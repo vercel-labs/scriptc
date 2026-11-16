@@ -2908,6 +2908,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.sqlite",
+      "kind": "node-builtin",
+      "name": "node:sqlite",
+      "status": "static",
+      "note": "recognized module (node:-prefixed specifier only, matching Node)"
+    },
+    {
       "id": "node-builtin.stream",
       "kind": "node-builtin",
       "name": "stream",

@@ -282,6 +282,11 @@ bool scr_eld_enable(double handle) {
   ScrEld *h = scr_eld_of(handle);
   if (h == NULL || h->enabled) return false;
   h->enabled = true;
+  /* Node's ELDHistogram::OnStart arms the timer and nothing else: the
+   * first tick's RecordDelta has no previous reading to difference
+   * against, so it records nothing, and prev_ns survives a disable (a
+   * re-enabled histogram's first sample spans the disabled period), as
+   * Node's does. */
   h->timer = scr_set_interval(scr_closure_retain(h->tick), h->resolution);
   scr_timer_unref(h->timer);
   return true;

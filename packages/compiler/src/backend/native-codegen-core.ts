@@ -101,6 +101,32 @@ export function nativePartitionPaths(path: string, count: number): string[] {
   return paths;
 }
 
+/** The frame that threw, as an error's stack names it, for a failure that
+ * carries no message of its own. */
+function throwingFrame(error: Error): string | null {
+  const stack = error.stack;
+  if (stack === undefined) return null;
+  for (const line of stack.split("\n").slice(1)) {
+    const text = line.trim();
+    if (text !== "") return text.replace(/^at\s+/, "");
+  }
+  return null;
+}
+
+/** The text a native-pipeline failure reports. An error thrown without a
+ * message — a compiler-internal refusal has none — still names what failed
+ * and where it was thrown, so an SC3004 never ends at its code alone. */
+export function failureText(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  if (error.message !== "") return error.message;
+  const frame = throwingFrame(error);
+  const what =
+    error.name === "" || error.name === "Error"
+      ? "internal compiler error"
+      : `internal compiler error (${error.name})`;
+  return frame === null ? what : `${what} at ${frame}`;
+}
+
 export class NativeCodegenError extends Error {
   constructor(
     readonly diagnosticCode: "SC3002" | "SC3003" | "SC3004",

@@ -208,6 +208,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "blob.new",
   "blob.slice",
   "blob.text",
+  // buffer.resolveObjectURL rebuilds a Blob handle from a registration.
+  "buffer.resolveObjectURL",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "dc.chanUnbindStore",
@@ -333,6 +335,9 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.writableFromWeb",
+  "stream.getDefaultHwm",
+  "stream.setDefaultHwm",
   "child.stdioStream",
   "stream.chunkDone",
   "stream.objectMode",
@@ -414,6 +419,7 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.writableFromWeb",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -959,6 +965,14 @@ const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
 /** The libCall nodes the rules below test. */
 type LibCallNode = IrExpr & { kind: "libCall" };
 
+/** Whether `node` is the interned constructor value of one of `names`
+ * (`dyn.globalConstructor("RegExp")`): a program that reads a builtin
+ * class as a value may build or call one, which runs the class's unit. */
+function readsGlobalConstructor(node: LibCallNode, ...names: string[]): boolean {
+  if (node.fn !== "dyn.globalConstructor" || node.args[0]?.kind !== "strLit") return false;
+  return names.includes(node.args[0].value);
+}
+
 /** A condition over several nodes of the module (a WebCrypto call and an
  * algorithm name): the scan's one walk shows it every expression, and the
  * feature is set when `result` answers true after the walk. */
@@ -1070,10 +1084,13 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** The WebCrypto algorithms scr_webcrypto_pki.c implements over the pki
  * unit (lowercased). */
 const WEBCRYPTO_ASYMMETRIC_NAMES: ReadonlySet<string> = new Set([
+  "ecdh",
   "ecdsa",
   "ed25519",
+  "rsa-oaep",
   "rsa-pss",
   "rsassa-pkcs1-v1_5",
+  "x25519",
 ]);
 
 /** Whether a string literal in the module names Ed25519, without regard
@@ -1384,6 +1401,11 @@ export const JS_OBJECT_MODEL_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "arrayBuffer.newResizable",
   "sharedArrayBuffer.newGrowable",
   "arrayBuffer.armMutable",
+  // The typed-array callback methods' entry guard and live element read
+  // (t262-dc2), emitted only for a mutableBuffers program; the symbols live
+  // in the object model build of scr_bytes.c beside the registry.
+  "bytes.requireLive",
+  "bytes.itemDyn",
 ]);
 
 /** The member name Object.prototype answers as an accessor (protoAccessor):
@@ -1900,6 +1922,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      "webstream.writableFromWeb",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
       // method value.
@@ -2103,14 +2126,24 @@ const RUNTIME_FEATURE_RULES = {
       ...ABORT_SIGNAL_LIB_FNS,
     ],
     prefixes: ["event."],
-    // spawn's `signal` option registers through addAbortListener. A call
-    // keeps the slot (the lowering always passes fifteen arguments); an IR
-    // fixture may spell fewer, and an absent one means no signal.
     libCall: (node) =>
-      node.fn === "cp.spawnArmed" && node.args[14] !== undefined && !isDynUndefined(node.args[14]),
+      // spawn's `signal` option registers through addAbortListener. A call
+      // keeps the slot (the lowering always passes fifteen arguments); an IR
+      // fixture may spell fewer, and an absent one means no signal.
+      (node.fn === "cp.spawnArmed" &&
+        node.args[14] !== undefined &&
+        !isDynUndefined(node.args[14])) ||
+      // A program that reads one of these classes as a value may build or
+      // call one (dyn.globalConstructor), and the construction runs this
+      // unit.
+      readsGlobalConstructor(node, "Event", "CustomEvent", "EventTarget"),
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
+  /** node:sqlite over the vendored SQLite engine (scr_sqlite.c and the
+   * vendored SQLite archive). A program that imports the module without
+   * reaching a lowered member links neither. */
+  sqlite: rule({ prefixes: ["sqlite."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
   /** A program that builds a Blob or File can hand one to fetch: selects
@@ -2124,7 +2157,16 @@ const RUNTIME_FEATURE_RULES = {
    * handles. */
   abortSignal: rule({
     prefixes: ["abort.", "webstream."],
-    fns: ["util.transferableAbortSignal", "util.transferableAbortController"],
+    fns: [
+      "util.transferableAbortSignal",
+      "util.transferableAbortController",
+      // A test's t.signal (scr_test.c): the abort unit supplies its
+      // controller through scr_abort.c's helpers.
+      "test.ctxSignal",
+    ],
+    // A program that reads the AbortController class as a value may build
+    // one (dyn.globalConstructor), and the construction runs this unit.
+    libCall: (node) => readsGlobalConstructor(node, "AbortController"),
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
@@ -2144,6 +2186,12 @@ const RUNTIME_FEATURE_RULES = {
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
   fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
+  /** fsPromises.watch (scr_watch_async.c): the async iterable the
+   * `for await` lowering drains, over the fs.watch watcher unit. */
+  fsWatchEvents: rule({
+    fns: ["fsp.watch", "watchEvents.wait", "watchEvents.take", "watchEvents.close"],
+    types: ["watchEvents"],
+  }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -2176,6 +2224,7 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      "webstream.writableFromWeb",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",
@@ -2284,6 +2333,10 @@ const RUNTIME_FEATURE_RULES = {
       // Unicode case mapping.
       "path.win32Relative",
     ],
+    // A program that reads the interned RegExp constructor as a value may
+    // build or call one: the checked-dynamic construction runs the regex
+    // engine, so link it as a regex literal does.
+    libCall: (node) => readsGlobalConstructor(node, "RegExp"),
     prefixes: URL_PREFIXES,
     expr: (node, _tables) =>
       node.kind === "regexLit" ||
@@ -2477,7 +2530,13 @@ const RUNTIME_FEATURE_RULES = {
    * ORs into jsObjectModel (jsObjectModelFact), so it selects no build
    * column of its own. Every other program links no part of the unit. */
   mutableBuffers: rule({
-    fns: ["arrayBuffer.armMutable", "arrayBuffer.newResizable", "sharedArrayBuffer.newGrowable"],
+    fns: [
+      "arrayBuffer.armMutable",
+      "arrayBuffer.newResizable",
+      "sharedArrayBuffer.newGrowable",
+      "bytes.requireLive",
+      "bytes.itemDyn",
+    ],
   }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn", "module.namespaceCopy"] }),
@@ -2507,8 +2566,13 @@ const RUNTIME_FEATURE_RULES = {
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
-   * scr_webcrypto.c. */
-  webcrypto: rule({ prefixes: ["webcrypto."] }),
+   * scr_webcrypto.c. A KeyObject's toCryptoKey on an untyped value
+   * dispatches through the KeyObject handle, whose conversion hook that
+   * unit installs, so naming the method selects the unit too. */
+  webcrypto: rule({
+    prefixes: ["webcrypto."],
+    expr: (node) => node.kind === "dynInvoke" && node.method === "toCryptoKey",
+  }),
   /** scr_x509.c: the X509Certificate fields beyond the validity window and
    * fingerprint, which stay in scr_lib.c. */
   x509: rule({
@@ -2688,6 +2752,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
+    fsWatchEvents: false,
     genBind: false,
     http2: false,
     http: false,
@@ -2697,6 +2762,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
+    sqlite: false,
     webBodies: false,
     webStreams: false,
     abortSignal: false,
@@ -3095,6 +3161,14 @@ export function moduleUsesFsWatch(mod: IrModule): boolean {
  * and keep their exact link line. */
 export function moduleUsesFsWatchFile(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "fsWatchFile").fsWatchFile;
+}
+
+/** True when the module contains an fsPromises.watch libCall or a
+ * watchEvents handle type — the link switch that pulls scr_watch_async.c
+ * (and, with it, scr_watch.c) into the binary and has the emitted main call
+ * scr_watch_events_install (the moduleUsesFsWatchFile precedent). */
+export function moduleUsesFsWatchEvents(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "fsWatchEvents").fsWatchEvents;
 }
 
 /** True when the module contains any test.* libCall or a testCtx handle

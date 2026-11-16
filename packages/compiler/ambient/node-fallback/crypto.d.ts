@@ -51,6 +51,17 @@ declare module "crypto" {
     export(options?: KeyExportOptions): Buffer;
     export(options: JwkKeyExportOptions): JsonWebKey;
     equals(otherKeyObject: KeyObject): boolean;
+    toCryptoKey(
+      algorithm:
+        | string
+        | webcrypto.Algorithm
+        | webcrypto.HmacImportParams
+        | webcrypto.EcKeyImportParams
+        | webcrypto.RsaHashedImportParams,
+      extractable: boolean,
+      keyUsages: readonly webcrypto.KeyUsage[],
+    ): webcrypto.CryptoKey;
+    static from(key: webcrypto.CryptoKey): KeyObject;
   }
   export interface PrivateKeyInput {
     key: string | Buffer;

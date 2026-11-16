@@ -229,6 +229,9 @@ enum {
   SCR_NET_OFF_DROP = 6,
   SCR_NET_OFF_NEW_LISTENER = 7,
   SCR_NET_OFF_CLIENT_ERROR = 8,
+  /* The TLS handshake-complete list ('secureConnection'), which fires
+   * beside the 'connection' list but is a separate registry. */
+  SCR_NET_OFF_SECURE_CONNECTION = 9,
 };
 void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 /* server.listeners(event): a +1 closure array of the event's listeners in

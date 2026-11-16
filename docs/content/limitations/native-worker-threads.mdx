@@ -6,7 +6,7 @@ Nested workers inherit their parent's environment snapshot.
 Supported constructor options are `workerData`, `argv`, a `transferList` of MessagePorts, `name` (reported by `threadName` and `worker.threadName`), `stdout`, `stderr` and `stdin`, and `resourceLimits.stackSizeMb`, which sets the worker thread's stack size (at least 192 KiB; without it a worker's stack is 8 MiB, where Node's is 4 MiB).
 The `resourceLimits` heap limits (`maxOldGenerationSizeMb`, `maxYoungGenerationSizeMb`, and `codeRangeSizeMb`), `worker.resourceLimits` while the worker runs, and `resourceLimits` read inside a worker are refused; in the main thread `resourceLimits` is `{}`, and after a worker exits `worker.resourceLimits` is `{}`, as in Node.
 With the `stdout` or `stderr` option, the worker's writes to that stream reach `worker.stdout` or `worker.stderr`, a Readable that ends after the worker's `'exit'` event; its chunks arrive in order with the worker's other events.
-Without the option a worker writes to the process's own output, and reading `worker.stdout` or `worker.stderr` is refused.
+Without the option a worker writes to the process's own output, and `worker.stdout` or `worker.stderr` still answers the same Readable, which receives those writes as Node's pipe delivers them.
 With the `stdin` option, `worker.stdin` is a Writable whose chunks the worker reads from `process.stdin`, in order with the worker's other events, and `process.stdin` ends when `worker.stdin` ends; without it `worker.stdin` is `null` and the worker's `process.stdin` ends without data, as in Node.
 Runtime paths, `eval`, loaders, and shared environments are unsupported.
 `setEnvironmentData` and `getEnvironmentData` keep a map per thread with SameValueZero keys; each new Worker starts from a clone of its parent's entries taken by the constructor, which throws `DataCloneError` when an entry cannot be cloned.
@@ -18,6 +18,7 @@ A worker's uncaught exception reaches its `error` listeners as Node's error seri
 An unhandled rejection whose reason is not error-like arrives as an `UnhandledPromiseRejection` Error with code `ERR_UNHANDLED_REJECTION` quoting the reason.
 A thrown value that does not clone, such as a function, arrives as an `ERR_WORKER_UNSERIALIZABLE_ERROR` Error, where Node sends its `util.inspect` string.
 `new MessageChannel()` from `node:worker_threads` makes two entangled MessagePorts, in one thread or across threads once a port is transferred, with `receiveMessageOnPort`.
+The `MessageChannel` global constructs the channel `new MessageChannel()` builds, so `new` through a stored value (`const Channel = MessageChannel; new Channel()`) builds one too.
 Port messages arrive in Node's order: each port's queued messages as one batch before `setImmediate` callbacks, a port's own `'close'` after the poll phase, and the other port's `'close'` after its queued messages while the loop keeps running.
 A worker's messages to its parent, and the parent's messages in the worker, also arrive as one batch before `setImmediate` callbacks, each followed by its microtasks, as in Node: the messages queued when delivery starts, and those that arrive meanwhile until the batch holds 1000.
 `receiveMessageOnPort(parentPort)` in a worker takes the parent's next message.

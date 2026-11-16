@@ -202,6 +202,9 @@ export interface CcOptions {
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
   mime?: boolean;
+  /** node:sqlite: compiles scr_sqlite.c and links the vendored SQLite
+   * archive. */
+  sqlite?: boolean;
   /** `--large-pages`: compiles scr_text_pages.c. */
   largePages?: boolean;
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
@@ -431,6 +434,10 @@ export interface CcOptions {
    * unit under the same precedent, so polling-free binaries keep their
    * exact link line. */
   watchFile?: boolean;
+  /** The program uses fsPromises.watch (moduleUsesFsWatchEvents on the IR):
+   * compiles scr_watch_async.c into the binary, and with it scr_watch.c
+   * (the iterator is a queue over that unit's watcher). */
+  watchEvents?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

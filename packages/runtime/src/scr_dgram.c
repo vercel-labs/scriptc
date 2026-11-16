@@ -1144,13 +1144,8 @@ void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *c
   const ScrDyn *p = empty ? NULL : scr_dyn_obj_get(v, "port", 4);
   if (p != NULL) {
     if (p->kind == SCR_DYN_NUM) port = p->v.num;
-    else if (p->kind == SCR_DYN_STR && p->v.str->len > 0) {
-      char buf[32];
-      if (p->v.str->len < sizeof buf) {
-        memcpy(buf, p->v.str->data, p->v.str->len);
-        buf[p->v.str->len] = '\0';
-        port = atof(buf);
-      }
+    else if (p->kind == SCR_DYN_STR) {
+      port = scr_string_to_number(p->v.str); /* JavaScript's ToNumber */
     }
   }
   ScrStr *host = address != NULL && address->kind == SCR_DYN_STR ? scr_str_retain(address->v.str)
@@ -1186,11 +1181,21 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
   if (p != NULL && p->kind != SCR_DYN_UNDEF) {
     if (p->kind == SCR_DYN_NUM) {
       port = p->v.num;
-    } else if (p->kind == SCR_DYN_STR && p->v.str->len > 0 && p->v.str->len < 32) {
-      char buf[32];
-      memcpy(buf, p->v.str->data, p->v.str->len);
-      buf[p->v.str->len] = '\0';
-      port = atof(buf); /* validatePort accepts a numeric string */
+    } else if (p->kind == SCR_DYN_STR) {
+      /* validatePort's string arm: JavaScript's ToNumber ('0x10' is 16,
+       * "12abc" is NaN), then the integer/range test. */
+      ScrStr *trimmed = scr_str_trim(p->v.str);
+      double value = scr_string_to_number(p->v.str);
+      bool numeric = trimmed->len > 0 && value >= 0 && value <= 65535 &&
+                     trunc(value) == value;
+      scr_str_release(trimmed);
+      if (!numeric) {
+        scr_dgram_throw_received(SCR_ERR_RANGE, "ERR_SOCKET_BAD_PORT",
+                                 "options.port should be >= 0 and < 65536. Received ", p, ".");
+        scr_dyn_release(owned);
+        return;
+      }
+      port = value;
     } else {
       /* validatePort's non-number arm: ERR_SOCKET_BAD_PORT with the
        * specific-type tail. */

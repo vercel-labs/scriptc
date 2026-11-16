@@ -13,7 +13,7 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
-import type { Lowerer } from "./lowerer.js";
+import { PoisonError, type Lowerer } from "./lowerer.js";
 import {
   classMemberNameOf,
   classValueRef,
@@ -146,6 +146,30 @@ function ownStaticsRepresentable(lowerer: Lowerer, info: ClassInfo): boolean {
   return true;
 }
 
+/** The installer could not answer a member the table would hold. */
+const REFUSED = Symbol("refused");
+
+/** The value the table defines for the static member `method` (an accessor
+ * half is `get:x` or `set:x`): null when the member has no value form, and
+ * REFUSED when its own lowering refused one. That refusal's diagnostic is
+ * dropped — no source asked for this member — and the caller keeps the
+ * class's runtime fence rather than a table that answers a member it does not
+ * hold as `undefined`. */
+function staticTableMemberValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  method: string,
+): IrExpr | null | typeof REFUSED {
+  const before = lowerer.diags.length;
+  try {
+    return reflectedClassStaticMethodValueForTable(lowerer, info, method);
+  } catch (error) {
+    if (!(error instanceof PoisonError)) throw error;
+    lowerer.diags.splice(before);
+    return REFUSED;
+  }
+}
+
 /** The lifted function that installs `info`'s static table on the class
  * value it receives: the class's property table linked to its base's, with
  * the class's own statics defined in JavaScript's own-key order (`length`
@@ -227,7 +251,8 @@ export function classStaticsInstaller(
     if (key === null) continue;
     const at = locOf(member);
     if (ts.isMethodDeclaration(member)) {
-      const value = reflectedClassStaticMethodValueForTable(lowerer, info, key);
+      const value = staticTableMemberValue(lowerer, info, key);
+      if (value === REFUSED) return null;
       if (!value) continue;
       statements.push(
         define(
@@ -247,12 +272,11 @@ export function classStaticsInstaller(
       continue;
     }
     if (!ts.isAccessor(member) || setters.has(key)) continue;
-    const getter = findStaticAccessorOn(info, key)?.get
-      ? reflectedClassStaticMethodValueForTable(lowerer, info, `get:${key}`)
-      : null;
-    const setter = findStaticAccessorOn(info, key)?.set
-      ? reflectedClassStaticMethodValueForTable(lowerer, info, `set:${key}`)
-      : null;
+    const halves = findStaticAccessorOn(info, key);
+    const getter = halves?.get ? staticTableMemberValue(lowerer, info, `get:${key}`) : null;
+    if (getter === REFUSED) return null;
+    const setter = halves?.set ? staticTableMemberValue(lowerer, info, `set:${key}`) : null;
+    if (setter === REFUSED) return null;
     if (!getter && !setter) continue;
     const entries: { key: string; value: IrExpr }[] = [
       { key: "enumerable", value: flag(false, at) },

@@ -5444,13 +5444,13 @@ ScrDyn *scr_net_sock_timeout(ScrNetSocket *s) {
 }
 
 /* destroy(err): the 'error' event carries this Error, then 'close' with
- * hadError (Node's _destroy). A settled socket ignores it. */
-void scr_net_sock_destroy_error(ScrNetSocket *s, ScrError *err /*moved*/) {
-  if (s->close_emitted || s->destroy_error != NULL) {
-    scr_error_release(err);
-    return;
-  }
-  s->destroy_error = err;
+ * hadError (Node's _destroy). The caller keeps its reference — the socket
+ * retains the Error it queues and releases it after delivery, so a
+ * temporary's statement cleanup cannot free it before the sweep. A settled
+ * socket ignores it. */
+void scr_net_sock_destroy_error(ScrNetSocket *s, ScrError *err /*borrowed*/) {
+  if (s->close_emitted || s->destroy_error != NULL) return;
+  s->destroy_error = scr_error_retain(err);
   s->had_error = true;
   scr_net_sock_destroy(s);
 }

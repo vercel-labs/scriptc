@@ -363,8 +363,8 @@ void scr_net_sock_connect_opts(ScrNetSocket *s, const ScrDyn *options /*borrowed
  * _idleTimeout), then the idle timeout in milliseconds. +1. */
 ScrDyn *scr_net_sock_timeout(ScrNetSocket *s);
 /* destroy(error): the 'error' event carries this Error, then 'close' with
- * hadError. Takes the error (+1 moves in). */
-void scr_net_sock_destroy_error(ScrNetSocket *s, ScrError *err /*moves*/);
+ * hadError. Borrows the caller's error and retains the one it queues. */
+void scr_net_sock_destroy_error(ScrNetSocket *s, ScrError *err /*borrowed*/);
 /* write(str, encoding) / end(str, encoding): the string's bytes in that
  * encoding (Node's unknown-encoding TypeError included). */
 bool scr_net_sock_write_enc(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);

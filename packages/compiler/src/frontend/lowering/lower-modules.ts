@@ -2551,11 +2551,15 @@ export function collectGlobals(
       if (symbol.flags & ts.SymbolFlags.Alias) {
         const target = lowerer.checker.getAliasedSymbol(symbol);
         const vd = target.valueDeclaration;
+        // A non-const variable, or a function declaration the program
+        // reassigns (rebindable-functions.ts), can change after the export
+        // statement: Node's default binding keeps the value it had there.
         const mutableVar =
           vd !== undefined &&
-          ts.isVariableDeclaration(vd) &&
           !ts.getSourceFileOfNode(vd).isDeclarationFile &&
-          (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
+          ((ts.isVariableDeclaration(vd) &&
+            (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0) ||
+            isRebindableFunction(lowerer, vd));
         // Immutable targets: alias plumbing — importers resolve to the
         // target's storage (the alias-resolved read IS the snapshot when
         // nothing can reassign). Mutable targets fall through to the

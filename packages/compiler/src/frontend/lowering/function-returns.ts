@@ -5,6 +5,7 @@ import { dynUndefinedExpr } from "../../ir/build.js";
 import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import { isRebindableFunction } from "./rebindable-functions.js";
 import {
   BOOL,
   DYN,
@@ -267,6 +268,11 @@ export function declaredReturnType(
   blame: ts.Node,
 ): IrType {
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && ts.isGetAccessorDeclaration(decl)) return DYN;
+  // A JavaScript body that returns a call of a function declaration the
+  // program reassigns answers whatever that binding held, so the checker's
+  // inference from the declaration's own signature cannot settle the result.
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && returnsRebindableCall(lowerer, decl))
+    return DYN;
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
   let retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
@@ -928,4 +934,25 @@ export function widensReducedRecords(lowerer: Lowerer, narrow: IrType, wide: IrT
       );
     })
   );
+}
+
+/** Whether a JavaScript body returns a call of a function declaration the
+ * program reassigns (rebindable-functions.ts). */
+function returnsRebindableCall(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
+  const body = decl.body;
+  if (body === undefined) return false;
+  let found = false;
+  ts.walkPreorder(body, (child) => {
+    if (found) return "skip";
+    if (child !== body && ts.isFunctionLike(child)) return "skip";
+    if (!ts.isReturnStatement(child) || child.expression === undefined) return undefined;
+    let expr: ts.Expression = child.expression;
+    while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+    if (!ts.isCallExpression(expr) || !ts.isIdentifier(expr.expression)) return undefined;
+    const symbol = lowerer.resolveValueSymbol(expr.expression);
+    if (symbol !== null && symbol.declarations.some((d) => isRebindableFunction(lowerer, d)))
+      found = true;
+    return undefined;
+  });
+  return found;
 }

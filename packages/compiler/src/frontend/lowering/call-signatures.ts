@@ -1651,21 +1651,29 @@ function jsDynStoredLambda(
     value = parent.parent;
     parent = value.parent;
   }
-  if (
-    parent === undefined ||
-    !ts.isBinaryExpression(parent) ||
-    parent.right !== value ||
-    parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-    lowerer.jsWidenedBindings.size === 0
-  )
-    return false;
-  let target: ts.Node = parent.left;
-  while (ts.isParenthesizedExpression(target)) target = target.expression;
-  if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target)) return false;
-  let root: ts.Node = target.expression;
-  while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
-    root = root.expression;
-  while (ts.isParenthesizedExpression(root)) root = root.expression;
+  if (parent === undefined || lowerer.jsWidenedBindings.size === 0) return false;
+  // The value goes into a binding the preflight widened: either a member of
+  // one (`o.f = function () { …; return v; }`) or the binding's own
+  // initializer (`var o = { f: function () { …; return v; } }`), whose
+  // literal the checked-dynamic storage keeps as written.
+  let root: ts.Node;
+  if (ts.isVariableDeclaration(parent) && parent.initializer === value) {
+    if (!ts.isIdentifier(parent.name)) return false;
+    root = parent.name;
+  } else if (
+    ts.isBinaryExpression(parent) &&
+    parent.right === value &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  ) {
+    let target: ts.Node = parent.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
+      return false;
+    root = target.expression;
+    while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+      root = root.expression;
+    while (ts.isParenthesizedExpression(root)) root = root.expression;
+  } else return false;
   if (!ts.isIdentifier(root)) return false;
   const symbol = lowerer.checker.getSymbolAtLocation(root);
   return symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);

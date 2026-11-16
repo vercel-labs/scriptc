@@ -42,3 +42,18 @@ recursive = function (n) {
   return original(n) * 10;
 };
 console.log(recursive(4));
+
+// A nested declaration the enclosing function reassigns with a function of
+// another signature: Node's binding holds the replacement, so the call
+// returns its value whatever the declaration's own signature says.
+function nestedSignature() {
+  function pick() {
+    return 1;
+  }
+  const first = pick();
+  pick = function () {
+    return "text";
+  };
+  return first + ":" + pick() + ":" + typeof pick();
+}
+console.log(nestedSignature());

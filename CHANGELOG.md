@@ -9,6 +9,8 @@ All notable changes to scriptc will be documented in this file.
 - **Node.js parity:**
   - `Set` and `Map` take `Map`, `Set` and typed-array elements: each is one object for its whole life, so JavaScript compares it by identity, and the collection holds it, finds it, deletes and re-adds it, iterates it in insertion order and seeds another `Map` from `[key, value]` pairs holding it, instead of failing with SC2020; `Set<Uint8Array>` and `Map<Map<string, number>, T>` compile and keep two objects with equal contents apart.
   - A collection constructor's seed cast from an untyped value, `new Set(u as Key[])` where `u` is `unknown`, lowers as the ordinary checked array conversion rather than as a single key, so it compiles like `const keys = u as Key[]; new Set(keys)` and every element keeps the identity the untyped name still sees; a key written on its own (`set.add(u as Key)`) stays refused, because copying a key would change the object the collection holds.
+  - A class declared in a module of an import cycle behaves as Node's temporal dead zone makes it: a reference that can run before the class statement — `new`, a static read, the class value, `instanceof`, a subclass's `extends` clause in another module, generic classes included — throws Node's `ReferenceError` naming the binding, and every later reference sees the one class, instead of the program failing to build with SC1016.
+  - `RegExp(pattern, flags)` called without `new` compiles as the constructor call Node runs, instead of throwing SC2020 at startup, and a RegExp pattern with no flags argument (or an `undefined` one) answers the pattern itself, keeping its identity.
 
 <!-- release:start -->
 

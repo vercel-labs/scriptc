@@ -305,6 +305,7 @@ import {
   lowerStaticFieldRead,
   returnsOnlyThis,
   storedClassValueType,
+  lowerRegExpConstruction,
   type ClassInfo,
 } from "./lower-classes.js";
 import { checkRefusedMemberUse } from "./class-member-refusals.js";
@@ -1385,6 +1386,37 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       };
     }
     if (name === "String") return lowerer.ensureString(arg, argNode);
+  }
+
+  // `RegExp(pattern, flags?)` without `new`: Node's RegExp function IS the
+  // constructor (ECMA-262 22.2.3.1), so the call lowers to the construction
+  // — except that a RegExp pattern with no flags argument is answered as it
+  // stands instead of copied (step 2), identity included.
+  if (
+    ts.isIdentifier(expr.expression) &&
+    expr.expression.text === "RegExp" &&
+    expr.questionDotToken === undefined &&
+    lowerer.isStdlibGlobal(expr.expression, "RegExp")
+  ) {
+    const args = expr.arguments.nodes;
+    // An identifier read (`undefined`, a binding typed undefined) runs no
+    // user code, so a flags argument spelled that way is skippable exactly.
+    const staticallyUndefined = (e: ts.Expression): boolean => {
+      if (!ts.isIdentifier(e)) return false;
+      if (e.text === "undefined" && lowerer.isStdlibGlobal(e, "undefined")) return true;
+      const type = lowerer.mapTypeOf(lowerer.typeOf(e));
+      return type !== null && (type.kind === "undefinedT" || type.kind === "void");
+    };
+    // A RegExp pattern with an undefined flags argument is the same object
+    // in Node (ECMA-262 22.2.3.1 step 2), so the call is the pattern's own
+    // value, evaluated once.
+    if (args.length >= 1 && args.length <= 2 && !args.some(ts.isSpreadElement)) {
+      const pattern = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+      const flags = args[1];
+      if (pattern?.kind === "regex" && (flags === undefined || staticallyUndefined(flags)))
+        return lowerer.lowerExpr(args[0]!);
+    }
+    return lowerRegExpConstruction(lowerer, expr, args, loc, "RegExp");
   }
 
   // Computed calls preserve their evaluated receiver just like dotted

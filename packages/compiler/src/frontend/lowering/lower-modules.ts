@@ -4534,6 +4534,7 @@ export function lowerFileInit(
     // binding sees its assigned value.
     const runsStatics = (c: ClassInfo): boolean =>
       lowerer.classInitFlags.has(c.def.name) ||
+      (c.decl != null && lowerer.heritageClassChecks.has(c.decl)) ||
       c.callableBase !== undefined ||
       c.def.baseValueGlobal !== undefined ||
       c.runtimeStatics !== undefined ||

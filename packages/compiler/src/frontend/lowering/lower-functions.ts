@@ -89,6 +89,32 @@ function declareCallReceiver(
   };
 }
 
+/** Whether a non-arrow function's own body (or a nested arrow's) reads
+ * `this` or `super`: nested plain functions and classes bind their own, so
+ * their uses are not this function's. */
+function readsOwnReceiver(node: ts.FunctionLikeDeclaration): boolean {
+  const reads = (child: ts.Node): boolean => {
+    if (child.kind === ts.SyntaxKind.ThisKeyword || child.kind === ts.SyntaxKind.SuperKeyword)
+      return true;
+    if (
+      (ts.isFunctionLike(child) && !ts.isArrowFunction(child)) ||
+      ts.isClassDeclaration(child) ||
+      ts.isClassExpression(child)
+    )
+      return false;
+    return ts.forEachChild(child, (next) => (reads(next) ? true : undefined)) === true;
+  };
+  for (const parameter of node.parameters.nodes) if (reads(parameter)) return true;
+  return node.body !== undefined && reads(node.body);
+}
+
+/** A class member's `this` is the instance (or the class value) its own
+ * lowering binds; lowerLambda must not shadow it with a call receiver. */
+function isClassMember(node: ts.FunctionLikeDeclaration): boolean {
+  const parent = node.parent;
+  return parent !== undefined && (ts.isClassDeclaration(parent) || ts.isClassExpression(parent));
+}
+
 /** Remove the receiver declaration when no lookup of `this` reached it:
  * the parameters, the body and nested arrows never read it, so the entry
  * does not read the call-site receiver. */
@@ -536,7 +562,14 @@ export function lowerLambda(
     const receiver =
       (checkedReceiver ||
         isJsSourceFile(ts.getSourceFileOfNode(node)) ||
-        node.parameters.nodes.some(isThisParameter)) &&
+        node.parameters.nodes.some(isThisParameter) ||
+        // A function with its own `this` (a function expression or
+        // declaration, an object-literal method) reads the receiver of the
+        // call that runs it, as Node does: `o.m()`, `f.call(o)`,
+        // `f.apply(o, …)` and `Reflect.apply(f, o, …)` bind it, and a bare
+        // call leaves it undefined. A class member's `this` is its own
+        // lowering's instance.
+        (!isClassMember(node) && readsOwnReceiver(node))) &&
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
         : null;

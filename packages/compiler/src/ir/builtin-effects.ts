@@ -1415,6 +1415,19 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.
+  // createSocket's constructor ladder (ERR_SOCKET_BAD_TYPE, validateUint32,
+  // the options' type checks, and the SC2020s for options with no native
+  // behavior yet), the options-object bind forms, the synchronous pair,
+  // the source-specific joins and remoteAddress()'s state errors.
+  "dgram.createSocket",
+  "dgram.createSocketCb",
+  "dgram.bindOpts",
+  "dgram.bindOptsCb",
+  "dgram.bindSync",
+  "dgram.connectSync",
+  "dgram.addSourceMembership",
+  "dgram.dropSourceMembership",
+  "dgram.remoteAddress",
   "dgram.bind",
   "dgram.bindCb",
   "dgram.connect",

@@ -223,7 +223,7 @@ import {
   lowerPromisifiedCryptoCall,
 } from "./builtins/crypto.js";
 import { lowerErrorCaptureStackTraceCall, lowerErrorIsErrorCall } from "./builtins/errors.js";
-import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
+import { lowerDgramDisposeCall, lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
   lowerDirDisposeCall,
@@ -2340,6 +2340,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (streamDispose) return streamDispose;
     const netServerDispose = lowerNetServerAsyncDisposeCall(lowerer, expr);
     if (netServerDispose) return netServerDispose;
+    const dgramDispose = lowerDgramDisposeCall(lowerer, expr);
+    if (dgramDispose) return dgramDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");

@@ -335,15 +335,10 @@ static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg) {
     fprintf(stderr, "Unhandled 'error' event: Error: %s\n", msg->data);
     _Exit(1);
   }
-  /* Node's error object for the message, as far as the error itself
-   * holds it: errno, code and syscall. Every listener receives the same
-   * object. The address and port (or hostname) Node also sets are
-   * properties of the error's untyped view; building that view here would
-   * link the dynamic object model into every program with a datagram
-   * socket, typed ones included, so an 'error' event does not carry them. */
-  const char *detail;
-  ScrError *system = scr_system_error_fields(msg, &detail);
-  (void)detail;
+  /* Node's error object for the message: errno, code and syscall, plus the
+   * address and port (or hostname) the detail names. Every listener
+   * receives the same object. */
+  ScrError *system = scr_system_error_from_message(msg);
   ScrError *saved = scr_event_error_payload;
   if (system != NULL) scr_event_error_payload = system;
   ScrDgramL *snap;
@@ -491,16 +486,26 @@ static bool scr_dgram_key_is_socket(const void *udata) {
 
 /* ── the surface ─────────────────────────────────────────────────────── */
 
-ScrDgramSocket *scr_dgram_create(bool reuse_addr) {
+ScrDgramSocket *scr_dgram_create(bool v6, bool reuse_addr, bool ipv6_only, bool reuse_port,
+                                 double recv_size, double send_size) {
   ScrDgramSocket *s = calloc(1, sizeof *s);
   if (!s) scr_dgram_oom();
   s->rc = 1;
   s->fd = -1;
+  s->v6 = v6;
   s->reuse_addr = reuse_addr;
+  s->ipv6_only = ipv6_only;
+  s->reuse_port = reuse_port;
+  s->init_recv_size = recv_size;
+  s->init_send_size = send_size;
 #ifdef SCR_RC_AUDIT
   scr_dgram_live++;
 #endif
   return s;
+}
+
+ScrStr *scr_dgram_type_str(ScrDgramSocket *s) {
+  return scr_str_new(s->v6 ? "udp6" : "udp4", 4);
 }
 
 static void scr_dgram_throw(const char *msg) {
@@ -518,19 +523,116 @@ static void scr_dgram_throw(const char *msg) {
   }
 }
 
-/* Resolve a numeric host into a sockaddr_in; "" means any (bind's
- * default), "localhost" pins to 127.0.0.1 (the net stance). False for
- * non-numeric hosts — the caller defers Node's ENOTFOUND. */
-static bool scr_dgram_host4(const char *host, uint16_t port, struct sockaddr_in *out) {
+/* Forward declarations: the helpers below the socket surface. */
+static bool scr_dgram_ip6(const char *text, struct in6_addr *addr, unsigned *scope);
+static bool scr_dgram_dyn_truthy(const ScrDyn *v);
+static void scr_dgram_throw_errno(int err, const char *syscall);
+static void scr_dgram_throw_exception_host_port(int err, const char *syscall, const char *ip,
+                                                int port);
+static void scr_dgram_apply_init_buffers(ScrDgramSocket *s);
+
+/* A JS number as V8 prints it in an error's Received tail ("70000",
+ * "1.5", "NaN", "Infinity"). Integer-valued doubles print without a
+ * fraction. */
+static void scr_dgram_number_text(double v, char *buf, size_t cap) {
+  if (v != v) {
+    snprintf(buf, cap, "NaN");
+  } else if (isinf(v)) {
+    snprintf(buf, cap, v < 0 ? "-Infinity" : "Infinity");
+  } else if (trunc(v) == v && v >= -9007199254740992.0 && v <= 9007199254740992.0) {
+    snprintf(buf, cap, "%.0f", v);
+  } else {
+    snprintf(buf, cap, "%.17g", v);
+  }
+}
+
+/* Node's ERR_INVALID_ARG_VALUE: "The property|argument 'name' <reason>.
+ * Received <inspected>" (the inspection truncated at 128 characters, the
+ * way Node truncates it). */
+static void scr_dgram_throw_invalid_arg_value(const char *name, const ScrStr *value,
+                                              const char *reason) {
+  ScrStr *shown = scr_str_inspect_quoted(value, true);
+  bool cut = shown->len > 128;
+  char text[256];
+  int n = snprintf(text, sizeof text, "The %s '%s' %s. Received %.*s%s",
+                   strchr(name, '.') != NULL ? "property" : "argument", name, reason,
+                   (int)(cut ? 128 : shown->len), shown->data, cut ? "..." : "");
+  scr_str_release(shown);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text, n < 0 ? 0 : (size_t)n, "ERR_INVALID_ARG_VALUE");
+}
+
+/* Node's validatePort(port, name, allowZero): an integer in 0..65535
+ * (1..65535 when zero is not allowed). Throws ERR_SOCKET_BAD_PORT, a
+ * RangeError, with Node's Received tail. False with the error pending. */
+static bool scr_dgram_valid_port(double port, const char *name, bool allow_zero) {
+  if (port >= 0 && port <= 65535 && trunc(port) == port && (allow_zero || port != 0)) return true;
+  char shown[48];
+  scr_dgram_number_text(port, shown, sizeof shown);
+  char text[192];
+  int n = snprintf(text, sizeof text, "%s should be %s 0 and < 65536. Received type number (%s).",
+                   name, allow_zero ? ">=" : ">", shown);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_SOCKET_BAD_PORT");
+  return false;
+}
+
+/* Fill a sockaddr for this socket's family: "" is the wildcard (bind's
+ * default address), "localhost" pins the family's loopback (the net
+ * stance), and every other host must be a numeric literal. False for a
+ * non-numeric host — the caller defers Node's ENOTFOUND. */
+static bool scr_dgram_host_addr(const ScrDgramSocket *s, const char *host, uint16_t port,
+                                struct sockaddr_storage *out, socklen_t *outlen) {
   memset(out, 0, sizeof *out);
-  out->sin_family = AF_INET;
-  out->sin_port = htons(port);
+  if (s->v6) {
+    struct sockaddr_in6 *a = (struct sockaddr_in6 *)out;
+    a->sin6_family = AF_INET6;
+    a->sin6_port = htons(port);
+    if (host[0] == '\0') {
+      a->sin6_addr = in6addr_any;
+      *outlen = (socklen_t)sizeof *a;
+      return true;
+    }
+    if (strcmp(host, "localhost") == 0) host = "::1";
+    unsigned scope = 0;
+    struct in6_addr addr;
+    if (!scr_dgram_ip6(host, &addr, &scope)) return false;
+    a->sin6_addr = addr;
+    a->sin6_scope_id = scope;
+    *outlen = (socklen_t)sizeof *a;
+    return true;
+  }
+  struct sockaddr_in *a = (struct sockaddr_in *)out;
+  a->sin_family = AF_INET;
+  a->sin_port = htons(port);
+  *outlen = (socklen_t)sizeof *a;
   if (host[0] == '\0') {
-    out->sin_addr.s_addr = INADDR_ANY;
+    a->sin_addr.s_addr = INADDR_ANY;
     return true;
   }
   if (strcmp(host, "localhost") == 0) host = "127.0.0.1";
-  return inet_pton(AF_INET, host, &out->sin_addr) == 1;
+  return inet_pton(AF_INET, host, &a->sin_addr) == 1;
+}
+
+/* A numeric literal this socket's family parses (the synchronous bind and
+ * connect take literals only: Node performs no name resolution there). */
+static bool scr_dgram_numeric_host(const ScrDgramSocket *s, const char *text) {
+  if (s->v6) {
+    struct in6_addr addr;
+    unsigned scope = 0;
+    return scr_dgram_ip6(text, &addr, &scope);
+  }
+  struct in_addr addr;
+  return inet_pton(AF_INET, text, &addr) == 1;
+}
+
+/* The address text Node's ExceptionWithHostPort prints ("bind EADDRINUSE
+ * 0.0.0.0:4000", "::1:4000" for udp6 — no brackets). */
+static void scr_dgram_sockaddr_ip(const struct sockaddr_storage *sa, char *buf, size_t cap) {
+  if (sa->ss_family == AF_INET6) {
+    if (inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)sa)->sin6_addr, buf, cap) == NULL)
+      snprintf(buf, cap, "::");
+  } else if (inet_ntop(AF_INET, &((const struct sockaddr_in *)sa)->sin_addr, buf, cap) == NULL) {
+    snprintf(buf, cap, "0.0.0.0");
+  }
 }
 
 /* Create the fd (idempotent). Aborts only on resource exhaustion, the
@@ -541,7 +643,7 @@ static void scr_dgram_ensure_fd(ScrDgramSocket *s) {
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
   }
-  int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  int fd = socket(s->v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
   if (fd < 0) {
     fputs("scriptc: socket() failed\n", stderr);
     abort();
@@ -549,9 +651,38 @@ static void scr_dgram_ensure_fd(ScrDgramSocket *s) {
   scr_dgram_nonblock(fd);
   if (s->reuse_addr) {
     int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const void *)&one, sizeof one);
+  }
+#ifdef SO_REUSEPORT
+  if (s->reuse_port) {
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (const void *)&one, sizeof one);
+  }
+#else
+  (void)s->reuse_port; /* libuv answers ENOTSUP on these platforms; a
+                          bind that ignores the flag is the close match */
+#endif
+  if (s->v6 && s->ipv6_only) {
+    int one = 1;
+    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const void *)&one, sizeof one);
   }
   s->fd = fd;
+}
+
+/* Node's startReceiving applies the constructor's recv/send buffer sizes
+ * once the socket begins receiving. A setsockopt failure is ignored (Node
+ * would throw inside its own callback; the sizes are best-effort here). */
+static void scr_dgram_apply_init_buffers(ScrDgramSocket *s) {
+  if (s->fd < 0) return;
+  int value;
+  if (s->init_recv_size > 0 && s->init_recv_size <= 2147483647.0) {
+    value = (int)s->init_recv_size;
+    setsockopt(s->fd, SOL_SOCKET, SO_RCVBUF, (const void *)&value, sizeof value);
+  }
+  if (s->init_send_size > 0 && s->init_send_size <= 2147483647.0) {
+    value = (int)s->init_send_size;
+    setsockopt(s->fd, SOL_SOCKET, SO_SNDBUF, (const void *)&value, sizeof value);
+  }
 }
 
 static void scr_dgram_defer_err(ScrDgramSocket *s, const char *msg) {
@@ -574,18 +705,19 @@ void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb
     return;
   }
   if (cb) scr_dgram_ls_add(&s->listening_ls, cb, NULL, true);
-  struct sockaddr_in a4;
-  if (!scr_dgram_host4(host->data, (uint16_t)(int)port, &a4)) {
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  if (!scr_dgram_host_addr(s, host->data, (uint16_t)(int)port, &sa, &salen)) {
     char msg[160];
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", host->data);
     scr_dgram_defer_err(s, msg);
     return;
   }
   scr_dgram_ensure_fd(s);
-  if (bind(s->fd, (struct sockaddr *)&a4, sizeof a4) != 0) {
+  if (bind(s->fd, (struct sockaddr *)&sa, salen) != 0) {
     int err = errno;
     char ip[64];
-    inet_ntop(AF_INET, &a4.sin_addr, ip, sizeof ip);
+    scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
     char msg[128];
     /* Node: "bind EADDRINUSE 0.0.0.0:4000" */
     snprintf(msg, sizeof msg, "bind %s %s:%d", scr_dgram_errname(err), ip, (int)port);
@@ -596,6 +728,7 @@ void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb
   }
   s->bound = true;
   s->emit_listening = true;
+  scr_dgram_apply_init_buffers(s);
   scr_dgram_register(s);
   scr_dgram_update_read(s);
 }
@@ -614,11 +747,17 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
     scr_dgram_throw("Already connected");
     return;
   }
+  if (!scr_dgram_valid_port(port, "Port", false)) {
+    scr_closure_release(cb);
+    return;
+  }
   if (cb) scr_dgram_ls_add(&s->conn_ls, cb, NULL, true);
-  struct sockaddr_in a4;
-  if (!scr_dgram_host4(host->data, (uint16_t)(int)port, &a4) || host->len == 0) {
+  const char *h = host->len > 0 ? host->data : (s->v6 ? "::1" : "127.0.0.1");
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  if (!scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     char msg[160];
-    snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", host->data);
+    snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
     scr_dgram_defer_err(s, msg);
     return;
   }
@@ -626,11 +765,12 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
   if (!s->bound) {
     s->bound = true;
     s->emit_listening = true; /* Node's implicit bind emits 'listening' */
+    scr_dgram_apply_init_buffers(s);
   }
-  if (connect(s->fd, (struct sockaddr *)&a4, sizeof a4) != 0) {
+  if (connect(s->fd, (struct sockaddr *)&sa, salen) != 0) {
     char msg[128];
     char ip[64];
-    inet_ntop(AF_INET, &a4.sin_addr, ip, sizeof ip);
+    scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
     snprintf(msg, sizeof msg, "connect %s %s:%d", scr_dgram_errname(errno), ip, (int)port);
     scr_dgram_defer_err(s, msg);
     return;
@@ -639,6 +779,413 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
   s->emit_connect = true;
   scr_dgram_register(s);
   scr_dgram_update_read(s);
+}
+
+/* bindSync([options]): Node's synchronous bind. numeric host only; the
+ * state and argument errors throw synchronously (validatePort's
+ * ERR_SOCKET_BAD_PORT, ERR_INVALID_ARG_VALUE for a non-IP address, the
+ * errno exception for a failed bind). 'listening' emits at the next
+ * dispatch pass, Node's next tick. */
+void scr_dgram_bind_sync(ScrDgramSocket *s, double port, ScrStr *host, bool has_host) {
+  if (s->closing || s->close_emitted) {
+    scr_dgram_throw("Not running");
+    return;
+  }
+  if (s->bound) {
+    scr_dgram_throw("Socket is already bound");
+    return;
+  }
+  if (!scr_dgram_valid_port(port, "options.port", true)) return;
+  const char *h = has_host ? host->data : "";
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  if (h[0] != '\0' && !scr_dgram_numeric_host(s, h)) {
+    scr_dgram_throw_invalid_arg_value(
+        "options.address", host,
+        "must be a numeric IP address; bindSync does not perform DNS resolution");
+    return;
+  }
+  if (!scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
+    scr_dgram_throw_invalid_arg_value(
+        "options.address", host,
+        "must be a numeric IP address; bindSync does not perform DNS resolution");
+    return;
+  }
+  scr_dgram_ensure_fd(s);
+  if (bind(s->fd, (struct sockaddr *)&sa, salen) != 0) {
+    int err = errno;
+    char ip[64];
+    scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
+    close(s->fd);
+    s->fd = -1;
+    scr_dgram_throw_exception_host_port(err, "bind", ip, (int)port);
+    return;
+  }
+  s->bound = true;
+  s->emit_listening = true;
+  scr_dgram_apply_init_buffers(s);
+  scr_dgram_register(s);
+  scr_dgram_update_read(s);
+}
+
+/* connectSync(port[, address]): the synchronous connect. An unbound
+ * socket binds to the wildcard first (Node's this.bindSync()), and the
+ * connect state becomes CONNECTED at once, so disconnect() works before
+ * the 'connect' emission. */
+void scr_dgram_connect_sync(ScrDgramSocket *s, double port, ScrStr *host, bool has_host) {
+  if (s->closing || s->close_emitted) {
+    scr_dgram_throw("Not running");
+    return;
+  }
+  if (!scr_dgram_valid_port(port, "Port", false)) return;
+  if (s->connected) {
+    scr_dgram_throw("Already connected");
+    return;
+  }
+  bool given = has_host && host->len > 0;
+  const char *h = given ? host->data : (s->v6 ? "::1" : "127.0.0.1");
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  if (given && !scr_dgram_numeric_host(s, h)) {
+    scr_dgram_throw_invalid_arg_value(
+        "address", host,
+        "must be a numeric IP address; connectSync does not perform DNS resolution");
+    return;
+  }
+  if (!scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
+    scr_dgram_throw_invalid_arg_value(
+        "address", host,
+        "must be a numeric IP address; connectSync does not perform DNS resolution");
+    return;
+  }
+  if (!s->bound) {
+    /* Node's this.bindSync(): the wildcard, port 0, 'listening' pending */
+    struct sockaddr_storage bsa;
+    socklen_t blen = sizeof bsa;
+    if (!scr_dgram_host_addr(s, "", 0, &bsa, &blen)) return;
+    scr_dgram_ensure_fd(s);
+    if (bind(s->fd, (struct sockaddr *)&bsa, blen) != 0) {
+      int err = errno;
+      char ip[64];
+      scr_dgram_sockaddr_ip(&bsa, ip, sizeof ip);
+      close(s->fd);
+      s->fd = -1;
+      scr_dgram_throw_exception_host_port(err, "bind", ip, 0);
+      return;
+    }
+    s->bound = true;
+    s->emit_listening = true;
+    scr_dgram_apply_init_buffers(s);
+  }
+  if (connect(s->fd, (struct sockaddr *)&sa, salen) != 0) {
+    char ip[64];
+    scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
+    scr_dgram_throw_exception_host_port(errno, "connect", ip, (int)port);
+    return;
+  }
+  s->connected = true;
+  s->connected_sync = true;
+  s->emit_connect = true;
+  scr_dgram_register(s);
+  scr_dgram_update_read(s);
+}
+
+/* ── the options-object forms over checked-dynamic values ──────────────
+ * createSocket's argument (a type string or an options object) and
+ * bind/bindSync's options records arrive untyped so a literal, a typed
+ * record, and an untyped JavaScript object all take Node's own path. */
+
+/* Node's error-tail number: integer-valued doubles group their digits
+ * with underscores ("70_000_000_000"), everything else prints plainly. */
+static void scr_dgram_received_number(double v, char *buf, size_t cap) {
+  char digits[64];
+  scr_dgram_number_text(v, digits, sizeof digits);
+  bool neg = digits[0] == '-';
+  const char *d = neg ? digits + 1 : digits;
+  size_t n = strlen(d);
+  bool integer = v == v && !isinf(v) && trunc(v) == v;
+  if (!integer || n <= 3) {
+    snprintf(buf, cap, "%s", digits);
+    return;
+  }
+  size_t groups = (n + 2) / 3;
+  if (groups * 4 >= cap) {
+    snprintf(buf, cap, "%s", digits);
+    return;
+  }
+  char out[64];
+  size_t o = 0;
+  if (neg) out[o++] = '-';
+  size_t first = n % 3 == 0 ? 3 : n % 3;
+  size_t i = 0;
+  for (size_t g = 0; g < first; g++) out[o++] = d[i++];
+  while (i < n) {
+    out[o++] = '_';
+    for (int g = 0; g < 3; g++) out[o++] = d[i++];
+  }
+  out[o] = '\0';
+  snprintf(buf, cap, "%s", out);
+}
+
+/* Node's validateUint32 for an options member: the integer check first,
+ * then the 32-bit range. False with ERR_OUT_OF_RANGE pending. */
+static bool scr_dgram_uint32_option(const ScrDyn *v, const char *name) {
+  char shown[96];
+  if (v->kind != SCR_DYN_NUM || trunc(v->v.num) != v->v.num || isinf(v->v.num)) {
+    char detail[256];
+    const char *received =
+        v->kind == SCR_DYN_NUM
+            ? (snprintf(shown, sizeof shown, "%g", v->v.num), shown)
+            : scr_dyn_specific_type(v, detail, sizeof detail);
+    char text[256];
+    int n = snprintf(text, sizeof text,
+                     "The value of \"%s\" is out of range. It must be an integer. Received %s", name,
+                     received);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (v->v.num < 0 || v->v.num > 4294967295.0) {
+    char num[64];
+    scr_dgram_received_number(v->v.num, num, sizeof num);
+    char text[256];
+    int n = snprintf(text, sizeof text,
+                     "The value of \"%s\" is out of range. It must be >= 0 && <= 4294967295. "
+                     "Received %s",
+                     name, num);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  return true;
+}
+
+/* A property present in an options object (not undefined). */
+static bool scr_dgram_opt_present(const ScrDyn *obj, const char *name, size_t len,
+                                  const ScrDyn **out) {
+  const ScrDyn *v = scr_dyn_obj_get(obj, name, len);
+  if (v == NULL || v->kind == SCR_DYN_UNDEF) return false;
+  *out = v;
+  return true;
+}
+
+/* The materialized options view (a typed record arrives by reference; the
+ * caller releases *owned). NULL with the exception pending. */
+static const ScrDyn *scr_dgram_options_view(const ScrDyn *v, ScrDyn **owned) {
+  *owned = NULL;
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    *owned = scr_dyn_typed_ref_materialize(v);
+    return scr_exc_pending() ? NULL : *owned;
+  }
+  return v;
+}
+
+/* createSocket(type | options[, listener]) — Node's Socket constructor.
+ * The listener (nullable, moves) registers as on('message'). NULL with the
+ * exception pending (ERR_SOCKET_BAD_TYPE, ERR_OUT_OF_RANGE, the
+ * ERR_INVALID_ARG_TYPE ladder) or an SC2020 for an option with no native
+ * behavior yet. */
+ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgramMsgFn fn) {
+  ScrDyn *owned = NULL;
+  const ScrDyn *v = scr_dgram_options_view(arg, &owned);
+  if (v == NULL) {
+    scr_closure_release(cb);
+    return NULL;
+  }
+  const ScrDyn *type = v;
+  bool v6 = false, reuse = false, ipv6_only = false, reuse_port = false;
+  double recv = 0, send = 0;
+  if (v->kind == SCR_DYN_OBJ) {
+    const ScrDyn *member = NULL;
+    if (scr_dgram_opt_present(v, "reuseAddr", 9, &member)) reuse = scr_dgram_dyn_truthy(member);
+    if (scr_dgram_opt_present(v, "ipv6Only", 8, &member)) ipv6_only = scr_dgram_dyn_truthy(member);
+    if (scr_dgram_opt_present(v, "reusePort", 9, &member)) reuse_port = scr_dgram_dyn_truthy(member);
+    if (scr_dgram_opt_present(v, "recvBufferSize", 14, &member) && scr_dgram_dyn_truthy(member)) {
+      if (!scr_dgram_uint32_option(member, "options.recvBufferSize")) {
+        scr_dyn_release(owned);
+        scr_closure_release(cb);
+        return NULL;
+      }
+      if (member->kind == SCR_DYN_NUM) recv = member->v.num;
+    }
+    if (scr_dgram_opt_present(v, "sendBufferSize", 14, &member) && scr_dgram_dyn_truthy(member)) {
+      if (!scr_dgram_uint32_option(member, "options.sendBufferSize")) {
+        scr_dyn_release(owned);
+        scr_closure_release(cb);
+        return NULL;
+      }
+      if (member->kind == SCR_DYN_NUM) send = member->v.num;
+    }
+    if (scr_dgram_opt_present(v, "signal", 6, &member)) {
+      /* Node's validateAbortSignal is the loose `'aborted' in signal` test;
+       * a native AbortSignal handle carries the tag. */
+      bool signal = (member->kind == SCR_DYN_HANDLE &&
+                     member->v.handle.tag == SCR_DYNH_ABORT_SIGNAL) ||
+                    (member->kind == SCR_DYN_OBJ && scr_dyn_obj_get(member, "aborted", 7) != NULL);
+      if (!signal) {
+        scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", member);
+      } else {
+        static const char msg[] = "abort-driven close is not supported yet";
+        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+      }
+      scr_dyn_release(owned);
+      scr_closure_release(cb);
+      return NULL;
+    }
+    if (scr_dgram_opt_present(v, "lookup", 6, &member)) {
+      if (member->kind != SCR_DYN_FUNC) {
+        scr_dyn_arg_type_fail("lookup", "of type function", member);
+      } else {
+        static const char msg[] = "a custom lookup function is not supported yet";
+        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+      }
+      scr_dyn_release(owned);
+      scr_closure_release(cb);
+      return NULL;
+    }
+    if (scr_dgram_opt_present(v, "receiveBlockList", 16, &member) ||
+        scr_dgram_opt_present(v, "sendBlockList", 13, &member)) {
+      bool recv_list = scr_dyn_obj_get(v, "receiveBlockList", 16) != NULL;
+      const char *name = recv_list ? "receiveBlockList" : "sendBlockList";
+      char prop[64];
+      snprintf(prop, sizeof prop, "options.%s", name);
+      if (!(member->kind == SCR_DYN_HANDLE &&
+            member->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST)) {
+        scr_dyn_prop_type_fail(prop, "an net.BlockList", member);
+      } else {
+        static const char msg[] = "a receiveBlockList or sendBlockList is not supported yet";
+        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+      }
+      scr_dyn_release(owned);
+      scr_closure_release(cb);
+      return NULL;
+    }
+    type = scr_dyn_obj_get(v, "type", 4);
+  }
+  if (type == NULL || type->kind != SCR_DYN_STR ||
+      !((type->v.str->len == 4 && memcmp(type->v.str->data, "udp4", 4) == 0) ||
+        (type->v.str->len == 4 && memcmp(type->v.str->data, "udp6", 4) == 0))) {
+    static const char msg[] = "Bad socket type specified. Valid types are: udp4, udp6";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_SOCKET_BAD_TYPE");
+    scr_dyn_release(owned);
+    scr_closure_release(cb);
+    return NULL;
+  }
+  v6 = type->v.str->data[3] == '6';
+  ScrDgramSocket *s = scr_dgram_create(v6, reuse, ipv6_only, reuse_port, recv, send);
+  scr_dyn_release(owned);
+  if (cb) scr_dgram_on_message(s, cb, fn, false);
+  return s;
+}
+
+/* bind(options[, callback]) — Node's normalization over an untyped options
+ * object: { port, address, exclusive }, with an open-fd request and the
+ * option kinds with no native behavior yet refused explicitly. */
+void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *cb) {
+  ScrDyn *owned = NULL;
+  const ScrDyn *v = scr_dgram_options_view(options, &owned);
+  if (v == NULL) {
+    scr_closure_release(cb);
+    return;
+  }
+  /* bind(undefined) is bind() (Node's absent port: the wildcard). */
+  const bool empty = v->kind == SCR_DYN_UNDEF;
+  if (!empty && v->kind != SCR_DYN_OBJ) {
+    scr_dyn_arg_type_fail("options", "of type object", v);
+    scr_dyn_release(owned);
+    scr_closure_release(cb);
+    return;
+  }
+  const ScrDyn *member = NULL;
+  if (!empty && scr_dgram_opt_present(v, "fd", 2, &member)) {
+    static const char msg[] = "opening an existing descriptor is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    scr_dyn_release(owned);
+    scr_closure_release(cb);
+    return;
+  }
+  const ScrDyn *address = empty ? NULL : scr_dyn_obj_get(v, "address", 7);
+  if (address != NULL && address->kind != SCR_DYN_UNDEF && address->kind != SCR_DYN_NULL) {
+    if (address->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("hostname", "of type string", address);
+      scr_dyn_release(owned);
+      scr_closure_release(cb);
+      return;
+    }
+  }
+  double port = 0;
+  const ScrDyn *p = empty ? NULL : scr_dyn_obj_get(v, "port", 4);
+  if (p != NULL) {
+    if (p->kind == SCR_DYN_NUM) port = p->v.num;
+    else if (p->kind == SCR_DYN_STR && p->v.str->len > 0) {
+      char buf[32];
+      if (p->v.str->len < sizeof buf) {
+        memcpy(buf, p->v.str->data, p->v.str->len);
+        buf[p->v.str->len] = '\0';
+        port = atof(buf);
+      }
+    }
+  }
+  ScrStr *host = address != NULL && address->kind == SCR_DYN_STR ? scr_str_retain(address->v.str)
+                                                                 : scr_str_new("", 0);
+  scr_dgram_bind(s, port, host, cb);
+  scr_str_release(host);
+  scr_dyn_release(owned);
+}
+
+/* bindSync(options) — Node's synchronous bind over an untyped options
+ * object: validateObject, its already-bound check, validatePort and the
+ * numeric-address rule. */
+void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
+  ScrDyn *owned = NULL;
+  const ScrDyn *v = scr_dgram_options_view(options, &owned);
+  if (v == NULL) return;
+  /* bindSync(undefined) is bindSync() (Node's kEmptyObject default). */
+  const bool empty = v->kind == SCR_DYN_UNDEF;
+  if (!empty && v->kind != SCR_DYN_OBJ) {
+    scr_dyn_arg_type_fail("options", "of type object", v);
+    scr_dyn_release(owned);
+    return;
+  }
+  const ScrDyn *member = NULL;
+  if (!empty && scr_dgram_opt_present(v, "fd", 2, &member)) {
+    static const char msg[] = "opening an existing descriptor is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    scr_dyn_release(owned);
+    return;
+  }
+  const ScrDyn *p = empty ? NULL : scr_dyn_obj_get(v, "port", 4);
+  double port = 0;
+  if (p != NULL && p->kind != SCR_DYN_UNDEF) {
+    if (p->kind == SCR_DYN_NUM) {
+      port = p->v.num;
+    } else if (p->kind == SCR_DYN_STR && p->v.str->len > 0 && p->v.str->len < 32) {
+      char buf[32];
+      memcpy(buf, p->v.str->data, p->v.str->len);
+      buf[p->v.str->len] = '\0';
+      port = atof(buf); /* validatePort accepts a numeric string */
+    } else {
+      /* validatePort's non-number arm: ERR_SOCKET_BAD_PORT with the
+       * specific-type tail. */
+      char detail[256];
+      char text[224];
+      int n = snprintf(text, sizeof text,
+                       "options.port should be >= 0 and < 65536. Received %s",
+                       scr_dyn_specific_type(p, detail, sizeof detail));
+      scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n,
+                               "ERR_SOCKET_BAD_PORT");
+      scr_dyn_release(owned);
+      return;
+    }
+  }
+  const ScrDyn *a = empty ? NULL : scr_dyn_obj_get(v, "address", 7);
+  bool has_host = a != NULL && a->kind != SCR_DYN_UNDEF && a->kind != SCR_DYN_NULL;
+  ScrStr *host = has_host && a->kind == SCR_DYN_STR ? scr_str_retain(a->v.str) : scr_str_new("", 0);
+  if (has_host && a->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("options.address", "of type string", a);
+  } else {
+    scr_dgram_bind_sync(s, port, host, has_host);
+  }
+  scr_str_release(host);
+  scr_dyn_release(owned);
 }
 
 static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, double port,
@@ -651,10 +1198,13 @@ static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, 
     scr_dgram_throw("Already connected");
     return;
   }
-  struct sockaddr_in a4;
-  if (!scr_dgram_host4(host->data, (uint16_t)(int)port, &a4) || host->len == 0) {
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  /* An empty host is the family's loopback, Node's lookup answer for "". */
+  const char *h = host->len > 0 ? host->data : (s->v6 ? "::1" : "127.0.0.1");
+  if (!scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     char msg[160];
-    snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", host->data);
+    snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
     scr_dgram_defer_err(s, msg);
     return;
   }
@@ -664,12 +1214,13 @@ static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, 
      * emits for it there too. */
     s->bound = true;
     s->emit_listening = true;
+    scr_dgram_apply_init_buffers(s);
   }
   scr_dgram_register(s); /* an open sender holds the loop, like Node */
-  if (sendto(s->fd, data, len, 0, (struct sockaddr *)&a4, sizeof a4) < 0 &&
+  if (sendto(s->fd, data, len, 0, (struct sockaddr *)&sa, salen) < 0 &&
       errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
     char ip[64];
-    inet_ntop(AF_INET, &a4.sin_addr, ip, sizeof ip);
+    scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
     char msg[128];
     snprintf(msg, sizeof msg, "send %s %s:%d", scr_dgram_errname(errno), ip, (int)port);
     scr_dgram_defer_err(s, msg);
@@ -689,36 +1240,76 @@ void scr_dgram_send_bytes(ScrDgramSocket *s, ScrBytes *data, double port, ScrStr
   scr_dgram_send_raw(s, (const char *)data->data, data->len, port, host);
 }
 
-/* address() parts. The ip read carries the "Not running" throw; family
- * and port only run after it succeeded. */
+/* address() parts. The ip read carries the state errors: "Not running"
+ * after close() (Node's healthCheck), else Node's getsockname EBADF on a
+ * socket that never bound; family and port only run after ip succeeded. */
 ScrStr *scr_dgram_addr_ip(ScrDgramSocket *s) {
-  if (s->fd < 0 || !s->bound) {
+  if (s->closing || s->close_emitted) {
     scr_dgram_throw("Not running");
+    return NULL;
+  }
+  if (s->fd < 0 || !s->bound) {
+    scr_dgram_throw_errno(EBADF, "getsockname");
     return NULL;
   }
   struct sockaddr_storage sa;
   socklen_t salen = sizeof sa;
   char ip[64] = "0.0.0.0";
-  if (getsockname(s->fd, (struct sockaddr *)&sa, &salen) == 0 && sa.ss_family == AF_INET) {
-    inet_ntop(AF_INET, &((struct sockaddr_in *)&sa)->sin_addr, ip, sizeof ip);
-  }
+  if (getsockname(s->fd, (struct sockaddr *)&sa, &salen) == 0) scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
   return scr_str_new(ip, strlen(ip));
 }
 
 ScrStr *scr_dgram_addr_family(ScrDgramSocket *s) {
-  (void)s; /* udp4 is the one lowered type */
-  return scr_str_new("IPv4", 4);
+  return scr_str_new(s->v6 ? "IPv6" : "IPv4", s->v6 ? 4 : 4);
 }
 
 double scr_dgram_addr_port(ScrDgramSocket *s) {
   struct sockaddr_storage sa;
   socklen_t salen = sizeof sa;
-  if (s->fd >= 0 && getsockname(s->fd, (struct sockaddr *)&sa, &salen) == 0 &&
-      sa.ss_family == AF_INET) {
-    return (double)ntohs(((struct sockaddr_in *)&sa)->sin_port);
+  if (s->fd >= 0 && getsockname(s->fd, (struct sockaddr *)&sa, &salen) == 0) {
+    if (sa.ss_family == AF_INET6) return (double)ntohs(((struct sockaddr_in6 *)&sa)->sin6_port);
+    if (sa.ss_family == AF_INET) return (double)ntohs(((struct sockaddr_in *)&sa)->sin_port);
   }
   return 0;
 }
+
+/* remoteAddress() parts: Node's healthCheck, then
+ * ERR_SOCKET_DGRAM_NOT_CONNECTED, then getpeername's errno error. */
+ScrStr *scr_dgram_remote_ip(ScrDgramSocket *s) {
+  if (s->closing || s->close_emitted) {
+    scr_dgram_throw("Not running");
+    return NULL;
+  }
+  if (!s->connected) {
+    static const char msg[] = "Not connected";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_SOCKET_DGRAM_NOT_CONNECTED");
+    return NULL;
+  }
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  char ip[64] = "0.0.0.0";
+  if (getpeername(s->fd, (struct sockaddr *)&sa, &salen) != 0) {
+    scr_dgram_throw_errno(errno, "getpeername");
+    return NULL;
+  }
+  scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
+  return scr_str_new(ip, strlen(ip));
+}
+
+ScrStr *scr_dgram_remote_family(ScrDgramSocket *s) {
+  return scr_str_new(s->v6 ? "IPv6" : "IPv4", 4);
+}
+
+double scr_dgram_remote_port(ScrDgramSocket *s) {
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  if (s->fd >= 0 && getpeername(s->fd, (struct sockaddr *)&sa, &salen) == 0) {
+    if (sa.ss_family == AF_INET6) return (double)ntohs(((struct sockaddr_in6 *)&sa)->sin6_port);
+    if (sa.ss_family == AF_INET) return (double)ntohs(((struct sockaddr_in *)&sa)->sin_port);
+  }
+  return 0;
+}
+
 
 /* close([cb]): the fd closes NOW; 'close' (and the callback, registered
  * as once('close')) fires at the next sweep. Node throws "Not running"
@@ -774,6 +1365,28 @@ static void scr_dgram_throw_errno(int err, const char *syscall) {
   scr_error_set_code(e, uv->name);
   e->system_errno = uv->value;
   e->system_call = scr_str_new(syscall, strlen(syscall));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* Node's ExceptionWithHostPort: "<syscall> <CODE> <ip>:<port>" (the port
+ * part only for a positive port) with code, errno, syscall, address and
+ * port. */
+static void scr_dgram_throw_exception_host_port(int err, const char *syscall, const char *ip,
+                                                int port) {
+  const ScrUvError *uv = scr_dgram_uv_error(err);
+  char text[160];
+  int n = port > 0 ? snprintf(text, sizeof text, "%s %s %s:%d", syscall, uv->name, ip, port)
+                   : snprintf(text, sizeof text, "%s %s %s", syscall, uv->name, ip);
+  ScrStr *msg = scr_str_new(text, n < 0 ? 0 : (size_t)n);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_error_set_code(e, uv->name);
+  e->system_errno = uv->value;
+  e->system_call = scr_str_new(syscall, strlen(syscall));
+  ScrStr *addr = scr_str_new(ip, strlen(ip));
+  scr_error_set_prop(e, "address", 7, scr_dyn_new_str(addr));
+  scr_str_release(addr);
+  if (port > 0) scr_error_set_prop(e, "port", 4, scr_dyn_new_num((double)port));
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
@@ -935,11 +1548,20 @@ static void scr_dgram_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface
     scr_dgram_throw_errno(EINVAL, syscall);
     return;
   }
-  if (s->fd < 0) {
-    char text[96];
-    int n = snprintf(text, sizeof text, "dgram.Socket.%s before bind() is not supported yet", syscall);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, text, n < 0 ? 0 : (size_t)n, "SC2020");
-    return;
+  if (!s->bound) {
+    /* Node's implicit bind: the join on an unbound socket binds the
+     * wildcard on an ephemeral port first (and emits no 'listening'). */
+    struct sockaddr_storage bsa;
+    socklen_t blen = sizeof bsa;
+    if (!scr_dgram_host_addr(s, "", 0, &bsa, &blen)) return;
+    scr_dgram_ensure_fd(s);
+    if (bind(s->fd, (struct sockaddr *)&bsa, blen) != 0) {
+      scr_dgram_throw_errno(errno, syscall);
+      return;
+    }
+    s->bound = true;
+    scr_dgram_apply_init_buffers(s);
+    scr_dgram_update_read(s);
   }
   int rc;
   if (v4) {
@@ -978,6 +1600,124 @@ void scr_dgram_add_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, b
 
 void scr_dgram_drop_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, bool has_iface) {
   scr_dgram_membership(s, group, has_iface ? iface : NULL, false);
+}
+
+/* addSourceSpecificMembership / dropSourceSpecificMembership: Node's
+ * libuv (uv_udp_set_source_membership). Both addresses are numeric
+ * literals of the group's family; an optional interface is parsed the
+ * same family (its scope id picks the interface for IPv6). An unbound
+ * socket answers EBADF (libuv's fd test); a malformed address or
+ * interface is EINVAL. */
+static void scr_dgram_source_membership(ScrDgramSocket *s, ScrStr *source, ScrStr *group,
+                                         ScrStr *iface, bool has_iface, bool join) {
+  const char *syscall = join ? "addSourceSpecificMembership" : "dropSourceSpecificMembership";
+  if (scr_dgram_not_running(s)) return;
+  char gbuf[96], sbuf[96], ibuf[96];
+  const char *gtext = scr_dgram_cstr(group, gbuf, sizeof gbuf);
+  const char *stext = scr_dgram_cstr(source, sbuf, sizeof sbuf);
+  const char *itext = has_iface ? scr_dgram_cstr(iface, ibuf, sizeof ibuf) : NULL;
+  struct in_addr g4, s4;
+  struct in6_addr g6, s6;
+  unsigned gscope = 0, sscope = 0;
+  bool v4 = gtext != NULL && inet_pton(AF_INET, gtext, &g4) == 1;
+  bool v6 = !v4 && gtext != NULL && scr_dgram_ip6(gtext, &g6, &gscope);
+  if (!v4 && !v6) {
+    scr_dgram_throw_errno(EINVAL, syscall);
+    return;
+  }
+  if (!s->bound) {
+    /* libuv's deferred bind: the join on an unbound socket binds the
+     * wildcard on an ephemeral port first (no 'listening' emission). */
+    struct sockaddr_storage bsa;
+    socklen_t blen = sizeof bsa;
+    if (!scr_dgram_host_addr(s, "", 0, &bsa, &blen)) return;
+    scr_dgram_ensure_fd(s);
+    if (bind(s->fd, (struct sockaddr *)&bsa, blen) != 0) {
+      scr_dgram_throw_errno(errno, syscall);
+      return;
+    }
+    s->bound = true;
+    scr_dgram_apply_init_buffers(s);
+    scr_dgram_update_read(s);
+  }
+  if (v4) {
+    if (stext == NULL || inet_pton(AF_INET, stext, &s4) != 1) {
+      scr_dgram_throw_errno(EINVAL, syscall);
+      return;
+    }
+    struct ip_mreq_source mreq;
+    memset(&mreq, 0, sizeof mreq);
+    mreq.imr_multiaddr = g4;
+    mreq.imr_sourceaddr = s4;
+    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    if (has_iface && (itext == NULL || inet_pton(AF_INET, itext, &mreq.imr_interface) != 1)) {
+      scr_dgram_throw_errno(EINVAL, syscall);
+      return;
+    }
+    if (setsockopt(s->fd, IPPROTO_IP,
+                   join ? IP_ADD_SOURCE_MEMBERSHIP : IP_DROP_SOURCE_MEMBERSHIP,
+                   (const void *)&mreq, sizeof mreq) != 0) {
+      scr_dgram_throw_errno(errno, syscall);
+    }
+    return;
+  }
+  if (stext == NULL || !scr_dgram_ip6(stext, &s6, &sscope)) {
+    scr_dgram_throw_errno(EINVAL, syscall);
+    return;
+  }
+  struct group_source_req gsr;
+  memset(&gsr, 0, sizeof gsr);
+  if (has_iface) {
+    struct in6_addr i6;
+    unsigned iscope = 0;
+    if (itext == NULL || !scr_dgram_ip6(itext, &i6, &iscope)) {
+      scr_dgram_throw_errno(EINVAL, syscall);
+      return;
+    }
+    gsr.gsr_interface = iscope;
+  }
+  struct sockaddr_in6 *gaddr = (struct sockaddr_in6 *)&gsr.gsr_group;
+  gaddr->sin6_family = AF_INET6;
+  gaddr->sin6_addr = g6;
+  gaddr->sin6_scope_id = gscope;
+  struct sockaddr_in6 *saddr = (struct sockaddr_in6 *)&gsr.gsr_source;
+  saddr->sin6_family = AF_INET6;
+  saddr->sin6_addr = s6;
+  saddr->sin6_scope_id = sscope;
+  if (setsockopt(s->fd, IPPROTO_IPV6,
+                 join ? MCAST_JOIN_SOURCE_GROUP : MCAST_LEAVE_SOURCE_GROUP,
+                 (const void *)&gsr, sizeof gsr) != 0) {
+    scr_dgram_throw_errno(errno, syscall);
+  }
+}
+
+void scr_dgram_add_source_membership(ScrDgramSocket *s, ScrStr *source, ScrStr *group, ScrStr *iface,
+                                     bool has_iface) {
+  scr_dgram_source_membership(s, source, group, iface, has_iface, true);
+}
+
+void scr_dgram_drop_source_membership(ScrDgramSocket *s, ScrStr *source, ScrStr *group,
+                                      ScrStr *iface, bool has_iface) {
+  scr_dgram_source_membership(s, source, group, iface, has_iface, false);
+}
+
+/* socket[Symbol.asyncDispose](): Node's `promisify(this.close)()` — a
+ * promise of 'close', fulfilled at once for a socket whose handle is
+ * already gone. */
+static void scr_dgram_dispose_done(ScrClosure *cb) {
+  ScrPromise *p = scr_box_get_ref(cb->caps[0]); /* +1 */
+  if (p != NULL) scr_promise_fulfill_void(p);
+  scr_promise_release(p);
+}
+
+ScrPromise *scr_dgram_async_dispose(ScrDgramSocket *s) {
+  if (s->closing || s->close_emitted) return scr_promise_settled_void();
+  ScrPromise *p = scr_promise_new();
+  ScrClosure *cb = scr_closure_new((void *)&scr_dgram_dispose_done, 1);
+  cb->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_promise_retain(p));
+  scr_dgram_close(s, cb); /* ownership moves in */
+  return p;
 }
 
 /* Node's bufferSize(): the size must be a uint32 (TypeError otherwise,
@@ -1035,7 +1775,7 @@ double scr_dgram_get_send_queue_count(ScrDgramSocket *s) {
  * AF_UNSPEC connect dissolves the association; EAFNOSUPPORT (macOS) and
  * EINVAL count as success, as in libuv. */
 void scr_dgram_disconnect(ScrDgramSocket *s) {
-  if (!s->connected || s->emit_connect) {
+  if (!s->connected || (s->emit_connect && !s->connected_sync)) {
     static const char msg[] = "Not connected";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_SOCKET_DGRAM_NOT_CONNECTED");
     return;
@@ -1050,6 +1790,7 @@ void scr_dgram_disconnect(ScrDgramSocket *s) {
     return;
   }
   s->connected = false;
+  s->connected_sync = false;
 }
 
 void scr_dgram_on_message(ScrDgramSocket *s, ScrClosure *cb, ScrDgramMsgFn fn, bool once) {
@@ -1121,7 +1862,11 @@ static void scr_dgram_read(ScrDgramSocket *s) {
     }
     char ip[64] = "0.0.0.0";
     int rport = 0;
-    if (from.ss_family == AF_INET) {
+    bool from6 = from.ss_family == AF_INET6;
+    if (from6) {
+      inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&from)->sin6_addr, ip, sizeof ip);
+      rport = ntohs(((struct sockaddr_in6 *)&from)->sin6_port);
+    } else if (from.ss_family == AF_INET) {
       inet_ntop(AF_INET, &((struct sockaddr_in *)&from)->sin_addr, ip, sizeof ip);
       rport = ntohs(((struct sockaddr_in *)&from)->sin_port);
     }
@@ -1129,7 +1874,7 @@ static void scr_dgram_read(ScrDgramSocket *s) {
     chunk->is_buffer = true; /* the message is a Buffer */
     memcpy(chunk->data, buf, (size_t)n);
     ScrStr *addr = scr_str_new(ip, strlen(ip));
-    ScrStr *family = scr_str_new("IPv4", 4);
+    ScrStr *family = scr_str_new(from6 ? "IPv6" : "IPv4", 4);
     ScrDgramL *snap;
     size_t nl = scr_dgram_ls_snapshot(&s->msg_ls, &snap);
     for (size_t i = 0; i < nl; i++) {
@@ -2032,9 +2777,11 @@ static void scr_dgram_send_out(ScrDgramSocket *s, const char *data, size_t len, 
   bool has_cb = callback->kind == SCR_DYN_FUNC;
   char msg[192];
   msg[0] = '\0';
-  struct sockaddr_in a4;
-  const char *h = host == NULL ? NULL : host->len > 0 ? host->data : "127.0.0.1";
-  if (h != NULL && !scr_dgram_host4(h, (uint16_t)(int)port, &a4)) {
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  const char *h =
+      host == NULL ? NULL : host->len > 0 ? host->data : (s->v6 ? "::1" : "127.0.0.1");
+  if (h != NULL && !scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
   } else {
     scr_dgram_ensure_fd(s);
@@ -2043,14 +2790,15 @@ static void scr_dgram_send_out(ScrDgramSocket *s, const char *data, size_t len, 
        * 'listening' for it. */
       s->bound = true;
       s->emit_listening = true;
+      scr_dgram_apply_init_buffers(s);
     }
     scr_dgram_register(s); /* an open sender holds the loop, like Node */
-    ssize_t sent = h != NULL ? sendto(s->fd, data, len, 0, (struct sockaddr *)&a4, sizeof a4)
+    ssize_t sent = h != NULL ? sendto(s->fd, data, len, 0, (struct sockaddr *)&sa, salen)
                              : send(s->fd, data, len, 0);
     if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
       const char *code = scr_dgram_errname(errno);
       char ip[64] = "";
-      if (h != NULL) inet_ntop(AF_INET, &a4.sin_addr, ip, sizeof ip);
+      if (h != NULL) scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
       snprintf(msg, sizeof msg, "send %s %s:%d", code, ip, (int)port);
       /* A connected send names no address ("send ECONNREFUSED"): cut the
        * message after the code (one format string keeps the unit's

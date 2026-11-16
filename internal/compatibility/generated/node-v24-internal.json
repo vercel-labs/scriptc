@@ -104117,8 +104117,18 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/compat-errors-net.mjs",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-udp6.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -104190,10 +104200,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:dgram.createSocket",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.dgram.createSocket",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104216,8 +104238,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.dgram.Socket",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104239,11 +104276,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.addMembership",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104266,8 +104314,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.addSourceSpecificMembership",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104289,10 +104352,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.address",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.address",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104315,10 +104390,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.bind",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.bind",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104367,8 +104454,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.bindSync",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104390,10 +104492,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.close",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.close",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104416,8 +104530,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104439,10 +104568,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.connect",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104465,8 +104606,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.connectSync",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104488,8 +104644,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.disconnect",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104511,11 +104682,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.dropMembership",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104538,8 +104720,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.dropSourceSpecificMembership",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104561,11 +104758,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.getRecvBufferSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104588,11 +104796,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.getSendBufferSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104615,11 +104834,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.getSendQueueSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104642,11 +104872,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.getSendQueueCount",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104669,10 +104910,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.ref",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.ref",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104695,10 +104948,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.remoteAddress",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.remoteAddress",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104721,10 +104986,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.send",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.send",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104770,11 +105047,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setBroadcast",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104797,11 +105085,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setMulticastInterface",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104847,11 +105146,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setMulticastLoopback",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104874,11 +105184,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setMulticastTTL",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104901,11 +105222,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setRecvBufferSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104928,11 +105260,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setSendBufferSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104955,11 +105298,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setTTL",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -104982,10 +105336,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.unref",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.unref",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -105008,11 +105374,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.'close'",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -105035,8 +105412,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.'connect'",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105058,8 +105450,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.'error'",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105081,11 +105488,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.'listening'",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -105108,11 +105526,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.'message'",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"

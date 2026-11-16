@@ -1744,6 +1744,7 @@ const RUNTIME_FEATURE_RULES = {
    * a boxed function or record that carries one): scr_dgram_dyn.c over
    * the dgram unit. */
   dgramDyn: rule({
+    fns: ["dgram.isSocket"],
     expr: (node, tables) =>
       (node.kind === "dynFrom" && mentionsDgramSocket(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsDgramSocket(node.type, tables())),

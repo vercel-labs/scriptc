@@ -331,8 +331,32 @@
  },
  {
   "file": "scr_dgram.c",
-  "function": "scr_dgram_membership",
-  "message": "dgram.Socket.%s before bind() is not supported yet",
+  "function": "scr_dgram_create_chk",
+  "message": "abort-driven close is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_create_chk",
+  "message": "a custom lookup function is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_create_chk",
+  "message": "a receiveBlockList or sendBlockList is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_bind_opts",
+  "message": "opening an existing descriptor is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_bind_sync_chk",
+  "message": "opening an existing descriptor is not supported yet",
   "code": "SC2020"
  },
  {
@@ -369,12 +393,6 @@
   "file": "scr_dh.c",
   "function": "sd_set",
   "message": "Writing DiffieHellman properties has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dns_promises.c",
-  "function": "scr_dnsp_options",
-  "message": "dns.lookup hints are not supported yet",
   "code": "SC2020"
  },
  {
@@ -829,12 +847,6 @@
  },
  {
   "file": "scr_inspect.c",
-  "function": "insp_inspect_member_call",
-  "message": "util.inspect.%s through the inspect function is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
   "function": "insp_custom",
   "message": "util.inspect of this class instance's [util.inspect.custom] method has no lowering",
   "code": "SC2020"
@@ -861,18 +873,6 @@
   "file": "scr_inspect.c",
   "function": "scr_insp_dyn",
   "message": "util.inspect of a promise value is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_fmt_s",
-  "message": "%s of a class instance whose class defines toString has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_fmt_s",
-  "message": "%s of objects with symbol-keyed members has no lowering",
   "code": "SC2020"
  },
  {
@@ -1488,12 +1488,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_mime.c",
-  "function": "scr_mime_member_get",
-  "message": "'%s.prototype.%s' as a value is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_net.c",
   "function": "scr_net_dynh_unsupported",
   "message": "'Socket.prototype.%s' on a dynamic value is not supported yet%s%s",
@@ -1515,6 +1509,12 @@
   "file": "scr_net.c",
   "function": "scr_net_dynh_srv_invoke",
   "message": "' on a dynamic Server is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_dynh_srv_invoke",
+  "message": "the options-object form on a dynamic value is not modeled (use listen(port[, host][, cb]))",
   "code": "SC2020"
  },
  {
@@ -1609,12 +1609,6 @@
  },
  {
   "file": "scr_readline.c",
-  "function": "scr_rl_prompt_text",
-  "message": "a terminal readline prompt that is an object or a symbol has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_readline.c",
   "function": "scr_rl_get_prompt",
   "message": "rl.getPrompt() of a prompt that is not a string has no lowering",
   "code": "SC2020"
@@ -1623,12 +1617,6 @@
   "file": "scr_readline.c",
   "function": "scr_rl_cursor",
   "message": "rl.cursor of an interface that is not a terminal has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_readline_tty.c",
-  "function": "scr_rl_cursor_pos",
-  "message": "rl.getCursorPos() with a prompt that is an object or a symbol has no lowering",
   "code": "SC2020"
  },
  {

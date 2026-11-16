@@ -221,6 +221,7 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
   X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
+  X(STAT_WATCHER, 103) /* fs.watchFile's StatWatcher (scr_watch_file.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -276,6 +277,7 @@ typedef enum {
   Y(SQLITE_SESSION) /* node:sqlite Session (scr_sqlite.c) */ \
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
+  Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the

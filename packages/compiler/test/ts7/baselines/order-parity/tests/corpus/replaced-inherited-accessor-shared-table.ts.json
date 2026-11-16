@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/replaced-inherited-accessor-shared-table.ts"
+ ],
+ "diags": []
+}

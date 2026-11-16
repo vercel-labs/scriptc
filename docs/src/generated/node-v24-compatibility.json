@@ -17968,9 +17968,9 @@
       "anchor": "err_ambiguous_argument",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -18112,7 +18112,7 @@
       "anchor": "err_buffer_out_of_bounds",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -19246,7 +19246,7 @@
       "anchor": "err_encoding_not_supported",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -20848,7 +20848,7 @@
       "anchor": "err_invalid_arg_type",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -20866,7 +20866,7 @@
       "anchor": "err_invalid_arg_value",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -20920,7 +20920,7 @@
       "anchor": "err_invalid_char",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -20992,7 +20992,7 @@
       "anchor": "err_invalid_file_url_host",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21010,7 +21010,7 @@
       "anchor": "err_invalid_file_url_path",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21046,7 +21046,7 @@
       "anchor": "err_invalid_http_token",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21082,7 +21082,7 @@
       "anchor": "err_invalid_mime_syntax",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21172,7 +21172,7 @@
       "anchor": "err_invalid_protocol",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21370,7 +21370,7 @@
       "anchor": "err_invalid_url",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21406,7 +21406,7 @@
       "anchor": "err_invalid_url_scheme",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21604,7 +21604,7 @@
       "anchor": "err_missing_args",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21856,7 +21856,7 @@
       "anchor": "err_out_of_range",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -21946,7 +21946,7 @@
       "anchor": "err_parse_args_unknown_option",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -22356,9 +22356,9 @@
       "anchor": "err_server_already_listen",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22374,7 +22374,7 @@
       "anchor": "err_server_not_running",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -22428,7 +22428,7 @@
       "anchor": "err_socket_bad_port",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -23346,7 +23346,7 @@
       "anchor": "err_unescaped_characters",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -23364,7 +23364,7 @@
       "anchor": "err_unhandled_error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -23418,7 +23418,7 @@
       "anchor": "err_unknown_encoding",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -23472,7 +23472,7 @@
       "anchor": "err_unknown_signal",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -28909,7 +28909,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -28978,7 +28978,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -30703,7 +30703,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -30749,9 +30749,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -30772,9 +30772,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -30864,9 +30864,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -30887,9 +30887,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -30910,9 +30910,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -58753,9 +58753,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -66895,7 +66895,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -66918,9 +66918,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -66941,9 +66941,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -66964,9 +66964,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -66987,9 +66987,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -67010,9 +67010,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -67033,9 +67033,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -67056,9 +67056,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -67079,9 +67079,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -80953,9 +80953,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -80976,9 +80976,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {

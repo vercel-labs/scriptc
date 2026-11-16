@@ -34512,6 +34512,7 @@
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
+          "tests/corpus/compat-error-validation-codes.mjs",
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
           "tests/corpus/compat-errors-http.mjs",
@@ -35274,8 +35275,11 @@
       "anchor": "err_ambiguous_argument",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_AMBIGUOUS_ARGUMENT",
+        "tests": [
+          "tests/corpus/compat-error-validation-codes.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35452,10 +35456,11 @@
       "anchor": "err_buffer_out_of_bounds",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_BUFFER_OUT_OF_BOUNDS",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -36773,10 +36778,11 @@
       "anchor": "err_encoding_not_supported",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ENCODING_NOT_SUPPORTED",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38489,12 +38495,13 @@
       "anchor": "err_invalid_arg_type",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_ARG_TYPE",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/process-error-codes.cjs",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38512,12 +38519,13 @@
       "anchor": "err_invalid_arg_value",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_ARG_VALUE",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/process-error-codes.cjs",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38577,10 +38585,11 @@
       "anchor": "err_invalid_char",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_CHAR",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38655,10 +38664,11 @@
       "anchor": "err_invalid_file_url_host",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_FILE_URL_HOST",
         "tests": [
-          "tests/corpus/6931-fs-url-paths.ts"
+          "tests/corpus/6931-fs-url-paths.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38676,10 +38686,11 @@
       "anchor": "err_invalid_file_url_path",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_FILE_URL_PATH",
         "tests": [
-          "tests/corpus/6931-fs-url-paths.ts"
+          "tests/corpus/6931-fs-url-paths.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38718,10 +38729,11 @@
       "anchor": "err_invalid_http_token",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_HTTP_TOKEN",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38761,10 +38773,11 @@
       "anchor": "err_invalid_mime_syntax",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_MIME_SYNTAX",
         "tests": [
-          "tests/corpus/7707-util-mime-type.cjs"
+          "tests/corpus/7707-util-mime-type.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38872,10 +38885,11 @@
       "anchor": "err_invalid_protocol",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_PROTOCOL",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39112,10 +39126,11 @@
       "anchor": "err_invalid_url",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_URL",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39154,10 +39169,11 @@
       "anchor": "err_invalid_url_scheme",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_URL_SCHEME",
         "tests": [
-          "tests/corpus/6931-fs-url-paths.ts"
+          "tests/corpus/6931-fs-url-paths.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39365,10 +39381,11 @@
       "anchor": "err_missing_args",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_MISSING_ARGS",
         "tests": [
-          "tests/corpus/5656-dgram-option-states.ts"
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39776,12 +39793,13 @@
       "anchor": "err_out_of_range",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_OUT_OF_RANGE",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/process-error-codes.cjs",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39931,10 +39949,11 @@
       "anchor": "err_parse_args_unknown_option",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_PARSE_ARGS_UNKNOWN_OPTION",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40350,8 +40369,11 @@
       "anchor": "err_server_already_listen",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_SERVER_ALREADY_LISTEN",
+        "tests": [
+          "tests/corpus/compat-error-validation-codes.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40368,10 +40390,11 @@
       "anchor": "err_server_not_running",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SERVER_NOT_RUNNING",
         "tests": [
-          "tests/corpus/compat-errors-net.mjs"
+          "tests/corpus/compat-errors-net.mjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40449,10 +40472,11 @@
       "anchor": "err_socket_bad_port",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_PORT",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41533,10 +41557,11 @@
       "anchor": "err_unescaped_characters",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNESCAPED_CHARACTERS",
         "tests": [
-          "tests/corpus/6441-http-request-options-record.ts"
+          "tests/corpus/6441-http-request-options-record.ts",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41554,10 +41579,11 @@
       "anchor": "err_unhandled_error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNHANDLED_ERROR",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41617,10 +41643,11 @@
       "anchor": "err_unknown_encoding",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNKNOWN_ENCODING",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41674,12 +41701,13 @@
       "anchor": "err_unknown_signal",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNKNOWN_SIGNAL",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/process-error-codes.cjs",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-error-validation-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -46812,6 +46840,8 @@
           "tests/corpus/fs-promises-watch.ts",
           "tests/corpus/fs-read-file-sync-option-errors.cjs",
           "tests/corpus/fs-read-file-sync-options-typed.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-recursive-types.ts",
           "tests/corpus/fs-realpath-native-callback.cjs",
           "tests/corpus/fs-stat-callback-ladder.cjs",
           "tests/corpus/fs-stat-callback-options.cjs",
@@ -46825,6 +46855,7 @@
           "tests/corpus/fs-sync-dynamic-descriptors.cjs",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts",
           "tests/corpus/fs-watch-ref-unref.ts",
           "tests/corpus/fs-write-callback-options.cjs",
           "tests/corpus/fs-write-options.ts",
@@ -48259,7 +48290,9 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fsPromises.readdir",
         "tests": [
-          "tests/corpus/2942-fsp-readdir-dirent.ts"
+          "tests/corpus/2942-fsp-readdir-dirent.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-recursive-types.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50097,12 +50130,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:fs.unwatchFile",
         "tests": [
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/fs-watch-file-names.ts",
-          "tests/corpus/fs-watch-file-polling.ts"
+          "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50283,12 +50318,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:fs.watchFile",
         "tests": [
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/fs-watch-file-names.ts",
-          "tests/corpus/fs-watch-file-polling.ts"
+          "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
         ]
       },
       "anchorSource": "exact"
@@ -52552,12 +52589,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:fs.FSWatcher",
         "tests": [
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/fs-watch-file-names.ts",
-          "tests/corpus/fs-watch-file-polling.ts"
+          "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
         ]
       },
       "anchorSource": "exact"
@@ -52585,7 +52624,8 @@
         "tests": [
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/fs-watch-file-names.ts",
-          "tests/corpus/fs-watch-ref-unref.ts"
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
         ]
       },
       "anchorSource": "exact"
@@ -52608,8 +52648,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.watcher.ref",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52631,8 +52677,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.watcher.unref",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52723,8 +52775,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-dedicated:fs.StatWatcher",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52746,8 +52805,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.watcher.ref",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52769,8 +52834,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.watcher.unref",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90881,6 +90952,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/sqlite-authorizer.ts",
+          "tests/corpus/sqlite-backup.ts",
           "tests/corpus/sqlite-constants.ts",
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
@@ -92311,8 +92383,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlite.backup",
+        "tests": [
+          "tests/corpus/sqlite-backup.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104936,8 +105011,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "supported",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -104959,8 +105037,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.node:trace_events",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104982,8 +105063,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.Tracing",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105005,8 +105089,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.tracing.disable",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105028,8 +105115,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.tracing.enable",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105051,8 +105141,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.categories",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -105074,8 +105167,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.enabled",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -105120,8 +105216,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.trace_events.createTracing",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105143,8 +105242,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:tracing"
+        "status": "supported",
+        "evidence": "compiler-feature:tracing.trace_events.getEnabledCategories",
+        "tests": [
+          "tests/corpus/trace-events-tracing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -122965,6 +123067,7 @@
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
           "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-performance.ts",
           "tests/corpus/worker-share-env.ts"
         ]
       },
@@ -123869,8 +123972,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.worker.performance",
+        "tests": [
+          "tests/corpus/worker-performance.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -123892,8 +123998,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.performance.eventLoopUtilization",
+        "tests": [
+          "tests/corpus/worker-performance.ts"
+        ]
       },
       "anchorSource": "exact"
     },

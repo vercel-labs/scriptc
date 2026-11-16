@@ -355,6 +355,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // propagates — the documented divergence from triggerUncaughtException);
   // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
   // non-function subscribers.
+  // trace_events.createTracing validates its options object.
+  "te.createTracing",
   "dc.publish",
   "dc.subscribe",
   "dc.unsubscribe",
@@ -904,8 +906,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "mime.typeNew",
   "mime.typeParse",
   // node:sqlite opens (or validates) a connection; every option it reads
-  // can refuse the call.
+  // can refuse the call, as can sqlite.backup's arguments.
   "sqlite.dbNew",
+  "sqlite.backup",
   "util.callbackify",
   "util.promisifyDyn",
   // The typed promisify's custom protocol: a truthy non-function throws
@@ -1149,6 +1152,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readdirSync",
   "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
+  "fs.readdirTypesRecursiveSync",
+  "fsp.readdirTypesRecursive",
+  "fs.readdirBytesSync",
+  "fs.readdirEncodedSync",
+  "fsp.readdirBytes",
+  "fsp.readdirRecursive",
+  "fsp.readdirEncoded",
   "fs.globSync",
   "fs.globTypesSync",
   "fs.callbackGlob",
@@ -1497,6 +1507,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.throwsNone",
   "assert.throwsMismatch",
   "assert.throwsRegex",
+  "assert.throwsAmbiguous",
   "assert.shapeEnd",
   "assert.unwantedRejection",
   "assert.unwantedError",

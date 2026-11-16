@@ -115,6 +115,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseResolve",
   // A promise boxed as a weak collection's key (scr_dyn_new_promise).
   "weakMap.promiseKey",
+  // sqlite.backup answers a promise minted by the dyn-async unit.
+  "sqlite.backup",
   // The generic Promise statics build and settle their capability's promise
   // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
   "promise.genericStatic",
@@ -191,6 +193,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+
+  // trace_events.Tracing handles (same unit: the checked-dynamic handle
+  // table and the registry).
+  "te.createTracing",
+  "te.getEnabledCategories",
   "blob.arrayBuffer",
   "blob.bytes",
   "blob.fileNew",
@@ -2166,7 +2173,10 @@ const RUNTIME_FEATURE_RULES = {
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
-  fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
+  fsWatchFile: rule({
+    fns: ["fs.watchFile", "fs.unwatchFile", "statWatcher.ref", "statWatcher.unref"],
+    types: ["statWatcher"],
+  }),
   /** fsPromises.watch (scr_watch_async.c): the async iterable the
    * `for await` lowering drains, over the fs.watch watcher unit. */
   fsWatchEvents: rule({
@@ -2271,7 +2281,10 @@ const RUNTIME_FEATURE_RULES = {
   parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
   /** perf_hooks event-loop metrics (eventLoopUtilization,
    * monitorEventLoopDelay): scr_perf_loop.c. */
-  perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
+  perfLoop: rule({
+    fns: ["perf.idleTime", "worker.performance"],
+    prefixes: ["perf.loop", "perf.eld"],
+  }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */
   pki: rule({ scan: webCryptoAsymmetricScan, fns: [...PKI_LIB_FNS] }),

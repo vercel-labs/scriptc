@@ -283,6 +283,10 @@ export type IrType =
    * lowering awaits and drains. Heap, refcounted; consumed only as a
    * for-await source, so it stays out of unions, arrays, maps and JSON. */
   | { kind: "watchEvents" }
+  /** An fs.StatWatcher handle (scr_watch_file.c): what fs.watchFile returns.
+   * Heap, refcounted; ref()/unref() move its loop liveness and close() stops
+   * its own listener registration. */
+  | { kind: "statWatcher" }
   /** A tls.SecureContext handle (scr_tls.c): heap, refcounted, IMMUTABLE —
    * a parsed cert/key pair (tls.createSecureContext({ cert, key })) that
    * an SNI callback answers per-servername. Holds no references — never
@@ -447,6 +451,7 @@ const POINTER_HANDLE_KINDS = [
   "cryptoHmac",
   "fsWatcher",
   "watchEvents",
+  "statWatcher",
   "childStream",
   "childWriter",
 ] as const satisfies readonly IrType["kind"][];
@@ -533,6 +538,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   procStream: "",
   fsWatcher: "scr_watcher",
   watchEvents: "scr_watch_events",
+  statWatcher: "scr_stat_watcher",
   secureCtx: "scr_secure_ctx",
   cryptoHash: "scr_crypto_hash",
   cryptoHmac: "scr_crypto_hash",
@@ -602,6 +608,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "cryptoHmac",
   "fsWatcher",
   "watchEvents",
+  "statWatcher",
   "childStream",
   "childWriter",
   "procStream",
@@ -648,6 +655,7 @@ export const CRYPTOHASH_T: IrType = { kind: "cryptoHash" };
 export const CRYPTOHMAC_T: IrType = { kind: "cryptoHmac" };
 export const FSWATCHER_T: IrType = { kind: "fsWatcher" };
 export const WATCHEVENTS_T: IrType = { kind: "watchEvents" };
+export const STATWATCHER_T: IrType = { kind: "statWatcher" };
 export const CHILDSTREAM_T: IrType = { kind: "childStream" };
 export const CHILDWRITER_T: IrType = { kind: "childWriter" };
 export const PROCSTREAM_T: IrType = { kind: "procStream" };
@@ -4928,6 +4936,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["spawnRes", { tag: "SCR_DYNH_SPAWN_RES", cls: "SpawnSyncReturns" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
+  ["statWatcher", { tag: "SCR_DYNH_STAT_WATCHER", cls: "StatWatcher" }],
 ]);
 
 /** How a Node island's own instance of a native platform class comes to sit in

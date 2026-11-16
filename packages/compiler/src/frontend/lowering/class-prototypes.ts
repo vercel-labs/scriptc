@@ -495,6 +495,46 @@ export function prototypeReflectedFlag(lowerer: Lowerer, info: ClassInfo): strin
   return id;
 }
 
+/** Whether the member's body reads or calls a member of its class through
+ * `this` that the checked-dynamic dispatch cannot answer: a generic method
+ * whose type parameters do not come from its parameters (the dispatch has no
+ * specialization to hand out, and fences at run time), or one a subclass
+ * overrides. Such a body cannot run over a checked-dynamic receiver, so the
+ * view takes the member's compiled, receiver-checked value instead: its body
+ * then keeps the class's typed `this`, and a read of the generic method
+ * lowers as the typed call site does (monomorphized where the call sits). */
+function bodyNeedsTypedReceiver(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: ts.MethodDeclaration | ts.AccessorDeclaration,
+): boolean {
+  if (member.body === undefined) return false;
+  let refused = false;
+  ts.walkPreorder(member.body, (node) => {
+    if (refused) return "skip";
+    if (
+      (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) ||
+      node.expression.kind !== ts.SyntaxKind.ThisKeyword
+    )
+      return undefined;
+    const name = ts.isPropertyAccessExpression(node)
+      ? node.name.text
+      : ts.isStringLiteralLike(node.argumentExpression)
+        ? node.argumentExpression.text
+        : null;
+    if (name === null || findMethodOn(lowerer, info, name) !== null) return undefined;
+    const generic = findGenericMethodOn(lowerer, info, name);
+    if (generic === null) return undefined;
+    const specialized =
+      generic.info.implicitParams !== undefined &&
+      generic.declarer.decl !== undefined &&
+      !lowerer.overrideBelow(info, name);
+    if (!specialized) refused = true;
+    return undefined;
+  });
+  return refused;
+}
+
 /** The prototype-view value of a TypeScript member that can run over a
  * checked-dynamic receiver: the declaration lowered with `this` as that
  * receiver (lowerLambda's checked receiver), so an object made from the
@@ -682,9 +722,16 @@ export function reflectClassPrototype(
       let before = lowerer.diags.length;
       let value: IrExpr | null;
       try {
-        value =
-          dynamicPrototypeMemberValue(lowerer, info, member) ??
-          classMethodValue(lowerer, info.decl, info, method, loc);
+        // A member whose body reads another member through `this` that the
+        // checked-dynamic dispatch cannot answer (a generic method) keeps
+        // its compiled, receiver-checked value, so its body runs with the
+        // class's typed `this` instead of fencing at run time. Every other
+        // member takes the dynamic-receiver view.
+        value = bodyNeedsTypedReceiver(lowerer, info, member)
+          ? (classMethodValue(lowerer, info.decl, info, method, loc) ??
+            dynamicPrototypeMemberValue(lowerer, info, member))
+          : (dynamicPrototypeMemberValue(lowerer, info, member) ??
+            classMethodValue(lowerer, info.decl, info, method, loc));
       } catch (error) {
         if (!(error instanceof PoisonError)) throw error;
         lowerer.diags.splice(before);

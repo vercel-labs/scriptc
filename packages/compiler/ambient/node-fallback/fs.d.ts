@@ -272,13 +272,22 @@ declare module "node:fs" {
   ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
-  /* The recursive form: every entry below the path, relative to it. */
+  /* The bare encoding spellings name the codec for the entry names; the
+   * bytes form answers them as Buffers, byte for byte. */
+  export function readdirSync(path: string | URL, options: "buffer"): Buffer[];
+  export function readdirSync(path: string | URL, options: BufferEncoding): string[];
+  export function readdirSync(
+    path: string | URL,
+    options: { encoding: "buffer"; withFileTypes?: false; recursive?: false },
+  ): Buffer[];
+  /* The recursive form: every entry below the path, relative to it. A
+   * recursive listing decodes its names as utf8. */
   export function readdirSync(
     path: string | URL,
     options: {
       recursive?: boolean;
       withFileTypes?: false;
-      encoding?: "utf8" | "utf-8";
+      encoding?: BufferEncoding | null;
       [option: string]: unknown;
     },
   ): string[];

@@ -1837,11 +1837,50 @@ export function lowerFsReaddirTypesCall(
   const operation = promiseForm ? "fs.promises.readdir" : "readdirSync";
   const spelling = promiseForm ? "readdir" : "readdirSync";
   const optsNode = call.arguments.nodes[1]!;
+  // The encoding the options name: the bare spelling Node accepts as the
+  // whole argument, or the record's `encoding` member. null is the utf8
+  // default; "buffer" asks for the raw entry bytes.
+  let encodingNode: ts.Expression | null = null;
+  let encodingLiteral: string | null = null;
+  const noteEncoding = (node: ts.Expression): void => {
+    const t = lowerer.typeOf(node);
+    if (t.isStringLiteralType()) encodingLiteral = t.value;
+    else {
+      // A runtime-selected name decodes at run time; a nullish value is
+      // Node's default, as getOptions reads it.
+      const parts: readonly ts.Type[] = t.isUnionType() ? ts.constituentTypes(t) : [t];
+      const nameLike = parts.every(
+        (part) =>
+          (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
+          (part.flags & ts.TypeFlags.StringLike) !== 0,
+      );
+      if (!nameLike) {
+        lowerer.noLowering(
+          `${operation} with this encoding`,
+          node,
+          "the encoding is a BufferEncoding name",
+        );
+      }
+    }
+    encodingNode = node;
+  };
   if (!ts.isObjectLiteralExpression(optsNode)) {
-    lowerer.noLowering(
-      `${operation} with a non-literal options argument`,
-      optsNode,
-      `pass the options inline so each member can be checked: ${spelling}(path, { withFileTypes: true })`,
+    const bare = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
+    if (bare?.kind !== "string") {
+      lowerer.noLowering(
+        `${operation} with a non-literal options argument`,
+        optsNode,
+        `pass the options inline so each member can be checked: ${spelling}(path, { withFileTypes: true })`,
+      );
+    }
+    noteEncoding(optsNode);
+    return lowerFsReaddirNamesByEncoding(
+      lowerer,
+      call,
+      promiseForm,
+      encodingNode,
+      encodingLiteral,
+      loc,
     );
   }
   let sawWithFileTypes = false;
@@ -1866,19 +1905,12 @@ export function lowerFsReaddirTypesCall(
       }
       sawWithFileTypes = true;
     } else if (m.name === "encoding") {
-      const t = lowerer.typeOf(m.value);
-      if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-        lowerer.noLowering(
-          `${operation} with a non-utf8 encoding`,
-          m.value,
-          "names decode as utf8 (the default); encoding: 'buffer' has no lowering",
-        );
-      }
-    } else if (m.name === "recursive" && !promiseForm) {
+      noteEncoding(m.value);
+    } else if (m.name === "recursive") {
       recursive = m.value;
     } else {
-      // The options-record stance: recursive (a documented knob with
-      // no lowering here) fences by name; undocumented keys drop like Node.
+      // The options-record stance: a documented knob with no lowering here
+      // fences by name; undocumented keys drop like Node.
       fenceOrDropOptionKey(
         lowerer,
         p,
@@ -1900,20 +1932,72 @@ export function lowerFsReaddirTypesCall(
         : flag.kind === ts.SyntaxKind.FalseKeyword
           ? "false"
           : null;
-    if (sawWithFileTypes && literal !== "false") {
-      lowerer.noLowering(
-        `${operation} with withFileTypes and recursive`,
+    if (sawWithFileTypes) {
+      if (literal === "true") {
+        if (encodingLiteral !== null && encodingLiteral !== "utf8" && encodingLiteral !== "utf-8") {
+          lowerer.noLowering(
+            `${operation} with recursive and this encoding`,
+            encodingNode ?? recursive,
+            "the recursive Dirent form decodes its names as utf8; drop the encoding",
+          );
+        }
+        return lowerFsReaddirTypesRecursive(lowerer, call, promiseForm, encodingNode, loc);
+      }
+      if (literal !== "false") {
+        lowerer.noLowering(
+          `${operation} with withFileTypes and a recursive flag that is not a literal`,
+          recursive,
+          "recursive: true and recursive: false pick different listings; spell one",
+        );
+      }
+    }
+    if (!sawWithFileTypes) {
+      // recursive: false is the one-directory listing, so it keeps whatever
+      // encoding the options name; a recursive walk decodes its relative
+      // names as utf8.
+      if (literal === "false") {
+        return lowerFsReaddirNamesByEncoding(
+          lowerer,
+          call,
+          promiseForm,
+          encodingNode,
+          encodingLiteral,
+          loc,
+        );
+      }
+      if (encodingLiteral !== null && encodingLiteral !== "utf8" && encodingLiteral !== "utf-8") {
+        lowerer.noLowering(
+          `${operation} with recursive and this encoding`,
+          encodingNode ?? recursive,
+          "a recursive listing decodes its relative names as utf8; drop the encoding",
+        );
+      }
+      return lowerFsReaddirRecursive(
+        lowerer,
+        call,
         recursive,
-        "recursive: true lists relative names; withFileTypes: true lists one directory's Dirents",
+        literal,
+        promiseForm,
+        encodingNode,
+        loc,
       );
     }
-    if (!sawWithFileTypes) return lowerFsReaddirRecursive(lowerer, call, recursive, literal, loc);
   }
   if (!sawWithFileTypes) {
-    lowerer.noLowering(
-      `${operation} with 2 arguments`,
+    return lowerFsReaddirNamesByEncoding(
+      lowerer,
       call,
-      `${spelling}(path) lists names; ${spelling}(path, { withFileTypes: true }) lists Dirents`,
+      promiseForm,
+      encodingNode,
+      encodingLiteral,
+      loc,
+    );
+  }
+  if (encodingLiteral !== null && encodingLiteral !== "utf8" && encodingLiteral !== "utf-8") {
+    lowerer.noLowering(
+      `${operation} with withFileTypes and this encoding`,
+      encodingNode ?? call,
+      "Dirent names are strings; a Buffer-named entry has no lowering",
     );
   }
   const fence: () => never = () =>
@@ -1941,13 +2025,19 @@ export function lowerFsReaddirTypesCall(
     fence();
   }
   const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
-  return {
-    kind: "libCall",
-    fn: promiseForm ? "fsp.readdirTypes" : "fs.readdirTypesSync",
-    args: [path],
-    type: callType,
+  return withReaddirEncodingEffects(
+    lowerer,
+    path,
+    encodingNode,
+    (pathArg) => ({
+      kind: "libCall",
+      fn: promiseForm ? "fsp.readdirTypes" : "fs.readdirTypesSync",
+      args: [pathArg],
+      type: callType,
+      loc,
+    }),
     loc,
-  };
+  );
 }
 
 /** `fs.readdirSync(path, { recursive })` without withFileTypes: the
@@ -1960,26 +2050,192 @@ function lowerFsReaddirRecursive(
   call: ts.CallExpression,
   recursive: ts.Expression,
   literal: string | null,
+  promiseForm: boolean,
+  encodingNode: ts.Expression | null,
   loc: SrcLoc,
 ): IrExpr {
   const names = arrayOf(STRING);
+  const expected: IrType = promiseForm ? { kind: "promise", inner: names } : names;
   // @types/node types the call `string[] | Buffer[]` when the options name
   // no encoding; the names are strings, so the call is the string[] arm.
   const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if (
-    !callType ||
-    !(
-      typeEquals(callType, names) ||
-      (callType.kind === "union" && lowerer.armTag(callType.unionId, names) >= 0)
-    )
-  ) {
+  const namesArm = (t: IrType | null | undefined): boolean =>
+    t !== null &&
+    t !== undefined &&
+    (typeEquals(t, expected) ||
+      (!promiseForm && t.kind === "union" && lowerer.armTag(t.unionId, names) >= 0));
+  if (!namesArm(callType)) {
     lowerer.noLowering(
       "readdirSync(path, { recursive }) where the result is not a string array",
       call,
       "names decode as utf8 strings (the default encoding)",
     );
   }
-  return lowerFsReaddirNames(lowerer, call, recursive, literal, names, loc);
+  return lowerFsReaddirNames(
+    lowerer,
+    call,
+    recursive,
+    literal,
+    names,
+    promiseForm,
+    encodingNode,
+    loc,
+  );
+}
+
+/** `fs.readdirSync(path, { recursive: true, withFileTypes: true })` and the
+ * fs/promises spelling: a Dirent row for every entry below the path, each
+ * name its basename, each parentPath the directory holding it relative to
+ * the path (the path as given at the top level), in Node's queue order. The
+ * result must be the interned Dirent record array, as for the one-directory
+ * form. */
+function lowerFsReaddirTypesRecursive(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  promiseForm: boolean,
+  encodingNode: ts.Expression | null,
+  loc: SrcLoc,
+): IrExpr {
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  let result = callType;
+  if (promiseForm && callType?.kind === "promise") result = callType.inner;
+  const shape =
+    result?.kind === "array" && result.elem.kind === "record"
+      ? lowerer.shapes.get(result.elem.shapeId)
+      : undefined;
+  if (
+    !callType ||
+    !shape ||
+    shape.tuple ||
+    shape.indexValue ||
+    shape.fields.length !== 3 ||
+    !shape.fields.some((f) => f.name === "%dtype")
+  ) {
+    lowerer.noLowering(
+      "readdir with recursive and withFileTypes where the result is not the Dirent array",
+      call,
+      "{ name, parentPath, isFile(), isDirectory(), isSymbolicLink() } rows are the supported result shape",
+    );
+  }
+  return withReaddirEncodingEffects(
+    lowerer,
+    lowerFsPath(lowerer, call.arguments.nodes[0]!),
+    encodingNode,
+    (pathArg) => ({
+      kind: "libCall",
+      fn: promiseForm ? "fsp.readdirTypesRecursive" : "fs.readdirTypesRecursiveSync",
+      args: [pathArg],
+      type: callType!,
+      loc,
+    }),
+    loc,
+  );
+}
+
+/** A listing whose names always decode as utf8 still evaluates the options
+ * record's `encoding` expression when Node would: the path binds first, the
+ * expression runs next (its side effects and exceptions included), and the
+ * call reads the binding. A literal encoding has nothing to run. */
+function withReaddirEncodingEffects(
+  lowerer: Lowerer,
+  path: IrExpr,
+  encodingNode: ts.Expression | null,
+  build: (path: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (encodingNode === null || ts.isStringLiteralLike(encodingNode)) return build(path);
+  const pathLocal = lowerer.declareHiddenLocal("%readdirPath", STRING);
+  const pathRef = varRef(pathLocal.id, STRING, loc);
+  const effect = lowerer.lowerExpr(encodingNode);
+  const result = build(pathRef);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: pathLocal.id, init: path, loc },
+      { kind: "exprStmt", expr: effect, loc },
+    ],
+    result,
+    type: result.type,
+    loc,
+  };
+}
+
+/** `readdirSync(path[, encoding])` and `fs.promises.readdir` without
+ * withFileTypes: the directory's own names. The declared result type picks
+ * the family — Buffer[] (encoding: "buffer") answers each entry's raw
+ * bytes, string[] decodes them with the named encoding (utf8, the default,
+ * is the plain listing; every other name decodes at run time). */
+function lowerFsReaddirNamesByEncoding(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  promiseForm: boolean,
+  encodingNode: ts.Expression | null,
+  encodingLiteral: string | null,
+  loc: SrcLoc,
+): IrExpr {
+  const buffers = arrayOf(BYTES_U8);
+  const names = arrayOf(STRING);
+  const expectedBuffers: IrType = promiseForm ? { kind: "promise", inner: buffers } : buffers;
+  const expectedNames: IrType = promiseForm ? { kind: "promise", inner: names } : names;
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  if (callType && typeEquals(callType, expectedBuffers)) {
+    // The names are Buffers, but Node still evaluates the encoding
+    // expression: its side effects and exceptions run in argument order.
+    return withReaddirEncodingEffects(
+      lowerer,
+      path,
+      encodingNode,
+      (pathArg) => ({
+        kind: "libCall",
+        fn: promiseForm ? "fsp.readdirBytes" : "fs.readdirBytesSync",
+        args: [pathArg],
+        type: expectedBuffers,
+        loc,
+      }),
+      loc,
+    );
+  }
+  const namesArm =
+    callType !== null &&
+    callType !== undefined &&
+    (typeEquals(callType, expectedNames) ||
+      (!promiseForm && callType.kind === "union" && lowerer.armTag(callType.unionId, names) >= 0));
+  if (!namesArm) {
+    lowerer.noLowering(
+      "readdir with this result type",
+      call,
+      "the names are strings, or Buffers with encoding: 'buffer'",
+    );
+  }
+  // No encoding argument at all, or the literal utf8 default, is the plain
+  // listing. Every other name — another literal, or one the program picks
+  // at run time — decodes the entry bytes at run time, so its expression is
+  // still evaluated (a nullish one is Node's default).
+  const plain = encodingNode === null || encodingLiteral === "utf8" || encodingLiteral === "utf-8";
+  if (plain) {
+    return withReaddirEncodingEffects(
+      lowerer,
+      path,
+      encodingNode,
+      (pathArg) => ({
+        kind: "libCall",
+        fn: promiseForm ? "fsp.readdir" : "fs.readdirSync",
+        args: [pathArg],
+        type: expectedNames,
+        loc,
+      }),
+      loc,
+    );
+  }
+  const utf8Default = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
+  return {
+    kind: "libCall",
+    fn: promiseForm ? "fsp.readdirEncoded" : "fs.readdirEncodedSync",
+    args: [path, lowerBuiltinOptionalDefault(lowerer, encodingNode!, STRING, utf8Default, true)],
+    type: expectedNames,
+    loc,
+  };
 }
 
 function lowerFsReaddirNames(
@@ -1988,35 +2244,62 @@ function lowerFsReaddirNames(
   recursive: ts.Expression,
   literal: string | null,
   names: IrType,
+  promiseForm: boolean,
+  encodingNode: ts.Expression | null,
   loc: SrcLoc,
 ): IrExpr {
   const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  const resultType: IrType = promiseForm ? { kind: "promise", inner: names } : names;
   const listing = (fn: IrLibFn, arg: IrExpr): IrExpr => ({
     kind: "libCall",
     fn,
     args: [arg],
-    type: names,
+    type: resultType,
     loc,
   });
-  if (literal === "true") return listing("fs.readdirRecursiveSync", path);
-  if (literal === "false") return listing("fs.readdirSync", path);
+  const recursiveFn: IrLibFn = promiseForm ? "fsp.readdirRecursive" : "fs.readdirRecursiveSync";
+  const plainFn: IrLibFn = promiseForm ? "fsp.readdir" : "fs.readdirSync";
+  if (literal !== null) {
+    return withReaddirEncodingEffects(
+      lowerer,
+      path,
+      encodingNode,
+      (pathArg) => listing(literal === "true" ? recursiveFn : plainFn, pathArg),
+      loc,
+    );
+  }
+  // A flag only the run time knows: the path binds first, then the options
+  // record's own expressions in the order the literal spells them (each
+  // with its side effects and exceptions), and the call reads all of them —
+  // JavaScript's argument order, which a ternary over the flag would
+  // reverse by reading it before the path.
   const pathLocal = lowerer.declareHiddenLocal("%readdirPath", STRING);
   const pathRef = varRef(pathLocal.id, STRING, loc);
-  const flag = lowerer.lowerExprExpecting(recursive, BOOL);
-  return {
-    kind: "seqExpr",
-    stmts: [{ kind: "varDecl", localId: pathLocal.id, init: path, loc }],
-    result: {
-      kind: "ternary",
-      cond: flag,
-      then: listing("fs.readdirRecursiveSync", pathRef),
-      else_: listing("fs.readdirSync", pathRef),
-      type: names,
-      loc,
-    },
-    type: names,
+  const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc }];
+  const encodingEffect =
+    encodingNode !== null && !ts.isStringLiteralLike(encodingNode)
+      ? ({ kind: "exprStmt", expr: lowerer.lowerExpr(encodingNode), loc } satisfies IrStmt)
+      : null;
+  const encodingFirst = encodingEffect !== null && encodingNode!.pos < recursive.pos;
+  if (encodingFirst) stmts.push(encodingEffect!);
+  const flagLocal = lowerer.declareHiddenLocal("%readdirRecursive", BOOL);
+  stmts.push({
+    kind: "varDecl",
+    localId: flagLocal.id,
+    init: lowerer.lowerExprExpecting(recursive, BOOL),
+    loc,
+  });
+  if (encodingEffect !== null && !encodingFirst) stmts.push(encodingEffect);
+  const flagRef = varRef(flagLocal.id, BOOL, loc);
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: flagRef,
+    then: listing(recursiveFn, pathRef),
+    else_: listing(plainFn, pathRef),
+    type: resultType,
     loc,
   };
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
 /** fs.statSync / fs.lstatSync's documented option keys. */

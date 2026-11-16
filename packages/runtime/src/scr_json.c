@@ -3651,12 +3651,20 @@ static void scr_canonical_prototypes_cleanup(void) {
   scr_canonical_n = scr_canonical_cap = 0;
 }
 
-static ScrDyn *scr_dyn_canonical_prototype(const char *cls) {
+/* The canonical prototype already answered for `cls`, or NULL. Borrowed. */
+static ScrDyn *scr_dyn_canonical_prototype_find(const char *cls) {
   size_t len = strlen(cls);
   for (size_t i = 0; i < scr_canonical_n; i++)
     if (strlen(scr_canonical_prototypes[i].cls) == len &&
         memcmp(scr_canonical_prototypes[i].cls, cls, len) == 0)
-      return scr_dyn_retain(scr_canonical_prototypes[i].prototype);
+      return scr_canonical_prototypes[i].prototype;
+  return NULL;
+}
+
+static ScrDyn *scr_dyn_canonical_prototype(const char *cls) {
+  ScrDyn *existing = scr_dyn_canonical_prototype_find(cls);
+  if (existing != NULL) return scr_dyn_retain(existing);
+  size_t len = strlen(cls);
   ScrDyn *prototype = scr_dyn_new_obj(); /* Object.prototype behind it */
   /* The runtime's constructor value, where the invoke unit answers one:
    * `Object.getPrototypeOf(v).constructor` then names the class as Node's
@@ -3731,6 +3739,11 @@ static ScrDyn *scr_dyn_canonical_function_prototype(void) {
  * when linked (so `Object.getPrototypeOf("x") === String.prototype`), the
  * canonical object otherwise. */
 static ScrDyn *scr_dyn_primitive_prototype(int kind, const char *cls) {
+  /* Once this kind has answered the canonical object, keep answering it: a
+   * wrapper prototype built by a later read must not change the identity a
+   * caller of Object.getPrototypeOf already holds (or vice versa). */
+  ScrDyn *existing = scr_dyn_canonical_prototype_find(cls);
+  if (existing != NULL) return scr_dyn_retain(existing);
   if (scr_dyn_wrapper_prototype_hook != NULL) {
     ScrDyn *prototype = scr_dyn_wrapper_prototype_hook(kind);
     if (prototype != NULL) return prototype;
@@ -3822,11 +3835,21 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object->kind == SCR_DYN_PROMISE) return scr_dyn_canonical_prototype("Promise");
   if (object->kind == SCR_DYN_FUNC) {
     /* Function.prototype, the object every function's chain links to, when
-     * the invoke unit models it as a value. */
+     * the invoke unit models it as a value. Function.prototype's own
+     * [[Prototype]] is Object.prototype, so a chain walk must not answer the
+     * object itself (Node's answer, and the end of the walk). */
     if (scr_dyn_function_prototype_hook != NULL) {
       ScrDyn *prototype = scr_dyn_function_prototype_hook();
-      if (prototype != NULL) return prototype;
+      if (prototype != NULL) {
+        bool self = scr_dyn_strict_eq(prototype, object);
+        if (self) {
+          scr_dyn_release(prototype);
+          return scr_dyn_object_prototype();
+        }
+        return prototype;
+      }
     }
+    if (object == scr_canonical_function_prototype_value) return scr_dyn_object_prototype();
     return scr_dyn_canonical_function_prototype();
   }
   if (object->kind == SCR_DYN_HANDLE) {

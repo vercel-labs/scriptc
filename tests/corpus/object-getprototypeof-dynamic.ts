@@ -54,3 +54,16 @@ function isRecord(value: any): boolean {
   return value !== null && Object.getPrototypeOf(value) === Object.prototype;
 }
 console.log("isRecord", isRecord(store.label), isRecord(store.items), isRecord(store.meta));
+
+// Function.prototype is a function whose own [[Prototype]] is
+// Object.prototype, so walking past it ends the chain instead of cycling.
+const fn: any = () => 1;
+const fnPrototype: any = Object.getPrototypeOf(fn);
+console.log(
+  "function-chain",
+  typeof fnPrototype,
+  fnPrototype !== fn,
+  Object.getPrototypeOf(fnPrototype) === Object.prototype,
+  Object.getPrototypeOf(Object.getPrototypeOf(fnPrototype)) === null,
+);
+

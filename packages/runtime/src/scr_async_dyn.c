@@ -2145,7 +2145,11 @@ static bool scr_emit_event_is(const ScrStr *event, const char *name) {
 /* Node's onWarning test: only an Error reaches the default report, while a
  * program's 'warning' listener receives whatever value the emit carried. */
 static bool scr_emit_warning_is_error(const ScrDyn *value) {
-  if (scr_errdyn_err_of(value) != NULL) return true;
+  ScrError *error = scr_errdyn_err_of(value); /* +1: the identity lookup retains */
+  if (error != NULL) {
+    scr_error_release(error);
+    return true;
+  }
   if (value->kind == SCR_DYN_OBJ && scr_dyn_obj_get(value, "%error", 6) != NULL) return true;
   return scr_dyn_ref_is_error(value);
 }

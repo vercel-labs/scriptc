@@ -432,8 +432,11 @@ static bool argon2_integer(const char *name, const ScrDyn *value, double min, do
  * false with Node's TypeError pending when it is there but invalid. */
 static bool argon2_optional_bytes(const ScrDyn *options, const char *name, ScrBytes **out) {
   ScrDyn *value = scr_dyn_obj_read(options, name, strlen(name));
-  if (!value || value->kind == SCR_DYN_UNDEF) {
-    if (value) scr_dyn_release(value);
+  /* A NULL read is a throwing getter: its exception is pending and the
+   * derivation must not run. */
+  if (!value) return !scr_exc_pending();
+  if (value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(value);
     return true;
   }
   char label[64];

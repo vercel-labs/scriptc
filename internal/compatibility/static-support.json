@@ -1000,7 +1000,9 @@
     { "chapter": "querystring", "symbols": ["querystring.decode", "querystring.encode", "querystring.escape", "querystring.parse", "querystring.stringify", "querystring.unescape"], "status": "supported", "evidence": ["tests/corpus/querystring-codec-matrix.ts", "tests/corpus/querystring-runtime-values.js", "tests/corpus/querystring-stringify-live-records.ts", "tests/corpus/querystring-stringify-live-values.js"] },
     { "chapter": "punycode", "symbols": ["punycode.decode", "punycode.encode", "punycode.toASCII", "punycode.toUnicode", "punycode.ucs2.decode", "punycode.ucs2.encode"], "signatures": ["`version` Type: {string}"], "status": "supported", "evidence": ["tests/corpus/6122-punycode-conversions.ts", "tests/corpus/6124-punycode-require-warnings.cjs", "tests/corpus/6126-punycode-dependency/main.cjs"] },
     { "chapter": "util", "symbols": ["util.callbackify"], "status": "supported", "evidence": ["tests/corpus/util-format-equality-promisify.ts", "tests/corpus/5190-util-callbackify.cjs", "tests/corpus/5191-util-callbackify.ts"] },
-    { "chapter": "util", "symbols": ["util.inherits"], "status": "supported", "evidence": ["tests/corpus/5185-util-inherits.cjs", "tests/corpus/5186-util-inherits.ts"] }
+    { "chapter": "util", "symbols": ["util.inherits"], "status": "supported", "evidence": ["tests/corpus/5185-util-inherits.cjs", "tests/corpus/5186-util-inherits.ts"] },
+    { "chapter": "buffer", "parent": "`node:buffer` module APIs", "signatures": ["`buffer.resolveObjectURL(id)`"], "status": "supported", "evidence": ["tests/corpus/buffer-resolve-object-url.ts"] },
+    { "chapter": "buffer", "signatures": ["Class: `SlowBuffer`"], "status": "supported", "evidence": ["tests/corpus/buffer-slowbuffer.cjs"] }
   ],
   "dedicated": [
     { "symbols": ["assert.doesNotThrow", "assert.doesNotReject"], "status": "partial", "evidence": ["tests/corpus/node24-no-error-assertions.ts", "tests/corpus/node24-no-error-assertions.cjs", "tests/corpus/node24-no-error-assertions-coercion.js", "tests/fixtures/node-types/no-error-assertions.ts", "tests/harness/project-config.test.ts"] },

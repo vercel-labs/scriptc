@@ -1262,6 +1262,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hkdfCb",
   "crypto.scrypt",
   "crypto.scryptCb",
+  "buffer.resolveObjectURL",
   "buffer.concat",
   "buffer.concatLen",
   "buffer.concatDyn",

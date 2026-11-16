@@ -376,8 +376,14 @@ function prepareRounds(
       return retry.retry.prepared;
     }
     // An attempt that compiles replaces the build that asked for it; the
-    // outermost build is the result.
-    if (fence !== null || outcome.fence === null) return outcome.prepared;
+    // outermost build is the result. An attempt that asks for a fence retry
+    // of its own replaces it in turn, and the last retry asked for is the one
+    // that runs: the attempt is not the build the round driver returns until
+    // its own chain settles, exactly as the recursive rounds it replaced did.
+    // Its success is the result the asking build accepts, and a failure of
+    // every attempt in its chain leaves it in place with the warning that
+    // names that growth.
+    if (outcome.fence === null) return outcome.prepared;
     fence = { retry: outcome.fence, next: 1, firstError: null };
     request = attemptRequest(outcome.fence, outcome.fence.attempts[0]!);
   }

@@ -34,14 +34,21 @@ clearInterval(ticker);
 console.log("entries", entries > 0);
 
 // 2. The iterator answers a whole directory watch too: a new entry there is
-// named by the platform.
-const dirTicker = setInterval(() => fs.writeFileSync(join(dir, `n${Date.now()}.txt`), "z"), 20);
+// named by the platform. macOS is skipped on both sides: the watch unit
+// refuses a directory watcher that reads the entry name there (kqueue names
+// no entries), which is the fence fs.watch's two-argument listener has.
 let named = false;
-for await (const info of fs.promises.watch(dir)) {
-  if (typeof info.filename === "string" && info.filename.length > 0) named = true;
-  break;
+if (process.platform !== "darwin") {
+  const dirTicker = setInterval(
+    () => fs.writeFileSync(join(dir, `n${Date.now()}.txt`), "z"),
+    20,
+  );
+  for await (const info of fs.promises.watch(dir)) {
+    if (typeof info.filename === "string" && info.filename.length > 0) named = true;
+    break;
+  }
+  clearInterval(dirTicker);
 }
-clearInterval(dirTicker);
 console.log("directory entry named", named);
 
 // 3. persistent: false still iterates while something else holds the loop,
@@ -55,4 +62,5 @@ for await (const info of watch(file, { persistent: false })) {
 }
 clearInterval(looseTicker);
 console.log("unpersistent iterates", loose === 1);
+
 fs.rmSync(dir, { recursive: true, force: true });

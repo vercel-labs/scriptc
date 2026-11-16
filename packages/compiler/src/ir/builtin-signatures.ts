@@ -1806,7 +1806,7 @@ function buildLibFnSignatures() {
      * awaits watchEvents.wait and pops one entry with watchEvents.take,
      * whose `{ eventType, filename } | null` result the lowering types.
      * close() is the loop's finally. */
-    "fsp.watch": { argTypes: [STRING, BOOL], result: WATCHEVENTS_T },
+    "fsp.watch": { argTypes: [STRING, BOOL, F64, BOOL], result: WATCHEVENTS_T },
     "watchEvents.wait": { argTypes: [WATCHEVENTS_T], result: { kind: "promise", inner: BOOL } },
     "watchEvents.take": { argTypes: [WATCHEVENTS_T], result: DYN },
     "watchEvents.close": { argTypes: [WATCHEVENTS_T], result: VOID },

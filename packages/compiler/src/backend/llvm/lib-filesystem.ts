@@ -554,17 +554,20 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     return out;
   }
   if (e.fn === "fsp.watch") {
-    // fsPromises.watch(path, persistent): the iterator state (+1). The
-    // watch opens NOW, so a bad or unopenable path throws here (Node's
-    // first next() does the same); a reffed state holds the loop like a
-    // reffed fs.watch handle. The standard pending check.
+    // fsPromises.watch(path, persistent, maxQueue, overflowIsError): the
+    // iterator state (+1). The watch opens NOW, so a bad or unopenable path
+    // throws here (Node's first next() does the same), as does a maxQueue
+    // validateInteger rejects; a reffed state holds the loop like a reffed
+    // fs.watch handle. The standard pending check.
     host.usesTimers = true;
     const path = host.emitExpr(e.args[0]!);
     const persistent = host.emitExpr(e.args[1]!);
-    host.declare(`declare ptr @scr_watch_events_new(ptr, i1 zeroext)`);
+    const maxQueue = host.emitExpr(e.args[2]!);
+    const overflowError = host.emitExpr(e.args[3]!);
+    host.declare(`declare ptr @scr_watch_events_new(ptr, i1 zeroext, double, i1 zeroext)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_watch_events_new(ptr ${path.name}, i1 zeroext ${persistent.name})`,
+      `${t} = call ptr @scr_watch_events_new(ptr ${path.name}, i1 zeroext ${persistent.name}, double ${maxQueue.name}, i1 zeroext ${overflowError.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
@@ -582,12 +585,16 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
   if (e.fn === "watchEvents.take") {
     // The dynamic `{ eventType, filename }` record the iterator queued
     // (+1); the loop only takes one after a true wait, and checks it into
-    // the iteration record there.
+    // the iteration record there. A queue that overflowed under
+    // overflow: "error" throws Node's ERR_FS_WATCH_QUEUE_OVERFLOW here —
+    // the standard pending check.
     const st = host.emitExpr(e.args[0]!);
     host.declare(`declare ptr @scr_watch_events_take(ptr)`);
     const t = B.tmp();
     B.line(`${t} = call ptr @scr_watch_events_take(ptr ${st.name})`);
-    return host.own({ name: t, type: e.type });
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
   }
   if (e.fn === "watchEvents.close") {
     // The loop's finally: closes the watch (idempotent) and drops the

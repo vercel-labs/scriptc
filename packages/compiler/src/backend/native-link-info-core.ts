@@ -475,6 +475,11 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // scr_perf.c resolves performance.measure's Node timing milestone names
   // ("loopStart", "loopExit") through scr_perf_loop.c's getters.
   { feature: "dynAsync", requires: ["perfLoop"] },
+  // scr_watch_async.c reports its bounded queue's dropped events through
+  // scr_emit_warning (scr_async_dyn.c, Node's process warning report and
+  // listeners), so the iterator unit brings the checked-dynamic async unit
+  // with it.
+  { feature: "watchEvents", requires: ["watch", "dynAsync"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

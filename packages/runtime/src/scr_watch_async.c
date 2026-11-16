@@ -24,6 +24,7 @@
 #include "scr_runtime.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,13 @@ struct ScrWatchEvents {
   ScrStr **events;      /* queue: the event name of each entry (+1 each) */
   ScrStr **names;       /* queue: the entry name of each entry (+1 each) */
   size_t head, n, cap;
+  /* Node's bound on the pending entries (options.maxQueue, 2048 by
+   * default): past it a new event either raises the iteration's error
+   * (overflow: "error") or is dropped with a process warning
+   * (overflow: "ignore"). */
+  long max_queue;
+  bool overflow_error;
+  bool failed;          /* the queue was cleared into the overflow error */
   ScrPromise *waiter;   /* +1: the pending wait() promise, if one waits */
   ScrClosure *resolver; /* +1: its void resolver */
   bool closed;
@@ -99,6 +107,18 @@ static void scr_watch_events_settle(ScrWatchEvents *st, bool ready) {
 }
 
 static void scr_watch_events_push(ScrWatchEvents *st, const char *event, const char *filename) {
+  /* The bound comes before the growth: a consumer that falls behind cannot
+   * make the queue grow without limit, whatever the writer does. */
+  if ((long)st->n >= st->max_queue) {
+    if (st->overflow_error) {
+      scr_watch_events_drop_queue(st);
+      st->failed = true;
+      scr_watch_events_settle(st, true);
+    } else {
+      scr_emit_warning("Warning", NULL, scr_str_new("fs.watch maxQueue exceeded", 26));
+    }
+    return;
+  }
   if (st->head + st->n == st->cap) {
     size_t cap = st->cap != 0 ? st->cap * 2 : 8;
     if (st->head != 0) {
@@ -152,10 +172,24 @@ static ScrStr *scr_watch_events_basename(ScrStr *path) {
 /* fsPromises.watch(path, options): the iterator state, +1. The watcher is
  * created here, so a path that rejects the null-byte check or cannot be
  * opened throws and answers NULL. */
-ScrWatchEvents *scr_watch_events_new(ScrStr *path, bool persistent) {
+ScrWatchEvents *scr_watch_events_new(ScrStr *path, bool persistent, double max_queue,
+                                     bool overflow_error) {
+  /* options.maxQueue: Node's validateInteger, before the path is opened. */
+  if (!isfinite(max_queue) || trunc(max_queue) != max_queue) {
+    char recv[48], msg[160];
+    scr_num_received(max_queue, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"options.maxQueue\" is out of range. It must be an integer. "
+                       "Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
   ScrWatchEvents *st = calloc(1, sizeof *st);
   if (!st) scr_watch_events_oom();
   st->rc = 1;
+  st->max_queue = (long)max_queue;
+  st->overflow_error = overflow_error;
   st->fallback = scr_watch_events_basename(path);
   ScrClosure *cb = scr_closure_new((void *)scr_watch_events_event, 1);
   cb->caps[0] = scr_box_new_obj(scr_watch_events_retain_v, scr_watch_events_release_v, NULL);
@@ -193,6 +227,16 @@ ScrPromise *scr_watch_events_wait(ScrWatchEvents *st) {
  * which ends the loop. The emitter narrows the NULL into the record or
  * null union the loop's binding names. */
 ScrDyn *scr_watch_events_take(ScrWatchEvents *st) {
+  if (st->failed) {
+    /* Node's ERR_FS_WATCH_QUEUE_OVERFLOW: the iteration throws it where the
+     * generator would have yielded, and the loop's finally closes the
+     * watch. */
+    st->failed = false;
+    char msg[96];
+    int len = snprintf(msg, sizeof msg, "fs.watch() queued more than %ld events", st->max_queue);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, "ERR_FS_WATCH_QUEUE_OVERFLOW");
+    return NULL;
+  }
   if (st->n == 0) return NULL;
   ScrStr *event = st->events[st->head];
   ScrStr *name = st->names[st->head];
@@ -242,7 +286,14 @@ static void scr_watch_events_cleanup_atexit(void) {
 }
 
 /* The emitted main's install line — scr_watch_async.c links only when it is
- * emitted, the scr_watch.c gating precedent. */
+ * emitted, the scr_watch.c gating precedent. scr_atexit is the runtime's
+ * per-thread hook (scr_watch.c's own install shape): a worker drains its
+ * cleanup stack before its TLS dies, where libc's atexit would run the
+ * callback on the process-exit thread, long after the worker's registry
+ * went away. */
 void scr_watch_events_install(void) {
-  atexit(scr_watch_events_cleanup_atexit);
+  static SCR_TL bool installed = false;
+  if (installed) return;
+  installed = true;
+  scr_atexit(scr_watch_events_cleanup_atexit);
 }

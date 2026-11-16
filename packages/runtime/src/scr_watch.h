@@ -83,8 +83,13 @@ void scr_watch_file_install(void);
 typedef struct ScrPromise ScrPromise;
 typedef struct ScrWatchEvents ScrWatchEvents;
 /* fsPromises.watch(path[, options]): opens the watch NOW (+1 state). A
- * path that fails validation or cannot be watched throws and answers NULL. */
-ScrWatchEvents *scr_watch_events_new(ScrStr *path, bool persistent);
+ * path that fails validation or cannot be watched throws and answers NULL.
+ * `max_queue` (options.maxQueue, 2048 at the call site) bounds the pending
+ * entries; `overflow_error` picks Node's policy past the bound: the
+ * iteration's ERR_FS_WATCH_QUEUE_OVERFLOW, or a dropped event and the
+ * "fs.watch maxQueue exceeded" warning. */
+ScrWatchEvents *scr_watch_events_new(ScrStr *path, bool persistent, double max_queue,
+                                     bool overflow_error);
 ScrWatchEvents *scr_watch_events_retain(ScrWatchEvents *st);
 void scr_watch_events_release(ScrWatchEvents *st);
 void *scr_watch_events_retain_v(void *p);

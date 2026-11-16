@@ -468,9 +468,6 @@ export const FS_WATCH_PROMISES_OPTION_HINTS: Record<string, string | undefined> 
     "recursive: true watches with Node's non-native recursive walker, which has no lowering",
   signal: "options.signal (an AbortSignal ending the iteration) has no lowering",
   ignore: "options.ignore (a matcher over entry names) has no lowering",
-  maxQueue: "options.maxQueue (the queue-bound policy) has no lowering; the queue is unbounded",
-  overflow:
-    "options.overflow (the maxQueue overflow policy) has no lowering; the queue is unbounded",
 };
 
 /** fs.readdirSync's documented option keys. */

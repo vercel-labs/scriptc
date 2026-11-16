@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-absent-member-esm/table.cjs",
+  "<repo>/tests/corpus/cjs-absent-member-esm/main.mjs"
+ ],
+ "diags": []
+}

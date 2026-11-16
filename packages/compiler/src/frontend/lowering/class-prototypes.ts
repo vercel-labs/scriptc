@@ -529,8 +529,10 @@ function dynamicPrototypeMemberValue(
   // member falls back to the compiled receiver-checked wrapper (as a member
   // that needs a native receiver already does).
   const held = lowerer.diagSink;
+  const heldDiscarded = lowerer.discardedCapture;
   const captured: ScrDiagnostic[] = [];
   lowerer.diagSink = captured;
+  lowerer.discardedCapture = true;
   try {
     const value = lowerer.coerceToExpected(lowerer.lowerLambda(member, true), DYN);
     return captured.length === 0 ? value : null;
@@ -541,6 +543,7 @@ function dynamicPrototypeMemberValue(
     return null;
   } finally {
     lowerer.diagSink = held;
+    lowerer.discardedCapture = heldDiscarded;
     lowerer.diags.splice(before);
     lowerer.fnStack.pop();
     lowerer.currentClass = previousClass;

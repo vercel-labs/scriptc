@@ -6287,6 +6287,9 @@ static bool sp_webcrypto_md(const char *hash, mbedtls_md_type_t *md) {
   else if (strcmp(hash, "SHA-256") == 0) *md = MBEDTLS_MD_SHA256;
   else if (strcmp(hash, "SHA-384") == 0) *md = MBEDTLS_MD_SHA384;
   else if (strcmp(hash, "SHA-512") == 0) *md = MBEDTLS_MD_SHA512;
+  else if (strcmp(hash, "SHA3-256") == 0) *md = MBEDTLS_MD_SHA3_256;
+  else if (strcmp(hash, "SHA3-384") == 0) *md = MBEDTLS_MD_SHA3_384;
+  else if (strcmp(hash, "SHA3-512") == 0) *md = MBEDTLS_MD_SHA3_512;
   else return false;
   return true;
 }

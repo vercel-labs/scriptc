@@ -3846,17 +3846,17 @@ await attempt("unwrap an ecdsa key", () =>
 
   test("a method outside the slice is a named fence where it runs", async () => {
     const r = await compileAndRun(
-      "webcrypto-get-public-key",
+      "webcrypto-encapsulate-bits",
       `console.log("before");
 const key = await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign"]);
-await crypto.subtle.getPublicKey(key, ["verify"]);
+await crypto.subtle.encapsulateBits("ML-KEM-768", key);
 `,
       "mjs",
     );
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("before\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'crypto\.subtle\.getPublicKey' is part of the standard library types but has no scriptc lowering yet.*\n$/,
+      /^Uncaught Error: 'crypto\.subtle\.encapsulateBits' is part of the standard library types but has no scriptc lowering yet.*\n$/,
     );
   });
 });

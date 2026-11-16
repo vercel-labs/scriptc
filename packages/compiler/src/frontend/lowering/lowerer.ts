@@ -154,7 +154,7 @@ import {
 import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
 import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
-import { isInstalledPackagePath } from "../resolve.js";
+import { isInstalledPackagePath, projectDtsRuntimeSibling } from "../resolve.js";
 import { lowerKeyObjectCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
 import { lowerCertificateCall } from "./builtins/certificate.js";
@@ -6420,6 +6420,11 @@ export class Lowerer {
     "computedEnvironmentWrite",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
+    // Cache made when first needed: the implementation symbol a declaration
+    // in a project twin (a `.d.ts` beside the JavaScript it describes) binds
+    // to, by symbol and by the import alias it was read through.
+    "declarationTwinSymbols",
+    "declarationTwinRouted",
     "socketEncodingReachable",
     "thenablesMayBeDefined",
     "unixListenReachable",
@@ -7609,6 +7614,7 @@ export class Lowerer {
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
       runtimeClassValue: (type) => runtimeClassValueOfType(this, type),
+      classTwinDeclaration: (decl) => this.declarationTwinClassDeclarationOf(decl),
       localClassValue: (type) =>
         this.instanceResultClass !== null && this.instanceResultClass.declared === type.id
           ? (noteScopeSensitiveMapping(), this.instanceResultClass.value)
@@ -8086,14 +8092,21 @@ export class Lowerer {
     if (!sym) return null;
     if (sym.flags & ts.SymbolFlags.Alias) sym = this.checker.getAliasedSymbol(sym);
     for (const decl of sym.declarations) {
+      // A project declaration's namespace is its runtime implementation's:
+      // the checker resolves the import to the declaration beside the
+      // JavaScript Node loads (resolve.ts's projectDtsRuntimeSibling).
+      const source = ts.isSourceFile(decl)
+        ? decl.isDeclarationFile
+          ? this.declarationTwinFileOf(decl.fileName)
+          : decl
+        : null;
       if (
-        ts.isSourceFile(decl) &&
-        !decl.isDeclarationFile &&
-        !decl.fileName.endsWith(".cts") &&
-        !isCjsJsFile(decl, this.program) &&
-        this.moduleOrder.includes(decl)
+        source !== null &&
+        !source.fileName.endsWith(".cts") &&
+        !isCjsJsFile(source, this.program) &&
+        this.moduleOrder.includes(source)
       ) {
-        return `file:${this.pathOf(decl)}`;
+        return `file:${this.pathOf(source)}`;
       }
       if (ts.isModuleDeclaration(decl) && ts.isStringLiteral(decl.name)) {
         const builtin = canonicalBuiltinModule(decl.name.text);
@@ -8500,6 +8513,7 @@ export class Lowerer {
       this.flushDeferred(wholeSlot);
       return wholeSlot;
     }
+    const importAlias = symbol;
     if (symbol.flags & ts.SymbolFlags.Alias) {
       // SNAPSHOT aliases own storage keyed by the PRE-alias symbol
       // (`import x = N.y` of a mutable target — collectGlobals): the
@@ -8568,8 +8582,117 @@ export class Lowerer {
     // the target's value symbol explicitly.
     const splitAlias = splitWholeExportAliasTargetOf(this, symbol);
     if (splitAlias) symbol = splitAlias;
+    // A project declaration's runtime implementation owns the storage and
+    // the bodies (resolve.ts's projectDtsRuntimeSibling): the checker
+    // resolved the import to the declaration beside the JavaScript Node
+    // loads, so a reference re-binds to the implementation's export of the
+    // same name. The checker's type at the site still comes from the
+    // declaration.
+    const twin = this.declarationTwinExportSymbolOf(symbol, importAlias);
+    if (twin) symbol = twin;
     this.flushDeferred(symbol);
     return symbol;
+  }
+
+  /** The implementation's export symbol for a symbol the checker declares
+   * in a project declaration: `lib.d.ts` beside `lib.js` describes that
+   * module, and the lowering compiles the JavaScript. A declaration bridge
+   * (`export * from "../types"`) re-exports a declaration another module
+   * implements, so the import the reference came through answers too. Null
+   * when no compiled module implements the symbol. */
+  declarationTwinExportSymbolOf(symbol: ts.Symbol, alias: ts.Symbol | null): ts.Symbol | null {
+    const direct = this.declarationTwinDirectSymbolOf(symbol);
+    if (direct !== null || alias === null) return direct;
+    const cached = this.declarationTwinRouted.get(alias);
+    if (cached !== undefined) return cached;
+    const routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
+    this.declarationTwinRouted.set(alias, routed);
+    return routed;
+  }
+
+  private declarationTwinSymbols = new Map<ts.Symbol, ts.Symbol | null>();
+
+  private declarationTwinRouted = new Map<ts.Symbol, ts.Symbol | null>();
+
+  /** The declaration's OWN runtime sibling (`lib.d.ts` → `lib.js`), when
+   * every declaration of the symbol sits in such a declaration. */
+  private declarationTwinDirectSymbolOf(symbol: ts.Symbol): ts.Symbol | null {
+    const cached = this.declarationTwinSymbols.get(symbol);
+    if (cached !== undefined) return cached;
+    const answer = this.declarationTwinDirectSymbolUncached(symbol);
+    this.declarationTwinSymbols.set(symbol, answer);
+    return answer;
+  }
+
+  private declarationTwinDirectSymbolUncached(symbol: ts.Symbol): ts.Symbol | null {
+    const declarations = symbol.declarations;
+    if (declarations.length === 0) return null;
+    let implementation: ts.SourceFile | null = null;
+    for (const decl of declarations) {
+      const file = ts.getSourceFileOfNode(decl);
+      if (!file.isDeclarationFile) return null;
+      const twin = this.declarationTwinFileOf(file.fileName);
+      if (twin === null) return null;
+      if (implementation !== null && implementation !== twin) return null;
+      implementation = twin;
+    }
+    if (implementation === null) return null;
+    return this.moduleExportSymbolOf(implementation, ts.symbolName(symbol), symbol);
+  }
+
+  /** The compiled module an import of `symbol` names, and that module's
+   * export under the name the import asked for. */
+  private declarationTwinRoutedSymbolOf(symbol: ts.Symbol, alias: ts.Symbol): ts.Symbol | null {
+    const declarations = symbol.declarations;
+    if (declarations.length === 0) return null;
+    if (!declarations.some((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)) return null;
+    const imported = alias.declarations.find(
+      (decl) => ts.isImportSpecifier(decl) || ts.isImportClause(decl),
+    );
+    if (imported === undefined) return null;
+    const stmt = ts.isImportClause(imported) ? imported.parent : imported.parent?.parent?.parent;
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) return null;
+    const dep = this.facts.importedModule(
+      ts.getSourceFileOfNode(imported),
+      stmt.moduleSpecifier.text,
+    );
+    if (dep === null || dep.isDeclarationFile) return null;
+    const name = ts.isImportClause(imported)
+      ? "default"
+      : (imported.propertyName ?? imported.name).text;
+    return this.moduleExportSymbolOf(dep, name, symbol);
+  }
+
+  private moduleExportSymbolOf(
+    module: ts.SourceFile,
+    name: string,
+    symbol: ts.Symbol,
+  ): ts.Symbol | null {
+    const moduleSymbol = this.checker.getSymbolAtLocation(module);
+    if (moduleSymbol === undefined) return null;
+    const exported = moduleSymbol.getExports().get(ts.escapedSymbolName(name));
+    return exported !== undefined && exported !== symbol ? exported : null;
+  }
+
+  /** The implementation's class declaration for a class declared in a
+   * project declaration with a runtime sibling (`lib.d.ts` beside
+   * `lib.js`). Null for every other class. */
+  declarationTwinClassDeclarationOf(decl: ts.ClassLikeDeclaration): ts.ClassLikeDeclaration | null {
+    const symbol = decl.name
+      ? this.checker.getSymbolAtLocation(decl.name)
+      : this.checker.getSymbolAtLocation(decl);
+    if (symbol === undefined) return null;
+    const value = this.declarationTwinExportSymbolOf(symbol, null)?.valueDeclaration;
+    return value && (ts.isClassDeclaration(value) || ts.isClassExpression(value)) ? value : null;
+  }
+
+  /** The program file implementing a project declaration (`lib.d.ts` →
+   * `lib.js`), or null when the declaration has no runtime sibling in the
+   * program. */
+  declarationTwinFileOf(path: string): ts.SourceFile | null {
+    const sibling = projectDtsRuntimeSibling(tsgoPath(path));
+    if (sibling === null) return null;
+    return this.program.getSourceFile(tsgoPath(sibling)) ?? null;
   }
 
   /** The first immediate alias hop that owns module storage (an export
@@ -8682,7 +8805,8 @@ export class Lowerer {
   private moduleSourceFileOf(from: ts.SourceFile, spec: ts.StringLiteral): ts.SourceFile | null {
     const moduleSymbol = this.checker.getSymbolAtLocation(spec);
     for (const decl of moduleSymbol ? moduleSymbol.declarations : []) {
-      if (ts.isSourceFile(decl)) return decl;
+      if (ts.isSourceFile(decl))
+        return decl.isDeclarationFile ? (this.declarationTwinFileOf(decl.fileName) ?? decl) : decl;
     }
     return this.facts.importedModule(from, spec.text);
   }

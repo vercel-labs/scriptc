@@ -1016,6 +1016,22 @@ function externalTypeFileClosure7(
   return new Map([...ownersByFile].map(([file, owners]) => [file, [...owners]] as const));
 }
 
+/** The runtime implementations of the project's own declarations: a
+ * declaration beside the JavaScript Node loads (`lib.d.ts` next to
+ * `lib.js`) describes that module, and the JavaScript is the code that
+ * compiles (resolve.ts's projectDtsRuntimeSibling). The checker resolves
+ * the import to the declaration, so the implementation joins the program
+ * as a root. */
+function declarationTwinRoots7(program: ts.Program): string[] {
+  const roots: string[] = [];
+  for (const sf of program.getSourceFiles()) {
+    if (!sf.isDeclarationFile) continue;
+    const sibling = projectDtsRuntimeSibling(sf.fileName);
+    if (sibling !== null) roots.push(sibling);
+  }
+  return roots;
+}
+
 /** The fallback declaration files of the Node modules the program's files
  * name (fallbackModulesNamedIn) that the program does not hold yet. Each
  * file is read as tsgo reads it; the TypeScript libraries and scriptc's own
@@ -1531,6 +1547,7 @@ function loadProgram7(
         ...(nodeTypes === null
           ? fallbackModuleRoots7(program, host)
           : nodeTypesSupplementRoots7(program, host)),
+        ...declarationTwinRoots7(program),
         ...entryPackageProgramRoots7(program, entryPath, packageRoots),
         ...createRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),
@@ -2134,15 +2151,16 @@ export function loadProgram(
     if (probe?.workspaceDir !== undefined)
       registerWorkspacePackage(probe.packageName, probe.workspaceDir);
   }
-  // Declaration-twin hiding is scoped to the entry's own package realm
-  // (see projectDtsRuntimeSibling) — set before the host exists so the
-  // program never sees an out-of-realm twin hidden.
+  // The project package realm (see projectDtsRuntimeSibling) is set before
+  // the host exists, so the twin roots below answer for this program's
+  // entry realm.
   setProjectRealm(entryPath);
-  // Two fs shadows compose: --npm-static's per-package hiding, and the
-  // always-on project declaration-TWIN hiding (a .d.ts beside runtime JS
-  // outside node_modules — the classic typed-JS-library entry — must not exist for
-  // the checker, so its resolution lands on the JS Node actually loads;
-  // resolve.ts answers the same sibling for scriptc's own edges).
+  // --npm-static's per-package hiding: an opted-in package's declaration
+  // entry points must not exist for the checker, so its resolution lands on
+  // the JavaScript Node actually loads. A PROJECT declaration twin (.d.ts
+  // beside runtime JS outside node_modules) is not hidden: TypeScript
+  // resolves the import to the declaration, and the JavaScript joins the
+  // program as the module's implementation (declarationTwinRoots7).
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
   setProgramDefines(opts?.define);
@@ -2176,8 +2194,7 @@ export function loadProgram(
           definedSource(services, path) ??
           undefined,
       ),
-    hideFile: (path: string) =>
-      (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
+    hideFile: (path: string) => npmShadow?.hideFile(path) ?? false,
   };
   const authoredShadow = {
     readFile: (path: string) => voidCasts(path, scriptcManifest(path)),

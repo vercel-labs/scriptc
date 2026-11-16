@@ -6212,6 +6212,10 @@ function buildLibFnSignatures() {
     "assert.deqEnter": { argTypes: [null, null], result: BOOL },
     "assert.deqLeave": { argTypes: [], result: VOID },
     "assert.match": { argTypes: [STRING, REGEX, BOOL, STRING, BOOL], result: VOID },
+    /* expectsError's string-matcher check: a thrown object whose `message`
+     * is the matcher string, or the string itself, throws
+     * ERR_AMBIGUOUS_ARGUMENT; otherwise returns. */
+    "assert.throwsAmbiguous": { argTypes: [DYN, STRING], result: VOID },
     "assert.throwsNone": { argTypes: [BOOL, STRING, BOOL, STRING, BOOL], result: VOID },
     "assert.throwsMismatch": {
       argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],

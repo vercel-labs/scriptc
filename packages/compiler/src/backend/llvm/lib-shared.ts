@@ -613,6 +613,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.deqEnter": "scr_assert_deq_enter",
   "assert.deqLeave": "scr_assert_deq_leave",
   "assert.match": "scr_assert_match",
+  "assert.throwsAmbiguous": "scr_assert_throws_ambiguous",
   "assert.throwsNone": "scr_assert_throws_none",
   "assert.throwsMismatch": "scr_assert_throws_mismatch",
   "assert.throwsRegex": "scr_assert_throws_regex",

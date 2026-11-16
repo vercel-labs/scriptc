@@ -1505,6 +1505,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.throwsNone",
   "assert.throwsMismatch",
   "assert.throwsRegex",
+  "assert.throwsAmbiguous",
   "assert.shapeEnd",
   "assert.unwantedRejection",
   "assert.unwantedError",

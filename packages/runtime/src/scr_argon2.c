@@ -103,6 +103,13 @@ static void blake2b(void *out, size_t outlen, const void *in, size_t inlen) {
 
 #define ARGON2_BLOCK_WORDS 128
 
+/* A derivation whose working set cannot be allocated answers like Node's
+ * failed EVP_KDF setup instead of wrapping the size arithmetic. */
+static void scr_argon2_operation_failed(void) {
+  static const char msg[] = "Failed to initialize Argon2";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_CRYPTO_OPERATION_FAILED");
+}
+
 static uint32_t load32(const unsigned char *p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
          ((uint32_t)p[3] << 24);
@@ -215,8 +222,18 @@ ScrBytes *scr_argon2_hash(const char *algorithm, const unsigned char *pwd, size_
   uint32_t lane_length = m / parallelism;
   uint32_t segment_length = lane_length / 4;
   /* H0 */
-  /* Six 32-bit parameters and four 32-bit length words, then the inputs. */
-  size_t h0_len = 4 * 10 + pwd_len + salt_len + secret_len + ad_len;
+  /* Six 32-bit parameters and four 32-bit length words, then the inputs.
+   * The sizes are added and multiplied with overflow checks: a 32-bit
+   * size_t wraps above 4 GiB, and a wrapped buffer would be overflowed. */
+  size_t input_len = pwd_len;
+  if (salt_len > SIZE_MAX - input_len || secret_len > SIZE_MAX - input_len - salt_len ||
+      ad_len > SIZE_MAX - input_len - salt_len - secret_len ||
+      input_len + salt_len + secret_len + ad_len > SIZE_MAX - 4 * 10) {
+    scr_argon2_operation_failed();
+    return NULL;
+  }
+  input_len += salt_len + secret_len + ad_len;
+  size_t h0_len = 4 * 10 + input_len;
   unsigned char *h0_in = malloc(h0_len ? h0_len : 1);
   if (!h0_in) scr_trap("scriptc: out of memory\n");
   unsigned char *q = h0_in;
@@ -238,6 +255,10 @@ ScrBytes *scr_argon2_hash(const char *algorithm, const unsigned char *pwd, size_
   blake2b(h0, 64, h0_in, h0_len);
   free(h0_in);
 
+  if ((size_t)m > SIZE_MAX / (ARGON2_BLOCK_WORDS * sizeof(uint64_t))) {
+    scr_argon2_operation_failed();
+    return NULL;
+  }
   uint64_t *blocks = calloc((size_t)m * ARGON2_BLOCK_WORDS, sizeof(uint64_t));
   if (!blocks) scr_trap("scriptc: out of memory\n");
   for (uint32_t l = 0; l < parallelism; l++) {
@@ -376,6 +397,12 @@ ScrBytes *scr_argon2_hash(const char *algorithm, const unsigned char *pwd, size_
     for (int w = 0; w < ARGON2_BLOCK_WORDS; w++) final_block[w] ^= last[w];
   }
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)tag_len);
+  if (!out) {
+    /* The requested tag length is not addressable on this target; the
+     * RangeError scr_bytes_new raised stays pending. */
+    free(blocks);
+    return NULL;
+  }
   argon2_hprime(out->data, tag_len, (const unsigned char *)final_block, 1024);
   free(blocks);
   return out;

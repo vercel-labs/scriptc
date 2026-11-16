@@ -794,10 +794,15 @@ static void scr_test_cancel_pending(ScrTestCtx *t) {
   }
 }
 
+/* Late registrations, reported when the summary prints: a concurrent
+ * sibling buffers its subtree's lines, and Node reports a late failure at
+ * the end of the run, so it cannot be printed on arrival. */
+static SCR_TL ScrTestCtx **scr_test_late = NULL;
+static SCR_TL size_t scr_test_nlate = 0, scr_test_late_cap = 0;
+
 /* A test registered under a parent that already finished (a timer callback
  * the body left behind): Node attaches it to the root and fails it with
- * this message. The runtime reports it on arrival, after the summary's
- * results, where Node's reporter reaches it at exit. */
+ * this message, reporting it when the run ends. */
 static void scr_test_late_failure(ScrTestCtx *t) {
   static const char msg[] = "test could not be started because its parent finished";
   scr_test_child_add(scr_test_root, t);
@@ -807,7 +812,21 @@ static void scr_test_late_failure(ScrTestCtx *t) {
   t->start_ms = scr_now_ms();
   t->dur_ms = 0;
   t->state = SCR_TS_FAIL;
-  scr_test_report_result(t);
+  if (scr_test_nlate == scr_test_late_cap) {
+    scr_test_late_cap = scr_test_late_cap ? scr_test_late_cap * 2 : 4;
+    scr_test_late = realloc(scr_test_late, scr_test_late_cap * sizeof *scr_test_late);
+    if (!scr_test_late) scr_test_oom();
+  }
+  scr_test_late[scr_test_nlate++] = t;
+}
+
+/* Prints the late failures' result lines, in registration order, before the
+ * summary they belong above. */
+static void scr_test_flush_late(void) {
+  for (size_t i = 0; i < scr_test_nlate; i++) scr_test_report_result(scr_test_late[i]);
+  free(scr_test_late);
+  scr_test_late = NULL;
+  scr_test_nlate = scr_test_late_cap = 0;
 }
 
 /* A cancelled subtest's afterEach chain and t.after hooks, on their own
@@ -1974,6 +1993,7 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
 static void scr_test_print_summary(void) {
   ScrTestCtx *root = scr_test_root;
   if (!root) return;
+  scr_test_flush_late();
   scr_test_count(root);
   scr_test_info_line("tests", (double)scr_test_ct_tests);
   scr_test_info_line("suites", (double)scr_test_ct_suites);
@@ -2134,7 +2154,7 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
    * calls attach here. Skipped suites keep their bodies unrun. A body that
    * throws fails the suite (Node fails it and cancels its children), so the
    * error is captured here instead of escaping the registration. */
-  if (cb && (int)mode != SCR_TEST_SKIP) {
+  if (cb && (int)mode != SCR_TEST_SKIP && !t->only_false) {
     ScrTestCtx *prev = scr_test_parent_get();
     scr_test_parent_set(t);
     ScrAlsCtx *outer = scr_test_scope_enter(t);

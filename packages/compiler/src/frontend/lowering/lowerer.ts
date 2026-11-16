@@ -19209,8 +19209,13 @@ export class Lowerer {
 
   /** A key conversion may rebox or upcast a reference, but must never copy
    * its referent. Apply the ordinary checked narrowing to absent arms from
-   * runtime-optional reads; only present reference arms participate here. */
-  lowerCollectionKey(node: ts.Expression, expected: IrType): IrExpr {
+   * runtime-optional reads; only present reference arms participate here.
+   * `seed` marks a collection CONSTRUCTOR's seed, which is lowered at the
+   * array (or fixed tuple) type it is declared with rather than at a single
+   * key: the value is the sequence of keys, so the checked cast that builds
+   * it is the ordinary one (`u as Key[]`, which preserves the identity of
+   * every reference it holds), not a key conversion. */
+  lowerCollectionKey(node: ts.Expression, expected: IrType, opts?: { seed?: boolean }): IrExpr {
     if (expected.kind === "dyn") {
       const value = this.lowerExprExpecting(node, expected);
       // The Error boundary snapshots mutable fields, so its copy is no live
@@ -19280,8 +19285,9 @@ export class Lowerer {
         const from = this.mapTypeOf(this.typeOf(asserted.expression));
         const to = this.mapTypeOf(this.checker.getTypeFromTypeNode(asserted.type));
         if (
-          from?.kind === "dyn" ||
-          (from?.kind === "record" && to?.kind === "record" && !typeEquals(from, to))
+          opts?.seed !== true &&
+          (from?.kind === "dyn" ||
+            (from?.kind === "record" && to?.kind === "record" && !typeEquals(from, to)))
         ) {
           this.noLowering(
             "collection key assertion requiring a structural copy or dynamic conversion",

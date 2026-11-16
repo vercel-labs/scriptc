@@ -1259,6 +1259,12 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
     scr_throw_domex("SyntaxError", "Usages cannot be empty when creating a key.");
     goto done;
   }
+  /* Node derives an HMAC key length from the hash only for SHA-1 and
+   * SHA-2; a SHA-3 hash needs an explicit length. */
+  if (hmac && !algorithm.has_length && strncmp(algorithm.hash, "SHA3-", 5) == 0) {
+    scr_throw_domex("NotSupportedError", "Explicit algorithm length member is required");
+    goto done;
+  }
   double length = algorithm.has_length ? algorithm.length
                   : strcmp(algorithm.hash, "SHA-384") == 0 || strcmp(algorithm.hash, "SHA-512") == 0
                       ? 1024

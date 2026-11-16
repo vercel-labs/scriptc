@@ -4787,6 +4787,11 @@ export class Lowerer {
   /** True while re-lowering a base function's 2nd+ instance: the same source
    * statements were already counted for the first instance. */
   suppressStats = false;
+  /** True inside a capture buffer whose diagnostics are dropped (the
+   * prototype view's dynamic-receiver attempt): a statement that refuses
+   * there is not the program's lowering — the member lowers again over its
+   * own receiver — so coverage does not count it as a failed statement. */
+  discardedCapture = false;
   /** Callback literals passed straight to an error-first zlib or crypto
    * function: only that function's callback adapter calls them
    * (lowerUndefinedResultBody). */
@@ -6774,6 +6779,7 @@ export class Lowerer {
       fixed("fspGlobHead", () => this.fspGlobHead),
       fixed("instantiationContext", () => this.instantiationContext),
       fixed("suppressStats", () => this.suppressStats),
+      fixed("discardedCapture", () => this.discardedCapture),
       fixed("emitSpecCtx", () => this.emitSpecCtx),
       fixed("assertCallOptions", () => this.assertCallOptions),
       fixed("currentClass", () => this.currentClass),

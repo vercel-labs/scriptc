@@ -1091,7 +1091,11 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           if (e instanceof InternalCompilerError) noteCrashSite(e, () => locOf(stmt));
           throw e;
         }
-        if (!lowerer.suppressStats) lowerer.countStatementFailed(stmt, sf?.fileName);
+        // A capture buffer that drops its diagnostics (the prototype view's
+        // dynamic-receiver attempt) owns this refusal: the member lowers again
+        // over its own receiver, and the program judges nothing here.
+        if (!lowerer.suppressStats && !lowerer.discardedCapture)
+          lowerer.countStatementFailed(stmt, sf?.fileName);
         // Localized failure (report-only): the statement's committed
         // diagnostics that are not themselves type failures or rejected
         // declarations are cascades of the rejected declarations it used.

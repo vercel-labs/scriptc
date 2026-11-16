@@ -4222,6 +4222,50 @@ ScrBytes *scr_buffer_pool_adopt(ScrBytes *b) {
   return v;
 }
 
+/* Buffer.copyBytesFrom(view[, offset[, length]]): Node's copyBytesFrom —
+ * a pooled Buffer holding a copy of the view's underlying bytes over the
+ * element window [offset, min(offset + length, view.length)), so a wider
+ * typed array copies view.length * BYTES_PER_ELEMENT bytes. `mask` bit 0
+ * marks a supplied offset and bit 1 a supplied length; an absent one takes
+ * Node's default (0, and the rest of the view). Each supplied position is
+ * Node's validateInteger (an integer >= 0, ERR_OUT_OF_RANGE otherwise),
+ * checked in argument order, and an empty view answers an empty Buffer
+ * before any position is read. A DataView is not a TypedArray: Node
+ * reports ERR_INVALID_ARG_TYPE for it. NULL with the exception pending. */
+ScrBytes *scr_buffer_copy_bytes_from(const ScrBytes *view, double offset, double length,
+                                     double mask) {
+  SCR_BYTES_SNAPSHOT(view);
+  size_t given = (size_t)mask;
+  if (view->is_data_view) {
+    char msg[96];
+    int mlen = snprintf(msg, sizeof msg,
+                        "The \"view\" argument must be an instance of TypedArray. Received an instance of %s",
+                        "DataView");
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)mlen, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  double view_length = (double)view->len;
+  if (view_length == 0) return scr_bytes_new(SCR_BYTES_U8, 0);
+  double start = 0, end = view_length;
+  if ((given & 1) != 0) {
+    if (!scr_bytes_validate_off("offset", offset, 9007199254740991.0)) return NULL;
+    if (offset >= view_length) return scr_bytes_new(SCR_BYTES_U8, 0);
+    start = offset;
+  }
+  if ((given & 2) != 0) {
+    if (!scr_bytes_validate_off("length", length, 9007199254740991.0)) return NULL;
+    end = start + length < view_length ? start + length : view_length;
+  }
+  if (end <= start) return scr_bytes_new(SCR_BYTES_U8, 0);
+  size_t element = scr_bytes_elem_size(view->elem);
+  size_t from = (size_t)start * element;
+  size_t count = (size_t)(end - start) * element;
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)count);
+  if (view->shared) scr_bytes_raw_in(view, out->data, view->data + from, count);
+  else memcpy(out->data, view->data + from, count);
+  return scr_buffer_pool_adopt(out);
+}
+
 void scr_buffer_pool_reset(void) {
   scr_bytes_release(scr_pool_slab);
   scr_pool_slab = NULL;

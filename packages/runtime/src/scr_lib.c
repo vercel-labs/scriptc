@@ -13572,6 +13572,10 @@ static ScrDyn *scr_key_object_new(const unsigned char *data, size_t len) {
   return box;
 }
 
+ScrDyn *scr_crypto_secret_key_object_from_bytes(const unsigned char *data, size_t len) {
+  return scr_key_object_new(data, len);
+}
+
 /* The key bytes of a KeyObject value, or NULL for any other value. */
 const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
   if (value->kind != SCR_DYN_HANDLE || value->v.handle.tag != SCR_DYNH_KEY_OBJECT) return NULL;
@@ -13581,6 +13585,12 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
 }
 
 void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
+
+/* KeyObject.toCryptoKey and KeyObject.from; scr_webcrypto.c installs both
+ * when WebCrypto is linked. */
+ScrDyn *(*scr_crypto_to_crypto_key)(const ScrDyn *key, const ScrDyn *const *args, size_t argc) =
+    NULL;
+ScrDyn *(*scr_crypto_key_object_from)(const ScrDyn *crypto_key) = NULL;
 
 int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes, size_t *len) = NULL;
 
@@ -13681,9 +13691,13 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
     return scr_dyn_new_bool(equal && diff == 0);
   }
   if (strcmp(method, "toCryptoKey") == 0) {
-    static const char message[] = "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return NULL;
+    if (!scr_crypto_to_crypto_key) {
+      static const char message[] =
+          "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+    return scr_crypto_to_crypto_key(self, args, argc);
   }
   scr_lib_throw_not_a_function(what);
   return NULL;

@@ -5,11 +5,14 @@ import { type Lowerer, ladderFenceExpr } from "../lowerer.js";
 import { lowerFsPath } from "./fs-paths.js";
 import { fsStreamOptionsMayHoldSignal } from "./fs-streams.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import {
   builtinModuleFnOf,
   FS_READDIR_DOCUMENTED_OPTIONS,
   FS_WATCH_DOCUMENTED_OPTIONS,
   FS_WATCH_FILE_DOCUMENTED_OPTIONS,
+  FS_WATCH_PROMISES_DOCUMENTED_OPTIONS,
+  FS_WATCH_PROMISES_OPTION_HINTS,
   fenceOrDropOptionKey,
 } from "../surfaces.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
@@ -28,6 +31,7 @@ import {
   type IrType,
   STATS_T,
   STRING,
+  WATCHEVENTS_T,
   type SrcLoc,
   VOID,
   arrayOf,
@@ -41,6 +45,13 @@ import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 type FsSyncBufferWindowSource =
   | { kind: "options"; node: ts.Expression | undefined }
   | { kind: "offset"; node: ts.Expression };
+
+/** The documented members of a FileHandle read or write options record that
+ * have no lowering: `flush` (fsync after the write) and `signal` (an
+ * abortable operation). `encoding` selects the codec, and `mode` and `flag`
+ * are read and ignored over an already-open handle. Any other key drops like
+ * Node drops it. */
+const FILE_HANDLE_DATA_FENCED_OPTIONS: ReadonlySet<string> = new Set(["flush", "signal"]);
 
 /** Normalize fs.readSync/fs.writeSync's shorthand and inline-options buffer
  * forms into the existing fixed-width descriptor IR. fd and buffer bind
@@ -620,6 +631,78 @@ export function lowerFileHandleMethodCall(
     }
     return { value: lowerer.coerceInto(node ?? call, value, F64), defaulted: boolLit(false, loc) };
   };
+  /* The encoding a FileHandle read or write names: the bare encoding string,
+   * the options record's `encoding` member, or the utf8 default. Node
+   * validates the name and decodes with it, and every BufferEncoding is
+   * lowered, so any string-valued expression passes. The record's other
+   * documented members take Node's own stance over an open handle — mode and
+   * flag are ignored there — while flush and signal have no lowering; an
+   * undocumented key drops like Node drops it. */
+  /* Whether an encoding-valued expression can reach the decoder: every
+   * non-nullish constituent is a string (a literal name and the
+   * BufferEncoding union both count). */
+  const encodingLike = (node: ts.Expression): boolean => {
+    const nodeType = lowerer.typeOf(node);
+    const parts: readonly ts.Type[] = nodeType.isUnionType()
+      ? ts.constituentTypes(nodeType)
+      : [nodeType];
+    return parts.every(
+      (t) =>
+        (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
+        (t.flags & ts.TypeFlags.StringLike) !== 0,
+    );
+  };
+  const dataEncoding = (node: ts.Expression | undefined): IrExpr => {
+    const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
+    if (!node) return dflt;
+    if (!ts.isObjectLiteralExpression(node)) {
+      if (!encodingLike(node)) {
+        lowerer.noLowering(
+          `FileHandle.${name} with this encoding`,
+          node,
+          "the encoding is a BufferEncoding name",
+        );
+      }
+      return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
+    }
+    let encoding: IrExpr = dflt;
+    for (const prop of node.properties.nodes) {
+      const member = optionMember(prop);
+      if (member === null) {
+        lowerer.noLowering(`FileHandle.${name} with a non-plain options member`, prop);
+      }
+      if (member.name === "encoding") {
+        const value = member.value;
+        if (!encodingLike(value)) {
+          lowerer.noLowering(
+            `FileHandle.${name} with this encoding`,
+            value,
+            "the encoding is a BufferEncoding name",
+          );
+        }
+        // Node reads the member's truthiness: null and undefined name the
+        // default codec. The helper evaluates the expression exactly once
+        // (its side effects included) and substitutes utf8 for the nullish
+        // arms, so a runtime-nullish encoding behaves like Node's.
+        encoding = lowerBuiltinOptionalDefault(lowerer, value, STRING, dflt, true);
+        continue;
+      }
+      fenceOrDropOptionKey(
+        lowerer,
+        prop,
+        member.name,
+        `FileHandle.${name}`,
+        FILE_HANDLE_DATA_FENCED_OPTIONS,
+        "the record carries encoding; mode and flag are ignored over an open handle, and flush and signal have no lowering",
+      );
+    }
+    return encoding;
+  };
+
+  /* FileHandle.write's string form: the fixed-width write writes the
+   * string's utf8 bytes, so any other encoding leaves this lowering and
+   * takes the checked-dynamic write, which encodes with the name Node
+   * validates. */
   const utf8 = (node: ts.Expression | undefined): IrExpr => {
     const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
     if (!node) return dflt;
@@ -636,7 +719,7 @@ export function lowerFileHandleMethodCall(
       lowerer.noLowering(
         `FileHandle.${name} with a non-utf8 encoding`,
         node,
-        "only utf8 data is supported",
+        "the fixed-width string write is utf8; another encoding takes the checked-dynamic write",
       );
     }
     return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
@@ -660,6 +743,21 @@ export function lowerFileHandleMethodCall(
       kind: "libCall",
       fn: name === "truncate" ? "fileHandle.truncate" : "fileHandle.chmod",
       args: [receiver(), num(call.arguments.nodes[0], 0).value],
+      type: promise(VOID),
+      loc,
+    };
+  }
+  if (name === "chown") {
+    if (call.arguments.nodes.length !== 2)
+      lowerer.noLowering(`FileHandle.chown with ${call.arguments.nodes.length} arguments`, call);
+    return {
+      kind: "libCall",
+      fn: "fileHandle.chown",
+      args: [
+        receiver(),
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64),
+        lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64),
+      ],
       type: promise(VOID),
       loc,
     };
@@ -715,7 +813,7 @@ export function lowerFileHandleMethodCall(
     }
     const type = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (type?.kind !== "promise") lowerer.badType(call, lowerer.typeOf(call));
-    const encoding = utf8(call.arguments.nodes[0]);
+    const encoding = dataEncoding(call.arguments.nodes[0]);
     if (typeEquals(type.inner, BYTES_U8)) {
       return {
         kind: "libCall",
@@ -743,7 +841,7 @@ export function lowerFileHandleMethodCall(
     const dataT = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     // Evaluate a supplied utf8 encoding even for Buffer data, matching
     // Node's argument order; it does not affect the bytes.
-    const encoding = utf8(call.arguments.nodes[1]);
+    const encoding = dataEncoding(call.arguments.nodes[1]);
     if (dataT?.kind === "string") {
       return {
         kind: "libCall",
@@ -1444,6 +1542,148 @@ export function lowerFsWatchFileCall(
     fn: "fs.watchFile",
     args: [path, interval ?? numLit(5007, loc), persistent ?? boolLit(true, loc), cb],
     type: VOID,
+    loc,
+  };
+}
+
+/** `fsPromises.watch(path[, options])` → the async-iterator libCall the
+ * `for await` lowering drains (scr_watch_async.c). The options record
+ * follows the options-record stance: `persistent: true/false` and
+ * `encoding: "utf8"` are accepted, the documented keys this surface cannot
+ * model fence by name (recursive's non-native walker, signal's
+ * AbortSignal, ignore's matcher, and maxQueue/overflow's overflow policy),
+ * and undocumented keys drop like Node. Returns null for any untyped shape
+ * so the checked-dynamic ladder keeps its current IR. */
+/** True when the call is the iteration expression of a `for await` loop —
+ * the one position Node's async generator is consumed in. A standalone
+ * `fsPromises.watch(path)` answers an iterator Node never starts (the
+ * process exits), so lowering it would open a watch nothing closes. */
+function isForAwaitSource(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  for (;;) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) return false;
+    if (ts.isForOfStatement(parent)) {
+      return parent.awaitModifier !== undefined && parent.expression === node;
+    }
+    if (
+      (ts.isParenthesizedExpression(parent) ||
+        ts.isAsExpression(parent) ||
+        ts.isTypeAssertion(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isNonNullExpression(parent)) &&
+      (parent as ts.Expression).expression === node
+    ) {
+      node = parent;
+      continue;
+    }
+    return false;
+  }
+}
+
+export function lowerFsPromisesWatchCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (!isForAwaitSource(expr)) return null;
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 1 || nodes.length > 2 || nodes.some(ts.isSpreadElement)) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(nodes[0]!))?.kind !== "string") return null;
+  const path = lowerer.lowerExprExpecting(nodes[0]!, STRING);
+  let persistent: IrExpr | null = null;
+  let maxQueue: IrExpr | null = null;
+  let overflowError: IrExpr | null = null;
+  if (nodes.length === 2) {
+    const options = nodes[1]!;
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "fsPromises.watch with a non-literal options value",
+        options,
+        'the options record is a literal: persistent, encoding: "utf8", maxQueue and overflow: "ignore" | "error" are the accepted entries',
+      );
+    }
+    for (const prop of options.properties.nodes) {
+      if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
+        lowerer.noLowering(
+          "fsPromises.watch options with computed keys or spreads",
+          prop,
+          "each option must be a plain `name: value` entry with a literal key",
+        );
+      }
+      if (!ts.isIdentifier(prop.name) && !ts.isStringLiteral(prop.name)) {
+        lowerer.noLowering(
+          "fsPromises.watch options with computed keys",
+          prop,
+          "each option must be a plain `name: value` entry with a literal key",
+        );
+      }
+      const key = prop.name.text;
+      const value = ts.isPropertyAssignment(prop)
+        ? prop.initializer
+        : ts.isShorthandPropertyAssignment(prop)
+          ? prop.name
+          : null;
+      if (key === "persistent" && value !== null) {
+        persistent = lowerer.lowerExprExpecting(value, BOOL);
+        continue;
+      }
+      if (key === "maxQueue" && value !== null) {
+        maxQueue = lowerer.lowerExprExpecting(value, F64);
+        continue;
+      }
+      if (key === "overflow" && value !== null) {
+        // Node's overflow policy past maxQueue: "error" fails the
+        // iteration, "ignore" drops the event with a warning.
+        const mode = withoutParenthesesAssertionsNonNull(value);
+        const text = mode.kind === ts.SyntaxKind.StringLiteral ? (mode.text ?? null) : null;
+        if (text === "error") overflowError = boolLit(true, loc);
+        else if (text === "ignore") overflowError = boolLit(false, loc);
+        else {
+          lowerer.noLowering(
+            "fsPromises.watch with this overflow policy",
+            value,
+            'overflow: "error" and overflow: "ignore" are the two policies',
+          );
+        }
+        continue;
+      }
+      if (key === "encoding" && value !== null) {
+        // Node's `encoding: "utf8"` is the utf8 the record carries; every
+        // other codec (and "buffer") would change the entry names.
+        const enc = withoutParenthesesAssertionsNonNull(value);
+        const text = enc.kind === ts.SyntaxKind.StringLiteral ? (enc.text ?? null) : null;
+        if (text !== null && (text.toLowerCase() === "utf8" || text.toLowerCase() === "utf-8")) {
+          continue;
+        }
+        lowerer.noLowering(
+          "fsPromises.watch with this encoding",
+          value,
+          'the entry names are strings: encoding: "utf8" is the accepted value',
+        );
+      }
+      fenceOrDropOptionKey(
+        lowerer,
+        prop,
+        key,
+        "fsPromises.watch",
+        FS_WATCH_PROMISES_DOCUMENTED_OPTIONS,
+        'persistent: true/false, encoding: "utf8", maxQueue and overflow: "ignore" | "error" are the accepted options',
+        FS_WATCH_PROMISES_OPTION_HINTS,
+      );
+      // An undocumented key, dropped like Node drops it.
+    }
+  }
+  return {
+    kind: "libCall",
+    fn: "fsp.watch",
+    args: [
+      path,
+      persistent ?? boolLit(true, loc),
+      maxQueue ?? numLit(2048, loc),
+      overflowError ?? boolLit(false, loc),
+    ],
+    type: WATCHEVENTS_T,
     loc,
   };
 }

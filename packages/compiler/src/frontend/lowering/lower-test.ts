@@ -100,6 +100,9 @@ interface TestOptions {
   todo: boolean;
   todoMsg: IrExpr | null;
   only: boolean;
+  /** { expectFailure }: the test passes only if its body throws. A string
+   * reason behaves as true (Node's matcher forms are refused). */
+  expectFailure: boolean;
   /** The { plan } count, -1 without one. */
   plan: number;
   /** The { timeout } in ms, null without one. */
@@ -117,6 +120,7 @@ const noOptions = (): TestOptions => ({
   todo: false,
   todoMsg: null,
   only: false,
+  expectFailure: false,
   plan: -1,
   timeout: null,
   concurrency: null,
@@ -128,6 +132,8 @@ const noOptions = (): TestOptions => ({
  * method twins override the options of the same name, skip wins over
  * todo, and the message is the skip string, else the todo string. */
 function directiveOf(opts: TestOptions, methodMode: number, loc: SrcLoc): [IrExpr, IrExpr] {
+  // `test.expectFailure(...)`: the method twin of { expectFailure: true }.
+  if (methodMode === 4) opts.expectFailure = true;
   if (methodMode === 1) {
     opts.skip = true;
     opts.skipMsg = null;
@@ -140,9 +146,13 @@ function directiveOf(opts: TestOptions, methodMode: number, loc: SrcLoc): [IrExp
   return [numLit(mode, loc), opts.skipMsg ?? opts.todoMsg ?? strLit("", loc)];
 }
 
-/** Flags 8 and 16: a { timeout } and a { concurrency } are given. */
+/** Flags 4, 8, 16 and 64: { only }, a { timeout }, a { concurrency }, and
+ * { expectFailure }. */
 const optionFlags = (opts: TestOptions): number =>
-  (opts.only ? 4 : 0) | (opts.timeout ? 8 : 0) | (opts.concurrency ? 16 : 0);
+  (opts.only ? 4 : 0) |
+  (opts.timeout ? 8 : 0) |
+  (opts.concurrency ? 16 : 0) |
+  (opts.expectFailure ? 64 : 0);
 
 /** Evaluates a non-literal option value into a hidden local, so option
  * values run in source order. */
@@ -258,6 +268,32 @@ function lowerTestOptions(
       }
     } else if (name === "timeout" && !suite) {
       out.timeout = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), locOf(init));
+    } else if (name === "expectFailure") {
+      if (init.kind === ts.SyntaxKind.TrueKeyword) {
+        out.expectFailure = true;
+      } else if (init.kind === ts.SyntaxKind.FalseKeyword) {
+        out.expectFailure = false;
+      } else if (
+        ts.isStringLiteralLike(init) ||
+        lowerer.mapTypeOf(lowerer.typeOf(init))?.kind === "string"
+      ) {
+        /* A reason string behaves as true. A computed one is evaluated for
+         * its side effects; the text changes nothing we print. */
+        if (!ts.isStringLiteralLike(init)) {
+          out.pre.push({
+            kind: "exprStmt",
+            expr: lowerer.lowerExprExpecting(init, STRING),
+            loc: locOf(init),
+          });
+        }
+        out.expectFailure = true;
+      } else {
+        lowerer.noLowering(
+          `${what} with an expectFailure matcher`,
+          init,
+          "expectFailure takes true, false or a string reason; Node's matcher forms (RegExp, function, object, Error, { label, match }) have no lowering",
+        );
+      }
     } else {
       lowerer.noLowering(
         `${what} option '${name}'`,
@@ -564,7 +600,10 @@ function lowerSuite(
   const [mode, msg] = directiveOf(opts, methodMode, loc);
   // describe.only and { only: true } mark the suite (flag 4, as for tests).
   const flags = numLit(
-    optionFlags(opts) | (methodMode === 3 ? 4 : 0) | (cb.type.params.length === 1 ? 2 : 0),
+    optionFlags(opts) |
+      (methodMode === 3 ? 4 : 0) |
+      (methodMode === 4 ? 64 : 0) |
+      (cb.type.params.length === 1 ? 2 : 0),
     loc,
   );
   return withOptionValues(
@@ -635,14 +674,16 @@ export function lowerNodeTestModuleCall(
     case "skip":
     case "todo":
     case "only":
+    case "expectFailure":
       // The default-import method twins (`test.skip(...)` where `test`
-      // is the module object).
+      // is the module object), and the top-level `expectFailure(...)`
+      // export (mode 4 marks the registration instead of a directive).
       return lowerRegistration(
         lowerer,
         expr,
         `test.${bi.member}(...)`,
         loc,
-        bi.member === "skip" ? 1 : bi.member === "todo" ? 2 : 3,
+        bi.member === "skip" ? 1 : bi.member === "todo" ? 2 : bi.member === "only" ? 3 : 4,
         null,
       );
     case "describe":
@@ -953,27 +994,27 @@ export function lowerTestMethodCall(
     if (bi && bi.module === "test") {
       if (
         (bi.member === "test" || bi.member === "it") &&
-        (member === "skip" || member === "todo" || member === "only")
+        (member === "skip" || member === "todo" || member === "only" || member === "expectFailure")
       ) {
         return lowerRegistration(
           lowerer,
           call,
           `${bi.member}.${member}(...)`,
           loc,
-          member === "skip" ? 1 : member === "todo" ? 2 : 3,
+          member === "skip" ? 1 : member === "todo" ? 2 : member === "only" ? 3 : 4,
           null,
         );
       }
       if (
         (bi.member === "describe" || bi.member === "suite") &&
-        (member === "skip" || member === "todo" || member === "only")
+        (member === "skip" || member === "todo" || member === "only" || member === "expectFailure")
       ) {
         return lowerSuite(
           lowerer,
           call,
           `${bi.member}.${member}(...)`,
           loc,
-          member === "skip" ? 1 : member === "todo" ? 2 : 3,
+          member === "skip" ? 1 : member === "todo" ? 2 : member === "only" ? 3 : 4,
         );
       }
       if (bi.member === "mock") {

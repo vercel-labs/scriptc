@@ -7,6 +7,10 @@
  * interleaves with timers or other fibers — observable only in concurrent
  * code. readFile is utf8-only, like readFileSync. */
 declare module "fs/promises" {
+  /* fs/promises.constants IS the fs.constants group (Node re-exports the
+   * same object). */
+  export const constants: typeof import("node:fs").constants;
+
   export interface FileReadResult<T extends Uint8Array> {
     bytesRead: number;
     buffer: T;
@@ -59,6 +63,7 @@ declare module "fs/promises" {
     datasync(): Promise<void>;
     truncate(len?: number): Promise<void>;
     chmod(mode: number): Promise<void>;
+    chown(uid: number, gid: number): Promise<void>;
     utimes(atime: number | string | Date, mtime: number | string | Date): Promise<void>;
     readv<T extends Uint8Array[]>(
       buffers: T,
@@ -96,10 +101,30 @@ declare module "fs/promises" {
       position?: number | null,
       encoding?: "utf8" | "utf-8" | null,
     ): Promise<FileWriteResult<string>>;
-    readFile(options?: null): Promise<Buffer>;
-    readFile(encoding: "utf8" | "utf-8"): Promise<string>;
-    writeFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
-    appendFile(data: string | ScriptcBufferView, encoding?: "utf8" | "utf-8" | null): Promise<void>;
+    /* readFile's options: the record's encoding (or the bare encoding
+     * name) selects the codec, and a nullish encoding answers the bytes.
+     * `flag` is read off the record and ignored over an open handle. */
+    readFile(options?: { encoding?: null; flag?: string | number } | null): Promise<Buffer>;
+    readFile(
+      options: { encoding: BufferEncoding; flag?: string | number } | BufferEncoding,
+    ): Promise<string>;
+    /* writeFile and appendFile encode string data with the record's
+     * encoding (or the bare encoding name); mode and flag are ignored over
+     * an open handle and flush fences at the call site. */
+    writeFile(
+      data: string | ScriptcBufferView,
+      options?:
+        | BufferEncoding
+        | { encoding?: BufferEncoding | null; mode?: number | string; flag?: string | number }
+        | null,
+    ): Promise<void>;
+    appendFile(
+      data: string | ScriptcBufferView,
+      options?:
+        | BufferEncoding
+        | { encoding?: BufferEncoding | null; mode?: number | string; flag?: string | number }
+        | null,
+    ): Promise<void>;
     stat(): Promise<import("node:fs").Stats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
@@ -231,6 +256,21 @@ declare module "fs/promises" {
     path: string | URL,
     options?: import("node:fs").OpenDirOptions,
   ): Promise<import("node:fs").Dir>;
+  /** One entry of fsPromises.watch's iteration: the event kind and the
+   * entry name the platform reported. */
+  export interface FileChangeInfo {
+    eventType: string;
+    filename: string | null;
+  }
+  export interface WatchOptions {
+    persistent?: boolean;
+    recursive?: boolean;
+    encoding?: string;
+  }
+  export function watch(
+    filename: string | URL,
+    options?: WatchOptions,
+  ): AsyncIterable<FileChangeInfo>;
 }
 
 declare module "node:fs/promises" {

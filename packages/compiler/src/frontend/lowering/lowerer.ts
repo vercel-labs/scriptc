@@ -8699,7 +8699,21 @@ export class Lowerer {
   ): ts.Symbol | null {
     const moduleSymbol = this.checker.getSymbolAtLocation(module);
     if (moduleSymbol === undefined) return null;
-    let exported = moduleSymbol.getExports().get(ts.escapedSymbolName(name));
+    // The RESOLVED export table: a star re-export (`export * from
+    // "./impl.js"`) contributes to it, while the module symbol's own exports
+    // hold only its declarations.
+    let exported = this.checker
+      .getExportsOfModule(moduleSymbol)
+      .find((resolved) => ts.symbolName(resolved) === name);
+    if (exported === undefined) {
+      exported = moduleSymbol.getExports().get(ts.escapedSymbolName(name));
+    }
+    if (exported === undefined) {
+      // A CommonJS module whose whole export is a table (`module.exports =
+      // { f }`): the named import is the table's property, re-resolved to
+      // the local declaration the property references.
+      exported = this.cjsTableExportSymbolOf(moduleSymbol, name) ?? undefined;
+    }
     if (exported === undefined || exported === symbol) return null;
     // The implementation may RE-EXPORT the name (`export { greet } from
     // "./impl.js"`) of a module that also re-exports it: an alias owns no
@@ -8711,6 +8725,29 @@ export class Lowerer {
       exported = target;
     }
     return exported !== undefined && exported !== symbol ? exported : null;
+  }
+
+  /** The property symbol a CommonJS module's whole export table
+   * (`module.exports = { f }`) holds under `name`, re-resolved to the local
+   * declaration it references. Null when the module has no table export or
+   * the table has no such property. */
+  private cjsTableExportSymbolOf(moduleSymbol: ts.Symbol, name: string): ts.Symbol | null {
+    const exportEquals = moduleSymbol.getExports().get(ts.escapedSymbolName("export="));
+    if (exportEquals === undefined) return null;
+    const target =
+      (exportEquals.flags & ts.SymbolFlags.Alias) !== 0
+        ? this.checker.getAliasedSymbol(exportEquals)
+        : exportEquals;
+    if (target === undefined) return null;
+    let type: ts.Type;
+    try {
+      type = this.checker.getTypeOfSymbol(target);
+    } catch {
+      return null;
+    }
+    const property = this.checker.getPropertyOfType(type, name);
+    if (property === undefined) return null;
+    return this.cjsExportValueSymbol(property) ?? property;
   }
 
   /** The implementation's class declaration for a class declared in a

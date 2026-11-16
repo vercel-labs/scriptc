@@ -7,6 +7,8 @@
   "<repo>/tests/corpus/sibling-declaration-types/widget.d.cts",
   "<repo>/tests/corpus/sibling-declaration-types/panel.d.ts",
   "<repo>/tests/corpus/sibling-declaration-types/link.d.ts",
+  "<repo>/tests/corpus/sibling-declaration-types/spread.d.ts",
+  "<repo>/tests/corpus/sibling-declaration-types/table.d.cts",
   "<repo>/tests/corpus/sibling-declaration-types/main.ts"
  ],
  "diags": []

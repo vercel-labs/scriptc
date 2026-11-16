@@ -224,3 +224,48 @@ test(
     );
   },
 );
+
+test(
+  "a star re-export and a CommonJS table export keep their runtime binding",
+  { timeout: 600_000 },
+  async () => {
+    // The implementation either star-re-exports its declarations
+    // (`export * from "./impl.js"`) or assigns a table to
+    // `module.exports`; the module's raw export table lists neither name, so
+    // the resolved export table and the table's property answer instead.
+    const files = {
+      "package.json": '{ "type": "module" }\n',
+      "impl2.js": 'export function greet(name) {\n  return "hi " + name;\n}\n',
+      "star.d.ts": "export declare function greet(name?: string): string;\n",
+      "star.js": 'export * from "./impl2.js";\n',
+      "table.d.cts": "export declare function f(a: number): number;\n",
+      "table.cjs": "function f(a) {\n  return a * 2;\n}\nmodule.exports = { f };\n",
+    };
+    const dir = project({
+      ...files,
+      "main.ts":
+        'import { greet } from "./star.js";\n' +
+        'import { f } from "./table.cjs";\n' +
+        "console.log(greet());\n" +
+        "console.log(f(3));\n",
+    });
+    const result = await build(join(dir, "main.ts"), "star-and-table");
+    expect(messages(result)).toBe("");
+    if (!result.ok) return;
+    const { stdout } = await execFileAsync(result.binaryPath, [], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    expect(stdout).toBe("hi undefined\n6\n");
+
+    const bad = project({
+      ...files,
+      "bad.ts": 'import { f } from "./table.cjs";\nconsole.log(f("x"));\n',
+    });
+    const rejected = await build(join(bad, "bad.ts"), "star-and-table-rejects");
+    expect(rejected.ok).toBe(false);
+    expect(messages(rejected)).toContain(
+      "SC0001: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    );
+  },
+);

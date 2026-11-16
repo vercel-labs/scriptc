@@ -10,6 +10,8 @@ import format from "./format.js";
 import { Widget } from "./widget.cjs";
 import * as panels from "./panel.js";
 import { wave } from "./link.js";
+import { wave as spreadWave } from "./spread.js";
+import { tripled } from "./table.cjs";
 
 console.log(greet({}));
 console.log(greet({ name: "ada" }));
@@ -24,3 +26,7 @@ console.log(Widget({ label: "w" }));
 // re-exports the function its declaration names.
 console.log(panels.Panel({}));
 console.log(wave());
+// An implementation that star-re-exports its declarations, and a CommonJS
+// table export whose sibling declaration types it.
+console.log(spreadWave());
+console.log(tripled(3));

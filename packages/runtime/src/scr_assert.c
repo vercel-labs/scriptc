@@ -677,6 +677,17 @@ static bool scr_assert_same_type_key(const ScrDyn *a, const ScrDyn *b) {
                  a->v.typed_ref.type_key_len);
 }
 
+/* Node compares constructors: the INSTANCE's class, not the static type the
+ * value was boxed through. The type key names the static class, so a derived
+ * instance boxed as its base would differ from the same instance boxed as
+ * itself; the capsule's class ops answer the actual class instead. A
+ * capsule without class ops (a record view) falls back to the type key. */
+static bool scr_assert_same_class(const ScrDyn *a, const ScrDyn *b) {
+  int verdict = scr_dyn_same_typed_class(a, b);
+  if (verdict >= 0) return verdict == 1;
+  return scr_assert_same_type_key(a, b);
+}
+
 static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
   if (a == b) return true;
   if (a->kind == SCR_DYN_PROXY || b->kind == SCR_DYN_PROXY) {
@@ -684,6 +695,11 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
     return false;
   }
   if (a->kind == SCR_DYN_TYPED_REF || b->kind == SCR_DYN_TYPED_REF) {
+    /* The same native object reached through two static types is one JS
+     * value, exactly as Node's identity fast path answers. */
+    if (a->kind == SCR_DYN_TYPED_REF && b->kind == SCR_DYN_TYPED_REF &&
+        a->v.typed_ref.ptr == b->v.typed_ref.ptr)
+      return true;
     bool class_a = scr_assert_class_capsule(a);
     bool class_b = scr_assert_class_capsule(b);
     /* Node's constructor gate runs before both values are compared, and a
@@ -695,7 +711,7 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       if (other->kind == SCR_DYN_HANDLE ||
           (other->kind == SCR_DYN_TYPED_REF && !scr_assert_class_capsule(other)))
         return false;
-      if (class_a && class_b && !scr_assert_same_type_key(a, b)) return false;
+      if (class_a && class_b && !scr_assert_same_class(a, b)) return false;
     }
     ScrDyn *ma = a->kind == SCR_DYN_TYPED_REF
                      ? scr_dyn_typed_ref_materialize(a)
@@ -2349,7 +2365,9 @@ static bool scr_assert_strict_set(ScrMap *a, ScrMap *b) {
   if (!used) scr_trap("scriptc: out of memory\n");
   bool same = true;
   for (size_t i = 0; same && i < bv.len; i++) {
-    if (scr_map_dyn_has(a, bv.items[i], false)) continue;
+    /* Every entry pairs structurally, consuming its partner once: a member
+     * already matched cannot stand in for another (Node's setObjectEquiv
+     * marks the matched slot the same way). */
     bool matched = false;
     for (size_t j = 0; !matched && j < av.len; j++) {
       if (used[j]) continue;
@@ -2376,12 +2394,10 @@ static bool scr_assert_strict_map(ScrMap *a, ScrMap *b) {
   if (!used) scr_trap("scriptc: out of memory\n");
   bool same = true;
   for (size_t i = 0; same && i < bk.len; i++) {
-    if (scr_map_dyn_has(a, bk.items[i], false)) {
-      ScrDyn *item = scr_map_dyn_get(a, bk.items[i]);
-      same = item && scr_assert_dyn_deep_eq(item, bv.items[i]);
-      if (item) scr_dyn_release(item);
-      continue;
-    }
+    /* Keys pair structurally and each pair is consumed once. An identity
+     * shortcut would both pair a key twice and reject a Map whose
+     * structurally equal keys hold each other's values (Node's
+     * mapObjectEquiv matches object keys by structure, not identity). */
     bool matched = false;
     for (size_t j = 0; !matched && j < ak.len; j++) {
       if (used[j]) continue;
@@ -2505,12 +2521,14 @@ static bool scr_assert_partial_bytes(const ScrBytes *x, const ScrBytes *y) {
 static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
   size_t la = a->v.arr.len, lb = b->v.arr.len;
   if (la < lb) return false;
-  /* Equal-length arrays pair element by element: a hole on one side and an
-   * own undefined on the other are different key sets (Node's aligned key
+  /* Equal-length arrays pair element by element. An expected hole imposes
+   * no property requirement (Node skips it), while an expected own element
+   * needs one on the actual side (an actual hole fails the aligned key
    * check). The unequal-length forms below keep Node's subsequence match. */
   if (la == lb) {
     for (size_t i = 0; i < la; i++) {
-      if (scr_dyn_arr_has_index(a, i) != scr_dyn_arr_has_index(b, i)) return false;
+      if (!scr_dyn_arr_has_index(b, i)) continue;
+      if (!scr_dyn_arr_has_index(a, i)) return false;
     }
   }
   const ScrDyn *pb = b->v.arr.properties;

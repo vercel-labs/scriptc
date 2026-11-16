@@ -86,3 +86,43 @@ const looseHoles: unknown = holes;
 const looseUndefs: unknown = undefs;
 console.log("O", outcome(() => assert.deepEqual(looseHoles, looseUndefs)));
 console.log("P", outcome(() => assert.partialDeepStrictEqual(looseHoles, looseUndefs)));
+
+// A derived instance boxed through its base's static type is the same
+// runtime class: the constructor Node compares comes from the instance, not
+// from the static type the value crossed the unknown boundary through.
+class Animal {
+  legs: number;
+  constructor(legs: number) {
+    this.legs = legs;
+  }
+}
+class Bird extends Animal {
+  wings: number;
+  constructor(legs: number, wings: number) {
+    super(legs);
+    this.wings = wings;
+  }
+}
+const boxAsBase = (v: Animal): unknown => v;
+const bird = new Bird(2, 2);
+const birdViaBase = boxAsBase(bird);
+const birdDirect: unknown = bird;
+console.log("Q", outcome(() => assert.deepStrictEqual(birdViaBase, birdDirect)));
+const bird2 = new Bird(2, 2);
+const bird2Direct: unknown = bird2;
+console.log("R", outcome(() => assert.deepStrictEqual(boxAsBase(bird2), bird2Direct)));
+const mammal: unknown = new Animal(2);
+console.log("S", outcome(() => assert.deepStrictEqual(birdViaBase, mammal)));
+const birdThroughBase = boxAsBase(new Bird(4, 2));
+const birdThroughOwnType: unknown = new Bird(4, 2);
+console.log("V", outcome(() => assert.deepStrictEqual(birdThroughBase, birdThroughOwnType)));
+
+// Partial equality: an expected hole imposes no property requirement, while
+// an expected own undefined needs one on the actual side.
+const expectedHole: any = [];
+expectedHole.length = 1;
+const actualUndefined: unknown = [undefined];
+const actualHole: any = [];
+actualHole.length = 1;
+console.log("T", outcome(() => assert.partialDeepStrictEqual(actualUndefined, expectedHole as unknown)));
+console.log("U", outcome(() => assert.partialDeepStrictEqual(actualHole as unknown, actualUndefined)));

@@ -83,3 +83,29 @@ console.log("Q", outcome(() => assert.deepStrictEqual(yesAB, noAB)));
 const weak1: unknown = new WeakMap();
 const weak2: unknown = new WeakMap();
 console.log("R", outcome(() => assert.deepStrictEqual(weak1, weak2)));
+
+// Sets and Maps pair object members structurally and consume each match
+// once: a member already matched cannot stand in for another, and keys that
+// are structurally equal may hold each other's values.
+const reuseA: unknown = new Map<any, string>([
+  [{ k: 1 }, "x"],
+  [{ k: 2 }, "y"],
+]);
+const sharedKey: any = { k: 1 };
+const reuseB: unknown = new Map<any, string>([
+  [sharedKey, "x"],
+  [{ k: 1 }, "x"],
+]);
+console.log("S", outcome(() => assert.deepStrictEqual(reuseA, reuseB)));
+const permutedA: unknown = new Map<any, string>([
+  [{ k: 1 }, "x"],
+  [{ k: 2 }, "y"],
+]);
+const permutedB: unknown = new Map<any, string>([
+  [{ k: 2 }, "x"],
+  [{ k: 1 }, "y"],
+]);
+console.log("T", outcome(() => assert.deepStrictEqual(permutedA, permutedB)));
+const setShared1: unknown = new Set<any>([sharedKey, { k: 9 }]);
+const setShared2: unknown = new Set<any>([{ k: 1 }, { k: 2 }]);
+console.log("U", outcome(() => assert.deepStrictEqual(setShared1, setShared2)));

@@ -738,7 +738,9 @@ class ScopeAnalysis {
 
   /** Whether `ref` (inside `scope`, or in another module) runs only after
    * the store `settle` describes. `read`: `ref` reads the binding itself,
-   * so tsc vouches for one in the scope's own code. */
+   * so tsc vouches for one in the scope's own code — except behind `!`,
+   * which waives that definite-assignment check, so the reference's own
+   * position decides. */
   settles(scope: Scope, settle: Settle, ref: ts.Identifier, read = true): boolean {
     if (ts.getSourceFileOfNode(ref) !== this.sf) return true;
     const statements = statementsOf(scope);
@@ -757,7 +759,7 @@ class ScopeAnalysis {
       if (n.parent === container) top = n;
     }
     if (top === null) return false;
-    if (deferred === null && read && !this.js) return true;
+    if (deferred === null && read && !this.js && !isNonNullAsserted(ref)) return true;
     if (deferred !== null && ts.isFunctionDeclaration(deferred) && deferred.name !== undefined)
       return this.functionSettles(scope, settle, deferred);
     const index = statements.indexOf(top as ts.Statement);

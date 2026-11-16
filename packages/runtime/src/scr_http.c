@@ -8716,10 +8716,10 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (strcmp(method, "pipe") == 0) {
-    /* OutgoingMessage.prototype.pipe: a write-only message is not
-     * readable, so Node emits ERR_STREAM_CANNOT_PIPE (an unhandled
-     * 'error' is the throw of that error). */
-    scr_http_outgoing_cannot_pipe(&c->err_ls, c, SCR_DYNH_HTTP_CLIENT);
+    /* OutgoingMessage.prototype.pipe over an untyped value: the same answer
+     * as the typed call — a request without an 'error' listener throws
+     * ERR_STREAM_CANNOT_PIPE at the call rather than ending the process. */
+    scr_http_client_cannot_pipe(c);
     return NULL;
   }
   if (strcmp(method, "toString") == 0) {

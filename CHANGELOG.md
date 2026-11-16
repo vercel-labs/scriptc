@@ -9,6 +9,8 @@ All notable changes to scriptc will be documented in this file.
 - **Node.js parity:**
   - `Set` and `Map` take `Map`, `Set` and typed-array elements: each is one object for its whole life, so JavaScript compares it by identity, and the collection holds it, finds it, deletes and re-adds it, iterates it in insertion order and seeds another `Map` from `[key, value]` pairs holding it, instead of failing with SC2020; `Set<Uint8Array>` and `Map<Map<string, number>, T>` compile and keep two objects with equal contents apart.
   - A collection constructor's seed cast from an untyped value, `new Set(u as Key[])` where `u` is `unknown`, lowers as the ordinary checked array conversion rather than as a single key, so it compiles like `const keys = u as Key[]; new Set(keys)` and every element keeps the identity the untyped name still sees; a key written on its own (`set.add(u as Key)`) stays refused, because copying a key would change the object the collection holds.
+- **TypeScript parity:**
+  - A relative JavaScript import resolves to its sibling declaration for types, as tsc resolves it: `./lib.js` is typed by `lib.d.ts`, `./lib.mjs` by `lib.d.mts` and `./lib.cjs` by `lib.d.cts` when the file sits beside the JavaScript, while the compiled module is the JavaScript Node loads. A call is checked against the declaration (an optional declared parameter stays optional although the JavaScript's inferred parameter type requires it), so a vendored dependency keeps its published types instead of losing them to the JavaScript's inferred shape. A declaration a project's tsconfig `include` loads beside its implementation also stays in the program, where a JSX project previously reported it as a missing file.
 
 <!-- release:start -->
 

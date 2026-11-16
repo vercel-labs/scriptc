@@ -6,6 +6,10 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+### Fixes
+
+- A checked value from an indexed object's optional member, such as `JsonWebKey`'s `alg?: string` over `[key: string]: unknown`, keeps the present `undefined` a `(T | undefined)[]` slot admits instead of throwing `expected string at $, got undefined`: an array literal, an index write, `push`, `unshift`, `splice`, `toSpliced`, `with`, `fill`, `Array.of` and `new Array(...)` print `null` from `JSON.stringify` and read back as `undefined`, as Node does.
+
 ## 0.4.15
 
 ### Highlights

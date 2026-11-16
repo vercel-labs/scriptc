@@ -3523,10 +3523,15 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       : lowerer.lowerExpr(expr.right);
   // Validate the payload before emitting a native store. A dormant JS
   // method can contradict its JSDoc element type; retain its call-time
-  // refusal instead of leaving invalid IR in a newly reachable method.
+  // refusal instead of leaving invalid IR in a newly reachable method. A
+  // checked-dynamic value in a `(T | undefined)[]` slot can hold the
+  // present undefined the slot records in its state byte (a member read on
+  // an indexed object), so it converts against the optional element type
+  // like a union with an undefined arm.
   const expected =
     value.type.kind === "undefinedT" ||
-    (value.type.kind === "union" && lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0)
+    (value.type.kind === "union" && lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0) ||
+    (value.type.kind === "dyn" && arr.type.optionalElements === true)
       ? arrayValueType(lowerer, arr.type.elem)
       : arr.type.elem;
   const stored = lowerer.coerceInto(expr.right, value, expected);

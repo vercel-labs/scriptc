@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3761,
+    "matrixRows": 3763,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 128,
+      "not-applicable": 126,
       "chapters": 6
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 394,
-      "apiEntries": 394
+      "entries": 396,
+      "apiEntries": 396
     },
     {
       "slug": "events",
@@ -19918,6 +19918,24 @@
       }
     },
     {
+      "id": "errors:18c92c1db453",
+      "chapter": "errors",
+      "kind": "module",
+      "name": "`err_http2_no_mem`",
+      "signature": "`ERR_HTTP2_NO_MEM`",
+      "label": "ERR_HTTP2_NO_MEM",
+      "apiSymbol": "ERR_HTTP2_NO_MEM",
+      "depth": 1,
+      "scope": "api",
+      "anchor": "err_http2_no_mem",
+      "nodeStability": null,
+      "static": {
+        "status": "not-implemented",
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
+      }
+    },
+    {
       "id": "errors:e79b0b4eadd5",
       "chapter": "errors",
       "kind": "module",
@@ -20270,6 +20288,24 @@
       "depth": 1,
       "scope": "api",
       "anchor": "err_http2_too_many_custom_settings",
+      "nodeStability": null,
+      "static": {
+        "status": "not-implemented",
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
+      }
+    },
+    {
+      "id": "errors:f94974790b37",
+      "chapter": "errors",
+      "kind": "module",
+      "name": "`err_http2_too_many_invalid_frames`",
+      "signature": "`ERR_HTTP2_TOO_MANY_INVALID_FRAMES`",
+      "label": "ERR_HTTP2_TOO_MANY_INVALID_FRAMES",
+      "apiSymbol": "ERR_HTTP2_TOO_MANY_INVALID_FRAMES",
+      "depth": 1,
+      "scope": "api",
+      "anchor": "err_http2_too_many_invalid_frames",
       "nodeStability": null,
       "static": {
         "status": "not-implemented",

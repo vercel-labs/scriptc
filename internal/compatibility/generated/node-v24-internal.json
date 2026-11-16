@@ -37483,7 +37483,7 @@
       "anchor": "err_http2_no_mem",
       "nodeStability": null,
       "static": {
-        "status": "not-applicable",
+        "status": "not-implemented",
         "evidence": "compiler-feature:errors.ERR_HTTP2_NO_MEM"
       },
       "anchorSource": "exact"
@@ -37867,7 +37867,7 @@
       "anchor": "err_http2_too_many_invalid_frames",
       "nodeStability": null,
       "static": {
-        "status": "not-applicable",
+        "status": "not-implemented",
         "evidence": "compiler-feature:errors.ERR_HTTP2_TOO_MANY_INVALID_FRAMES"
       },
       "anchorSource": "exact"

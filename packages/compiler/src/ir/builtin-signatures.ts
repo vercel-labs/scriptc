@@ -1770,9 +1770,11 @@ function buildLibFnSignatures() {
      * shape (zero-param, or the (eventType: string) form — runtime-
      * provided); an open watcher keeps the loop alive until watcher.close()
      * (idempotent, receiver borrowed, statement position only). */
-    "fs.watch": { argTypes: [STRING], result: FSWATCHER_T },
-    "fs.watchCb": { argTypes: [STRING, null], result: FSWATCHER_T },
+    "fs.watch": { argTypes: [STRING, BOOL], result: FSWATCHER_T },
+    "fs.watchCb": { argTypes: [STRING, null, BOOL], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
+    "watcher.ref": { argTypes: [FSWATCHER_T], result: VOID },
+    "watcher.unref": { argTypes: [FSWATCHER_T], result: VOID },
     // FSWatcher's EventEmitter surface: (receiver, event code, once|prepend
     // flags, listener) for on/once/addListener/prependListener/
     // prependOnceListener, and (receiver, event code, listener) for

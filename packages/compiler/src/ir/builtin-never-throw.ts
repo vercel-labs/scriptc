@@ -15,6 +15,17 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",
+  // Console instance state that answers text: the timer labels are already
+  // strings, the stores are the instance's own tables, and no program code
+  // runs. (The counters and the table can throw, so they are not here.)
+  "console.instTime",
+  "console.instTimeEnd",
+  "console.instTimeLog",
+  // scr_console_inst_group adjusts the instance's indentation count.
+  "console.instGroup",
+  // scr_console_inst_clear writes the terminal sequences to the instance's
+  // descriptor; a non-terminal target writes nothing.
+  "console.instClear",
   "process.finalization",
   // scr_watcher_ref / scr_watcher_unref move one open watcher's loop-liveness
   // flag; a closed watcher ignores them, and nothing user-visible runs.

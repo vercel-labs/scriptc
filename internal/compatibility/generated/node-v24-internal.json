@@ -19489,6 +19489,9 @@
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/console-instance-members.ts",
+          "tests/corpus/console-instance-options.ts",
+          "tests/corpus/console-instance-state.ts",
           "tests/corpus/console-method-format.ts",
           "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
@@ -19623,7 +19626,10 @@
         "evidence": "compiler-feature:console.Console",
         "tests": [
           "tests/corpus/4900-console-instances.ts",
-          "tests/corpus/4901-console-instance-errors.ts"
+          "tests/corpus/4901-console-instance-errors.ts",
+          "tests/corpus/console-instance-members.ts",
+          "tests/corpus/console-instance-options.ts",
+          "tests/corpus/console-instance-state.ts"
         ]
       },
       "anchorSource": "exact"
@@ -20148,7 +20154,8 @@
         "evidence": "compiler-feature:console.console.trace",
         "tests": [
           "tests/corpus/console-trace-output.cjs",
-          "tests/harness/console-trace.test.ts"
+          "tests/harness/console-trace.test.ts",
+          "tests/corpus/console-instance-members.ts"
         ]
       },
       "anchorSource": "exact"

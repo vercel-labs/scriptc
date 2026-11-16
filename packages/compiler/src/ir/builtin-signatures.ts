@@ -2931,7 +2931,7 @@ function buildLibFnSignatures() {
      * socket POOLING is not modeled (one dial per request); maxSockets
      * accounting is real: over-limit requests defer their dial and queue.
      * MAY THROW. */
-    "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64, DYN], result: DYN },
+    "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64, F64, DYN], result: DYN },
     /** http.globalAgent / https.globalAgent (true): Node's keepAlive global
      * agent, the one requests without an agent option use. */
     "http.globalAgent": { argTypes: [BOOL], result: DYN },

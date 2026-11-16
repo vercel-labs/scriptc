@@ -2171,7 +2171,10 @@ const RUNTIME_FEATURE_RULES = {
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
-  fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
+  fsWatchFile: rule({
+    fns: ["fs.watchFile", "fs.unwatchFile", "statWatcher.ref", "statWatcher.unref"],
+    types: ["statWatcher"],
+  }),
   /** fsPromises.watch (scr_watch_async.c): the async iterable the
    * `for await` lowering drains, over the fs.watch watcher unit. */
   fsWatchEvents: rule({

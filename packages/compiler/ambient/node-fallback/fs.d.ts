@@ -779,9 +779,16 @@ declare module "node:fs" {
    * path that cannot be stat'd polls as all-zero Stats. One poller per
    * resolved path is shared by every listener on it. interval defaults to
    * 5007 ms, persistent defaults to true; bigint: true (BigIntStats) has
-   * no lowering. The call is a statement: Node's StatWatcher has no
-   * lowering. */
-  export interface StatWatcher {}
+   * no lowering. The call answers the StatWatcher its listener registered
+   * on, whose ref()/unref() move that registration's loop liveness. */
+  export interface StatWatcher {
+    /* The registration's loop liveness: a reffed watcher keeps the process
+     * alive (the default, and what the `persistent` option sets), an
+     * unref'd one lets it exit. fs.unwatchFile is the removal API; after it
+     * removes this listener both are no-ops. */
+    ref(): void;
+    unref(): void;
+  }
   export function watchFile(
     filename: string,
     options: { interval?: number; persistent?: boolean; bigint?: false },

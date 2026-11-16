@@ -1233,6 +1233,8 @@ export function formatIrType(
         return append("FSWatcher");
       case "watchEvents":
         return append("FSWatchEvents");
+      case "statWatcher":
+        return append("StatWatcher");
       case "childStream":
         return append("Readable");
       case "childWriter":
@@ -5582,6 +5584,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "fsWatcher" };
+  }
+  // fs.StatWatcher: the fs.watchFile handle (scr_watch_file.c), declared
+  // beside FSWatcher in the same ambient module.
+  if (
+    psym !== undefined &&
+    psymName === "StatWatcher" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  ) {
+    return { kind: "statWatcher" };
   }
   // The piped child-output stream, under BOTH spellings @types/node uses
   // for it: stream.Readable (ChildProcess.stdout's declared type — the

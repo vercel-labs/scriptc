@@ -46825,6 +46825,7 @@
           "tests/corpus/fs-sync-dynamic-descriptors.cjs",
           "tests/corpus/fs-watch-file-names.ts",
           "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts",
           "tests/corpus/fs-watch-ref-unref.ts",
           "tests/corpus/fs-write-callback-options.cjs",
           "tests/corpus/fs-write-options.ts",
@@ -50097,12 +50098,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:fs.unwatchFile",
         "tests": [
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/fs-watch-file-names.ts",
-          "tests/corpus/fs-watch-file-polling.ts"
+          "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50283,12 +50286,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:fs.watchFile",
         "tests": [
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/fs-watch-file-names.ts",
-          "tests/corpus/fs-watch-file-polling.ts"
+          "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
         ]
       },
       "anchorSource": "exact"
@@ -52552,12 +52557,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:fs.FSWatcher",
         "tests": [
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/fs-watch-file-names.ts",
-          "tests/corpus/fs-watch-file-polling.ts"
+          "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
         ]
       },
       "anchorSource": "exact"
@@ -52585,7 +52592,8 @@
         "tests": [
           "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/fs-watch-file-names.ts",
-          "tests/corpus/fs-watch-ref-unref.ts"
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
         ]
       },
       "anchorSource": "exact"
@@ -52608,8 +52616,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.watcher.ref",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52631,8 +52645,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.watcher.unref",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52723,8 +52743,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-dedicated:fs.StatWatcher",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-file-polling.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52746,8 +52773,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.watcher.ref",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -52769,8 +52802,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.watcher.unref",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-ref-unref.ts",
+          "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
       },
       "anchorSource": "exact"
     },

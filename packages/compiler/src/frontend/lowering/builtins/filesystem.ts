@@ -25,6 +25,7 @@ import {
   F64,
   FILEHANDLE_T,
   FSWATCHER_T,
+  STATWATCHER_T,
   type IrExpr,
   type IrLibFn,
   type IrStmt,
@@ -1435,9 +1436,11 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
  * follows the options-record stance: interval, persistent: true/false and
  * bigint: false are accepted; bigint: true fences (BigIntStats); other
  * documented keys fence by name; undocumented keys drop like Node.
- * Statement position only — Node returns a StatWatcher, which has no
- * lowering. Returns null for any untyped shape so the checked-dynamic
- * ladder (fs.watchFileChk) keeps its current IR. */
+ * watchFile answers the path's StatWatcher (ref/unref lower as
+ * statWatcher.ref/statWatcher.unref); unwatchFile with a listener that is
+ * not registered on the path removes nothing, as in Node. Returns null for
+ * any untyped shape so the checked-dynamic ladder (fs.watchFileChk) keeps
+ * its current IR. */
 export function lowerFsWatchFileCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1462,14 +1465,6 @@ export function lowerFsWatchFileCall(
   if (nodes.length === 2 && hasOptions) return null; /* no listener */
   const listenerArg = nodes[nodes.length - 1]!;
   if (lowerer.mapTypeOf(lowerer.typeOf(listenerArg))?.kind !== "func") return null;
-  const parent = expr.parent;
-  if (!ts.isExpressionStatement(parent) && !(ts.isArrowFunction(parent) && parent.body === expr)) {
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "using the returned StatWatcher (register the fs.watchFile call as its own statement)",
-    );
-  }
   let interval: IrExpr | null = null;
   let persistent: IrExpr | null = null;
   if (hasOptions) {
@@ -1541,7 +1536,7 @@ export function lowerFsWatchFileCall(
     kind: "libCall",
     fn: "fs.watchFile",
     args: [path, interval ?? numLit(5007, loc), persistent ?? boolLit(true, loc), cb],
-    type: VOID,
+    type: STATWATCHER_T,
     loc,
   };
 }
@@ -1701,10 +1696,26 @@ export function lowerWatcherMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
-  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fsWatcher") return null;
+  const receiverKind = lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind;
+  if (receiverKind !== "fsWatcher" && receiverKind !== "statWatcher") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
+  if (receiverKind === "statWatcher") {
+    /* fs.watchFile's StatWatcher answers ref()/unref() — the registration's
+     * loop liveness — and no close(): fs.unwatchFile is the removal API.
+     * Node returns the watcher from both; the bundle's handles answer void,
+     * like dgram's and the FSWatcher's. */
+    if ((name !== "ref" && name !== "unref") || call.arguments.nodes.length !== 0) return null;
+    const receiver = lowerer.lowerExpr(access.expression);
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "statWatcher.ref" : "statWatcher.unref",
+      args: [receiver],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "close" && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
     return { kind: "libCall", fn: "watcher.close", args: [receiver], type: VOID, loc };

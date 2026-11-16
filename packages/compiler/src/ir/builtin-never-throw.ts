@@ -49,6 +49,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // error.
   "watchEvents.wait",
   "watchEvents.close",
+  // scr_stat_watcher_ref / scr_stat_watcher_unref move one registration's
+  // liveness flag; a registration fs.unwatchFile already removed is a no-op.
+  "statWatcher.ref",
+  "statWatcher.unref",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
   // scr_sqlite_is compares a handle's tag.

@@ -381,6 +381,26 @@ static ScrDyn *scr_worker_transfer_list(ScrDyn *arg) {
         scr_throw_domex("DataCloneError", "Cannot transfer object of unsupported type.");
         return NULL;
       }
+      /* Node validates the list before it clones: one port listed twice is a
+       * duplicate, and a value that is no transferable at all is invalid. An
+       * ArrayBuffer or SharedArrayBuffer keeps the documented refusal. */
+      if (item && item->kind == SCR_DYN_HANDLE && item->v.handle.tag == SCR_DYNH_MESSAGE_PORT) {
+        for (size_t j = 0; j < i; j++) {
+          const ScrDyn *earlier = value->v.arr.items[j];
+          if (earlier && earlier->kind == SCR_DYN_HANDLE &&
+              earlier->v.handle.tag == SCR_DYNH_MESSAGE_PORT &&
+              earlier->v.handle.ptr == item->v.handle.ptr) {
+            scr_dyn_release(own);
+            scr_throw_domex("DataCloneError", "Transfer list contains duplicate MessagePort");
+            return NULL;
+          }
+        }
+        continue;
+      }
+      if (scr_array_buffer_is(item) || scr_shared_array_buffer_is(item)) continue;
+      scr_dyn_release(own);
+      scr_throw_domex("DataCloneError", "Found invalid value in transferList.");
+      return NULL;
     }
     ScrDyn *result = scr_dyn_retain(value);
     scr_dyn_release(own);

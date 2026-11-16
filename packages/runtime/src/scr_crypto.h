@@ -92,6 +92,14 @@ bool scr_crypto_hash_stream_write(ScrCryptoHash *hash, ScrBytes *chunk);
 ScrBytes *scr_crypto_hash_stream_flush(ScrCryptoHash *hash);
 /* Secret KeyObjects (scr_lib.c). */
 ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding);
+/* A secret KeyObject over a copy of `data`. */
+ScrDyn *scr_crypto_secret_key_object_from_bytes(const unsigned char *data, size_t len);
+/* KeyObject.toCryptoKey and KeyObject.from (scr_webcrypto.c installs them
+ * when WebCrypto is linked): the KeyObject handle's method arguments are
+ * borrowed; each answers NULL with the DOMException pending. */
+extern ScrDyn *(*scr_crypto_to_crypto_key)(const ScrDyn *key, const ScrDyn *const *args,
+                                           size_t argc);
+extern ScrDyn *(*scr_crypto_key_object_from)(const ScrDyn *crypto_key);
 ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options);
 /* Node's synchronous callback gate for generateKey: a non-function throws
  * ERR_INVALID_ARG_TYPE, a function passes. */
@@ -300,6 +308,8 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_export_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_sign(ScrDyn *args);
 ScrPromise *scr_webcrypto_get_public_key(ScrDyn *args);
+ScrDyn *scr_wc_key_object_to_crypto_key(ScrDyn *args);
+ScrDyn *scr_wc_key_object_from(ScrDyn *args);
 ScrPromise *scr_webcrypto_verify(ScrDyn *args);
 ScrPromise *scr_webcrypto_digest(ScrDyn *args);
 /* encrypt and decrypt (scr_webcrypto_aes.c, linked with the cipher

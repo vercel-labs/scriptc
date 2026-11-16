@@ -1049,6 +1049,10 @@ struct ScrHttpRes {
   bool head_sent;
   bool chunked;
   bool finished;
+  /* writableHighWaterMark as it was when the response was created: the
+   * server's value (or the current default for an h2 response), kept after
+   * the connection detaches. */
+  double hwm;
   bool no_date; /* res.sendDate = false: suppress the implicit Date header */
   /* removeHeader('connection' / 'content-length' / 'transfer-encoding'):
    * the head adds no such header of its own (Node's _removedConnection,
@@ -2296,8 +2300,6 @@ double scr_http_res_writable_corked(ScrHttpRes *r) { return (double)r->corked; }
  * since Node 22) and counts what has not reached the wire: the corked
  * chunk bytes with their chunk framing, a head that has been built but not
  * sent, and the socket's own unsent bytes. */
-#define SCR_HTTP_WRITE_HWM 65536u
-
 static size_t scr_http_hex_digits(size_t v) {
   size_t digits = 1;
   while (v >= 16) {
@@ -2377,20 +2379,17 @@ static void scr_http_res_maybe_drain(ScrHttpRes *r) {
 /* write()'s answer: Node's `writableLength < writableHighWaterMark`, and a
  * false answer makes the next empty buffer emit 'drain'. */
 static bool scr_http_res_write_backpressure(ScrHttpRes *r) {
-  bool ok = scr_http_res_writable_length(r) < (double)SCR_HTTP_WRITE_HWM;
+  bool ok = scr_http_res_writable_length(r) < r->hwm;
   if (!ok) r->need_drain = true;
   scr_http_res_maybe_drain(r);
   return ok;
 }
 
-/* res.writableHighWaterMark and res.writableObjectMode: Node's default
- * high-water mark of a byte stream (getDefaultHighWaterMark(), 64 KiB
- * since Node 22) and false. createServer's highWaterMark option, which
- * would change the first, is not accepted. */
-double scr_http_res_writable_high_water_mark(ScrHttpRes *r) {
-  (void)r;
-  return 65536;
-}
+/* res.writableHighWaterMark and res.writableObjectMode: the server's
+ * highWaterMark, which createServer takes from the stream default at that
+ * moment (Node's ServerResponse), and false. createServer's highWaterMark
+ * option is not accepted. */
+double scr_http_res_writable_high_water_mark(ScrHttpRes *r) { return r->hwm; }
 
 bool scr_http_res_writable_object_mode(ScrHttpRes *r) {
   (void)r;
@@ -3591,6 +3590,10 @@ typedef struct ScrHttpSrvCtx {
   bool join_dup; /* createServer({ joinDuplicateHeaders: true }) */
   size_t max_header_size; /* createServer({ maxHeaderSize }); 0 = the default */
   bool require_host_header; /* HTTP/1.1 Host is required by default */
+  /* The response streams' highWaterMark: stream.getDefaultHighWaterMark(false)
+   * as it was when the server was created (Node's ServerResponse takes the
+   * server's value, which createServer defaults to that). */
+  double hwm;
 } ScrHttpSrvCtx;
 
 static ScrHttpSrvCtx *scr_http_srv_ctx_retain(ScrHttpSrvCtx *ctx) {
@@ -4227,6 +4230,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
 #ifdef SCR_RC_AUDIT
   scr_http_live++;
 #endif
+  res->hwm = conn->srv != NULL ? conn->srv->hwm : scr_stream_get_default_hwm(false);
   res->sock = scr_net_sock_retain(conn->sock);
   res->conn = conn;
   res->keep_alive = req_keep_alive;
@@ -4789,6 +4793,7 @@ ScrNetServer *scr_http_create_server(ScrClosure *handler /*moves, nullable*/, Sc
   ctx->rc = 1;
   ctx->server = s;
   ctx->require_host_header = true;
+  ctx->hwm = scr_stream_get_default_hwm(false);
   if (handler != NULL) scr_net_ls_add(&ctx->request_ls, handler, (void *)fn, false);
   scr_net_server_set_native_conn(s, &scr_http_on_connection, ctx, &scr_http_srv_ctx_free);
   scr_net_server_set_http_ctx(s, ctx);
@@ -5048,6 +5053,7 @@ ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
   if (!res) scr_http_oom();
   res->rc = 1;
   res->als = scr_als_capture();
+  res->hwm = scr_stream_get_default_hwm(false);
   res->sock = sock ? scr_net_sock_retain(sock) : NULL;
   res->h2_stream = scr_http_h2_ops->retain(stream);
   res->keep_alive = true; /* inert on h2 — no Connection header exists */
@@ -5208,6 +5214,9 @@ struct ScrHttpClientReq {
   ScrAlsCtx *als;
   ScrNetSocket *sock; /* +1 */
   ScrHttpConn *conn;  /* borrowed backref (the socket's ctx); NULL after free */
+  /* The writable highWaterMark this request's buffering is judged by:
+   * stream.getDefaultHighWaterMark(false) when the request was created. */
+  double hwm;
   ScrStr *host, *path, *method;
   int port;
   int default_port; /* the Host header omits it (80 http, 443 https) */
@@ -5911,7 +5920,7 @@ static void scr_http_client_maybe_drain(ScrHttpClientReq *c) {
 }
 
 static bool scr_http_client_write_backpressure(ScrHttpClientReq *c) {
-  bool ok = scr_http_client_writable_length(c) < (double)SCR_HTTP_WRITE_HWM;
+  bool ok = scr_http_client_writable_length(c) < c->hwm;
   if (!ok) c->need_drain = true;
   scr_http_client_maybe_drain(c);
   return ok;
@@ -6867,6 +6876,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   ScrHttpClientReq *c = calloc(1, sizeof *c);
   if (!c) scr_http_oom();
   c->rc = 1;
+  c->hwm = scr_stream_get_default_hwm(false);
   c->als = scr_als_capture();
 #ifdef SCR_RC_AUDIT
   scr_http_live++;

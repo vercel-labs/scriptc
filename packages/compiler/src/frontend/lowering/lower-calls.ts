@@ -306,6 +306,7 @@ import {
   returnsOnlyThis,
   storedClassValueType,
   lowerRegExpConstruction,
+  regExpFromValues,
   type ClassInfo,
 } from "./lower-classes.js";
 import { checkRefusedMemberUse } from "./class-member-refusals.js";
@@ -598,6 +599,34 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     lowerArgumentsObjectCall(lowerer, expr, locOf(expr), () => lowerOrdinaryCall(lowerer, expr)) ??
     lowerOrdinaryCall(lowerer, expr)
   );
+}
+
+/** Builds the `value === undefined` condition for a value whose type can
+ * hold undefined — a checked-dynamic value, or a union with an undefined
+ * arm — or null when the value never is undefined. */
+function undefinedTest(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+): ((tested: IrExpr) => IrExpr) | null {
+  if (value.type.kind === "dyn")
+    return (tested) => ({ kind: "dynTest", test: "undefined", value: tested, type: BOOL, loc });
+  if (value.type.kind === "union") {
+    const unionId = value.type.unionId;
+    const arms = lowerer.unions.get(unionId)?.arms ?? [];
+    const tag = arms.findIndex((arm) => arm.kind === "undefinedT" || arm.kind === "void");
+    if (tag >= 0)
+      return (tested) => ({
+        kind: "unionIsTag",
+        unionId,
+        tag,
+        negated: false,
+        value: tested,
+        type: BOOL,
+        loc,
+      });
+  }
+  return null;
 }
 
 function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
@@ -1415,6 +1444,39 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const flags = args[1];
       if (pattern?.kind === "regex" && (flags === undefined || staticallyUndefined(flags)))
         return lowerer.lowerExpr(args[0]!);
+      // The same rule for a flags value that is only undefined at run time
+      // (a `string | undefined` slot, an untyped value): the pattern is
+      // answered as it stands, identity and lastIndex included, unless
+      // flags holds a string.
+      if (pattern?.kind === "regex" && flags !== undefined) {
+        const patternValue = lowerer.lowerExpr(args[0]!);
+        const flagsValue = lowerer.lowerExpr(flags);
+        const undefinedFlags = undefinedTest(lowerer, flagsValue, loc);
+        if (undefinedFlags !== null) {
+          const patternLocal = lowerer.declareHiddenLocal("%regexp.pattern", { kind: "regex" });
+          const flagsLocal = lowerer.declareHiddenLocal("%regexp.flags", flagsValue.type);
+          const patternRef = varRef(patternLocal.id, { kind: "regex" }, loc);
+          const flagsRef = varRef(flagsLocal.id, flagsValue.type, loc);
+          return {
+            kind: "seqExpr",
+            // Node evaluates the pattern, then flags, then the check.
+            stmts: [
+              { kind: "varDecl", localId: patternLocal.id, init: patternValue, loc },
+              { kind: "varDecl", localId: flagsLocal.id, init: flagsValue, loc },
+            ],
+            result: {
+              kind: "ternary",
+              cond: undefinedFlags(flagsRef),
+              then: patternRef,
+              else_: regExpFromValues(lowerer, [patternRef, flagsRef], [undefined, undefined], loc),
+              type: { kind: "regex" },
+              loc,
+            },
+            type: { kind: "regex" },
+            loc,
+          };
+        }
+      }
     }
     return lowerRegExpConstruction(lowerer, expr, args, loc, "RegExp");
   }

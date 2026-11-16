@@ -12656,7 +12656,23 @@ export function lowerRegExpConstruction(
     lowerer.noLowering(`${what} with ${args.length} arguments`, at);
   }
   if (args.some(ts.isSpreadElement)) lowerer.noLowering(`${what} with spread arguments`, at);
-  const values = args.map((arg) => lowerer.lowerExpr(arg));
+  return regExpFromValues(
+    lowerer,
+    args.map((arg) => lowerer.lowerExpr(arg)),
+    args,
+    loc,
+  );
+}
+
+/** The construction Node's RegExp builtin performs over already-lowered
+ * pattern/flags values, in that order. `nodes` names the source each value
+ * came from (a synthesized value leaves its slot undefined). */
+export function regExpFromValues(
+  lowerer: Lowerer,
+  values: readonly (IrExpr | undefined)[],
+  nodes: readonly (ts.Expression | undefined)[],
+  loc: SrcLoc,
+): IrExpr {
   // The statically spelled form below needs a string or undefined in
   // each slot. Every other value — a `dyn` or `regex` argument, and
   // any primitive or object the static form cannot spell, such as a
@@ -12674,12 +12690,19 @@ export function lowerRegExpConstruction(
         false));
   if (
     values.some(
-      (value) => value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value),
+      (value) =>
+        value !== undefined &&
+        (value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value)),
     )
   ) {
-    const checked = [0, 1].map((index): IrExpr =>
-      values[index] ? lowerer.coerceInto(args[index]!, values[index]!, DYN) : dynUndefinedExpr(loc),
-    );
+    const checked = [0, 1].map((index): IrExpr => {
+      const value = values[index];
+      const node = nodes[index];
+      if (value === undefined) return dynUndefinedExpr(loc);
+      return node === undefined
+        ? lowerer.coerceToExpected(value, DYN)
+        : lowerer.coerceInto(node, value, DYN);
+    });
     return {
       kind: "libCall",
       fn: "regex.newChecked",
@@ -12690,31 +12713,34 @@ export function lowerRegExpConstruction(
   }
   // Every slot reaches here as a string or a nullish cover of one: the
   // checked path above took every other value.
-  const strArg = (a: ts.Expression | undefined): IrExpr => {
-    if (!a) return { kind: "strLit", value: "", type: STRING, loc };
-    const v = values[args.indexOf(a)]!;
+  const strArg = (index: number): IrExpr => {
+    const v = values[index];
+    const node = nodes[index];
+    const at = node === undefined ? loc : locOf(node);
+    if (v === undefined) return { kind: "strLit", value: "", type: STRING, loc };
     const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
     if (v.type.kind === "undefinedT") {
       if (v.kind === "unitLit") return empty;
       return {
         kind: "seqExpr",
-        stmts: [{ kind: "exprStmt", expr: lowerer.coerceToExpected(v, DYN), loc: locOf(a) }],
+        stmts: [{ kind: "exprStmt", expr: lowerer.coerceToExpected(v, DYN), loc: at }],
         result: empty,
         type: STRING,
         loc,
       };
     }
     if (v.type.kind === "union") {
-      return { kind: "nullish", left: v, right: empty, type: STRING, loc: locOf(a) };
+      return { kind: "nullish", left: v, right: empty, type: STRING, loc: at };
     }
     return v;
   };
-  const pattern = strArg(args[0]);
-  const flags = strArg(args[1]);
+  const pattern = strArg(0);
+  const flags = strArg(1);
   // Node accepts the 'd' flag the engine does not have; a literal
   // flags string refuses here like the literal regex form.
-  if (flags.kind === "strLit" && args[1] !== undefined && flags.value.includes("d")) {
-    lowerer.unsupported("SC1120", args[1], "the regex 'd' flag (match indices)");
+  const flagNode = nodes[1];
+  if (flags.kind === "strLit" && flagNode !== undefined && flags.value.includes("d")) {
+    lowerer.unsupported("SC1120", flagNode, "the regex 'd' flag (match indices)");
   }
   return {
     kind: "libCall",

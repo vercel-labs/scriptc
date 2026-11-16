@@ -25,3 +25,25 @@ for (const flags of ["gg", "z"]) {
 
 const fromVariable = RegExp(String(7) + "+");
 console.log("variable", fromVariable.test("77"), fromVariable.flags);
+
+// A flags value that is undefined only at run time answers the pattern
+// itself too, identity and lastIndex included (ECMA-262 22.2.3.1 step 2).
+const target = /(a)/g;
+target.lastIndex = 2;
+const missingFlags = undefined;
+console.log("late identity", RegExp(target, missingFlags) === target);
+console.log("lastIndex", RegExp(target, missingFlags).lastIndex);
+const givenFlags = "i";
+const copied = RegExp(target, givenFlags);
+console.log("late copy", copied === target, copied.flags, copied.lastIndex);
+
+const maybeFlags = Math.random() >= 0 ? undefined : "g";
+console.log("computed identity", RegExp(target, maybeFlags) === target);
+const untypedFlags = missingFlags;
+console.log("untyped identity", RegExp(target, untypedFlags) === target);
+
+const produced = () => {
+  console.log("pattern evaluated");
+  return target;
+};
+console.log("order", RegExp(produced(), missingFlags) === target);

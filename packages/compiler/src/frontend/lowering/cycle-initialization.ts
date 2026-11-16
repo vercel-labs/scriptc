@@ -304,21 +304,31 @@ function earlyHeritageReferences(
     if (names.size === 0) continue;
     ts.walkPreorder(sf, (node) => {
       if (node === declaration) return "skip";
-      if (!ts.isHeritageClause(node)) return undefined;
-      // Node evaluates the whole clause when the class statement runs:
-      // any reference inside it (parenthesized, a factory argument)
-      // reaches the class.
-      let found = false;
-      ts.walkPreorder(node, (inner) => {
-        if (found) return "skip";
-        if (
-          ts.isIdentifier(inner) &&
-          names.has(inner.text) &&
-          resolvesTo(lowerer, inner, binding.symbol, true)
-        )
-          found = true;
+      // Only an `extends` clause is EVALUATED: an `implements` clause and a
+      // heritage TYPE (`extends Base<C>`) name types, which Node erases, so
+      // no read of the class happens there.
+      if (!ts.isHeritageClause(node) || node.token !== ts.SyntaxKind.ExtendsKeyword)
         return undefined;
-      });
+      let found = false;
+      for (const base of node.types.nodes) {
+        if (found) break;
+        if (!ts.isExpressionWithTypeArguments(base)) continue;
+        // The base EXPRESSION is evaluated when the class statement runs
+        // (its arguments and parentheses included); a reference a
+        // conditional expression or a short circuit may skip is not read
+        // at all, so it must not carry a check.
+        ts.walkPreorder(base.expression, (inner) => {
+          if (found) return "skip";
+          if (
+            ts.isIdentifier(inner) &&
+            names.has(inner.text) &&
+            resolvesTo(lowerer, inner, binding.symbol, true) &&
+            !conditionallyEvaluated(inner, base.expression)
+          )
+            found = true;
+          return undefined;
+        });
+      }
       if (found) {
         const cls = enclosingClass7(node);
         // In the declaring module the statements run in source order: a
@@ -333,6 +343,45 @@ function earlyHeritageReferences(
     });
   }
   return out;
+}
+
+/** Whether a heritage expression may not evaluate `ref`: an arm of a
+ * conditional expression, the short-circuited right side of `&&`, `||` or
+ * `??`, or the receiver of an optional chain. Node reads the class only
+ * when that position runs, so a check prepared for the class statement
+ * would throw before the expression chooses. */
+function conditionallyEvaluated(ref: ts.Node, root: ts.Node): boolean {
+  for (
+    let node: ts.Node | undefined = ref;
+    node !== undefined && node !== root;
+    node = node.parent
+  ) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) return false;
+    if (
+      ts.isConditionalExpression(parent) &&
+      (parent.whenTrue === node || parent.whenFalse === node)
+    )
+      return true;
+    if (ts.isBinaryExpression(parent) && parent.right === node) {
+      const operator = parent.operatorToken.kind;
+      if (
+        operator === ts.SyntaxKind.AmpersandAmpersandToken ||
+        operator === ts.SyntaxKind.BarBarToken ||
+        operator === ts.SyntaxKind.QuestionQuestionToken
+      )
+        return true;
+    }
+    const optional = parent as { questionDotToken?: ts.Node };
+    if (
+      (ts.isPropertyAccessExpression(parent) ||
+        ts.isElementAccessExpression(parent) ||
+        ts.isCallExpression(parent)) &&
+      optional.questionDotToken !== undefined
+    )
+      return true;
+  }
+  return false;
 }
 
 /** The class-like declaration a heritage clause belongs to. */

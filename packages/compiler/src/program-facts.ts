@@ -979,6 +979,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "program roots named by createRequire calls",
   ),
   scan(
+    "frontend/lowering/cycle-initialization.ts#earlyHeritageReferences",
+    1,
+    "closed-world",
+    "the `extends` clauses that read a class of an import cycle before its declaration, each of which carries the class's initialization check at its own statement",
+  ),
+  scan(
     "frontend/program.ts#boundedDynamicImportRoots7",
     1,
     "discovery",

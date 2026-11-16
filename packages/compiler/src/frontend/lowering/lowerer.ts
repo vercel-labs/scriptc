@@ -300,7 +300,7 @@ import { applyHandleProperties, handlePropertyScanRoots } from "./handle-propert
 import { shareIslandProcessState } from "./island-process-state.js";
 import { adoptIslandThenables } from "./island-thenables.js";
 import { installBufferValue } from "./containers/bytes.js";
-import { installMutableBuffersArm } from "./buffers.js";
+import { installMutableBuffersArm, programMentionsMutableBuffers } from "./buffers.js";
 import { AsyncProtocolHolders } from "./async-protocol-holders.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { analyzeVarReads } from "./var-hoisting.js";
@@ -7688,6 +7688,11 @@ export class Lowerer {
     registerBuiltinEmitterClass(this);
     registerBuiltinStreamClasses(this);
     registerBuiltinEventTargetClasses(this);
+    // The mutable-buffers fact is a name match over the program's JavaScript
+    // sources (buffers.ts), settled here rather than at the first lowered
+    // read: a callback helper lifted before the read that arms the fact must
+    // still emit the live-length checks the program needs.
+    this.buffersMutable = programMentionsMutableBuffers(this);
   }
 
   /** Whether preflight admitted the checker diagnostic `code` at `node`: a

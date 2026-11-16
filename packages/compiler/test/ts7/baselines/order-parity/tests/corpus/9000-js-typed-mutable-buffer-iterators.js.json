@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9000-js-typed-mutable-buffer-iterators.js"
+ ],
+ "diags": []
+}

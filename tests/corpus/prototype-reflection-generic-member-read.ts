@@ -41,3 +41,28 @@ const counter = new Counter();
 const counterView = Object.getPrototypeOf(counter as any);
 const bump = counterView.bump;
 console.log(bump.call(counter), bump.call(counter), counter.count);
+
+// A nested function's `this` is its own, never the class's: a name that
+// matches the class's generic method there does not make the member need a
+// typed receiver, so the view still runs with a borrowed receiver. An arrow
+// keeps the enclosing `this`, so a read through one is the class's own.
+class Borrower {
+  appendChild<T extends Borrower>(child: any): T {
+    return child as T;
+  }
+  readThroughFunction(): string {
+    const call = function (this: any) {
+      return this.appendChild();
+    };
+    return call.call({ appendChild: () => "helper" }) + ":" + (this as any).tag;
+  }
+  readThroughArrow(): string {
+    const read = (): string => String(this.appendChild(new Borrower()) !== undefined);
+    return read() + ":" + ((this as any).tag ?? "instance");
+  }
+}
+
+const borrower = new Borrower();
+const borrowedView = Object.getPrototypeOf(borrower as any);
+console.log(borrowedView.readThroughFunction.call({ tag: "borrowed" }));
+console.log(borrowedView.readThroughArrow.call(borrower));

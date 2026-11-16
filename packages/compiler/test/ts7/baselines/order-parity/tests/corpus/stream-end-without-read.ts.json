@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-end-without-read.ts"
+ ],
+ "diags": []
+}

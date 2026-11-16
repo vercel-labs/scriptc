@@ -1050,6 +1050,15 @@ static bool ws_rcontroller_can_close_or_enqueue(WsRController *c) {
   return !c->close_requested && c->stream->state == WS_STATE_READABLE;
 }
 
+/* The "already closed" TypeError a controller's close()/enqueue() raises:
+ * a default controller always names itself, while a byte controller names
+ * itself once its close was requested and names the stream once the stream
+ * itself closed or errored (Node's ReadableByteStreamController order). */
+static void ws_rcontroller_closed_error(WsRController *c) {
+  ws_state_error(!c->bytes || c->close_requested ? "Controller is already closed"
+                                                 : "ReadableStream is already closed");
+}
+
 static void ws_rcontroller_pull(WsRController *c);
 
 static bool ws_rcontroller_should_call_pull(WsRController *c) {
@@ -1082,21 +1091,32 @@ static void ws_rcontroller_close(WsRController *c) {
 }
 
 /* ReadableByteStreamControllerClose: a read that already holds bytes answers
- * with them before the stream ends (a partial destination errors the stream
- * instead, since a BYOB read cannot return half an element). */
+ * with them before the stream ends. A BYOB read cannot return half an element,
+ * so a partially filled destination errors the stream and close() re-throws
+ * that error, as Node's "Partial read" does. Byte queued data defers the close
+ * (closeRequested names the controller afterwards); with the queue empty the
+ * stream closes without that flag, so a later close() names the stream. A read
+ * still waiting for its first byte is answered as an end here; Node leaves it
+ * unsettled forever. */
 static void ws_bytes_close(WsRController *c) {
   if (!ws_rcontroller_can_close_or_enqueue(c)) return;
   WsPullInto *d = c->into_head;
   if (d && d->filled) {
     size_t width = scr_bytes_elem_size(d->view->elem);
     if (d->byob && width && d->filled % width) {
-      ScrDyn *error = ws_state_error_value("Insufficient bytes to fill elements in the given buffer");
+      ScrDyn *error = ws_state_error_value("Partial read");
       ws_rcontroller_error(c, error);
+      if (!scr_exc_pending()) scr_dyn_throw(scr_dyn_retain(error));
       scr_dyn_release(error);
       return;
     }
   }
-  ws_rcontroller_close(c);
+  if (c->queue.length) {
+    c->close_requested = true;
+    return;
+  }
+  ws_rcontroller_clear_algorithms(c);
+  ws_readable_close(c->stream);
 }
 
 /* readableStreamDefaultControllerEnqueue: false with the exception pending
@@ -1468,12 +1488,10 @@ static void ws_bytes_settle(WsRController *c, ScrDyn *error, bool done) {
   }
 }
 
-/* ReadableByteStreamControllerEnqueue: false with the exception pending. */
+/* ReadableByteStreamControllerEnqueue: false with the exception pending. The
+ * chunk's own validation comes first, as in Node, so a closed controller
+ * still names a bad chunk before it names its state. */
 static bool ws_bytes_enqueue(WsRController *c, ScrDyn *chunk) {
-  if (!ws_rcontroller_can_close_or_enqueue(c)) {
-    ws_state_error("Controller is already closed");
-    return false;
-  }
   if (chunk->kind != SCR_DYN_BYTES) {
     scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", chunk);
     return false;
@@ -1484,6 +1502,11 @@ static bool ws_bytes_enqueue(WsRController *c, ScrDyn *chunk) {
   if (!total) {
     scr_bytes_release(source);
     ws_state_error("chunk ArrayBuffer is zero-length or detached");
+    return false;
+  }
+  if (!ws_rcontroller_can_close_or_enqueue(c)) {
+    scr_bytes_release(source);
+    ws_rcontroller_closed_error(c);
     return false;
   }
   /* The controller's copy: a later write through the enqueued view is not
@@ -5220,7 +5243,7 @@ static ScrDyn *ws_rcontroller_method(void *ptr, ScrDyn *self, const char *method
   size_t len = strlen(method);
   if (ws_name(method, len, "close")) {
     if (!ws_rcontroller_can_close_or_enqueue(c)) {
-      ws_state_error("Controller is already closed");
+      ws_rcontroller_closed_error(c);
       return NULL;
     }
     if (c->bytes) ws_bytes_close(c);
@@ -5228,13 +5251,13 @@ static ScrDyn *ws_rcontroller_method(void *ptr, ScrDyn *self, const char *method
     return ws_undef();
   }
   if (ws_name(method, len, "enqueue")) {
-    if (!ws_rcontroller_can_close_or_enqueue(c)) {
-      ws_state_error("Controller is already closed");
-      return NULL;
-    }
     if (c->bytes) {
       if (!ws_bytes_enqueue(c, ws_arg(args, argc, 0))) return NULL;
       return ws_undef();
+    }
+    if (!ws_rcontroller_can_close_or_enqueue(c)) {
+      ws_rcontroller_closed_error(c);
+      return NULL;
     }
     if (!ws_rcontroller_enqueue(c, ws_arg(args, argc, 0))) return NULL;
     return ws_undef();

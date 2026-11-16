@@ -9,7 +9,7 @@ import { isErrorFirstErrorType } from "./builtins/arguments.js";
 import { InternalCompilerError } from "../../errors.js";
 import { noteCrashSite } from "../../diagnostics/crash-site.js";
 import * as ts from "../ts7/adapter.js";
-import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
+import { isRebindableFunction, isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -132,12 +132,16 @@ export function isTopLevelFnSymbol(lowerer: Lowerer, ident: ts.Identifier): bool
 export function lowerNestedFunctionDecl(lowerer: Lowerer, stmt: ts.FunctionDeclaration): IrStmt {
   if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous function declarations");
   const { funcType } = lowerer.lambdaSignature(stmt);
+  // A declaration the enclosing code reassigns is an ordinary mutable
+  // binding the assignment can replace with any function: its storage is
+  // checked-dynamic, and every call goes through that storage.
+  const rebindable = isRebindableFunction(lowerer, stmt);
   // Function declaration bindings are mutable in JavaScript. More
   // importantly, putting the empty slot into the owning statement list
   // BEFORE lowerLambda lets a sibling lowered from that body capture this
   // local's eventual box. The local object may become boxed while either
   // body lowers; backends inspect its final shape when emitting varDecl.
-  const local = lowerer.declareLocal(stmt.name, stmt.name.text, funcType, true);
+  const local = lowerer.declareLocal(stmt.name, stmt.name.text, rebindable ? DYN : funcType, true);
   let declared = false;
   for (let i = lowerer.activeStmtLists.length - 1; i >= 0; i--) {
     const entry = lowerer.activeStmtLists[i]!;
@@ -151,7 +155,8 @@ export function lowerNestedFunctionDecl(lowerer: Lowerer, stmt: ts.FunctionDecla
       "lowerer bug: nested function declaration has no active statement list",
     );
   }
-  const init = lowerer.lowerLambda(stmt);
+  const lowered = lowerer.lowerLambda(stmt);
+  const init = rebindable ? lowerer.coerceInto(stmt, lowered, DYN) : lowered;
   // Body inference may settle a JS return differently from the initial
   // checker signature. Publish that same ABI on the hoisted binding and
   // every mutable capture of it before callers are lowered.

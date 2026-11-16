@@ -74,6 +74,7 @@ function buildLibFnSignatures() {
     "fetch.responseLight": { argTypes: [DYN], result: arrayOf(STRING) },
     "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "abort.controllerNew": { argTypes: [], result: DYN },
+    "abort.signalIs": { argTypes: [DYN], result: BOOL },
     /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
      * the Event constructors take the argument vector as one dyn array and
      * throw Node's validation errors; `event.is` is `v instanceof Event`

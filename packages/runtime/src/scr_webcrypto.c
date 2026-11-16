@@ -1258,6 +1258,12 @@ static ScrDyn *scr_wc_import_kmac(const char *format, ScrBytes *data, const ScrW
     }
     result = scr_crypto_key_new(view->data, len, algorithm->name, NULL, length, (unsigned)usages,
                                 extractable);
+    /* A declared bit length that is not a whole byte count keeps only its
+     * high bits, like Node's key import. */
+    if (result) {
+      ScrCryptoKey *created = scr_crypto_key_of(result);
+      scr_wc_truncate_bits(created->data, created->len, length);
+    }
   }
 done:
   scr_bytes_release(bytes);
@@ -1766,7 +1772,12 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, ScrBytes **mac_o
       }
       ScrBytes *mac = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
       ScrKeccakCtx ctx;
-      scr_kmac_init(&ctx, strcmp(algorithm.name, "KMAC256") == 0, key->data, key->len,
+      /* KMAC encodes the key's declared bit length, which a WebCrypto key
+       * can record below its whole byte count. */
+      size_t key_bits = key->length > 0 ? (size_t)key->length : key->len * 8;
+      size_t key_bytes = (key_bits + 7) / 8;
+      if (key_bytes > key->len) key_bytes = key->len;
+      scr_kmac_init(&ctx, strcmp(algorithm.name, "KMAC256") == 0, key->data, key_bytes, key_bits,
                     algorithm.customization ? algorithm.customization->data : NULL,
                     algorithm.customization
                         ? (size_t)scr_bytes_byte_len(algorithm.customization)

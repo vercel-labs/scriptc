@@ -24,6 +24,19 @@ const custom = await crypto.subtle.sign(
 );
 console.log("custom", Buffer.from(custom).toString("hex"));
 
+// A key's declared bit length that is not a whole byte count keeps only its
+// high bits and feeds KMAC's key encoding at that bit length.
+for (const length of [121, 122, 127]) {
+  const bitsKey = await crypto.subtle.importKey("raw-secret", keyBytes, { name: "KMAC128", length }, true, [
+    "sign",
+  ]);
+  const exported = Buffer.from(await crypto.subtle.exportKey("raw-secret", bitsKey));
+  const signature = Buffer.from(
+    await crypto.subtle.sign({ name: "KMAC128", outputLength: 32 }, bitsKey, Buffer.from("abc")),
+  );
+  console.log("bits", length, exported.toString("hex"), signature.toString("hex"));
+}
+
 const jwk = await crypto.subtle.exportKey("jwk", key);
 console.log("jwk", JSON.stringify(jwk));
 const jwk256 = await crypto.subtle.importKey(

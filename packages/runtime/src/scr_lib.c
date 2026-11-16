@@ -12763,7 +12763,7 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
     mac->mac = true;
     mac->out_len = (size_t)out;
     mac->inner.alg = kmac256 ? SCR_DIGEST_KECCAK_KMAC256 : SCR_DIGEST_KECCAK_KMAC128;
-    scr_kmac_init(&mac->inner.state.keccak, kmac256, bytes->data, keylen,
+    scr_kmac_init(&mac->inner.state.keccak, kmac256, bytes->data, keylen, keylen * 8,
                   custom ? custom->data : NULL,
                   custom ? (size_t)scr_bytes_byte_len(custom) : 0);
     scr_bytes_release(custom);

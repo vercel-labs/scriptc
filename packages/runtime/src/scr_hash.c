@@ -168,7 +168,20 @@ static size_t scr_kmac_right_encode(unsigned char out[9], uint64_t x) {
 }
 
 /* encode_string(S) = left_encode(len(S) in bits) || S, absorbed as it
+ * goes; the byte count feeds bytepad's zero padding. The bit length can
+ * differ from the byte length's when a WebCrypto key records a
+ * non-byte-aligned size. */
+static size_t scr_kmac_encode_bits(ScrKeccakCtx *ctx, const unsigned char *s, size_t bits) {
+  unsigned char head[9];
+  size_t n = scr_kmac_left_encode(head, (uint64_t)bits);
+  scr_keccak_update(ctx, head, n);
+  size_t bytes = (bits + 7) / 8;
+  if (bytes != 0) scr_keccak_update(ctx, s, bytes);
+  return n + bytes;
+}
+/* encode_string(S) = left_encode(len(S) in bits) || S, absorbed as it
  * goes; the byte count feeds bytepad's zero padding. */
+
 static size_t scr_kmac_encode_string(ScrKeccakCtx *ctx, const unsigned char *s, size_t len) {
   unsigned char head[9];
   size_t n = scr_kmac_left_encode(head, (uint64_t)len * 8);
@@ -185,7 +198,7 @@ static void scr_kmac_pad_to_rate(ScrKeccakCtx *ctx, size_t absorbed) {
 }
 
 void scr_kmac_init(ScrKeccakCtx *ctx, bool kmac256, const unsigned char *key, size_t keylen,
-                   const unsigned char *custom, size_t customlen) {
+                   size_t key_bits, const unsigned char *custom, size_t customlen) {
   size_t rate = kmac256 ? 136 : 168;
   scr_keccak_init(ctx, rate, 0x04);
   /* bytepad(encode_string("KMAC") || encode_string(S), rate) */
@@ -196,10 +209,12 @@ void scr_kmac_init(ScrKeccakCtx *ctx, bool kmac256, const unsigned char *key, si
   absorbed += scr_kmac_encode_string(ctx, (const unsigned char *)"KMAC", 4);
   absorbed += scr_kmac_encode_string(ctx, custom, customlen);
   scr_kmac_pad_to_rate(ctx, absorbed);
-  /* bytepad(encode_string(K), rate) */
+  /* bytepad(encode_string(K), rate), with the key's declared bit length
+   * (a WebCrypto key can record one that is not a whole byte count). */
+  (void)keylen;
   n = scr_kmac_left_encode(head, rate);
   scr_keccak_update(ctx, head, n);
-  absorbed = n + scr_kmac_encode_string(ctx, key, keylen);
+  absorbed = n + scr_kmac_encode_bits(ctx, key, key_bits);
   scr_kmac_pad_to_rate(ctx, absorbed);
 }
 

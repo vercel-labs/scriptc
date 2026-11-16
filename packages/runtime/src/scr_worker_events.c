@@ -946,6 +946,11 @@ static void scr_worker_dispatch(void) {
     ScrWorkerView *source = scr_worker_views;
     while (source && scr_worker_thread_id(source->thread) != event->source) source = source->next;
     ScrStream *stream = source ? source->stdio[stderr_stream] : NULL;
+    /* Node pipes a stream the options did not capture to the process's own
+     * output, and its pipe is registered at construction: the chunk reaches
+     * that output before a listener the program adds later runs. */
+    if (source && !source->stdio_captured[stderr_stream] && event->data && event->length)
+      scr_worker_pipe_output(stderr_stream ? 2 : 1, event->data, event->length);
     if (stream) {
       ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)event->length);
       memcpy(chunk->data, event->data, event->length);
@@ -953,10 +958,6 @@ static void scr_worker_dispatch(void) {
       scr_worker_stdio_ops->push(stream, chunk);
       scr_bytes_release(chunk);
     }
-    /* Node pipes a stream the options did not capture to the process's own
-     * output. */
-    if (source && !source->stdio_captured[stderr_stream] && event->data && event->length)
-      scr_worker_pipe_output(stderr_stream ? 2 : 1, event->data, event->length);
     scr_mail_event_free(event);
     return;
   }

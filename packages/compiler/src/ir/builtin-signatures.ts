@@ -2716,6 +2716,9 @@ function buildLibFnSignatures() {
     "http.resWriteContinue": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteProcessing": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteEarlyHints": { argTypes: [HTTPRES_T, arrayOf(STRING)], result: VOID },
+    /* writeInformation(status[, headers]): the generic informational
+     * response, answering write()'s backpressure boolean. */
+    "http.resWriteInformation": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: BOOL },
     "http.resWrite": { argTypes: [HTTPRES_T, STRING], result: VOID },
     "http.resWriteBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: VOID },
     "http.resEnd": { argTypes: [HTTPRES_T], result: VOID },

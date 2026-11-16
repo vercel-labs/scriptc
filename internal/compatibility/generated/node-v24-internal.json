@@ -57660,6 +57660,8 @@
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/http-client-max-headers-count.ts",
+          "tests/corpus/http-informational-responses.ts",
+          "tests/corpus/http-informational-untyped.mjs",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-server-client-error.ts",
           "tests/corpus/http-server-limit-values.ts",
@@ -60277,7 +60279,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http.response.writeContinue",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/http-informational-untyped.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -60303,7 +60306,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http.response.writeEarlyHints",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/http-informational-untyped.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -60354,10 +60358,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.response.writeInformation",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-informational-responses.ts",
+          "tests/corpus/http-informational-untyped.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -60383,7 +60388,8 @@
         "status": "partial",
         "evidence": "compiler-feature:http.response.writeProcessing",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/http-informational-untyped.mjs"
         ]
       },
       "anchorSource": "exact"

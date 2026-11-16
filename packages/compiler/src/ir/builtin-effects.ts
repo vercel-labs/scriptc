@@ -387,6 +387,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
+  // writeInformation validates the status (ERR_OUT_OF_RANGE, and
+  // ERR_HTTP_INVALID_STATUS_CODE for 101), the state
+  // (ERR_HTTP_HEADERS_SENT) and every header name and value.
+  "http.resWriteInformation",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",

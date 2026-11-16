@@ -146,6 +146,9 @@ declare module "http" {
     ): ServerResponse;
     writeContinue(callback?: () => void): void;
     writeProcessing(callback?: () => void): void;
+    /* Node's generic informational response: any 1xx status but 101,
+     * answered with write()'s backpressure boolean. */
+    writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void): void;
     write(data: string | Uint8Array): void;
     flushHeaders(): void;

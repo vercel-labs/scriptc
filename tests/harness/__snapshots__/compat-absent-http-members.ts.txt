@@ -31,25 +31,18 @@ compat-absent-http-members.ts:18:23 - error SC0001: Property 'signal' does not e
   17 |   // IncomingMessage: the abort signal.
   18 |   console.log(request.signal.aborted);
      |                       ^~~~~~
-  19 |   // OutgoingMessage: several headers at once, an arbitrary 1xx response,
+  19 |   // OutgoingMessage: several headers at once and the state and event behind
 
-compat-absent-http-members.ts:21:12 - error SC0001: Property 'setHeaders' does not exist on type 'ServerResponse'. Did you mean 'setHeader'?
+compat-absent-http-members.ts:22:12 - error SC0001: Property 'setHeaders' does not exist on type 'ServerResponse'. Did you mean 'setHeader'?
 
-  20 |   // and the state and event behind write()'s result.
-  21 |   response.setHeaders(new Map([["x-a", "1"]]));
+  21 |   // three that delegate to it) have their own differential programs.
+  22 |   response.setHeaders(new Map([["x-a", "1"]]));
      |            ^~~~~~~~~~
-  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
-
-compat-absent-http-members.ts:22:12 - error SC0001: Property 'writeInformation' does not exist on type 'ServerResponse'.
-
-  21 |   response.setHeaders(new Map([["x-a", "1"]]));
-  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
-     |            ^~~~~~~~~~~~~~~~
   23 |   console.log(response.writableLength);
 
 compat-absent-http-members.ts:23:24 - error SC0001: Property 'writableLength' does not exist on type 'ServerResponse'.
 
-  22 |   response.writeInformation(103, { link: "</a.css>; rel=preload" });
+  22 |   response.setHeaders(new Map([["x-a", "1"]]));
   23 |   console.log(response.writableLength);
      |                        ^~~~~~~~~~~~~~
   24 |   response.on("drain", () => {});

@@ -1928,6 +1928,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.resWriteContinue": "scr_http_res_write_continue",
   "http.resWriteProcessing": "scr_http_res_write_processing",
   "http.resWriteEarlyHints": "scr_http_res_write_early_hints",
+  "http.resWriteInformation": "scr_http_res_write_information",
   "http.resWrite": "scr_http_res_write_str",
   "http.resWriteBytes": "scr_http_res_write_bytes",
   "http.resEnd": "scr_http_res_end",

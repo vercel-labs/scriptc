@@ -53,17 +53,8 @@
    "message": "Property 'setHeaders' does not exist on type 'ServerResponse'. Did you mean 'setHeader'?",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1057,
-    "end": 1067
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'writeInformation' does not exist on type 'ServerResponse'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1105,
-    "end": 1121
+    "start": 1153,
+    "end": 1163
    }
   },
   {
@@ -71,8 +62,8 @@
    "message": "Property 'writableLength' does not exist on type 'ServerResponse'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1186,
-    "end": 1200
+    "start": 1213,
+    "end": 1227
    }
   },
   {
@@ -80,8 +71,8 @@
    "message": "Argument of type '\"drain\"' is not assignable to parameter of type '\"close\" | \"finish\" | \"prefinish\"'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1217,
-    "end": 1224
+    "start": 1244,
+    "end": 1251
    }
   },
   {
@@ -89,8 +80,8 @@
    "message": "Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import(\"node:http\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1331,
-    "end": 1352
+    "start": 1358,
+    "end": 1379
    }
   }
  ]

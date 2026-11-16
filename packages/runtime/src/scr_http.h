@@ -151,6 +151,9 @@ void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*bor
 void scr_http_res_write_continue(ScrHttpRes *r);
 void scr_http_res_write_processing(ScrHttpRes *r);
 void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
+/* writeInformation(status[, headers]): the generic informational response,
+ * status 100..199 but never 101; answers write()'s backpressure boolean. */
+bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed, nullable*/);
 /* writeHead with a CHECKED-DYNAMIC headers object (borrowed): OBJ
  * entries setHeader in insertion order (string/number values), then the
  * head goes out; undefined/null = the plain head; may throw. */

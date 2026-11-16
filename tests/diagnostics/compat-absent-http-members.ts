@@ -16,10 +16,10 @@ agent.destroy();
 const server = http.createServer((request, response) => {
   // IncomingMessage: the abort signal.
   console.log(request.signal.aborted);
-  // OutgoingMessage: several headers at once, an arbitrary 1xx response,
-  // and the state and event behind write()'s result.
+  // OutgoingMessage: several headers at once and the state and event behind
+  // write()'s result. The informational responses (writeInformation and the
+  // three that delegate to it) have their own differential programs.
   response.setHeaders(new Map([["x-a", "1"]]));
-  response.writeInformation(103, { link: "</a.css>; rel=preload" });
   console.log(response.writableLength);
   response.on("drain", () => {});
   response.end();

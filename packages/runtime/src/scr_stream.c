@@ -8711,6 +8711,7 @@ const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_retain_v, scr_stream_release_v, scr_stream_trace,
   scr_stream_push, scr_stream_push_null,
   scr_stream_write_done, scr_stream_final_done,
+  scr_stream_flowing,
 };
 
 static ScrDyn *scr_stream_dyn_view_v(void *stream) { return scr_stream_dyn_view(stream); }

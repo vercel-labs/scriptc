@@ -431,6 +431,11 @@ typedef struct ScrChildStreamOps {
   bool (*end)(ScrStream *);
   void (*write_done)(ScrStream *, ScrError *);
   void (*final_done)(ScrStream *, ScrError *);
+  /* Whether a Readable the parent holds takes chunks now (1 flowing, 0
+   * paused or never started, -1 null). A holder that also forwards the
+   * stream's bytes elsewhere pushes only while it does, so an unread stream
+   * cannot grow without bound. NULL when the stream unit is not linked. */
+  double (*flowing)(ScrStream *);
 } ScrChildStreamOps;
 extern const ScrChildStreamOps scr_stream_child_ops;
 ScrDyn *scr_stream_dyn_view(ScrStream *stream); /* borrowed; +1 live method/property view */

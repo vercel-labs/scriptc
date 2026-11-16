@@ -951,7 +951,14 @@ static void scr_worker_dispatch(void) {
      * that output before a listener the program adds later runs. */
     if (source && !source->stdio_captured[stderr_stream] && event->data && event->length)
       scr_worker_pipe_output(stderr_stream ? 2 : 1, event->data, event->length);
-    if (stream) {
+    /* Pushing into a Readable nothing reads grows its buffer without bound.
+     * A stream the options captured is Node's own buffered Readable; one they
+     * did not capture is drained by the pipe above, so it takes a chunk only
+     * while a reader (a 'data' listener or resume()) is flowing, as Node's
+     * pipe consumes everything else. */
+    bool flowing = stream != NULL && scr_worker_stdio_ops->flowing != NULL &&
+                   scr_worker_stdio_ops->flowing(stream) > 0;
+    if (stream && (source->stdio_captured[stderr_stream] || flowing)) {
       ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)event->length);
       memcpy(chunk->data, event->data, event->length);
       chunk->is_buffer = true;

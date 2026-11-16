@@ -70890,7 +70890,8 @@
           "tests/corpus/2858-import-meta-resolve/main.mjs",
           "tests/corpus/2860-require-resolve/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -70921,7 +70922,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -70975,7 +70977,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71006,7 +71009,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71037,7 +71041,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71090,7 +71095,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71117,7 +71123,8 @@
         "evidence": "compiler-feature:modules.require.resolve",
         "tests": [
           "tests/corpus/2858-import-meta-resolve/main.mjs",
-          "tests/corpus/2860-require-resolve/main.cjs"
+          "tests/corpus/2860-require-resolve/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71144,7 +71151,8 @@
         "evidence": "compiler-feature:modules.require.resolve.paths",
         "tests": [
           "tests/corpus/2858-import-meta-resolve/main.mjs",
-          "tests/corpus/2860-require-resolve/main.cjs"
+          "tests/corpus/2860-require-resolve/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71170,7 +71178,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.cache",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71224,7 +71233,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71277,7 +71287,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71303,7 +71314,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.children",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71334,7 +71346,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71365,7 +71378,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71396,7 +71410,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71422,7 +71437,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.id",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71448,7 +71464,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.isPreloading",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71474,7 +71491,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.loaded",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71500,7 +71518,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.parent",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71526,7 +71545,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.path",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71552,7 +71572,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.paths",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71578,7 +71599,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.Module",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"

@@ -118,8 +118,10 @@ import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509
 import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
+  cjsAbsentMemberValue,
   cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
+  cjsModuleLacksExport,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
   wholeExportValue,
@@ -159,9 +161,16 @@ import {
   findGenericMethodOn,
   lowerStaticFieldRead,
   lowerStaticSuperRead,
+  type ClassInfo,
 } from "../lower-classes.js";
 import { checkRefusedMemberUse } from "../class-member-refusals.js";
-import { isErrorPrototypeValue, lowerClassPrototypeData } from "../class-prototypes.js";
+import {
+  isErrorPrototypeValue,
+  lowerClassPrototypeData,
+  prototypeMadeClass,
+  prototypeViewable,
+  receiverPrototypeView,
+} from "../class-prototypes.js";
 import { isEnumMemberRead, lowerEnumAccess } from "../lower-enums.js";
 import {
   hasOptionalChainGuard,
@@ -212,6 +221,7 @@ import {
   ambientNsRootOf,
   ambientUndefReadType,
   ambientUndefVarRootOf,
+  cjsNamespaceImportDep,
   contextualUndefReadType,
   fenceEarlyNsMemberRef,
   nodeUndefinedGlobalName,
@@ -500,6 +510,19 @@ export function lowerPropertyAccessExpr(
         return nodeThrowExpr(1, "", aliasMember.throwMessage, DYN, loc);
       return { kind: "varRef", localId: aliasMember.slot.id, type: aliasMember.slot.type, loc };
     }
+  }
+  // `ns.member` through a namespace import of a CommonJS module whose
+  // namespace object has no such property (Node's lexer detects the
+  // module's exports): Node reads undefined, and a namespace object
+  // inherits nothing from Object.prototype.
+  if (
+    expr.questionDotToken === undefined &&
+    ts.isIdentifier(expr.expression) &&
+    ts.isIdentifier(expr.name)
+  ) {
+    const nsDep = cjsNamespaceImportDep(lowerer, expr.expression);
+    if (nsDep !== null && !lowerer.cjsNamespaceOf(nsDep).names.has(expr.name.text))
+      return cjsAbsentMemberValue(lowerer, expr, expr.name);
   }
   // The prototype of a held primitive constructor stays refused by name in
   // the pass that holds constructors untyped, as it is in the typed form (a
@@ -1168,6 +1191,19 @@ export function lowerPropertyAccessExpr(
       const slot =
         dep === null ? null : lowerer.cjsConditionalWholeExportSlotOf(dep, expr.name.text);
       if (slot !== null) return { kind: "varRef", localId: slot.id, type: slot.type, loc };
+    }
+    // A member the module's exports object carries no export for reads
+    // undefined in Node — the shipped JavaScript never defines it
+    // (scheduler.production.js omits the log hooks react-dom reads). The
+    // read is typed with the declaration it was written against plus the
+    // undefined arm the runtime can hold. Object.prototype's own names
+    // stay on their existing paths: a plain exports object inherits them.
+    if (ts.isIdentifier(expr.name)) {
+      const dep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      if (dep !== null && cjsModuleLacksExport(lowerer, dep, expr.name.text, expr.name))
+        return cjsAbsentMemberValue(lowerer, expr, expr.name);
     }
     return lowerExpr(lowerer, expr.name);
   }
@@ -4479,25 +4515,91 @@ function plainReadChain(lowerer: Lowerer, node: ts.Expression): boolean {
   return ts.isIdentifier(current) || current.kind === ts.SyntaxKind.ThisKeyword;
 }
 
+/** A member read on an object made from a class's prototype
+ * (isPrototypeMadeReference): the read stays checked-dynamic, and a name the
+ * class declares as a field or accessor keeps an undefined arm, which is
+ * what the made object's absent own property yields in Node. Null for every
+ * other receiver. */
+function prototypeMadeMemberRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  value: IrExpr,
+  optional: boolean,
+  info: ClassInfo,
+  checkedThis: boolean,
+): IrExpr | null {
+  const getter = lowerer.findMethodOn(info, `get:${expr.name.text}`);
+  const setter = getter === null ? lowerer.findMethodOn(info, `set:${expr.name.text}`) : null;
+  const member = info.fields.get(expr.name.text) ?? getter?.sig.ret ?? setter?.sig.params[0]?.type;
+  const read: IrExpr = {
+    kind: "dynKeyGet",
+    value,
+    key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+    ...(optional ? { optional: true as const } : {}),
+    type: DYN,
+    loc: locOf(expr),
+  };
+  if (member === undefined || member.kind === "dyn") return read;
+  // A member read through a checked-dynamic `this` runs inside the member
+  // over an object that may have no such property: in a TypeScript member a
+  // number converts with JavaScript's ToNumber, so an absent field counts
+  // as NaN exactly as `undefined * 2` does in Node, rather than failing the
+  // declared type. JavaScript members already lower their reads with
+  // JavaScript's semantics and keep the plain read.
+  if (checkedThis) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) return read;
+    return member.kind === "f64"
+      ? {
+          kind: "libCall",
+          fn: "dyn.toNumberCoerce",
+          args: [read],
+          type: F64,
+          loc: locOf(expr),
+        }
+      : read;
+  }
+  return lowerer.coerceInto(expr, read, lowerer.withUndefinedArm(member));
+}
+
 export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
   // A checked receiver already owns its property table. An ambient
   // generic method signature must not divert its value into native
   // object-literal specialization (Array.prototype.map is one example).
-  if (ts.isIdentifier(expr.expression)) {
-    const stored = lowerer.peekLocal(expr.expression) ?? lowerer.globalOf(expr.expression);
+  if (ts.isIdentifier(expr.expression) || expr.expression.kind === ts.SyntaxKind.ThisKeyword) {
+    const isThis = expr.expression.kind === ts.SyntaxKind.ThisKeyword;
+    const stored = isThis
+      ? lowerer.resolveThis()
+      : (lowerer.peekLocal(expr.expression as ts.Identifier) ??
+        lowerer.globalOf(expr.expression as ts.Identifier));
     if (stored?.type.kind === "dyn") {
       const value = lowerer.lowerExpr(expr.expression);
-      if (value.type.kind === "dyn")
+      if (value.type.kind === "dyn") {
+        const optional =
+          expr.questionDotToken !== undefined || hasOptionalChainGuard(expr.expression, lowerer);
+        let info: ClassInfo | null = null;
+        if (isThis) {
+          const current = lowerer.currentClass;
+          info = current && current.decl !== null ? current : null;
+        } else {
+          const declaration = lowerer.checker.getSymbolAtLocation(
+            expr.expression,
+          )?.valueDeclaration;
+          if (declaration && ts.isVariableDeclaration(declaration))
+            info = prototypeMadeClass(lowerer, declaration);
+        }
+        const made = info
+          ? prototypeMadeMemberRead(lowerer, expr, value, optional, info, isThis)
+          : null;
+        if (made) return made;
         return {
           kind: "dynKeyGet",
           value,
           key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
-          ...(expr.questionDotToken || hasOptionalChainGuard(expr.expression, lowerer)
-            ? { optional: true as const }
-            : {}),
+          ...(optional ? { optional: true as const } : {}),
           type: DYN,
           loc: locOf(expr),
         };
+      }
     }
   }
   // A presence probe of a member read through a record assertion
@@ -6400,6 +6502,75 @@ export function fieldGetExpr(
       );
     }
     checkRefusedMemberUse(lowerer, getF.declarer, `get:${target.field}`, blame);
+    // A name the program reflects on some class prototype: the shared
+    // prototype view may hold a replaced getter (Object.defineProperty on
+    // the prototype), so read through it with the instance as the receiver.
+    if (
+      !target.field.startsWith("#") &&
+      lowerer.prototypeMethodAccesses.has(target.field) &&
+      prototypeViewable(getF.declarer)
+    ) {
+      // The read names the receiver up to four times; an effectful
+      // expression (`make().x`) runs once, into a hidden local.
+      const receiverValue = lowerer.coerceToExpected(target.obj, DYN);
+      const stable =
+        isSafeToRepeat(receiverValue) || lowerer.fnStack.length === 0
+          ? null
+          : lowerer.declareHiddenLocal("%prototypeReceiver", DYN);
+      const receiver = (): IrExpr =>
+        stable === null ? receiverValue : varRef(stable.id, DYN, loc);
+      // Node's [[Get]] starts at the receiver: the receiver's own class's
+      // prototype may replace what the class that declares the getter put
+      // there, and a base-class parameter can hold any subclass instance.
+      const view = receiverPrototypeView(
+        lowerer,
+        lowerer.classes.get(target.className) ?? null,
+        getF.declarer,
+        receiver(),
+        loc,
+      );
+      if (view && view.start.prototypeReflectionRefusal === undefined) {
+        const prototype = view.prototype;
+        // [[Get]] starts at the receiver: an own property the program wrote
+        // shadows the prototype's, whatever the definition put there.
+        const key: IrExpr = { kind: "strLit", value: target.field, type: STRING, loc };
+        const read: IrExpr = {
+          kind: "ternary",
+          cond: {
+            kind: "libCall",
+            fn: "dyn.hasOwn",
+            args: [receiver(), key],
+            type: BOOL,
+            loc,
+          },
+          then: {
+            kind: "dynKeyGet",
+            value: receiver(),
+            key,
+            type: DYN,
+            loc,
+          },
+          else_: {
+            kind: "libCall",
+            fn: "dyn.reflectGet",
+            args: [prototype, lowerer.coerceToExpected(key, DYN), receiver()],
+            type: DYN,
+            loc,
+          },
+          type: DYN,
+          loc,
+        };
+        const result = lowerer.coerceToExpected(read, getF.sig.ret);
+        if (stable === null) return result;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: stable.id, init: receiverValue, loc }],
+          result,
+          type: result.type,
+          loc,
+        };
+      }
+    }
     if (
       !target.field.startsWith("#") &&
       isJsSourceFile(ts.getSourceFileOfNode(blame)) &&

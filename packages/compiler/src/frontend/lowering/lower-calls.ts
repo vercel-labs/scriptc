@@ -80,6 +80,8 @@ import {
 import { callableMemberFieldTarget, lowerCallableAssign } from "./callable-properties.js";
 import type { Lowerer } from "./lowerer.js";
 import {
+  cjsAbsentMemberValue,
+  cjsModuleLacksExport,
   inlineNamespaceRequireOf,
   lowerInlineRequireValue,
   lowerUncompiledRequireCall,
@@ -91,7 +93,11 @@ import { lowerGenMethodCall } from "./lower-generators.js";
 import { lowerClassSymbolMethodCall } from "./symbol-methods.js";
 import { lowerReadlineDisposeCall } from "./builtins/readline.js";
 import { errorToStringCall } from "./error-methods.js";
-import { lowerClassPrototypeAssign, lowerClassPrototypeDescriptors } from "./class-prototypes.js";
+import {
+  isPrototypeViewReference,
+  lowerClassPrototypeAssign,
+  lowerClassPrototypeDescriptors,
+} from "./class-prototypes.js";
 import {
   BYTES_ELEMENT_NAME,
   BYTES_U8,
@@ -754,9 +760,12 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
     const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
-      // Node calls the member with `this` bound to the module's exports.
+      // Node calls the member with `this` bound to the module's exports. A
+      // member the module does not carry is undefined, so no `this` is
+      // ever bound: the call is Node's "is not a function" TypeError.
       if (
         ts.isIdentifier(expr.expression.name) &&
+        !cjsModuleLacksExport(lowerer, req.dep, expr.expression.name.text, expr.expression.name) &&
         !cjsExportCallIgnoresThis(lowerer, req.dep, expr.expression.name.text)
       ) {
         lowerer.unsupported(
@@ -1899,6 +1908,25 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (!ts.isIdentifier(nameId)) {
       lowerer.unsupported("SC1090", nameId, "private-named module members");
     }
+    // A member the module's exports object does not carry is undefined;
+    // Node evaluates the arguments and then throws its "is not a function"
+    // TypeError (the checked-dynamic call's answer for a non-callable).
+    {
+      const recv = expr.expression.expression;
+      const dep = ts.isIdentifier(recv)
+        ? lowerer.cjsModuleBindingDepOf(recv)
+        : lowerer.cjsModuleRefDepOf(recv);
+      if (dep !== null && cjsModuleLacksExport(lowerer, dep, nameId.text, nameId)) {
+        const callee: IrExpr = {
+          kind: "dynFrom",
+          value: cjsAbsentMemberValue(lowerer, expr.expression, nameId),
+          type: DYN,
+          loc,
+        };
+        const missing = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+        if (missing) return missing;
+      }
+    }
     // A conditional whole export answers below through a slot; the receiver
     // check comes first so that path cannot invoke a receiver-dependent
     // export with no `this`.
@@ -1941,7 +1969,16 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // `exports.f =` statement assigns.
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
     const g = cjsInFileExportGlobalOf(lowerer, expr.expression);
-    if (g && (g.type.kind === "func" || g.type.kind === "dyn")) {
+    // A member some path leaves unassigned has an undefined-armed slot (the
+    // absent-member widening): the call still evaluates its arguments and
+    // then throws Node's "is not a function" TypeError when the arm is
+    // undefined, so it rides the checked-dynamic call.
+    const absentCapable =
+      g !== null &&
+      g.type.kind === "union" &&
+      lowerer.stripUndefinedArm(g.type).kind === "func" &&
+      lowerer.dynConvertible(g.type);
+    if (g && (g.type.kind === "func" || g.type.kind === "dyn" || absentCapable)) {
       const sf = ts.getSourceFileOfNode(expr);
       const member = expr.expression.name.text;
       // A function that reads `this` only for its sibling exports gets them
@@ -1951,7 +1988,11 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         : (lowerCjsExportsReceiver(lowerer, expr, sf, member) ?? null);
       const refusal = `calling '${ts.getTextOfNode(expr.expression)}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`;
       if (receiver === null) lowerer.unsupported("SC1090", expr, refusal);
-      const callee: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
+      const slot: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
+      const callee: IrExpr =
+        g.type.kind === "func" || g.type.kind === "dyn"
+          ? slot
+          : { kind: "dynFrom", value: slot, type: DYN, loc };
       const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
       if (checked) {
         if (receiver === undefined) return checked;
@@ -9658,10 +9699,11 @@ function lowerDefineReceiver(lowerer: Lowerer, targetNode: ts.Expression): IrExp
   // The checker gives C.prototype the instance type, but its lowered
   // value is the shared prototype table, not an instance to unbox.
   const prototypeTarget =
-    ts.isPropertyAccessExpression(targetNode) &&
-    targetNode.name.text === "prototype" &&
-    (exactClassOfReceiver(lowerer, targetNode.expression) !== null ||
-      storedClassValueType(lowerer, targetNode.expression)?.kind === "classval");
+    (ts.isPropertyAccessExpression(targetNode) &&
+      targetNode.name.text === "prototype" &&
+      (exactClassOfReceiver(lowerer, targetNode.expression) !== null ||
+        storedClassValueType(lowerer, targetNode.expression)?.kind === "classval")) ||
+    isPrototypeViewReference(lowerer, targetNode);
   const declaredTarget =
     target?.type.kind === "dyn" &&
     !prototypeTarget &&

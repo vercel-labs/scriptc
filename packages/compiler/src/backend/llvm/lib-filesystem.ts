@@ -515,13 +515,16 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
   }
   if (e.fn === "fs.watch") {
     // The callback-less form: NULL listener/adapter. Throws Node-shaped
-    // fs errors when the path won't open; an open watcher holds the
-    // loop (usesTimers).
+    // fs errors when the path won't open; a reffed watcher holds the
+    // loop (usesTimers), one created with persistent: false does not.
     host.usesTimers = true;
     const path = host.emitExpr(e.args[0]!);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
+    const persistent = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext)`);
     const t = B.tmp();
-    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false)`);
+    B.line(
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false, i1 ${persistent.name})`,
+    );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
@@ -538,12 +541,13 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
       throw new InternalCompilerError("llvm emitter bug: fs.watchCb callback not a func");
     const path = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
+    const persistent = host.emitExpr(e.args[2]!);
     host.toHeap(cb);
     const adapter = watchChangeAdapter(host, cbT);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"})`,
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"}, i1 ${persistent.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
@@ -602,6 +606,15 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const w = host.emitExpr(e.args[0]!);
     host.declare(`declare void @scr_watcher_close(ptr)`);
     B.line(`call void @scr_watcher_close(ptr ${w.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "watcher.ref" || e.fn === "watcher.unref") {
+    // The loop-liveness toggle; a closed watcher ignores both, so neither
+    // throws.
+    const w = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "watcher.ref" ? "scr_watcher_ref" : "scr_watcher_unref";
+    host.declare(`declare void @${sym}(ptr)`);
+    B.line(`call void @${sym}(ptr ${w.name})`);
     return { name: "", type: e.type };
   }
   if (e.fn === "fs.watchFile") {

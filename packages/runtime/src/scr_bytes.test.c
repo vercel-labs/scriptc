@@ -180,3 +180,98 @@ void scr_bytes_test_buffer_pool(void) {
   assert(scr_buffer_pool_size() == 65536);
   assert(scr_bytes_live_count() == before);
 }
+
+/* src.copy(dst, targetStart?, sourceStart?, sourceEnd?): every index
+ * converts through copyImpl's toInteger — a fractional index floors, and
+ * NaN, ±Infinity and a value outside the safe-integer range become the
+ * default 0 — so no index is ever reported as a non-integer. Only the
+ * sign and the bounds Node checks remain, and an absent index keeps its
+ * default (0, or the source length for sourceEnd) without converting. */
+void scr_bytes_test_copy_ladder(void) {
+  long before = scr_bytes_live_count();
+  ScrBytes *src = scr_bytes_new(SCR_BYTES_U8, 8);
+  for (size_t i = 0; i < 8; i++) scr_bytes_set(src, (double)i, (double)('a' + i));
+  ScrBytes *dst = scr_bytes_new(SCR_BYTES_U8, 8);
+
+  /* Fractional positions floor (toward -infinity, as Node's toInteger). */
+  for (size_t i = 0; i < 5; i++) scr_bytes_set(dst, (double)i, 'x');
+  assert(scr_bytes_copy_into(src, dst, 3, 1.9, 2.9, 4.9) == 2);
+  assert(dst->data[0] == 'x' && dst->data[1] == 'c' && dst->data[2] == 'd' && dst->data[3] == 'x');
+
+  /* NaN and ±Infinity in every position are 0, never a range error. */
+  assert(scr_bytes_copy_into(src, dst, 1, NAN, 0, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 1, INFINITY, 0, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 1, -INFINITY, 0, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 2, 0, NAN, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 2, 0, -INFINITY, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 3, 0, 0, NAN) == 0);
+  assert(scr_bytes_copy_into(src, dst, 3, 0, 0, INFINITY) == 0);
+
+  /* An integer-valued index beyond the safe-integer range is kept (it
+   * starts past both buffers), while a non-integer one there becomes 0. */
+  assert(scr_bytes_copy_into(src, dst, 1, 1e300, 0, 0) == 0);
+  assert(scr_bytes_copy_into(src, dst, 2, 0, 1e300, 0) == 0 && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_bytes_copy_into(src, dst, 3, 0, 1, 1e300) == 7);
+
+  /* The bounds Node checks after conversion still throw. */
+  assert(scr_bytes_copy_into(src, dst, 1, -1, 0, 0) == 0 && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_bytes_copy_into(src, dst, 2, 0, -1, 0) == 0 && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_bytes_copy_into(src, dst, 2, 0, 9, 0) == 0 && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_bytes_copy_into(src, dst, 3, 0, 0, -1) == 0 && scr_exc_pending());
+  scr_exc_clear();
+
+  /* Absent positions keep their defaults: the whole source at target 0. */
+  assert(scr_bytes_copy_into(src, dst, 0, -5, -5, -5) == 8);
+  assert(memcmp(dst->data, src->data, 8) == 0);
+
+  scr_bytes_release(dst);
+  scr_bytes_release(src);
+  assert(scr_bytes_live_count() == before);
+}
+
+/* indexOf/lastIndexOf's byteOffset ladder: a negative offset counts from
+ * the end, one that starts before the first byte searches nothing going
+ * back — except for an empty needle, which matches at 0 — NaN searches
+ * everything (0 forward, the end backward), and fractions truncate. */
+void scr_bytes_test_search_offsets(void) {
+  long before = scr_bytes_live_count();
+  ScrBytes *hay = scr_bytes_new(SCR_BYTES_U8, 9);
+  for (size_t i = 0; i < 9; i++) scr_bytes_set(hay, (double)i, "abcabcabc"[i]);
+  ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
+  ScrBytes *bc = scr_bytes_new(SCR_BYTES_U8, 2);
+  scr_bytes_set(bc, 0, 'b');
+  scr_bytes_set(bc, 1, 'c');
+  const double offsets[] = { -99, -9, -10, -1, 0, 1, NAN, 9, 99, 1.5, INFINITY, -INFINITY };
+  /* Node's answers for indexOf(needle, offset) and lastIndexOf(needle, offset). */
+  const double want_empty_fwd[] = { 0, 0, 0, 8, 0, 1, 0, 9, 9, 1, 9, 0 };
+  const double want_empty_back[] = { 0, 0, 0, 8, 0, 1, 9, 9, 9, 1, 9, 0 };
+  const double want_bc_fwd[] = { 1, 1, 1, -1, 1, 1, 1, -1, -1, 1, -1, 1 };
+  const double want_bc_back[] = { -1, -1, -1, 7, -1, 1, 7, 7, 7, 1, 7, -1 };
+  for (size_t i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+    assert(scr_bytes_index_of(hay, empty, offsets[i], 1, true) == want_empty_fwd[i]);
+    assert(scr_bytes_index_of(hay, empty, offsets[i], 1, false) == want_empty_back[i]);
+    assert(scr_bytes_index_of(hay, bc, offsets[i], 1, true) == want_bc_fwd[i]);
+    assert(scr_bytes_index_of(hay, bc, offsets[i], 1, false) == want_bc_back[i]);
+  }
+  /* utf16le searches whole 2-byte units. */
+  ScrBytes *u16 = scr_bytes_new(SCR_BYTES_U8, 6);
+  const uint8_t u16bytes[] = { 0x61, 0x00, 0x62, 0x00, 0x63, 0x00 };
+  for (size_t i = 0; i < 6; i++) scr_bytes_set(u16, (double)i, u16bytes[i]);
+  ScrBytes *b16 = scr_bytes_new(SCR_BYTES_U8, 2);
+  scr_bytes_set(b16, 0, 'b');
+  scr_bytes_set(b16, 1, 0);
+  assert(scr_bytes_index_of(u16, b16, -99, 2, true) == 2);
+  assert(scr_bytes_index_of(u16, b16, -1, 2, true) == -1);
+  assert(scr_bytes_index_of(u16, b16, NAN, 2, false) == 2);
+  assert(scr_bytes_index_of(u16, b16, 99, 2, false) == 2);
+  scr_bytes_release(b16);
+  scr_bytes_release(u16);
+  scr_bytes_release(bc);
+  scr_bytes_release(empty);
+  scr_bytes_release(hay);
+  assert(scr_bytes_live_count() == before);
+}

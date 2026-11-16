@@ -1557,8 +1557,17 @@ static void scr_stream_iter_step(ScrStream *s) {
     st->r.next_reading = true;
     ScrEntryKind kind;
     /* The adapter's read takes one buffered chunk (Node's toWeb enqueues
-     * each 'data' chunk); the iterator's own read takes the whole buffer. */
+     * each 'data' chunk); the iterator's own read takes the whole buffer.
+     * An empty buffer first runs the stream's _read through a zero-size
+     * read, so the chunks it pushes synchronously buffer as entries of
+     * their own instead of arriving as one merged read. */
     double want = -1;
+    if (st->r.next_single && !st->r.object_entries && st->r.n == 0 && !st->r.ended &&
+        !st->r.reading) {
+      ScrEntryKind fill_kind;
+      void *filled = scr_stream_read_n_kind(s, 0, &fill_kind);
+      if (filled) scr_stream_entry_release_kind(st, filled, fill_kind);
+    }
     if (st->r.next_single && !st->r.object_entries && st->r.n > 0)
       want = (double)(scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off);
     void *chunk = scr_stream_read_n_kind(s, want, &kind);

@@ -45,6 +45,27 @@ async function main(): Promise<void> {
   );
   log.push(`response ${await response.text()}`);
 
+  // A readable whose _read pushes twice synchronously still answers one
+  // chunk per push.
+  let reads = 0;
+  const synchronous = new Readable({
+    read(): void {
+      reads += 1;
+      if (reads > 1) {
+        this.push(null);
+        return;
+      }
+      this.push(Buffer.from("xy"));
+      this.push(Buffer.from("z"));
+    },
+  });
+  const synchronousReader = Readable.toWeb(synchronous).getReader();
+  const synchronousOne = await synchronousReader.read();
+  const synchronousTwo = await synchronousReader.read();
+  log.push(
+    `synchronous ${decoder.decode(synchronousOne.value as Uint8Array)}/${decoder.decode(synchronousTwo.value as Uint8Array)}`,
+  );
+
   // Node's adapter enqueues each buffered chunk by itself, and copies a
   // Buffer chunk into a plain Uint8Array detached from the readable.
   const buffered = new Readable({ read(): void {} });

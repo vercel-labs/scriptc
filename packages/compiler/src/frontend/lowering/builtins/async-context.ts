@@ -8,6 +8,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrStmt,
   STRING,
   type SrcLoc,
   VOID,
@@ -142,20 +143,37 @@ export function lowerDiagnosticsChannelMethodCall(
       call.arguments.nodes[0] !== undefined
         ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!)
         : dynUndefinedExpr(loc);
-    const publish: IrExpr = {
+    // Surplus arguments are evaluated and ignored, as Node's publish(…) is;
+    // JavaScript evaluates the receiver, then the arguments left to right,
+    // so their side effects run after the receiver and message and before
+    // the call itself.
+    const extra = call.arguments.nodes.slice(1);
+    if (extra.length === 0)
+      return { kind: "libCall", fn: "dc.publish", args: [receiver, msg], type: VOID, loc };
+    const recvLocal = lowerer.declareHiddenLocal("%channelReceiver", F64);
+    const msgLocal = lowerer.declareHiddenLocal("%channelMessage", DYN);
+    const result: IrExpr = {
       kind: "libCall",
       fn: "dc.publish",
-      args: [receiver, msg],
+      args: [
+        { kind: "varRef", localId: recvLocal.id, type: F64, loc },
+        { kind: "varRef", localId: msgLocal.id, type: DYN, loc },
+      ],
       type: VOID,
       loc,
     };
-    // Surplus arguments are evaluated and ignored, as Node's publish(…) is.
-    const extra = call.arguments.nodes.slice(1);
-    if (extra.length === 0) return publish;
     return {
       kind: "seqExpr",
-      stmts: extra.map((arg) => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
-      result: publish,
+      stmts: [
+        { kind: "varDecl", localId: recvLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: msgLocal.id, init: msg, loc },
+        ...extra.map((arg): IrStmt => ({
+          kind: "exprStmt",
+          expr: lowerer.lowerExpr(arg),
+          loc: locOf(arg),
+        })),
+      ],
+      result,
       type: VOID,
       loc,
     };
@@ -623,7 +641,11 @@ export function lowerDiagnosticsChannelCall(
     (bi.member === "subscribe" || bi.member === "unsubscribe") &&
     expr.arguments.nodes.length <= 2
   ) {
-    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0]!);
+    const nameNode = expr.arguments.nodes[0];
+    const name =
+      nameNode !== undefined
+        ? diagnosticsChannelNameArgument(lowerer, nameNode)
+        : dynUndefinedExpr(loc);
     const fnNode = expr.arguments.nodes[1];
     const cb =
       fnNode !== undefined

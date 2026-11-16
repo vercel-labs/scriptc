@@ -38,6 +38,37 @@ show('symbol name read', () => symbolChannel.name === symbolName);
 console.log('symbol subscribed:', dc.hasSubscribers(symbolName), '| unsubscribe:', dc.unsubscribe(symbolName, symbolListener), '| now:', dc.hasSubscribers(symbolName));
 show('tracingChannel(symbol)', () => dc.tracingChannel(symbolName));
 
+// Module-level subscribe creates a channel nothing has interned yet.
+const freshSeen = [];
+dc.subscribe('audit:fresh', (message) => freshSeen.push(message));
+dc.channel('audit:fresh').publish('fresh');
+console.log('fresh channel subscriber:', freshSeen.join(','));
+
+// The module functions validate the name before anything else, including
+// when no arguments are given at all.
+show('subscribe()', () => dc.subscribe());
+show('unsubscribe()', () => dc.unsubscribe());
+
+// publish evaluates the receiver, then the message, then any surplus
+// arguments, and only then calls the subscribers.
+const publishOrder = [];
+const ordered = dc.channel('audit:order');
+ordered.subscribe((message) => publishOrder.push(`subscriber ${message.tag}`));
+const orderReceiver = () => {
+  publishOrder.push('receiver');
+  return ordered;
+};
+const orderMessage = () => {
+  publishOrder.push('message');
+  return { tag: 'msg' };
+};
+const orderSurplus = () => {
+  publishOrder.push('surplus');
+  return 5;
+};
+orderReceiver().publish(orderMessage(), orderSurplus());
+console.log(publishOrder.join(','));
+
 // Duplicate entries are separate; one unsubscribe removes the first.
 const ch = dc.channel('audit:dup');
 const seen = [];

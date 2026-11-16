@@ -286,7 +286,11 @@ void scr_dc_subscribe(ScrDyn *name, ScrDyn *cb) {
     scr_dyn_release(key);
     return;
   }
-  dc_sub_add(&dc_channels[dc_intern(key)], cb);
+  /* Intern FIRST: a channel created here may realloc the registry, and a
+   * subscript written as dc_channels[dc_intern(...)] may read the old
+   * array pointer before the call that frees it. */
+  size_t index = dc_intern(key);
+  dc_sub_add(&dc_channels[index], cb);
   scr_dyn_release(key);
 }
 

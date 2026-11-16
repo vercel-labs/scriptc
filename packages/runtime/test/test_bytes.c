@@ -27,6 +27,7 @@ static long total = 0, failed = 0;
 
 void scr_bytes_test_bulk_storage(void);
 void scr_bytes_test_buffer_pool(void);
+void scr_bytes_test_copy_bytes_from(void);
 void scr_bytes_test_copy_ladder(void);
 void scr_bytes_test_search_offsets(void);
 
@@ -705,6 +706,7 @@ int main(int argc, char **argv) {
   test_slice_set_copy();
   scr_bytes_test_bulk_storage();
   scr_bytes_test_buffer_pool();
+  scr_bytes_test_copy_bytes_from();
   scr_bytes_test_copy_ladder();
   scr_bytes_test_search_offsets();
   test_encodings();

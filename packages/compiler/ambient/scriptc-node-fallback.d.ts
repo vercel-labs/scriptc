@@ -1215,6 +1215,24 @@ interface BufferConstructor {
   /* The pool slab size for allocUnsafe, from, and concat. */
   poolSize: number;
   concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
+  /* A pooled copy of a typed array's underlying bytes over
+   * [offset, offset + length) in element indices. */
+  copyBytesFrom(
+    view:
+      | Int8Array
+      | Uint8Array
+      | Uint8ClampedArray
+      | Int16Array
+      | Uint16Array
+      | Int32Array
+      | Uint32Array
+      | Float32Array
+      | Float64Array
+      | BigInt64Array
+      | BigUint64Array,
+    offset?: number,
+    length?: number,
+  ): Buffer;
   isBuffer(obj: unknown): obj is Buffer;
   byteLength(input: string | Uint8Array, encoding?: BufferEncoding): number;
   isEncoding(encoding: string): boolean;

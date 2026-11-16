@@ -3740,6 +3740,52 @@ function lowerBufferStaticValue(
       "supported: Buffer.byteLength(string, literalEncoding?) or Buffer.byteLength(typedArray)",
     );
   }
+  if (member === "copyBytesFrom") {
+    // Buffer.copyBytesFrom(view[, offset[, length]]): a pooled copy of the
+    // view's underlying bytes over [offset, offset + length) in ELEMENT
+    // indices, so a wider typed array copies view.length *
+    // BYTES_PER_ELEMENT bytes. The runtime runs Node's validation, so the
+    // positions ride as (offset, length, mask); a statically undefined
+    // position is absent, like an omitted one. A position whose value is
+    // only known at run time could name either, and no in-band sentinel
+    // separates undefined from a number Node validates, so it is refused
+    // rather than guessed.
+    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`Buffer.copyBytesFrom with ${args.length} arguments`, call);
+    }
+    const view = lowerer.lowerExpr(args[0]!);
+    if (!(view.type.kind === "bytes")) {
+      lowerer.noLowering(
+        `Buffer.copyBytesFrom of '${lowerer.fmt(view.type)}' values`,
+        args[0]!,
+        "a typed array is the lowered view",
+      );
+    }
+    const position = (i: number): { value: IrExpr; present: boolean } => {
+      const node = args[i];
+      if (!node) return { value: numLit(0, loc), present: false };
+      const undef = lowerStaticallyUndefinedArgument(lowerer, node);
+      if (undef) return { value: defaultAfterUndefined(undef, numLit(0, loc)), present: false };
+      if (lowerer.mapTypeOf(lowerer.typeOf(node))?.kind !== "f64") {
+        lowerer.noLowering(
+          `Buffer.copyBytesFrom with a '${lowerer.checker.typeToString(lowerer.typeOf(node))}' position`,
+          node,
+          "a number, or undefined, is the lowered position",
+        );
+      }
+      return { value: lowerer.lowerExprExpecting(node, F64), present: true };
+    };
+    const offset = position(1);
+    const length = position(2);
+    const mask = numLit((offset.present ? 1 : 0) | (length.present ? 2 : 0), loc);
+    return {
+      kind: "libCall",
+      fn: "buffer.copyBytesFrom",
+      args: [view, offset.value, length.value, mask],
+      type: BYTES_U8,
+      loc,
+    };
+  }
   if (member === "isEncoding") {
     // The runtime alias-set test — a plain bool over any string value
     // (Node's case-insensitive normalizeEncoding check).

@@ -275,3 +275,79 @@ void scr_bytes_test_search_offsets(void) {
   scr_bytes_release(hay);
   assert(scr_bytes_live_count() == before);
 }
+/* Buffer.copyBytesFrom(view[, offset[, length]]): a pooled copy of the
+ * view's underlying bytes over [offset, offset + length) in element
+ * indices — a wider typed array copies BYTES_PER_ELEMENT bytes per element
+ * — with Node's validateInteger ladder on the supplied positions only, and
+ * an empty view answering an empty Buffer before either position is read. */
+void scr_bytes_test_copy_bytes_from(void) {
+  scr_buffer_pool_reset();
+  long before = scr_bytes_live_count();
+  ScrBytes *u8 = scr_bytes_new(SCR_BYTES_U8, 3);
+  for (size_t i = 0; i < 3; i++) scr_bytes_set(u8, (double)i, (double)(i + 1));
+  ScrBytes *u16 = scr_bytes_new(SCR_BYTES_U16, 2);
+  scr_bytes_set(u16, 0, 0x0102);
+  scr_bytes_set(u16, 1, 0x0304);
+  ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
+
+  ScrBytes *all = scr_buffer_copy_bytes_from(u8, 0, 0, 0);
+  assert(all->len == 3 && all->data[0] == 1 && all->data[2] == 3 && all->backing != NULL);
+  scr_bytes_release(all);
+
+  ScrBytes *tail = scr_buffer_copy_bytes_from(u8, 1, 0, 1);
+  assert(tail->len == 2 && tail->data[0] == 2 && tail->data[1] == 3);
+  scr_bytes_release(tail);
+
+  ScrBytes *one = scr_buffer_copy_bytes_from(u8, 1, 1, 3);
+  assert(one->len == 1 && one->data[0] == 2);
+  scr_bytes_release(one);
+
+  ScrBytes *clamped = scr_buffer_copy_bytes_from(u8, 2, 9, 3);
+  assert(clamped->len == 1 && clamped->data[0] == 3);
+  scr_bytes_release(clamped);
+
+  ScrBytes *past = scr_buffer_copy_bytes_from(u8, 3, 0, 1);
+  assert(past->len == 0);
+  scr_bytes_release(past);
+
+  ScrBytes *zero = scr_buffer_copy_bytes_from(u8, 0, 0, 3);
+  assert(zero->len == 0);
+  scr_bytes_release(zero);
+
+  /* Element indices: the wider view copies its bytes, not its count. */
+  ScrBytes *wide = scr_buffer_copy_bytes_from(u16, 0, 0, 0);
+  assert(wide->len == 4 && wide->data[0] == 0x02 && wide->data[1] == 0x01 &&
+         wide->data[2] == 0x04 && wide->data[3] == 0x03);
+  scr_bytes_release(wide);
+  ScrBytes *wide_second = scr_buffer_copy_bytes_from(u16, 1, 0, 1);
+  assert(wide_second->len == 2 && wide_second->data[0] == 0x04 && wide_second->data[1] == 0x03);
+  scr_bytes_release(wide_second);
+
+  /* An empty view answers an empty Buffer before a bad position is read. */
+  ScrBytes *empty_copy = scr_buffer_copy_bytes_from(empty, -1, -1, 3);
+  assert(empty_copy->len == 0 && !scr_exc_pending());
+  scr_bytes_release(empty_copy);
+
+  /* Supplied positions take validateInteger, in argument order. */
+  assert(scr_buffer_copy_bytes_from(u8, -1, 0, 1) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_buffer_copy_bytes_from(u8, 1.5, 0, 1) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_buffer_copy_bytes_from(u8, NAN, 0, 1) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_buffer_copy_bytes_from(u8, 0, -1, 2) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_buffer_copy_bytes_from(u8, 0, 1.5, 2) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  /* An absent position skips its validation even when the value is junk. */
+  ScrBytes *absent = scr_buffer_copy_bytes_from(u8, -1, -1, 0);
+  assert(absent->len == 3);
+  scr_bytes_release(absent);
+
+  scr_bytes_release(empty);
+  scr_bytes_release(u16);
+  scr_bytes_release(u8);
+  scr_buffer_pool_reset();
+  assert(scr_bytes_live_count() == before);
+}
+

@@ -629,6 +629,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.brand": "scr_bytes_as_buffer",
   "buffer.isBranded": "scr_bytes_is_buffer",
   "buffer.fromDyn": "scr_buffer_from_dyn",
+  "buffer.copyBytesFrom": "scr_buffer_copy_bytes_from",
   "buffer.concat": "scr_buffer_concat",
   "buffer.concatLen": "scr_buffer_concat_len",
   "buffer.concatDyn": "scr_buffer_concat_dyn",

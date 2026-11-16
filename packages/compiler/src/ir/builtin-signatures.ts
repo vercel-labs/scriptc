@@ -4252,6 +4252,14 @@ function buildLibFnSignatures() {
     /** Buffer.from(value, byteOffset, length): an ArrayBuffer's range with
      * Node's fromArrayBuffer checks; other values as poolFromDynOffset. */
     "buffer.poolFromDynRange": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
+    /** Buffer.copyBytesFrom(view[, offset[, length]]): a pooled Buffer
+     * holding a copy of the view's underlying bytes over the element window
+     * [offset, offset + length). The view is any typed array — its element
+     * kind travels in the ScrBytes header and decides the byte count, so the
+     * slot takes a program-dependent type. `mask` bit 0 marks a supplied
+     * offset and bit 1 a supplied length; the runtime runs Node's
+     * validation. */
+    "buffer.copyBytesFrom": { argTypes: [null, F64, F64, F64], result: BYTES_U8 },
     "buffer.poolSize": { argTypes: [], result: F64 },
     "buffer.setPoolSize": { argTypes: [F64], result: VOID },
     /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like

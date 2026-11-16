@@ -2242,6 +2242,7 @@ export function lowerStreamStaticCall(
     }
   }
   if (member === "fromWeb" && cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
+  if (member === "toWeb" && cls === "%Writable") return lowerWritableToWeb(lowerer, call, loc);
   // Readable.isDisturbed is stream.isDisturbed, which every stream class
   // inherits from the module's legacy Stream.
   if (member === "isDisturbed") {
@@ -2396,6 +2397,29 @@ function lowerReadableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
     fn: "stream.addAbortSignal",
     args: [built, signal],
     type: readable,
+    loc,
+  };
+}
+
+/** Writable.toWeb(writable): a web WritableStream over the writable
+ * (scr_stream_writable_to_web.c). */
+function lowerWritableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+    lowerer.noLowering(
+      `Writable.toWeb with ${args.length} arguments`,
+      call,
+      "the supported form is Writable.toWeb(writable)",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: "webstream.writableToWeb",
+    args: [
+      lowerer.lowerExprExpecting(args[0]!, { kind: "object", className: "%Writable" }),
+      numLit(0, loc),
+    ],
+    type: DYN,
     loc,
   };
 }

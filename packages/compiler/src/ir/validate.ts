@@ -4668,6 +4668,17 @@ function validateFunction(
         );
       return true;
     }
+    if (e.fn === "webstream.writableToWeb") {
+      // Writable.toWeb: (writable, flags) → a web WritableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (writable, flags) and return a web stream`, e.loc);
+      return true;
+    }
     if (e.fn === "fetch.readerRead") {
       if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
         err(`libCall fetch.readerRead must return a promise of a read-result record`, e.loc);

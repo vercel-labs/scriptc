@@ -4400,7 +4400,10 @@ double scr_bytes_index_of(const ScrBytes *b, const ScrBytes *needle, double off,
   if (o < 0) {
     o += (double)len;
     if (o < 0) {
-      if (!fwd) return -1;
+      /* Node's IndexOfOffset: a backward search that starts before the
+       * first byte finds nothing — unless the needle is empty, which
+       * matches at 0 there. */
+      if (!fwd && nlen != 0) return -1;
       o = 0;
     }
   }
@@ -4554,19 +4557,53 @@ ScrBytes *scr_bytes_fill_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
   return r;
 }
 
-/* src.copy(dst, targetStart?, sourceStart?, sourceEnd?): Node's C++-side
- * ladder — fractional indices TRUNCATE without an error, targetStart/sourceEnd
- * check only >= 0 (past-the-end clamps to nothing), sourceStart is
- * bounded by the source length. Returns the byte count copied. */
+/* copyImpl's index conversion: an integer-valued index is kept as it is
+ * (Number.isInteger keeps values beyond the safe-integer range too), while
+ * any other goes through buffer.js's toInteger — flooring a finite value
+ * inside the safe range and answering the default 0 for NaN, ±Infinity and
+ * anything outside it. Node's copy never reports a non-integer index. */
+static double scr_bytes_copy_integer(double v) {
+  if (isfinite(v) && floor(v) == v) return v;
+  if (!isnan(v) && v >= -9007199254740991.0 && v <= 9007199254740991.0) return floor(v);
+  return 0;
+}
+
+/* copyImpl's range check, whose message names only the bound: ">= 0", or
+ * ">= 0 && <= <max>". */
+static bool scr_bytes_copy_range(const char *name, double value, double max) {
+  if (value >= 0 && (max < 0 || value <= max)) return true;
+  char recv[48];
+  scr_num_received(value, recv);
+  char msg[160];
+  int mlen;
+  if (max < 0) {
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"%s\" is out of range. It must be >= 0. Received %s", name, recv);
+  } else {
+    char maxb[32];
+    scr_f64_to_str(max, maxb);
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"%s\" is out of range. It must be >= 0 && <= %s. Received %s",
+                    name, maxb, recv);
+  }
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* src.copy(dst, targetStart?, sourceStart?, sourceEnd?): Node's copyImpl
+ * ladder — every index converts with Number.isInteger-or-toInteger (so NaN,
+ * ±Infinity and fractions never fail as non-integers), targetStart and
+ * sourceEnd check only >= 0 (past-the-end clamps to nothing), sourceStart
+ * is bounded by the source length. Returns the byte count copied. */
 double scr_bytes_copy_into(const ScrBytes *src, ScrBytes *dst, double nargs,
                            double ts, double ss, double se) {
   size_t n = (size_t)nargs;
-  ts = n < 1 ? 0 : trunc(ts);
-  ss = n < 2 ? 0 : trunc(ss);
-  se = n < 3 ? (double)src->len : trunc(se);
-  if (!scr_bytes_validate_off("targetStart", ts, -1)) return 0;
-  if (!scr_bytes_validate_off("sourceStart", ss, (double)src->len)) return 0;
-  if (!scr_bytes_validate_off("sourceEnd", se, -1)) return 0;
+  ts = n < 1 ? 0 : scr_bytes_copy_integer(ts);
+  ss = n < 2 ? 0 : scr_bytes_copy_integer(ss);
+  se = n < 3 ? (double)src->len : scr_bytes_copy_integer(se);
+  if (!scr_bytes_copy_range("targetStart", ts, -1)) return 0;
+  if (!scr_bytes_copy_range("sourceStart", ss, (double)src->len)) return 0;
+  if (!scr_bytes_copy_range("sourceEnd", se, -1)) return 0;
   if (ts >= (double)dst->len) return 0;
   size_t t0 = (size_t)ts;
   size_t s0 = (size_t)ss;

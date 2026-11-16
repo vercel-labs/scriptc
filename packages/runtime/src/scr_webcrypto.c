@@ -1512,7 +1512,9 @@ ScrPromise *scr_webcrypto_get_public_key(ScrDyn *args) {
     goto done;
   }
   key = scr_wc_asymmetric->get_public_key(a.v[0], usages);
-  if (key) result = scr_wc_deferred(key);
+  /* Node answers an already-fulfilled promise, like importKey and
+   * exportKey, so a reaction runs in the current microtask batch. */
+  if (key) result = scr_wc_resolved(key);
 done:
   scr_wc_args_drop(&a, 2);
   return result ? result : scr_wc_rejected();

@@ -95,3 +95,20 @@ for (const [label, run] of [
   const result = await run().then(() => "resolved", (error: Error) => `${error.name} ${error.message}`);
   console.log(label, result);
 }
+
+// Node answers an already-fulfilled promise: the key wins a race with an
+// immediately resolved promise, and both a success and the key-half error
+// settle with the reactions queued after them.
+const raced = await Promise.race([crypto.subtle.getPublicKey(ecdsa, ["verify"]), Promise.resolve("micro")]);
+console.log("race success", typeof raced === "string" ? raced : "key");
+const successOrder: string[] = [];
+crypto.subtle.getPublicKey(ecdsa, ["verify"]).then(() => successOrder.push("key"));
+Promise.resolve().then(() => successOrder.push("micro"));
+const errorOrder: string[] = [];
+crypto.subtle.getPublicKey(ecdsaPublic, ["verify"]).then(
+  () => errorOrder.push("resolved"),
+  () => errorOrder.push("error"),
+);
+Promise.resolve().then(() => errorOrder.push("micro"));
+await new Promise((resolve) => setTimeout(resolve, 0));
+console.log("order", successOrder.join(","), errorOrder.join(","));

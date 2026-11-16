@@ -1599,9 +1599,6 @@ static void scr_dgram_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface
     }
     s->bound = true;
     scr_dgram_apply_init_buffers(s);
-    /* the implicit bind arms the read watch, so the socket must also be
-     * in the registry the dispatch resolves keys through */
-    scr_dgram_register(s);
     scr_dgram_update_read(s);
   }
   int rc;
@@ -1679,9 +1676,6 @@ static void scr_dgram_source_membership(ScrDgramSocket *s, ScrStr *source, ScrSt
     }
     s->bound = true;
     scr_dgram_apply_init_buffers(s);
-    /* the implicit bind arms the read watch, so the socket must also be
-     * in the registry the dispatch resolves keys through */
-    scr_dgram_register(s);
     scr_dgram_update_read(s);
   }
   if (v4) {

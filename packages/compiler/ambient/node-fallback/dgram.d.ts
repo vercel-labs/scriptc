@@ -92,8 +92,8 @@ declare module "dgram" {
     address(): AddressInfo;
     remoteAddress(): AddressInfo;
     close(callback?: () => void): void;
-    unref(): void;
-    ref(): void;
+    unref(): this;
+    ref(): this;
     setBroadcast(flag: boolean): void;
     setTTL(ttl: number): number;
     setMulticastTTL(ttl: number): number;

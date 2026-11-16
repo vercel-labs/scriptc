@@ -105,7 +105,7 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
  * A plain statement is; a concise arrow body is only when the arrow itself
  * answers void/undefined — `() => server.close(cb)` can hand the server to
  * the caller that returns it (store.run's R), and then the value is used. */
-function chainingResultDiscarded(lowerer: Lowerer, call: ts.CallExpression): boolean {
+export function chainingResultDiscarded(lowerer: Lowerer, call: ts.CallExpression): boolean {
   if (ts.isExpressionStatement(call.parent)) return true;
   if (!ts.isArrowFunction(call.parent)) return false;
   const arrowT = lowerer.mapTypeOf(lowerer.typeOf(call.parent));
@@ -521,7 +521,7 @@ function lowerSocketDynListener(lowerer: Lowerer, node: ts.Expression, what: str
  * an interned helper runs the void call and returns its first argument.
  * `prefix` calls (the writeHead statusMessage form's resStatusMsgSet)
  * run first, sharing the same parameter refs. */
-function receiverReturningCall(
+export function receiverReturningCall(
   lowerer: Lowerer,
   fn: IrLibFn,
   callArgs: IrExpr[],

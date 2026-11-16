@@ -369,3 +369,692 @@ double scr_eld_stat(double handle, double which) {
       return 0;
   }
 }
+
+/* ── perf_hooks histograms (createHistogram) ──────────────────────────
+ * Node's Histogram is an HdrHistogram: a counts array over a bucket layout
+ * set by the lowest discernible value and the number of significant
+ * figures. createHistogram's defaults (lowest 1, highest
+ * Number.MAX_SAFE_INTEGER, figures 3) give the same 2048 sub-buckets per
+ * power of two as the event-loop histogram above; other options change the
+ * unit magnitude and sub-bucket count, so the layout arithmetic lives here
+ * in its general form (hdr_calculate_bucket_config, counts_index_for and
+ * value_at_index). Every reading answers the bucket values Node's
+ * hdr_histogram answers. */
+
+typedef struct {
+  int64_t *counts; /* owned, counts_len entries */
+  int64_t counts_len;
+  int64_t total;      /* hdr's total_count */
+  int64_t min_value;  /* INT64_MAX while empty */
+  int64_t max_value;  /* 0 while empty */
+  int64_t exceeds;    /* records above highest */
+  int64_t lowest;
+  int64_t highest;
+  int32_t unit_magnitude;
+  int32_t sub_bucket_half_count_magnitude;
+  int32_t sub_bucket_half_count;
+  int32_t sub_bucket_count;
+  int64_t sub_bucket_mask;
+  uint64_t prev_ns; /* RecordDelta's previous sample; 0 = none */
+  bool disposed;
+  /* The percentiles view: hdr_iter_percentile's (percentile, value) ticks,
+   * rebuilt by scr_histo_percentiles_count and read by the two accessors. */
+  double *view_key;   /* owned */
+  int64_t *view_value; /* owned */
+  size_t view_len;
+  size_t view_cap;
+} ScrHisto;
+
+static SCR_TL ScrHisto **scr_histos;
+static SCR_TL size_t scr_histos_len;
+
+/* createHistogram handles are NEGATIVE (-1, -2, ...) so they can never be
+ * mistaken for a monitorEventLoopDelay handle (the positive ELD table), even
+ * when a value is read through a `Histogram`-typed upcast of an
+ * IntervalHistogram. */
+static ScrHisto *scr_histo_of(double handle) {
+  if (!(handle <= -1) || -handle > (double)scr_histos_len) return NULL;
+  ScrHisto *h = scr_histos[(size_t)(-handle) - 1];
+  return h == NULL || h->disposed ? NULL : h;
+}
+
+static int scr_histo_log2_floor(int64_t value) {
+  int bits = 0;
+  while (value > 1) {
+    value >>= 1;
+    bits++;
+  }
+  return bits;
+}
+
+static int scr_histo_log2_ceil(int64_t value) {
+  int bits = scr_histo_log2_floor(value);
+  return ((int64_t)1 << bits) < value ? bits + 1 : bits;
+}
+
+/* hdr_calculate_bucket_config; false for the configurations hdr_init
+ * refuses (ERR_INVALID_ARG_VALUE from Node's _Histogram constructor). */
+static bool scr_histo_config(ScrHisto *h, int64_t lowest, int64_t highest, int figures) {
+  if (lowest < 1 || figures < 1 || figures > 5 || lowest * 2 > highest) return false;
+  int64_t largest_single_unit = 2;
+  for (int i = 0; i < figures; i++) largest_single_unit *= 10;
+  int32_t sub_bucket_count_magnitude = scr_histo_log2_ceil(largest_single_unit);
+  h->sub_bucket_half_count_magnitude =
+      (sub_bucket_count_magnitude > 1 ? sub_bucket_count_magnitude : 1) - 1;
+  h->unit_magnitude = scr_histo_log2_floor(lowest);
+  if (h->unit_magnitude + h->sub_bucket_half_count_magnitude > 61) return false;
+  h->sub_bucket_count = (int32_t)1 << (h->sub_bucket_half_count_magnitude + 1);
+  h->sub_bucket_half_count = h->sub_bucket_count / 2;
+  h->sub_bucket_mask = ((int64_t)h->sub_bucket_count - 1) << h->unit_magnitude;
+  int64_t smallest_untrackable = ((int64_t)h->sub_bucket_count) << h->unit_magnitude;
+  int64_t buckets = 1;
+  while (smallest_untrackable <= highest) {
+    if (smallest_untrackable > INT64_MAX / 2) {
+      buckets++;
+      break;
+    }
+    smallest_untrackable <<= 1;
+    buckets++;
+  }
+  int64_t counts_len = (buckets + 1) * (int64_t)h->sub_bucket_half_count;
+  if (counts_len <= 0 || counts_len > (INT64_MAX / (int64_t)sizeof(int64_t))) return false;
+  h->counts = calloc((size_t)counts_len, sizeof(int64_t));
+  if (h->counts == NULL) return false;
+  h->counts_len = counts_len;
+  h->lowest = lowest;
+  h->highest = highest;
+  h->min_value = INT64_MAX;
+  return true;
+}
+
+static int32_t scr_histo_bucket_index(const ScrHisto *h, int64_t value) {
+  int pow2ceiling =
+      64 - __builtin_clzll((uint64_t)(value | h->sub_bucket_mask));
+  return pow2ceiling - h->unit_magnitude - (h->sub_bucket_half_count_magnitude + 1);
+}
+
+static int32_t scr_histo_sub_bucket_index(const ScrHisto *h, int64_t value, int32_t bucket) {
+  return (int32_t)(value >> (bucket + h->unit_magnitude));
+}
+
+static int64_t scr_histo_counts_index(const ScrHisto *h, int64_t value) {
+  int32_t bucket = scr_histo_bucket_index(h, value);
+  int32_t sub = scr_histo_sub_bucket_index(h, value, bucket);
+  int64_t base = ((int64_t)bucket + 1) << h->sub_bucket_half_count_magnitude;
+  return base + (sub - h->sub_bucket_half_count);
+}
+
+static int64_t scr_histo_value_at_index(const ScrHisto *h, int64_t index) {
+  int32_t bucket = (int32_t)(index >> h->sub_bucket_half_count_magnitude) - 1;
+  int32_t sub = (int32_t)(index & (h->sub_bucket_half_count - 1)) + h->sub_bucket_half_count;
+  if (bucket < 0) {
+    sub -= h->sub_bucket_half_count;
+    bucket = 0;
+  }
+  return ((int64_t)sub) << (bucket + h->unit_magnitude);
+}
+
+static int64_t scr_histo_range_size(const ScrHisto *h, int64_t value) {
+  int32_t bucket = scr_histo_bucket_index(h, value);
+  int32_t sub = scr_histo_sub_bucket_index(h, value, bucket);
+  int32_t adjusted = sub >= h->sub_bucket_count ? bucket + 1 : bucket;
+  return (int64_t)1 << (h->unit_magnitude + adjusted);
+}
+
+static int64_t scr_histo_lowest_equivalent(const ScrHisto *h, int64_t value) {
+  int32_t bucket = scr_histo_bucket_index(h, value);
+  int32_t sub = scr_histo_sub_bucket_index(h, value, bucket);
+  return ((int64_t)sub) << (bucket + h->unit_magnitude);
+}
+
+static int64_t scr_histo_median_equivalent(const ScrHisto *h, int64_t value) {
+  return scr_histo_lowest_equivalent(h, value) + (scr_histo_range_size(h, value) >> 1);
+}
+
+static int64_t scr_histo_highest_equivalent(const ScrHisto *h, int64_t value) {
+  return scr_histo_lowest_equivalent(h, value) + scr_histo_range_size(h, value) - 1;
+}
+
+/* hdr_record_values: false (and no change) when the value is outside
+ * 0..highest, which the caller counts in exceeds. */
+static bool scr_histo_record_value(ScrHisto *h, int64_t value, int64_t count) {
+  if (value < 0 || value > h->highest) return false;
+  int64_t index = scr_histo_counts_index(h, value);
+  if (index < 0 || index >= h->counts_len) return false;
+  h->counts[index] += count;
+  h->total += count;
+  if (value != 0 && value < h->min_value) h->min_value = value;
+  if (value > h->max_value) h->max_value = value;
+  return true;
+}
+
+/* hdr_reset_internal_counters: rebuild total, min and max from the counts
+ * (Subtract leaves gaps). */
+static void scr_histo_recount(ScrHisto *h) {
+  int64_t total = 0, min_value = INT64_MAX, max_value = 0;
+  for (int64_t i = 0; i < h->counts_len; i++) {
+    if (h->counts[i] == 0) continue;
+    total += h->counts[i];
+    if (i != 0 && min_value == INT64_MAX) min_value = scr_histo_value_at_index(h, i);
+    max_value = scr_histo_highest_equivalent(h, scr_histo_value_at_index(h, i));
+  }
+  h->total = total;
+  h->min_value = min_value;
+  h->max_value = max_value;
+}
+
+/* Node's node::Histogram::Record: an out-of-range value counts as an
+ * exceed and is not recorded. */
+static void scr_histo_record(ScrHisto *h, int64_t value) {
+  if (!scr_histo_record_value(h, value, 1)) h->exceeds++;
+}
+
+/* hdr_record_corrected_value. */
+static void scr_histo_record_corrected(ScrHisto *h, int64_t value, int64_t expected_interval) {
+  if (!scr_histo_record_value(h, value, 1)) {
+    h->exceeds++;
+    return;
+  }
+  if (expected_interval <= 0 || value <= expected_interval) return;
+  int64_t missing = value - expected_interval;
+  for (; missing >= expected_interval; missing -= expected_interval) {
+    if (!scr_histo_record_value(h, missing, 1)) {
+      h->exceeds++;
+      return;
+    }
+  }
+}
+
+static void scr_histo_clear_view(ScrHisto *h) { h->view_len = 0; }
+
+static void scr_histo_push_view(ScrHisto *h, double key, int64_t value) {
+  if (h->view_len == h->view_cap) {
+    size_t cap = h->view_cap ? h->view_cap * 2 : 16;
+    double *keys = realloc(h->view_key, cap * sizeof *keys);
+    int64_t *values = realloc(h->view_value, cap * sizeof *values);
+    if (keys == NULL || values == NULL) {
+      free(keys);
+      free(values);
+      return;
+    }
+    h->view_key = keys;
+    h->view_value = values;
+    h->view_cap = cap;
+  }
+  h->view_key[h->view_len] = key;
+  h->view_value[h->view_len] = value;
+  h->view_len++;
+}
+
+static void scr_histo_free(ScrHisto *h) {
+  if (h == NULL) return;
+  free(h->counts);
+  free(h->view_key);
+  free(h->view_value);
+  free(h);
+}
+
+static void scr_histo_cleanup(void) {
+  for (size_t i = 0; i < scr_histos_len; i++) scr_histo_free(scr_histos[i]);
+  free(scr_histos);
+  scr_histos = NULL;
+  scr_histos_len = 0;
+}
+
+/* Node's validateInteger(name, min, max): ERR_OUT_OF_RANGE with the range
+ * text and the received number; false and the pending exception otherwise. */
+static bool scr_histo_integer_ok(double value, const char *name, double min, double max) {
+  bool integer = isfinite(value) && trunc(value) == value;
+  if (integer && value >= min && value <= max) return true;
+  char received[48];
+  if (value == 0 && signbit(value))
+    memcpy(received, "-0", 3);
+  else
+    scr_num_received(value, received);
+  char range[64];
+  snprintf(range, sizeof range, "%.0f", min);
+  char msg[224];
+  int len;
+  if (!integer)
+    len = snprintf(msg, sizeof msg,
+                   "The value of \"%s\" is out of range. It must be an integer. Received %s", name,
+                   received);
+  else
+    len = snprintf(msg, sizeof msg,
+                   "The value of \"%s\" is out of range. It must be >= %.0f && <= %.0f. Received %s",
+                   name, min, max, received);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+  (void)range;
+  return false;
+}
+
+/* The options object's field as an integer: numbers must be integer-valued
+ * and in 1..MAX_SAFE_INTEGER, bigints must fit an int64. */
+static bool scr_histo_option_int(const ScrDyn *value, const char *name, int64_t *out) {
+  if (value == NULL || value->kind == SCR_DYN_UNDEF) return true; /* absent */
+  if (value->kind == SCR_DYN_NUM) {
+    if (!scr_histo_integer_ok(value->v.num, name, 1, 9007199254740991.0)) return false;
+    *out = (int64_t)value->v.num;
+    return true;
+  }
+  if (value->kind == SCR_DYN_BIGINT) {
+    int64_t v = 0;
+    bool fits = scr_bigint_i64_fits(value->v.bigint);
+    if (fits) v = scr_bigint_to_i64(value->v.bigint);
+    if (!fits || v < 1) {
+      char received[48];
+      if (fits)
+        snprintf(received, sizeof received, "%lldn", (long long)v);
+      else
+        snprintf(received, sizeof received, "%s", "a bigint outside the int64 range");
+      char msg[224];
+      int len = snprintf(msg, sizeof msg,
+                         "The value of \"%s\" is out of range. It must be >= 1n && <= "
+                         "9223372036854775807n. Received %s",
+                         name, received);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      return false;
+    }
+    *out = v;
+    return true;
+  }
+  char msg[192];
+  int len = snprintf(msg, sizeof msg,
+                     "The \"%s\" argument must be of type number or bigint", name);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_TYPE");
+  return false;
+}
+
+/* createHistogram(options?): options.lowest, options.highest and
+ * options.figures with Node's defaults and validation, in Node's order
+ * (lowest, highest, the highest >= 2*lowest range, figures, then the EWMA
+ * options this lowering accepts). A typed options object lowers to a
+ * typed-ref capsule, which is materialized once so its fields read like a
+ * plain object's. */
+double scr_histo_new(ScrDyn *options) {
+  int64_t lowest = 1, highest = 9007199254740991LL;
+  double figures = 3;
+  ScrDyn *plain = NULL;
+  bool ok = false;
+  if (options == NULL || options->kind == SCR_DYN_UNDEF) {
+    ok = true;
+    goto create;
+  }
+  if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_TYPED_REF) {
+    static const char msg[] = "The \"options\" argument must be of type object";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+    return 0;
+  }
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    plain = scr_dyn_typed_ref_materialize(options);
+    if (scr_exc_pending()) return 0;
+  }
+  {
+    const ScrDyn *opts = plain != NULL ? plain : options;
+    if (!scr_histo_option_int(scr_dyn_obj_get(opts, "lowest", 6), "options.lowest", &lowest))
+      goto done;
+    if (!scr_histo_option_int(scr_dyn_obj_get(opts, "highest", 7), "options.highest", &highest))
+      goto done;
+    int64_t minimum_highest = lowest > INT64_MAX / 2 ? INT64_MAX : lowest * 2;
+    if (highest < minimum_highest) {
+      char msg[192];
+      int len = snprintf(msg, sizeof msg,
+                         "The value of \"options.highest\" is out of range. It must be >= 2 * "
+                         "options.lowest (%lldn). Received %lld",
+                         (long long)minimum_highest, (long long)highest);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      goto done;
+    }
+    const ScrDyn *fig = scr_dyn_obj_get(opts, "figures", 7);
+    if (fig != NULL && fig->kind != SCR_DYN_UNDEF) {
+      if (fig->kind != SCR_DYN_NUM) {
+        static const char msg[] = "The \"options.figures\" argument must be of type number";
+        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+        goto done;
+      }
+      if (!scr_histo_integer_ok(fig->v.num, "options.figures", 1, 5)) goto done;
+      figures = fig->v.num;
+    }
+    /* halfLife and threshold only feed the EWMA readings; they are
+     * validated as Node validates them, then kept unused. */
+    const char *ewma_keys[2] = {"halfLife", "threshold"};
+    const char *ewma_names[2] = {"options.halfLife", "options.threshold"};
+    for (int i = 0; i < 2; i++) {
+      const ScrDyn *value = scr_dyn_obj_get(opts, ewma_keys[i], strlen(ewma_keys[i]));
+      if (value == NULL || value->kind == SCR_DYN_UNDEF) continue;
+      if (value->kind != SCR_DYN_NUM) {
+        char msg[160];
+        int len = snprintf(msg, sizeof msg, "The \"%s\" argument must be of type number",
+                           ewma_names[i]);
+        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_TYPE");
+        goto done;
+      }
+      if (value->v.num < 0) {
+        char received[48];
+        scr_num_received(value->v.num, received);
+        char msg[224];
+        int len = snprintf(msg, sizeof msg,
+                           "The value of \"%s\" is out of range. It must be >= 0. Received %s",
+                           ewma_names[i], received);
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+        goto done;
+      }
+    }
+  }
+  ok = true;
+done:
+  scr_dyn_release(plain);
+  if (!ok) return 0;
+create:
+  if (scr_histos_len == 0 && scr_histos == NULL) scr_atexit(scr_histo_cleanup);
+  ScrHisto *h = calloc(1, sizeof *h);
+  if (h == NULL) {
+    static const char msg[] = "scriptc: out of memory";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return 0;
+  }
+  if (!scr_histo_config(h, lowest, highest, (int)figures)) {
+    scr_histo_free(h);
+    char msg[160];
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"options\" is invalid. Received lowest=%lld highest=%lld "
+                       "figures=%d",
+                       (long long)lowest, (long long)highest, (int)figures);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+    return 0;
+  }
+  ScrHisto **grown = realloc(scr_histos, (scr_histos_len + 1) * sizeof *grown);
+  if (grown == NULL) {
+    scr_histo_free(h);
+    static const char msg[] = "scriptc: out of memory";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return 0;
+  }
+  scr_histos = grown;
+  scr_histos[scr_histos_len] = h;
+  scr_histos_len++;
+  return -(double)scr_histos_len;
+}
+
+/* record(val): Node validates a number as an integer >= 1; a bigint must
+ * fit the histogram's int64 range (ERR_OUT_OF_RANGE otherwise). */
+void scr_histo_record_checked(double handle, double value) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return;
+  if (!scr_histo_integer_ok(value, "val", 1, 9007199254740991.0)) return;
+  scr_histo_record(h, (int64_t)value);
+}
+
+void scr_histo_record_big(double handle, ScrBigInt *value) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL || value == NULL) return;
+  if (!scr_bigint_i64_fits(value) || scr_bigint_to_i64(value) < 1) {
+    static const char msg[] = "The value of \"value\" is out of range";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  scr_histo_record(h, scr_bigint_to_i64(value));
+}
+
+/* recordCorrected(val, expectedInterval): both integers >= 1. */
+void scr_histo_record_corrected_checked(double handle, double value, double expected) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return;
+  if (!scr_histo_integer_ok(value, "val", 1, 9007199254740991.0)) return;
+  if (!scr_histo_integer_ok(expected, "expectedInterval", 1, 9007199254740991.0)) return;
+  scr_histo_record_corrected(h, (int64_t)value, (int64_t)expected);
+}
+
+/* recordDelta(): the nanoseconds since the previous call, recorded. */
+void scr_histo_record_delta(double handle) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return;
+  uint64_t now = scr_hrtime_ns();
+  if (h->prev_ns > 0 && now > h->prev_ns) {
+    uint64_t delta = now - h->prev_ns;
+    if (delta > (uint64_t)h->highest)
+      h->exceeds++;
+    else
+      scr_histo_record(h, (int64_t)delta);
+  }
+  h->prev_ns = now;
+}
+
+void scr_histo_reset(double handle) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return;
+  memset(h->counts, 0, (size_t)h->counts_len * sizeof *h->counts);
+  h->total = 0;
+  h->min_value = INT64_MAX;
+  h->max_value = 0;
+  h->exceeds = 0;
+  h->prev_ns = 0;
+  scr_histo_clear_view(h);
+}
+
+/* add(other): every recorded value of `other` is recorded here; values this
+ * histogram cannot hold are dropped (Node ignores hdr_add's dropped count). */
+void scr_histo_add(double handle, double other_handle) {
+  ScrHisto *h = scr_histo_of(handle);
+  ScrHisto *other = scr_histo_of(other_handle);
+  if (h == NULL || other == NULL) {
+    static const char msg[] =
+        "The \"other\" argument must be an instance of RecordableHistogram";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+    return;
+  }
+  /* Node's Histogram::Add merges the exceeds counter and the delta clock
+   * before hdr_add merges the buckets. */
+  h->exceeds += other->exceeds;
+  if (other->prev_ns > h->prev_ns) h->prev_ns = other->prev_ns;
+  for (int64_t i = 0; i < other->counts_len; i++) {
+    if (other->counts[i] == 0) continue;
+    scr_histo_record_value(h, scr_histo_value_at_index(other, i), other->counts[i]);
+  }
+}
+
+/* subtract(other): counts clamp at zero; the internal counters are rebuilt
+ * and exceeds drops to the difference, like Node's Histogram::Subtract. */
+void scr_histo_subtract(double handle, double other_handle) {
+  ScrHisto *h = scr_histo_of(handle);
+  ScrHisto *other = scr_histo_of(other_handle);
+  if (h == NULL || other == NULL) {
+    static const char msg[] =
+        "The \"other\" argument must be an instance of RecordableHistogram";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+    return;
+  }
+  int64_t dropped = 0;
+  int64_t len = h->counts_len < other->counts_len ? h->counts_len : other->counts_len;
+  for (int64_t i = 0; i < len; i++) {
+    int64_t count = h->counts[i] - other->counts[i];
+    if (count < 0) {
+      dropped += -count;
+      count = 0;
+    }
+    h->counts[i] = count;
+  }
+  (void)dropped;
+  scr_histo_recount(h);
+  h->exceeds = h->exceeds > other->exceeds ? h->exceeds - other->exceeds : 0;
+  scr_histo_clear_view(h);
+}
+
+/* which: 0 count, 1 min, 2 max, 3 mean, 4 stddev, 5 exceeds. */
+double scr_histo_stat(double handle, double which) {
+  ScrHisto *h = scr_histo_of(handle);
+  int w = (int)which;
+  if (h == NULL) return w == 1 ? (double)INT64_MAX : (w == 3 || w == 4) ? NAN : 0;
+  switch (w) {
+    case 0:
+      return (double)h->total;
+    case 1:
+      if (h->counts_len > 0 && h->counts[0] > 0) return 0;
+      return h->min_value == INT64_MAX ? (double)INT64_MAX
+                                       : (double)scr_histo_lowest_equivalent(h, h->min_value);
+    case 2:
+      return h->max_value == 0 ? 0 : (double)scr_histo_highest_equivalent(h, h->max_value);
+    case 3:
+    case 4: {
+      if (h->total == 0) return NAN;
+      /* hdr_mean accumulates the buckets as int64 (count * median), then
+       * divides once; stddev measures each bucket's median against it. */
+      int64_t sum = 0;
+      for (int64_t i = 0; i < h->counts_len; i++) {
+        if (h->counts[i] == 0) continue;
+        sum += h->counts[i] * scr_histo_median_equivalent(h, scr_histo_value_at_index(h, i));
+      }
+      double mean = (double)sum / (double)h->total;
+      if (w == 3) return mean;
+      double geo = 0;
+      for (int64_t i = 0; i < h->counts_len; i++) {
+        if (h->counts[i] == 0) continue;
+        double dev =
+            (double)scr_histo_median_equivalent(h, scr_histo_value_at_index(h, i)) - mean;
+        geo += dev * dev * (double)h->counts[i];
+      }
+      return sqrt(geo / (double)h->total);
+    }
+    default:
+      return (double)h->exceeds;
+  }
+}
+
+ScrBigInt *scr_histo_stat_big(double handle, double which) {
+  ScrHisto *h = scr_histo_of(handle);
+  int w = (int)which;
+  if (h == NULL) return scr_bigint_from_i64(w == 1 ? INT64_MAX : 0);
+  switch (w) {
+    case 0:
+      return scr_bigint_from_i64(h->total);
+    case 1: {
+      if (h->counts_len > 0 && h->counts[0] > 0) return scr_bigint_from_i64(0);
+      if (h->min_value == INT64_MAX) return scr_bigint_from_i64(INT64_MAX);
+      return scr_bigint_from_i64(scr_histo_lowest_equivalent(h, h->min_value));
+    }
+    case 2:
+      return scr_bigint_from_i64(
+          h->max_value == 0 ? 0 : scr_histo_highest_equivalent(h, h->max_value));
+    default:
+      return scr_bigint_from_i64(h->exceeds);
+  }
+}
+
+/* hdr_value_at_percentile; the compiler checked Node's 0 < p <= 100. */
+double scr_histo_percentile(double handle, double percentile) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return 0;
+  double requested = percentile < 100.0 ? percentile : 100.0;
+  int64_t wanted = (int64_t)((requested / 100.0) * (double)h->total + 0.5);
+  if (wanted < 1) wanted = 1;
+  int64_t seen = 0;
+  int64_t value = 0;
+  for (int64_t i = 0; i < h->counts_len; i++) {
+    seen += h->counts[i];
+    if (seen >= wanted) {
+      value = scr_histo_value_at_index(h, i);
+      break;
+    }
+  }
+  if (percentile == 0.0) return (double)scr_histo_lowest_equivalent(h, value);
+  return (double)scr_histo_highest_equivalent(h, value);
+}
+
+ScrBigInt *scr_histo_percentile_big(double handle, double percentile) {
+  return scr_bigint_from_i64((int64_t)scr_histo_percentile(handle, percentile));
+}
+
+/* Node's CountAt converts the double with V8's int64 truncation; a NaN or a
+ * magnitude past int64 has no counts index. */
+static bool scr_histo_to_i64(double value, int64_t *out) {
+  if (isnan(value)) return false;
+  if (value >= 9223372036854775808.0 || value <= -9223372036854775808.0) return false;
+  *out = (int64_t)value;
+  return true;
+}
+
+double scr_histo_count_at(double handle, double value) {
+  ScrHisto *h = scr_histo_of(handle);
+  int64_t at = 0;
+  if (h == NULL || !scr_histo_to_i64(value, &at)) return 0;
+  if (at < 0) return 0;
+  int64_t index = scr_histo_counts_index(h, at);
+  if (index < 0 || index >= h->counts_len) return 0;
+  return (double)h->counts[index];
+}
+
+/* Node's Histogram::Cdf: the first index whose highest equivalent value
+ * reaches `value`, empty buckets included. */
+double scr_histo_cdf(double handle, double value) {
+  ScrHisto *h = scr_histo_of(handle);
+  int64_t at = 0;
+  if (h == NULL || h->total == 0 || !scr_histo_to_i64(value, &at)) return 0.0;
+  int64_t target = at;
+  int64_t cumulative = 0;
+  for (int64_t i = 0; i < h->counts_len; i++) {
+    cumulative += h->counts[i];
+    int64_t highest = scr_histo_highest_equivalent(h, scr_histo_value_at_index(h, i));
+    if (highest >= target) return (double)cumulative / (double)h->total;
+    if (cumulative >= h->total) break;
+  }
+  return 1.0;
+}
+
+double scr_histo_ccdf(double handle, double value) { return 1.0 - scr_histo_cdf(handle, value); }
+
+/* hdr_iter_percentile's ticks: the percentile thresholds 0, 50, 75, ...,
+ * each emitted once the running cumulative reaches it, and 100 for the
+ * last recorded bucket (or for an empty histogram). */
+double scr_histo_percentiles_count(double handle) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return 0;
+  scr_histo_clear_view(h);
+  if (h->total == 0) {
+    scr_histo_push_view(h, 100.0, 0);
+    return (double)h->view_len;
+  }
+  double to = 0.0;
+  int64_t cumulative = 0;
+  int64_t last_value = 0;
+  for (int64_t i = 0; i < h->counts_len; i++) {
+    cumulative += h->counts[i];
+    if (h->counts[i] == 0) continue;
+    last_value = scr_histo_value_at_index(h, i);
+    double current = 100.0 * (double)cumulative / (double)h->total;
+    if (cumulative >= h->total) {
+      /* The final bucket's next tick is the closing 100 entry, not another
+       * threshold: the iterator's has_next is false after it. */
+      if (to <= current) scr_histo_push_view(h, to, last_value);
+      break;
+    }
+    while (to < 100.0 && to <= current) {
+      scr_histo_push_view(h, to, last_value);
+      to += (100.0 - to) / 2.0;
+    }
+  }
+  scr_histo_push_view(h, 100.0, last_value);
+  return (double)h->view_len;
+}
+
+double scr_histo_percentiles_key(double handle, double index) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL || index < 0 || (size_t)index >= h->view_len) return 0;
+  return h->view_key[(size_t)index];
+}
+
+double scr_histo_percentiles_value(double handle, double index) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL || index < 0 || (size_t)index >= h->view_len) return 0;
+  return (double)h->view_value[(size_t)index];
+}
+
+/* Symbol.dispose: Node's RecordableHistogram is not disposable, but the
+ * runtime frees the counts early. */
+void scr_histo_dispose(double handle) {
+  if (!(handle <= -1) || -handle > (double)scr_histos_len) return;
+  ScrHisto *h = scr_histos[(size_t)(-handle) - 1];
+  if (h == NULL) return;
+  h->disposed = true;
+  scr_histo_free(h);
+  scr_histos[(size_t)(-handle) - 1] = NULL;
+}

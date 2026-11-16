@@ -30,7 +30,11 @@ import { builtinNamespaceValue, wellKnownSymbolValue } from "../builtin-namespac
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
-import { lowerHistogramProperty, lowerPerfHooksProperty } from "../builtins/performance.js";
+import {
+  lowerHistogramProperty,
+  lowerPerfHooksProperty,
+  lowerRecordableHistogramProperty,
+} from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import {
@@ -728,6 +732,11 @@ export function lowerPropertyAccessExpr(
   // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
   {
     const reading = lowerHistogramProperty(lowerer, expr);
+    if (reading) return reading;
+  }
+  // A createHistogram RecordableHistogram's readings and percentiles Map.
+  {
+    const reading = lowerRecordableHistogramProperty(lowerer, expr);
     if (reading) return reading;
   }
   // An X509Certificate's publicKey KeyObject.

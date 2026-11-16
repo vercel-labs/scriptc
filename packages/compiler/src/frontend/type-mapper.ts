@@ -6854,6 +6854,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // runtime's histogram table, like a timer handle. Its members lower over
   // the handle (builtins/performance.ts).
   if (isStdlibInterface("IntervalHistogram")) return F64;
+  // createHistogram's RecordableHistogram and its Histogram base: a numeric
+  // handle too, but a negative one into a separate table, so an upcast of an
+  // IntervalHistogram still reads the event-loop histogram.
+  if (isStdlibInterface("Histogram") || isStdlibInterface("RecordableHistogram")) return F64;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",

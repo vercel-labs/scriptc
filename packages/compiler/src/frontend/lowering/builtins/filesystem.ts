@@ -2017,17 +2017,20 @@ function lowerFsReaddirNames(
       loc,
     );
   }
-  // A flag only the run time knows: the path binds first, the options
-  // record's encoding expression runs next (its side effects and exceptions
-  // included), the flag binds last, and the call reads all three —
+  // A flag only the run time knows: the path binds first, then the options
+  // record's own expressions in the order the literal spells them (each
+  // with its side effects and exceptions), and the call reads all of them —
   // JavaScript's argument order, which a ternary over the flag would
   // reverse by reading it before the path.
   const pathLocal = lowerer.declareHiddenLocal("%readdirPath", STRING);
   const pathRef = varRef(pathLocal.id, STRING, loc);
   const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc }];
-  if (encodingNode !== null && !ts.isStringLiteralLike(encodingNode)) {
-    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(encodingNode), loc });
-  }
+  const encodingEffect =
+    encodingNode !== null && !ts.isStringLiteralLike(encodingNode)
+      ? ({ kind: "exprStmt", expr: lowerer.lowerExpr(encodingNode), loc } satisfies IrStmt)
+      : null;
+  const encodingFirst = encodingEffect !== null && encodingNode!.pos < recursive.pos;
+  if (encodingFirst) stmts.push(encodingEffect!);
   const flagLocal = lowerer.declareHiddenLocal("%readdirRecursive", BOOL);
   stmts.push({
     kind: "varDecl",
@@ -2035,6 +2038,7 @@ function lowerFsReaddirNames(
     init: lowerer.lowerExprExpecting(recursive, BOOL),
     loc,
   });
+  if (encodingEffect !== null && !encodingFirst) stmts.push(encodingEffect);
   const flagRef = varRef(flagLocal.id, BOOL, loc);
   const result: IrExpr = {
     kind: "ternary",

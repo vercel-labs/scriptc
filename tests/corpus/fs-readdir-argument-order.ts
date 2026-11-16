@@ -58,5 +58,11 @@ log.length = 0;
 // 4. A falsy runtime flag takes the plain listing, in the same order.
 const flat = fs.readdirSync(pathOf(), { recursive: flag(false) });
 console.log("flat", flat.includes("a.txt"), log.join(","));
+log.length = 0;
+
+// 5. The options record's expressions run in the order the literal spells
+// them, whichever order that is.
+const spelled = fs.readdirSync(pathOf(), { recursive: flag(true), encoding: utf8Encoding() });
+console.log("flag first", spelled.includes("sub/b.txt"), log.join(","));
 
 fs.rmSync(dir, { recursive: true, force: true });

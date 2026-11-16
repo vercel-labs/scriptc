@@ -66,6 +66,34 @@ export function lowerSqliteNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr
   };
 }
 
+/** `backup(sourceDb, path[, options])`, the module's one function: the
+ * promise of the copy's page count. */
+export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  if (call.questionDotToken) return null;
+  const callee = call.expression;
+  let isBackup = false;
+  if (ts.isIdentifier(callee)) {
+    const builtin = builtinImportOf(lowerer, callee);
+    isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
+  } else if (ts.isPropertyAccessExpression(callee) && !callee.questionDotToken) {
+    const builtin = lowerer.builtinMemberOf(callee);
+    isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
+  }
+  if (!isBackup) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  const nodes = call.arguments.nodes;
+  const argument = (index: number): IrExpr =>
+    index < nodes.length ? lowerer.lowerExprExpecting(nodes[index]!, DYN) : dynUndefinedExpr(loc);
+  return {
+    kind: "libCall",
+    fn: "sqlite.backup",
+    args: [argument(0), argument(1), argument(2)],
+    type: DYN,
+    loc,
+  };
+}
+
 /** `v instanceof DatabaseSync` / `v instanceof StatementSync`. */
 export function lowerSqliteInstanceof(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr | null {
   const cls = sqliteClassOf(lowerer, expr.right);

@@ -90745,6 +90745,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "tests/corpus/sqlite-backup.ts",
           "tests/corpus/sqlite-constants.ts",
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
@@ -92099,8 +92100,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sqlite.backup",
+        "tests": [
+          "tests/corpus/sqlite-backup.ts"
+        ]
       },
       "anchorSource": "exact"
     },

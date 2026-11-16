@@ -58753,9 +58753,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static implementation exists for this Node API family yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {

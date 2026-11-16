@@ -4918,7 +4918,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (psym !== undefined && psymName === "StatementSyncIterator") ||
       (psym !== undefined && psymName === "Session") ||
       (psym !== undefined && psymName === "SQLTagStore") ||
-      (psym !== undefined && psymName === "DatabaseSyncLimits")) &&
+      (psym !== undefined && psymName === "DatabaseSyncLimits") ||
+      // sqlite.backup's progress record, read through the callback's
+      // checked-dynamic parameter.
+      (psym !== undefined && psymName === "BackupProgressInfo")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&

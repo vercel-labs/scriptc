@@ -6903,11 +6903,14 @@ void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
  * passes the object-mode high-water marks (16 by default). */
 void scr_stream_set_object_mode(ScrStream *s, bool readable, bool writable) {
   ScrStreamState *st = s->st;
-  if (readable && st->has_r) {
+  /* The mode is the OPTION, not the side: Node keeps an object-mode state
+   * even on a disabled side, so `Duplex.from(promise).writableObjectMode`
+   * answers true while `writable` stays false. */
+  if (readable) {
     st->r.object_entries = true;
     st->r.object_mode_opt = true;
   }
-  if (writable && st->has_w) st->w.object_mode = st->w.values = true;
+  if (writable) st->w.object_mode = st->w.values = true;
 }
 
 /* decodeStrings: false — string writes stay strings (scr_stream_write_string). */

@@ -43,12 +43,15 @@ log.push(`writable ${sink.writableHighWaterMark} object ${objectSink.writableHig
 log.push(`transform ${transform.readableHighWaterMark}/${transform.writableHighWaterMark} pass ${pass.readableHighWaterMark}/${pass.writableHighWaterMark}`);
 log.push(`explicit ${explicit.readableHighWaterMark} early still ${early.readableHighWaterMark}`);
 
-// Duplex.from(promise) takes the object default; the async-function channel
-// keeps duplexify.js's own highWaterMark of 1.
+// Duplex.from(promise) takes the object default; the async-function and
+// iterable channels keep duplexify.js's own highWaterMark of 1. Every one of
+// them keeps its object-mode state on both sides, as Node does.
 const fromPromise = Duplex.from(Promise.resolve("p"));
-log.push(`duplex promise ${fromPromise.readableObjectMode} ${fromPromise.readableHighWaterMark}/${fromPromise.writableHighWaterMark}`);
+log.push(`duplex promise ${fromPromise.readableObjectMode}/${fromPromise.writableObjectMode} ${fromPromise.readableHighWaterMark}/${fromPromise.writableHighWaterMark}`);
 const fromAsync = Duplex.from(async function* () { yield "a"; });
-log.push(`duplex asyncfn ${fromAsync.readableObjectMode} ${fromAsync.readableHighWaterMark}/${fromAsync.writableHighWaterMark}`);
+log.push(`duplex asyncfn ${fromAsync.readableObjectMode}/${fromAsync.writableObjectMode} ${fromAsync.readableHighWaterMark}/${fromAsync.writableHighWaterMark}`);
+const fromIterable = Duplex.from(["i"]);
+log.push(`duplex iterable ${fromIterable.readableObjectMode}/${fromIterable.writableObjectMode} ${fromIterable.readableHighWaterMark}/${fromIterable.writableHighWaterMark}`);
 
 shape("negative", () => setDefaultHighWaterMark(false, -1));
 shape("fraction", () => setDefaultHighWaterMark(false, 1.5));

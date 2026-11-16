@@ -46,6 +46,21 @@ const pick = (name: BufferEncoding): BufferEncoding => {
 };
 showNames("runtime sync", fs.readdirSync(dir, pick("hex")));
 showNames("runtime promise", await fsp.readdir(dir, pick("latin1")));
+// A name typed as the utf8 default still runs: the listing is the plain
+// one, but the expression's side effects happen as Node's does.
+showNames("typed utf8", fs.readdirSync(dir, pick("utf8")));
+showNames("typed utf8 promise", await fsp.readdir(dir, pick("utf8")));
+showNames(
+  "typed utf8 recursive",
+  fs.readdirSync(dir, { recursive: true, encoding: pick("utf-8") }),
+);
+showNames(
+  "typed utf8 types",
+  fs
+    .readdirSync(dir, { withFileTypes: true, encoding: pick("utf8") })
+    .map((entry) => entry.name)
+    .sort(),
+);
 console.log("picked", picked);
 
 // A const with a literal type is the same listing as the literal.

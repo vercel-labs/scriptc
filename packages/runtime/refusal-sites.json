@@ -1465,6 +1465,12 @@
  },
  {
   "file": "scr_message.c",
+  "function": "scr_message_value",
+  "message": "carrying a primitive wrapper object (new String/Number/Boolean or Object(primitive)) through a message is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_message.c",
   "function": "scr_message_encode_transfer",
   "message": "Transfer lists with values other than MessagePorts are not supported yet",
   "code": "SC2020"

@@ -32,6 +32,14 @@ typedef struct {
   void (*release)(ScrChannel *channel);
 } ScrMessagePortOps;
 extern const ScrMessagePortOps *scr_message_port_ops;
+/* The primitive-wrapper unit's half (scr_js_wrapper.c installs it): a wrapper
+ * is not carried through a message yet, so the encoder refuses it by name
+ * instead of sending the plain object its internal slot hides. */
+typedef struct {
+  bool (*is_wrapper)(const ScrDyn *value);
+} ScrMessageWrapperOps;
+extern const ScrMessageWrapperOps *scr_message_wrapper_ops;
+void scr_message_set_wrapper_ops(const ScrMessageWrapperOps *ops);
 ScrDyn *scr_message_decode(const ScrMessage *message);
 void scr_message_free(ScrMessage *message);
 

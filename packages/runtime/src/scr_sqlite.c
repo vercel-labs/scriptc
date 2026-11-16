@@ -302,6 +302,19 @@ static void scr_sqlite_throw_message_error(const char *message) {
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
+/* ERR_SQLITE_ERROR for a result code (Node's THROW_ERR_SQLITE_ERROR(isolate,
+ * errcode)): the code's own text and the code, without errstr. */
+static void scr_sqlite_throw_result_error(int errcode) {
+  const char *text = sqlite3_errstr(errcode);
+  if (text == NULL) text = "";
+  ScrStr *msg = scr_str_new(text, strlen(text));
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_error_set_code(e, "ERR_SQLITE_ERROR");
+  scr_error_set_prop(e, "errcode", 7, scr_dyn_new_num((double)errcode));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* ── value conversion: SQLite -> JavaScript ─────────────────────────── */
 
 #define SCR_SQLITE_MAX_SAFE 9007199254740991.0
@@ -2193,7 +2206,6 @@ done:
 /* ── applyChangeset ─────────────────────────────────────────────────── */
 
 typedef struct ScrSqliteChangeset {
-  ScrSqliteDb *db;
   ScrDyn *filter; /* owned or NULL */
   ScrDyn *conflict; /* owned or NULL */
   bool filter_failed;
@@ -2210,7 +2222,6 @@ static int scr_sqlite_changeset_filter(void *ctx, const char *table) {
   scr_dyn_release(argument);
   if (result == NULL) {
     c->filter_failed = true;
-    c->db->ignore_next_error = true;
     return 0;
   }
   bool truth = scr_dyn_truthy(result);
@@ -2229,14 +2240,15 @@ static int scr_sqlite_changeset_conflict(void *ctx, int conflict, sqlite3_change
   ScrDyn *result = scr_dyn_call(c->conflict, &argument, 1, "onConflict");
   scr_dyn_this_pop();
   scr_dyn_release(argument);
-  if (result == NULL) {
-    c->db->ignore_next_error = true;
-    return SQLITE_CHANGESET_ABORT;
-  }
-  if (result->kind != SCR_DYN_NUM || result->v.num != trunc(result->v.num)) {
+  if (result == NULL) return SQLITE_CHANGESET_ABORT;
+  if (result->kind != SCR_DYN_NUM || result->v.num != trunc(result->v.num) ||
+      result->v.num < (double)INT32_MIN || result->v.num > (double)INT32_MAX) {
+    /* A non-int32 answer is not a conflict resolution: Node hands SQLite
+     * an invalid code, which aborts the apply with SQLITE_MISUSE, so the
+     * apply raises ERR_SQLITE_ERROR from SQLite's misuse text and code,
+     * and the connection keeps reporting its later errors. */
     scr_dyn_release(result);
-    c->db->ignore_next_error = true;
-    return SQLITE_CHANGESET_ABORT;
+    return SQLITE_MISUSE;
   }
   int code = (int)result->v.num;
   scr_dyn_release(result);
@@ -2254,7 +2266,7 @@ static ScrDyn *scr_sqlite_db_apply_changeset(ScrSqliteDb *db, ScrDyn *const *arg
     return NULL;
   }
   ScrDyn *options = scr_dyn_retain((ScrDyn *)scr_sqlite_arg(args, argc, 1));
-  ScrSqliteChangeset context = {.db = db};
+  ScrSqliteChangeset context = {0};
   if (options->kind != SCR_DYN_UNDEF) {
     if (!scr_sqlite_object_like(options)) {
       scr_dyn_release(options);
@@ -2310,7 +2322,7 @@ static ScrDyn *scr_sqlite_db_apply_changeset(ScrSqliteDb *db, ScrDyn *const *arg
   scr_dyn_release(input);
   if (r == SQLITE_OK) return scr_dyn_new_bool(true);
   if (r == SQLITE_ABORT) return scr_dyn_new_bool(false);
-  scr_sqlite_throw_db_error(db);
+  scr_sqlite_throw_result_error(r);
   return NULL;
 }
 

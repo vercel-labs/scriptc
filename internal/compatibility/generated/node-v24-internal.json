@@ -80244,6 +80244,7 @@
           "tests/corpus/perf-entry-globals.cjs",
           "tests/corpus/perf-event-loop-utilization.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/perf-hooks-now-arguments.cjs",
           "tests/corpus/perf-hooks-observer.ts",
           "tests/corpus/perf-hooks-surface.ts",
           "tests/corpus/perf-loop-metrics-exit-in-body.ts",
@@ -83856,11 +83857,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.performance.now",
         "tests": [
           "tests/corpus/2427-perf-hooks-now.ts",
-          "tests/corpus/2446-performance-global.ts"
+          "tests/corpus/2446-performance-global.ts",
+          "tests/corpus/perf-hooks-now-arguments.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -84016,11 +84018,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.timeOrigin",
         "tests": [
           "tests/corpus/compat-js-value-reads.mjs",
-          "tests/corpus/compat-js-value-reads-require.cjs"
+          "tests/corpus/compat-js-value-reads-require.cjs",
+          "tests/corpus/perf-hooks-now-arguments.cjs"
         ]
       },
       "anchorSource": "ancestor"

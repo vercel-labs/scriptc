@@ -991,6 +991,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "program roots of the entry package",
   ),
   scan(
+    "frontend/program.ts#declarationTwinRoots7",
+    1,
+    "discovery",
+    "program roots for the runtime implementation of each project declaration the program holds (a `.d.ts` beside the JavaScript it describes)",
+  ),
+  scan(
     "frontend/program.ts#cjsStarReexportSources",
     2,
     "discovery",

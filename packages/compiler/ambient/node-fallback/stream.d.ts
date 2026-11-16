@@ -355,6 +355,10 @@ declare module "stream" {
     constructor(opts: ObjectWritableOptions);
     constructor(opts: StringWritableOptions);
     constructor(opts?: WritableOptions);
+    /* A Writable over a web WritableStream's writer: a write completes when
+     * the writer's write() settles, end() closes the writer and destroy()
+     * aborts it. The options have no lowering yet. */
+    static fromWeb(writableStream: WritableStream<Uint8Array>, options?: {}): Writable;
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
     _writev(

@@ -493,10 +493,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dgram && u.opts.dnsResolve, "scr_dns_resolve.c"),
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
   unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
-  unit((u) => u.opts.watch, "scr_watch.c"),
+  unit((u) => u.opts.watch === true || u.opts.watchEvents === true, "scr_watch.c"),
   // fs.watchFile's stat poller: its own gated unit (no loop hook — the
   // re-armed timers are the liveness), linked only by programs that poll.
   unit((u) => u.opts.watchFile, "scr_watch_file.c"),
+  // fsPromises.watch's async iterator: a queue over the watcher unit, its
+  // own gate (native/executable.ts pulls scr_watch.c with it).
+  unit((u) => u.opts.watchEvents, "scr_watch_async.c"),
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),
   unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
@@ -559,6 +562,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.islandChild === true, "scr_node_island_child.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
+  // Writable.fromWeb wraps a web WritableStream's writer.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_from_web_writable.c",
+  ),
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),

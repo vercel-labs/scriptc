@@ -230,14 +230,35 @@ declare const console: {
 
 // node:console exports the global instance's bound methods and the Console
 // constructor: instances over process.stdout/process.stderr or node:stream
-// writables lower their log/info/debug/error/warn members; their remaining
-// methods are declared so unsupported uses reach named fences.
+// writables lower every member — the output members through util.format,
+// and count/time/group/table/trace/assert/clear over the instance's own
+// counters, timers and group indentation, written to its own streams.
 type ScriptcConsoleMethods = typeof console;
 declare module "node:console" {
+  export interface ConsoleConstructorOptions {
+    stdout?: unknown;
+    stderr?: unknown;
+    ignoreErrors?: boolean;
+    /** 'auto' colors only a terminal's inspect output, which this runtime
+     * never styles; false turns colors off — the two lower identically,
+     * and true is refused (the util.inspect colors boundary). */
+    colorMode?: boolean | "auto";
+    /** Spaces per open group (default 2), validated like Node's
+     * validateInteger(0..1000). */
+    groupIndentation?: number;
+  }
   export class Console {
+    /** The options form. Node destructures the known keys and ignores the
+     * rest; every initializer still evaluates, in source order. */
+    constructor(options: ConsoleConstructorOptions);
     constructor(stdout: unknown, stderr?: unknown, ignoreErrors?: boolean);
   }
-  export interface Console extends ScriptcConsoleMethods {}
+  /** Node's Console instances define the global console's members except
+   * the inspector-only three, which exist on the global console alone. */
+  export interface Console extends Omit<
+    ScriptcConsoleMethods,
+    "profile" | "profileEnd" | "timeStamp"
+  > {}
   export const log: ScriptcConsoleMethods["log"];
   export const info: ScriptcConsoleMethods["info"];
   export const debug: ScriptcConsoleMethods["debug"];

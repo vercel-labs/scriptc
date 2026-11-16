@@ -94,6 +94,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.label",
   "console.countReset",
   "console.table",
+  // Console construction validates its options in the runtime, and the
+  // instance twins of the throwing members share their fences.
+  "console.new",
+  "console.instCount",
+  "console.instCountReset",
+  "console.instTable",
+  "console.instTrace",
   "console.dirDyn",
   "console.dirHidden",
   "worker.new",

@@ -5062,11 +5062,13 @@ function buildLibFnSignatures() {
     "global.undefRead": { argTypes: [STRING], result: VOID },
     "console.native": { argTypes: [], result: DYN },
     /** node:console Console instances (scr_console_native.c): new mints the
-     * handle over the stdout/stderr fds (1/2; 0 = a stream binds next) and
-     * the ignoreErrors flag; bind attaches a borrowed writable stream to
-     * target 0 (stdout) or 1 (stderr); write prints `text\n` to the
-     * selected target of an instance or the global console handle. */
-    "console.new": { argTypes: [F64, F64, BOOL], result: DYN },
+     * handle over the stdout/stderr fds (1/2; 0 = a stream binds next), the
+     * ignoreErrors flag and the groupIndentation (a number, or null for
+     * undefined: Node's validateInteger runs here); bind attaches a borrowed
+     * writable stream to target 0 (stdout) or 1 (stderr); write prints
+     * `text\n` to the selected target of an instance or the global console
+     * handle. */
+    "console.new": { argTypes: [F64, F64, BOOL, DYN], result: DYN },
     "console.bind": { argTypes: [DYN, F64, null], result: VOID },
     "console.write": { argTypes: [DYN, STRING, BOOL], result: VOID },
     /** The global console's remaining members (scr_console_native.c; the
@@ -5096,6 +5098,27 @@ function buildLibFnSignatures() {
     "console.table": { argTypes: [DYN, DYN], result: VOID },
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
     "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
+    /** The same members on a Console instance (scr_console_native.c), which
+     * keeps its own counters, timers and group indentation and writes to
+     * its own stdout/stderr targets. count prints "label: n"; countReset
+     * answers the warning text for an unknown (or non-string) label, ""
+     * otherwise; time answers the duplicate-label warning text or "";
+     * timeEnd/timeLog answer the formatted elapsed time, or "" for an
+     * unknown label (timeEnd drops the timer). group adds (+1) or removes
+     * (-1) one indentation step of the instance's groupIndentationWidth.
+     * clear writes the cursor-home and erase-down sequences when the
+     * instance's stdout is a terminal. table renders and prints Node's
+     * table; trace prints "Trace[: text]" and the captured frames to the
+     * instance's stderr. */
+    "console.instCount": { argTypes: [DYN, STRING], result: VOID },
+    "console.instCountReset": { argTypes: [DYN, DYN], result: STRING },
+    "console.instTime": { argTypes: [DYN, STRING], result: STRING },
+    "console.instTimeEnd": { argTypes: [DYN, STRING], result: STRING },
+    "console.instTimeLog": { argTypes: [DYN, STRING], result: STRING },
+    "console.instGroup": { argTypes: [DYN, F64], result: VOID },
+    "console.instClear": { argTypes: [DYN], result: VOID },
+    "console.instTable": { argTypes: [DYN, DYN, DYN], result: VOID },
+    "console.instTrace": { argTypes: [DYN, STRING], result: VOID },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Arms the runtime check for the Node globals the native runtime does not

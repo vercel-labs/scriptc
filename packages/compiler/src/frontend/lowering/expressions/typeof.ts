@@ -17,7 +17,7 @@ import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
 import { isNavigatorGlobal } from "../builtins/navigator.js";
 import { processHasIpc } from "../builtins/process.js";
 import { lowerPerfHooksTypeof } from "../builtins/performance.js";
-import { isNodeModuleValue } from "../lower-node-module.js";
+import { isNodeModuleValue, lowerModuleParentTypeof } from "../lower-node-module.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { builtinModuleMemberCensus } from "../builtin-module-members.js";
 import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
@@ -127,6 +127,10 @@ function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: Src
       stdlibGlobalNameOf(lowerer, operand.expression) === "globalThis"
     )
       return { kind: "strLit", value: "undefined", type: STRING, loc };
+  }
+  {
+    const moduleParent = lowerModuleParentTypeof(lowerer, expr.expression);
+    if (moduleParent) return moduleParent;
   }
   if (isNodeModuleValue(lowerer, expr.expression)) {
     return { kind: "strLit", value: "object", type: STRING, loc };

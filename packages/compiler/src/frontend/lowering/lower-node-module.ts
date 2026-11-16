@@ -223,9 +223,17 @@ export function isRequireCacheExpr(lowerer: Lowerer, node: ts.Expression): boole
 /** `require.main`, `module.parent`, and `module.parent.parent`: a property
  * path the module registry answers, even in a JS file whose implicit
  * `module.exports` assignment leaves `module` typed as `any`. */
+/** Whether the program has a CommonJS entry module — Node's require.main.
+ * An ES-module entry has no CommonJS main, so `require.main` is undefined
+ * there even inside the CommonJS modules it imports. */
+function requireMainPresent(lowerer: Lowerer): boolean {
+  return !isNodeEsmFile(lowerer.entry, lowerer.program);
+}
+
 function moduleObjectExpression(lowerer: Lowerer, node: ts.Expression): boolean {
   if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return false;
-  if (node.name.text === "main" && cjsGlobal(lowerer, node.expression, "require")) return true;
+  if (node.name.text === "main" && cjsGlobal(lowerer, node.expression, "require"))
+    return requireMainPresent(lowerer);
   if (node.name.text !== "parent") return false;
   return (
     isCjsModuleGlobal(lowerer, node.expression) || moduleObjectExpression(lowerer, node.expression)
@@ -233,6 +241,16 @@ function moduleObjectExpression(lowerer: Lowerer, node: ts.Expression): boolean 
 }
 
 function nodeModuleType(lowerer: Lowerer, node: ts.Expression): boolean {
+  // `require.main` in an ES-module-entry program is undefined, so its
+  // declared module arm must not make `typeof` answer "object".
+  if (
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "main" &&
+    !node.questionDotToken &&
+    cjsGlobal(lowerer, node.expression, "require") &&
+    !requireMainPresent(lowerer)
+  )
+    return false;
   if (moduleObjectExpression(lowerer, node)) return true;
   const type = lowerer.typeOf(node);
   // `require.main` and `module.parent` are typed `ScriptcModule |
@@ -685,6 +703,33 @@ export function lowerNodeModuleProperty(
         "the static CommonJS module surface is id, filename, path, paths, loaded, isPreloading, parent, children, exports, and require",
       );
   }
+}
+
+/** `typeof module.parent`: null (the CommonJS entry) and a module (a module
+ * required by CommonJS) both answer "object"; a module loaded by an ES-module
+ * entry has no CommonJS parent and answers "undefined". The registry's
+ * absent marker (-2) is the only one that renders "undefined". */
+export function lowerModuleParentTypeof(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return null;
+  if (node.name.text !== "parent" || !isCjsModuleGlobal(lowerer, node.expression)) return null;
+  const id = cjsModuleRef(lowerer, node.expression);
+  if (!id) return null;
+  const loc = locOf(node);
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "libCall", fn: "module.parent", args: [id], type: F64, loc },
+      right: numLit(-2, loc),
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "strLit", value: "undefined", type: STRING, loc },
+    else_: { kind: "strLit", value: "object", type: STRING, loc },
+    type: STRING,
+    loc,
+  };
 }
 
 export function lowerRequireCacheElement(

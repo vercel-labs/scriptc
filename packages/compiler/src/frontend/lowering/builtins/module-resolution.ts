@@ -1063,10 +1063,15 @@ function staticResolveOptionPathEntry(lowerer: Lowerer, node: ts.Expression): st
     lowerer.isStdlibGlobal(value, "__dirname") &&
     !isNodeEsmFile(ts.getSourceFileOfNode(value), lowerer.program)
   ) {
-    const file = runtimePathForTarget(
-      ts.getSourceFileOfNode(value).fileName,
-      lowerer.targetPlatform,
-    );
+    const source = ts.getSourceFileOfNode(value).fileName;
+    // Build-time resolution reads HOST paths (the base file is one). A WASI
+    // guest path would send the resolver to a directory that does not exist
+    // on the build host; the guest form belongs to the emitted value, not to
+    // this lookup.
+    const file =
+      lowerer.targetPlatform === "wasi"
+        ? source
+        : runtimePathForTarget(source, lowerer.targetPlatform);
     return lowerer.targetPlatform === "win32" ? win32.dirname(file) : posix.dirname(file);
   }
   return null;

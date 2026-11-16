@@ -66,3 +66,27 @@ const borrower = new Borrower();
 const borrowedView = Object.getPrototypeOf(borrower as any);
 console.log(borrowedView.readThroughFunction.call({ tag: "borrowed" }));
 console.log(borrowedView.readThroughArrow.call(borrower));
+
+// A nested class's field initializer is a new `this`, even when it holds an
+// arrow: the inner instance's `appendChild` is not the outer class's, so the
+// member keeps the dynamic view and a borrowed receiver still runs.
+class Outer {
+  appendChild<T extends Outer>(child: any): T {
+    return child as T;
+  }
+  run(): string {
+    class Inner {
+      appendChild(): string {
+        return "inner";
+      }
+      helper: () => string = () => this.appendChild();
+      read(): string {
+        return String(typeof this.helper) + ":" + this.helper();
+      }
+    }
+    return new Inner().read() + ":" + (this as any).tag;
+  }
+}
+
+const outerView = Object.getPrototypeOf(new Outer() as any);
+console.log(outerView.run.call({ tag: "borrowed" }));

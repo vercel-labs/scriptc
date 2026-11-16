@@ -512,17 +512,21 @@ function bodyNeedsTypedReceiver(
   let refused = false;
   ts.walkPreorder(member.body, (node) => {
     if (refused) return "skip";
-    // `this` inside a nested function, method or accessor is that function's
-    // own receiver, never the class instance's, so the scan does not cross
-    // into one: a helper object's `appendChild` is not the class's. An arrow
-    // keeps the enclosing `this`, so its reads still count.
+    // `this` inside a nested function, method, accessor or class body is
+    // that construct's own receiver, never the class instance's, so the scan
+    // does not cross into one: a helper object's `appendChild` is not the
+    // class's, and an inner class's field initializer (even one holding an
+    // arrow) reads the inner instance. An arrow keeps the enclosing `this`,
+    // so a read through one still counts.
     if (
       ts.isFunctionExpression(node) ||
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node) ||
       ts.isGetAccessorDeclaration(node) ||
       ts.isSetAccessorDeclaration(node) ||
-      ts.isConstructorDeclaration(node)
+      ts.isConstructorDeclaration(node) ||
+      ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node)
     )
       return "skip";
     if (

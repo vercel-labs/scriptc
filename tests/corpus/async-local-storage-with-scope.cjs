@@ -15,6 +15,18 @@ assert.strictEqual(als.name, 'store');
 show('initial');
 
 const outer = als.withScope('outer');
+
+// A RunScope is a native handle that models no data properties: an
+// unmodeled name reads undefined and `in` answers false (there is no getter
+// behind it), while its dispose stays a method value.
+console.log(
+  'scope reads:',
+  outer.missing,
+  '|',
+  'missing' in outer,
+  '| dispose:',
+  typeof outer.dispose,
+);
 console.log('scope type:', typeof outer, Object.keys(outer).length);
 show('after withScope');
 const inner = als.withScope('inner');

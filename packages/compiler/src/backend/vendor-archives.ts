@@ -67,6 +67,7 @@ import {
   ZLIB_VERSION,
   BROTLI_VERSION,
   ZSTD_VERSION,
+  SQLITE_VERSION,
   ICU_VERSION,
   ICU_SOURCE_URL,
   ICU_SOURCE_SHA256,
@@ -76,6 +77,7 @@ import {
   ZLIB_SOURCES,
   ZSTD_SOURCES,
   icuSourceList,
+  sqliteInputs,
   zlibInputs,
   zstdInputs,
 } from "./vendor-inputs.js";
@@ -85,6 +87,7 @@ export {
   ZLIB_VERSION,
   BROTLI_VERSION,
   ZSTD_VERSION,
+  SQLITE_VERSION,
   ICU_VERSION,
   LRE_SOURCES,
   ZLIB_SOURCES,
@@ -636,6 +639,79 @@ export function createVendorArchives(context: VendorArchiveContext) {
     return archive;
   }
 
+  function vendorSqliteDir(): string {
+    return join(runtimeSrcDir(), "..", "vendor", "sqlite");
+  }
+
+  function sqliteArchivePath(
+    sanitize: boolean,
+    driver: CcDriver,
+    buildIdentity: string,
+    cacheRoot: string = vendorBuildCacheRoot(),
+  ): string {
+    const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    return join(cacheRoot, `sqlite-${SQLITE_VERSION}-${flavor}`, "libsqlite.a");
+  }
+
+  /** The SQLite archive for one flavor, compiled lazily on the first
+   * sqlite-using build and cached under
+   * <build-cache>/vendor/sqlite-<version>-<flavor>-<target>-<toolchain>/libsqlite.a,
+   * with the brotli archive's recipe: one compile of the amalgamation with
+   * Node's deps/sqlite/sqlite.gyp defines, then one `ar rcs`. Only a
+   * program that imports node:sqlite links it. */
+  async function ensureSqliteArchive(
+    sanitize: boolean,
+    driver: CcDriver,
+    buildIdentity: string,
+    cacheRoot: string = vendorBuildCacheRoot(),
+  ): Promise<string> {
+    const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    const compileArgv = isZigDriver(driver) ? driver.argv : ["clang"];
+    const arArgv = isZigDriver(driver) ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
+    const vendor = vendorSqliteDir();
+    const archive = sqliteArchivePath(sanitize, driver, buildIdentity, cacheRoot);
+    if (await validVendorArtifact(archive)) return archive;
+
+    const build = sqliteInputs(vendorTriple(driver));
+    await mkdir(cacheRoot, { recursive: true });
+    const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-sqlite-${flavor}-`));
+    try {
+      const cflags = [
+        "-std=c11",
+        ...driver.targetArgs,
+        // Node builds the amalgamation at -O2.
+        ...(sanitize ? ["-O1", "-fsanitize=address"] : ["-O2"]),
+        ...build.defines.map((define) => `-D${define}`),
+        ...build.compileFlags,
+        "-I",
+        vendor,
+      ];
+      const objects: string[] = [];
+      for (const src of build.sources) {
+        const object = join(buildDir, `${src.replaceAll("/", "-").replace(/\.c$/, "")}.o`);
+        await execFileAsync(compileArgv[0] ?? "clang", [
+          ...compileArgv.slice(1),
+          ...cflags,
+          "-c",
+          join(vendor, src),
+          "-o",
+          object,
+        ]);
+        objects.push(object);
+      }
+      await execFileAsync(arArgv[0] ?? "ar", [
+        ...arArgv.slice(1),
+        "rcs",
+        join(buildDir, "libsqlite.a"),
+        ...objects,
+      ]);
+      await publishVendorArtifact(join(buildDir, "libsqlite.a"), archive);
+    } finally {
+      await rm(buildDir, { recursive: true, force: true });
+    }
+    return archive;
+  }
+
   /** The fetched ICU release root (`icu/`, holding `source/` and LICENSE),
    * downloaded once per cache root and reused after that. ICU is not
    * vendored: the release's own source tarball is pinned by version and
@@ -922,5 +998,8 @@ export function createVendorArchives(context: VendorArchiveContext) {
     LRE_SOURCES,
     ZLIB_SOURCES,
     ZSTD_SOURCES,
+    vendorSqliteDir,
+    sqliteArchivePath,
+    ensureSqliteArchive,
   };
 }

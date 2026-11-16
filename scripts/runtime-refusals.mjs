@@ -49,6 +49,9 @@ const NODE_WORDING = [
   /^(?:address family|ai_family|socket type|protocol) not supported$/,
   /not supported on socket$/,
   /^The .* method is not implemented$/, // ERR_METHOD_NOT_IMPLEMENTED
+  // node:sqlite's JSValueToSQLiteResult: the SQLITE error a user-defined
+  // function answers with when it returns a promise.
+  /^Asynchronous user-defined functions are not supported$/,
   /^is not supported$/, // ERR_INVALID_ARG_VALUE's reason, raised with Node's code
 ];
 

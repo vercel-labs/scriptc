@@ -322,6 +322,14 @@ export const BUILTIN_MODULE_MEMBERS: Readonly<Record<string, BuiltinModuleMember
     functions: "channel=1 hasSubscribers=1 subscribe=2 tracingChannel=1 unsubscribe=2 Channel=1",
     values: "",
   },
+  "sqlite": {
+    callable: false,
+    keys: ["DatabaseSync", "StatementSync", "Session", "constants", "backup"],
+    ownNames: ["DatabaseSync", "StatementSync", "Session", "constants", "backup"],
+    inherited: ["constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "toString", "valueOf", "__proto__", "toLocaleString"],
+    functions: "DatabaseSync=0 StatementSync=0 Session=0 backup=2",
+    values: "constants=object",
+  },
   "perf_hooks": {
     callable: false,
     keys: ["Performance", "PerformanceEntry", "PerformanceMark", "PerformanceMeasure", "PerformanceObserver", "PerformanceObserverEntryList", "PerformanceResourceTiming", "monitorEventLoopDelay", "eventLoopUtilization", "timerify", "createHistogram", "createSlidingWindowHistogram", "importHistogram", "performance", "constants"],

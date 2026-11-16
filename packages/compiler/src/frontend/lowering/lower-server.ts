@@ -383,6 +383,57 @@ const ERROR_T: IrType = { kind: "object", className: "%Error" };
  * callback rides an interned cast-and-discard adapter (the stream lane's
  * bare-expression-body discard, generalized to closure VALUES): same
  * parameters, void return, the underlying result discarded unread. */
+/** `outgoingMessage.pipe(...args)`: Node evaluates every argument of the
+ * call and then ignores them, so the arguments must still run (side effects,
+ * throws) before the runtime answers ERR_STREAM_CANNOT_PIPE. They ride an
+ * interned lifted helper whose body ignores them and makes the one runtime
+ * call. */
+function pipeWithArguments(
+  lowerer: Lowerer,
+  prefix: string,
+  fn: IrLibFn,
+  receiver: IrExpr,
+  evaluated: readonly IrExpr[],
+  loc: SrcLoc,
+): IrExpr {
+  const direct: IrExpr = { kind: "libCall", fn, args: [receiver], type: VOID, loc };
+  if (evaluated.length === 0) return direct;
+  const all = [receiver, ...evaluated];
+  const key = `${prefix}:${all.map((arg) => typeKey(arg.type)).join(",")}`;
+  const existing = lowerer.arrHofHelpers.get(key);
+  const name = existing ?? keyedHelperName(lowerer, prefix, key);
+  if (!existing) {
+    lowerer.arrHofHelpers.set(key, name);
+    const params = all.map((arg, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: arg.type }));
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: VOID,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: param.type,
+        mutable: false,
+      })),
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn,
+            args: [varRef(params[0]!.localId, params[0]!.type, loc)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: all, type: VOID, loc };
+}
+
 export function voidizedCallback(lowerer: Lowerer, cb: IrExpr, loc: SrcLoc): IrExpr {
   if (cb.type.kind !== "func" || cb.type.ret.kind === "void") return cb;
   const fromT = cb.type;
@@ -9009,12 +9060,19 @@ function lowerHttpClientMethodCall(
   if (name === "pipe") {
     // OutgoingMessage.prototype.pipe overrides Stream's with a shape that
     // takes anything and ignores it: an outgoing message is not readable, so
-    // Node emits ERR_STREAM_CANNOT_PIPE on the request's 'error' list (no
-    // listener means the unhandled-error exit, which is Node's throw of it).
+    // Node evaluates the arguments and then emits ERR_STREAM_CANNOT_PIPE on
+    // the request's 'error' list — or throws it at the call when no
+    // listener is registered.
     requireStatementPosition(lowerer, call, "request.pipe(...)");
     const receiver = lowerer.lowerExpr(access.expression);
-    for (const arg of args) lowerer.lowerExpr(arg);
-    return { kind: "libCall", fn: "http.clientPipe", args: [receiver], type: VOID, loc };
+    return pipeWithArguments(
+      lowerer,
+      "%request.pipe",
+      "http.clientPipe",
+      receiver,
+      args.map((arg) => lowerer.lowerExpr(arg)),
+      loc,
+    );
   }
   if (name === "destroy" && args.length === 1) {
     // destroy(err): err is the request's 'error' (an Error value here).
@@ -10155,11 +10213,18 @@ function lowerHttpResMethodCall(
     // OutgoingMessage.prototype.pipe: Stream's shape takes anything and
     // ignores it — a response is write-only, so Node emits
     // ERR_STREAM_CANNOT_PIPE (an unhandled 'error' is the throw at the
-    // call).
+    // call). Node evaluates every argument before the call runs, so their
+    // side effects and throws happen first.
     requireStatementPosition(lowerer, call, "res.pipe(...)");
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
-    for (const arg of args) lowerer.lowerExpr(arg);
-    return { kind: "libCall", fn: "http.resPipe", args: [receiver], type: VOID, loc };
+    return pipeWithArguments(
+      lowerer,
+      "%server.pipe",
+      "http.resPipe",
+      receiver,
+      args.map((arg) => lowerer.lowerExpr(arg)),
+      loc,
+    );
   }
   if (name === "getHeader" || name === "hasHeader" || name === "removeHeader") {
     // The header CRUD trio (setHeader's readers): getHeader answers the

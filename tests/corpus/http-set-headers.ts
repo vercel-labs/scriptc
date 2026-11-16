@@ -19,6 +19,15 @@ const server = http.createServer((req, res) => {
     res.end("ok");
     return;
   }
+  if (req.url === "/map-array") {
+    // A Map<string, string[]> whose set-cookie values stay ONE array: the
+    // wire carries one Set-Cookie line per cookie.
+    res.setHeaders(new Map<string, string[]>([["set-cookie", ["a=1", "b=2"]]]));
+    const value = res.getHeader("set-cookie") as string[];
+    console.log("map-array", value.length, value[0], value[1]);
+    res.end("ok");
+    return;
+  }
   if (req.url === "/numbers") {
     res.setHeaders(new Map<string, string | string[]>([["x-n", "5" as string]]));
     console.log("number", res.getHeader("x-n"));
@@ -50,7 +59,7 @@ const server = http.createServer((req, res) => {
   res.end("other");
 });
 
-const paths = ["/map", "/numbers", "/after", "/badname"];
+const paths = ["/map", "/map-array", "/numbers", "/after", "/badname"];
 const pathAt = (i: number): string => paths[i] ?? "/other";
 const next = (i: number): void => {
   if (i >= paths.length) {
@@ -58,6 +67,10 @@ const next = (i: number): void => {
     return;
   }
   http.get({ host: "127.0.0.1", port: server.address().port, path: pathAt(i) }, (res) => {
+    if (pathAt(i) === "/map-array") {
+      const seen = res.headersDistinct["set-cookie"] as string[];
+      console.log("wire", seen.length, seen[0], seen[1]);
+    }
     if (pathAt(i) === "/map") {
       console.log("response header", res.headers["x-a"], res.headers["x-b"], String(res.headersDistinct["set-cookie"]));
     }

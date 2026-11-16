@@ -1606,16 +1606,26 @@ static void scr_http_set_headers_apply(ScrHttpRes *r, const ScrDyn *headers,
        * `key === 'set-cookie'`), so a differently-cased spelling takes
        * setHeader's ordinary path and keeps its case. */
       if (cookies == NULL) cookies = scr_dyn_new_arr();
-      if (value->kind == SCR_DYN_ARR) {
-        double values = scr_dyn_arr_len(value);
+      /* A Map<string, string[]> hands its array values over as live typed
+       * refs (the map's dyn adapter), not dyn arrays: materialize first, or
+       * every cookie would collapse into one comma-joined value below. */
+      ScrDyn *plain = scr_http_header_value_plain((ScrDyn *)value);
+      if (plain == NULL) {
+        scr_dyn_release(key);
+        scr_dyn_release(value);
+        break;
+      }
+      if (plain->kind == SCR_DYN_ARR) {
+        double values = scr_dyn_arr_len(plain);
         for (double j = 0; j < values; j++) {
-          ScrDyn *item = scr_dyn_index_get(value, (double)j);
+          ScrDyn *item = scr_dyn_index_get(plain, (double)j);
           if (item == NULL) break;
           scr_dyn_arr_push(cookies, item); /* ownership moves in */
         }
       } else {
-        scr_dyn_arr_push(cookies, scr_dyn_retain(value));
+        scr_dyn_arr_push(cookies, scr_dyn_retain(plain));
       }
+      scr_dyn_release(plain);
     } else {
       set(r, key->v.str, value);
     }
@@ -2910,8 +2920,18 @@ static void scr_http_proto_sweep(void) {
         res->destroyed = true; /* Node: destroyed reads true inside 'close' */
         res->socket_detached = true;
         scr_net_fire0_this(&res->close_ls, res, SCR_DYNH_HTTP_RES);
+        /* Nothing this response owns can fire again: a client that aborts
+         * a streaming response never reaches 'drain'/'finish', so their
+         * listeners would keep the response — and anything they captured —
+         * alive forever (a closure holding the response is a reference
+         * cycle the collector cannot see). */
         scr_net_ls_drop(&res->close_ls);
         scr_net_ls_drop(&res->timeout_ls);
+        scr_net_ls_drop(&res->drain_ls);
+        scr_net_ls_drop(&res->finish_ls);
+        scr_net_ls_drop(&res->prefinish_ls);
+        scr_net_ls_drop(&res->endcb_ls);
+        scr_net_ls_drop(&res->wcb_ls);
       }
       break;
     }
@@ -5459,6 +5479,14 @@ static void scr_http_client_emit_abort(ScrHttpClientReq *c) {
  * on the request's 'error' list (a listener sees the error; none means the
  * unhandled-error exit, Node's throw of it). */
 void scr_http_client_cannot_pipe(ScrHttpClientReq *c) {
+  if (!scr_net_ls_has_live(&c->err_ls)) {
+    /* no listener: Node's emit throws the error at the call, which a try
+     * statement catches — an unhandled 'error' here must not exit the
+     * process from inside the caller's frame */
+    static const char msg[] = "Cannot pipe, not readable";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_STREAM_CANNOT_PIPE");
+    return;
+  }
   scr_http_outgoing_cannot_pipe(&c->err_ls, c, SCR_DYNH_HTTP_CLIENT);
 }
 

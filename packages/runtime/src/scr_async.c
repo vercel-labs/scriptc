@@ -6383,9 +6383,9 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
 #else
   (void)evw;
 #ifdef SCR_NODE_ISLANDS
-  if (evw || net_io || dgram || watch || ffi || kids || renames || workers || islands)
+  if (evw || net_io || dgram || watch_io || ffi || kids || renames || workers || islands)
 #else
-  if (evw || net_io || dgram || watch || ffi || kids || renames || workers)
+  if (evw || net_io || dgram || watch_io || ffi || kids || renames || workers)
 #endif
     scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
 #endif
@@ -6912,18 +6912,18 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * With island units linked the loop's own poll takes the sleep
      * instead, and it watches the island wake fd too. */
     bool island_wake = scr_ni_remote_pollfd() >= 0;
-    if (workers && scr_workers_wait_fn && !islands && !island_wake && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+    if (workers && scr_workers_wait_fn && !islands && !island_wake && !kids && !evw && !net_io && !dgram && !watch_io && !ffi && !renames && !crypto) {
 #else
-    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch_io && !ffi && !renames && !crypto) {
 #endif
       scr_workers_wait_fn(due > now ? due - now : 0);
       now = scr_now_ms();
     } else
 #endif
 #ifdef SCR_NODE_ISLANDS
-    if (evw || net_io || dgram || watch || ffi || workers || islands || renames_fd >= 0) {
+    if (evw || net_io || dgram || watch_io || ffi || workers || islands || renames_fd >= 0) {
 #else
-    if (evw || net_io || dgram || watch || ffi || workers || renames_fd >= 0) {
+    if (evw || net_io || dgram || watch_io || ffi || workers || renames_fd >= 0) {
 #endif
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
@@ -6938,7 +6938,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
        * show up in a profile, the upgrade is a real waitable arm —
        * WaitForMultipleObjects over WSAEVENTs, or IOCP. */
       if (evw && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
-      if ((net_io || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+      if ((net_io || dgram || watch_io) && due > now + SCR_CHILD_POLL_MS)
+        due = now + SCR_CHILD_POLL_MS;
       if ((ffi || workers) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (due > now) {

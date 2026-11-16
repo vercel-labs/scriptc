@@ -460,10 +460,21 @@ void scr_watcher_close(ScrWatcher *w) {
   }
 #ifdef SCR_HAVE_INOTIFY
   if (w->wd >= 0) {
-    /* The queued IN_IGNORED this rm produces finds no open watcher and is
-     * skipped; wd numbers are issued cyclically, so it cannot collide
-     * with a watch created afterwards. */
-    if (scr_watch_ino >= 0) (void)inotify_rm_watch(scr_watch_ino, w->wd);
+    /* inotify is refcounted by PATH: every watcher on one path shares its
+     * descriptor, and inotify_rm_watch drops it for all of them. Only the
+     * last open watcher on the descriptor removes it, so closing one
+     * watcher leaves its peers delivering. The queued IN_IGNORED a real
+     * removal produces finds no open watcher and is skipped; wd numbers
+     * are issued cyclically, so it cannot collide with a watch created
+     * afterwards. */
+    bool shared_by_peer = false;
+    for (ScrWatcher *peer = scr_watchers; peer != NULL; peer = peer->next) {
+      if (peer != w && !peer->closed && peer->wd == w->wd) {
+        shared_by_peer = true;
+        break;
+      }
+    }
+    if (!shared_by_peer && scr_watch_ino >= 0) (void)inotify_rm_watch(scr_watch_ino, w->wd);
     w->wd = -1;
   }
 #endif

@@ -23,6 +23,24 @@ const reffed = fs.watch(file, { persistent: false }, () => {
 reffed.ref();
 fs.appendFileSync(file, "x");
 
+// Two watchers on one path share the kernel's watch: closing one leaves
+// the other delivering.
+let peerClosed = 0;
+let peerOpen = 0;
+const first = fs.watch(file, () => {
+  peerClosed++;
+});
+const second = fs.watch(file, () => {
+  peerOpen++;
+});
+first.close();
+await new Promise<void>((resolve) => {
+  fs.appendFileSync(file, "z");
+  setTimeout(resolve, 100);
+});
+console.log("peer after close", peerClosed === 0, peerOpen > 0);
+second.close();
+
 // persistent: false + unref(): events still arrive while the ticker holds
 // the loop.
 await new Promise<void>((resolve) => {

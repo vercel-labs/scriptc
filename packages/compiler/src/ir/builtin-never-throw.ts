@@ -109,6 +109,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http2.getPackedSettings0",
   // Copies the values a name has in a string pairs array.
   "http2.pairsValues",
+  // stream.getDefaultHighWaterMark reads the runtime's default for the mode:
+  // no allocation, no coercion and no program code.
+  "stream.getDefaultHwm",
   // The child stream's flowing state is set or read; held chunks go to the
   // listeners on a later tick, never inside the call.
   "stream.childPause",

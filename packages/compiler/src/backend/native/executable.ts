@@ -431,6 +431,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_dyn_builtin_stream.c",
   ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
+  // The stream defaults (setDefaultHighWaterMark) are process state the net
+  // and http units read for the streams they build.
+  unit((u) => u.opts.stream || u.net || u.http, "scr_stream_defaults.c"),
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),

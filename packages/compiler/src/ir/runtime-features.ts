@@ -316,6 +316,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "stream.getDefaultHwm",
+  "stream.setDefaultHwm",
   "child.stdioStream",
   "stream.chunkDone",
   "stream.objectMode",

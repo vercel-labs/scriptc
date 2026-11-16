@@ -5800,6 +5800,10 @@ function buildLibFnSignatures() {
      * stream). Both answer the stream (+1) and throw ERR_INVALID_ARG_TYPE
      * for a value that is not an AbortSignal; they link the event-target
      * unit (addAbortListener). */
+    /** stream.getDefaultHighWaterMark(objectMode) (scr_stream_get_default_hwm): the default new streams take. */
+    "stream.getDefaultHwm": { argTypes: [BOOL], result: F64 },
+    /** stream.setDefaultHighWaterMark(objectMode, value): ERR_OUT_OF_RANGE for a negative or fractional value. */
+    "stream.setDefaultHwm": { argTypes: [BOOL, F64], result: VOID },
     "stream.addAbortSignal": { argTypes: [null, DYN], result: VOID },
     "stream.addAbortSignalFn": { argTypes: [DYN, null], result: VOID },
     "stream.finished": { argTypes: [null, null], result: VOID },

@@ -3497,6 +3497,15 @@ function lowerNetSocketMethodCall(
         return resultOf(name === "write" ? "net.sockWrite" : "net.sockEndStr", [receiver(), data]);
       }
       if (data.type.kind === "dyn") {
+        if (encodingNode !== undefined) {
+          // The value may be a string at run time: its encoding applies.
+          const enc = lowerer.coerceToExpected(lowerer.lowerExpr(encodingNode), STRING);
+          return resultOf(name === "write" ? "net.sockWriteDynEnc" : "net.sockEndDynEnc", [
+            receiver(),
+            data,
+            enc,
+          ]);
+        }
         return resultOf(name === "write" ? "net.sockWriteDyn" : "net.sockEndDyn", [
           receiver(),
           data,

@@ -5379,6 +5379,7 @@ void scr_net_sock_connect_opts(ScrNetSocket *s, const ScrDyn *options,
       host = scr_str_retain(m->v.str);
     }
   }
+  bool local_addr_given = false;
   if (ok && scr_net_opt_present(v, "localAddress", 12, &m)) {
     char buf[64];
     if (m->kind != SCR_DYN_STR) {
@@ -5394,7 +5395,7 @@ void scr_net_sock_connect_opts(ScrNetSocket *s, const ScrDyn *options,
         { static const char refusal[] = "a non-IPv4 localAddress is not supported yet"; scr_throw_error_msg_code(SCR_ERR_ERROR, refusal, sizeof refusal - 1, "SC2020"); ok = false; }
       } else {
         snprintf(s->local_ip, sizeof s->local_ip, "%s", buf);
-        s->local_set = true;
+        local_addr_given = true;
       }
     }
   }
@@ -5404,14 +5405,18 @@ void scr_net_sock_connect_opts(ScrNetSocket *s, const ScrDyn *options,
       ok = false;
     } else {
       s->local_port = (int)m->v.num;
-      s->local_set = true;
     }
   }
+  /* localPort alone binds the wildcard: only a given localAddress marks an
+   * address as supplied (an empty one would fail bind with EINVAL). */
+  s->local_set = local_addr_given;
   if (ok && scr_net_opt_present(v, "family", 6, &m) && m->kind == SCR_DYN_NUM) {
     s->dial_family = (int)m->v.num;
   }
   if (ok) {
     if (path != NULL) {
+      /* the listener is once('connect'), registered before the dial */
+      if (cb) scr_net_sock_on_connect(s, cb, true);
       if (s->unix_path == NULL) s->unix_path = scr_str_retain(path);
       s->dial_hook = &scr_net_sock_dial_unix;
       if (!scr_net_poller_init()) {
@@ -5420,7 +5425,6 @@ void scr_net_sock_connect_opts(ScrNetSocket *s, const ScrDyn *options,
       }
       scr_net_sock_dial_unix(s);
       scr_net_sock_register(s);
-      scr_closure_release(cb);
     } else {
       scr_net_sock_dial_on(s, port, host, cb, -1);
     }
@@ -10609,6 +10613,42 @@ bool scr_net_sock_write_dynv(ScrNetSocket *s, const ScrDyn *d) {
   if (d->kind == SCR_DYN_BYTES) return scr_net_sock_write_bytes(s, d->v.bytes);
   scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
   return false;
+}
+
+/* The encoding forms over a checked-dynamic payload: a string's bytes
+ * decode with the encoding (Node's Writable.write(string, encoding)); a
+ * Buffer ignores it, as Node does; any other chunk is the argument
+ * error. */
+static ScrBytes *scr_net_dyn_chunk_bytes(const ScrDyn *d, ScrStr *enc) {
+  if (d->kind == SCR_DYN_STR) {
+    ScrStr *canon = scr_bytes_normalize_encoding(enc);
+    if (canon == NULL) return NULL; /* ERR_UNKNOWN_ENCODING pending */
+    ScrBytes *b = scr_bytes_from_str(d->v.str, canon);
+    scr_str_release(canon);
+    return b;
+  }
+  if (d->kind == SCR_DYN_BYTES) return scr_bytes_retain(d->v.bytes);
+  scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", d);
+  return NULL;
+}
+
+bool scr_net_sock_write_dyn_enc(ScrNetSocket *s, const ScrDyn *d, ScrStr *enc) {
+  ScrBytes *b = scr_net_dyn_chunk_bytes(d, enc);
+  if (b == NULL) return false;
+  bool ok = scr_net_sock_write_bytes(s, b);
+  scr_bytes_release(b);
+  return ok;
+}
+
+void scr_net_sock_end_dyn_enc(ScrNetSocket *s, const ScrDyn *d, ScrStr *enc) {
+  if (d->kind == SCR_DYN_UNDEF || d->kind == SCR_DYN_NULL) {
+    scr_net_sock_end(s);
+    return;
+  }
+  ScrBytes *b = scr_net_dyn_chunk_bytes(d, enc);
+  if (b == NULL) return;
+  scr_net_sock_end_bytes(s, b);
+  scr_bytes_release(b);
 }
 
 void scr_net_sock_end_dynv(ScrNetSocket *s, const ScrDyn *d) {

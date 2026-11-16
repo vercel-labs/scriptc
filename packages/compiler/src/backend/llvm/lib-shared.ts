@@ -1837,6 +1837,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "net.sockDestroyError": "scr_net_sock_destroy_error",
   "net.sockTimeout": "scr_net_sock_timeout",
   "net.sockWriteEnc": "scr_net_sock_write_enc",
+  "net.sockWriteDynEnc": "scr_net_sock_write_dyn_enc",
+  "net.sockEndDynEnc": "scr_net_sock_end_dyn_enc",
   "net.sockEndEnc": "scr_net_sock_end_enc",
   "net.sockDestroy": "scr_net_sock_destroy",
   "net.sockPipe": "scr_net_sock_pipe",

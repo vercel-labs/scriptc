@@ -1432,6 +1432,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.sockDestroyError",
   "net.sockWriteEnc",
   "net.sockEndEnc",
+  "net.sockWriteDynEnc",
+  "net.sockEndDynEnc",
   // SocketAddress's option checks and parse()'s input check.
   "net.socketAddressNew",
   "net.socketAddressParse",

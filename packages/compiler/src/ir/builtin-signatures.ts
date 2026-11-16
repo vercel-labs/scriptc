@@ -2381,6 +2381,9 @@ function buildLibFnSignatures() {
     /** write(str, encoding) / end(str, encoding): the string's bytes in
      * that encoding. */
     "net.sockWriteEnc": { argTypes: [NETSOCKET_T, STRING, STRING], result: BOOL },
+    /** The same over a checked-dynamic payload (an untyped JS write). */
+    "net.sockWriteDynEnc": { argTypes: [NETSOCKET_T, DYN, STRING], result: BOOL },
+    "net.sockEndDynEnc": { argTypes: [NETSOCKET_T, DYN, STRING], result: VOID },
     "net.sockEndEnc": { argTypes: [NETSOCKET_T, STRING, STRING], result: VOID },
     "net.sockEndBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
     /** write/end with a CHECKED-DYNAMIC chunk (an untyped JS payload into a

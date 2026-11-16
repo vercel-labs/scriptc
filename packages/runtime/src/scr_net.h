@@ -369,6 +369,12 @@ void scr_net_sock_destroy_error(ScrNetSocket *s, ScrError *err /*moves*/);
  * encoding (Node's unknown-encoding TypeError included). */
 bool scr_net_sock_write_enc(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);
 void scr_net_sock_end_enc(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);
+/* The same over a checked-dynamic payload: a string decodes with the
+ * encoding, a Buffer ignores it. */
+bool scr_net_sock_write_dyn_enc(ScrNetSocket *s, const ScrDyn *data /*borrowed*/,
+                                ScrStr *enc /*borrowed*/);
+void scr_net_sock_end_dyn_enc(ScrNetSocket *s, const ScrDyn *data /*borrowed*/,
+                              ScrStr *enc /*borrowed*/);
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_dial_start(ScrNetSocket *s);

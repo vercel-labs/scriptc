@@ -114667,7 +114667,9 @@
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
           "tests/corpus/node24-crypto-sha2.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
           "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts",
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/webcrypto-get-public-key.ts",
@@ -115216,9 +115218,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.AeadParams",
         "tests": [
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts",
           "tests/corpus/compat-webcrypto-algorithms.mjs",
           "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
@@ -115243,11 +115247,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.additionalData",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115270,11 +115276,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.iv",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115297,11 +115305,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115324,11 +115334,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.tagLength",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115351,9 +115363,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.AesDerivedKeyParams",
         "tests": [
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts",
           "tests/corpus/compat-webcrypto-algorithms.mjs",
           "tests/corpus/compat-webcrypto-algorithms.ts"
         ]
@@ -115378,11 +115392,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -115405,11 +115421,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
           "tests/corpus/compat-webcrypto-algorithms.mjs",
-          "tests/corpus/compat-webcrypto-algorithms.ts"
+          "tests/corpus/compat-webcrypto-algorithms.ts",
+          "tests/corpus/webcrypto-aes-ocb.ts",
+          "tests/corpus/webcrypto-chacha20-poly1305.ts"
         ]
       },
       "anchorSource": "ancestor"

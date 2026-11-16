@@ -66,6 +66,7 @@
   `publicEncrypt`/`privateDecrypt` remain unsupported.
   The WebCrypto `crypto` global, which node:crypto also exports as `webcrypto`, supports `randomUUID()` and `getRandomValues()`, also read as values from untyped JavaScript.
   Its `subtle` object, also node:crypto's `subtle` export, supports `generateKey()` and `exportKey()` for HMAC and AES keys, `importKey()` for HMAC, AES, PBKDF2, and HKDF keys, `encrypt()` and `decrypt()` with AES-GCM, AES-CBC, and AES-CTR and `wrapKey()` and `unwrapKey()` of secret keys with AES-KW or those ciphers on native targets, `deriveBits()` and `deriveKey()` with PBKDF2 and HKDF, HMAC `sign()` and `verify()`, and SHA-1, SHA-2 and SHA-3 `digest()`; each SHA-3 digest reports Node's ExperimentalWarning once per process.
+  `encrypt()` and `decrypt()` also take AES-OCB and ChaCha20-Poly1305 keys, whose JWK forms carry the A128OCB and C20P labels and whose raw formats are refused, with Node's nonce and tag-length rules; each reports Node's ExperimentalWarning once per process.
   Secret keys import and export in the `raw`, `raw-secret`, and `jwk` formats.
   `generateKey()`, `importKey()`, `exportKey()`, `sign()`, and `verify()` also support ECDSA (P-256, P-384, and P-521), Ed25519, RSASSA-PKCS1-v1_5, and RSA-PSS, with the `spki`, `pkcs8`, and `jwk` formats and `raw` for ECDSA and Ed25519 public keys.
   `generateKey()`, `importKey()`, and `exportKey()` also support ECDH and X25519, with `spki`, `pkcs8`, and `jwk` and `raw` for their public keys, and RSA-OAEP, whose `encrypt()` and `decrypt()` take the optional `label`.

@@ -8943,6 +8943,11 @@ void scr_net_sock_clear_native_reader(ScrNetSocket *s) {
   s->native_closed = NULL;
   s->native_idle = NULL; /* upgraded and CONNECT sockets are outside HTTP close sweeps */
   s->native_http_timeout = NULL;
+  /* the parser stepped aside: the socket is raw again, so its errors are
+   * the socket's own (Node's upgraded and CONNECT sockets leave the
+   * server's error story) */
+  s->native_err = NULL;
+  s->native_err_obj = NULL;
   scr_net_sock_update_read(s);
 }
 
@@ -9453,7 +9458,10 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     ScrStr *msg = scr_str_retain(err->message);
     ScrAlsCtx *prev = scr_als_dispatch_enter(sock->als);
     bool consumed = sock->native_err_obj != NULL && sock->native_err_obj(sock->native_ctx, err);
-    if (!consumed && !scr_exc_pending()) {
+    /* The protocol handler stands in for Node's internal listener: the
+     * program's own 'error' listeners still run beside it, and only an
+     * error neither of them took ends the process. */
+    if (!scr_exc_pending() && (sock->err_ls.n > 0 || !consumed)) {
       ScrError *saved = scr_event_error_payload;
       scr_event_error_payload = err;
       scr_net_fire_err_this(&sock->err_ls, msg, sock, SCR_DYNH_NET_SOCKET);

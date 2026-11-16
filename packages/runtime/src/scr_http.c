@@ -5229,9 +5229,8 @@ struct ScrHttpClientReq {
    * their lengths stay in the message's buffer answer until the socket is
    * assigned, and each keeps its own chunk on the wire because the message
    * does not autocork yet. */
-  size_t *pre_lens;
-  size_t pre_count, pre_lens_cap;
-  size_t pre_len;
+  size_t pre_len;    /* bytes of the writes buffered before 'socket' */
+  size_t pre_framed; /* those bytes plus their chunk framing */
   /* the head a corked write committed, sent first at the flush */
   char *held_head;
   size_t held_head_len, held_head_cap;
@@ -5307,7 +5306,6 @@ void scr_http_client_release(ScrHttpClientReq *c) {
     scr_net_ls_drop(&c->info_ls);
     scr_net_ls_drop(&c->connect_ls);
     scr_net_ls_drop(&c->drain_ls);
-    free(c->pre_lens);
     scr_str_release(c->host);
     scr_str_release(c->path);
     scr_str_release(c->method);
@@ -5383,7 +5381,8 @@ static void scr_http_client_unregister(ScrHttpClientReq *c) {
 /* Agent bookkeeping (implementation below, with the Agent unit): the
  * settling client leaves its agent's lists and frees a slot. */
 static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpClientReq *c);
-static void scr_http_agent_free_remove(struct ScrHttpAgent *a, struct ScrHttpConn *conn);
+static void scr_http_agent_free_remove(struct ScrHttpAgent *a, struct ScrHttpConn *conn, bool wake);
+static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name);
 static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientReq *c, double hint);
 static double scr_http_response_keep_alive(ScrHttpReq *res, const struct ScrHttpClientReq *c);
 static struct ScrHttpAgent *scr_http_agent_release_p(struct ScrHttpAgent *ag);
@@ -5451,10 +5450,8 @@ static void scr_http_client_queue_finish(ScrHttpClientReq *c) {
 
 /* The pre-socket writes are the socket's from here on. */
 static void scr_http_client_clear_pre_socket(ScrHttpClientReq *c) {
-  free(c->pre_lens);
-  c->pre_lens = NULL;
-  c->pre_count = c->pre_lens_cap = 0;
   c->pre_len = 0;
+  c->pre_framed = 0;
 }
 
 static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
@@ -5797,14 +5794,11 @@ static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, siz
      * outputData until the socket arrives: the bytes go out in order (one
      * chunk each, since the message does not autocork yet) and their length
      * stays in writableLength's answer until then. */
-    if (c->pre_count == c->pre_lens_cap) {
-      size_t cap = c->pre_lens_cap ? c->pre_lens_cap * 2 : 8;
-      c->pre_lens = realloc(c->pre_lens, cap * sizeof *c->pre_lens);
-      if (!c->pre_lens) scr_http_oom();
-      c->pre_lens_cap = cap;
-    }
-    c->pre_lens[c->pre_count++] = len;
+    /* running totals: a chunked body's size line costs its hex digits
+     * plus the two CRLFs, counted once per write here instead of rescanned
+     * per write from every earlier length */
     c->pre_len += len;
+    c->pre_framed += len + scr_http_hex_digits(len) + 4;
   }
   if (c->corked > 0) {
     /* Node's write_() builds the implicit head even while corked */
@@ -5901,11 +5895,7 @@ double scr_http_client_writable_corked(ScrHttpClientReq *c) { return (double)c->
 double scr_http_client_writable_length(ScrHttpClientReq *c) {
   double buffered = 0;
   if (c->pre_len != 0) {
-    buffered = (double)c->pre_len;
-    if (c->chunked) {
-      for (size_t i = 0; i < c->pre_count; i++)
-        buffered += (double)(scr_http_hex_digits(c->pre_lens[i]) + 4);
-    }
+    buffered = (double)(c->chunked ? c->pre_framed : c->pre_len);
     if (c->held_head_len > 0) buffered += (double)c->held_head_len;
   }
   if (c->cork_len != 0) {
@@ -6685,7 +6675,7 @@ static void scr_http_client_agent_detach(ScrHttpClientReq *c) {
 
 static void scr_http_client_closed(ScrHttpConn *conn) {
   scr_http_conn_uncount(conn);
-  if (conn->pool_agent != NULL) scr_http_agent_free_remove(conn->pool_agent, conn);
+  if (conn->pool_agent != NULL) scr_http_agent_free_remove(conn->pool_agent, conn, true);
   ScrHttpClientReq *c = conn->client;
   if (!c) return;
   scr_http_client_agent_detach(c);
@@ -6791,7 +6781,7 @@ static void scr_http_client_sock_established(void *ctx) {
 
 static void scr_http_client_conn_free(ScrHttpConn *conn) {
   scr_http_conn_uncount(conn);
-  if (conn->pool_agent != NULL) scr_http_agent_free_remove(conn->pool_agent, conn);
+  if (conn->pool_agent != NULL) scr_http_agent_free_remove(conn->pool_agent, conn, false);
   if (conn->req) {
     scr_http_req_finish(conn->req, false);
     scr_http_req_release(conn->req);
@@ -7213,17 +7203,26 @@ static void scr_http_agent_free_untake(ScrHttpAgent *a, ScrHttpAgentFree *f) {
 }
 
 /* The idle socket closed (or its parser is going away): it leaves the
- * free list. */
-static void scr_http_agent_free_remove(struct ScrHttpAgent *a, struct ScrHttpConn *conn) {
+ * free list, and the slot it held under maxTotalSockets is free — the
+ * requests queued for it get their chance now, as Node's removeSocket
+ * serves the queue. */
+static void scr_http_agent_free_remove(struct ScrHttpAgent *a, struct ScrHttpConn *conn, bool wake) {
   for (ScrHttpAgentFree **link = &a->free_socks; *link; link = &(*link)->next) {
     if ((*link)->conn != conn) continue;
     ScrHttpAgentFree *f = *link;
     *link = f->next;
     conn->pool_agent = NULL;
-    scr_str_release(f->name);
-    scr_str_release(f->pool_key);
+    ScrStr *name = f->name; /* ownership moves to the pump */
+    ScrStr *pool_key = f->pool_key;
     scr_net_sock_release(f->sock);
     free(f);
+    if (wake) {
+      scr_http_agent_pump(a, name);
+      scr_str_release(name);
+    } else {
+      scr_str_release(name);
+    }
+    scr_str_release(pool_key);
     return;
   }
   conn->pool_agent = NULL;
@@ -7389,6 +7388,15 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
     scr_http_client_release(done->client);
     free(done);
   }
+  scr_http_agent_pump(ag, name);
+  scr_str_release(name);
+}
+
+/* Starts the requests queued under the freed name (Node's FIFO), then — when
+ * that name had nothing to start — the first queued request whose own origin
+ * has no live socket and whose dial stays under maxTotalSockets (Node's
+ * cross-origin path; the queue is not FIFO across origins). */
+static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
   if (!ag->destroyed && ag->nqueued > 0) {
     bool started = false;
     if (name != NULL) {
@@ -7432,7 +7440,6 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
       }
     }
   }
-  scr_str_release(name);
 }
 
 /* getName's string builder — Node's exact shape:
@@ -7553,7 +7560,7 @@ static void scr_http_agent_destroy(ScrHttpAgent *a) {
   while (a->free_socks) {
     ScrNetSocket *sock = scr_net_sock_retain(a->free_socks->sock);
     struct ScrHttpConn *conn = a->free_socks->conn;
-    scr_http_agent_free_remove(a, conn);
+    scr_http_agent_free_remove(a, conn, false);
     scr_net_sock_destroy(sock);
     scr_net_sock_release(sock);
   }

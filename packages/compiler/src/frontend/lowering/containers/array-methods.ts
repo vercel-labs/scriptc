@@ -36,6 +36,7 @@ import {
   elementPlaceholder,
   insertedValues,
   optionalElementValue,
+  optionalSlotValue,
   primitiveElement,
   unionArmsView,
   unionTupleJoin,
@@ -781,7 +782,9 @@ export function lowerArrayMethodCall(
     if (call.arguments.nodes.length > 3 || call.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(`.fill with ${call.arguments.nodes.length} arguments`, call);
     }
-    const value = call.arguments.nodes[0] ? lowerer.lowerExpr(call.arguments.nodes[0]) : null;
+    const value = call.arguments.nodes[0]
+      ? optionalSlotValue(lowerer, lowerer.lowerExpr(call.arguments.nodes[0]), receiverIr)
+      : null;
     if (
       value &&
       value.type.kind === "dyn" &&
@@ -847,7 +850,11 @@ export function lowerArrayMethodCall(
         call.arguments.nodes[0]!,
       );
     }
-    const value = lowerer.lowerExpr(call.arguments.nodes[1]!);
+    const value = optionalSlotValue(
+      lowerer,
+      lowerer.lowerExpr(call.arguments.nodes[1]!),
+      receiverIr,
+    );
     const receiverLocal = lowerer.declareHiddenLocal("%withRecv", receiverIr);
     const indexLocal = lowerer.declareHiddenLocal("%withIndex", index.type);
     const valueLocal = lowerer.declareHiddenLocal("%withValue", value.type);
@@ -949,21 +956,28 @@ export function lowerArrayMethodCall(
       (probe) =>
         probe !== null &&
         (lowerer.runtimeOptionalWidening(probe.type, elem) !== null ||
-          optionalElementValue(lowerer, probe, elem)),
+          optionalElementValue(lowerer, probe, elem) ||
+          (probe.type.kind === "dyn" && receiverIr.optionalElements === true)),
     );
     const items: IrExpr = hasSpread
       ? lowerArraySpreadItems(lowerer, itemNodes, elem, receiverIr, loc)
       : statefulItems
         ? lowerArrayValueItems(
             lowerer,
-            itemNodes.map((arg) => lowerer.lowerExpr(arg)),
+            itemNodes.map((arg) => optionalSlotValue(lowerer, lowerer.lowerExpr(arg), receiverIr)),
             elem,
             receiverIr,
             loc,
           )
         : {
             kind: "arrayLit",
-            elems: itemNodes.map((arg) => lowerer.coerceInto(arg, lowerer.lowerExpr(arg), elem)),
+            elems: itemNodes.map((arg) =>
+              lowerer.coerceInto(
+                arg,
+                optionalSlotValue(lowerer, lowerer.lowerExpr(arg), receiverIr),
+                elem,
+              ),
+            ),
             type: receiverIr,
             loc,
           };
@@ -1191,14 +1205,18 @@ export function lowerArrayMethodCall(
       };
     }
     // A `(T | undefined)[]` (primitiveElement) takes undefined values as
-    // present undefined elements, stored after the insertion.
+    // present undefined elements, stored after the insertion. A
+    // checked-dynamic argument the checker typed with an undefined arm (a
+    // member read on an indexed object) is one: convert it against the
+    // optional element type so the store keeps a present undefined in the
+    // slot's state instead of rejecting it as a missing `T`.
     if (
       (name === "push" || name === "unshift") &&
       primitiveElement(elem) &&
       call.arguments.nodes.some((a) => checkerTypeAdmitsUndefined(lowerer, a))
     ) {
       const nodes = call.arguments.nodes;
-      const values = nodes.map((a) => lowerer.lowerExpr(a));
+      const values = nodes.map((a) => optionalSlotValue(lowerer, lowerer.lowerExpr(a), receiverIr));
       const inserted = insertedValues(
         lowerer,
         values,
@@ -1394,7 +1412,8 @@ export function lowerArrayMethodCall(
       (probe) =>
         probe !== null &&
         (lowerer.runtimeOptionalWidening(probe.type, elem) !== null ||
-          optionalElementValue(lowerer, probe, elem)),
+          optionalElementValue(lowerer, probe, elem) ||
+          (probe.type.kind === "dyn" && receiverIr.optionalElements === true)),
     );
     if (statefulItems && itemNodes.length === 1 && itemProbes[0]?.type.kind === "union") {
       return lowerOptionalSpliceItem(
@@ -1412,14 +1431,20 @@ export function lowerArrayMethodCall(
       : statefulItems
         ? lowerArrayValueItems(
             lowerer,
-            itemNodes.map((arg) => lowerer.lowerExpr(arg)),
+            itemNodes.map((arg) => optionalSlotValue(lowerer, lowerer.lowerExpr(arg), receiverIr)),
             elem,
             receiverIr,
             loc,
           )
         : {
             kind: "arrayLit",
-            elems: itemNodes.map((arg) => lowerer.coerceInto(arg, lowerer.lowerExpr(arg), elem)),
+            elems: itemNodes.map((arg) =>
+              lowerer.coerceInto(
+                arg,
+                optionalSlotValue(lowerer, lowerer.lowerExpr(arg), receiverIr),
+                elem,
+              ),
+            ),
             type: receiverIr,
             loc,
           };

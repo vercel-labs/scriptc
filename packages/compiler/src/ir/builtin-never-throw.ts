@@ -12,7 +12,14 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
+  // controller runs no program code and raises no catchable error.
+  "test.ctxSignal",
   "process.finalization",
+  // scr_watcher_ref / scr_watcher_unref move one open watcher's loop-liveness
+  // flag; a closed watcher ignores them, and nothing user-visible runs.
+  "watcher.ref",
+  "watcher.unref",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
   "global.bindingValue",
@@ -224,6 +231,11 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // out of memory ends the process, so no error escapes the call.
   "zlib.infoPromise",
   "zlib.infoPromiseDyn",
+  // scr_bytes_item_dyn reads a byte view's element as a checked-dynamic
+  // value: an index that is not one of the view's elements answers undefined,
+  // the element read runs no program code, and the box allocation cannot
+  // raise (running out of memory ends the process).
+  "bytes.itemDyn",
   // scr_text_encode_into_str writes the two counts of the typed encodeInto
   // into the slots the compiler allocated: the walk runs no program code, a
   // destination that is not a u8 byte view ends the process at the entry's

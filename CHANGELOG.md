@@ -4,7 +4,17 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Highlights
+
+- **Node.js parity:**
+  - `Set` and `Map` take `Map`, `Set` and typed-array elements: each is one object for its whole life, so JavaScript compares it by identity, and the collection holds it, finds it, deletes and re-adds it, iterates it in insertion order and seeds another `Map` from `[key, value]` pairs holding it, instead of failing with SC2020; `Set<Uint8Array>` and `Map<Map<string, number>, T>` compile and keep two objects with equal contents apart.
+  - A collection constructor's seed cast from an untyped value, `new Set(u as Key[])` where `u` is `unknown`, lowers as the ordinary checked array conversion rather than as a single key, so it compiles like `const keys = u as Key[]; new Set(keys)` and every element keeps the identity the untyped name still sees; a key written on its own (`set.add(u as Key)`) stays refused, because copying a key would change the object the collection holds.
+
 <!-- release:start -->
+
+### Fixes
+
+- A checked value from an indexed object's optional member, such as `JsonWebKey`'s `alg?: string` over `[key: string]: unknown`, keeps the present `undefined` a `(T | undefined)[]` slot admits instead of throwing `expected string at $, got undefined`: an array literal, an index write, `push`, `unshift`, `splice`, `toSpliced`, `with`, `fill`, `Array.of` and `new Array(...)` print `null` from `JSON.stringify` and read back as `undefined`, as Node does.
 
 ## 0.4.15
 

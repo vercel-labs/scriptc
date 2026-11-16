@@ -70,6 +70,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generatePrimeCb",
   // node:test's { timeout } and { concurrency } range checks.
   "test.register",
+  // t.error builds Node's wrapper over the failure through the inspect
+  // unit's rendering, which can raise.
+  "test.ctxError",
   "test.registerEmpty",
   "test.sub",
   "test.subEmpty",
@@ -202,6 +205,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "atomics.opDyn",
   "atomics.waitDyn",
   "atomics.notifyDyn",
+  // The typed-array builtins' detached-receiver guard (t262-dc2): Node's
+  // TypeError, raised at the entry of sort/toSorted and the iterator
+  // factories. Emitted only under the mutableBuffers fact, but the check
+  // belongs to the call like every other runtime error.
+  "bytes.requireLive",
   "arrayBuffer.byteLengthGetter",
   "arrayBuffer.viewU8C",
   "arrayBuffer.viewI8",

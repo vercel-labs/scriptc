@@ -888,13 +888,21 @@ static ScrBytes *scr_wc_jwk_secret(const ScrWcJwk *jwk, bool extractable, long u
 
 const ScrWcAsymmetric *scr_wc_asymmetric = NULL;
 
-static const char *const scr_wc_asymmetric_names[] = {"ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5"};
+static const char *const scr_wc_asymmetric_names[] = {
+    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519",
+};
+
+/* Whether an asymmetric algorithm name is one of the key-agreement ones
+ * (deriveBits and deriveKey). */
+static bool scr_wc_is_derive_algorithm(const char *name) {
+  return strcmp(name, "ECDH") == 0 || strcmp(name, "X25519") == 0;
+}
 
 /* Whether the AlgorithmIdentifier at args[index] names ECDSA,
- * RSASSA-PKCS1-v1_5, RSA-PSS or Ed25519, read without side effects or errors: a
- * string, or the name member of an object (a statically typed one through
- * its plain view). A value that does not read cleanly takes the HMAC path,
- * which reports its errors. */
+ * RSASSA-PKCS1-v1_5, RSA-PSS, Ed25519, ECDH, RSA-OAEP or X25519, read
+ * without side effects or errors: a string, or the name member of an object
+ * (a statically typed one through its plain view). A value that does not
+ * read cleanly takes the HMAC path, which reports its errors. */
 static const char *scr_wc_asymmetric_name(const ScrDyn *args, size_t index) {
   if ((size_t)scr_dyn_arr_len(args) <= index) return NULL;
   ScrDyn *identifier = scr_dyn_arr_at(args, (double)index);
@@ -1514,6 +1522,13 @@ static bool scr_wc_member_buffer(const ScrDyn *dict, const char *dict_name, cons
   return ok;
 }
 
+/* scr_webcrypto_pki.c's view of scr_wc_member_buffer: an algorithm
+ * dictionary's BufferSource member (the RSA-OAEP label). */
+bool scr_wc_dictionary_buffer(const ScrDyn *dict, const char *dict_name, const char *key,
+                              bool required, ScrBytes **out) {
+  return scr_wc_member_buffer(dict, dict_name, key, required, out);
+}
+
 /* validateByteLength / validateMaxBufferLength over a converted member. */
 static bool scr_wc_exact_length(const ScrBytes *bytes, const char *name, double length) {
   if (scr_bytes_byte_len(bytes) == length) return true;
@@ -1699,6 +1714,12 @@ static ScrPromise *scr_wc_run_cipher(ScrWebCryptoAesFn aes, const char *name, bo
 }
 
 ScrPromise *scr_webcrypto_cipher(ScrDyn *args, bool decrypt, ScrWebCryptoAesFn aes) {
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  if (asymmetric && strcmp(asymmetric, "RSA-OAEP") == 0) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->encrypt)
+      return scr_wc_asymmetric_missing(decrypt ? "decrypt" : "encrypt", asymmetric);
+    return decrypt ? scr_wc_asymmetric->decrypt(args) : scr_wc_asymmetric->encrypt(args);
+  }
   const char *method = decrypt ? "decrypt" : "encrypt";
   const char *prefix = decrypt ? "Failed to execute 'decrypt' on 'SubtleCrypto'"
                                : "Failed to execute 'encrypt' on 'SubtleCrypto'";
@@ -2143,6 +2164,17 @@ ScrPromise *scr_webcrypto_derive_bits(ScrDyn *args) {
   double length = 0;
   if (!null_length && !scr_wc_enforce_range(prefix, "3rd argument", a.v[2], 4294967295.0, &length))
     goto done;
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  if (asymmetric && scr_wc_is_derive_algorithm(asymmetric)) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
+      result = scr_wc_asymmetric_missing("deriveBits", asymmetric);
+      goto done;
+    }
+    ScrBytes *bits =
+        scr_wc_asymmetric->derive_bits(a.v[0], a.v[1], null_length, length, "deriveBits");
+    if (bits) result = scr_wc_deferred_buffer(bits);
+    goto done;
+  }
   if (!scr_wc_normalize_kdf(a.v[0], "deriveBits", &params)) goto done;
   if (!scr_wc_check_base_key(asymmetric_key ? NULL : key, params.name, SCR_WC_USAGE_DERIVE_BITS,
                              "deriveBits"))
@@ -2217,7 +2249,9 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
   bool extractable = scr_dyn_truthy(a.v[3]);
   long usages = scr_wc_key_usages(prefix, 4, a.v[4]);
   if (usages < 0) goto done;
-  if (!scr_wc_normalize_kdf(a.v[0], "deriveKey", &params)) goto done;
+  const char *asymmetric = scr_wc_asymmetric_name(args, 0);
+  bool agreement = asymmetric && scr_wc_is_derive_algorithm(asymmetric);
+  if (!agreement && !scr_wc_normalize_kdf(a.v[0], "deriveKey", &params)) goto done;
   ScrWcAlgorithm imported;
   if (!scr_wc_normalize(a.v[2], scr_wc_import_names, SCR_WC_COUNT(scr_wc_import_names),
                         SCR_WC_OP_IMPORT, &imported))
@@ -2228,6 +2262,20 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
   if (strcmp(imported.name, "HMAC") != 0 && !scr_wc_is_aes(imported.name) &&
       !scr_wc_is_kdf(imported.name)) {
     scr_wc_unsupported_algorithm("deriveKey", imported.name);
+    goto done;
+  }
+  if (agreement) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
+      result = scr_wc_asymmetric_missing("deriveKey", asymmetric);
+      goto done;
+    }
+    ScrBytes *bits =
+        scr_wc_asymmetric->derive_bits(a.v[0], a.v[1], null_length, length, "deriveKey");
+    if (!bits) goto done;
+    ScrDyn *derived = scr_wc_import_key_sync("raw-secret", bits, NULL, &imported, extractable,
+                                             usages);
+    scr_bytes_release(bits);
+    result = derived ? scr_wc_deferred(derived) : scr_wc_deferred_rejection();
     goto done;
   }
   if (!scr_wc_check_base_key(asymmetric_key ? NULL : key, params.name, SCR_WC_USAGE_DERIVE_KEY,

@@ -1287,6 +1287,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.responseJsonStatic": "scr_fetch_response_json_static",
   "fetch.input": "scr_fetch_input",
   "abort.controllerNew": "scr_fetch_abort_controller_new",
+  "abort.signalIs": "scr_dyn_abort_signal_is",
   "event.targetNew": "scr_event_target_new",
   "event.new": "scr_event_new",
   "event.customNew": "scr_custom_event_new",

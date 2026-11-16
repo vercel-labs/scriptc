@@ -700,6 +700,15 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* `value instanceof AbortSignal`: the handles this unit boxes are the only
+ * values that carry the signal tag, so a signal answers true and every other
+ * value — undefined, null, a controller, a plain object — answers false, as
+ * Node's prototype chain does for the interfaces' real instances. */
+bool scr_dyn_abort_signal_is(const ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_HANDLE &&
+      value->v.handle.tag == SCR_DYNH_ABORT_SIGNAL;
+}
+
 /* ── the test runner's t.signal ────────────────────────────────────────
  * The same native signal, exposed to scr_test.c, which reaches these through
  * weak declarations. They live in the fetch unit's shared part so the

@@ -47,13 +47,14 @@ static void scr_watch_file_oom(void) {
 typedef struct {
   ScrClosure *cb; /* owned */
   ScrWatchFileFn fn;
+  bool reffed; /* this registration keeps the loop alive (Node's persistent
+                * default; the StatWatcher handle's ref()/unref() move it) */
 } ScrWatchFileL;
 
 struct ScrWatchFiler {
   size_t rc;
   ScrStr *path;     /* the resolved path (+1): the registry key and the stat target */
   double interval;  /* the first call's interval, reused for every poll */
-  bool persistent;
   int state;        /* libuv's busy_polling: 0 before the first poll, 1 after
                      * a success, -errno after a failure */
   int node_status;  /* Node's kOldStatus: -1 until a change is reported */
@@ -114,9 +115,25 @@ static ScrWatchFiler *scr_watch_file_find(ScrStr *resolved) {
 
 /* Arms the next poll: the first one at 0 (libuv stats on a later loop
  * turn, never synchronously), then one per interval. */
+static bool scr_watch_file_live(const ScrWatchFiler *p) {
+  for (size_t i = 0; i < p->n; i++)
+    if (p->ls[i].reffed) return true;
+  return false;
+}
+
+/* A timer the handle is armed with keeps the loop alive only while some
+ * registration on the poller is reffed. */
 static void scr_watch_file_arm(ScrWatchFiler *p, double ms) {
   p->timer = scr_set_timeout_handle(scr_closure_retain(p->pollCb), ms);
-  if (!p->persistent) scr_timer_unref(p->timer);
+  if (!scr_watch_file_live(p)) scr_timer_unref(p->timer);
+}
+
+/* A ref()/unref() (or a registration going away) moves the armed timer
+ * without re-arming it. */
+static void scr_watch_file_apply_liveness(ScrWatchFiler *p) {
+  if (p->timer == 0) return;
+  if (scr_watch_file_live(p)) scr_timer_ref(p->timer);
+  else scr_timer_unref(p->timer);
 }
 
 /* libuv's poll comparison: ctime, mtime and birthtime (the *_ms doubles
@@ -191,7 +208,8 @@ static void scr_watch_file_poll(ScrClosure *cb) {
   scr_watch_file_release(p);
 }
 
-static void scr_watch_file_add(ScrWatchFiler *p, ScrClosure *cb /*moves*/, ScrWatchFileFn fn) {
+static void scr_watch_file_add(ScrWatchFiler *p, ScrClosure *cb /*moves*/, ScrWatchFileFn fn,
+                               bool reffed) {
   if (p->n == p->cap) {
     size_t cap = p->cap != 0 ? p->cap * 2 : 4;
     ScrWatchFileL *grown = realloc(p->ls, cap * sizeof *grown);
@@ -204,6 +222,7 @@ static void scr_watch_file_add(ScrWatchFiler *p, ScrClosure *cb /*moves*/, ScrWa
   }
   p->ls[p->n].cb = cb;
   p->ls[p->n].fn = fn;
+  p->ls[p->n].reffed = reffed;
   p->n++;
 }
 
@@ -245,28 +264,94 @@ static bool scr_watch_file_interval_ok(double interval) {
   return false;
 }
 
+/* ── fs.StatWatcher (what fs.watchFile returns) ───────────────────────
+ * One handle per watchFile call, over the registration the call added to
+ * the poller: ref()/unref() move that registration's loop liveness (the
+ * poller's timer stays reffed while any of its registrations is), and
+ * unlike Node's StatWatcher there is no close() — fs.unwatchFile is the
+ * removal API, after which the handle's methods are no-ops. Node returns
+ * the watcher from ref()/unref(); the bundle's handles answer void, like
+ * dgram's. */
+struct ScrStatWatcher {
+  size_t rc;
+  ScrWatchFiler *poller; /* +1 */
+  ScrClosure *cb;        /* +1: the registration this handle names */
+};
+
+ScrStatWatcher *scr_stat_watcher_retain(ScrStatWatcher *w) {
+  if (w->rc != SIZE_MAX) w->rc++;
+  return w;
+}
+
+void *scr_stat_watcher_retain_v(void *p) { return scr_stat_watcher_retain((ScrStatWatcher *)p); }
+
+void scr_stat_watcher_release(ScrStatWatcher *w) {
+  if (!w || w->rc == SIZE_MAX) return;
+  if (--w->rc == 0) {
+    scr_closure_release(w->cb);
+    scr_watch_file_release(w->poller);
+    free(w);
+  }
+}
+
+void scr_stat_watcher_release_v(void *p) { scr_stat_watcher_release((ScrStatWatcher *)p); }
+
+/* The registration this handle names, or NULL once unwatchFile removed it. */
+static ScrWatchFileL *scr_stat_watcher_row(ScrStatWatcher *w) {
+  ScrWatchFiler *p = w->poller;
+  if (p == NULL) return NULL;
+  for (size_t i = p->n; i-- > 0;)
+    if (p->ls[i].cb == w->cb) return &p->ls[i];
+  return NULL;
+}
+
+void scr_stat_watcher_ref(ScrStatWatcher *w) {
+  ScrWatchFileL *row = scr_stat_watcher_row(w);
+  if (row == NULL || row->reffed) return;
+  row->reffed = true;
+  scr_watch_file_apply_liveness(w->poller);
+}
+
+void scr_stat_watcher_unref(ScrStatWatcher *w) {
+  ScrWatchFileL *row = scr_stat_watcher_row(w);
+  if (row == NULL || !row->reffed) return;
+  row->reffed = false;
+  scr_watch_file_apply_liveness(w->poller);
+}
+
+static ScrStatWatcher *scr_stat_watcher_new(ScrWatchFiler *p, ScrClosure *cb) {
+  ScrStatWatcher *w = malloc(sizeof *w);
+  if (!w) scr_watch_file_oom();
+  w->rc = 1;
+  w->poller = scr_watch_file_retain(p);
+  w->cb = scr_closure_retain(cb);
+  return w;
+}
+
 /* fs.watchFile(path, interval, persistent, listener) — the listener MOVES
  * in. A path holding a null byte throws Node's ERR_INVALID_ARG_VALUE. A
  * second call on the same resolved path adds the listener to the existing
  * poller and ignores its options (Node's rule); a new poller first checks
  * `interval` as a uint32, and registers nothing when that throws. */
-void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
-                       ScrWatchFileFn fn) {
+ScrStatWatcher *scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
+                                  ScrWatchFileFn fn) {
   if (!scr_fs_path_ok(path, "path")) {
     scr_closure_release(cb);
-    return; /* exception pending */
+    return NULL; /* exception pending */
   }
   ScrStr *resolved = scr_watch_file_resolve(path);
   ScrWatchFiler *existing = scr_watch_file_find(resolved);
   if (existing != NULL) {
     scr_str_release(resolved);
-    scr_watch_file_add(existing, cb, fn);
-    return;
+    ScrStatWatcher *watcher = scr_stat_watcher_new(existing, cb);
+    scr_watch_file_add(existing, cb, fn, persistent);
+    scr_watch_file_apply_liveness(existing);
+    return watcher;
   }
   if (!scr_watch_file_interval_ok(interval)) {
     scr_str_release(resolved);
     scr_closure_release(cb);
-    return; /* exception pending */
+    return NULL; /* exception pending */
   }
   ScrWatchFiler *p = malloc(sizeof *p);
   if (!p) {
@@ -277,7 +362,6 @@ void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosur
   p->rc = 1;
   p->path = resolved;
   p->interval = interval;
-  p->persistent = persistent;
   p->state = 0;
   p->node_status = -1;
   p->last = NULL;
@@ -290,13 +374,15 @@ void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosur
   p->pollCb->caps[0] =
       scr_box_new_obj(scr_watch_file_retain_v, scr_watch_file_release_v, NULL);
   scr_box_set_ref(p->pollCb->caps[0], p);
-  scr_watch_file_add(p, cb, fn);
+  ScrStatWatcher *watcher = scr_stat_watcher_new(p, cb);
+  scr_watch_file_add(p, cb, fn, persistent);
   p->next = scr_watch_filers;
   scr_watch_filers = p;
   scr_watch_file_retain(p); /* the registry's reference */
   scr_watch_file_arm(p, 0);
   /* The creating reference moved into the box (scr_box_set_ref moves, it
    * does not retain): the box and the registry are the two owners. */
+  return watcher;
 }
 
 /* fs.unwatchFile(path[, listener]) — `cb` is borrowed (pointer identity);
@@ -324,6 +410,7 @@ void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb) {
     p->n = 0;
   }
   if (p->n == 0) scr_watch_file_stop(p);
+  else scr_watch_file_apply_liveness(p);
 }
 
 /* ── the runtime-provided listener adapters ───────────────────────────

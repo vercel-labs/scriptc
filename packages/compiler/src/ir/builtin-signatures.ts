@@ -18,6 +18,7 @@ import {
   F64,
   FILEHANDLE_T,
   FSWATCHER_T,
+  STATWATCHER_T,
   HTTP2SESSION_T,
   HTTP2STREAM_T,
   HTTPCLIENTREQ_T,
@@ -1796,7 +1797,9 @@ function buildLibFnSignatures() {
      * program-dependent, so the slot pins the arity. Statement position
      * only (Node returns a StatWatcher). fs.unwatchFile(path[, listener])
      * takes a borrowed listener; the null slot is the absent one. */
-    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: VOID },
+    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: STATWATCHER_T },
+    "statWatcher.ref": { argTypes: [STATWATCHER_T], result: VOID },
+    "statWatcher.unref": { argTypes: [STATWATCHER_T], result: VOID },
     "fs.unwatchFile": { argTypes: [STRING, null], result: VOID },
     /** The composed `new crypto.X509Certificate(data).fingerprint` read
      * (scr_lib.c — no certificate handle exists): the SHA-1 of the DER,

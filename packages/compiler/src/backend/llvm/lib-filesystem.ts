@@ -635,11 +635,22 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.toHeap(cb);
     const adapter = `scr_watch_file_thunk${cbT.params.length}`;
     host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
-    host.declare(`declare void @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    host.declare(`declare ptr @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    const w = B.tmp();
     B.line(
-      `call void @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
+      `${w} = call ptr @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
     );
+    const out = host.own({ name: w, type: e.type });
     host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "statWatcher.ref" || e.fn === "statWatcher.unref") {
+    // The registration's loop-liveness toggle; a registration fs.unwatchFile
+    // already removed makes both no-ops, so neither throws.
+    const w = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "statWatcher.ref" ? "scr_stat_watcher_ref" : "scr_stat_watcher_unref";
+    host.declare(`declare void @${sym}(ptr)`);
+    B.line(`call void @${sym}(ptr ${w.name})`);
     return { name: "", type: e.type };
   }
   if (e.fn === "fs.unwatchFile") {

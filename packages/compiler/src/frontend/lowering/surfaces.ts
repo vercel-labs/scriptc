@@ -2879,8 +2879,8 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.fs.watchFile",
       kind: "node-builtin",
       name: "fs.watchFile",
-      fns: ["fs.watchFile"],
-      note: "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused",
+      fns: ["fs.watchFile", "statWatcher.ref", "statWatcher.unref"],
+      note: "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused",
     },
     {
       id: "node-builtin.fs.unwatchFile",

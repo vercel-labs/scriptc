@@ -1630,6 +1630,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "fileHandle":
     case "dir":
     case "watcher":
+    case "statWatcher":
     case "stats":
     case "bigstats":
     case "zlib":

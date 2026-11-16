@@ -175,22 +175,17 @@ static const ScrWebStreamSource stw_source = {stw_read_into, stw_cancel, stw_rel
  * read's rejection is how the web stream learns of it. */
 static void stw_noop(ScrClosure *cl) { (void)cl; }
 
-static ScrClosure *stw_noop_error;
-
-static void stw_noop_error_free(void) {
-  scr_closure_release(stw_noop_error);
-  stw_noop_error = NULL;
-}
-
+/* One listener per adapted readable: a process-global template would cross
+ * worker runtimes (one worker's cleanup could release it while another still
+ * uses it). The stream's listener table owns the closure. */
 static void stw_watch_errors(ScrStream *s) {
-  if (!stw_noop_error) {
-    stw_noop_error = scr_closure_new((void *)&stw_noop, 0);
-    scr_atexit(stw_noop_error_free);
-  }
+  ScrClosure *listener = scr_closure_new((void *)&stw_noop, 0);
   ScrStr *name = scr_str_new("error", 5);
-  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, scr_closure_retain(stw_noop_error),
-                                     scr_ee_inv_fixed0, false, false));
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name,
+                                     scr_closure_retain(listener), scr_ee_inv_fixed0, false,
+                                     false));
   scr_str_release(name);
+  scr_closure_release(listener);
 }
 
 /* Readable.toWeb(readable[, options]): the web ReadableStream (+1). flags'

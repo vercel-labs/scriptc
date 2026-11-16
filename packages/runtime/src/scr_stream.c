@@ -1568,8 +1568,21 @@ static void scr_stream_iter_step(ScrStream *s) {
       void *filled = scr_stream_read_n_kind(s, 0, &fill_kind);
       if (filled) scr_stream_entry_release_kind(st, filled, fill_kind);
     }
-    if (st->r.next_single && !st->r.object_entries && st->r.n > 0)
-      want = (double)(scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off);
+    if (st->r.next_single && !st->r.object_entries && st->r.n > 0) {
+      /* Take the head entry directly: an explicit read size would grow the
+       * stream's highWaterMark (Node's read(n)), which a zero-mark stream
+       * cannot do (the growth loop would never terminate). */
+      ScrEntryKind single_kind = scr_stream_rkind(st);
+      size_t take = scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off;
+      void *single = scr_stream_rbuf_take(st, take);
+      st->r.next_reading = false;
+      if (!st->error_emitted && !st->close_emitted) st->r.data_emitted = true;
+      ScrPromise *single_waiter = st->r.next_waiter;
+      st->r.next_waiter = NULL;
+      scr_stream_next_fulfill(st, single_waiter, single, single_kind);
+      if (st->r.ended && st->r.length == 0) scr_stream_end_readable(s);
+      return;
+    }
     void *chunk = scr_stream_read_n_kind(s, want, &kind);
     st->r.next_reading = false;
     if (scr_exc_pending()) {

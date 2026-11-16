@@ -66,6 +66,25 @@ async function main(): Promise<void> {
     `synchronous ${decoder.decode(synchronousOne.value as Uint8Array)}/${decoder.decode(synchronousTwo.value as Uint8Array)}`,
   );
 
+  // A zero highWaterMark stream still answers one buffered chunk per read
+  // (an explicit read size would ask the stream to grow its watermark).
+  const zeroMark = new Readable({
+    read(): void {
+      this.push(Buffer.from("pq"));
+      this.push(Buffer.from("r"));
+      this.push(null);
+    },
+    highWaterMark: 0,
+  });
+  const zeroReader = Readable.toWeb(zeroMark).getReader();
+  const zeroData: string[] = [];
+  for (;;) {
+    const result = await zeroReader.read();
+    if (result.done) break;
+    zeroData.push(decoder.decode(result.value as Uint8Array));
+  }
+  log.push(`zero-mark ${zeroData.join("")}`);
+
   // Node's adapter enqueues each buffered chunk by itself, and copies a
   // Buffer chunk into a plain Uint8Array detached from the readable.
   const buffered = new Readable({ read(): void {} });

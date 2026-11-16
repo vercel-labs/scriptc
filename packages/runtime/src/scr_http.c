@@ -4523,6 +4523,40 @@ static bool scr_http_conn_server_timeout(void *ctx) {
   return handled;
 }
 
+/* req.socket.destroy(err) on a server socket: Node's socketOnError hands
+ * the Error to the server's 'clientError' listeners, then the request
+ * tears down (its 'error' fires "aborted"); the socket's own listeners
+ * never see it. Always consumed: the parser owns the error story. */
+static bool scr_http_conn_err_obj(void *ctx, ScrError *err) {
+  ScrHttpConn *conn = (ScrHttpConn *)ctx;
+  if (conn->client_mode) return false;
+  if (conn->srv != NULL && scr_net_ls_has_live(&conn->srv->client_error_ls)) {
+    conn->len = 0;
+    conn->client_errored = true;
+    ScrNetL *snap;
+    size_t count = scr_net_ls_snapshot(&conn->srv->client_error_ls, &snap);
+    scr_dyn_this_push(scr_net_sock_server(conn->sock), SCR_DYNH_NET_SERVER);
+    for (size_t i = 0; i < count; i++) {
+      if (!scr_exc_pending()) {
+        ((ScrHttpClientErrorFn)snap[i].fn)(snap[i].cb, scr_error_retain(err),
+                                           scr_net_sock_retain(conn->sock));
+      }
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+  }
+  if (conn->req != NULL && conn->res != NULL && !conn->res->finished) {
+    scr_http_conn_abort_incoming(conn);
+  } else if (conn->req && conn->req->err_ls.n > 0) {
+    ScrStr *aborted = scr_str_new("aborted", 7);
+    scr_net_fire_err_this(&conn->req->err_ls, aborted, conn->req, SCR_DYNH_HTTP_REQ);
+    scr_str_release(aborted);
+  }
+  scr_http_conn_drop_request(conn, false);
+  return true;
+}
+
 /* The server's native connection hook: one parser per accepted socket. */
 static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
   ScrHttpSrvCtx *srv = (ScrHttpSrvCtx *)ctx;
@@ -4537,6 +4571,7 @@ static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
                                   &scr_http_conn_closed, conn, &scr_http_conn_free);
   scr_net_sock_set_native_idle_checker(sock, &scr_http_conn_is_idle);
   scr_net_sock_set_native_events(sock, NULL, &scr_http_conn_err);
+  scr_net_sock_set_native_error_obj(sock, &scr_http_conn_err_obj);
   scr_net_sock_set_native_http_timeout(sock, &scr_http_conn_server_timeout);
 }
 

@@ -794,6 +794,7 @@ struct ScrNetSocket {
   ScrNetNativeErrFn native_err; /* true = consumed (the protocol layer owns
                                  * the error story); false falls through to
                                  * this socket's own err_ls */
+  ScrNetNativeErrObjFn native_err_obj; /* the destroy(err) arm's claim */
   bool (*native_idle)(void *); /* HTTP parser: no active request or partial head */
   void *native_ctx;
   void (*native_ctx_free)(void *);
@@ -8973,6 +8974,10 @@ void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout
   s->native_err = err;
 }
 
+void scr_net_sock_set_native_error_obj(ScrNetSocket *s, ScrNetNativeErrObjFn fn) {
+  s->native_err_obj = fn;
+}
+
 void scr_net_sock_set_native_http_timeout(ScrNetSocket *s, ScrNetNativeTimeoutHandledFn fn) {
   s->native_http_timeout = fn;
 }
@@ -9439,17 +9444,22 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     if (scr_exc_pending()) return false;
   }
   if (sock->destroy_error != NULL) {
-    /* destroy(err): the 'error' event carries the Error the program
+    /* destroy(err): the protocol layer gets first claim on the Error (an
+     * HTTP server hands it to clientError and tears the request down);
+     * unconsumed errors fire the 'error' event with the Error the program
      * passed — the same object — then 'close' with hadError. */
     ScrError *err = sock->destroy_error;
     sock->destroy_error = NULL;
     ScrStr *msg = scr_str_retain(err->message);
-    ScrError *saved = scr_event_error_payload;
-    scr_event_error_payload = err;
     ScrAlsCtx *prev = scr_als_dispatch_enter(sock->als);
-    scr_net_fire_err_this(&sock->err_ls, msg, sock, SCR_DYNH_NET_SOCKET);
+    bool consumed = sock->native_err_obj != NULL && sock->native_err_obj(sock->native_ctx, err);
+    if (!consumed && !scr_exc_pending()) {
+      ScrError *saved = scr_event_error_payload;
+      scr_event_error_payload = err;
+      scr_net_fire_err_this(&sock->err_ls, msg, sock, SCR_DYNH_NET_SOCKET);
+      scr_event_error_payload = saved;
+    }
     scr_als_dispatch_leave(prev);
-    scr_event_error_payload = saved;
     scr_str_release(msg);
     scr_error_release(err);
     if (scr_exc_pending()) return false;

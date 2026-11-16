@@ -9947,6 +9947,40 @@ export class Lowerer {
           if (setterParam) this.jsWidenedBindings.add(setterParam);
           return undefined;
         }
+        // A `for (k in obj)` head writes the key string into its binding,
+        // whatever the binding was declared to hold. Shipped JavaScript
+        // reuses one `var` for keys and for a value of another type
+        // (`var propName = arguments.length - 2` beside a key loop), so
+        // the binding takes checked-dynamic storage and reads answer the
+        // string Node stored.
+        if (
+          !checked &&
+          ts.isForInStatement(node) &&
+          !ts.isVariableDeclarationList(node.initializer)
+        ) {
+          let target: ts.Node = node.initializer;
+          while (ts.isParenthesizedExpression(target)) target = target.expression;
+          if (!ts.isIdentifier(target)) return undefined;
+          const symbol = this.resolveValueSymbol(target);
+          if (!symbol || this.runtimeOptionalBindingTypes.has(symbol)) return undefined;
+          const decl = symbol.valueDeclaration;
+          if (
+            decl === undefined ||
+            !(ts.isVariableDeclaration(decl) || ts.isParameter(decl)) ||
+            !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName)
+          )
+            return undefined;
+          const declared = this.checker.getTypeOfSymbol(symbol);
+          // A binding that can already hold a string keeps its declared
+          // storage; anything else (`var propName = arguments.length - 2`)
+          // holds the keys the loop writes.
+          if (
+            jsTypeIsTyped(declared) &&
+            !this.checker.isTypeAssignableTo(declared, this.checker.getStringType())
+          )
+            widenBinding(symbol);
+          return undefined;
+        }
         // An annotated binding whose initializer the checker cannot show
         // fits the annotation (`/** @type {Base|undefined} */ const b = v;`
         // with `v` an `any`) holds the value it is given.

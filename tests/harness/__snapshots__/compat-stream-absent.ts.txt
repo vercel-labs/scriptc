@@ -28,13 +28,4 @@ compat-stream-absent.ts:22:35 - error SC0001: Object literal may only specify kn
   21 | const transform = new TransformStream();
   22 | const fromPair = Duplex.fromWeb({ readable: transform.readable, writable: transform.writable });
      |                                   ^~~~~~~~
-  23 | const pair = Duplex.toWeb(new PassThrough());
-
-compat-stream-absent.ts:23:21 - error SC0001: Property 'toWeb' does not exist on type 'typeof Duplex'.
-
-  22 | const fromPair = Duplex.fromWeb({ readable: transform.readable, writable: transform.writable });
-  23 | const pair = Duplex.toWeb(new PassThrough());
-     |                     ^~~~~
-  24 | console.log(typeof fromWritable, typeof fromPair, typeof pair);
-
-  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+  23 | console.log(typeof fromWritable, typeof fromPair);

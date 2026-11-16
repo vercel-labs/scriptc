@@ -199,6 +199,14 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
     ScrClosure *flush_fb, ScrStreamPlainInv flush_fb_inv,
     ScrClosure *destroy_fb, ScrStreamErrInv destroy_fb_inv);
 
+/* Readable.toWeb(readable[, options]) (scr_stream_to_web.c): a web
+ * ReadableStream over the readable's chunks. +1. flags bit 1 asks for a byte
+ * stream. */
+struct ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags);
+/* The same over a checked-dynamic value (a boxed native stream unwraps; any
+ * other value throws the not-supported Error). */
+struct ScrDyn *scr_stream_to_web_readable_dyn(const struct ScrDyn *value, double flags);
+
 /* stream.setDefaultHighWaterMark(objectMode, value) and
  * stream.getDefaultHighWaterMark(objectMode): what a stream created without
  * a highWaterMark takes (64 KiB bytes on every platform except win32's

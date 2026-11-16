@@ -92431,11 +92431,13 @@
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-readable-to-web.ts",
           "tests/corpus/stream-set-default-hwm.ts",
           "tests/corpus/stream-set-encoding-hwm.ts",
           "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/stream-web-predicates.ts",
           "tests/corpus/writable-error-callbacks.ts",
+          "tests/diagnostics/compat-absent-lowerings.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-stream-absent.ts"
         ]
@@ -93037,10 +93039,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Readable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-readable-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93170,7 +93172,7 @@
         "status": "not-implemented",
         "evidence": "compiler-feature:stream.stream.Duplex.toWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/diagnostics/compat-absent-lowerings.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93732,10 +93734,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Readable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-readable-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93865,7 +93867,7 @@
         "status": "not-implemented",
         "evidence": "compiler-feature:stream.stream.Duplex.toWeb",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/diagnostics/compat-absent-lowerings.ts"
         ]
       },
       "anchorSource": "ancestor"

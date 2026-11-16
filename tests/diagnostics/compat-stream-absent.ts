@@ -20,5 +20,4 @@ wrapped.resume();
 const fromWritable = Writable.fromWeb(new WritableStream());
 const transform = new TransformStream();
 const fromPair = Duplex.fromWeb({ readable: transform.readable, writable: transform.writable });
-const pair = Duplex.toWeb(new PassThrough());
-console.log(typeof fromWritable, typeof fromPair, typeof pair);
+console.log(typeof fromWritable, typeof fromPair);

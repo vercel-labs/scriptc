@@ -4668,6 +4668,27 @@ function validateFunction(
         );
       return true;
     }
+    if (e.fn === "webstream.toWebReadable") {
+      // Readable.toWeb: (readable, flags) → a web ReadableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (readable, flags) and return a web stream`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.toWebReadableDyn") {
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
+      return true;
+    }
     if (e.fn === "fetch.readerRead") {
       if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
         err(`libCall fetch.readerRead must return a promise of a read-result record`, e.loc);

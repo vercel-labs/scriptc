@@ -5225,6 +5225,13 @@ struct ScrHttpClientReq {
   int corked;
   char *cork_buf;
   size_t cork_len, cork_cap;
+  /* The writes made before the request's 'socket' event (Node's outputData):
+   * their lengths stay in the message's buffer answer until the socket is
+   * assigned, and each keeps its own chunk on the wire because the message
+   * does not autocork yet. */
+  size_t *pre_lens;
+  size_t pre_count, pre_lens_cap;
+  size_t pre_len;
   /* the head a corked write committed, sent first at the flush */
   char *held_head;
   size_t held_head_len, held_head_cap;
@@ -5300,6 +5307,7 @@ void scr_http_client_release(ScrHttpClientReq *c) {
     scr_net_ls_drop(&c->info_ls);
     scr_net_ls_drop(&c->connect_ls);
     scr_net_ls_drop(&c->drain_ls);
+    free(c->pre_lens);
     scr_str_release(c->host);
     scr_str_release(c->path);
     scr_str_release(c->method);
@@ -5441,6 +5449,14 @@ static void scr_http_client_queue_finish(ScrHttpClientReq *c) {
   scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_FINISH, scr_http_client_retain(c));
 }
 
+/* The pre-socket writes are the socket's from here on. */
+static void scr_http_client_clear_pre_socket(ScrHttpClientReq *c) {
+  free(c->pre_lens);
+  c->pre_lens = NULL;
+  c->pre_count = c->pre_lens_cap = 0;
+  c->pre_len = 0;
+}
+
 static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
   if (c->socket_emitted) return;
   if (c->destroyed) {
@@ -5448,6 +5464,9 @@ static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
     return;
   }
   c->socket_emitted = true;
+  /* Node flushes the message's outputData as its socket is assigned, so the
+   * writes made before the event stop counting towards its buffer. */
+  scr_http_client_clear_pre_socket(c);
   ScrNetL *snap;
   size_t count = scr_net_ls_snapshot(&c->socket_ls, &snap);
   scr_dyn_this_push(c, SCR_DYNH_HTTP_CLIENT);
@@ -5773,6 +5792,20 @@ static void scr_http_client_send_held_head(ScrHttpClientReq *c) {
 
 static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, size_t len) {
   if (c->ended || c->destroyed || c->close_emitted) return; /* write-after-end drops (divergence 48's stance) */
+  if (!c->socket_emitted && c->corked == 0 && len > 0) {
+    /* Before the 'socket' event Node's message counts its writes in
+     * outputData until the socket arrives: the bytes go out in order (one
+     * chunk each, since the message does not autocork yet) and their length
+     * stays in writableLength's answer until then. */
+    if (c->pre_count == c->pre_lens_cap) {
+      size_t cap = c->pre_lens_cap ? c->pre_lens_cap * 2 : 8;
+      c->pre_lens = realloc(c->pre_lens, cap * sizeof *c->pre_lens);
+      if (!c->pre_lens) scr_http_oom();
+      c->pre_lens_cap = cap;
+    }
+    c->pre_lens[c->pre_count++] = len;
+    c->pre_len += len;
+  }
   if (c->corked > 0) {
     /* Node's write_() builds the implicit head even while corked */
     if (!c->head_sent) {
@@ -5809,7 +5842,12 @@ static void scr_http_client_autocork_nt(ScrClosure *cb) {
 }
 
 static void scr_http_client_autocork(ScrHttpClientReq *c) {
-  if (c->ended || c->destroyed || c->close_emitted || c->sock == NULL || c->corked > 0) return;
+  /* Node's write_() corks only once the message has its socket; before the
+   * 'socket' event the writes queue in outputData instead (the pre-socket
+   * buffer below). */
+  if (c->ended || c->destroyed || c->close_emitted || !c->socket_emitted || c->sock == NULL ||
+      c->corked > 0)
+    return;
   c->corked++;
   ScrClosure *cb = scr_closure_new((void *)&scr_http_client_autocork_nt, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_client_retain_v, &scr_http_client_release_v, NULL);
@@ -5862,6 +5900,14 @@ double scr_http_client_writable_corked(ScrHttpClientReq *c) { return (double)c->
  * writableLength/'drain' accounting over a request's buffer. */
 double scr_http_client_writable_length(ScrHttpClientReq *c) {
   double buffered = 0;
+  if (c->pre_len != 0) {
+    buffered = (double)c->pre_len;
+    if (c->chunked) {
+      for (size_t i = 0; i < c->pre_count; i++)
+        buffered += (double)(scr_http_hex_digits(c->pre_lens[i]) + 4);
+    }
+    if (c->held_head_len > 0) buffered += (double)c->held_head_len;
+  }
   if (c->cork_len != 0) {
     buffered = (double)c->cork_len;
     if (c->chunked) buffered += (double)(scr_http_hex_digits(c->cork_len) + 4);

@@ -80246,6 +80246,7 @@
           "tests/corpus/perf-entry-classes.ts",
           "tests/corpus/perf-entry-constructors.cjs",
           "tests/corpus/perf-entry-globals.cjs",
+          "tests/corpus/perf-entry-object-tag.ts",
           "tests/corpus/perf-event-loop-utilization.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/perf-hooks-now-arguments.cjs",
@@ -80617,12 +80618,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.PerformanceEntry",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
           "tests/corpus/5214-perf-entry-inspect.ts",
-          "tests/corpus/perf-entry-classes.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-object-tag.ts"
         ]
       },
       "anchorSource": "exact"
@@ -80645,11 +80647,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.duration",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-object-tag.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -80672,11 +80675,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.entryType",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-object-tag.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -80699,11 +80703,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.name",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-object-tag.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -80726,11 +80731,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.startTime",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-object-tag.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -80753,12 +80759,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.PerformanceMark",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
           "tests/corpus/5214-perf-entry-inspect.ts",
-          "tests/corpus/perf-entry-classes.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-object-tag.ts"
         ]
       },
       "anchorSource": "exact"
@@ -80781,7 +80788,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.detail",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
@@ -80809,12 +80816,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.PerformanceMeasure",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
           "tests/corpus/5214-perf-entry-inspect.ts",
-          "tests/corpus/perf-entry-classes.ts"
+          "tests/corpus/perf-entry-classes.ts",
+          "tests/corpus/perf-entry-object-tag.ts"
         ]
       },
       "anchorSource": "exact"
@@ -80837,11 +80845,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.detail",
         "tests": [
           "tests/corpus/5212-perf-marks-measures.ts",
-          "tests/corpus/5214-perf-entry-inspect.ts"
+          "tests/corpus/5214-perf-entry-inspect.ts",
+          "tests/corpus/perf-entry-object-tag.ts"
         ]
       },
       "anchorSource": "ancestor"

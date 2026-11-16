@@ -4298,7 +4298,11 @@ function lowerObjectPrototypeCall(
     immediate === null &&
     receiver.type.kind === "func" &&
     (receiver.type.ret.kind === "promise" || receiver.type.ret.kind === "generator");
-  const tag = immediate?.tag ?? (kindTagged ? null : objectToStringTag(lowerer, receiver.type));
+  // A perf entry's tag comes from the entryType it holds (below), not from
+  // its record shape, which the plain-record rule would answer as Object.
+  const perfEntry = receiver.type.kind === "record" && isPerfEntryType(lowerer, receiver.type);
+  const tag =
+    immediate?.tag ?? (kindTagged || perfEntry ? null : objectToStringTag(lowerer, receiver.type));
   if (tag === null && immediate === null && !kindTagged && call.arguments.nodes.length === 1) {
     const classTag = classObjectTag(lowerer, receiver, receiverNode);
     if (classTag) return classTag;
@@ -4307,6 +4311,7 @@ function lowerObjectPrototypeCall(
   if (
     tag === null &&
     !kindTagged &&
+    !perfEntry &&
     receiver.type.kind !== "dyn" &&
     receiver.type.kind !== "generator"
   ) {
@@ -4328,17 +4333,21 @@ function lowerObjectPrototypeCall(
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(extra), loc: locOf(extra) });
   }
   const result: IrExpr =
-    tag === null
-      ? {
-          kind: "libCall",
-          fn: "dyn.objectTag",
-          args: [
-            ref.type.kind === "generator" || kindTagged ? lowerer.coerceToExpected(ref, DYN) : ref,
-          ],
-          type: STRING,
-          loc,
-        }
-      : { kind: "strLit", value: "[object " + tag + "]", type: STRING, loc };
+    tag !== null
+      ? { kind: "strLit", value: "[object " + tag + "]", type: STRING, loc }
+      : perfEntry && receiver.type.kind === "record"
+        ? perfEntryTag(lowerer, ref, receiver.type, loc)
+        : {
+            kind: "libCall",
+            fn: "dyn.objectTag",
+            args: [
+              ref.type.kind === "generator" || kindTagged
+                ? lowerer.coerceToExpected(ref, DYN)
+                : ref,
+            ],
+            type: STRING,
+            loc,
+          };
   return { kind: "seqExpr", stmts, result, type: STRING, loc };
 }
 

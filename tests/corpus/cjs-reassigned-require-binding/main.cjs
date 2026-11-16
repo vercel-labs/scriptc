@@ -21,3 +21,9 @@ function callIt(value) {
 console.log(callIt(3));
 held = function (value) { return value * 10; };
 console.log(callIt(3));
+
+// A module whose exports are one object literal supplies that object.
+var shape = require("./object.cjs");
+console.log(shape.version, shape.label);
+shape = { version: 5, label: "replaced" };
+console.log(shape.version, shape.label);

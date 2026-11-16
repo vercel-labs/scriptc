@@ -2528,6 +2528,7 @@ export function collectGlobals(
             mutable: true,
           };
           lowerer.globalsBySymbol.set(symbol, g);
+          lowerer.globalsByDeclNode.set(decl, g);
           lowerer.globalsList.push(g);
         }
       }

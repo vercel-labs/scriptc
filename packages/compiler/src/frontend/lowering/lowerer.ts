@@ -8533,6 +8533,20 @@ export class Lowerer {
       this.flushDeferred(wholeSlot);
       return wholeSlot;
     }
+    // A require binding the file reassigns owns a checked-dynamic global
+    // (rebindable-requires.ts). tsgo hands each reference its own alias
+    // symbol, so the declaration's registration is found by declaration and
+    // the reference resolves to the same storage.
+    {
+      const rebound = symbol.declarations.find(
+        (d) => ts.isVariableDeclaration(d) && isRebindableRequireDecl(this, d),
+      );
+      const global = rebound === undefined ? undefined : this.globalsByDeclNode.get(rebound);
+      if (global !== undefined) {
+        this.globalsBySymbol.set(symbol, global);
+        return symbol;
+      }
+    }
     const importAlias = symbol;
     if (symbol.flags & ts.SymbolFlags.Alias) {
       // SNAPSHOT aliases own storage keyed by the PRE-alias symbol

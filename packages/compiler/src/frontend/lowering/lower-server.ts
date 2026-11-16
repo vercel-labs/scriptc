@@ -9694,14 +9694,7 @@ function lowerWriteEndArgs(
   resultType: IrType,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (args.length < 2 || args.length > 3) return null;
   const typeAt = (node: ts.Expression): IrType | null => lowerer.mapTypeOf(lowerer.typeOf(node));
-  const second = typeAt(args[1]!);
-  const third = args.length === 3 ? typeAt(args[2]!) : null;
-  const encodingForm = second?.kind === "string";
-  const callbackForm = second?.kind === "func" && name === "write";
-  if (!encodingForm && !callbackForm) return null;
-  if (third !== null && third.kind !== "func") return null;
   const dyn = (node: ts.Expression | undefined): IrExpr => {
     if (node === undefined) return dynUndefinedExpr(loc);
     const value = lowerer.lowerExpr(node);
@@ -9709,6 +9702,24 @@ function lowerWriteEndArgs(
       ? value
       : { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
   };
+  // end(callback): the callback alone, with no data
+  if (name === "end" && args.length === 1 && typeAt(args[0]!)?.kind === "func") {
+    return {
+      kind: "libCall",
+      fn,
+      args: [lowerReceiver(), dynUndefinedExpr(loc), dynUndefinedExpr(loc), dyn(args[0])],
+      type: resultType,
+      loc,
+    };
+  }
+  if (args.length < 2 || args.length > 3) return null;
+  const second = typeAt(args[1]!);
+  const third = args.length === 3 ? typeAt(args[2]!) : null;
+  const encodingForm = second?.kind === "string";
+  // both calls take a callback second (a request's end(data, cb) included)
+  const callbackForm = second?.kind === "func";
+  if (!encodingForm && !callbackForm) return null;
+  if (third !== null && third.kind !== "func") return null;
   const receiver = lowerReceiver();
   const chunk = dyn(args[0]);
   const encoding = encodingForm ? dyn(args[1]) : dynUndefinedExpr(loc);

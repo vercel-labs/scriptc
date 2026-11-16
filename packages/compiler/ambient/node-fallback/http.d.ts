@@ -171,9 +171,9 @@ declare module "http" {
     setTimeout(msecs: number, callback?: () => void): this;
     /* end's callback forms fire once the body went out (the 'finish'
      * emit, deferred past the handler's synchronous tail). */
-    end(data?: string | Uint8Array, callback?: () => void): void;
-    end(data: string | Uint8Array, encoding: string): void;
-    end(data: string | Uint8Array, encoding: string, callback: () => void): void;
+    end(data?: string | Uint8Array | null, callback?: () => void): void;
+    end(data: string | Uint8Array | null | undefined, encoding: string): void;
+    end(data: string | Uint8Array | null | undefined, encoding: string, callback: () => void): void;
     end(callback: () => void): void;
     destroy(): void;
     /* 'prefinish' fires inside end(), before 'finish'; 'drain' follows a
@@ -318,10 +318,11 @@ declare module "http" {
     write(data: string | Uint8Array, encoding: string): boolean;
     write(data: string | Uint8Array, callback: () => void): boolean;
     write(data: string | Uint8Array, encoding: string, callback: () => void): boolean;
-    end(data?: string | Uint8Array): void;
-    end(data: string | Uint8Array, encoding: string): void;
-    end(data: string | Uint8Array, callback: () => void): void;
-    end(data: string | Uint8Array, encoding: string, callback: () => void): void;
+    end(data?: string | Uint8Array | null): void;
+    end(data: string | Uint8Array | null | undefined, encoding: string): void;
+    end(data: string | Uint8Array | null | undefined, callback: () => void): void;
+    end(data: string | Uint8Array | null | undefined, encoding: string, callback: () => void): void;
+    end(callback: () => void): void;
     /* OutgoingMessage.pipe(): a request is write-only, so Node emits
      * ERR_STREAM_CANNOT_PIPE on the request's 'error' list, whatever the
      * arguments. */

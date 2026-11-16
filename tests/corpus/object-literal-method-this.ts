@@ -55,3 +55,17 @@ console.log(callable.call(other2, 5), callable.mock.calls[1]!.this === other2);
 console.log(callable.apply(other2, [6]), callable.mock.calls[2]!.this === other2);
 callable.mock.restore();
 console.log(counter2.add(3), other2.add(4));
+
+// A mocked method copied to another record runs against the record the call
+// went through, and the method read off the object and called alone runs
+// without a receiver, as in Node.
+const base3: Adder = { base: 1, add: (x: number) => x };
+const moved = mock.method(base3, "add", function (this: Adder, x: number) {
+  return x * 10;
+});
+const copy3: Adder = { base: 100, add: base3.add };
+console.log(copy3.add(2), moved.mock.calls[0]!.this === copy3);
+const detached3 = base3.add;
+console.log(detached3(3), moved.mock.calls[1]!.this === undefined);
+moved.mock.restore();
+console.log(base3.add(4), copy3.add(5));

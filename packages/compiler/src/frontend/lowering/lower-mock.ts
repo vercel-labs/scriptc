@@ -148,18 +148,14 @@ function liftOnce(
 
 /** `%mock.wrap.N(ctx)`: the closure that records each call into ctx and
  * runs the implementation with the receiver the call bound, which is
- * `undefined` for a bare call, exactly as Node's mock function does.
- * `%mock.wrapMethod.N(ctx, this)` is the wrapper a mock.method stores in
- * the object's property: a call that passes no receiver at all falls back
- * to the object the mock was made on, so a typed call of a member no
- * function in the program reads still records the object as Node does. */
-function mockWrapperFactory(
-  lowerer: Lowerer,
-  ctxType: IrType,
-  loc: SrcLoc,
-  fieldReceiver = false,
-): string {
-  return liftOnce(lowerer, ctxType, fieldReceiver ? "wrapMethod" : "wrap", (name) => {
+ * `undefined` for a bare call, exactly as Node's mock function does. The
+ * wrapper a mock.method stores in an object's property is this same
+ * closure: a member call of the mocked name passes its holder
+ * (member-call-receivers.ts marks the name a `mock.method` call replaces),
+ * so the receiver is the object the call went through, and a call of the
+ * wrapper read off the object runs against whoever calls it. */
+function mockWrapperFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): string {
+  return liftOnce(lowerer, ctxType, "wrap", (name) => {
     const { fn, call, calls, once, onceEntry, result, args } = mockContextFields(lowerer, ctxType)!;
     const impl = `${name}.impl`;
     const ctx = () => varRef("ctx.0", ctxType, loc);
@@ -324,14 +320,10 @@ function mockWrapperFactory(
       name: impl,
       params,
       returnType: fn.ret,
-      captures: [
-        { localId: "ctx.0", name: "ctx", type: ctxType },
-        ...(fieldReceiver ? [{ localId: "this.0", name: "this", type: DYN }] : []),
-      ],
+      captures: [{ localId: "ctx.0", name: "ctx", type: ctxType }],
       locals: [
         ...params.map((p) => local(p.localId, p.name, p.type)),
         boxedLocal("ctx.0", "ctx", ctxType),
-        ...(fieldReceiver ? [boxedLocal("this.0", "this", DYN)] : []),
         local("rcv.0", "callThis", DYN),
         local("n.0", "index", F64),
         local("f.0", "implementation", fn, true),
@@ -343,15 +335,7 @@ function mockWrapperFactory(
         {
           kind: "varDecl",
           localId: "rcv.0",
-          init: fieldReceiver
-            ? {
-                kind: "nullish",
-                left: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
-                right: varRef("this.0", DYN, loc),
-                type: DYN,
-                loc,
-              }
-            : { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+          init: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
           loc,
         },
         {
@@ -368,22 +352,16 @@ function mockWrapperFactory(
     });
     lowerer.liftedFns.push({
       name,
-      params: [
-        { localId: "ctx.0", name: "ctx", type: ctxType },
-        ...(fieldReceiver ? [{ localId: "this.0", name: "this", type: DYN }] : []),
-      ],
+      params: [{ localId: "ctx.0", name: "ctx", type: ctxType }],
       returnType: fn,
-      locals: [
-        boxedLocal("ctx.0", "ctx", ctxType),
-        ...(fieldReceiver ? [boxedLocal("this.0", "this", DYN)] : []),
-      ],
+      locals: [boxedLocal("ctx.0", "ctx", ctxType)],
       body: [
         {
           kind: "return",
           value: {
             kind: "closure",
             fnName: impl,
-            captures: fieldReceiver ? ["ctx.0", "this.0"] : ["ctx.0"],
+            captures: ["ctx.0"],
             type: fn,
             loc,
           },
@@ -1068,8 +1046,8 @@ export function lowerMockMethod(
     localId: fieldWrapperLocal.id,
     init: {
       kind: "call",
-      callee: mockWrapperFactory(lowerer, ctxType!, loc, true),
-      args: [ctx(), dynamicObject ? obj() : lowerer.coerceToExpected(obj(), DYN)],
+      callee: mockWrapperFactory(lowerer, ctxType!, loc),
+      args: [ctx()],
       type: fn!,
       loc,
     },

@@ -3,6 +3,7 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import { literalValues } from "../literal-values.js";
 import { isJsSourceFile } from "../program.js";
+import { mockMethodTarget } from "./mock-callsites.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** Members every function value has (Function.prototype and
@@ -24,27 +25,6 @@ const FUNCTION_MEMBER_NAMES = new Set([
   "toString",
   "valueOf",
 ]);
-
-/** `mock.method(object, "name", …)` and its `t.mock` twin: the property
- * name the call replaces on the object it names. Node's mock writes a
- * wrapper over the method, so the name is replaced exactly like an
- * assignment to it. */
-function mockMethodTarget(
-  call: ts.CallExpression,
-): { name: string; receiver: ts.Expression } | null {
-  const callee = call.expression;
-  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "method") return null;
-  const owner = callee.expression;
-  const isMock =
-    (ts.isIdentifier(owner) && owner.text === "mock") ||
-    (ts.isPropertyAccessExpression(owner) && owner.name.text === "mock");
-  if (!isMock) return null;
-  const receiver = call.arguments.nodes[0];
-  const nameArg = call.arguments.nodes[1];
-  if (receiver === undefined || nameArg === undefined) return null;
-  if (ts.isSpreadElement(receiver) || !ts.isStringLiteralLike(nameArg)) return null;
-  return { name: nameArg.text, receiver };
-}
 
 /** Whether a setPrototypeOf call the census found may give an instance of
  * `info` another prototype (Lowerer.reprototypedClasses). */
@@ -445,7 +425,7 @@ export function collectClassMethodMutations(
         receiverFields.add(node.name.text);
       }
       if (ts.isCallExpression(node)) {
-        const mock = mockMethodTarget(node);
+        const mock = mockMethodTarget(lowerer, node);
         if (mock) mockWrites.push({ ...mock, site: node });
       }
       if (

@@ -5,6 +5,7 @@
 // the instance as each call's `this`, and restore gives the class method
 // back.
 import { mock } from "node:test";
+import { mock as renamedMock } from "node:test";
 
 class Account {
   owner: string;
@@ -37,3 +38,11 @@ const p = mock.method(bob, "deposit");
 console.log(p.mock.calls.length, bob.deposit(2));
 p.mock.restore();
 console.log(bob.deposit(2));
+
+// An import of `mock` under another local name is the same tracker, so a
+// class instance's method it replaces is still the one its calls run.
+const aliased = renamedMock.method(alice, "deposit");
+console.log(alice.deposit(1));
+console.log(aliased.mock.calls[0]!.this === alice);
+aliased.mock.restore();
+console.log(alice.deposit(1));

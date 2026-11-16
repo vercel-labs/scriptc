@@ -90,6 +90,39 @@ void scr_http2_session_error_thunk2(ScrClosure *cb, ScrStr *msg, ScrH2Session *s
 void scr_http2_session_on_connect(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2ConnectFn fn, bool once);
 void scr_http2_session_on_stream(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2StreamFn fn, bool once);
 void scr_http2_session_on_goaway(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2GoawayFn fn, bool once);
+/* goaway listeners that read the opaque data: the third argument is a
+ * `Uint8Array | undefined` parameter (a NULL-sentinel bytes pointer). */
+void scr_http2_session_on_goaway_opaque(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
+/* An untyped (JavaScript) goaway listener: its arguments cross as dyn. */
+void scr_http2_session_on_goaway_dyn(ScrH2Session *s, const ScrDyn *cb /*borrowed*/, bool once);
+/* Idle deadlines (Node's setStreamTimeout, shared by both prototypes): the
+ * deadline is stored as `timeout`, milliseconds < 0 or non-finite throw
+ * ERR_OUT_OF_RANGE, a destroyed object takes nothing, 0 disarms, and a
+ * given callback joins the 'timeout' listeners (once). */
+void scr_http2_session_set_timeout(ScrH2Session *s, double ms, ScrClosure *cb /*moves, nullable*/);
+void scr_http2_stream_set_timeout(ScrH2Stream *st, double ms, ScrClosure *cb /*moves, nullable*/);
+void scr_http2_session_on_timeout(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_on_timeout(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+/* 'frameError' registrations (never raised: no frame this side sends
+ * fails to go out). */
+void scr_http2_session_on_frame_error(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_on_frame_error(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+/* goaway([code[, lastStreamID[, opaqueData]]]): the graceful GOAWAY; a
+ * client still connecting defers the send to 'connect'. */
+void scr_http2_session_goaway(ScrH2Session *s, double code, double last,
+                               ScrBytes *opaque /*borrowed, nullable*/);
+void scr_http2_session_ref(ScrH2Session *s);
+void scr_http2_session_unref(ScrH2Session *s);
+/* setLocalWindowSize(windowSize): the connection-level receive window; a
+ * raise rides a WINDOW_UPDATE of the delta. May throw. */
+void scr_http2_session_set_local_window_size(ScrH2Session *s, double size);
+/* server.setTimeout / server.timeout: every accepted session arms the
+ * deadline, and a fire with no server 'timeout' listener destroys it. */
+void scr_http2_server_set_timeout(ScrNetServer *s, double ms);
+void scr_http2_server_set_timeout_cb(ScrNetServer *s, double ms,
+                                      ScrClosure *cb /*moves, nullable*/, ScrH2SessionFn fn);
+void scr_http2_server_on_timeout(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH2SessionFn fn,
+                                  bool once);
 /* The settings surface: session.settings(obj[, cb]) sends a SETTINGS
  * frame; local/remote listener lists fire with the settings record on
  * ACK/receipt; the property reads answer the tracked records. */

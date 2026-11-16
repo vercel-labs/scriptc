@@ -71,6 +71,23 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http.clientOnConnect",
   "http.clientOnInformation",
   "http2.sessionOnPing",
+  // Listener registrations and deadline disarmament: no listener runs
+  // inside the call, and a registered callback cannot raise.
+  "http2.sessionOnTimeout",
+  "http2.streamOnTimeout",
+  "http2.sessionOnFrameError",
+  "http2.streamOnFrameError",
+  "http2.sessionOnGoawayOpaque",
+  "http2.sessionOnGoawayDyn",
+  "http2.sessionRef",
+  "http2.sessionUnref",
+  // goaway() and server.setTimeout store or submit a frame; the typed
+  // arguments are already numbers, and sending never fails here.
+  "http2.sessionGoaway",
+  "http2.sessionGoawayOpaque",
+  "http2.serverSetTimeout",
+  "http2.serverSetTimeoutCb",
+  "http2.serverOnTimeout",
   // Reads of the session's, the stream's or the request's state bits.
   "http2.sessionConnecting",
   "http2.streamHeadersSent",

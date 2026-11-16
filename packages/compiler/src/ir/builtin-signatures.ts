@@ -3338,6 +3338,33 @@ function buildLibFnSignatures() {
     "http2.sessionOnConnect": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
     "http2.sessionOnStream": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
     "http2.sessionOnGoaway": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+    // The (errorCode, lastStreamID, opaqueData?) form: the opaque argument
+    // is a `Uint8Array | undefined` parameter (NULL-sentinel bytes pointer).
+    "http2.sessionOnGoawayOpaque": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+    "http2.sessionOnGoawayDyn": { argTypes: [HTTP2SESSION_T, DYN, BOOL], result: VOID },
+    // session.setTimeout / stream.setTimeout (Node's return this rides the
+    // receiver-returning helper); the callback joins the 'timeout'
+    // listeners (once).
+    "http2.sessionSetTimeout": { argTypes: [HTTP2SESSION_T, F64], result: VOID },
+    "http2.sessionSetTimeoutCb": { argTypes: [HTTP2SESSION_T, F64, null], result: VOID },
+    "http2.streamSetTimeout": { argTypes: [HTTP2STREAM_T, F64], result: VOID },
+    "http2.streamSetTimeoutCb": { argTypes: [HTTP2STREAM_T, F64, null], result: VOID },
+    "http2.sessionOnTimeout": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+    "http2.streamOnTimeout": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.sessionOnFrameError": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+    "http2.streamOnFrameError": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    // session.goaway([code[, lastStreamID[, opaqueData]]]) — the opaque
+    // Buffer rides its own call shape (a NULL byte pointer otherwise).
+    "http2.sessionGoaway": { argTypes: [HTTP2SESSION_T, F64, F64], result: VOID },
+    "http2.sessionGoawayOpaque": { argTypes: [HTTP2SESSION_T, F64, F64, BYTES_U8], result: VOID },
+    "http2.sessionRef": { argTypes: [HTTP2SESSION_T], result: VOID },
+    "http2.sessionUnref": { argTypes: [HTTP2SESSION_T], result: VOID },
+    "http2.sessionSetLocalWindowSize": { argTypes: [HTTP2SESSION_T, F64], result: VOID },
+    // server.setTimeout(ms[, cb]) / server.on("timeout"): the session
+    // deadline every accepted connection arms (Http2Server/Http2SecureServer).
+    "http2.serverSetTimeout": { argTypes: [NETSERVER_T, F64], result: VOID },
+    "http2.serverSetTimeoutCb": { argTypes: [NETSERVER_T, F64, null], result: VOID },
+    "http2.serverOnTimeout": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     // session.ping([payload, ]callback): the (err, duration, payload)
     // callback crosses the checked-dynamic boundary.
     "http2.sessionPing": { argTypes: [HTTP2SESSION_T, DYN], result: VOID },

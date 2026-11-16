@@ -62499,6 +62499,11 @@
           "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-http2-settings.mjs",
           "tests/corpus/compat-http2-state.mjs",
+          "tests/corpus/http2-goaway-listener.ts",
+          "tests/corpus/http2-goaway.mjs",
+          "tests/corpus/http2-server-timeout.ts",
+          "tests/corpus/http2-session-control.ts",
+          "tests/corpus/http2-session-timeout.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
         ]
       },
@@ -62920,10 +62925,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http2.http2session.goaway",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-goaway.mjs",
+          "tests/corpus/http2-session-control.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62972,8 +62978,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2session.ref",
+        "tests": [
+          "tests/corpus/http2-goaway.mjs",
+          "tests/corpus/http2-session-control.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -62995,8 +63005,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.http2session.setLocalWindowSize",
+        "tests": [
+          "tests/corpus/http2-goaway.mjs",
+          "tests/corpus/http2-session-control.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63018,10 +63032,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http2.http2session.setTimeout",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-timeout.ts"
         ]
       },
       "anchorSource": "exact"
@@ -63070,10 +63084,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http2.http2session.unref",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-goaway.mjs",
+          "tests/corpus/http2-session-control.ts"
         ]
       },
       "anchorSource": "exact"
@@ -63479,8 +63494,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'frameError'",
+        "tests": [
+          "tests/corpus/http2-session-control.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63502,8 +63520,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'goaway'",
+        "tests": [
+          "tests/corpus/http2-goaway.mjs",
+          "tests/corpus/http2-goaway-listener.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -63630,10 +63652,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http2.'timeout'",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-timeout.ts"
         ]
       },
       "anchorSource": "exact"
@@ -63988,10 +64010,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http2.http2stream.setTimeout",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-timeout.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64436,8 +64458,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'frameError'",
+        "tests": [
+          "tests/corpus/http2-session-control.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64957,8 +64982,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.server.setTimeout",
+        "tests": [
+          "tests/corpus/http2-server-timeout.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65003,8 +65031,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:http2.timeout"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.timeout",
+        "tests": [
+          "tests/corpus/http2-server-timeout.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65176,8 +65207,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'timeout'",
+        "tests": [
+          "tests/corpus/http2-server-timeout.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65248,8 +65282,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.server.setTimeout",
+        "tests": [
+          "tests/corpus/http2-server-timeout.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65294,8 +65331,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:http2.timeout"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.timeout",
+        "tests": [
+          "tests/corpus/http2-server-timeout.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65467,8 +65507,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'timeout'",
+        "tests": [
+          "tests/corpus/http2-server-timeout.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -117,6 +117,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.sessionDestroy": "scr_http2_session_destroy",
     "http2.sessionSettingsDynCb": "scr_http2_session_settings_dyncb",
     "http2.sessionOnSettingsDyn": "scr_http2_session_on_settings_dyn",
+    "http2.sessionOnGoawayDyn": "scr_http2_session_on_goaway_dyn",
     "http2.sessionPingPayload": "scr_http2_session_ping",
     "http2.sessionConnecting": "scr_http2_session_connecting",
     "http2.getPackedSettings": "scr_http2_get_packed_settings",
@@ -127,6 +128,10 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.sessionClosed": "scr_http2_session_closed",
     "http2.sessionDestroyed": "scr_http2_session_destroyed",
     "http2.sessionEncrypted": "scr_http2_session_encrypted",
+    "http2.sessionRef": "scr_http2_session_ref",
+    "http2.sessionUnref": "scr_http2_session_unref",
+    "http2.sessionSetLocalWindowSize": "scr_http2_session_set_local_window_size",
+    "http2.serverSetTimeout": "scr_http2_server_set_timeout",
     "http2.sessionType": "scr_http2_session_type",
     "http2.sessionAlpn": "scr_http2_session_alpn",
     "http2.sessionSocket": "scr_http2_session_socket",
@@ -158,6 +163,37 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
   switch (e.fn) {
     case "http2.streamNoop":
       return { name: "", type: e.type };
+    case "http2.sessionSetTimeout":
+    case "http2.sessionSetTimeoutCb":
+    case "http2.streamSetTimeout":
+    case "http2.streamSetTimeoutCb": {
+      const withCb = e.fn.endsWith("Cb");
+      if (withCb) host.toHeap(args[2]!);
+      const symbol = e.fn.startsWith("http2.session")
+        ? "scr_http2_session_set_timeout"
+        : "scr_http2_stream_set_timeout";
+      return finishRuntimeCall(host, e, symbol, withCb ? a : [...a, ptr()]);
+    }
+    case "http2.serverSetTimeoutCb": {
+      const cb = args[2]!;
+      const thunk =
+        callbackType(cb).params.length === 0
+          ? "scr_http2_session_thunk0"
+          : "scr_http2_session_thunk";
+      return finishRuntimeCall(host, e, "scr_http2_server_set_timeout_cb", [
+        a[0]!,
+        a[1]!,
+        ...callbackAdapter(host, cb, thunk, ["ptr", "ptr"]),
+      ]);
+    }
+    case "http2.sessionGoaway":
+    case "http2.sessionGoawayOpaque":
+      return finishRuntimeCall(host, e, "scr_http2_session_goaway", [
+        a[0]!,
+        a[1]!,
+        a[2]!,
+        e.fn === "http2.sessionGoawayOpaque" ? a[3]! : ptr(),
+      ]);
     case "http2.sessionPing":
       return finishRuntimeCall(host, e, "scr_http2_session_ping", [a[0]!, ptr(), a[1]!]);
     case "http2.getPackedSettings0":
@@ -286,6 +322,11 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       thunk = `scr_http2_goaway_thunk${Math.min(arity, 2)}`;
       params = ["ptr", "double", "double", "ptr"];
       break;
+    case "http2.sessionOnGoawayOpaque":
+      // The runtime's own thunk hands the optional opaque argument (a
+      // NULL-sentinel bytes pointer) to the listener.
+      runtime = "scr_http2_session_on_goaway_opaque";
+      break;
     case "http2.sessionOnError":
       runtime = "scr_http2_session_on_error";
       thunk = arity === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
@@ -327,6 +368,23 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.sessionOnClose":
       runtime = "scr_http2_session_on_close";
+      break;
+    case "http2.sessionOnTimeout":
+      runtime = "scr_http2_session_on_timeout";
+      break;
+    case "http2.streamOnTimeout":
+      runtime = "scr_http2_stream_on_timeout";
+      break;
+    case "http2.sessionOnFrameError":
+      runtime = "scr_http2_session_on_frame_error";
+      break;
+    case "http2.streamOnFrameError":
+      runtime = "scr_http2_stream_on_frame_error";
+      break;
+    case "http2.serverOnTimeout":
+      runtime = "scr_http2_server_on_timeout";
+      thunk = arity === 0 ? "scr_http2_session_thunk0" : "scr_http2_session_thunk";
+      params = ["ptr", "ptr"];
       break;
     case "http2.streamOnEnd":
       runtime = "scr_http2_stream_on_end";

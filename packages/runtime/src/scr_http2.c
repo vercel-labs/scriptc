@@ -54,6 +54,7 @@
 #include "scr_runtime.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -694,8 +695,12 @@ struct ScrH2Stream {
   /* send buffer for window-blocked bytes */
   ScrH2Buf wbuf;
   int64_t send_window;
+  /* stream.setTimeout: the idle deadline (0 = off), the loop timer's id
+   * (0 = none) and the 'timeout' listeners it fires. */
+  double timeout_ms;
+  double timeout_handle;
   ScrNetLs data_ls, end_ls, close_ls, err_ls, resp_ls, aborted_ls, ready_ls,
-      trailers_ls, wanttrailers_ls, push_ls, frameerr_ls;
+      trailers_ls, wanttrailers_ls, push_ls, frameerr_ls, timeout_ls;
   /* The AsyncLocalStorage context of the request() call that created a
    * client stream (+1, NULL outside a store); NULL on server streams,
    * whose own events Node runs with no store. */
@@ -713,6 +718,11 @@ typedef struct ScrH2SrvCtx {
                          * eager handler and server.on("request", ...) */
   ScrNetLs connect_ls; /* traditional/RFC 8441 CONNECT (req, res) listeners */
   ScrNetLs session_error_ls; /* server 'sessionError' (err, session) */
+  /* server.setTimeout / server.on("timeout"): every accepted session arms
+   * this deadline, and a fire with no listener head destroys the session
+   * (Node's sessionOnTimeout). The deadline itself lives in the net
+   * server's own timeout slot, which is what `server.timeout` reads. */
+  ScrNetLs timeout_ls;
   void *http1_ctx;     /* borrowed: owned by the TLS wrapper's inner hook */
   bool enable_connect_protocol;
   /* Node's compat dispatch is itself a 'stream' listener, added when the
@@ -798,6 +808,24 @@ struct ScrH2Session {
   int64_t send_window;
   uint32_t peer_max_frame;
   uint32_t peer_init_window;
+  /* the connection-level receive window as the application set it
+   * (setLocalWindowSize) — WINDOW_UPDATE deltas ride the difference */
+  int64_t local_window;
+  /* session.setTimeout: the idle deadline (0 = off), the loop timer's id
+   * (0 = none) and the 'timeout' listeners it fires. */
+  double timeout_ms;
+  double timeout_handle;
+  /* GOAWAY this side received: the last stream the peer processed. New
+   * streams past it are refused locally, without a round trip — nghttp2
+   * refuses them the same way. A NO_ERROR frame also closes the session
+   * (Node's onGoawayData calls session.close()). */
+  int32_t goaway_last;
+  /* a goaway() issued while the client was still connecting (Node defers
+   * the send to 'connect') */
+  bool goaway_pending;
+  uint32_t pending_goaway_code;
+  int32_t pending_goaway_last;
+  ScrBytes *pending_goaway_opaque; /* +1, nullable */
   /* the API-visible settings records + the in-flight local ack */
   ScrH2Settings local_settings, remote_settings;
   ScrH2PendingSettings *pending;
@@ -808,7 +836,7 @@ struct ScrH2Session {
   bool connected;    /* client: the transport is established */
   bool error_emitted;
   ScrNetLs stream_ls, close_ls, err_ls, connect_ls, goaway_ls,
-      remote_settings_ls, local_settings_ls, ping_ls;
+      remote_settings_ls, local_settings_ls, ping_ls, timeout_ls, frameerr_ls;
   /* The stream the last lookup by id found (borrowed from `streams`):
    * the frames of one stream arrive together, and a frame's context
    * lookup and its handling ask for the same stream. */
@@ -857,6 +885,34 @@ void scr_http2_stream_release(ScrH2Stream *st) {
 void *scr_http2_stream_retain_v(void *p) { return scr_http2_stream_retain(p); }
 void scr_http2_stream_release_v(void *p) { scr_http2_stream_release(p); }
 
+/* ── idle deadlines (session.setTimeout / stream.setTimeout) ─────────── */
+
+/* Cancel a live deadline. The loop timer owns the closure, which owns the
+ * handle's +1; clearing releases both, so the object's own refcount is
+ * untouched here. */
+static void scr_h2_session_disarm_timeout(ScrH2Session *s) {
+  double h = s->timeout_handle;
+  s->timeout_handle = 0;
+  if (h != 0) scr_clear_interval(h);
+}
+
+static void scr_h2_stream_disarm_timeout(ScrH2Stream *st) {
+  double h = st->timeout_handle;
+  st->timeout_handle = 0;
+  if (h != 0) scr_clear_interval(h);
+}
+
+/* I/O on the session (or the stream) pushes its idle deadline out — the
+ * refresh Node's kUpdateTimer calls. A deadline that already fired left no
+ * handle, which is the same no-op Node's dead one-shot refresh is. */
+static void scr_h2_session_touch(ScrH2Session *s) {
+  if (s->timeout_handle != 0) scr_timer_refresh(s->timeout_handle);
+}
+
+static void scr_h2_stream_touch(ScrH2Stream *st) {
+  if (st->timeout_handle != 0) scr_timer_refresh(st->timeout_handle);
+}
+
 static ScrH2SrvCtx *scr_h2_srv_ctx_retain(ScrH2SrvCtx *ctx) {
   ctx->rc++;
   return ctx;
@@ -869,6 +925,7 @@ static void scr_h2_srv_ctx_release(ScrH2SrvCtx *ctx) {
   scr_net_ls_drop(&ctx->request_ls);
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->session_error_ls);
+  scr_net_ls_drop(&ctx->timeout_ls);
   free(ctx);
 }
 
@@ -884,6 +941,7 @@ static void scr_h2_stream_drop_lists(ScrH2Stream *st) {
   scr_net_ls_drop(&st->wanttrailers_ls);
   scr_net_ls_drop(&st->push_ls);
   scr_net_ls_drop(&st->frameerr_ls);
+  scr_net_ls_drop(&st->timeout_ls);
 }
 
 static void scr_h2_stream_free(ScrH2Stream *st) {
@@ -918,6 +976,8 @@ static void scr_h2_session_drop_lists(ScrH2Session *s) {
   scr_net_ls_drop(&s->remote_settings_ls);
   scr_net_ls_drop(&s->local_settings_ls);
   scr_net_ls_drop(&s->ping_ls);
+  scr_net_ls_drop(&s->timeout_ls);
+  scr_net_ls_drop(&s->frameerr_ls);
 }
 
 static void scr_h2_session_free(ScrH2Session *s) {
@@ -930,6 +990,7 @@ static void scr_h2_session_free(ScrH2Session *s) {
   free(s->rbuf);
   free(s->hblock.data);
   free(s->authority);
+  scr_bytes_release(s->pending_goaway_opaque);
   scr_h2_dyntab_free(&s->dec_table);
   if (s->srv) scr_h2_srv_ctx_release(s->srv);
   if (s->sock) scr_net_sock_release(s->sock);
@@ -1025,6 +1086,7 @@ static void scr_h2_send_frame(ScrH2Session *s, uint8_t type, uint8_t flags,
   head[8] = (uint8_t)stream_id;
   scr_net_sock_write_native(s->sock, (const char *)head, 9);
   if (n > 0) scr_net_sock_write_native(s->sock, payload, n);
+  scr_h2_session_touch(s);
 }
 
 /* Record a SETTINGS frame about to go out; `after` is the local record its
@@ -1073,15 +1135,30 @@ static void scr_h2_send_window_update(ScrH2Session *s, int32_t stream_id, uint32
   scr_h2_send_frame(s, SCR_H2_F_WINDOW_UPDATE, 0, stream_id, p, 4);
 }
 
-static void scr_h2_send_goaway(ScrH2Session *s, uint32_t code) {
+static void scr_h2_send_goaway_full(ScrH2Session *s, uint32_t code, int32_t last,
+                                     const uint8_t *opaque, size_t oplen) {
   if (s->goaway_sent) return;
   s->goaway_sent = true;
-  uint32_t last = (uint32_t)s->last_recv_stream_id;
-  uint8_t p[8] = {
-    (uint8_t)(last >> 24) & 0x7f, (uint8_t)(last >> 16), (uint8_t)(last >> 8), (uint8_t)last,
+  size_t n = 8 + oplen;
+  uint8_t fixed[8] = {
+    (uint8_t)((uint32_t)last >> 24) & 0x7f, (uint8_t)((uint32_t)last >> 16),
+    (uint8_t)((uint32_t)last >> 8), (uint8_t)last,
     (uint8_t)(code >> 24), (uint8_t)(code >> 16), (uint8_t)(code >> 8), (uint8_t)code,
   };
-  scr_h2_send_frame(s, SCR_H2_F_GOAWAY, 0, 0, p, 8);
+  if (oplen == 0) {
+    scr_h2_send_frame(s, SCR_H2_F_GOAWAY, 0, 0, fixed, 8);
+    return;
+  }
+  uint8_t *p = malloc(n);
+  if (!p) scr_h2_oom();
+  memcpy(p, fixed, 8);
+  memcpy(p + 8, opaque, oplen);
+  scr_h2_send_frame(s, SCR_H2_F_GOAWAY, 0, 0, p, n);
+  free(p);
+}
+
+static void scr_h2_send_goaway(ScrH2Session *s, uint32_t code) {
+  scr_h2_send_goaway_full(s, code, s->last_recv_stream_id, NULL, 0);
 }
 
 /* A header block as HEADERS (+ CONTINUATIONs past the peer's max frame). */
@@ -1171,6 +1248,7 @@ static void scr_h2_session_maybe_finish_close(ScrH2Session *s);
 /* Queue the stream's 'close' (idempotent) and forget it session-side. */
 static void scr_h2_stream_settle(ScrH2Stream *st) {
   if (st->close_queued || st->close_emitted) return;
+  scr_h2_stream_disarm_timeout(st);
   st->close_queued = true;
   st->api_closed = true;
   st->state = SCR_H2_S_CLOSED;
@@ -1525,9 +1603,26 @@ static void scr_h2_session_fail(ScrH2Session *s, const char *text) {
   scr_str_release(msg);
 }
 
+/* A session 'error' whose payload carries Node's code (ERR_HTTP2_*): the
+ * listeners receive that exact Error object, so the code property rides
+ * along whatever the message is. */
+static void scr_h2_session_error_event(ScrH2Session *s, const char *message, size_t len,
+                                        const char *code) {
+  ScrStr *msg = scr_str_new(message, len);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_error_set_code(e, code);
+  ScrError *saved = scr_event_error_payload;
+  scr_event_error_payload = e;
+  if (s->err_ls.n > 0) scr_net_fire_err_this(&s->err_ls, msg, s, SCR_DYNH_H2_SESSION);
+  scr_event_error_payload = saved;
+  scr_error_release(e);
+  scr_str_release(msg);
+}
+
 void scr_http2_session_destroy(ScrH2Session *s) {
   if (s->destroyed) return;
   s->destroyed = true;
+  scr_h2_session_disarm_timeout(s);
   scr_h2_session_abort_streams(s, 0 /* NGHTTP2_NO_ERROR */);
   scr_h2_session_queue_close(s);
   if (scr_h2_sock_alive(s)) scr_net_sock_destroy(s->sock);
@@ -1607,6 +1702,7 @@ static bool scr_h2_on_frame(ScrH2Session *s, uint8_t type, uint8_t flags, int32_
 
 static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int32_t stream_id,
                                 const uint8_t *p, size_t n) {
+  scr_h2_session_touch(s);
   /* An open header block admits only its CONTINUATIONs. */
   if (s->hblock_active && type != SCR_H2_F_CONTINUATION) {
     goto proto_err;
@@ -1676,6 +1772,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
     }
     ScrH2Stream *st = scr_h2_find_stream(s, stream_id);
     if (!st || st->destroyed) break; /* late DATA on a gone stream: drop */
+    scr_h2_stream_touch(st);
     if (st->compat_req != NULL) {
       /* the compat req owns the READ side: DATA feeds req 'data',
        * END_STREAM fires req 'end' — the stream's own queue stays empty */
@@ -1849,6 +1946,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       ScrNetL *snap;
       size_t nl = scr_net_ls_snapshot(&s->goaway_ls, &snap);
       int32_t last = (int32_t)((((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]) & 0x7fffffff);
+      s->goaway_last = last;
       /* the opaque data, when the frame carries any (a Buffer; Node passes
        * undefined otherwise) */
       ScrBytes *opaque = NULL;
@@ -1870,12 +1968,20 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       if (scr_exc_pending()) return false;
     }
     if (code != 0) {
-      /* an error GOAWAY tears the session down NOW */
+      /* an error GOAWAY tears the session down NOW — Node destroys with
+       * ERR_HTTP2_SESSION_ERROR carrying the numeric code */
+      char text[64];
+      int tl = snprintf(text, sizeof text, "Session closed with error code %u", (unsigned)code);
+      scr_h2_session_error_event(s, text, (size_t)tl, "ERR_HTTP2_SESSION_ERROR");
       scr_http2_session_destroy(s);
       return false;
     }
-    /* NO_ERROR: no new streams; the session winds down as streams drain */
-    s->closed = true;
+    /* NO_ERROR: Node closes the session (GOAWAY back, no new streams);
+     * open streams may end naturally, then the session winds down. */
+    if (!s->closed) {
+      s->closed = true;
+      scr_h2_send_goaway(s, 0 /* NGHTTP2_NO_ERROR */);
+    }
     scr_h2_session_maybe_finish_close(s);
     break;
   }
@@ -2041,6 +2147,8 @@ static ScrH2Session *scr_h2_session_new(bool client) {
   s->send_window = SCR_H2_DEFAULT_WINDOW;
   s->peer_max_frame = SCR_H2_DEFAULT_MAX_FRAME;
   s->peer_init_window = SCR_H2_DEFAULT_WINDOW;
+  s->local_window = SCR_H2_DEFAULT_WINDOW;
+  s->goaway_last = -1;
   scr_h2_settings_defaults(&s->local_settings);
   scr_h2_settings_defaults(&s->remote_settings);
   /* a session that sent or received no MAX_HEADER_LIST_SIZE has none:
@@ -2120,6 +2228,7 @@ static void scr_h2_stream_flush(ScrH2Stream *st) {
 
 static void scr_h2_stream_send(ScrH2Stream *st, const char *data, size_t n) {
   if (st->destroyed || scr_h2_stream_local_closed(st)) return;
+  scr_h2_stream_touch(st);
   scr_h2_buf_put(&st->wbuf, data, n);
   scr_h2_stream_flush(st);
 }
@@ -2862,6 +2971,8 @@ static void scr_h2_fire_server_session(ScrH2Session *sess) {
 
 static void scr_h2_on_server_established(void *ctx) { scr_h2_fire_server_session(ctx); }
 
+static void scr_h2_session_arm_server_timeout(ScrH2Session *s, double ms);
+
 static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
   ScrH2SrvCtx *srv = (ScrH2SrvCtx *)ctx;
   ScrH2Session *sess = scr_h2_session_new(false); /* in the listen() context */
@@ -2873,6 +2984,12 @@ static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
                                   sess, &scr_h2_session_ctx_free);
   scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
   scr_h2_send_settings(sess);
+  /* server.timeout / server.setTimeout(ms) applies to every session the
+   * server accepts: Node reads this.timeout when the connection arrives
+   * and arms the session before 'session' is emitted. */
+  ScrNetServer *srvh = scr_net_sock_server(sock);
+  double srv_ms = srvh != NULL ? scr_net_server_timeout_get(srvh, 0) : 0;
+  if (srv_ms > 0) scr_h2_session_arm_server_timeout(sess, srv_ms);
   /* 'session' fires in the connection callback, before the connection's
    * first frame. Node's server listens to its own 'connection' (cleartext)
    * or 'secureConnection' (TLS) from its construction and creates the
@@ -3073,6 +3190,16 @@ void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH
 static void scr_h2_on_established(void *ctx) {
   ScrH2Session *s = ctx;
   s->connected = true;
+  /* a goaway() issued while the handshake was in flight goes out now */
+  if (s->goaway_pending && !s->destroyed) {
+    s->goaway_pending = false;
+    ScrBytes *opaque = s->pending_goaway_opaque;
+    s->pending_goaway_opaque = NULL;
+    scr_h2_send_goaway_full(s, s->pending_goaway_code, s->pending_goaway_last,
+                            opaque != NULL ? (const uint8_t *)opaque->data : NULL,
+                            opaque != NULL ? (size_t)opaque->len : 0);
+    scr_bytes_release(opaque);
+  }
   if (!s->destroyed && !s->connect_queued) {
     s->connect_queued = true;
     scr_h2_emit_push(SCR_H2_EMIT_SESSION_CONNECT, scr_http2_session_retain(s));
@@ -3173,6 +3300,18 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   if (!scr_h2_regular_names_valid(pairs)) return NULL; /* no stream was created */
   ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
   s->next_stream_id += 2;
+  /* A received GOAWAY said the peer processed nothing past its last
+   * stream id: a stream beyond it closes locally with REFUSED_STREAM —
+   * no frame goes out (nghttp2's own refusal, which Node reports the
+   * same way: 'error' ERR_HTTP2_STREAM_ERROR, then 'close'). */
+  if (s->goaway_recv && st->id > s->goaway_last) {
+    st->rst_code = 7 /* NGHTTP2_REFUSED_STREAM */;
+    st->err_code_queued = true;
+    st->destroyed = true;
+    scr_h2_stream_begin_close(st);
+    scr_h2_stream_settle(st);
+    return st;
+  }
   ScrStr *method = scr_h2_pairs_pseudo(pairs, ":method");
   ScrStr *path = scr_h2_pairs_pseudo(pairs, ":path");
   ScrStr *scheme = scr_h2_pairs_pseudo(pairs, ":scheme");
@@ -3283,6 +3422,336 @@ void scr_http2_session_on_goaway(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH
     return;
   }
   scr_net_ls_add(&s->goaway_ls, cb, (void *)fn, once);
+}
+
+/* An UNTYPED (JavaScript) goaway listener: its three arguments cross as
+ * checked-dynamic values (the dyn adapter builds the optional Buffer). */
+static void scr_h2_dyn_fire_goaway(ScrClosure *cb, double code, double last, ScrBytes *opaque);
+
+void scr_http2_session_on_goaway_dyn(ScrH2Session *s, const ScrDyn *cb /*borrowed*/, bool once) {
+  if (s->close_emitted) return;
+  scr_http2_session_on_goaway(
+      s,
+      scr_dyn_listener_closure_fn((ScrDyn *)cb, (void *)&scr_h2_dyn_fire_goaway),
+      (ScrH2GoawayFn)&scr_h2_dyn_fire_goaway, once);
+}
+
+/* ── idle deadlines (session/stream setTimeout + the server's) ───────── */
+
+void scr_http2_session_on_timeout(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->timeout_ls, cb, NULL, once);
+}
+
+void scr_http2_stream_on_timeout(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once) {
+  if (st->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&st->timeout_ls, cb, NULL, once);
+}
+
+/* 'frameError' registrations: a frame this side hands to the socket never
+ * fails to send here (a dead socket reports through 'error' instead), so
+ * the listener is stored and never fires — Node's event is for the same
+ * exceedingly rare case. */
+void scr_http2_session_on_frame_error(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->frameerr_ls, cb, NULL, once);
+}
+
+void scr_http2_stream_on_frame_error(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once) {
+  if (st->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&st->frameerr_ls, cb, NULL, once);
+}
+
+/* The deadline a session or stream timeout fires from. The closure holds
+ * the object's +1 (the loop timer owns the closure), which this releases;
+ * a deadline swept by a close left no handle, so nothing fires. */
+static void scr_h2_session_timeout_fire(ScrClosure *cb) {
+  ScrH2Session *s = (ScrH2Session *)scr_box_get_ref(cb->caps[0]);
+  if (s == NULL) return;
+  s->timeout_handle = 0;
+  if (!s->destroyed && !s->close_emitted) {
+    scr_net_fire0_this(&s->timeout_ls, s, SCR_DYNH_H2_SESSION);
+  }
+  scr_http2_session_release(s);
+}
+
+static void scr_h2_stream_timeout_fire(ScrClosure *cb) {
+  ScrH2Stream *st = (ScrH2Stream *)scr_box_get_ref(cb->caps[0]);
+  if (st == NULL) return;
+  st->timeout_handle = 0;
+  if (!st->destroyed && !st->close_emitted) {
+    scr_net_fire0_this(&st->timeout_ls, st, SCR_DYNH_H2_STREAM);
+  }
+  scr_http2_stream_release(st);
+}
+
+/* Arm an idle deadline of `ms` that fires `emit` over the object's
+ * listeners. The timer is UNREF'd, as Node's reuseOrCreateUnrefTimeout
+ * is: an idle deadline never keeps the process alive by itself. */
+static void scr_h2_arm_deadline(double *handle, void *obj, void (*emit)(ScrClosure *),
+                                 void *(*retain)(void *), void (*release)(void *), double ms) {
+  ScrClosure *fire = scr_closure_new((void *)emit, 1);
+  ScrBox *box = scr_box_new_obj(retain, release, NULL);
+  scr_box_set_ref(box, retain(obj));
+  fire->caps[0] = box;
+  if (*handle != 0) scr_clear_interval(*handle);
+  *handle = scr_set_timeout_handle(fire, ms);
+  scr_timer_unref(*handle);
+}
+
+/* setStreamTimeout's type check (getTimerDuration): a non-number throws
+ * ERR_INVALID_ARG_TYPE, a negative or non-finite one ERR_OUT_OF_RANGE, and
+ * a value past 2^31-1 warns TimeoutOverflowWarning and truncates. The
+ * typed path hands numbers already; the dyn path converts first. */
+static bool scr_h2_timeout_ms_ok(double ms, const char *name, double *out) {
+  char recv[48], msg[224];
+  if (!(ms >= 0) || !isfinite(ms)) { /* also catches NaN */
+    scr_num_received(ms, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"%s\" is out of range. "
+                       "It must be a non-negative finite number. Received %s",
+                       name, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (ms > 2147483647.0) {
+    /* Node warns TimeoutOverflowWarning and truncates; the warning rides
+     * the process-warning hook the always-linked unit installs (a build
+     * that linked no such unit stays silent). */
+    if (scr_warning_emit_hook != NULL) {
+      scr_num_received(ms, recv);
+      int len = snprintf(msg, sizeof msg,
+                         "%s does not fit into a 32-bit signed integer.\n"
+                         "Timer duration was truncated to 2147483647.",
+                         recv);
+      ScrStr *text = scr_str_new(msg, (size_t)len);
+      scr_warning_emit_hook("TimeoutOverflowWarning", NULL, text);
+      scr_str_release(text);
+    }
+    ms = 2147483647.0;
+  }
+  *out = ms;
+  return true;
+}
+
+/* session.goaway(...) listeners that read the opaque data: the third
+ * argument is a `Uint8Array | undefined` parameter, which the compiler
+ * passes as a NULL-sentinel bytes pointer owning one reference. */
+static void scr_h2_goaway_thunk3(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
+  ScrBytes *given = opaque != NULL ? scr_bytes_retain(opaque) : NULL;
+  ((void (*)(ScrClosure *, double, double, ScrBytes *))cb->fn)(cb, code, last, given);
+}
+
+void scr_http2_session_on_goaway_opaque(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->goaway_ls, cb, (void *)&scr_h2_goaway_thunk3, once);
+}
+
+/* session.setTimeout(msecs[, callback]) — Node's setStreamTimeout. A
+ * destroyed session takes nothing (not even validation); the stored
+ * `timeout` is the value as given; an existing deadline is cleared; 0
+ * disarms and removes a callback that is the same function as one already
+ * registered; otherwise a fresh unref'd deadline is armed and the callback
+ * joins the 'timeout' listeners (once). */
+void scr_http2_session_set_timeout(ScrH2Session *s, double ms, ScrClosure *cb /*moves, nullable*/) {
+  if (s->destroyed) {
+    scr_closure_release(cb);
+    return;
+  }
+  s->timeout_ms = ms;
+  scr_h2_session_disarm_timeout(s);
+  double armed;
+  if (!scr_h2_timeout_ms_ok(ms, "msecs", &armed)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (armed == 0) {
+    if (cb != NULL) {
+      scr_net_ls_remove_last(&s->timeout_ls, cb);
+      scr_closure_release(cb);
+    }
+    return;
+  }
+  scr_h2_arm_deadline(&s->timeout_handle, s, &scr_h2_session_timeout_fire,
+                      &scr_http2_session_retain_v, &scr_http2_session_release_v, armed);
+  if (cb != NULL) scr_net_ls_add(&s->timeout_ls, cb, NULL, true);
+}
+
+void scr_http2_stream_set_timeout(ScrH2Stream *st, double ms, ScrClosure *cb /*moves, nullable*/) {
+  if (st->destroyed) {
+    scr_closure_release(cb);
+    return;
+  }
+  st->timeout_ms = ms;
+  scr_h2_stream_disarm_timeout(st);
+  double armed;
+  if (!scr_h2_timeout_ms_ok(ms, "msecs", &armed)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (armed == 0) {
+    if (cb != NULL) {
+      scr_net_ls_remove_last(&st->timeout_ls, cb);
+      scr_closure_release(cb);
+    }
+    return;
+  }
+  scr_h2_arm_deadline(&st->timeout_handle, st, &scr_h2_stream_timeout_fire,
+                      &scr_http2_stream_retain_v, &scr_http2_stream_release_v, armed);
+  if (cb != NULL) scr_net_ls_add(&st->timeout_ls, cb, NULL, true);
+}
+
+/* http2session.goaway([code[, lastStreamID[, opaqueData]]]) — the graceful
+ * GOAWAY. While the client is still connecting the send waits for the
+ * handshake (Node defers it on 'connect'), so the code/last/opaque ride
+ * the session until then. */
+void scr_http2_session_goaway(ScrH2Session *s, double code, double last,
+                               ScrBytes *opaque /*borrowed, nullable*/) {
+  if (s->destroyed) return;
+  uint32_t c = isfinite(code) && code >= 0 ? (uint32_t)code : 0;
+  int32_t l = isfinite(last) && last >= 0 ? (int32_t)last : 0;
+  if (s->client && !s->connected) {
+    s->goaway_pending = true;
+    s->pending_goaway_code = c;
+    s->pending_goaway_last = l;
+    scr_bytes_release(s->pending_goaway_opaque);
+    s->pending_goaway_opaque = opaque != NULL ? scr_bytes_retain(opaque) : NULL;
+    return;
+  }
+  scr_h2_send_goaway_full(s, c, l,
+                          opaque != NULL ? (const uint8_t *)opaque->data : NULL,
+                          opaque != NULL ? (size_t)opaque->len : 0);
+}
+
+/* http2session.ref()/unref(): the transport socket's loop reference, as in
+ * Node. A session without a socket (torn down) is a no-op. */
+void scr_http2_session_ref(ScrH2Session *s) {
+  if (s->sock != NULL) scr_net_sock_set_ref(s->sock, true);
+}
+
+void scr_http2_session_unref(ScrH2Session *s) {
+  if (s->sock != NULL) scr_net_sock_set_ref(s->sock, false);
+}
+
+/* http2session.setLocalWindowSize(windowSize) — the connection-level
+ * receive window. A raise is announced with a WINDOW_UPDATE of the delta;
+ * a lower value only shrinks the tracked window (RFC 9113 has no negative
+ * increment). Node validates through validateInt32(windowSize, ..., 0)
+ * after refusing a destroyed session. */
+void scr_http2_session_set_local_window_size(ScrH2Session *s, double size) {
+  if (s->destroyed) {
+    static const char text[] = "The Http2Session is closed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "ERR_HTTP2_INVALID_SESSION");
+    return;
+  }
+  char recv[48], msg[224];
+  bool integer = isfinite(size) && trunc(size) == size;
+  if (!integer || size < 0 || size > 2147483647.0) {
+    scr_num_received(size, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"windowSize\" is out of range. It must be %s. Received %s",
+                       integer ? ">= 0 && <= 2147483647" : "an integer", recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  int64_t target = (int64_t)size;
+  int64_t delta = target - s->local_window;
+  s->local_window = target;
+  if (delta > 0) scr_h2_send_window_update(s, 0, (uint32_t)delta);
+}
+
+/* ── the server's session deadline ───────────────────────────────────── */
+
+/* Node's sessionOnTimeout, registered as each server session's 'timeout'
+ * listener when the server carries a non-zero timeout: emit the server's
+ * 'timeout' with the session, and destroy the session when nothing
+ * listened (the connection would otherwise sit idle forever). */
+static void scr_h2_srv_session_timeout_cb(ScrClosure *cb) {
+  ScrH2Session *s = (ScrH2Session *)scr_box_get_ref(cb->caps[0]);
+  if (s == NULL) return;
+  if (!s->destroyed && !s->close_emitted && s->srv != NULL) {
+    ScrNetL *snap;
+    size_t n = scr_net_ls_snapshot(&s->srv->timeout_ls, &snap);
+    ScrNetServer *server = s->sock != NULL ? scr_net_sock_server(s->sock) : NULL;
+    scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
+    for (size_t i = 0; i < n; i++) {
+      if (!scr_exc_pending()) {
+        ((ScrH2SessionFn)snap[i].fn)(snap[i].cb, scr_http2_session_retain(s));
+      }
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+    if (n == 0) scr_http2_session_destroy(s);
+  }
+  scr_http2_session_release(s);
+}
+
+/* server.timeout / server.setTimeout(ms): every session this server accepts
+ * arms `ms` (a session keeps the deadline even when the program later sets
+ * its own, which replaces only the timer — Node's listener registration
+ * does the same). */
+void scr_http2_server_set_timeout(ScrNetServer *s, double ms) {
+  ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
+  if (ctx == NULL) {
+    scr_net_server_set_timeout_plain(s, ms);
+    return;
+  }
+  scr_net_server_timeout_set(s, 0, ms);
+}
+
+void scr_http2_server_set_timeout_cb(ScrNetServer *s, double ms, ScrClosure *cb /*moves, nullable*/,
+                                      ScrH2SessionFn fn) {
+  ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
+  if (ctx == NULL) {
+    scr_closure_release(cb);
+    scr_net_server_set_timeout_plain(s, ms);
+    return;
+  }
+  scr_net_server_timeout_set(s, 0, ms);
+  if (cb != NULL) scr_net_ls_add(&ctx->timeout_ls, cb, (void *)fn, false);
+}
+
+void scr_http2_server_on_timeout(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH2SessionFn fn,
+                                  bool once) {
+  ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
+  if (ctx == NULL || scr_net_server_settled(s)) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_server_notify_new_listener(s, "timeout");
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&ctx->timeout_ls, cb, (void *)fn, once);
+}
+
+/* The connection armed the server's deadline: register the routing
+ * listener and start the session's timer (Node: session.setTimeout(
+ * this.timeout, sessionOnTimeout) before 'session' is emitted). */
+static void scr_h2_session_arm_server_timeout(ScrH2Session *s, double ms) {
+  ScrClosure *cb = scr_closure_new((void *)&scr_h2_srv_session_timeout_cb, 1);
+  ScrBox *box = scr_box_new_obj(&scr_http2_session_retain_v, &scr_http2_session_release_v, NULL);
+  scr_box_set_ref(box, scr_http2_session_retain(s));
+  cb->caps[0] = box;
+  scr_net_ls_add(&s->timeout_ls, cb, NULL, false);
+  scr_http2_session_set_timeout(s, ms, NULL);
 }
 
 /* ── the settings surface ────────────────────────────────────────────── */
@@ -3920,6 +4389,24 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
   }
   if (strcmp(method, "resume") == 0) { scr_http2_stream_resume(st); return scr_dyn_retain(self); }
   if (strcmp(method, "pause") == 0) { scr_http2_stream_pause(st); return scr_dyn_retain(self); }
+  if (strcmp(method, "setTimeout") == 0) {
+    const ScrDyn *arg = argc > 0 ? args[0] : scr_dyn_undefined();
+    if (arg->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("msecs", "of type number", arg);
+      return NULL;
+    }
+    ScrClosure *cb = NULL;
+    if (argc > 1 && args[1]->kind != SCR_DYN_UNDEF) {
+      if (args[1]->kind != SCR_DYN_FUNC) {
+        scr_dyn_check_listener(args[1], "callback");
+        return NULL;
+      }
+      cb = scr_dyn_listener_closure0(args[1]);
+    }
+    scr_http2_stream_set_timeout(st, arg->v.num, cb);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_retain(self); /* Node answers the stream */
+  }
   if (strcmp(method, "on") == 0 || strcmp(method, "once") == 0 || strcmp(method, "addListener") == 0) {
     bool once = method[0] == 'o' && method[1] == 'n' && method[2] == 'c';
     if (argc < 2 || args[0]->kind != SCR_DYN_STR) { scr_dyn_check_listener(argc > 1 ? args[1] : scr_dyn_undefined(), "listener"); return NULL; }
@@ -3937,9 +4424,11 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
       scr_http2_stream_on_error(st, scr_dyn_listener_closure_err(args[1]), (ScrChildErrFn)&scr_dyn_listener_fire_err, once);
     } else if (strcmp(ev, "response") == 0) {
       scr_http2_stream_on_response(st, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_resp), (ScrH2RespFn)&scr_h2_dyn_fire_resp, once);
-    } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {
-      /* never raised here (no frame fails to send, and setTimeout is
-       * refused): accept the registration */
+    } else if (strcmp(ev, "timeout") == 0) {
+      scr_http2_stream_on_timeout(st, scr_dyn_listener_closure0(args[1]), once);
+    } else if (strcmp(ev, "frameError") == 0) {
+      /* stored and never raised: no frame this side sends fails */
+      scr_http2_stream_on_frame_error(st, scr_dyn_listener_closure0(args[1]), once);
     } else {
       char msg[128];
       int n = snprintf(msg, sizeof msg, "listening for '%s' on an Http2Stream is not supported yet", ev);
@@ -3950,7 +4439,7 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
   }
   static const char *const unmodeled[] = {
     "sendTrailers", "additionalHeaders", "pushStream", "respondWithFD", "respondWithFile",
-    "priority", "setTimeout", NULL,
+    "priority", NULL,
   };
   for (size_t i = 0; unmodeled[i] != NULL; i++) {
     if (strcmp(method, unmodeled[i]) == 0) {
@@ -4030,9 +4519,11 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
       scr_http2_session_on_settings(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_settings), (ScrH2SettingsFn)&scr_h2_dyn_fire_settings, once, ev[0] == 'l');
     } else if (strcmp(ev, "ping") == 0) {
       scr_http2_session_on_ping(s, scr_dyn_listener_closure_data(args[1]), (ScrNetDataFn)&scr_dyn_listener_fire_data, once);
-    } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {
-      /* never raised here (no frame fails to send, and setTimeout is
-       * refused): accept the registration */
+    } else if (strcmp(ev, "timeout") == 0) {
+      scr_http2_session_on_timeout(s, scr_dyn_listener_closure0(args[1]), once);
+    } else if (strcmp(ev, "frameError") == 0) {
+      /* stored and never raised: no frame this side sends fails */
+      scr_http2_session_on_frame_error(s, scr_dyn_listener_closure0(args[1]), once);
     } else {
       char msg[128];
       int n = snprintf(msg, sizeof msg, "listening for '%s' on an Http2Session is not supported yet", ev);
@@ -4049,7 +4540,6 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
     scr_http2_session_settings(s, settings, cb, (ScrH2SettingsFn)&scr_h2_dyn_fire_settings_cb);
     return scr_dyn_retain(self);
   }
-  if (strcmp(method, "ref") == 0) return scr_dyn_retain(self); /* a session holds the loop already */
   if (strcmp(method, "ping") == 0) {
     bool has_payload = argc > 1 || (argc == 1 && args[0]->kind != SCR_DYN_FUNC);
     const ScrDyn *payload = has_payload ? args[0] : NULL;
@@ -4066,9 +4556,77 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
     if (answer == SCR_H2_PING_NOT_OPEN) return scr_dyn_undefined();
     return scr_dyn_new_bool(answer == SCR_H2_PING_SENT);
   }
-  if (strcmp(method, "setTimeout") == 0 || strcmp(method, "unref") == 0 || strcmp(method, "goaway") == 0 ||
-      strcmp(method, "setLocalWindowSize") == 0 ||
-      strcmp(method, "altsvc") == 0 || strcmp(method, "origin") == 0) {
+  if (strcmp(method, "setTimeout") == 0) {
+    double ms = 0;
+    const ScrDyn *arg = argc > 0 ? args[0] : scr_dyn_undefined();
+    if (arg->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("msecs", "of type number", arg);
+      return NULL;
+    }
+    ms = arg->v.num;
+    ScrClosure *cb = NULL;
+    if (argc > 1 && args[1]->kind != SCR_DYN_UNDEF) {
+      if (args[1]->kind != SCR_DYN_FUNC) {
+        scr_dyn_check_listener(args[1], "callback");
+        return NULL;
+      }
+      cb = scr_dyn_listener_closure0(args[1]);
+    }
+    scr_http2_session_set_timeout(s, ms, cb);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_retain(self); /* Node answers the session */
+  }
+  if (strcmp(method, "ref") == 0 || strcmp(method, "unref") == 0) {
+    if (method[0] == 'u') scr_http2_session_unref(s);
+    else scr_http2_session_ref(s);
+    return scr_dyn_undefined();
+  }
+  if (strcmp(method, "goaway") == 0) {
+    if (s->destroyed) {
+      static const char text[] = "The Http2Session is closed";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1,
+                               "ERR_HTTP2_INVALID_SESSION");
+      return NULL;
+    }
+    double code = 0, last = 0;
+    if (argc > 0 && args[0]->kind != SCR_DYN_UNDEF) {
+      if (args[0]->kind != SCR_DYN_NUM) {
+        scr_dyn_arg_type_fail("code", "of type number", args[0]);
+        return NULL;
+      }
+      code = args[0]->v.num;
+    }
+    if (argc > 1 && args[1]->kind != SCR_DYN_UNDEF) {
+      if (args[1]->kind != SCR_DYN_NUM) {
+        scr_dyn_arg_type_fail("lastStreamID", "of type number", args[1]);
+        return NULL;
+      }
+      last = args[1]->v.num;
+    }
+    const ScrDyn *opaque = argc > 2 ? args[2] : NULL;
+    if (opaque != NULL && opaque->kind != SCR_DYN_UNDEF && opaque->kind != SCR_DYN_BYTES) {
+      char detail[256], text[384];
+      const char *d = scr_dyn_specific_type(opaque, detail, sizeof detail);
+      int tl = snprintf(text, sizeof text,
+                        "The \"opaqueData\" argument must be an instance of Buffer, "
+                        "TypedArray, or DataView. Received %s", d);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, text, (size_t)tl, "ERR_INVALID_ARG_TYPE");
+      return NULL;
+    }
+    scr_http2_session_goaway(s, code, last,
+                             opaque != NULL && opaque->kind == SCR_DYN_BYTES ? opaque->v.bytes : NULL);
+    return scr_dyn_undefined();
+  }
+  if (strcmp(method, "setLocalWindowSize") == 0) {
+    if (argc < 1 || args[0]->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("windowSize", "of type number", argc > 0 ? args[0] : scr_dyn_undefined());
+      return NULL;
+    }
+    scr_http2_session_set_local_window_size(s, args[0]->v.num);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_undefined();
+  }
+  if (strcmp(method, "altsvc") == 0 || strcmp(method, "origin") == 0) {
     scr_h2_dyn_refuse_call(method, "Http2Session");
     return NULL;
   }

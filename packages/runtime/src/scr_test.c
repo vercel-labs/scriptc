@@ -809,6 +809,8 @@ static void scr_test_fail_unrun(ScrTestCtx *c, ScrCaught *err) {
     if (c->is_suite) {
       for (size_t i = 0; i < c->nchildren; i++) scr_test_cancel_unrun(c->children[i]);
     } else {
+      /* The outcome the afterEach hooks see is the pass the flag makes. */
+      c->passed = true;
       scr_test_run_each_hooks(c, SCR_HOOK_AFTER_EACH, false);
       if (scr_exc_pending()) scr_exc_clear();
     }
@@ -872,11 +874,17 @@ static void scr_test_run_node(ScrTestCtx *t) {
   }
   if (t->is_suite) {
     /* The body already ran at registration (children collected). A body that
-     * threw fails the suite and cancels its children, as Node does. */
+     * threw fails the suite and cancels its children, as Node does, but the
+     * suite's own hooks still run: they are the cleanup the body registered
+     * before it threw. */
     if (t->err) {
+      scr_test_run_hooks_of(t, SCR_HOOK_BEFORE, t);
+      if (scr_exc_pending()) scr_exc_clear(); /* the body's error stands */
       for (size_t i = 0; i < t->nchildren; i++) {
         if (t->children[i]->state == SCR_TS_PENDING) scr_test_cancel_unrun(t->children[i]);
       }
+      scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
+      if (scr_exc_pending()) scr_exc_clear();
     } else {
       /* A hook throw fails the SUITE with that error — before-failures skip
        * the children (Node cancels them; SEMANTICS.md numbers the
@@ -2079,8 +2087,9 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
      * subtest inherits { expectFailure }, so that failure is the one it
      * expected and it passes with the directive. */
     sub->err = scr_caught_retain(t->before_err);
-    sub->state =
-        sub->expect_failure && sub->mode != SCR_TEST_SKIP ? SCR_TS_PASS : SCR_TS_FAIL;
+    bool expected = sub->expect_failure && sub->mode != SCR_TEST_SKIP;
+    sub->state = expected ? SCR_TS_PASS : SCR_TS_FAIL;
+    if (expected) sub->passed = true;
     scr_test_run_each_hooks(sub, SCR_HOOK_AFTER_EACH, false);
     if (scr_exc_pending()) scr_exc_clear();
     scr_test_report_result(sub);

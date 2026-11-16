@@ -174,6 +174,32 @@ static char *scr_console_indent_text(const char *line, size_t *used, size_t inde
   return out;
 }
 
+/* kWriteToConsole's indentation over a message that has not had its
+ * terminator appended yet: the indent before the text and after EVERY
+ * newline in it, a trailing one included (Node's
+ * `string.replace(/\n/g, "\n" + indent)` then `indent + string`). The
+ * rendered-line helper above excludes the final newline instead, which is
+ * the shape its caller hands it. */
+static char *scr_console_indent_message(const char *line, size_t *used, size_t indent) {
+  size_t n = *used, breaks = 0;
+  for (size_t i = 0; i < n; i++) breaks += line[i] == '\n';
+  if (breaks >= (SIZE_MAX - n) / (indent + 1)) scr_trap("scriptc: console output too large\n");
+  size_t total = n + indent * (breaks + 1);
+  char *out = malloc(total);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t o = indent;
+  memset(out, ' ', indent);
+  for (size_t i = 0; i < n; i++) {
+    out[o++] = line[i];
+    if (line[i] == '\n') {
+      memset(out + o, ' ', indent);
+      o += indent;
+    }
+  }
+  *used = total;
+  return out;
+}
+
 /* text + "\n" to one target, under the instance's own group indentation
  * (Node's kWriteToConsole): a bound stream receives ONE write; process
  * stdio rides the console output path. Borrows text. */
@@ -184,7 +210,7 @@ static void scr_console_inst_print(ScrConsoleInst *inst, int which, ScrStr *text
     char *owned = NULL;
     const char *bytes = scr_str_utf8(text, &owned);
     size_t used = text->len;
-    char *spaces = scr_console_indent_text(bytes, &used, inst->state.indent);
+    char *spaces = scr_console_indent_message(bytes, &used, inst->state.indent);
     scr_str_utf8_end(owned);
     indented = scr_str_new(spaces, used);
     free(spaces);

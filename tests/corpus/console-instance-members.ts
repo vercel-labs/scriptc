@@ -2,9 +2,11 @@
 // output members through util.format, and count, countReset, time,
 // timeLog, timeEnd, group, groupCollapsed, groupEnd, assert, dir, dirxml,
 // table, trace and clear over the instance's own state and its own
-// streams. Node's elapsed times and captured frames are not reproducible
-// run to run, so this program pins the shapes they answer instead (trace's
-// frame block is scriptc's own text, SEMANTICS divergence 11).
+// streams. Grouped lines are indented where Node indents them, including
+// after a message's own trailing newline and on an empty line. Node's
+// elapsed times and captured frames are not reproducible run to run, so
+// this program pins the shapes they answer instead (trace's frame block is
+// scriptc's own text, SEMANTICS divergence 11).
 import { Console } from "node:console";
 import { Writable } from "node:stream";
 
@@ -56,6 +58,9 @@ c.timeEnd("t");
 
 c.group("group label");
 c.log("indented\nsecond line");
+c.log("trailing newline\n");
+c.log("");
+c.log("multi\n\nblank");
 c.group();
 c.groupCollapsed("collapsed");
 c.log("deep");
@@ -63,6 +68,11 @@ c.groupEnd();
 c.groupEnd();
 c.groupEnd();
 c.log("back");
+
+const stdio = new Console({ stdout: process.stdout });
+stdio.group("stdio");
+stdio.log("ends here\n");
+stdio.groupEnd();
 
 c.assert(true, "not printed");
 c.assert(false, "asserted");

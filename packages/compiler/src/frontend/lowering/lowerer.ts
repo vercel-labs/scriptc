@@ -23947,7 +23947,8 @@ export class Lowerer {
     if (callable !== null) return callable;
     if (module === "crypto" && member === "webcrypto")
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
-    if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    if ((module === "fs" || module === "fs/promises") && member === "constants")
+      return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
     return null;

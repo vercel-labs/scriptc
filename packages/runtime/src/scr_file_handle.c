@@ -452,9 +452,25 @@ void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data) {
 
 /* FileHandle.writeFile over a checked data argument: a string or any
  * Buffer/TypedArray/DataView, whose bytes are written as they are. */
-static void scr_file_handle_write_file_data(ScrFileHandle *h, const ScrDyn *data) {
+/* A string written with the encoding the record named: utf8 (and the
+ * absent default) copies its bytes, every other name encodes them, so the
+ * checked-dynamic path writes what the statically-string path writes. */
+static void scr_file_handle_write_str_encoded(ScrFileHandle *h, ScrStr *data, ScrStr *encoding) {
+  if (encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding)) {
+    scr_file_handle_write_file(h, data);
+    return;
+  }
+  ScrBytes *bytes = scr_bytes_from_str(data, encoding);
+  if (bytes) {
+    scr_file_handle_write_file_bytes(h, bytes);
+    scr_bytes_release(bytes);
+  }
+}
+
+static void scr_file_handle_write_file_data(ScrFileHandle *h, const ScrDyn *data,
+                                            ScrStr *encoding) {
   if (data->kind == SCR_DYN_STR) {
-    scr_file_handle_write_file(h, data->v.str);
+    scr_file_handle_write_str_encoded(h, data->v.str, encoding);
     return;
   }
   if (data->kind == SCR_DYN_BYTES) {
@@ -570,15 +586,7 @@ ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h,
                                                ScrStr *data,
                                                ScrStr *encoding) {
   if (!scr_file_handle_write_encoding_ok(h, encoding)) return scr_promise_settled_void();
-  if (encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding)) {
-    scr_file_handle_write_file(h, data);
-    return scr_promise_settled_void();
-  }
-  ScrBytes *bytes = scr_bytes_from_str(data, encoding);
-  if (bytes) {
-    scr_file_handle_write_file_bytes(h, bytes);
-    scr_bytes_release(bytes);
-  }
+  scr_file_handle_write_str_encoded(h, data, encoding);
   return scr_promise_settled_void();
 }
 
@@ -594,7 +602,7 @@ ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h,
                                                     const ScrDyn *data,
                                                     ScrStr *encoding) {
   if (!scr_file_handle_write_encoding_ok(h, encoding)) return scr_promise_settled_void();
-  scr_file_handle_write_file_data(h, data);
+  scr_file_handle_write_file_data(h, data, encoding);
   return scr_promise_settled_void();
 }
 

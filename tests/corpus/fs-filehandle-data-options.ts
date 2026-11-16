@@ -61,6 +61,25 @@ async function main(): Promise<void> {
   await report("appendFile base64", async () => {
     await w.appendFile("aGk=", { encoding: "base64" });
   });
+  // Data whose static type is the string | Buffer union takes the
+  // checked-dynamic path, where the encoding must still encode the string.
+  const unionData: string | Buffer = "aGk=";
+  await report("writeFile dyn base64", async () => {
+    await w.writeFile(unionData, { encoding: "base64" });
+  });
+  await report("appendFile dyn hex", async () => {
+    await w.appendFile(unionData, { encoding: "hex" });
+  });
+  // A nullish encoding names the default, and its expression still runs.
+  let encodingCalls = 0;
+  const nullishEncoding = (): "utf8" | null => {
+    encodingCalls++;
+    return null;
+  };
+  await report("writeFile nullish", async () => {
+    await w.writeFile("Q", { encoding: nullishEncoding() });
+  });
+  await report("nullish ran", async () => encodingCalls);
   await w.close();
   console.log("written", JSON.stringify(fs.readFileSync(out, "utf8")));
 

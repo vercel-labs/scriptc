@@ -648,7 +648,7 @@ export function lowerFileHandleMethodCall(
         (t.flags & ts.TypeFlags.StringLike) !== 0,
     );
   };
-  const utf8 = (node: ts.Expression | undefined): IrExpr => {
+  const dataEncoding = (node: ts.Expression | undefined): IrExpr => {
     const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
     if (!node) return dflt;
     if (!ts.isObjectLiteralExpression(node)) {
@@ -669,10 +669,6 @@ export function lowerFileHandleMethodCall(
       }
       if (member.name === "encoding") {
         const value = member.value;
-        const nullish =
-          (lowerer.typeOf(value).flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0 ||
-          value.kind === ts.SyntaxKind.NullKeyword;
-        if (nullish) continue;
         if (!encodingLike(value)) {
           lowerer.noLowering(
             `FileHandle.${name} with this encoding`,
@@ -680,7 +676,11 @@ export function lowerFileHandleMethodCall(
             "the encoding is a BufferEncoding name",
           );
         }
-        encoding = lowerer.lowerExprExpecting(value, STRING);
+        // Node reads the member's truthiness: null and undefined name the
+        // default codec. The helper evaluates the expression exactly once
+        // (its side effects included) and substitutes utf8 for the nullish
+        // arms, so a runtime-nullish encoding behaves like Node's.
+        encoding = lowerBuiltinOptionalDefault(lowerer, value, STRING, dflt, true);
         continue;
       }
       fenceOrDropOptionKey(
@@ -693,6 +693,32 @@ export function lowerFileHandleMethodCall(
       );
     }
     return encoding;
+  };
+
+  /* FileHandle.write's string form: the fixed-width write writes the
+   * string's utf8 bytes, so any other encoding leaves this lowering and
+   * takes the checked-dynamic write, which encodes with the name Node
+   * validates. */
+  const utf8 = (node: ts.Expression | undefined): IrExpr => {
+    const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
+    if (!node) return dflt;
+    const nodeType = lowerer.typeOf(node);
+    const parts: readonly ts.Type[] = nodeType.isUnionType()
+      ? ts.constituentTypes(nodeType)
+      : [nodeType];
+    const supported = parts.every(
+      (t) =>
+        (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
+        (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")),
+    );
+    if (!supported) {
+      lowerer.noLowering(
+        `FileHandle.${name} with a non-utf8 encoding`,
+        node,
+        "the fixed-width string write is utf8; another encoding takes the checked-dynamic write",
+      );
+    }
+    return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
   };
 
   if (name === "sync" || name === "datasync") {
@@ -783,7 +809,7 @@ export function lowerFileHandleMethodCall(
     }
     const type = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (type?.kind !== "promise") lowerer.badType(call, lowerer.typeOf(call));
-    const encoding = utf8(call.arguments.nodes[0]);
+    const encoding = dataEncoding(call.arguments.nodes[0]);
     if (typeEquals(type.inner, BYTES_U8)) {
       return {
         kind: "libCall",
@@ -811,7 +837,7 @@ export function lowerFileHandleMethodCall(
     const dataT = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     // Evaluate a supplied utf8 encoding even for Buffer data, matching
     // Node's argument order; it does not affect the bytes.
-    const encoding = utf8(call.arguments.nodes[1]);
+    const encoding = dataEncoding(call.arguments.nodes[1]);
     if (dataT?.kind === "string") {
       return {
         kind: "libCall",

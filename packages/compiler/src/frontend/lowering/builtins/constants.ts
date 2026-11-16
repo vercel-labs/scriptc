@@ -309,7 +309,8 @@ export function lowerFsConstantsProperty(
   if (expr.questionDotToken) return null;
   if (!ts.isIdentifier(expr.expression)) return null;
   const bi = lowerer.builtinImportOf(expr.expression);
-  if (!bi || bi.module !== "fs" || bi.member !== "constants") return null;
+  if (!bi || (bi.module !== "fs" && bi.module !== "fs/promises") || bi.member !== "constants")
+    return null;
   const MODES: Record<string, number | undefined> = {
     F_OK: 0,
     X_OK: 1,

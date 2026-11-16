@@ -6555,23 +6555,27 @@ function buildLibFnSignatures() {
     /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
      * the zlib gating precedent): a process-global name→channel registry;
      * channel values are f64 handles (type-mapper.ts maps Channel to F64, the
-     * readline.Interface pattern). Subscribers are dyn function values —
-     * identity-compared by unsubscribe, called (message, name) by publish
-     * over a SNAPSHOT of the list (a subscriber unsubscribing itself
-     * mid-publish still lets its siblings fire, Node's behavior). dc.publish
-     * MAY THROW: a subscriber's throw propagates out of publish (catchable
-     * there) where Node routes it to triggerUncaughtException — the
-     * documented divergence. subscribe/unsubscribe throw Node's
-     * ERR_INVALID_ARG_TYPE TypeError for non-function subscribers. */
-    "dc.channel": { argTypes: [STRING], result: F64 },
-    "dc.subscribe": { argTypes: [STRING, DYN], result: VOID },
-    "dc.unsubscribe": { argTypes: [STRING, DYN], result: BOOL },
-    "dc.hasSubscribers": { argTypes: [STRING], result: BOOL },
+     * readline.Interface pattern). Names and subscribers cross as dyn values
+     * so the runtime applies Node's own checks: channel()/subscribe() raise
+     * ERR_INVALID_ARG_TYPE for a name that is not a string, subscribe raises
+     * the "subscription" TypeError for a non-function, and
+     * unsubscribe/hasSubscribers answer false there (a symbol name fences
+     * with SC2020). Subscribers are identity-compared by unsubscribe and
+     * called (message, name) by publish over a SNAPSHOT of the list (a
+     * subscriber unsubscribing itself mid-publish still lets its siblings
+     * fire, Node's behavior). A subscriber throw does not stop the dispatch
+     * and does not leave publish: like Node's
+     * process.nextTick(triggerUncaughtException), it surfaces as an uncaught
+     * exception on a later tick. */
+    "dc.channel": { argTypes: [DYN], result: F64 },
+    "dc.subscribe": { argTypes: [DYN, DYN], result: VOID },
+    "dc.unsubscribe": { argTypes: [DYN, DYN], result: BOOL },
+    "dc.hasSubscribers": { argTypes: [DYN], result: BOOL },
     "dc.publish": { argTypes: [F64, DYN], result: VOID },
     "dc.chanSubscribe": { argTypes: [F64, DYN], result: VOID },
     "dc.chanUnsubscribe": { argTypes: [F64, DYN], result: BOOL },
     "dc.chanHasSubscribers": { argTypes: [F64], result: BOOL },
-    "dc.chanName": { argTypes: [F64], result: STRING },
+    "dc.chanName": { argTypes: [F64], result: DYN },
     /** TracingChannel (dc.tracingChannel): a registry entry of the five
      * event channels, an f64 handle like Channel (type-mapper.ts). tcSubscribe/
      * tcUnsubscribe walk a dyn handlers object's five event keys (truthy
@@ -6594,7 +6598,7 @@ function buildLibFnSignatures() {
      * the executor IS setImmediate, so resolve rides the immediate queue
      * (scr_async.c). Never throws. */
     "timers.immediatePromise": { argTypes: [], result: { kind: "promise", inner: DYN } },
-    "dc.tracingChannel": { argTypes: [STRING], result: F64 },
+    "dc.tracingChannel": { argTypes: [DYN], result: F64 },
     "dc.tracingChannelOf": { argTypes: [F64, F64, F64, F64, F64], result: F64 },
     "dc.tcChannel": { argTypes: [F64, F64], result: F64 },
     "dc.tcHasSubscribers": { argTypes: [F64], result: BOOL },

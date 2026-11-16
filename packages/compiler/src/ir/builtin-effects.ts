@@ -339,13 +339,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // %o's showHidden walk refuses the kinds whose hidden entries it cannot
   // render.
   "insp.dynHidden",
-  // diagnostics_channel: publish runs subscribers synchronously (a throw
-  // propagates — the documented divergence from triggerUncaughtException);
-  // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
-  // non-function subscribers.
-  "dc.publish",
+  // diagnostics_channel: the subscribe/unsubscribe forms validate the name
+  // and the subscriber in the runtime (Node's ERR_INVALID_ARG_TYPE), and
+  // the bind-store/run-stores calls run program code.
   "dc.subscribe",
   "dc.unsubscribe",
+  // The name validators raise Node's ERR_INVALID_ARG_TYPE, and a symbol
+  // name fences with SC2020.
+  "dc.channel",
+  "dc.tracingChannel",
   "dc.chanSubscribe",
   "dc.chanUnsubscribe",
   "dc.tcSubscribe",

@@ -36,6 +36,22 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // publish runs every subscriber and catches its throw: like Node's
+  // process.nextTick(triggerUncaughtException), the exception is delivered
+  // on a later tick instead of leaving the call, so publish itself raises
+  // nothing.
+  "dc.publish",
+  // scr_dc_has_subscribers answers false for a name that is neither a string
+  // nor a symbol and compares its registry by name identity; no program code
+  // runs.
+  "dc.hasSubscribers",
+  // scr_dc_chan_name retains the interned name string.
+  "dc.chanName",
+  // The tracing handles' reads compare registry entries and dispatch the
+  // hasSubscribers conjunction.
+  "dc.tcChannel",
+  "dc.tcHasSubscribers",
+  "dc.chanHasSubscribers",
   // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its
   // counter; neither runs program code.
   "perf.loopExit",

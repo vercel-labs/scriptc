@@ -98,6 +98,12 @@ for (const [label, run] of [
   console.log(label, result);
 }
 
+// An untyped KeyObject selects the WebCrypto unit through the same hook:
+// the call runs without any other crypto.subtle operation in the program.
+const untypedKey: any = createSecretKey(Buffer.alloc(16, 9));
+const untypedCryptoKey = untypedKey.toCryptoKey({ name: "AES-GCM" }, true, ["encrypt"]);
+console.log("untyped", untypedCryptoKey.algorithm.name, untypedCryptoKey.algorithm.length);
+
 // A KeyObject also signs through node:crypto with the material the derived
 // CryptoKey holds.
 const keyObjectSignature = signBytes("sha256", Buffer.from("raw"), ec.privateKey);

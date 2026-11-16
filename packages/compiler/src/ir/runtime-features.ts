@@ -2535,8 +2535,13 @@ const RUNTIME_FEATURE_RULES = {
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
-   * scr_webcrypto.c. */
-  webcrypto: rule({ prefixes: ["webcrypto."] }),
+   * scr_webcrypto.c. A KeyObject's toCryptoKey on an untyped value
+   * dispatches through the KeyObject handle, whose conversion hook that
+   * unit installs, so naming the method selects the unit too. */
+  webcrypto: rule({
+    prefixes: ["webcrypto."],
+    expr: (node) => node.kind === "dynInvoke" && node.method === "toCryptoKey",
+  }),
   /** scr_x509.c: the X509Certificate fields beyond the validity window and
    * fingerprint, which stay in scr_lib.c. */
   x509: rule({

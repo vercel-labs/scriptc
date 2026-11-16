@@ -5988,6 +5988,9 @@ const DYN_STRING_PROTO_ONLY_NAMES = new Set([
  * is-not-a-function where the kind's prototype lacks the name, and
  * throws the 'not supported yet' Error on real-but-unimplemented pairs. */
 const DYN_DISPATCH_METHODS = new Set([
+  // KeyObject.prototype's conversion dispatches on the handle, which has no
+  // stored member value to read (scr_lib.c/scr_pki.c reach it).
+  "toCryptoKey",
   "toFixed",
   "toExponential",
   "segment",

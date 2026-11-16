@@ -2,6 +2,7 @@
 // the call takes, in byte and object mode, for every constructor (an explicit
 // highWaterMark still wins), and validates its value with ERR_OUT_OF_RANGE.
 import {
+  Duplex,
   PassThrough,
   Readable,
   Transform,
@@ -41,6 +42,13 @@ log.push(`readable ${bytes.readableHighWaterMark} object ${objects.readableHighW
 log.push(`writable ${sink.writableHighWaterMark} object ${objectSink.writableHighWaterMark}`);
 log.push(`transform ${transform.readableHighWaterMark}/${transform.writableHighWaterMark} pass ${pass.readableHighWaterMark}/${pass.writableHighWaterMark}`);
 log.push(`explicit ${explicit.readableHighWaterMark} early still ${early.readableHighWaterMark}`);
+
+// Duplex.from(promise) takes the object default; the async-function channel
+// keeps duplexify.js's own highWaterMark of 1.
+const fromPromise = Duplex.from(Promise.resolve("p"));
+log.push(`duplex promise ${fromPromise.readableObjectMode} ${fromPromise.readableHighWaterMark}/${fromPromise.writableHighWaterMark}`);
+const fromAsync = Duplex.from(async function* () { yield "a"; });
+log.push(`duplex asyncfn ${fromAsync.readableObjectMode} ${fromAsync.readableHighWaterMark}/${fromAsync.writableHighWaterMark}`);
 
 shape("negative", () => setDefaultHighWaterMark(false, -1));
 shape("fraction", () => setDefaultHighWaterMark(false, 1.5));

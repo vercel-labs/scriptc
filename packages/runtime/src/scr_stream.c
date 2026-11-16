@@ -5621,8 +5621,10 @@ static void scr_dupx_promise_entry(ScrFiber *fiber, void *arg) {
 /* The readable Duplexify over a boxed promise (moves boxed). +1. */
 static ScrStream *scr_dupx_from_boxed(ScrDyn *boxed) {
   ScrClosure *read = scr_closure_new((void *)&scr_dupx_noop_read, 0);
-  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, true, false, read,
-                                       &scr_dupx_noop_read, NULL, NULL, NULL, NULL, NULL, NULL);
+  ScrStream *d = scr_stream_new_duplex(scr_stream_get_default_hwm(true),
+                                       scr_stream_get_default_hwm(true), true, true, true, true,
+                                       false, read, &scr_dupx_noop_read, NULL, NULL, NULL, NULL,
+                                       NULL, NULL);
   scr_stream_set_object_mode(d, true, true);
   d->cls = "Duplexify";
   ScrDupxPromise *ctx = malloc(sizeof *ctx);

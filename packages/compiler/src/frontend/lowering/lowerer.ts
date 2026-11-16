@@ -1,4 +1,5 @@
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
+import { writeFileSync } from "node:fs";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -1216,6 +1217,11 @@ export interface LowerResult {
    * statements in the module) — off the build, on the coverage report. */
   runtimeFences: ScrDiagnostic[];
   stats: LowerStats;
+  /** With unit reuse: the emitted-function names this build lowered rather
+   * than applied. Absent when it applied every record or used no unit store.
+   * A per-unit consumer keys its cache by this set instead of hashing every
+   * function's IR. */
+  changedUnits?: readonly string[];
   /** --provenance-sources only: per-file statement attribution (the
    * coverage report aggregates it per provenance package). */
   statsByFile?: Map<string, { total: number; failed: number }>;
@@ -15220,6 +15226,7 @@ export class Lowerer {
             note: (name, record, applied, files) => {
               const file = fileOfUnit(name);
               if (file !== null) reuse.note(name, file, record, applied, files);
+              else reuse.noteUnfiled(name, applied);
             },
           };
     const recordLines: string[] = [];
@@ -15253,8 +15260,10 @@ export class Lowerer {
           try {
             const fn = lowerUnitBody(name);
             if (fn) loweredUnits.set(name, fn);
+            reuse?.noteUnfiled(name, false);
             relieveHeapPressure();
           } catch (e) {
+            reuse?.noteUnfiled(name, false);
             if (!(e instanceof PoisonError)) throw e;
           }
         }
@@ -15424,11 +15433,19 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
+    const changedUnits = reuse === null ? undefined : reuse.changedUnits();
+    const changedDump = process.env["SCRIPTC_UNIT_CHANGED_DUMP"];
+    if (changedUnits !== undefined && changedDump !== undefined && changedDump !== "")
+      writeFileSync(changedDump, JSON.stringify(changedUnits));
+    const finished = withStructureSharing(() =>
+      this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
+    );
     return {
       reachable,
-      result: withStructureSharing(() =>
-        this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
-      ),
+      result:
+        changedUnits === undefined || changedUnits.length === 0
+          ? finished
+          : { ...finished, changedUnits },
     };
   }
 

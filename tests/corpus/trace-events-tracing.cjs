@@ -62,3 +62,34 @@ churn.enable();
 console.log('churn re-enabled:', te.getEnabledCategories());
 churn.disable();
 console.log('churn off again:', String(te.getEnabledCategories()));
+
+// The categories array stays alive under the reads that validate it: an
+// element answered by an inherited getter can remove options.categories,
+// dropping the object's only reference while later elements are still read.
+class InheritedCategories extends Array {
+  get 0() {
+    delete getterOptions.categories;
+    return 'node';
+  }
+}
+const getterOptions = {};
+getterOptions.categories = (() => {
+  const categories = new Array(2);
+  categories[1] = 42;
+  Object.setPrototypeOf(categories, InheritedCategories.prototype);
+  return categories;
+})();
+let getterError = null;
+try {
+  te.createTracing(getterOptions);
+} catch (error) {
+  getterError = error;
+}
+console.log(
+  'categories getter:',
+  getterError === null ? 'none' : getterError.code,
+  '|',
+  getterError === null ? '' : getterError.message,
+  '| deleted:',
+  !('categories' in getterOptions),
+);

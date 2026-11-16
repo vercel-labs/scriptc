@@ -2812,13 +2812,21 @@ ScrDyn *scr_te_create(ScrDyn *options) {
     scr_dyn_arg_type_fail("options", "of type object", options);
     return NULL;
   }
-  /* scr_dyn_obj_get borrows: only the undefined stand-in is ours to free. */
+  /* scr_dyn_obj_get borrows: only the undefined stand-in is ours to free.
+   * The array itself is retained rather than borrowed: the element reads
+   * below run program code (an index the array does not own is answered
+   * through its prototype chain), and a getter there can remove
+   * options.categories — the object's reference — leaving the array dead
+   * under the reads that follow. */
   ScrDyn *cats = scr_dyn_obj_get(options, "categories", 10);
   bool cats_owned = false;
   if (cats == NULL) {
     if (scr_exc_pending()) return NULL;
     /* An absent member reads as undefined, which is not an Array. */
     cats = scr_dyn_retain(scr_dyn_undefined());
+    cats_owned = true;
+  } else {
+    cats = scr_dyn_retain(cats);
     cats_owned = true;
   }
   if (cats->kind != SCR_DYN_ARR) {

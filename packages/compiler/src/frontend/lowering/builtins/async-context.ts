@@ -1,4 +1,5 @@
 import { isBuiltinClassInstance } from "./receiver-types.js";
+import { withIgnoredArguments } from "./call-arguments.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -8,7 +9,6 @@ import {
   DYN,
   F64,
   type IrExpr,
-  type IrStmt,
   STRING,
   type SrcLoc,
   VOID,
@@ -146,37 +146,15 @@ export function lowerDiagnosticsChannelMethodCall(
     // Surplus arguments are evaluated and ignored, as Node's publish(…) is;
     // JavaScript evaluates the receiver, then the arguments left to right,
     // so their side effects run after the receiver and message and before
-    // the call itself.
-    const extra = call.arguments.nodes.slice(1);
-    if (extra.length === 0)
-      return { kind: "libCall", fn: "dc.publish", args: [receiver, msg], type: VOID, loc };
-    const recvLocal = lowerer.declareHiddenLocal("%channelReceiver", F64);
-    const msgLocal = lowerer.declareHiddenLocal("%channelMessage", DYN);
-    const result: IrExpr = {
-      kind: "libCall",
-      fn: "dc.publish",
-      args: [
-        { kind: "varRef", localId: recvLocal.id, type: F64, loc },
-        { kind: "varRef", localId: msgLocal.id, type: DYN, loc },
-      ],
-      type: VOID,
-      loc,
-    };
-    return {
-      kind: "seqExpr",
-      stmts: [
-        { kind: "varDecl", localId: recvLocal.id, init: receiver, loc },
-        { kind: "varDecl", localId: msgLocal.id, init: msg, loc },
-        ...extra.map((arg): IrStmt => ({
-          kind: "exprStmt",
-          expr: lowerer.lowerExpr(arg),
-          loc: locOf(arg),
-        })),
-      ],
-      result,
-      type: VOID,
-      loc,
-    };
+    // the call itself. withIgnoredArguments stages the used values and
+    // drops an ignored `null`/`undefined` (a bare unitLit is not a valid
+    // statement) and refuses a spread the way the other builtin calls do.
+    return withIgnoredArguments(
+      lowerer,
+      [receiver, msg],
+      call.arguments.nodes.slice(1),
+      (args): IrExpr => ({ kind: "libCall", fn: "dc.publish", args, type: VOID, loc }),
+    );
   }
   if ((name === "subscribe" || name === "unsubscribe") && call.arguments.nodes.length <= 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);

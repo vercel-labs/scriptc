@@ -69,6 +69,17 @@ const orderSurplus = () => {
 orderReceiver().publish(orderMessage(), orderSurplus());
 console.log(publishOrder.join(','));
 
+// A surplus argument that is null or undefined has no effect to keep, but it
+// is still an argument: publish must compile (a bare unit value is not a
+// valid statement) and the ignored values change nothing, while the surplus
+// arguments around them still evaluate in order.
+const unitOrder = [];
+const units = dc.channel('audit:units');
+const unitSurplus = () => unitOrder.push('surplus');
+units.publish('a', null);
+units.publish('b', undefined, unitSurplus(), null, undefined);
+console.log('unit surplus:', unitOrder.join(','), '| subscribers:', units.hasSubscribers);
+
 // Duplicate entries are separate; one unsubscribe removes the first.
 const ch = dc.channel('audit:dup');
 const seen = [];

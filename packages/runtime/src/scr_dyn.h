@@ -221,6 +221,7 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
   X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
+  X(STAT_WATCHER, 103) /* fs.watchFile's StatWatcher (scr_watch_file.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -270,6 +271,13 @@ typedef enum {
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
+  Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
+  Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
+  Y(SQLITE_SESSION) /* node:sqlite Session (scr_sqlite.c) */ \
+  Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
+  Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
+  Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
@@ -1392,6 +1400,9 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
+/* Whether key is Symbol.iterator (false before the symbol unit registered
+ * it). Handle symbol_get ops outside that unit use it for their iterators. */
+bool scr_dyn_is_iterator_symbol(const ScrDyn *key);
 /* Symbol.for('nodejs.util.inspect.custom'): the symbol unit installs it
  * when the registry creates it; NULL (borrowed) until then. */
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key);
@@ -1451,6 +1462,12 @@ double scr_dyn_collection_iterator_index(const ScrDyn *iterator);
  * than 2 and 3) and the index its next step reads from. */
 void scr_dyn_native_iterator_state(const ScrDyn *iterator, unsigned *kind, unsigned *selection,
                                    ScrMap **collection, double *index);
+/* For util.inspect: a retained (+1) reference to the collection a Map or Set
+ * iterator reads, or NULL once the iterator is exhausted. A render invokes
+ * program code between entries, and that code can consume the iterator, which
+ * drops the iterator's own reference to the collection; a render that keeps
+ * reading the collection holds it through this accessor. */
+ScrDyn *scr_dyn_native_iterator_source(const ScrDyn *iterator);
 /* A compiled program that boxes generators and calls iterator helpers on
  * untyped values registers the checked functions that read a generator
  * capsule's next and return methods (each takes the capsule). The
@@ -1582,6 +1599,9 @@ ScrDyn *scr_dyn_new_typed_ref_observed(
 bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
+bool scr_dyn_typed_ref_brand_is_key(const ScrDyn *d, const ScrStr *type_key);
+bool scr_dyn_prototypes_replaced(void);
+bool scr_dyn_prototype_replaced(const ScrDyn *d);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
 /* Record views (scr_json.c): a checked conversion's view of the record a
  * capsule holds, or NULL. */

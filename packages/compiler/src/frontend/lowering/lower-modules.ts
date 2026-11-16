@@ -6,7 +6,6 @@ import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
 import { closedIslandInitLoad, isClosedIslandStatement } from "./closed-island-init.js";
 import { staticString } from "./builtins/module-resolution.js";
-import { extendsElementOf } from "../heritage-elements.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -18,7 +17,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
-import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isVoidLiteralCast } from "../js-void-initializers.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
@@ -74,6 +73,7 @@ import { markRequireEarlyBindings } from "./require-initialization.js";
 import {
   cjsConditionalAliasOf,
   cjsConditionalWholeExportTargetsOf,
+  cjsExportIsRuntimeOptional,
   cjsExportValueByName,
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
@@ -191,9 +191,14 @@ import {
   decoratorNodesOf,
   genericIfaceBindingKeepsClass,
   guaranteedDecorationThrow,
-  storedClassValueType,
+  computedHeritageOf,
+  lowerComputedClassHeritage,
 } from "./lower-classes.js";
-import { isMixinFnBinding, mixinResultBindingClassOf } from "./lower-mixins.js";
+import {
+  isMixinFnBinding,
+  mixinInstantiationNewType,
+  mixinResultBindingClassOf,
+} from "./lower-mixins.js";
 import { cjsModuleRef, cjsModuleRegistryPrelude } from "./lower-node-module.js";
 import { forkTargetPaths } from "../fork-target.js";
 import { workerTargetPaths } from "../worker-target.js";
@@ -595,10 +600,16 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
   const computed = new Set<ts.ClassDeclaration>();
   for (const fp of parts)
     for (const decl of fp.classDecls) {
-      const heritage = decl.heritageClauses?.nodes.find(
-        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-      )?.types?.nodes[0]?.expression;
-      if (heritage && ts.isCallExpression(heritage) && !builtinRequireBaseOf(lowerer, heritage))
+      // A conditional heritage selects between class values at run time
+      // (`class X extends (config.form ? tagged(Base) : Base)`), the same
+      // shape a call heritage has: the base is a value the class statement
+      // itself evaluates, so the class collects after its heritage lowers.
+      const heritage = computedHeritageOf(decl);
+      if (
+        heritage &&
+        (ts.isCallExpression(heritage) || ts.isConditionalExpression(heritage)) &&
+        !builtinRequireBaseOf(lowerer, heritage)
+      )
         computed.add(decl);
     }
   // Descendants need the computed ancestor's completed layout before
@@ -675,62 +686,28 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     const previousSink = lowerer.diagSink;
     const deferred: import("../../diagnostics/diagnostic.js").ScrDiagnostic[] = [];
     lowerer.diagSink = deferred;
-    const expression = extendsElementOf(decl)!.expression;
+    const expression = computedHeritageOf(decl)!;
     const context = newFnCtx(false, null, null, DYN);
     lowerer.fnStack.push(context);
+    let heritageFailed = false;
     try {
-      let value = lowerer.lowerExpr(expression);
-      const known = value.type.kind === "dyn" ? storedClassValueType(lowerer, expression) : null;
-      if (known?.kind === "classval") value = lowerer.coerceToExpected(value, known);
-      if (value.type.kind === "dyn" || value.type.kind === "func") {
-        const name = `%class.base.${lowerer.classNamer(decl)}`;
-        const loc = locOf(expression);
-        lowerer.liftedFns.push({
-          name,
-          params: [],
-          returnType: value.type,
-          locals: context.locals,
-          body: [{ kind: "return", value, loc }],
-          loc,
-        });
-        lowerer.computedCallableBases.set(decl, {
-          kind: "call",
-          callee: name,
-          args: [],
-          type: value.type,
-          loc,
-        });
-      }
-      if (value.type.kind === "classval") {
-        const classInfo = lowerer.classes.get(value.type.className);
-        if (classInfo) {
-          const name = `%class.base.${lowerer.classNamer(decl)}`;
-          const loc = locOf(expression);
-          lowerer.liftedFns.push({
-            name,
-            params: [],
-            returnType: value.type,
-            locals: context.locals,
-            body: [{ kind: "return", value, loc }],
-            loc,
-          });
-          lowerer.computedClassBases.set(lowerer.classNamer(decl), {
-            value: { kind: "call", callee: name, args: [], type: value.type, loc },
-            classInfo,
-          });
-        }
-      }
+      lowerComputedClassHeritage(lowerer, decl, expression, context);
     } catch (error) {
       if (!(error instanceof PoisonError)) throw error;
+      heritageFailed = true;
     } finally {
       lowerer.fnStack.pop();
       lowerer.diagSink = previousSink;
     }
-    lowerer.diagSink = deferred;
-    try {
-      lowerer.collectClassShape(decl);
-    } finally {
-      lowerer.diagSink = previousSink;
+    // A heritage the diagnostic refused has no base to collect against: the
+    // class reports that one diagnostic, and its uses inherit the blocker.
+    if (!heritageFailed) {
+      lowerer.diagSink = deferred;
+      try {
+        lowerer.collectClassShape(decl);
+      } finally {
+        lowerer.diagSink = previousSink;
+      }
     }
     if (symbol && deferred.length) {
       lowerer.deferredDiags.set(symbol, [
@@ -1900,11 +1877,18 @@ function registerCjsConditionalWholeExportGlobals(
         lowerer.cjsModuleExportSymbol(first.req.dep, name);
       if (symbol === undefined) continue;
       const strict = lowerer.checker.getTypeOfSymbol(symbol);
-      const t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, first.assign, strict);
+      let t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, first.assign, strict);
       if (!t || t.kind === "void") {
         lowerer.badType(first.assign, strict);
         continue;
       }
+      // A branch table that may finish without assigning the member leaves
+      // it absent from this module's exports object too: the slot holds the
+      // undefined arm, so the chosen branch's own slot converts into it.
+      const mayBeAbsent = targets.some((entry) =>
+        cjsExportIsRuntimeOptional(lowerer, entry.req.dep, name),
+      );
+      if (mayBeAbsent) t = cjsMaybeAbsentExportType(lowerer, t);
       // Modules that re-export the same tables share the checker's
       // synthesized member symbols, so each module's slot is keyed by the
       // module (and its statements and importers look it up that way). The
@@ -1912,8 +1896,13 @@ function registerCjsConditionalWholeExportGlobals(
       // the first module to register a shared symbol owns it.
       const g: IrGlobal = { id: `%g.${tag}%export.${name}`, name, type: t, mutable: false };
       slots.set(name, g);
+      if (mayBeAbsent) {
+        lowerer.runtimeOptionalGlobals.add(g);
+        noteVarGlobalEntryInit(lowerer, sf, g);
+      }
       if (lowerer.globalsBySymbol.has(symbol)) continue;
       lowerer.globalsBySymbol.set(symbol, g);
+      if (mayBeAbsent) lowerer.runtimeOptionalBindingTypes.set(symbol, g.type);
       for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
     } catch (e) {
       if (!(e instanceof PoisonError)) throw e;
@@ -2059,6 +2048,7 @@ function registerCjsExportGlobal(
   nameNode: ts.Node,
   name: string,
   typeNode: ts.Node,
+  mayBeAbsent = false,
 ): void {
   const diagsBefore = lowerer.diags.length;
   // The module's own member storage by name: an importer of a module whose
@@ -2096,6 +2086,9 @@ function registerCjsExportGlobal(
       const shape = lowerer.shapes.get(t.shapeId);
       if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) t = DYN;
     }
+    // A member some path leaves unassigned holds undefined where no write
+    // ran, exactly what Node's exports object answers there.
+    if (mayBeAbsent) t = cjsMaybeAbsentExportType(lowerer, t);
     // An immutable export source shares its live storage and native
     // callable ABI — while this write is the export's only one. A second
     // write (another arm of the same conditional, a later statement) would
@@ -2110,7 +2103,9 @@ function registerCjsExportGlobal(
         const vSym = lowerer.checker.getSymbolAtLocation(rhs);
         const vG = vSym && lowerer.globalsBySymbol.get(vSym);
         if (vG) {
-          if (!vG.mutable && cjsExportMemberWriteCount(lowerer, sf, name) === 1) {
+          // An absent-capable member never shares the source's storage: the
+          // source's slot has no undefined arm to hold the unassigned state.
+          if (!mayBeAbsent && !vG.mutable && cjsExportMemberWriteCount(lowerer, sf, name) === 1) {
             lowerer.globalsBySymbol.set(symbol, vG);
             for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, vG);
             note(vG);
@@ -2119,12 +2114,20 @@ function registerCjsExportGlobal(
           const g: IrGlobal = {
             id: `%g.${tag}%export.${name}`,
             name,
-            type: vG.mutable ? vG.type : t,
+            type: vG.mutable
+              ? mayBeAbsent
+                ? cjsMaybeAbsentExportType(lowerer, vG.type)
+                : vG.type
+              : t,
             mutable: false,
           };
           lowerer.globalsBySymbol.set(symbol, g);
           for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
           lowerer.globalsList.push(g);
+          if (mayBeAbsent) {
+            noteVarGlobalEntryInit(lowerer, sf, g);
+            noteCjsAbsentCapableExport(lowerer, symbol, g);
+          }
           note(g);
           return;
         }
@@ -2136,6 +2139,12 @@ function registerCjsExportGlobal(
     // the same declaration — key the node too (globalOf's fallback).
     for (const d of symbol.declarations) lowerer.globalsByDeclNode.set(d, g);
     lowerer.globalsList.push(g);
+    // The unassigned state is undefined, from module entry (the write that
+    // may not run leaves this value in place).
+    if (mayBeAbsent) {
+      noteVarGlobalEntryInit(lowerer, sf, g);
+      noteCjsAbsentCapableExport(lowerer, symbol, g);
+    }
     note(g);
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;
@@ -2176,12 +2185,19 @@ function registerCjsConditionalAliasGlobals(
           // synthesize an export symbol for keeps the first table's member
           // type; anything unmappable rides checked-dynamic storage.
           const exportSymbol = lowerer.cjsModuleExportSymbol(sf, name);
-          const t =
+          let t =
             (exportSymbol === undefined
               ? null
               : lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(exportSymbol))) ??
             cjsExportValueByName(lowerer, alias.writes[0]!.req.dep, name, decl)?.type ??
             DYN;
+          // A branch table that may finish without assigning the member
+          // leaves it absent from this slot too, so the chosen branch's own
+          // slot converts into it.
+          const mayBeAbsent = alias.writes.some((write) =>
+            cjsExportIsRuntimeOptional(lowerer, write.req.dep, name),
+          );
+          if (mayBeAbsent) t = cjsMaybeAbsentExportType(lowerer, t);
           const g: IrGlobal = {
             id: `%g.${tag}%alias.${decl.name.text}.${name}`,
             name: `${decl.name.text}.${name}`,
@@ -2190,6 +2206,10 @@ function registerCjsConditionalAliasGlobals(
           };
           slots.set(name, g);
           lowerer.globalsList.push(g);
+          if (mayBeAbsent) {
+            lowerer.runtimeOptionalGlobals.add(g);
+            noteVarGlobalEntryInit(lowerer, sf, g);
+          }
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
           deferJsCollectionDiags(lowerer, sf, diagsBefore);
@@ -2216,6 +2236,158 @@ function registerCjsConditionalAliasGlobals(
   }
 }
 
+/** The if statements whose arms contain `node`, innermost first, when the
+ * node is evaluated as part of the module's own initializer: every step to
+ * the source file either evaluates unconditionally (a statement-list entry,
+ * an assignment's right side, a comma operand, a call's argument, an
+ * immediately-invoked function's body) or is an `if` arm the member's own
+ * writes cover. Null when a step could skip it — a loop, a switch, a try,
+ * a `&&`/`||`/`??` operand, a conditional expression, or a function nothing
+ * invokes at this position. */
+function cjsInitPathOf(node: ts.Node, sf: ts.SourceFile): ts.IfStatement[] | null {
+  const ifs: ts.IfStatement[] = [];
+  let cur: ts.Node = node;
+  for (;;) {
+    const parent: ts.Node | undefined = cur.parent;
+    if (parent === undefined) return null;
+    if (parent === sf) return ifs;
+    if (ts.isIfStatement(parent)) {
+      if (parent.thenStatement !== cur && parent.elseStatement !== cur) return null;
+      ifs.push(parent);
+      cur = parent;
+      continue;
+    }
+    if (
+      ts.isBlock(parent) ||
+      ts.isExpressionStatement(parent) ||
+      ts.isVariableStatement(parent) ||
+      ts.isVariableDeclarationList(parent) ||
+      ts.isParenthesizedExpression(parent)
+    ) {
+      cur = parent;
+      continue;
+    }
+    if (ts.isVariableDeclaration(parent)) {
+      if (parent.initializer !== cur) return null;
+      cur = parent;
+      continue;
+    }
+    if (ts.isBinaryExpression(parent)) {
+      const op = parent.operatorToken.kind;
+      if (
+        (op === ts.SyntaxKind.EqualsToken && parent.right === cur) ||
+        op === ts.SyntaxKind.CommaToken
+      ) {
+        cur = parent;
+        continue;
+      }
+      return null;
+    }
+    if (ts.isCallExpression(parent)) {
+      if (parent.arguments.nodes.some((arg) => arg === cur)) {
+        cur = parent;
+        continue;
+      }
+      if (withoutParentheses(cur as ts.Expression) === withoutParentheses(parent.expression)) {
+        cur = parent;
+        continue;
+      }
+      return null;
+    }
+    if (ts.isFunctionLike(parent)) {
+      if (!ts.isFunctionExpression(parent) && !ts.isArrowFunction(parent)) return null;
+      cur = parent;
+      continue;
+    }
+    return null;
+  }
+}
+
+/** Whether every terminal arm of the if/else chain starting at `head`
+ * contains one of the member's `writes`. */
+function cjsIfCoversWrites(head: ts.IfStatement, writes: readonly ts.Node[]): boolean {
+  const arms: ts.Node[] = [];
+  let cur = head;
+  for (;;) {
+    arms.push(cur.thenStatement);
+    const otherwise = cur.elseStatement;
+    if (otherwise === undefined) return false;
+    if (ts.isIfStatement(otherwise)) {
+      cur = otherwise;
+      continue;
+    }
+    arms.push(otherwise);
+    break;
+  }
+  return arms.every((arm) =>
+    writes.some((write) => {
+      for (let p: ts.Node | undefined = write.parent; p !== undefined; p = p.parent)
+        if (p === arm) return true;
+      return false;
+    }),
+  );
+}
+
+/** Whether a `return` in a statement list around `node` can leave the
+ * initializer before the write runs (an early return ends a CommonJS
+ * module's evaluation, and a require then answers the partial exports). */
+function cjsEarlyReturnBefore(node: ts.Node, sf: ts.SourceFile): boolean {
+  for (let cur: ts.Node = node; cur !== sf;) {
+    const parent: ts.Node | undefined = cur.parent;
+    if (parent === undefined) return false;
+    if (parent === sf || ts.isBlock(parent)) {
+      const list = parent === sf ? sf.statements.nodes : (parent.statements?.nodes ?? []);
+      const at = list.indexOf(cur as never);
+      for (let i = 0; i < at; i++) if (ts.isReturnStatement(list[i]!)) return true;
+    }
+    cur = parent;
+  }
+  return false;
+}
+
+/** Whether the module's own evaluation assigns the export member these
+ * writes name on every path that reaches the end of its body: each write
+ * sits where the initializer evaluates, every arm of the if/else chain
+ * around it writes the member too, and no earlier `return` leaves first.
+ * A member some path leaves unassigned is absent from the exports object
+ * there, and a read of it is undefined. */
+function cjsMemberAlwaysAssigned(
+  writes: readonly ts.BinaryExpression[],
+  sf: ts.SourceFile,
+): boolean {
+  if (writes.length === 0) return false;
+  const ifs = new Set<ts.IfStatement>();
+  for (const write of writes) {
+    const path = cjsInitPathOf(write, sf);
+    if (path === null) return false;
+    if (cjsEarlyReturnBefore(write, sf)) return false;
+    for (const branch of path) ifs.add(branch);
+  }
+  for (const branch of ifs) if (!cjsIfCoversWrites(branch, writes)) return false;
+  return true;
+}
+
+/** Mark an export member's slot as runtime-optional: its storage holds the
+ * undefined arm where no write ran, even though the checker's type for the
+ * member names no undefined (its JavaScript assigns the member on some
+ * paths only). Presence tests then read the storage tag instead of trusting
+ * that type, exactly as they do for an unchecked indexed read. */
+function noteCjsAbsentCapableExport(lowerer: Lowerer, symbol: ts.Symbol, g: IrGlobal): void {
+  lowerer.runtimeOptionalGlobals.add(g);
+  lowerer.runtimeOptionalBindingTypes.set(symbol, g.type);
+}
+
+/** The slot type of an export member the module may leave unassigned: the
+ * member's own type with the undefined arm Node's exports object holds
+ * where no write ran (checked-dynamic where the undefined arm has no union
+ * home). */
+function cjsMaybeAbsentExportType(lowerer: Lowerer, t: IrType): IrType {
+  if (t.kind === "dyn") return t;
+  if (t.kind === "void" || isUnitType(t) || t.kind === "generator") return DYN;
+  if (t.kind === "union") return lowerer.withUndefinedArmOf(t) ?? DYN;
+  return lowerer.withUndefinedArm(t);
+}
+
 /** Register the export member globals of writes that are not top-level
  * export statements: `if (cond) { exports.now = … } else { exports.now = … }`
  * (scheduler's shape), writes inside functions, and loops. Node's exports
@@ -2224,7 +2396,10 @@ function registerCjsConditionalAliasGlobals(
  * every requirer reads, so each name the file writes gets the storage its
  * write already looks for (cjsExportMemberWriteGlobalOf). The write itself
  * assigns the global where it runs, so only the branch that executed leaves
- * a value — Node's answer, not a merge of every path. */
+ * a value — Node's answer, not a merge of every path. A member whose writes
+ * need not run before the module ends (a branch that may not be taken, a
+ * function nothing calls during evaluation) is absent there, so its slot
+ * starts out holding undefined. */
 function registerNestedCjsExportMembers(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -2239,6 +2414,7 @@ function registerNestedCjsExportMembers(
   // (with the discard rules that follow a later `module.exports =`), and a
   // second pass here would resurrect a member Node discards.
   const owned = new Set<ts.Node>(topStmts.filter((stmt) => cjsExportAssignmentOf(stmt) !== null));
+  const writesByName = new Map<string, { name: ts.Identifier; writes: ts.BinaryExpression[] }>();
   ts.walkPreorder(sf, (node) => {
     if (
       !ts.isBinaryExpression(node) ||
@@ -2253,9 +2429,24 @@ function registerNestedCjsExportMembers(
     const recv = node.left.expression;
     if (!isCjsExportsIdentifier(lowerer, recv) && !isCjsModuleExports(lowerer, recv))
       return undefined;
-    registerCjsExportGlobal(lowerer, sf, tag, node.left.name, node.left.name.text, node.right);
+    const name = node.left.name.text;
+    const entry = writesByName.get(name);
+    if (entry === undefined) writesByName.set(name, { name: node.left.name, writes: [node] });
+    else entry.writes.push(node);
     return undefined;
   });
+  for (const { name, writes } of writesByName.values()) {
+    const first = writes[0]!;
+    registerCjsExportGlobal(
+      lowerer,
+      sf,
+      tag,
+      name,
+      name.text,
+      first.right,
+      !cjsMemberAlwaysAssigned(writes, sf),
+    );
+  }
 }
 
 /** Whether the module keeps the exports object Node hands it: nothing
@@ -3489,6 +3680,20 @@ export function collectGlobals(
           )
             continue;
           let type = handleT ?? factoryType ?? (inferredJsCall ? DYN : lowerer.irTypeOf(nameNode));
+          // `const made = new V()` where V is a mixin RESULT binding: the
+          // checker types the value by the class expression the mixin body
+          // returns, but the binding holds the call site's INSTANTIATION
+          // (lowerVarDecl takes the same rule for locals —
+          // mixinInstantiationNewType).
+          if (
+            !decl.type &&
+            type.kind === "object" &&
+            ts.isIdentifier(decl.name) &&
+            nameNode === decl.name
+          ) {
+            const constructed = mixinInstantiationNewType(lowerer, decl);
+            if (constructed) type = constructed;
+          }
           // An initializer-less `let` without an annotation takes its
           // writes' type, as a function's local does (lowerVarDecl's own
           // binding path): `let stat; try { stat = lstatSync(".") } catch
@@ -4407,6 +4612,11 @@ export function lowerFileInit(
     const body = [...header, ...islandUnplaced, ...prelude];
     let at = 0;
     let funduleAt = 0;
+    // Mixin instantiations the statics list above already carries. One the
+    // program discovers LATER — a class expression's heritage lowers with
+    // its statement, after the list was built — is placed by the statement
+    // that builds it, and never twice.
+    const placedStatics = new Set<ClassInfo>();
     for (const stmt of stmts) {
       // `<=`: a mixin instantiation's position IS its statement's start
       // — its statics run mid-statement in JS (the call), before
@@ -4415,6 +4625,7 @@ export function lowerFileInit(
       // changes nothing for them.
       while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
         body.push(...lowerStaticsAt(statics[at]!));
+        if (statics[at]!.info) placedStatics.add(statics[at]!.info!);
         at++;
       }
       // A hoisted function member's property assignment runs where its
@@ -4444,10 +4655,23 @@ export function lowerFileInit(
         deferred ? [deferred] : lowerer.lowerStmts([stmt]),
       );
       if (lowerer.sharedInitFlags.size > 0) stmtIr.push(...sharedInitFlagStores(lowerer, stmt));
+      // Mixin instantiations created while THIS statement lowered (a class
+      // expression's heritage is such a call) evaluate at this statement,
+      // so their declaration-time code lands here, before the statement's
+      // own IR — the same point the statics list places them for a class
+      // declaration.
+      const lateStatics: IrStmt[] = [];
+      for (const c of lowerer.classes.values()) {
+        if (placedStatics.has(c) || c.mixinInstance?.statics === undefined) continue;
+        if (c.mixinInstance.statics.sf !== sf) continue;
+        if (c.mixinInstance.statics.pos > ts.tokenStartOfNode(stmt)) continue;
+        placedStatics.add(c);
+        lateStatics.push(...withClassInitFlag(lowerer, c, lowerer.lowerStaticFieldInits(c)));
+      }
       // Class EXPRESSIONS inside this statement queued their static
       // inits while it lowered: they land immediately before it — JS's
       // order for the supported whole-initializer positions.
-      body.push(...lowerer.pendingClassExprInits.splice(0), ...stmtIr);
+      body.push(...lateStatics, ...lowerer.pendingClassExprInits.splice(0), ...stmtIr);
     }
     while (at < statics.length) {
       body.push(...lowerStaticsAt(statics[at]!));

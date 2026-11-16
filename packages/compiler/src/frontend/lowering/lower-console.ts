@@ -24,8 +24,6 @@ import { type ConsoleMethodMember } from "./builtins/console.js";
 import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
 import { ensureBool } from "./lower-exprs.js";
 import {
-  formatRestValue,
-  formatStringConverts,
   heldFormatArgs,
   lowerConsoleInspectArg,
   lowerFormatCall,
@@ -33,6 +31,7 @@ import {
   lowerRuntimeFormat,
   lowerRuntimeInspectDir,
   runtimeFormatString,
+  formatStringConverts,
 } from "./lower-inspect.js";
 import { streamSidesOf } from "./lower-stream.js";
 import { programTouchesInspectTables } from "./inspect-tables.js";
@@ -45,7 +44,15 @@ import { programTouchesInspectTables } from "./inspect-tables.js";
  * formatted line, exactly Node's kWriteToConsole; the remaining Console
  * surface stays fenced like the global console's. */
 
-const OPTION_KEYS = new Set(["stdout", "stderr", "ignoreErrors", "groupIndentation"]);
+const OUTPUT_MEMBERS: ReadonlyMap<string, boolean> = new Map([
+  ["log", false],
+  ["info", false],
+  ["debug", false],
+  ["error", true],
+  ["warn", true],
+]);
+
+const OPTION_KEYS = new Set(["stdout", "stderr", "ignoreErrors"]);
 
 function isConsoleCtor(lowerer: Lowerer, callee: ts.Expression): boolean {
   if (ts.isIdentifier(callee)) {
@@ -69,21 +76,22 @@ function isUndefinedArg(node: ts.Expression | undefined): boolean {
 
 type Target = { fd: number } | { local: string; type: IrType };
 
-type OptionRole = "stdout" | "stderr" | "ignoreErrors" | "groupIndentation";
+type OptionRole = "stdout" | "stderr" | "ignoreErrors" | "groupIndentation" | "ignored";
 
-/** `new Console(stdout[, stderr][, ignoreErrors])` and
- * `new Console({ stdout, stderr, ignoreErrors, groupIndentation })`.
- * Arguments and option initializers evaluate in source order into hidden
- * locals before the handle exists (Node evaluates them before the
- * constructor body); an absent stderr shares stdout's target. The group
- * indentation is validated by the runtime like Node's validateInteger
- * (colorMode and inspectOptions stay refused: the inspect color and option
- * surfaces have no lowering). */
+/** `new Console(stdout[, stderr][, ignoreErrors])` and `new
+ * Console({ stdout, stderr, ignoreErrors })`. Arguments and option
+ * initializers evaluate in source order into hidden locals before the
+ * handle exists (Node evaluates them before the constructor body); an
+ * absent stderr shares stdout's target. */
 export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   if (!isConsoleCtor(lowerer, expr.expression)) return null;
   const loc = locOf(expr);
   const args = expr.arguments?.nodes ?? [];
   const entries: { role: OptionRole; node: ts.Expression | undefined }[] = [];
+  /** Effects of the arguments and options that run before the handle
+   * exists, in source order (Node evaluates them before its constructor
+   * body validates anything). */
+  const stmts: IrStmt[] = [];
   const first = args[0];
   if (first && ts.isObjectLiteralExpression(first)) {
     for (const prop of first.properties.nodes) {
@@ -99,12 +107,48 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         name = (prop.name as ts.Identifier).text;
         value = prop.name as ts.Identifier;
       }
-      if (name === null || value === null || !OPTION_KEYS.has(name)) {
+      if (name === null || value === null) {
         lowerer.noLowering(
-          "Console options other than stdout, stderr, ignoreErrors, and groupIndentation",
+          "this Console options form",
           prop,
-          "colorMode and inspectOptions have no lowering yet",
+          "spell the options as properties of one object literal",
         );
+      }
+      if (name === "colorMode") {
+        // Node accepts 'auto', true and false; 'auto' colors only a TTY's
+        // inspect output, which this runtime never styles (the same
+        // boundary as util.inspect's colors: true), so both non-color
+        // spellings lower identically.
+        if (
+          !(
+            value.kind === ts.SyntaxKind.FalseKeyword ||
+            (ts.isStringLiteral(value) && value.text === "auto")
+          )
+        ) {
+          lowerer.noLowering(
+            "Console colorMode other than 'auto' or false",
+            value,
+            "ANSI styling has no lowering — only 'auto' and false",
+          );
+        }
+        continue;
+      }
+      if (name === "groupIndentation") {
+        entries.push({ role: "groupIndentation", node: value });
+        continue;
+      }
+      if (!OPTION_KEYS.has(name)) {
+        if (name === "inspectOptions") {
+          lowerer.noLowering(
+            "Console inspectOptions",
+            value,
+            "the lowered members render with scriptc's inspect defaults; util.inspect's option knobs have no Console plumbing yet",
+          );
+        }
+        // Node destructures the known keys and ignores the rest. The
+        // unknown initializer still evaluates, in source order.
+        entries.push({ role: "ignored", node: value });
+        continue;
       }
       entries.push({ role: name as OptionRole, node: value });
     }
@@ -113,7 +157,6 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     entries.push({ role: "stderr", node: args[1] });
     entries.push({ role: "ignoreErrors", node: args[2] });
   }
-  const stmts: IrStmt[] = [];
   /** Node's constructor takes a target when `typeof stream.write ===
    * 'function'`. A value whose static type cannot carry one is rejected at
    * run time with ERR_CONSOLE_WRITABLE_STREAM (its expression still
@@ -155,7 +198,7 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
   let err: Target | null = null;
   let errBad = false;
   let ignore: IrExpr | null = null;
-  let group: IrExpr | null = null;
+  let groupIndent: IrExpr | null = null;
   for (const entry of entries) {
     const node = entry.node;
     if (isUndefinedArg(node)) {
@@ -168,7 +211,7 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         err = null;
         errBad = false;
       } else if (entry.role === "ignoreErrors") ignore = null;
-      else group = null;
+      else if (entry.role === "groupIndentation") groupIndent = null;
       continue;
     }
     if (entry.role === "stdout") {
@@ -176,25 +219,29 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
     } else if (entry.role === "stderr") {
       err = target(node!, "stderr");
       errBad = err === null;
-    } else if (entry.role === "ignoreErrors") {
+    } else if (entry.role === "groupIndentation") {
+      // Node's validateInteger runs in the runtime, after the stream
+      // checks (console.new takes the value as checked-dynamic).
+      const value = hoist(
+        lowerer,
+        stmts,
+        "%consoleGroupIndentation",
+        lowerer.lowerExprExpecting(node!, DYN),
+        loc,
+      );
+      groupIndent = value;
+    } else if (entry.role === "ignored") {
+      // Node destructures the known keys and ignores the rest; the
+      // unknown initializer still evaluates, in source order.
+      const value = lowerer.lowerExpr(node!);
+      if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc });
+    } else {
       // Node stores Boolean(ignoreErrors): any value is accepted, and only
       // a false one turns the error handling off.
       const value = ensureBool(lowerer, lowerer.lowerExpr(node!), node!);
       const local = lowerer.declareHiddenLocal("%consoleIgnoreErrors", BOOL);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
       ignore = varRef(local.id, BOOL, loc);
-    } else {
-      const value = lowerer.lowerExpr(node!);
-      if (value.type.kind !== "f64") {
-        lowerer.noLowering(
-          `groupIndentation of type '${lowerer.fmt(value.type)}'`,
-          node!,
-          "Node requires a number (an integer from 0 to 1000)",
-        );
-      }
-      const local = lowerer.declareHiddenLocal("%consoleGroupIndentation", value.type);
-      stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
-      group = varRef(local.id, value.type, loc);
     }
   }
   const writableError = (role: string): IrExpr =>
@@ -227,7 +274,7 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         fdOf(stdoutTarget),
         fdOf(stderrTarget),
         ignore ?? boolLit(true, loc),
-        group ?? numLit(2, loc),
+        groupIndent ?? dynUndefinedExpr(loc),
       ],
       type: DYN,
       loc,
@@ -253,15 +300,70 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
   return { kind: "seqExpr", stmts, result: varRef(handle.id, DYN, loc), type: DYN, loc };
 }
 
-/** `c.<member>(...)` on a stdlib-Console-typed receiver that is not the
- * global console object (that path keeps its direct lowering): the receiver
- * evaluates first, then the arguments, then the member — Node's own
- * Console.prototype methods, over the instance's counters, timers, and group
- * indentation (the runtime resolves the global console's handle to its
- * thread-local state and uses each instance's own otherwise). The output
- * members render util.format's one string and write it through
- * kWriteToConsole's indentation; the rest print through the same writer. */
+/** A Console instance's line from rendered console arguments
+ * (lowerConsoleArg's answers): strings verbatim, numbers in inspect's
+ * rendering (-0 prints "-0"), booleans spelled out, space-joined exactly
+ * like Node's formatter joins a rest-args call. */
+function instanceLine(lowerer: Lowerer, parts: readonly IrExpr[], loc: SrcLoc): IrExpr {
+  const texts = parts.map((part): IrExpr => {
+    if (part.type.kind === "f64")
+      return { kind: "libCall", fn: "insp.f64", args: [part], type: STRING, loc };
+    if (part.type.kind === "bool")
+      return {
+        kind: "ternary",
+        cond: part,
+        then: strLit("true", loc),
+        else_: strLit("false", loc),
+        type: STRING,
+        loc,
+      };
+    return part;
+  });
+  if (texts.length === 0) return strLit("", loc);
+  const joined: IrExpr[] = [];
+  texts.forEach((text, i) => {
+    if (i > 0) joined.push(strLit(" ", loc));
+    joined.push(text);
+  });
+  return joined.length === 1 ? joined[0]! : concat(joined, loc);
+}
+
+/** `c.log(...)` and the rest of the Console member surface on a
+ * stdlib-Console-typed receiver that is not the global console itself (that
+ * path keeps its direct console lowering): the receiver evaluates first,
+ * into one hidden local, then the member's arguments. The output members
+ * write one util.format rendering; the stateful members read and write the
+ * instance's own counters, timers and group indentation, and print to the
+ * instance's own stdout/stderr targets. */
 export function lowerConsoleInstanceCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const member = lowerConsoleInstanceMemberCall(lowerer, call, loc);
+  return member === null ? null : flattenSeq(member);
+}
+
+/** One flat sequence: a member lowering's own sequence is spliced in after
+ * the receiver's statement, so the emitted expression is a single seqExpr
+ * (the emitter reads the statements of a nested sequence inconsistently). */
+function flattenSeq(e: IrExpr): IrExpr {
+  if (e.kind !== "seqExpr") return e;
+  const stmts = [...e.stmts];
+  let result = e.result;
+  for (;;) {
+    const inner = result.kind === "seqExpr" ? flattenSeq(result) : result;
+    if (inner.kind !== "seqExpr") {
+      result = inner;
+      break;
+    }
+    stmts.push(...inner.stmts);
+    result = inner.result;
+  }
+  return { kind: "seqExpr", stmts, result, type: result.type, loc: e.loc };
+}
+
+function lowerConsoleInstanceMemberCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   loc: SrcLoc,
@@ -273,93 +375,49 @@ export function lowerConsoleInstanceCall(
   const sym = recvType.getAliasSymbol() ?? recvType.getSymbol();
   if (!sym || ts.symbolName(sym) !== "Console" || !lowerer.isStdlibSymbol(sym)) return null;
   const member = access.name.text;
-  const args = call.arguments.nodes;
   const receiver = lowerer.lowerExpr(access.expression);
   if (receiver.type.kind !== "dyn") return null;
-  const stmts: IrStmt[] = [];
-  // The receiver's own evaluation, before any argument (Node evaluates the
-  // callee's receiver first).
-  const inst = hoist(lowerer, stmts, "%consoleInst", receiver, loc);
-  const write = (text: IrExpr, toStderr: boolean): IrExpr => ({
+  const held = lowerer.declareHiddenLocal("%consoleInstance", DYN);
+  const stmts: IrStmt[] = [{ kind: "varDecl", localId: held.id, init: receiver, loc }];
+  const handle = (): IrExpr => varRef(held.id, DYN, loc);
+  const write = (stdout: boolean, parts: readonly IrExpr[], at: SrcLoc): IrExpr => ({
     kind: "libCall",
     fn: "console.write",
-    args: [inst, text, boolLit(toStderr, loc)],
+    args: [varRef(held.id, DYN, at), instanceLine(lowerer, parts, at), boolLit(!stdout, at)],
     type: VOID,
-    loc,
+    loc: at,
   });
-  const memberCall = (fn: IrLibFn, extra: IrExpr[], type: IrType): IrExpr => ({
+  const call_ = (fn: IrLibFn, args: IrExpr[], type: IrType, at: SrcLoc): IrExpr => ({
     kind: "libCall",
     fn,
-    args: [inst, ...extra],
+    args,
     type,
-    loc,
+    loc: at,
   });
-  const done = (result: IrExpr): IrExpr => seq(stmts, result, loc);
+
+  const outToStderr = member === "dirxml" ? false : OUTPUT_MEMBERS.get(member);
+  if (outToStderr !== undefined) {
+    return seq(stmts, write(!outToStderr, [lowerFormatCall(lowerer, call, loc, false)], loc), loc);
+  }
+
   switch (member) {
-    case "log":
-    case "info":
-    case "debug":
-    case "dirxml":
-      return done(write(lowerConsoleText(lowerer, call, "console.log", loc), false));
-    case "error":
-    case "warn":
-      return done(write(lowerConsoleText(lowerer, call, "console.error", loc), true));
-    case "trace":
-      // The stderr line "Trace[: args]" and the captured frames, scriptc's
-      // own frame text (SEMANTICS divergence 11) — as console.trace.
-      return done(
-        memberCall(
-          "console.instTrace",
-          [lowerConsoleText(lowerer, call, "console.trace", loc)],
-          VOID,
-        ),
-      );
-    case "group":
-    case "groupCollapsed": {
-      // The label line prints BEFORE the indentation grows.
-      if (args.length > 0) {
-        const text = lowerConsoleText(lowerer, call, `console.${member}`, loc);
-        stmts.push({ kind: "exprStmt", expr: write(text, false), loc });
-      }
-      return done(memberCall("console.instGroup", [numLit(1, loc)], VOID));
+    case "trace": {
+      // Node's Console.trace: the stderr line "Trace[: args]" and the
+      // captured frames, written to the instance's stderr as one chunk.
+      const text =
+        call.arguments.nodes.length === 0
+          ? strLit("", loc)
+          : lowerFormatCall(lowerer, call, loc, false);
+      return seq(stmts, call_("console.instTrace", [handle(), text], VOID, loc), loc);
     }
-    case "groupEnd":
-      evaluateIgnored(lowerer, args, stmts, loc);
-      return done(memberCall("console.instGroup", [numLit(-1, loc)], VOID));
-    case "count": {
-      const raw = rawLabel(lowerer, member, args[0]);
-      const rawRef = raw === null ? null : hoist(lowerer, stmts, "%consoleLabel", raw, loc);
-      evaluateIgnored(lowerer, args.slice(1), stmts, loc);
-      return done(memberCall("console.instCount", [labelText(rawRef, loc)], VOID));
-    }
-    case "countReset": {
-      const raw = rawLabel(lowerer, member, args[0]);
-      const rawRef = raw === null ? null : hoist(lowerer, stmts, "%consoleLabel", raw, loc);
-      evaluateIgnored(lowerer, args.slice(1), stmts, loc);
-      // Node looks the RAW label up (`counts.has(label)`): only string
-      // labels (and the default) ever reset.
-      const boxed: IrExpr =
-        rawRef === null
-          ? dynUndefinedExpr(loc)
-          : rawRef.type.kind === "dyn"
-            ? rawRef
-            : { kind: "dynFrom", value: rawRef, type: DYN, loc };
-      return done(emitWarning(memberCall("console.instCountReset", [boxed], STRING), loc));
-    }
-    case "time": {
-      const raw = rawLabel(lowerer, member, args[0]);
-      const rawRef = raw === null ? null : hoist(lowerer, stmts, "%consoleLabel", raw, loc);
-      evaluateIgnored(lowerer, args.slice(1), stmts, loc);
-      return done(
-        emitWarning(memberCall("console.instTime", [labelText(rawRef, loc)], STRING), loc),
-      );
-    }
-    case "timeEnd":
-    case "timeLog":
-      return lowerConsoleInstTimeLog(lowerer, call, inst, member, loc, stmts, done);
     case "assert":
-      return lowerConsoleInstAssert(lowerer, call, write, loc, stmts, done);
+      return seq(
+        stmts,
+        lowerConsoleAssert(lowerer, call, loc, (parts, at) => write(false, parts, at)),
+        loc,
+      );
     case "dir": {
+      const args = call.arguments.nodes;
       const [valueNode, optionsNode, ...rest] = args;
       const rendered =
         valueNode === undefined
@@ -367,250 +425,120 @@ export function lowerConsoleInstanceCall(
           : programTouchesInspectTables(lowerer)
             ? lowerRuntimeInspectDir(lowerer, valueNode, optionsNode, args.length, loc)
             : lowerInspectValue(lowerer, valueNode, optionsNode, loc, true);
-      if (rest.length === 0) return done(write(rendered, false));
       const text = hoist(lowerer, stmts, "%consoleDir", rendered, loc);
       evaluateIgnored(lowerer, rest, stmts, loc);
-      return done(write(text, false));
+      return seq(stmts, write(true, [text], loc), loc);
     }
     case "table":
-      return done(lowerConsoleTable(lowerer, call, loc, inst));
-    case "clear":
-      evaluateIgnored(lowerer, args, stmts, loc);
-      return done(memberCall("console.instClear", [], VOID));
-  }
-  return lowerer.noLowering(
-    `Console.${member}`,
-    call,
-    "log, info, debug, error, warn, dir, dirxml, trace, assert, count, countReset, time, timeEnd, timeLog, group, groupCollapsed, groupEnd, table, and clear are the lowered Console members",
-  );
-}
-
-/** util.format's one string for a Console method's arguments (the instance
- * path: kWriteToConsole receives formatWithOptions' output, not the
- * ScrLogArg protocol the global intrinsics take). Literal format strings and
- * run-time format strings follow lowerConsoleOutput; everything else is the
- * space-joined rest-arg rendering. */
-function lowerConsoleText(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  surface: string,
-  loc: SrcLoc,
-): IrExpr {
-  const nodes = expr.arguments.nodes;
-  // A program that reads util.inspect's value can change the tables every
-  // console line's inspection reads (defaultOptions, colors, styles), so
-  // the whole line renders through the runtime formatter, which reads them
-  // per call.
-  if (programTouchesInspectTables(lowerer)) return lowerRuntimeFormat(lowerer, nodes, loc);
-  const first = nodes[0];
-  const pair = (node: ts.Expression, value: IrExpr) => ({ node, value });
-  const join = (parts: { node: ts.Expression; value: IrExpr }[]): IrExpr => {
-    if (parts.length === 0) return strLit("", loc);
-    const pieces: IrExpr[] = [];
-    parts.forEach(({ node, value }, i) => {
-      if (i > 0) pieces.push(strLit(" ", loc));
-      pieces.push(formatRestValue(lowerer, node, value, loc));
-    });
-    return concat(pieces, loc);
-  };
-  if (nodes.length > 1 && isStringLiteralLike(first) && hasFormatSpecifier(first.text))
-    return lowerFormatCall(lowerer, expr, loc, false);
-  if (nodes.some(ts.isSpreadElement)) return lowerRuntimeFormat(lowerer, nodes, loc);
-  const runtime =
-    nodes.length > 1 && !isStringLiteralLike(first) ? runtimeFormatString(lowerer, first!) : null;
-  if (runtime === "other" && !formatStringConverts(lowerer, first!))
-    return lowerRuntimeFormat(lowerer, nodes, loc);
-  if (runtime !== null) {
-    const held = heldFormatArgs(lowerer, nodes, loc);
-    if (!held.joinable) return seq(held.stmts, held.format(), loc);
-    const joined = join(held.args.map((arg) => pair(arg.node, arg.ref())));
-    return seq(
-      held.stmts,
-      {
-        kind: "ternary",
-        cond: held.specifies,
-        then: held.format(),
-        else_: joined,
-        type: STRING,
+      return seq(
+        stmts,
+        lowerConsoleTable(lowerer, call, loc, {
+          log: (parts, at) => write(true, parts, at),
+          table: (data, props, at) =>
+            call_("console.instTable", [varRef(held.id, DYN, at), data, props], VOID, at),
+        }),
         loc,
-      },
-      loc,
-    );
-  }
-  return join(nodes.map((node) => pair(node, lowerer.lowerExpr(node))));
-}
-
-/** A Console instance's timeEnd/timeLog: the label's elapsed time, Node's
- * `${label}: ${formatTime(ms)}` line (timeLog appends its data as log
- * appends arguments after a format string), or the "No such label"
- * warning. Every argument evaluates before the timer is read. */
-function lowerConsoleInstTimeLog(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  inst: IrExpr,
-  member: "timeEnd" | "timeLog",
-  loc: SrcLoc,
-  stmts: IrStmt[],
-  done: (result: IrExpr) => IrExpr,
-): IrExpr {
-  const raw = rawLabel(lowerer, member, expr.arguments.nodes[0]);
-  const rawRef = raw === null ? null : hoist(lowerer, stmts, "%consoleLabel", raw, loc);
-  const data = expr.arguments.nodes.slice(1);
-  const dataRefs: { node: ts.Expression; value: IrExpr }[] = [];
-  if (member === "timeLog") {
-    for (const node of data)
-      dataRefs.push({
-        node,
-        value: hoist(lowerer, stmts, "%consoleData", lowerer.lowerExpr(node), loc),
-      });
-  } else {
-    evaluateIgnored(lowerer, data, stmts, loc);
-  }
-  const label = hoist(lowerer, stmts, "%consoleLabelText", labelText(rawRef, loc), loc);
-  const elapsed = hoist(
-    lowerer,
-    stmts,
-    "%consoleElapsed",
-    {
-      kind: "libCall",
-      fn: member === "timeEnd" ? "console.instTimeEnd" : "console.instTimeLog",
-      args: [inst, label],
-      type: STRING,
-      loc,
-    },
-    loc,
-  );
-  const parts: IrExpr[] = [label, strLit(": ", loc), elapsed];
-  for (const { node, value } of dataRefs) {
-    parts.push(strLit(" ", loc));
-    parts.push(formatRestValue(lowerer, node, value, loc));
-  }
-  const line = concat(parts, loc);
-  const missing: IrExpr = {
-    kind: "strEq",
-    negated: false,
-    left: elapsed,
-    right: strLit("", loc),
-    type: BOOL,
-    loc,
-  };
-  stmts.push({
-    kind: "if",
-    cond: { kind: "unary", op: "!", operand: missing, type: BOOL, loc },
-    then: [
-      {
-        kind: "exprStmt",
-        expr: {
-          kind: "libCall",
-          fn: "console.write",
-          args: [inst, line, boolLit(false, loc)],
-          type: VOID,
-          loc,
-        },
+      );
+    case "clear": {
+      evaluateIgnored(lowerer, call.arguments.nodes, stmts, loc);
+      return seq(stmts, call_("console.instClear", [handle()], VOID, loc), loc);
+    }
+    case "count": {
+      const stmts_: IrStmt[] = [...stmts];
+      const args = call.arguments.nodes;
+      const raw = rawLabel(lowerer, member, args[0]);
+      const rawRef = raw === null ? null : hoist(lowerer, stmts_, "%consoleLabel", raw, loc);
+      evaluateIgnored(lowerer, args.slice(1), stmts_, loc);
+      return seq(
+        stmts_,
+        call_("console.instCount", [varRef(held.id, DYN, loc), labelText(rawRef, loc)], VOID, loc),
         loc,
-      },
-    ],
-    else_: null,
-    loc,
-  });
-  const warning: IrExpr = {
-    kind: "ternary",
-    cond: missing,
-    then: concat(
-      [strLit("No such label '", loc), label, strLit(`' for console.${member}()`, loc)],
-      loc,
-    ),
-    else_: strLit("", loc),
-    type: STRING,
-    loc,
-  };
-  return done(emitWarning(warning, loc));
-}
-
-/** A Console instance's assert: the same prefix rules as the global one,
- * printed through the instance's warn (stderr) writer. */
-function lowerConsoleInstAssert(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  write: (text: IrExpr, toStderr: boolean) => IrExpr,
-  loc: SrcLoc,
-  stmts: IrStmt[],
-  done: (result: IrExpr) => IrExpr,
-): IrExpr {
-  const [valueNode, ...args] = expr.arguments.nodes;
-  const ok =
-    valueNode === undefined
-      ? boolLit(false, loc)
-      : hoist(lowerer, stmts, "%consoleAssert", lowerer.lowerCondition(valueNode), loc);
-  const first = args[0];
-  let failed: IrExpr;
-  if (isStringLiteralLike(first) && args.length > 1 && hasFormatSpecifier(first.text)) {
-    // The format path lowers its arguments inside the failing branch; that
-    // is only exact when skipping their evaluation is unobservable.
-    const effectful = args.find((a) => !isPureArgument(a));
-    if (effectful !== undefined) {
-      lowerer.noLowering(
-        "console.assert with a format string and computed arguments",
-        effectful,
-        "evaluate the argument first (const v = ...) and pass the binding",
       );
     }
-    failed = write(lowerFormatCall(lowerer, expr, loc, false, args, "Assertion failed: "), true);
-  } else {
-    const values = args.map((node) => ({
-      node,
-      value: hoist(lowerer, stmts, "%consoleData", lowerer.lowerExpr(node), loc),
-    }));
-    const head = values[0];
-    const parts: IrExpr[] = [];
-    if (head !== undefined && head.value.type.kind === "string") {
-      if (values.length > 1 && !isStringLiteralLike(head.node)) {
-        lowerer.noLowering(
-          "console.assert with a runtime format string and further arguments",
-          head.node,
-          "the %-substitution positions are runtime-dependent — use a string literal",
-        );
-      }
-      parts.push(strLit("Assertion failed: ", loc), head.value);
-      for (const v of values.slice(1)) {
-        parts.push(strLit(" ", loc), formatRestValue(lowerer, v.node, v.value, loc));
-      }
-    } else {
-      if (head !== undefined && head.value.type.kind !== "dyn") {
-        const t = head.value.type;
-        if (t.kind === "union") {
-          const def = lowerer.unions.get(t.unionId);
-          if (def?.arms.some((arm) => arm.kind === "string")) {
-            lowerer.noLowering(
-              "console.assert with a first message argument that may be a string",
-              head.node,
-              "Node prefixes string messages and inserts a separate prefix otherwise — narrow the message type",
-            );
-          }
-        }
-      }
-      if (head !== undefined && head.value.type.kind === "dyn") {
-        lowerer.noLowering(
-          "console.assert with an untyped first message argument",
-          head.node,
-          "Node prefixes string messages and inserts a separate prefix otherwise — narrow the message type",
-        );
-      }
-      parts.push(strLit("Assertion failed", loc));
-      for (const v of values) {
-        parts.push(strLit(" ", loc), formatRestValue(lowerer, v.node, v.value, loc));
-      }
+    case "countReset": {
+      const stmts_: IrStmt[] = [...stmts];
+      const args = call.arguments.nodes;
+      const raw = rawLabel(lowerer, member, args[0]);
+      const rawRef = raw === null ? null : hoist(lowerer, stmts_, "%consoleLabel", raw, loc);
+      evaluateIgnored(lowerer, args.slice(1), stmts_, loc);
+      const boxed: IrExpr =
+        rawRef === null
+          ? dynUndefinedExpr(loc)
+          : rawRef.type.kind === "dyn"
+            ? rawRef
+            : { kind: "dynFrom", value: rawRef, type: DYN, loc };
+      return seq(
+        stmts_,
+        emitWarning(
+          call_("console.instCountReset", [varRef(held.id, DYN, loc), boxed], STRING, loc),
+          loc,
+        ),
+        loc,
+      );
     }
-    failed = write(concat(parts, loc), true);
+    case "time": {
+      const stmts_: IrStmt[] = [...stmts];
+      const args = call.arguments.nodes;
+      const raw = rawLabel(lowerer, member, args[0]);
+      const rawRef = raw === null ? null : hoist(lowerer, stmts_, "%consoleLabel", raw, loc);
+      evaluateIgnored(lowerer, args.slice(1), stmts_, loc);
+      return seq(
+        stmts_,
+        emitWarning(
+          call_(
+            "console.instTime",
+            [varRef(held.id, DYN, loc), labelText(rawRef, loc)],
+            STRING,
+            loc,
+          ),
+          loc,
+        ),
+        loc,
+      );
+    }
+    case "timeEnd":
+    case "timeLog":
+      return seq(
+        stmts,
+        lowerConsoleTimeLog(lowerer, call, member, loc, {
+          timeEnd: "console.instTimeEnd",
+          timeLog: "console.instTimeLog",
+          handle: handle(),
+          write,
+        }),
+        loc,
+      );
+    case "group":
+    case "groupCollapsed": {
+      const indent = call_("console.instGroup", [handle(), numLit(1, loc)], VOID, loc);
+      const args = call.arguments.nodes;
+      const label =
+        args.length === 0 ? null : write(true, [lowerFormatCall(lowerer, call, loc, false)], loc);
+      return label === null
+        ? seq(stmts, indent, loc)
+        : seq([...stmts, { kind: "exprStmt", expr: label, loc }], indent, loc);
+    }
+    case "groupEnd": {
+      evaluateIgnored(lowerer, call.arguments.nodes, stmts, loc);
+      return seq(stmts, call_("console.instGroup", [handle(), numLit(-1, loc)], VOID, loc), loc);
+    }
+    case "profile":
+    case "profileEnd":
+    case "timeStamp":
+      // These exist on the global console only: Node's Console instances
+      // do not define them, so the call is a TypeError there. Refuse
+      // rather than print nothing.
+      lowerer.noLowering(
+        `Console.${member}`,
+        call,
+        "Node's Console instances have no profile, profileEnd or timeStamp member — only the global console does",
+      );
   }
-  stmts.push({
-    kind: "if",
-    cond: { kind: "unary", op: "!", operand: ok, type: BOOL, loc },
-    then: [{ kind: "exprStmt", expr: failed, loc }],
-    else_: null,
-    loc,
-  });
-  return done(noop(loc));
+  lowerer.noLowering(
+    `Console.${member}`,
+    call,
+    "log, info, debug, error, warn, dir, dirxml, time, timeEnd, timeLog, trace, assert, clear, count, countReset, group, groupCollapsed, groupEnd and table are the lowered Console members",
+  );
 }
 
 /* ── the global console's output members ─────────────────────────────── */
@@ -705,6 +633,39 @@ function consoleWrite(stdout: boolean, args: IrExpr[], loc: SrcLoc): IrExpr {
     loc,
   };
 }
+
+/** Where a timeEnd/timeLog line comes from and goes: the global console's
+ * own timers and stdout intrinsic, or a Console instance's own. */
+type ConsoleTimeTarget = {
+  timeEnd: IrLibFn;
+  timeLog: IrLibFn;
+  write: (stdout: boolean, parts: IrExpr[], loc: SrcLoc) => IrExpr;
+  handle?: IrExpr;
+};
+
+const GLOBAL_TIME_TARGET: ConsoleTimeTarget = {
+  timeEnd: "console.timeEnd",
+  timeLog: "console.timeLog",
+  write: (stdout, parts, loc) => consoleWrite(stdout, parts, loc),
+};
+
+/** Where console.table's output goes: the global console's log intrinsic,
+ * or a Console instance's own stdout. */
+type ConsoleTableTarget = {
+  log: (parts: IrExpr[], loc: SrcLoc) => IrExpr;
+  table: (data: IrExpr, props: IrExpr, loc: SrcLoc) => IrExpr;
+};
+
+const GLOBAL_TABLE_TARGET: ConsoleTableTarget = {
+  log: (parts, loc) => consoleWrite(true, parts, loc),
+  table: (data, props, loc) => ({
+    kind: "libCall",
+    fn: "console.table",
+    args: [data, props],
+    type: VOID,
+    loc,
+  }),
+};
 
 function hasFormatSpecifier(text: string): boolean {
   return /%[sdifjoOc%]/.test(text);
@@ -906,6 +867,7 @@ function lowerConsoleTimeLog(
   expr: ts.CallExpression,
   member: "timeEnd" | "timeLog",
   loc: SrcLoc,
+  target: ConsoleTimeTarget = GLOBAL_TIME_TARGET,
 ): IrExpr {
   const stmts: IrStmt[] = [];
   const raw = rawLabel(lowerer, member, expr.arguments.nodes[0]);
@@ -929,8 +891,8 @@ function lowerConsoleTimeLog(
     "%consoleElapsed",
     {
       kind: "libCall",
-      fn: member === "timeEnd" ? "console.timeEnd" : "console.timeLog",
-      args: [label],
+      fn: member === "timeEnd" ? target.timeEnd : target.timeLog,
+      args: target.handle === undefined ? [label] : [target.handle, label],
       type: STRING,
       loc,
     },
@@ -951,7 +913,7 @@ function lowerConsoleTimeLog(
   stmts.push({
     kind: "if",
     cond: { kind: "unary", op: "!", operand: missing, type: BOOL, loc },
-    then: [{ kind: "exprStmt", expr: consoleWrite(true, [line, ...rendered], loc), loc }],
+    then: [{ kind: "exprStmt", expr: target.write(true, [line, ...rendered], loc), loc }],
     else_: null,
     loc,
   });
@@ -972,8 +934,14 @@ function lowerConsoleTimeLog(
 /** console.assert(value, ...message): on a falsy value, Node prefixes a
  * string first argument with "Assertion failed: " (or inserts
  * "Assertion failed" before a non-string one) and prints through warn —
- * so a format string still formats. */
-function lowerConsoleAssert(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+ * so a format string still formats. `emit` is that warn write: the global
+ * console's stderr intrinsic, or a Console instance's own stderr target. */
+function lowerConsoleAssert(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  emit: (parts: IrExpr[], loc: SrcLoc) => IrExpr = (parts, at) => consoleWrite(false, parts, at),
+): IrExpr {
   const stmts: IrStmt[] = [];
   const [valueNode, ...args] = expr.arguments.nodes;
   const ok =
@@ -993,11 +961,7 @@ function lowerConsoleAssert(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
         "evaluate the argument first (const v = ...) and pass the binding",
       );
     }
-    failed = consoleWrite(
-      false,
-      [lowerFormatCall(lowerer, expr, loc, false, args, "Assertion failed: ")],
-      loc,
-    );
+    failed = emit([lowerFormatCall(lowerer, expr, loc, false, args, "Assertion failed: ")], loc);
   } else {
     const values = args.map((node) => ({
       node,
@@ -1047,7 +1011,7 @@ function lowerConsoleAssert(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
         ),
       ];
     }
-    failed = consoleWrite(false, rendered, loc);
+    failed = emit(rendered, loc);
   }
   stmts.push({
     kind: "if",
@@ -1061,28 +1025,16 @@ function lowerConsoleAssert(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
 
 /** console.table(tabularData[, properties]): primitives print like
  * log; objects, arrays, and checked-dynamic values render Node's table
- * in the runtime (cli_table's layout over util.inspect cells). `inst`
- * selects the instance form (its own stdout and indentation); null is the
- * global console. */
+ * in the runtime (cli_table's layout over util.inspect cells). */
 function lowerConsoleTable(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   loc: SrcLoc,
-  inst: IrExpr | null = null,
+  target: ConsoleTableTarget = GLOBAL_TABLE_TARGET,
 ): IrExpr {
   const stmts: IrStmt[] = [];
   const [dataNode, propsNode, ...rest] = expr.arguments.nodes;
-  const logLine = (text: IrExpr): IrExpr =>
-    inst === null
-      ? consoleWrite(true, [text], loc)
-      : {
-          kind: "libCall",
-          fn: "console.write",
-          args: [inst, text, boolLit(false, loc)],
-          type: VOID,
-          loc,
-        };
-  if (dataNode === undefined) return logLine(strLit("undefined", loc));
+  if (dataNode === undefined) return target.log([strLit("undefined", loc)], loc);
   let data = lowerer.lowerExpr(dataNode);
   let props =
     propsNode === undefined || isUndefinedLiteral(propsNode) ? null : lowerer.lowerExpr(propsNode);
@@ -1103,11 +1055,11 @@ function lowerConsoleTable(
   ) {
     // Node: `if (tabularData === null || typeof tabularData !== 'object')
     // return this.log(tabularData)`.
-    const text =
-      inst === null
-        ? lowerConsoleArg(lowerer, dataNode, data, "console.table", loc)
-        : formatRestValue(lowerer, dataNode, data, loc);
-    return seq(stmts, logLine(text), loc);
+    return seq(
+      stmts,
+      target.log([lowerConsoleArg(lowerer, dataNode, data, "console.table", loc)], loc),
+      loc,
+    );
   }
   const boxable =
     t.kind === "dyn" ||
@@ -1135,14 +1087,7 @@ function lowerConsoleTable(
   }
   const box = (v: IrExpr): IrExpr =>
     v.type.kind === "dyn" ? v : { kind: "dynFrom", value: v, type: DYN, loc };
-  const cards: IrExpr[] = [box(data), props === null ? dynUndefinedExpr(loc) : box(props)];
-  const call: IrExpr = {
-    kind: "libCall",
-    fn: inst === null ? "console.table" : "console.instTable",
-    args: inst === null ? cards : [inst, ...cards],
-    type: VOID,
-    loc,
-  };
+  const call = target.table(box(data), props === null ? dynUndefinedExpr(loc) : box(props), loc);
   return seq(stmts, call, loc);
 }
 

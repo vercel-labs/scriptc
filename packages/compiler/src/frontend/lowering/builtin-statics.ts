@@ -36,6 +36,7 @@ import {
 import { lowerArrayFromValue } from "./containers/array-construction.js";
 import { numberPredicateValue } from "./builtins/numbers.js";
 import { reflectMemberValue } from "./builtins/reflection.js";
+import type { FunctionCensus } from "./function-census.js";
 
 const LOOKUP_FN = "%builtin.staticValue";
 
@@ -362,7 +363,11 @@ export function registerIslandIntrinsics(lowerer: Lowerer, functions: IrFunction
  * `constructor` member of an untyped value. The lookup answers the static
  * members with function values whose names the program spells (as a
  * member name or a string), and the runtime the others. */
-export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[]): void {
+export function installBuiltinStatics(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   const entryInit = lowerer.initNameOf.get(lowerer.entry);
   const entry = functions.find((fn) => fn.name === entryInit);
   if (entry === undefined) return;
@@ -370,6 +375,22 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
   const names = new Set<string>();
   let readsConstructor = false;
   for (const fn of functions) {
+    // The scan reads member names from strings and dynamic accesses, and
+    // constructor values from a `dynFrom` of a builtin closure or a library
+    // entry point: a body holding none of these finds nothing, and a body
+    // holding only the closure form still finds a constructor value there.
+    if (
+      !census.hasAnyExpr(fn, [
+        "strLit",
+        "dynHasKey",
+        "dynInvoke",
+        "dynKeyGet",
+        "libCall",
+        "newValue",
+        "dynFrom",
+      ])
+    )
+      continue;
     everyStmtList(fn.body, {
       expr: (expr) => {
         if (expr.kind === "strLit") names.add(expr.value);

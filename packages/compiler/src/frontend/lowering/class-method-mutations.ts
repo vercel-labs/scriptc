@@ -25,6 +25,17 @@ const FUNCTION_MEMBER_NAMES = new Set([
   "valueOf",
 ]);
 
+/** Whether a setPrototypeOf call the census found may give an instance of
+ * `info` another prototype (Lowerer.reprototypedClasses). */
+export function mayReplacePrototype(
+  lowerer: Lowerer,
+  info: { decl: ts.Node | null; def: { runtime?: boolean } },
+): boolean {
+  if (info.def.runtime) return false;
+  const facts = lowerer.reprototypedClasses;
+  return facts.all || (info.decl !== null && facts.decls.has(info.decl));
+}
+
 /** Census observable slots before choosing native calls. Names are shared
  * conservatively across classes: aliases cannot hide a named replacement. */
 export function collectClassMethodMutations(
@@ -56,6 +67,11 @@ export function collectClassMethodMutations(
   const jsAssignments: (ts.PropertyAccessExpression | ts.ElementAccessExpression)[] = [];
   const computedMethods: ts.Expression[] = [];
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
+  /** Every class of the program, and the targets of the setPrototypeOf
+   * calls the census found (null: a reference to the function that is not
+   * a call, or a call without a target). */
+  const allClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
+  const prototypeTargets: (ts.Expression | null)[] = [];
   const symbolMethods = new Set<string>();
   let unknownKey: ts.Node | undefined;
   /** Every write with an unknown key: each may install a replacement of any
@@ -348,6 +364,7 @@ export function collectClassMethodMutations(
   };
   for (const file of files)
     ts.walkPreorder(file, (node) => {
+      if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) allClasses.push(node);
       if (
         (ts.isPropertyDeclaration(node) ||
           ts.isPropertyAssignment(node) ||
@@ -518,8 +535,13 @@ export function collectClassMethodMutations(
   for (const node of reflection) {
     const objectMethod = lowerer.stdlibGlobalMember(node, "Object");
     const reflectMethod = lowerer.stdlibGlobalMember(node, "Reflect");
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
+    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf") {
       markUnknownKey(node);
+      const call = node.parent;
+      const target =
+        ts.isCallExpression(call) && call.expression === node ? call.arguments.nodes[0] : undefined;
+      prototypeTargets.push(target && !ts.isSpreadElement(target) ? target : null);
+    }
     const single =
       objectMethod === "defineProperty" ||
       reflectMethod === "defineProperty" ||
@@ -533,11 +555,45 @@ export function collectClassMethodMutations(
       continue;
     }
     const receiver = call.arguments.nodes[0];
+    const receiverNode =
+      receiver !== undefined && !ts.isSpreadElement(receiver)
+        ? withoutParenthesesAssertionsNonNull(receiver)
+        : null;
+    const prototypeTarget =
+      receiverNode !== null &&
+      ts.isPropertyAccessExpression(receiverNode) &&
+      receiverNode.name.text === "prototype";
+    // Every name a definition on a class's prototype writes may replace an
+    // accessor or a method there, which the instances' compiled dispatch
+    // must observe (a read or write through the prototype view).
+    const notePrototypeKeys = (value: ts.Expression | undefined): void => {
+      if (!prototypeTarget || value === undefined) return;
+      const map = withoutParenthesesAssertionsNonNull(value);
+      if (!ts.isObjectLiteralExpression(map)) return;
+      for (const field of map.properties.nodes) {
+        if (ts.isSpreadAssignment(field) || !field.name) continue;
+        const name = field.name;
+        if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name))
+          lowerer.noteMethodAccess(
+            ts.isNumericLiteral(name) ? String(Number(name.text)) : name.text,
+            call,
+          );
+      }
+    };
+    if (single && prototypeTarget && call.arguments.nodes[1]) {
+      const key = withoutParenthesesAssertionsNonNull(call.arguments.nodes[1]);
+      if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key))
+        lowerer.noteMethodAccess(String(key.text), call);
+    }
     if (single && call.arguments.nodes[1]) markKey(call.arguments.nodes[1], call, receiver);
-    else if (objectMethod === "defineProperties" && call.arguments.nodes[1])
+    else if (objectMethod === "defineProperties" && call.arguments.nodes[1]) {
+      notePrototypeKeys(call.arguments.nodes[1]);
       markFields(call.arguments.nodes[1], call, receiver);
-    else if (objectMethod === "assign")
-      for (const source of call.arguments.nodes.slice(1)) markFields(source, call, receiver);
+    } else if (objectMethod === "assign")
+      for (const source of call.arguments.nodes.slice(1)) {
+        notePrototypeKeys(source);
+        markFields(source, call, receiver);
+      }
   }
   lowerer.checker.prefetchClassCollection(
     computedWrites.flatMap((write) => [
@@ -622,6 +678,25 @@ export function collectClassMethodMutations(
       return null;
     return type;
   };
+  // The classes whose instances a setPrototypeOf call may reprototype: every
+  // class whose instances its target's type admits, or all of them for a
+  // target `receiverType` cannot judge.
+  for (const target of prototypeTargets) {
+    const type = target ? receiverType(target) : null;
+    if (type === null) {
+      lowerer.reprototypedClasses.all = true;
+      break;
+    }
+    for (const cls of allClasses) {
+      const symbol = cls.name ? lowerer.checker.getSymbolAtLocation(cls.name) : undefined;
+      if (!symbol) {
+        lowerer.reprototypedClasses.decls.add(cls);
+        continue;
+      }
+      if (lowerer.checker.isTypeAssignableTo(lowerer.checker.getDeclaredTypeOfSymbol(symbol), type))
+        lowerer.reprototypedClasses.decls.add(cls);
+    }
+  }
   // A function-typed write shadows a method only on an object that has the
   // method: an instance of a class with method `name` that the receiver's
   // type admits. Without one (a callback field of an unrelated class that

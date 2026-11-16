@@ -3492,14 +3492,34 @@ export class LlEmitter {
     return this.closureNameByEntry!.get(this.closureEntry(fnName, target)) ?? null;
   }
 
+  /** Whether a function of the module calls dyn.setPrototype. */
+  private setsPrototypes(): boolean {
+    let found = false;
+    for (const fn of this.mod.functions) {
+      everyStmtList(fn.body, {
+        stmt: () => !found,
+        expr: (expr) => {
+          if (expr.kind === "libCall" && expr.fn === "dyn.setPrototype") found = true;
+          return !found;
+        },
+      });
+      if (found) return true;
+    }
+    return false;
+  }
+
   /** The dispose-observer gates the emitted frees and record writers test
    * (alloc.ts): defined after every helper is emitted, because dynCheck
    * builders, JSON schemas and weak collection constructors are requested
    * lazily. */
   disposeObserverGates(): string[] {
-    const weak = [...this.decls].some(
-      (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
-    );
+    // Object.setPrototypeOf on a class instance keeps the prototype in a
+    // table the instance's disposal clears (scr_instance_proto_set), so a
+    // module that can call it observes disposals as a weak collection does.
+    const weak =
+      [...this.decls].some(
+        (d) => d.includes("@scr_weak_map_new(") || d.includes("@scr_weak_set_new("),
+      ) || this.setsPrototypes();
     // The frontend removed the source tests of these record types because
     // nothing in the module gives a record a source
     // (IrModule.recordSourcesFolded). A helper that keeps one for such a
@@ -5623,6 +5643,7 @@ export class LlEmitter {
       case "childWriter":
       case "generator":
       case "fsWatcher":
+      case "statWatcher":
       case "cryptoHash":
       case "cryptoHmac":
       case "netSocket":
@@ -7796,6 +7817,8 @@ export class LlEmitter {
             node.fn === "perf.loopExit" ||
             node.fn === "perf.loopCount" ||
             node.fn === "perf.idleTime" ||
+            // worker.performance reports a worker's loop metrics.
+            node.fn === "worker.performance" ||
             // performance.measure('x', 'loopStart'): the milestone name is a
             // run-time string, so any measure may reach the loop metrics.
             node.fn === "perf.measure")

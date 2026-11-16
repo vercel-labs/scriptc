@@ -711,9 +711,14 @@ static int scr_uncaught_dispatch(bool from_promise) {
      * own throw is the fatal one (the pending exception the fatal path
      * below prints). */
     ScrDyn *capture_args[1] = {error};
-    ScrDyn *result = scr_dyn_call(scr_capture_fn, capture_args, 1, "callback");
+    /* The call holds its own reference: a callback that clears itself
+     * (setUncaughtExceptionCaptureCallback(null)) drops the registry's,
+     * and its body still reads what it captured. */
+    ScrDyn *capture = scr_dyn_retain(scr_capture_fn);
+    ScrDyn *result = scr_dyn_call(capture, capture_args, 1, "callback");
     ok = !scr_exc_pending();
     scr_dyn_release(result);
+    scr_dyn_release(capture);
     handled = ok;
   } else {
     handled = ok && scr_uncaught_n[0] > 0;
@@ -2661,4 +2666,264 @@ ScrDyn *scr_crypto_native(void) {
   ScrDyn *subtle = scr_dyn_new_obj();
   scr_dyn_obj_set(subtle, "digest", 6, scr_dyn_new_func(scr_closure_new(NULL, 0), scr_crypto_digest_call, 2, "crypto.subtle.digest", "digest"));
   ScrDyn *result = scr_dyn_new_obj(); scr_dyn_obj_set(result, "subtle", 6, subtle); return result;
+}
+
+/* ── node:trace_events (trace_events.Tracing) ─────────────────────────
+ * A compiled binary carries no trace-event agent, which is what Node's
+ * tracing objects drive. Without the agent — Node run without the
+ * --trace-event-* flags — what a program observes is the object's own
+ * bookkeeping: its categories string, its enabled flag, and the
+ * process-wide enabled-categories list. The object is a native handle
+ * (typeof "object", no own keys, `Tracing { enabled: false, categories:
+ * 'v8,node' }`), with member reads and calls through the checked-dynamic
+ * tree; enable()/disable() flip the flag, as Node's do when no agent is
+ * recording. */
+typedef struct {
+  size_t rc;
+  ScrStr *categories; /* owned: the options' categories joined by ',' */
+  bool enabled;
+} ScrTraceEvents;
+
+/* Only ENABLED tracers are referenced here (Node's tracing agent holds the
+ * enabled ones the same way): getEnabledCategories walks this list, and a
+ * tracer the program discards while disabled is freed with its handle —
+ * creating and dropping tracers in a loop retains and slows nothing. */
+static SCR_TL ScrTraceEvents **scr_te_enabled = NULL;
+static SCR_TL size_t scr_te_enabled_count = 0, scr_te_enabled_cap = 0;
+
+static void *scr_te_retain(void *h) {
+  ((ScrTraceEvents *)h)->rc++;
+  return h;
+}
+
+static void scr_te_release(void *h) {
+  ScrTraceEvents *t = h;
+  if (!t || --t->rc > 0) return;
+  scr_str_release(t->categories);
+  free(t);
+}
+
+static void scr_te_teardown(void) {
+  for (size_t i = 0; i < scr_te_enabled_count; i++) scr_te_release(scr_te_enabled[i]);
+  free(scr_te_enabled);
+  scr_te_enabled = NULL;
+  scr_te_enabled_count = scr_te_enabled_cap = 0;
+}
+
+static void scr_te_set_enabled(ScrTraceEvents *t, bool enabled) {
+  if (t->enabled == enabled) return;
+  t->enabled = enabled;
+  if (enabled) {
+    if (scr_te_enabled_count == scr_te_enabled_cap) {
+      scr_te_enabled_cap = scr_te_enabled_cap ? scr_te_enabled_cap * 2 : 4;
+      ScrTraceEvents **grown = realloc(scr_te_enabled, scr_te_enabled_cap * sizeof *grown);
+      if (!grown) scr_ad_oom();
+      scr_te_enabled = grown;
+      if (scr_te_enabled_count == 0) scr_atexit(scr_te_teardown);
+    }
+    scr_te_retain(t);
+    scr_te_enabled[scr_te_enabled_count++] = t;
+    return;
+  }
+  for (size_t i = 0; i < scr_te_enabled_count; i++) {
+    if (scr_te_enabled[i] != t) continue;
+    scr_te_enabled[i] = scr_te_enabled[--scr_te_enabled_count];
+    scr_te_release(t);
+    return;
+  }
+}
+
+static ScrDyn *scr_te_member(void *h, const char *key, size_t len);
+static ScrDyn *scr_te_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what);
+static ScrDyn *scr_te_inspect_view(void *h);
+static const ScrDynHandleMethod scr_te_methods[];
+
+static ScrDyn *scr_te_box(ScrTraceEvents *t) {
+  static const ScrDynHandleOps ops = {
+      .cls = "Tracing",
+      .retain = scr_te_retain,
+      .release = scr_te_release,
+      .invoke = scr_te_invoke,
+      .get = scr_te_member,
+      .inspect_view = scr_te_inspect_view,
+      .methods = scr_te_methods,
+  };
+  scr_dyn_handle_install(SCR_DYNH_TRACING, &ops);
+  /* The handle owns the resource; nothing else references a disabled
+   * tracer, so dropping the handle frees it. */
+  ScrDyn *box = scr_dyn_new_handle(t, SCR_DYNH_TRACING);
+  scr_te_release(t);
+  return box;
+}
+
+/* `tracing.enabled` / `tracing.categories` as Node's prototype getters
+ * answer them; any other name is no member (undefined). */
+static ScrDyn *scr_te_member(void *h, const char *key, size_t len) {
+  ScrTraceEvents *t = h;
+  if (len == 7 && memcmp(key, "enabled", 7) == 0) return scr_dyn_new_bool(t->enabled);
+  if (len == 10 && memcmp(key, "categories", 10) == 0)
+    return scr_dyn_new_str(t->categories); /* the box retains its own */
+  return NULL;
+}
+
+static ScrDyn *scr_te_undefined(void) { return scr_dyn_retain(scr_dyn_undefined()); }
+
+static ScrDyn *scr_te_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  (void)what;
+  ScrTraceEvents *t = h;
+  if (strcmp(method, "enable") == 0) {
+    scr_te_set_enabled(t, true);
+    return scr_te_undefined();
+  }
+  if (strcmp(method, "disable") == 0) {
+    scr_te_set_enabled(t, false);
+    return scr_te_undefined();
+  }
+  static const char message[] = "Tracing member is not a function: ";
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, message);
+  scr_jb_puts(&b, method);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+static ScrDyn *scr_te_inspect_view(void *h) {
+  ScrTraceEvents *t = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_dyn_obj_set(view, "enabled", 7, scr_dyn_new_bool(t->enabled));
+  scr_dyn_obj_set(view, "categories", 10, scr_dyn_new_str(t->categories));
+  return view;
+}
+
+static const ScrDynHandleMethod scr_te_methods[] = {
+    {"enable", 0, false}, {"disable", 0, false}, {NULL, 0, false}};
+
+ScrDyn *scr_te_create(ScrDyn *options) {
+  bool object_kind = options != NULL && (options->kind == SCR_DYN_OBJ ||
+                                         options->kind == SCR_DYN_TYPED_REF ||
+                                         options->kind == SCR_DYN_PROXY);
+  if (!object_kind) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  /* scr_dyn_obj_get borrows: only the undefined stand-in is ours to free.
+   * The array itself is retained rather than borrowed: the element reads
+   * below run program code (an index the array does not own is answered
+   * through its prototype chain), and a getter there can remove
+   * options.categories — the object's reference — leaving the array dead
+   * under the reads that follow. */
+  ScrDyn *cats = scr_dyn_obj_get(options, "categories", 10);
+  bool cats_owned = false;
+  if (cats == NULL) {
+    if (scr_exc_pending()) return NULL;
+    /* An absent member reads as undefined, which is not an Array. */
+    cats = scr_dyn_retain(scr_dyn_undefined());
+    cats_owned = true;
+  } else {
+    cats = scr_dyn_retain(cats);
+    cats_owned = true;
+  }
+  if (cats->kind != SCR_DYN_ARR) {
+    scr_dyn_prop_type_fail("options.categories", "an instance of Array", cats);
+    if (cats_owned) scr_dyn_release(cats);
+    return NULL;
+  }
+  double len = scr_dyn_arr_len(cats);
+  if (len >= 1) {
+    ScrJsonBuf joined;
+    scr_jb_init(&joined);
+    for (double i = 0; i < len; i++) {
+      ScrDyn *item = scr_dyn_arr_at(cats, i);
+      if (item == NULL) {
+        scr_jb_abandon(&joined); /* the joined string is never built */
+        if (cats_owned) scr_dyn_release(cats);
+        return NULL;
+      }
+      if (item->kind != SCR_DYN_STR) {
+        char name[40];
+        snprintf(name, sizeof name, "options.categories[%d]", (int)i);
+        scr_dyn_prop_type_fail(name, "of type string", item);
+        scr_dyn_release(item);
+        scr_jb_abandon(&joined); /* the joined string is never built */
+        if (cats_owned) scr_dyn_release(cats);
+        return NULL;
+      }
+      if (i > 0) scr_jb_putc(&joined, ',');
+      scr_jb_put_str(&joined, item->v.str);
+      scr_dyn_release(item);
+    }
+    if (cats_owned) scr_dyn_release(cats);
+    ScrTraceEvents *t = malloc(sizeof *t);
+    if (!t) scr_ad_oom();
+    t->rc = 1;
+    t->categories = scr_jb_finish(&joined);
+    t->enabled = false;
+    return scr_te_box(t);
+  }
+  if (cats_owned) scr_dyn_release(cats);
+  static const char message[] = "At least one category is required";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
+                           "ERR_TRACE_EVENTS_CATEGORY_REQUIRED");
+  return NULL;
+}
+
+static int scr_te_name_cmp(const void *a, const void *b) {
+  const ScrStr *x = *(const ScrStr *const *)a;
+  const ScrStr *y = *(const ScrStr *const *)b;
+  size_t n = x->len < y->len ? x->len : y->len;
+  int c = memcmp(x->data, y->data, n);
+  if (c != 0) return c;
+  return x->len < y->len ? -1 : x->len > y->len ? 1 : 0;
+}
+
+/* getEnabledCategories(): every enabled tracing object's categories, split
+ * on ',', de-duplicated and sorted, joined back — Node's answer, and the
+ * undefined value when nothing is enabled. */
+ScrDyn *scr_te_get_enabled_categories(void) {
+  ScrStr **names = NULL;
+  size_t n = 0, cap = 0;
+  for (size_t i = 0; i < scr_te_enabled_count; i++) {
+    ScrTraceEvents *t = scr_te_enabled[i];
+    size_t start = 0;
+    for (size_t at = 0; at <= t->categories->len; at++) {
+      if (at < t->categories->len && t->categories->data[at] != ',') continue;
+      ScrStr *part = scr_str_new(t->categories->data + start, at - start);
+      start = at + 1;
+      bool seen = false;
+      for (size_t j = 0; j < n && !seen; j++) seen = scr_str_eq(names[j], part);
+      if (seen) {
+        scr_str_release(part);
+        continue;
+      }
+      if (n == cap) {
+        cap = cap ? cap * 2 : 8;
+        names = realloc(names, cap * sizeof *names);
+        if (!names) scr_ad_oom();
+      }
+      names[n++] = part;
+    }
+  }
+  if (n == 0) {
+    free(names);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  qsort(names, n, sizeof *names, scr_te_name_cmp);
+  ScrJsonBuf joined;
+  scr_jb_init(&joined);
+  for (size_t i = 0; i < n; i++) {
+    if (i > 0) scr_jb_putc(&joined, ',');
+    scr_jb_put_str(&joined, names[i]);
+    scr_str_release(names[i]);
+  }
+  free(names);
+  ScrStr *text = scr_jb_finish(&joined);
+  ScrDyn *result = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return result;
 }

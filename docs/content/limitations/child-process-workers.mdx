@@ -7,8 +7,10 @@ Supported options are default inherited stdio or an inline object with `cwd`, `e
 `execArgv` is accepted but has no native effect.
 Runtime worker paths, custom `execPath`, advanced serialization, transferred sockets or servers, uid/gid, timeout/signal options, and other stdio arrays are unsupported.
 
-Parent and child channels support `send(message, callback?)`, `connected`, `disconnect()`, and `on`/`once` for `message` and `disconnect`.
-Message listeners may return `void` or `Promise<void>`.
+Parent and child channels support `send(message[, sendHandle[, options]][, callback])`, `connected`, `disconnect()`, and `on`/`once` for `message` and `disconnect`.
+A function in the `sendHandle` or `options` slot is the callback, as in Node.
+A `sendHandle` that is a socket or server being transferred is refused at compile time; `null` and `undefined` are accepted, and `options.keepOpen` has no effect because no handle is ever transferred.
+Message listeners may return `void` or `Promise<void>`, and may take Node's second parameter, the handle sent with the message, which is always `undefined` here.
 Messages use newline-delimited JSON, so their static types must be JSON-stringifiable or `unknown` backed by a checked JSON tree.
 `send()` returns the channel's backpressure state and invokes its callback later with `null` or an `Error`.
 `disconnect()` changes `connected` synchronously, before the later disconnect events.
@@ -19,6 +21,8 @@ Any other placement of `setEncoding()` is refused at compile time, and a `setEnc
 Pausing the output of an `exec()` or `execFile()` child that has a callback holds back its `'data'` listeners, but the output is still read for the callback, so that child is not blocked.
 The call's `maxBuffer` is counted while the stream is paused, so a child that writes past it is ended with the `maxBuffer` error at that point, where Node ends it once the stream is resumed.
 A child's output arrives over a pipe where Node uses a socket pair, so the number of bytes a child can write to an unread or paused stream before it blocks differs from Node's.
+`subprocess.stdio` is Node's array: one array per child, the piped handles at their slots (the same objects as `stdin`, `stdout` and `stderr`), `null` for every slot that is not a pipe, and one entry per slot, with a forked child's fourth, IPC slot reported as `null`.
+A project typed by `@types/node`'s five-tuple declaration of `stdio` is refused at compile time, as are checked-dynamic stream slots.
 A callback-form `exec()` or `execFile()` takes an inline options object with `encoding: "utf8"`, `maxBuffer`, `cwd`, `env` (which replaces the child environment), `timeout` (an unsigned-integer deadline that destroys the capture streams and sends `killSignal`, a signal name matched without case, SIGTERM when absent), `shell: true`, and the Windows-only members.
 The remaining `exec` options — other encodings, `uid`, `gid`, `input`, `stdio`, `signal` — and a non-literal options value are refused at compile time.
 A `spawn()` call takes `timeout`, `killSignal` and `signal` as well: the timeout kills the child with `killSignal` (a name matched without case, or a signal number; SIGTERM when absent) and leaves its streams open, an already-aborted `AbortSignal` still starts the child and then emits `'error'` with Node's `AbortError` while a later abort kills it with `killSignal` and emits that error once, and the child's exit ends the subscription.

@@ -120,3 +120,19 @@ const later = (): void => grouped(one, "closure");
 grouped(one, "param");
 later();
 console.log("carried", JSON.stringify(text(a.chunks)));
+
+// The global console's group state stays separate from every instance's: an
+// open instance group never indents a global line, and an open global group
+// never indents an instance line.
+const mixed = collector();
+const mixedConsole = new Console({ stdout: mixed.stream, stderr: mixed.stream });
+mixedConsole.group("instance");
+console.log("global line");
+mixedConsole.log("instance line");
+console.group();
+mixedConsole.groupEnd();
+console.log("global nested");
+console.groupEnd();
+mixedConsole.groupEnd();
+mixedConsole.log("after groups");
+console.log("mixed", JSON.stringify(text(mixed.chunks)));

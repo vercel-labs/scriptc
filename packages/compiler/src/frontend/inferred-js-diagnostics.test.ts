@@ -269,6 +269,12 @@ console.log(widget.read());`,
     ts: "compares objects by reference",
   },
   {
+    name: "TS2810",
+    source: `new Promise((resolve) => resolve()).then((value) => console.log(value));`,
+    checkJs: "Expected 1 argument, but got 0",
+    ts: "Expected 1 arguments, but got 0",
+  },
+  {
     name: "TS2845",
     source: `console.log(0n === Infinity);`,
     // tsc's checkJs does not compare a bigint with a number in JavaScript; the
@@ -490,4 +496,91 @@ test.for(["/\\1/u", "/\\1/v", "/(a)\\2/u", "/(a)\\2/v", "/[\\1]/u"])(
 test("TypeScript keeps the missing-group error of a non-Unicode regex", () => {
   const result = diagnostics("export const pattern = /\\1/;", 'import "./library.js";', "ts");
   expect(result.some((d) => d.message.includes("backreference"))).toBe(true);
+});
+
+test("a JavaScript descriptor's get and set are callable with an explicit receiver", () => {
+  // `base.get`/`base.set` are possibly undefined functions to the checker, so
+  // `.call` rejects the this type (TS2684); JavaScript still binds whatever
+  // receiver the call names, and the descriptor's functions run on it.
+  expect(
+    diagnostics(
+      `export class Field {
+        #value = "";
+        get value() { return this.#value; }
+        set value(next) { this.#value = next; }
+      }
+      export function wrap(el) {
+        const base = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
+        return {
+          read() { return base.get.call(el); },
+          write(next) { base.set.call(el, next); },
+        };
+      }`,
+      'import { Field, wrap } from "./library.js";\nconst field = new Field();\nwrap(field).write("value");\nconsole.log(field.value);',
+    ),
+  ).toEqual([]);
+});
+
+/* A JavaScript binding an operator reads holds whatever the program last
+ * stored, not the shape one assignment gave it: shipped JavaScript reuses one
+ * `var` for a record, an array of lines and a count. Node converts the stored
+ * value in every operator, so the binding takes checked-dynamic storage and
+ * the ordinary arithmetic and comparison lowering applies the conversion. */
+const RETYPED_OPERATOR = `var line = { name: "frame" };
+var index = { step: 0 };
+for (index = 0; index < 3; index++) {}
+line = index;
+export const answer = [1 <= line, line < 4, line, line--];`;
+
+test("an unchecked JavaScript operator reads the value the binding holds", () => {
+  expect(
+    diagnostics(
+      RETYPED_OPERATOR,
+      'import { answer } from "./library.js"; console.log(answer.join());',
+    ),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript operator keeps the checker's operand types", () => {
+  const kept = diagnostics(
+    `// @ts-check\n${RETYPED_OPERATOR}`,
+    'import { answer } from "./library.js"; console.log(answer.join());',
+  ).map((diagnostic) => diagnostic.message);
+  expect(kept.some((message) => message.includes("Operator '<='"))).toBe(true);
+  expect(kept.some((message) => message.includes("arithmetic on an operand"))).toBe(true);
+});
+
+test("an operator over a static record operand keeps the refusal", () => {
+  // Both operands are values the widening prepass cannot reach: a literal and
+  // an object read at the operator itself. Their conversion has no lowering.
+  const kept = diagnostics(
+    `export const answer = 1 <= { k: 1 };`,
+    'import { answer } from "./library.js"; console.log(String(answer));',
+  );
+  expect(kept.some((diagnostic) => diagnostic.message.includes("Operator '<='"))).toBe(true);
+});
+
+test("a hoisted JavaScript var read before its assignment answers undefined", () => {
+  expect(
+    diagnostics(
+      `export function install(flag) {
+  var callback;
+  if (flag) callback = function () { return "called"; };
+  return [callback && callback(), typeof callback];
+}`,
+      'import { install } from "./library.js"; console.log(install(true).join());',
+    ),
+  ).toEqual([]);
+});
+
+test("a let read above its declaration keeps the temporal-dead-zone refusal", () => {
+  const kept = diagnostics(
+    `export function read() {
+  const first = later;
+  let later = 1;
+  return first + later;
+}`,
+    'import { read } from "./library.js"; console.log(read());',
+  );
+  expect(kept.some((diagnostic) => diagnostic.code === "SC1090")).toBe(true);
 });

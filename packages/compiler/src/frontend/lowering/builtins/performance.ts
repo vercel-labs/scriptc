@@ -98,14 +98,24 @@ export function lowerPerfHooksCall(
   if (access.questionDotToken) return null;
   const loc = locOf(expr);
   if (access.name.text === "now" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
-    if (expr.arguments.nodes.length !== 0) {
+    // performance.now takes no arguments and ignores what it is given, but
+    // a call's arguments still evaluate, in source order, before the clock
+    // reads (a JavaScript source can spell them; the declarations cannot).
+    const args = expr.arguments.nodes;
+    if (args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
-        "performance.now with arguments",
+        "performance.now with a spread argument",
         expr,
-        "Node's performance.now takes none",
+        "Node ignores performance.now's arguments; pass plain expressions or drop them",
       );
     }
-    return { kind: "libCall", fn: "perf.now", args: [], type: F64, loc };
+    const stmts: IrStmt[] = [];
+    for (const arg of args) {
+      const value = lowerer.lowerExpr(arg);
+      if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+    }
+    const clock: IrExpr = { kind: "libCall", fn: "perf.now", args: [], type: F64, loc };
+    return stmts.length === 0 ? clock : { kind: "seqExpr", stmts, result: clock, type: F64, loc };
   }
   if (
     access.name.text === "bind" &&

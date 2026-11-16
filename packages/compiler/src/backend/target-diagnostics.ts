@@ -172,6 +172,7 @@ export function moduleWasiUnavailableSurface(
     ["http2Stream", "network sockets (WASI Preview 1 has no socket API)"],
     ["dgramSocket", "network sockets (WASI Preview 1 has no socket API)"],
     ["fsWatcher", "filesystem watching (WASI Preview 1 has no notification API)"],
+    ["statWatcher", "filesystem watching (WASI Preview 1 has no notification API)"],
     ["httpReq", "network sockets (WASI Preview 1 has no socket API)"],
     ["httpRes", "network sockets (WASI Preview 1 has no socket API)"],
     ["httpClientReq", "network sockets (WASI Preview 1 has no socket API)"],
@@ -281,7 +282,7 @@ export function moduleWasiUnavailableSurface(
   if (moduleUsesWebCryptoAsymmetric(mod)) {
     return {
       surface:
-        "WebCrypto ECDSA and RSA (the wasm32-wasi runtime does not include the mbedTLS library)",
+        "WebCrypto's asymmetric algorithms (the wasm32-wasi runtime does not include the mbedTLS library)",
       loc: entryLoc,
     };
   }

@@ -97,13 +97,13 @@ createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
 /* DiffieHellman's Object.prototype members. */
 import { createDiffieHellman } from "node:crypto";
 createDiffieHellman(Buffer.from([23])).toString();
-/* WebCrypto beyond the secret-key slice: @types/node declares the whole
+/* WebCrypto beyond the native slice: @types/node declares the whole
  * SubtleCrypto surface, and the methods outside the slice, such as
- * getPublicKey, fence by name. */
-async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
-  await crypto.subtle.getPublicKey(key, ["verify"]);
+ * encapsulateBits, fence by name. */
+async function encapsulatedWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
+  await crypto.subtle.encapsulateBits("ML-KEM-768", key);
 }
-void publicKeyWithWebCrypto;
+void encapsulatedWithWebCrypto;
 /* Node's navigator global: navigator.locks (the Web Locks API) fences
  * by name. */
 const locks = navigator.locks;

@@ -228,6 +228,14 @@ export interface TypeFailure {
 /** SC3002–SC3004 — native-helper target, installation, and execution
  * failures. These are ordinary build diagnostics: a missing optional package
  * or malformed LLVM input must never surface as an internal compiler error. */
+
+/** What each native-helper diagnostic says when its site supplied no reason:
+ * the code alone would not tell a user which stage failed. */
+const NATIVE_CODEGEN_FALLBACK: Record<"SC3002" | "SC3003" | "SC3004", string> = {
+  SC3002: "the native target was refused without a stated reason",
+  SC3003: "the native helper installation or version check failed without a stated reason",
+  SC3004: "the native helper code generation failed without a stated reason",
+};
 export function nativeCodegenDiag(
   code: "SC3002" | "SC3003" | "SC3004",
   message: string,
@@ -241,7 +249,7 @@ export function nativeCodegenDiag(
       : undefined);
   return {
     code,
-    message,
+    message: message.trim() === "" ? NATIVE_CODEGEN_FALLBACK[code] : message,
     loc: { file, start: 0, end: 0 },
     ...(shown !== undefined ? { hint: shown } : {}),
   };

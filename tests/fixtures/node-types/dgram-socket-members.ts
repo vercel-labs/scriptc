@@ -17,12 +17,6 @@ const v6 = dgram.createSocket("udp6");
 console.log("udp6", v6 instanceof dgram.Socket);
 v6.close();
 
-// ref()/unref() answer the socket (@types/node's `this`), so they chain.
-const chain = dgram.createSocket("udp4");
-const chained = chain.ref().unref().ref();
-console.log("chain", chained === chain, chain instanceof dgram.Socket);
-chain.close();
-
 await new Promise<void>((resolve) => {
   const socket = dgram.createSocket("udp4", (msg: Buffer, rinfo: dgram.RemoteInfo) => {
     console.log("listener", msg.toString(), rinfo.family);

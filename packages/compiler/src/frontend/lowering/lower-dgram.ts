@@ -27,7 +27,6 @@ import {
   VOID,
 } from "../../ir/ir.js";
 import { resultIsDiscarded } from "./call-position.js";
-import { chainingResultDiscarded, receiverReturningCall } from "./lower-server.js";
 import { lowerCallbackArg as lowerCallbackArgShared } from "./callback-arg.js";
 import { documentedParameter } from "./call-signatures.js";
 import {
@@ -42,11 +41,7 @@ const DGRAM_SURFACE_HINT =
   "supported dgram.Socket members";
 
 /** Dgram's callback policy: validate every positional parameter and require
- * callbacks to return void; raw dyn values adapt only to zero-arg slots.
- * A zero-argument slot (bind/connect/close callbacks and the
- * listening/close/connect events) also takes a function whose parameters
- * are all dynamic — Node hands it no arguments, so `resolve` from a
- * `new Promise(...)` executor fits. */
+ * callbacks to return void; raw dyn values adapt only to zero-arg slots. */
 function lowerCallbackArg(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -58,7 +53,6 @@ function lowerCallbackArg(
   return lowerCallbackArgShared(lowerer, node, what, maxParams, paramOk, paramHint, {
     dynZero: true,
     rejectValueReturn: true,
-    ...(maxParams === 0 ? { dynTuple: [] } : {}),
   });
 }
 
@@ -797,7 +791,13 @@ function untypedJsListener(lowerer: Lowerer, node: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (ts.isArrowFunction(e) || ts.isFunctionExpression(e))
     return e.parameters.nodes.some((param) => !documentedParameter(param));
-  return (lowerer.typeOf(e).flags & ts.TypeFlags.Any) !== 0;
+  if ((lowerer.typeOf(e).flags & ts.TypeFlags.Any) !== 0) return true;
+  /* A function passed by name (an identifier or a member read): its
+   * parameters are untyped when one of them lowers to the dynamic kind —
+   * the JavaScript declaration case, and any listener whose parameters are
+   * unknown. Those register through the socket's checked-dynamic handle. */
+  const t = lowerer.mapTypeOf(lowerer.typeOf(e));
+  return t !== null && t.kind === "func" && t.params.some((p) => p.kind === "dyn");
 }
 
 /** True when a bind argument is Node's options record rather than a port. */
@@ -1112,6 +1112,7 @@ export function lowerDgramMethodCall(
     return { kind: "libCall", fn: "dgram.closeCb", args: [receiver, cb], type: VOID, loc };
   }
   if (name === "unref" || name === "ref") {
+    requireStatementPosition(lowerer, call, `socket.${name}()`);
     if (args.length !== 0) {
       lowerer.noLowering(
         `${name} with ${args.length} arguments`,
@@ -1121,13 +1122,7 @@ export function lowerDgramMethodCall(
     }
     const receiver = lowerer.lowerExpr(access.expression);
     const fn: IrLibFn = name === "unref" ? "dgram.unref" : "dgram.ref";
-    // Both answer the socket (Node's `return this`), so a chained
-    // `socket.ref().send(...)` or a stored result keeps working; a
-    // discarded result stays the plain void call.
-    if (chainingResultDiscarded(lowerer, call)) {
-      return { kind: "libCall", fn, args: [receiver], type: VOID, loc };
-    }
-    return receiverReturningCall(lowerer, fn, [receiver], DGRAMSOCK_T, loc);
+    return { kind: "libCall", fn, args: [receiver], type: VOID, loc };
   }
   if ((name === "on" || name === "once") && args.length === 2) {
     requireStatementPosition(lowerer, call, `socket.${name}(...)`);

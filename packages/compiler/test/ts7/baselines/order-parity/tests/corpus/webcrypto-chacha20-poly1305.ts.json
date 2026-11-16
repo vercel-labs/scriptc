@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/webcrypto-chacha20-poly1305.ts"
+ ],
+ "diags": []
+}

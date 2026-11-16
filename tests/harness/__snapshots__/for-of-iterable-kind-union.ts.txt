@@ -12,7 +12,7 @@ for-of-iterable-kind-union.ts:22:23 - error SC2001: values of type 'string | str
      |                       ^~~~~~~~~~~
   23 |   return count;
 
-for-of-iterable-kind-union.ts:32:3 - error SC1070: 'for await' over this value (supported: typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams) is not supported yet
+for-of-iterable-kind-union.ts:32:3 - error SC1070: 'for await' over this value (supported: fsPromises.watch, typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams) is not supported yet
 
   31 |   let count = 0;
   32 |   for await (const entry of lists(flag)) count += typeof entry === "number" ? entry : entry.length;

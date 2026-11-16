@@ -706,10 +706,13 @@ static ScrDyn *sw_import(const ScrDyn *args) {
     scr_throw_domex("DataError", "Invalid key type");
     goto done;
   }
-  if (sw_is_ec_kind(kind) && strcmp(scr_pki_key_curve(key), curve) != 0) {
-    scr_pki_key_release(key);
-    scr_throw_domex("DataError", "Named curve mismatch");
-    goto done;
+  if (sw_is_ec_kind(kind)) {
+    const char *actual = scr_pki_key_curve(key);
+    if (actual == NULL || strcmp(actual, curve) != 0) {
+      scr_pki_key_release(key);
+      scr_throw_domex("DataError", "Named curve mismatch");
+      goto done;
+    }
   }
   if (private_key && usages == 0) {
     scr_pki_key_release(key);
@@ -1122,6 +1125,103 @@ static ScrPromise *sw_sign(const ScrDyn *args) { return sw_sign_verify(args, fal
 
 static ScrPromise *sw_verify(const ScrDyn *args) { return sw_sign_verify(args, true); }
 
+/* KeyObject.toCryptoKey for an asymmetric KeyObject: the algorithm
+ * normalizes like importKey's, then the usages convert, the key type and
+ * curve must match, and the usages the key half accepts are checked. */
+static ScrDyn *sw_to_crypto_key(const ScrDyn *key_value, const ScrDyn *const *args, size_t argc) {
+  ScrDyn *algorithm = argc > 0 ? scr_dyn_retain(args[0]) : scr_dyn_undefined();
+  ScrDyn *extractable_value = argc > 1 ? scr_dyn_retain(args[1]) : scr_dyn_undefined();
+  ScrDyn *usages_value = argc > 2 ? scr_dyn_retain(args[2]) : scr_dyn_undefined();
+  ScrPkiKey *material = scr_crypto_key_object_material(key_value);
+  ScrDyn *plain = NULL;
+  ScrDyn *out = NULL;
+  if (!material) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "value is not a KeyObject.");
+    goto done;
+  }
+  bool private_key = scr_pki_key_is_private(material);
+  bool ed = scr_pki_key_is_ed25519(material);
+  bool x = scr_pki_key_is_x25519(material);
+  bool rsa_key = scr_pki_key_is_rsa(material);
+  bool rsa = rsa_key && !scr_pki_key_is_rsa_pss(material);
+  /* An RSA-PSS key is RSA-shaped but not a plain RSA key; it is never an
+   * EC key, and its curve name is NULL. */
+  bool ec = !ed && !x && !rsa_key;
+  const char *name = sw_algorithm_name(algorithm);
+  if (!name) goto done;
+  SwKind kind = sw_kind_of(name);
+  plain = scr_wc_plain(algorithm);
+  if (!plain) goto done;
+  const char *curve = NULL;
+  const char *hash = NULL;
+  if (kind == SW_ED25519 || kind == SW_X25519) {
+    /* no parameters */
+  } else if (sw_is_ec_kind(kind)) {
+    if (!scr_wc_is_object(plain)) {
+      scr_wc_missing_member("EcKeyImportParams", "namedCurve");
+      goto done;
+    }
+    curve = sw_named_curve(plain, "EcKeyImportParams");
+    if (!curve) goto done;
+  } else {
+    if (!scr_wc_is_object(plain)) {
+      scr_wc_missing_member("RsaHashedImportParams", "hash");
+      goto done;
+    }
+    hash = sw_hash(plain, "RsaHashedImportParams", true, "toCryptoKey");
+    if (!hash) goto done;
+  }
+  long usages = scr_wc_value_usages(usages_value);
+  if (usages < 0) goto done;
+  /* Node validates the usages against the algorithm before it looks at the
+   * key, so a usage the algorithm never takes is that error even when the
+   * key itself has the wrong type. */
+  if ((unsigned)usages & ~sw_pair_usages(kind)) {
+    sw_unsupported_usage(kind);
+    goto done;
+  }
+  bool matches = (kind == SW_ED25519 && ed) || (kind == SW_X25519 && x) ||
+                 (sw_is_ec_kind(kind) && ec) || (sw_is_rsa_kind(kind) && rsa);
+  if (!matches) {
+    scr_throw_domex("DataError", "Invalid key type");
+    goto done;
+  }
+  if (sw_is_ec_kind(kind)) {
+    const char *actual = scr_pki_key_curve(material);
+    if (actual == NULL || strcmp(actual, curve) != 0) {
+      scr_throw_domex("DataError", "Named curve mismatch");
+      goto done;
+    }
+  }
+  unsigned allowed = sw_import_allowed(kind, private_key);
+  if ((unsigned)usages & ~allowed) {
+    sw_unsupported_usage(kind);
+    goto done;
+  }
+  if (private_key && usages == 0) {
+    scr_throw_domex("SyntaxError", "Usages cannot be empty when importing a private key.");
+    goto done;
+  }
+  out = sw_key_new(material, kind, hash, (unsigned)usages, scr_dyn_truthy(extractable_value));
+  material = NULL; /* consumed */
+done:
+  if (material) scr_pki_key_release(material);
+  if (plain) scr_dyn_release(plain);
+  scr_dyn_release(algorithm);
+  scr_dyn_release(extractable_value);
+  scr_dyn_release(usages_value);
+  return out;
+}
+
+static ScrDyn *sw_key_object_from(const ScrDyn *crypto_key) {
+  SwKey *k = sw_key_of(crypto_key);
+  if (!k) {
+    scr_dyn_arg_type_fail("key", "an instance of CryptoKey", crypto_key);
+    return NULL;
+  }
+  return scr_crypto_key_object_from_material(k->key);
+}
+
 /* getPublicKey: the public CryptoKey of a private one, with the usages the
  * caller asks for. All of this unit's algorithms verify with their public
  * key, and the public key is always extractable. */
@@ -1160,6 +1260,8 @@ static const ScrWcAsymmetric sw_table = {
     .decrypt = sw_decrypt,
     .derive_bits = sw_derive_bits,
     .get_public_key = sw_get_public_key,
+    .to_crypto_key = sw_to_crypto_key,
+    .key_object_from = sw_key_object_from,
     .is_key = sw_is_key,
     .key_is_private = sw_key_is_private,
 };

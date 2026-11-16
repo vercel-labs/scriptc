@@ -62,6 +62,13 @@ declare module "tls" {
     /* a new X509Certificate on each call, or undefined without one */
     getPeerX509Certificate(): import("crypto").X509Certificate | undefined;
     getX509Certificate(): import("crypto").X509Certificate | undefined;
+    /* The SNI name the client requested (a server socket) or the one this
+     * client offered; false without one. */
+    readonly servername: string | false;
+    /* The session a resumption would use; null before one exists. */
+    getSession(): Buffer | null;
+    /* Renegotiation is off by default: the call is a no-op. */
+    disableRenegotiation(): void;
   }
   /* A certificate as getPeerCertificate() and X509Certificate's
    * toLegacyObject() answer it: subject and issuer map attribute short
@@ -134,6 +141,16 @@ declare module "tls" {
     secureConnectListener?: () => void,
   ): TLSSocket;
   export function connect(
+    path: string,
+    options?: ConnectionOptions,
+    secureConnectListener?: () => void,
+  ): TLSSocket;
+  export function connect(
+    port: number,
+    host: string,
+    secureConnectListener?: () => void,
+  ): TLSSocket;
+  export function connect(
     port: number,
     options?: ConnectionOptions,
     secureConnectListener?: () => void,
@@ -149,7 +166,7 @@ declare module "tls" {
   export interface SecureContext {}
   /* @types/node's name for createSecureContext's options */
   export type SecureContextOptions = TlsOptions;
-  export function createSecureContext(options: TlsOptions): SecureContext;
+  export function createSecureContext(options?: TlsOptions): SecureContext;
   /** The CA-store introspection surface (scr_tls_ca.c): per-type cached
    * PEM string arrays. The host bundle stands in for Node's compiled-in
    * Mozilla roots ('bundled', and rootCertificates) AND the platform

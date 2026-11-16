@@ -52,16 +52,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Node v24's stream default (lib/internal/streams/state.js — 64 KiB
- * since nodejs/node#52037, EXCEPT win32, where the very same line keeps
- * the old 16 KiB: `process.platform === 'win32' ? 16 * 1024 : 64 * 1024`.
- * The triple decides at compile time, like the path/EOL bindings). */
-#ifdef _WIN32
-#define SCR_STREAM_DEFAULT_HWM 16384
-#else
-#define SCR_STREAM_DEFAULT_HWM 65536
-#endif
-
 static void scr_stream_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();
@@ -1865,7 +1855,7 @@ static ScrStream *scr_from_stream(ScrFromSrc *f, ScrStreamReadInv read_inv, bool
     return NULL;
   }
   if (hwm_kind == SCR_FROM_HWM_FROM && !f->single) hwm = 1;
-  else if (hwm_kind != SCR_FROM_HWM_SET) hwm = object_mode ? 16 : -1;
+  else if (hwm_kind != SCR_FROM_HWM_SET) hwm = object_mode ? scr_stream_get_default_hwm(true) : -1;
   ScrClosure *read = scr_closure_new((void *)read_inv, 1);
   read->caps[0] = scr_box_new_obj(scr_from_src_retain_v, scr_from_src_release_v, NULL);
   scr_box_set_ref(read->caps[0], f); /* moves */
@@ -1897,7 +1887,7 @@ ScrStream *scr_stream_new_from_readable(ScrClosure *read, ScrStreamReadInv read_
     return NULL;
   }
   bool object_mode = (bits & SCR_FROM_BYTE_MODE) == 0;
-  if (bits & SCR_FROM_DEFAULT_HWM) hwm = object_mode ? 16 : -1;
+  if (bits & SCR_FROM_DEFAULT_HWM) hwm = object_mode ? scr_stream_get_default_hwm(true) : -1;
   else if (!(bits & SCR_FROM_HAS_HWM)) hwm = 1;
   ScrStream *s = scr_from_new((bits & SCR_FROM_DUPLEX) != 0, hwm, read, read_inv, destroy, destroy_inv);
   if (object_mode) s->st->r.object_entries = true;
@@ -2749,8 +2739,8 @@ static ScrStreamState *scr_stream_state_new(bool has_r, bool has_w,
   st->auto_destroy = auto_destroy;
   st->emit_close = emit_close;
   st->allow_half_open = allow_half_open;
-  st->r.hwm = rhwm >= 0 ? (size_t)rhwm : SCR_STREAM_DEFAULT_HWM;
-  st->w.hwm = whwm >= 0 ? (size_t)whwm : SCR_STREAM_DEFAULT_HWM;
+  st->r.hwm = rhwm >= 0 ? (size_t)rhwm : (size_t)scr_stream_get_default_hwm(false);
+  st->w.hwm = whwm >= 0 ? (size_t)whwm : (size_t)scr_stream_get_default_hwm(false);
   st->r.flowing = -1;
   /* Node's ReadableState.sync starts TRUE: pushes before the first _read
    * attempt take the buffered path (never the direct 'data' emit). */
@@ -3377,8 +3367,8 @@ static bool scr_stream_parse_dyn_opts(const ScrDyn *opts, char base, ScrStreamDy
     if (hwm == -2) return false;
     out->rhwm = out->whwm = hwm;
   }
-  if (out->rhwm == -1 && out->readable_object) out->rhwm = 16;
-  if (out->whwm == -1 && out->writable_object) out->whwm = 16;
+  if (out->rhwm == -1 && out->readable_object) out->rhwm = scr_stream_get_default_hwm(true);
+  if (out->whwm == -1 && out->writable_object) out->whwm = scr_stream_get_default_hwm(true);
   out->auto_destroy = !scr_stream_dynopt_false(scr_dyn_obj_get((ScrDyn *)opts, "autoDestroy", 11));
   out->emit_close = !scr_stream_dynopt_false(scr_dyn_obj_get((ScrDyn *)opts, "emitClose", 9));
   if (duplexish) {
@@ -5206,7 +5196,8 @@ static ScrStream *scr_stream_compose_impl(size_t n, ScrStream **streams, const S
   bool object_mode = c->tail->st->has_r && c->tail->st->r.object_entries;
   bool w_object = c->head && c->head->st->has_w && c->head->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
-      object_mode ? 16 : -1, w_object ? 16 : -1, true, true, true, c->readable, c->writable,
+      object_mode ? scr_stream_get_default_hwm(true) : -1, w_object ? scr_stream_get_default_hwm(true) : -1,
+      true, true, true, c->readable, c->writable,
       c->readable ? scr_compose_closure((void *)&scr_compose_read_inv, c) : NULL,
       c->readable ? &scr_compose_read_inv : NULL,
       c->writable ? scr_compose_closure((void *)&scr_compose_write_inv, c) : NULL,
@@ -5518,7 +5509,8 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
   bool r_object = r && r->st->has_r && r->st->r.object_entries;
   bool w_object = w && w->st->has_w && w->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
-      r_object ? 16 : -1, w_object ? 16 : -1, true, true, true, x->readable, x->writable,
+      r_object ? scr_stream_get_default_hwm(true) : -1, w_object ? scr_stream_get_default_hwm(true) : -1,
+      true, true, true, x->readable, x->writable,
       x->readable ? scr_dupx_closure((void *)&scr_dupx_read_inv, x) : NULL,
       x->readable ? &scr_dupx_read_inv : NULL,
       x->writable ? scr_dupx_closure((void *)&scr_dupx_write_inv, x) : NULL,
@@ -5589,8 +5581,10 @@ static void scr_dupx_promise_entry(ScrFiber *fiber, void *arg) {
 /* The readable Duplexify over a boxed promise (moves boxed). +1. */
 static ScrStream *scr_dupx_from_boxed(ScrDyn *boxed) {
   ScrClosure *read = scr_closure_new((void *)&scr_dupx_noop_read, 0);
-  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, true, false, read,
-                                       &scr_dupx_noop_read, NULL, NULL, NULL, NULL, NULL, NULL);
+  ScrStream *d = scr_stream_new_duplex(scr_stream_get_default_hwm(true),
+                                       scr_stream_get_default_hwm(true), true, true, true, true,
+                                       false, read, &scr_dupx_noop_read, NULL, NULL, NULL, NULL,
+                                       NULL, NULL);
   scr_stream_set_object_mode(d, true, true);
   d->cls = "Duplexify";
   ScrDupxPromise *ctx = malloc(sizeof *ctx);
@@ -6869,11 +6863,14 @@ void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
  * passes the object-mode high-water marks (16 by default). */
 void scr_stream_set_object_mode(ScrStream *s, bool readable, bool writable) {
   ScrStreamState *st = s->st;
-  if (readable && st->has_r) {
+  /* The mode is the OPTION, not the side: Node keeps an object-mode state
+   * even on a disabled side, so `Duplex.from(promise).writableObjectMode`
+   * answers true while `writable` stays false. */
+  if (readable) {
     st->r.object_entries = true;
     st->r.object_mode_opt = true;
   }
-  if (writable && st->has_w) st->w.object_mode = st->w.values = true;
+  if (writable) st->w.object_mode = st->w.values = true;
 }
 
 /* decodeStrings: false — string writes stay strings (scr_stream_write_string). */
@@ -8709,11 +8706,21 @@ static ScrStream *scr_stream_child_writable(const char *cls, ScrClosure *write,
   s->cls = cls;
   return s;
 }
+/* Whether a chunk pushed now would reach a consumer: the Readable is
+ * flowing (a 'data' listener or resume()), a 'readable' listener is attached,
+ * or its consumer asked to read. */
+static bool scr_stream_wants_chunks(ScrStream *s) {
+  const ScrStreamState *st = s->st;
+  if (!st || !st->has_r) return false;
+  return st->r.flowing == 1 || st->r.readable_listening || st->r.need_readable;
+}
+
 const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_child_readable, scr_stream_child_writable,
   scr_stream_retain_v, scr_stream_release_v, scr_stream_trace,
   scr_stream_push, scr_stream_push_null,
   scr_stream_write_done, scr_stream_final_done,
+  scr_stream_wants_chunks,
 };
 
 static ScrDyn *scr_stream_dyn_view_v(void *stream) { return scr_stream_dyn_view(stream); }

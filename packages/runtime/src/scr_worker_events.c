@@ -956,9 +956,11 @@ static void scr_worker_dispatch(void) {
      * did not capture is drained by the pipe above, so it takes a chunk only
      * while a reader (a 'data' listener or resume()) is flowing, as Node's
      * pipe consumes everything else. */
-    bool flowing = stream != NULL && scr_worker_stdio_ops->flowing != NULL &&
-                   scr_worker_stdio_ops->flowing(stream) > 0;
-    if (stream && (source->stdio_captured[stderr_stream] || flowing)) {
+    /* A chunk nobody will read is forwarded and dropped: pushing it into a
+     * Readable that never drains it would grow the parent without bound. */
+    bool wanted = stream != NULL && scr_worker_stdio_ops->wanted != NULL &&
+                  scr_worker_stdio_ops->wanted(stream);
+    if (stream && (source->stdio_captured[stderr_stream] || wanted)) {
       ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)event->length);
       memcpy(chunk->data, event->data, event->length);
       chunk->is_buffer = true;

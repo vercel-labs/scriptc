@@ -1,15 +1,25 @@
-import { Worker, isMainThread } from "node:worker_threads";
+import { Worker, isMainThread, workerData } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 const self = fileURLToPath(import.meta.url);
 
-// A worker that logs without the stdout option: its writes go to the process's
-// own output, and worker.stdout carries nothing left over. A parent that never
-// reads the stream must not accumulate its chunks.
+// Without the stdout option a worker's writes go to the process's own output
+// and the parent's Readable carries nothing left over: a parent that never
+// reads it must not accumulate chunks. A parent that reads it — a 'readable'
+// listener with read() — still receives them.
 if (isMainThread) {
-  const worker = new Worker(self);
-  worker.on("exit", () => {
-    console.log("left in the stream", worker.stdout.readableLength > 0);
+  const quiet = new Worker(self, { workerData: "flood" });
+  quiet.on("exit", () => {
+    console.log("left in the unread stream", quiet.stdout.readableLength > 0);
+
+    const reader = new Worker(self, { workerData: "one" });
+    reader.stdout.on("readable", () => {
+      const chunk = reader.stdout.read();
+      if (chunk) console.log("readable got", String(chunk).trim());
+    });
+    reader.on("exit", () => console.log("left in the read stream", reader.stdout.readableLength > 0));
   });
-} else {
+} else if (workerData === "flood") {
   for (let i = 0; i < 200; i++) console.log("line", i);
+} else {
+  console.log("only line");
 }

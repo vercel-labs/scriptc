@@ -8706,12 +8706,21 @@ static ScrStream *scr_stream_child_writable(const char *cls, ScrClosure *write,
   s->cls = cls;
   return s;
 }
+/* Whether a chunk pushed now would reach a consumer: the Readable is
+ * flowing (a 'data' listener or resume()), a 'readable' listener is attached,
+ * or its consumer asked to read. */
+static bool scr_stream_wants_chunks(ScrStream *s) {
+  const ScrStreamState *st = s->st;
+  if (!st || !st->has_r) return false;
+  return st->r.flowing == 1 || st->r.readable_listening || st->r.need_readable;
+}
+
 const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_child_readable, scr_stream_child_writable,
   scr_stream_retain_v, scr_stream_release_v, scr_stream_trace,
   scr_stream_push, scr_stream_push_null,
   scr_stream_write_done, scr_stream_final_done,
-  scr_stream_flowing,
+  scr_stream_wants_chunks,
 };
 
 static ScrDyn *scr_stream_dyn_view_v(void *stream) { return scr_stream_dyn_view(stream); }

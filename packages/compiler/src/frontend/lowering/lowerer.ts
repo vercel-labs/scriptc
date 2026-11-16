@@ -127,7 +127,11 @@ import { OwnKeyListState } from "./own-key-lists.js";
 import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/function-references.js";
 import { ownEscapingLocals } from "../../ir/local-scopes.js";
 import { FunctionViews } from "./function-views.js";
-import { everyStmtList, observeRecordLiteralRebuilds } from "../../ir/traverse.js";
+import {
+  everyStmtList,
+  observeRecordLiteralRebuilds,
+  withStructureSharing,
+} from "../../ir/traverse.js";
 import { canAssertClassValue, checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import {
@@ -291,6 +295,7 @@ import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-att
 import { inferredCollectionType } from "./js-collection-types.js";
 import { sloppyDynamicWrites } from "./frozen-records.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
+import { FunctionCensus } from "./function-census.js";
 import { applyHandleProperties, handlePropertyScanRoots } from "./handle-properties.js";
 import { shareIslandProcessState } from "./island-process-state.js";
 import { adoptIslandThenables } from "./island-thenables.js";
@@ -13809,7 +13814,9 @@ export class Lowerer {
       };
     }
 
-    return this.finishModule(functions, false, undefined, classDispatch);
+    return withStructureSharing(() =>
+      this.finishModule(functions, false, undefined, classDispatch),
+    );
   }
 
   /** Final retention, pruning, and module assembly shared by ordinary emit
@@ -13821,6 +13828,10 @@ export class Lowerer {
     bodies?: FinishedBodies,
     dispatch?: ClassDynamicDispatch,
   ): LowerResult {
+    // One census of the functions' node kinds serves every finish pass below
+    // that looks for a rare kind: they skip a function that cannot hold one
+    // instead of walking it.
+    const census = new FunctionCensus();
     // Whether the program uses workers is final now.
     settleLoaderShareEnv(this, functions);
     // Every instance of every generic value is known now (the
@@ -13846,31 +13857,35 @@ export class Lowerer {
     finalizeGeneratorArrays(this, functions);
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
-    if (!library) installBuiltinStatics(this, functions);
+    if (!library) installBuiltinStatics(this, functions, census);
     if (!library) registerIslandIntrinsics(this, functions);
-    boxBuiltinValuesChecked(this, functions);
+    boxBuiltinValuesChecked(this, functions, census);
     shareBuiltinValueIdentities(this, functions);
     finalizeFunctionNames(this, functions);
     finalizeFunctionSourceText(this, functions);
     if (this.diags.length === 0) fuseArrayPipelines(this, functions);
     finalizeClassMethodValues(this, functions);
     finalizePrivateBrands(this, functions);
-    routeWrapperConsumers(this, functions);
-    trackClassFieldCreation(this, functions);
+    routeWrapperConsumers(this, functions, census);
+    trackClassFieldCreation(this, functions, census);
     boxClassInstancesExactly(this, functions);
     addUntypedIntegrityWords(this);
-    guardClassAttributeWrites(this, functions);
+    guardClassAttributeWrites(this, functions, census);
     guardPartialReads(this, functions);
-    guardFrozenWrites(this, functions);
+    guardFrozenWrites(this, functions, census);
     applyHandleProperties(this, functions);
     adoptIslandThenables(this, functions);
     shareIslandProcessState(this, functions);
-    installBufferValue(functions);
+    // applyHandleProperties, adoptIslandThenables and shareIslandProcessState
+    // rewrite nodes inside unchanged statement lists, so the census of every
+    // function they touched no longer describes its body.
+    census.clear();
+    installBufferValue(functions, census);
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
     const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
     installFetchBodyWebStreams(this, functions);
-    returnDispatchReceivers(this, functions);
+    returnDispatchReceivers(this, functions, census);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
@@ -13963,7 +13978,7 @@ export class Lowerer {
     refuseX509DynValues(this, functions);
     refuseUnseenBuiltinMemberWrites(this);
     markInferredFactChecks(functions, this.program);
-    const sloppyDynWrites = sloppyDynamicWrites(this, functions);
+    const sloppyDynWrites = sloppyDynamicWrites(this, functions, census);
     const module: IrModule | null =
       this.diags.length > 0
         ? null
@@ -15123,7 +15138,9 @@ export class Lowerer {
     this.reachableForArtifacts = reachable;
     return {
       reachable,
-      result: this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
+      result: withStructureSharing(() =>
+        this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
+      ),
     };
   }
 

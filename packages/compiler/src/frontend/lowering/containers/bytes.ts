@@ -49,6 +49,7 @@ import { lowerBytesIteratorValue } from "../iterator-adapters.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
 import { callbackSite, findPredicateOk, predicateToBoolean } from "./array-callbacks.js";
 import { typeKey } from "../../type-mapper.js";
+import type { FunctionCensus } from "../function-census.js";
 
 /** TypedArray.prototype.sort and toSorted. The receiver and comparator
  * expressions are evaluated before entering the helper (buildBytesSortFn).
@@ -3474,7 +3475,7 @@ const BUFFER_VALUE_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 
 /** A program that reads the Buffer function's value installs it in %main,
  * so a Buffer's `.constructor` answers the same function. */
-export function installBufferValue(functions: IrFunction[]): void {
+export function installBufferValue(functions: IrFunction[], census: FunctionCensus): void {
   let found = false;
   const visitor = {
     expr: (e: IrExpr): boolean => {
@@ -3484,6 +3485,8 @@ export function installBufferValue(functions: IrFunction[]): void {
     stmt: (): boolean => !found,
   };
   for (const fn of functions) {
+    // The visitor looks for four rare entry points.
+    if (!census.hasAnyLibFn(fn, BUFFER_VALUE_FNS)) continue;
     for (const s of fn.body) everyStmt(s, visitor);
     if (found) break;
   }

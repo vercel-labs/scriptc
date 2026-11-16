@@ -2649,8 +2649,11 @@ static ScrDyn *sp_key_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
     return scr_dyn_new_bool(same);
   }
   if (strcmp(method, "toCryptoKey") == 0) {
-    sp_not_supported("KeyObject.toCryptoKey");
-    return NULL;
+    if (!scr_crypto_to_crypto_key) {
+      sp_not_supported("KeyObject.toCryptoKey");
+      return NULL;
+    }
+    return scr_crypto_to_crypto_key(self, args, argc);
   }
   scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
@@ -6085,6 +6088,15 @@ ScrPkiKey *scr_pki_key_retain(ScrPkiKey *key) { return sp_key_retain(key); }
 void scr_pki_key_release(ScrPkiKey *key) { sp_key_release(key); }
 
 bool scr_pki_key_is_private(const ScrPkiKey *key) { return key->private_key; }
+
+ScrPkiKey *scr_crypto_key_object_material(const ScrDyn *value) {
+  SpKey *key = sp_key_of(value);
+  return key ? sp_key_retain(key) : NULL;
+}
+
+ScrDyn *scr_crypto_key_object_from_material(ScrPkiKey *key) {
+  return sp_key_box(sp_key_retain(key));
+}
 
 bool scr_pki_key_is_rsa_pss(const ScrPkiKey *key) { return key->rsa_pss; }
 

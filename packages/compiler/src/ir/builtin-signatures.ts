@@ -4186,6 +4186,8 @@ function buildLibFnSignatures() {
     "webcrypto.deriveBits": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.deriveKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.getPublicKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "webcrypto.keyObjectToCryptoKey": { argTypes: [DYN], result: DYN },
+    "webcrypto.keyObjectFrom": { argTypes: [DYN], result: DYN },
     "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
     "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },

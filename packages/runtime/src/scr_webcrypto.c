@@ -223,6 +223,42 @@ static int scr_wc_usage_index(const ScrStr *s) {
 }
 
 /* sequence<KeyUsage> over an array: the usage mask (-1 on failure). */
+/* The keyUsages sequence KeyObject.toCryptoKey takes: Node's messages name
+ * the value "Value" rather than an argument position. */
+long scr_wc_value_usages(ScrDyn *value) {
+  ScrDyn *plain = scr_wc_plain(value);
+  if (!plain) return -1;
+  if (plain->kind != SCR_DYN_ARR) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "Value cannot be converted to sequence.");
+    scr_dyn_release(plain);
+    return -1;
+  }
+  long mask = 0;
+  double n = scr_dyn_arr_len(plain);
+  for (double i = 0; i < n; i++) {
+    ScrDyn *item = scr_dyn_arr_at(plain, i);
+    ScrStr *s = scr_wc_dom_string(item);
+    scr_dyn_release(item);
+    if (!s) {
+      scr_dyn_release(plain);
+      return -1;
+    }
+    int k = scr_wc_usage_index(s);
+    if (k < 0) {
+      scr_wc_type_error("ERR_INVALID_ARG_VALUE",
+                        "Value[%.0f] '%.*s' is not a valid enum value of type KeyUsage.", i,
+                        (int)(s->len > 200 ? 200 : s->len), s->data);
+      scr_str_release(s);
+      scr_dyn_release(plain);
+      return -1;
+    }
+    scr_str_release(s);
+    mask |= 1L << k;
+  }
+  scr_dyn_release(plain);
+  return mask;
+}
+
 long scr_wc_key_usages(const char *prefix, size_t index, ScrDyn *value) {
   ScrDyn *plain = scr_wc_plain(value);
   if (!plain) return -1;
@@ -1175,6 +1211,119 @@ ScrPromise *scr_webcrypto_import_key(ScrDyn *args) {
   ScrDyn *key = scr_wc_import(args);
   if (!key) return scr_wc_rejected();
   return scr_wc_resolved(key);
+}
+
+/* ── KeyObject.toCryptoKey and KeyObject.from ─────────────────────────
+ * node:crypto's KeyObject converts to a CryptoKey with toCryptoKey, and a
+ * CryptoKey converts to a KeyObject with KeyObject.from. The key material
+ * is the same native key: a secret key's bytes go through the import path,
+ * and the pki unit builds the asymmetric CryptoKey and KeyObject. */
+
+static ScrDyn *scr_wc_key_object_to_crypto_key_values(const ScrDyn *key, ScrDyn *algorithm,
+                                                      ScrDyn *extractable_value,
+                                                      ScrDyn *usages_value) {
+  bool asymmetric = key && key->kind == SCR_DYN_HANDLE &&
+                    (key->v.handle.tag == SCR_DYNH_PRIVATE_KEY ||
+                     key->v.handle.tag == SCR_DYNH_PUBLIC_KEY);
+  if (asymmetric) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->to_crypto_key) {
+      scr_wc_unsupported("toCryptoKey", "an asymmetric KeyObject");
+      return NULL;
+    }
+    const ScrDyn *args[3] = {algorithm, extractable_value, usages_value};
+    return scr_wc_asymmetric->to_crypto_key(key, args, 3);
+  }
+  static const char *const names[] = {"AES-CBC", "AES-CTR", "AES-GCM", "AES-KW",
+                                      "HMAC",    "HKDF",    "PBKDF2"};
+  ScrWcAlgorithm alg;
+  if (!scr_wc_normalize(algorithm, names, SCR_WC_COUNT(names), SCR_WC_OP_IMPORT, &alg))
+    return NULL;
+  long usages = scr_wc_value_usages(usages_value);
+  if (usages < 0) return NULL;
+  size_t len = 0;
+  const unsigned char *bytes = scr_key_object_bytes(key, &len);
+  if (!bytes) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "value is not a KeyObject.");
+    return NULL;
+  }
+  ScrBytes *view = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  if (len) memcpy(view->data, bytes, len);
+  ScrDyn *out = scr_wc_import_key_sync("raw-secret", view, NULL, &alg,
+                                       scr_dyn_truthy(extractable_value), usages);
+  scr_bytes_release(view);
+  return out;
+}
+
+/* KeyObject.prototype.toCryptoKey(algorithm, extractable, keyUsages) as a
+ * compiler call: the argument vector is one dyn array. */
+ScrDyn *scr_wc_key_object_to_crypto_key(ScrDyn *args) {
+  size_t argc = (size_t)scr_dyn_arr_len(args);
+  ScrDyn *key = argc > 0 ? scr_dyn_arr_at(args, 0) : scr_dyn_undefined();
+  ScrDyn *algorithm = argc > 1 ? scr_dyn_arr_at(args, 1) : scr_dyn_undefined();
+  ScrDyn *extractable_value = argc > 2 ? scr_dyn_arr_at(args, 2) : scr_dyn_undefined();
+  ScrDyn *usages_value = argc > 3 ? scr_dyn_arr_at(args, 3) : scr_dyn_undefined();
+  ScrDyn *out =
+      scr_wc_key_object_to_crypto_key_values(key, algorithm, extractable_value, usages_value);
+  scr_dyn_release(key);
+  scr_dyn_release(algorithm);
+  scr_dyn_release(extractable_value);
+  scr_dyn_release(usages_value);
+  return out;
+}
+
+/* The CryptoKey's key material as a KeyObject (secret bytes, or the pki
+ * unit's asymmetric key), or NULL with the TypeError pending. */
+static ScrDyn *scr_wc_key_object_from_value(const ScrDyn *value) {
+  if (!scr_webcrypto_is_crypto_key(value)) {
+    scr_dyn_arg_type_fail("key", "an instance of CryptoKey", value);
+    return NULL;
+  }
+  if (scr_crypto_key_of(value)) {
+    const unsigned char *bytes = NULL;
+    size_t len = 0;
+    if (!scr_crypto_crypto_key_info || scr_crypto_crypto_key_info(value, &bytes, &len) != 1) {
+      scr_wc_unsupported("KeyObject.from", "this secret CryptoKey");
+      return NULL;
+    }
+    return scr_crypto_secret_key_object_from_bytes(bytes, len);
+  }
+  if (scr_wc_asymmetric && scr_wc_asymmetric->key_object_from)
+    return scr_wc_asymmetric->key_object_from(value);
+  scr_wc_unsupported("KeyObject.from", "an asymmetric CryptoKey from a computed algorithm");
+  return NULL;
+}
+
+/* KeyObject.from(key) as a compiler call: the argument vector is one dyn
+ * array. */
+ScrDyn *scr_wc_key_object_from(ScrDyn *args) {
+  size_t argc = (size_t)scr_dyn_arr_len(args);
+  ScrDyn *value = argc > 0 ? scr_dyn_arr_at(args, 0) : scr_dyn_undefined();
+  ScrDyn *out = scr_wc_key_object_from_value(value);
+  scr_dyn_release(value);
+  return out;
+}
+
+/* The KeyObject handles reach the two conversions through these hooks. */
+static ScrDyn *scr_wc_to_crypto_key_hook(const ScrDyn *key, const ScrDyn *const *args,
+                                         size_t argc) {
+  ScrDyn *algorithm = argc > 0 ? scr_dyn_retain(args[0]) : scr_dyn_undefined();
+  ScrDyn *extractable_value = argc > 1 ? scr_dyn_retain(args[1]) : scr_dyn_undefined();
+  ScrDyn *usages_value = argc > 2 ? scr_dyn_retain(args[2]) : scr_dyn_undefined();
+  ScrDyn *out =
+      scr_wc_key_object_to_crypto_key_values(key, algorithm, extractable_value, usages_value);
+  scr_dyn_release(algorithm);
+  scr_dyn_release(extractable_value);
+  scr_dyn_release(usages_value);
+  return out;
+}
+
+static ScrDyn *scr_wc_key_object_from_hook(const ScrDyn *crypto_key) {
+  return scr_wc_key_object_from_value(crypto_key);
+}
+
+__attribute__((constructor)) static void scr_wc_install_key_object_hooks(void) {
+  scr_crypto_to_crypto_key = scr_wc_to_crypto_key_hook;
+  scr_crypto_key_object_from = scr_wc_key_object_from_hook;
 }
 
 /* generateKey(algorithm, extractable, keyUsages) for HMAC and AES keys:

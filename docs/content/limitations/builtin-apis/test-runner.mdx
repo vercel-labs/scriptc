@@ -30,6 +30,7 @@
 - **Expecting failures:** `{ expectFailure: true }`, `{ expectFailure: false }` and `{ expectFailure: "reason" }` compile, as do `test.expectFailure(...)`, `it.expectFailure(...)`, `describe.expectFailure(...)`, `suite.expectFailure(...)` and the module-level `expectFailure(...)` export.
   A flagged test or suite passes only if its own run throws, its result line carries `# EXPECTED FAILURE`, an unexpected pass fails with Node's `test was expected to fail but passed`, and descendants inherit the flag the way they inherit `todo`.
   `skip` keeps its `SKIP` directive and `todo` keeps `TODO` and its counter, with the outcome flipped either way.
+  A flagged test cancelled before it runs, such as one after a failing root `before` hook or inside a suite whose body threw, displays the pass with the directive while counting as cancelled, and a suite failed by its own body or hook error lists that error in the failing section while one failed only by its descendants does not.
   A string reason behaves as `true`; Node's matcher forms (a `RegExp`, a function, an object, an `Error`, or `{ label, match }`) throw `SC2020`.
 - **Thrown values:** a test that throws a value that is not an `Error` reports it in the failing section as `util.inspect` renders it, as Node does, for strings, numbers, booleans, objects, arrays, `null` and `undefined`.
   A thrown class instance that is not an `Error`, such as `throw new Point(1, 2)`, reports `[object Object]`, where Node prints `Point { x: 1, y: 2 }`.

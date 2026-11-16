@@ -399,6 +399,14 @@ static void scr_test_print_dur(double ms) {
   fputs("ms)", scr_test_out());
 }
 
+/* The result symbol: an expectFailure test that was cancelled without
+ * running displays the pass symbol, as Node's reporter does, though it keeps
+ * the cancelled counter. */
+static const char *scr_test_symbol_of(const ScrTestCtx *t) {
+  if (t->state == SCR_TS_CANCELLED && t->expect_failure && t->mode == SCR_TEST_RUN) return "\xE2\x9C\x94";
+  return NULL;
+}
+
 static const char *scr_test_symbol(int state) {
   switch (state) {
   case SCR_TS_PASS:
@@ -436,7 +444,10 @@ static void scr_test_report_result(ScrTestCtx *t) {
   scr_test_ensure_started(t->parent);
   int depth = scr_test_depth(t);
   scr_test_indent(depth);
-  fputs(scr_test_symbol(t->state), scr_test_out());
+  {
+    const char *expected_symbol = scr_test_symbol_of(t);
+    fputs(expected_symbol ? expected_symbol : scr_test_symbol(t->state), scr_test_out());
+  }
   fputc(' ', scr_test_out());
   scr_test_print_str(t->name);
   scr_test_print_dur(t->dur_ms);
@@ -693,8 +704,19 @@ static void scr_test_cancel_unrun(ScrTestCtx *c) {
   static const char msg[] = "test did not finish before its parent and was cancelled";
   scr_throw_str(scr_str_new(msg, sizeof msg - 1));
   c->err = scr_exc_take();
-  c->listed = true;
   c->dur_ms = NAN;
+  /* A test flagged { expectFailure } passes on the failure: its cancellation
+   * without running is the failure it expected. Node still counts it
+   * cancelled (it displays the pass symbol), and does not list it; a todo
+   * one keeps its todo directive and warning. */
+  if (c->expect_failure && c->mode != SCR_TEST_SKIP) {
+    c->listed = c->mode == SCR_TEST_TODO;
+    c->state = c->mode == SCR_TEST_TODO ? SCR_TS_TODO_FAIL : SCR_TS_CANCELLED;
+    scr_test_abort_now(c);
+    scr_test_report_result(c);
+    return;
+  }
+  c->listed = true;
   c->state = SCR_TS_CANCELLED;
   scr_test_abort_now(c);
   scr_test_report_result(c);
@@ -779,6 +801,22 @@ static void scr_test_cancel_running(ScrTestCtx *t) {
 static void scr_test_fail_unrun(ScrTestCtx *c, ScrCaught *err) {
   double start = scr_now_ms();
   c->err = scr_caught_retain(err);
+  bool expected = c->expect_failure && c->mode != SCR_TEST_SKIP;
+  if (expected) {
+    /* The expected failure: the failing root before hook's error is what the
+     * flagged test expected, so it passes; a flagged suite's descendants are
+     * flagged too and pass the same way through cancel_unrun. */
+    if (c->is_suite) {
+      for (size_t i = 0; i < c->nchildren; i++) scr_test_cancel_unrun(c->children[i]);
+    } else {
+      scr_test_run_each_hooks(c, SCR_HOOK_AFTER_EACH, false);
+      if (scr_exc_pending()) scr_exc_clear();
+    }
+    c->dur_ms = scr_now_ms() - start;
+    c->state = c->mode == SCR_TEST_TODO ? SCR_TS_TODO_PASS : SCR_TS_PASS;
+    scr_test_report_result(c);
+    return;
+  }
   c->listed = true;
   if (c->is_suite) {
     for (size_t i = 0; i < c->nchildren; i++) scr_test_cancel_unrun(c->children[i]);
@@ -833,13 +871,21 @@ static void scr_test_run_node(ScrTestCtx *t) {
     return;
   }
   if (t->is_suite) {
-    /* The body already ran at registration (children collected). A hook
-     * throw fails the SUITE with that error — before-failures skip the
-     * children (Node cancels them; SEMANTICS.md numbers the difference). */
-    scr_test_run_hooks_of(t, SCR_HOOK_BEFORE, t);
+    /* The body already ran at registration (children collected). A body that
+     * threw fails the suite and cancels its children, as Node does. */
+    if (t->err) {
+      for (size_t i = 0; i < t->nchildren; i++) {
+        if (t->children[i]->state == SCR_TS_PENDING) scr_test_cancel_unrun(t->children[i]);
+      }
+    } else {
+      /* A hook throw fails the SUITE with that error — before-failures skip
+       * the children (Node cancels them; SEMANTICS.md numbers the
+       * difference). */
+      scr_test_run_hooks_of(t, SCR_HOOK_BEFORE, t);
+    }
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
-    } else {
+    } else if (!t->err) {
       if (t->concurrency > 1) {
         scr_test_defer++;
         scr_test_run_children(t);
@@ -864,7 +910,9 @@ static void scr_test_run_node(ScrTestCtx *t) {
       }
     }
     t->dur_ms = scr_now_ms() - start;
-    if (t->err && !expected_failure) scr_test_suite_hook_failed = true;
+    /* A todo suite's failure, expected or not, never fails the process. */
+    if (t->err && !expected_failure && t->mode != SCR_TEST_TODO)
+      scr_test_suite_hook_failed = true;
     if (t->mode == SCR_TEST_TODO) {
       /* A todo suite reports its directive; its children are todo too, and
        * an expected failure keeps the suite todo-passing. */
@@ -876,6 +924,9 @@ static void scr_test_run_node(ScrTestCtx *t) {
                  : scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL
                                               : SCR_TS_PASS;
     }
+    /* A suite failed by its own body or hook error lists it in the failing
+     * section; one failed by its descendants does not. */
+    if (t->state == SCR_TS_FAIL) t->listed = true;
     /* Node's suite pass() comes after its after hooks. A suite's signal is
      * not aborted when the suite finishes (Node aborts a test's in its
      * run's finally; a suite's context signal stays unaborted). */
@@ -1114,6 +1165,9 @@ static void scr_test_print_failures(ScrTestCtx *t, bool *any) {
     if ((!c->is_suite || c->listed) &&
         (c->state == SCR_TS_FAIL || c->state == SCR_TS_TODO_FAIL ||
          c->state == SCR_TS_CANCELLED) &&
+        /* A flagged test cancelled before it ran displays the pass and is
+         * not listed; Node still counts it cancelled. */
+        !(c->state == SCR_TS_CANCELLED && c->expect_failure && c->mode == SCR_TEST_RUN) &&
         c->err) {
       if (!*any) {
         *any = true;
@@ -1915,7 +1969,9 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
   scr_test_options_apply(t, flags, -1, 0, concurrency);
   scr_test_child_add(scr_test_parent_get(), t);
   /* The suite body runs NOW (Node's collection phase) — its test()/it()
-   * calls attach here. Skipped suites keep their bodies unrun. */
+   * calls attach here. Skipped suites keep their bodies unrun. A body that
+   * throws fails the suite (Node fails it and cancels its children), so the
+   * error is captured here instead of escaping the registration. */
   if (cb && (int)mode != SCR_TEST_SKIP) {
     ScrTestCtx *prev = scr_test_parent_get();
     scr_test_parent_set(t);
@@ -1925,6 +1981,7 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
       ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(t));
     else
       ((void (*)(ScrClosure *))cb->fn)(cb);
+    if (scr_exc_pending()) t->err = scr_exc_take();
     scr_test_scope_leave(outer);
     scr_test_parent_set(prev);
   }
@@ -2018,9 +2075,12 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
   }
   if (t->before_err) {
     /* A throwing t.before fails the subtests that follow: their bodies and
-     * beforeEach hooks do not run, their afterEach hooks do. */
+     * beforeEach hooks do not run, their afterEach hooks do. A flagged
+     * subtest inherits { expectFailure }, so that failure is the one it
+     * expected and it passes with the directive. */
     sub->err = scr_caught_retain(t->before_err);
-    sub->state = SCR_TS_FAIL;
+    sub->state =
+        sub->expect_failure && sub->mode != SCR_TEST_SKIP ? SCR_TS_PASS : SCR_TS_FAIL;
     scr_test_run_each_hooks(sub, SCR_HOOK_AFTER_EACH, false);
     if (scr_exc_pending()) scr_exc_clear();
     scr_test_report_result(sub);

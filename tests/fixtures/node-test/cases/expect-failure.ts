@@ -13,6 +13,7 @@ import {
   describe,
   expectFailure,
   it,
+  suite,
   test,
   type SuiteContext,
   type TestContext,
@@ -53,6 +54,20 @@ test("flagged parent inherits to children", { expectFailure: true }, async (t) =
 describe("flagged suite", { expectFailure: true }, () => {
   test("child throws too", () => {
     throw new Error("in suite");
+  });
+});
+
+describe.expectFailure("describe twin", () => {
+  throw new Error("suite body");
+});
+
+suite.expectFailure("suite twin", { skip: false }, () => {
+  throw new Error("suite body");
+});
+
+describe.expectFailure("describe with child", () => {
+  test("child throws", () => {
+    throw new Error("child");
   });
 });
 

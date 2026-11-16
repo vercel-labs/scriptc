@@ -145,6 +145,10 @@ declare module "node:test" {
     function only(name?: string, options?: TestOptions, fn?: SuiteFn): void;
     function only(options?: TestOptions, fn?: SuiteFn): void;
     function only(fn?: SuiteFn): void;
+    function expectFailure(name?: string, fn?: SuiteFn): void;
+    function expectFailure(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function expectFailure(options?: TestOptions, fn?: SuiteFn): void;
+    function expectFailure(fn?: SuiteFn): void;
   }
   const suite: typeof describe;
   function before(fn: HookFn): void;

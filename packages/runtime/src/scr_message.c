@@ -333,6 +333,61 @@ static void scr_message_property(ScrMessageEncoder *encoder, size_t id,
                                   const ScrStr *key, size_t value, bool hidden);
 static bool scr_message_drain(ScrMessageEncoder *encoder, size_t base);
 
+static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input);
+
+/* A Map or Set the wire format carries, or 0 for a value another case
+ * owns. */
+static int scr_message_collection_kind(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_HANDLE) return 0;
+  if (scr_dyn_native_map_is(value)) return SCR_MESSAGE_MAP;
+  if (scr_dyn_native_set_is(value)) return SCR_MESSAGE_SET;
+  return 0;
+}
+
+/* A collection's entries are encoded here, not through the visit stack: the
+ * handle's own get answers the collection's members, never its entries. Each
+ * child is reached in insertion order and its property carries the decimal
+ * index, so aliasing and cycles still come from the identity table. */
+static bool scr_message_collection(ScrMessageEncoder *encoder, size_t id, ScrDyn *value, int kind,
+                                   const ScrDyn *input) {
+  ScrMessageNode *node = &encoder->nodes[id];
+  ScrMap *map = value->v.handle.ptr;
+  bool is_map = kind == SCR_MESSAGE_MAP;
+  node->kind = (unsigned char)kind;
+  ScrDyn *keys = scr_dyn_new_arr();
+  encoder->visits[id].keys = keys;
+  size_t base = encoder->depth;
+  size_t child = 0;
+  char digits[32];
+  bool ok = true;
+  scr_map_iter_enter(map);
+  for (double i = 0; ok && i < scr_map_iter_count(map); i++) {
+    if (!scr_map_iter_live(map, i)) continue;
+    ScrDyn *entry_key = scr_map_dyn_key(map, i);          /* +1 */
+    ScrDyn *entry_value = is_map ? scr_map_dyn_value(map, i) : NULL; /* +1 */
+    ScrDyn *children[2] = {entry_key, entry_value};
+    size_t parts = is_map ? 2 : 1;
+    for (size_t p = 0; ok && p < parts; p++) {
+      int length = snprintf(digits, sizeof digits, "%zu", child++);
+      ScrStr *key = scr_str_new(digits, (size_t)length);
+      ScrDyn *key_dyn = scr_dyn_new_str(key);
+      scr_dyn_arr_push(keys, key_dyn);
+      size_t next = children[p] ? scr_message_value(encoder, children[p]) : SIZE_MAX;
+      if (next == SIZE_MAX) ok = false;
+      /* The key's text lives in the keys array until the message is packed
+       * (the property borrows the bytes). */
+      else scr_message_property(encoder, id, key_dyn->v.str, next, false);
+      scr_str_release(key);
+    }
+    scr_dyn_release(entry_key);
+    scr_dyn_release(entry_value);
+  }
+  scr_map_iter_exit(map);
+  node->v.length = child;
+  if (ok) ok = scr_message_drain(encoder, base);
+  return ok;
+}
+
 static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input) {
   bool uncaught = encoder->uncaught;
   encoder->uncaught = false;
@@ -507,6 +562,13 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     break;
   case SCR_DYN_BYTES:
   case SCR_DYN_HANDLE: {
+    if (value->kind == SCR_DYN_HANDLE) {
+      int collection = scr_message_collection_kind(value);
+      if (collection) {
+        if (!scr_message_collection(encoder, id, value, collection, input)) return SIZE_MAX;
+        return id;
+      }
+    }
     if (value->kind == SCR_DYN_HANDLE && scr_message_port_ops && scr_message_port_ops->is_port(value)) {
       int side = 0;
       ScrChannel *channel = scr_message_listed(encoder, value)
@@ -975,6 +1037,18 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
       for (size_t j = 0; j < node->v.length; j++) scr_dyn_arr_push_hole(values[i]);
       break;
     case SCR_MESSAGE_OBJECT: values[i] = scr_dyn_new_obj(); break;
+    case SCR_MESSAGE_MAP: {
+      ScrMap *map = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
+      values[i] = map ? scr_dyn_native_map(map) : NULL;
+      scr_map_release(map);
+      break;
+    }
+    case SCR_MESSAGE_SET: {
+      ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
+      values[i] = set ? scr_dyn_native_set(set) : NULL;
+      scr_map_release(set);
+      break;
+    }
     case SCR_MESSAGE_ERROR: {
       scr_error_set_traced();
       ScrError *error = scr_error_new((int)node->v.number, NULL);
@@ -1013,6 +1087,32 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
   }
   for (size_t i = 0; i < message->count; i++) {
     const ScrMessageNode *node = &message->nodes[i];
+    if (node->kind == SCR_MESSAGE_MAP || node->kind == SCR_MESSAGE_SET) {
+      /* The children arrive in insertion order: key then value per entry for
+       * a Map, one element per entry for a Set. */
+      ScrMap *map = values[i]->v.handle.ptr;
+      ScrDyn *pending = NULL;
+      for (size_t j = 0; j < node->count; j++) {
+        const ScrMessageProperty *property = &node->properties[j];
+        size_t index = scr_message_array_index(property->key, property->length, SIZE_MAX);
+        if (index == SIZE_MAX) continue;
+        ScrDyn *value = scr_dyn_retain(values[property->value]);
+        if (node->kind == SCR_MESSAGE_SET) {
+          scr_map_dyn_set(map, value, NULL, true);
+          scr_dyn_release(value);
+        } else if ((index & 1) == 0) {
+          scr_dyn_release(pending);
+          pending = value;
+        } else {
+          scr_map_dyn_set(map, pending ? pending : scr_dyn_undefined(), value, false);
+          scr_dyn_release(pending);
+          pending = NULL;
+          scr_dyn_release(value);
+        }
+      }
+      scr_dyn_release(pending);
+      continue;
+    }
     for (size_t j = 0; j < node->count; j++) {
       const ScrMessageProperty *property = &node->properties[j];
       ScrDyn *value = scr_dyn_retain(values[property->value]);

@@ -770,7 +770,17 @@ bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
 /* destroy(): tears the underlying connection down NOW; the teardown
  * events flow through the socket's native hooks like a peer close. */
 void scr_http_req_destroy(ScrHttpReq *r) {
+  /* Node's _destroy: an unfinished message is reported 'aborted' and has
+   * its signal aborted BEFORE destroy() returns, so a listener and a
+   * synchronous check both see it. */
+  bool unfinished = !r->ended;
   r->destroyed = true;
+  if (unfinished && !r->aborted) {
+    r->aborted = true;
+    scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
+    scr_net_ls_drop(&r->aborted_ls);
+  }
+  if (unfinished) scr_http_req_signal_abort(r);
   if (r->h2_stream != NULL) {
     scr_http_h2_ops->destroy(r->h2_stream);
     return;

@@ -9,8 +9,13 @@ const reason = (signal: AbortSignal): string => {
   return r === undefined ? "none" : `${r.name}/${r.code}`;
 };
 
+// Reading through an untyped value: the runtime's member dispatch answers the
+// same signal, which the program's feature scan has to account for.
+const readSignal = (message: any): AbortSignal => message.signal as AbortSignal;
+
 const server = http.createServer((req, res) => {
   if (req.url === "/normal") {
+    console.log("server any-read", readSignal(req) === req.signal);
     console.log("server normal", req.signal.aborted, req.signal === req.signal);
     req.signal.addEventListener("abort", () => console.log("server aborted", reason(req.signal)));
     req.on("data", () => {});
@@ -31,6 +36,14 @@ const server = http.createServer((req, res) => {
   res.end("ok");
 });
 
+// A peer that sends one chunk and never ends the body: the client's own
+// destroy() is the only ending, so the case has no race.
+const holding = net.createServer((socket) => {
+  socket.once("data", () => {
+    socket.write("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n");
+  });
+});
+
 const raw = net.createServer((socket) => {
   socket.once("data", () => {
     socket.write("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n");
@@ -39,6 +52,7 @@ const raw = net.createServer((socket) => {
 });
 
 server.listen(0, "127.0.0.1", () => {
+  holding.listen(0, "127.0.0.1", () => {
   raw.listen(0, "127.0.0.1", () => {
     const port = (server.address() as { port: number }).port;
     // 1. a complete exchange: the signal never aborts
@@ -59,6 +73,21 @@ server.listen(0, "127.0.0.1", () => {
         post.on("error", () => {});
         post.write("abc");
         setTimeout(() => post.destroy(), 10);
+        // 2b. destroying an unfinished message aborts its signal inside
+        // destroy(): 'aborted' first, then the abort listeners.
+        setTimeout(() => {
+          http.get({ host: "127.0.0.1", port: (holding.address() as { port: number }).port, path: "/" }, (res) => {
+            console.log("destroy read", res.signal.aborted);
+            res.signal.addEventListener("abort", () => console.log("destroy listener", res.signal.aborted));
+            res.on("aborted", () => console.log("destroy aborted event", res.signal.aborted));
+            res.on("data", () => {
+              res.destroy();
+              console.log("after destroy", res.signal.aborted);
+            });
+            res.on("error", () => {});
+            res.on("close", () => console.log("destroy close", res.signal.aborted));
+          }).on("error", () => {});
+        }, 40);
         // 3. a response whose connection dies before the body completes
         setTimeout(() => {
           http.get({ host: "127.0.0.1", port: (raw.address() as { port: number }).port, path: "/" }, (res) => {
@@ -70,11 +99,13 @@ server.listen(0, "127.0.0.1", () => {
             res.on("close", () => {
               console.log("client raw close", res.signal.aborted);
               raw.close();
+              holding.close();
               server.close();
             });
           }).on("error", () => {});
         }, 80);
       });
     });
+  });
   });
 });

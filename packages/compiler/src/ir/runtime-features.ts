@@ -2149,7 +2149,13 @@ const RUNTIME_FEATURE_RULES = {
   /** IncomingMessage.signal: the message's abort signal is an
    * AbortController, so a program that reads it links the signal unit
    * (scr_abort.c) without touching fetch. */
-  httpSignal: rule({ fns: ["http.reqSignal"] }),
+  httpSignal: rule({
+    fns: ["http.reqSignal"],
+    // An untyped message reads `signal` through a checked-dynamic key get,
+    // which no libCall stands for: that read needs the signal unit too.
+    expr: (node) =>
+      node.kind === "dynKeyGet" && node.key.kind === "strLit" && node.key.value === "signal",
+  }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** util.markPromiseAsHandled (scr_util_mark_handled.c): it reports its

@@ -205,6 +205,8 @@ export interface NativeLinkFeatures {
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: scr_mime.c. */
   mime?: boolean;
+  /** node:sqlite: scr_sqlite.c, plus the vendored SQLite archive. */
+  sqlite?: boolean;
   /** `--large-pages`: scr_text_pages.c, which moves the executable's code
    * onto transparent huge pages at startup. Absent (false) without it. */
   largePages?: boolean;

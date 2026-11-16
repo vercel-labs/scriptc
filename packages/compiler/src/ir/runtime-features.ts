@@ -2100,6 +2100,10 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
+  /** node:sqlite over the vendored SQLite engine (scr_sqlite.c and the
+   * vendored SQLite archive). A program that imports the module without
+   * reaching a lowered member links neither. */
+  sqlite: rule({ prefixes: ["sqlite."] }),
   /** Web streams in checked-dynamic code (scr_webstreams.c). */
   webStreams: rule({ prefixes: ["webstream."] }),
   /** A program that builds a Blob or File can hand one to fetch: selects
@@ -2698,6 +2702,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mutableBuffers: false,
     legacyTextDecoder: false,
     mime: false,
+    sqlite: false,
     webBodies: false,
     webStreams: false,
     abortSignal: false,

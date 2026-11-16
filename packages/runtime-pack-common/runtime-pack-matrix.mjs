@@ -192,6 +192,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // events.once with options registers through the emitter and event-target units.
   ["scr_events_once_signal.c", "eventsOnceSignal"],
   ["scr_mime.c", "mime"],
+  // node:sqlite over the vendored SQLite archive (see vendorArchives).
+  ["scr_sqlite.c", "sqlite"],
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
@@ -817,6 +819,7 @@ export function createRuntimePackMatrix({
     { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
+    { id: "sqlite", predicate: "sqlite" },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({

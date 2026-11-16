@@ -348,6 +348,13 @@ static void scr_dyn_proxy_conversion_symbols(void) {
   if (!scr_to_string_tag_symbol) scr_sym_well_known_make_hook("toStringTag", 11);
 }
 
+/* Symbol.iterator, for handle classes outside the symbol unit whose
+ * iterators an explicit `it[Symbol.iterator]()` reaches. */
+bool scr_dyn_is_iterator_symbol(const ScrDyn *key) {
+  return scr_iterator_symbol && key->kind == SCR_DYN_SYMBOL &&
+         key->v.symbol.value == scr_iterator_symbol->v.symbol.value;
+}
+
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
   scr_iterator_symbol = scr_dyn_retain(key);
@@ -11875,13 +11882,17 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
     return NULL;
   }
-  bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
-  if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
+  /* A handle class's own symbol-keyed member wins over the protocol's
+   * generic answer (a statement iterator whose [Symbol.iterator] answers
+   * itself). The class answers NULL for the symbols it does not model, and
+   * the builtin answer below then applies as before. */
   if (value->kind == SCR_DYN_HANDLE) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops(value->v.handle.tag);
     ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
     if (member || scr_exc_pending()) return member;
   }
+  bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
+  if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
   ScrDyn *table = scr_dyn_symbol_receiver(value);
   if (!table && scr_exc_pending()) return NULL;
   ScrDynEntry *entry = table ? scr_dyn_symbol_entry(table, key, false) : NULL;

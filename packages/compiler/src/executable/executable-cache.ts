@@ -139,6 +139,8 @@ export interface EarlyExecutableNativeFeatures {
   arrJoinStr?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
+  /** node:sqlite: scr_sqlite.c and the vendored SQLite archive. */
+  sqlite?: boolean;
   webStreams?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;

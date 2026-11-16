@@ -4909,7 +4909,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (psym !== undefined && psymName === "BlockList") ||
       (psym !== undefined && psymName === "BoundSocket") ||
       (psym !== undefined && psymName === "MIMEType") ||
-      (psym !== undefined && psymName === "MIMEParams")) &&
+      (psym !== undefined && psymName === "MIMEParams") ||
+      // node:sqlite's DatabaseSync and StatementSync (scr_sqlite.c):
+      // native handles whose getters and methods dispatch through the
+      // handle, like the classes above.
+      (psym !== undefined && psymName === "DatabaseSync") ||
+      (psym !== undefined && psymName === "StatementSync") ||
+      (psym !== undefined && psymName === "StatementSyncIterator") ||
+      (psym !== undefined && psymName === "Session") ||
+      (psym !== undefined && psymName === "SQLTagStore") ||
+      (psym !== undefined && psymName === "DatabaseSyncLimits")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&

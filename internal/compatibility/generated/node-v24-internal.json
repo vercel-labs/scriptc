@@ -34504,6 +34504,8 @@
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/os-error-codes.cjs",
           "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-value-types.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/zlib-codec-invalid-params.cjs",
           "tests/corpus/zstd-compress.cjs",
@@ -40648,8 +40650,12 @@
       "anchor": "err_sqlite_error",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_SQLITE_ERROR"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_SQLITE_ERROR",
+        "tests": [
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-value-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90680,8 +90686,18 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/sqlite-constants.ts",
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-limits.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-return-arrays.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -90726,8 +90742,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:DatabaseSync",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90772,8 +90793,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.close",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90841,8 +90867,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.enableDefensive",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90864,8 +90895,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.location",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90887,8 +90923,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.exec",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -90956,8 +90997,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.open",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91025,8 +91071,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database.prepare",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91117,8 +91168,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:database",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91140,8 +91196,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:isOpen",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91163,8 +91224,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:isTransaction",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-file-database.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91186,8 +91252,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "partial",
+        "evidence": "compiler-dedicated:limits",
+        "tests": [
+          "tests/corpus/sqlite-limits.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91324,8 +91393,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:StatementSync",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91370,8 +91446,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.all",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91393,8 +91476,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.close",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91416,8 +91506,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.columns",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91439,8 +91536,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.get",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91462,8 +91566,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.iterate",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91485,8 +91596,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.run",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91508,8 +91626,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.setAllowBareNamedParameters",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91531,8 +91656,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.setAllowUnknownNamedParameters",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91554,8 +91686,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.setReturnArrays",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91577,8 +91716,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement.setReadBigInts",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91600,8 +91746,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:statement",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91623,8 +91776,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:expandedSQL",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91646,8 +91806,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:sourceSQL",
+        "tests": [
+          "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-named-parameters.ts",
+          "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-errors.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -91899,8 +92066,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-chapter-policy:sqlite"
+        "status": "supported",
+        "evidence": "compiler-dedicated:constants",
+        "tests": [
+          "tests/corpus/sqlite-constants.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -112996,8 +113166,11 @@
         "inherited": false
       },
       "static": {
-        "status": "by-design",
-        "evidence": "derived:descendants"
+        "status": "partial",
+        "evidence": "derived:descendants",
+        "tests": [
+          "tests/corpus/sqlite-constants.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -113939,8 +114112,11 @@
         "inherited": true
       },
       "static": {
-        "status": "by-design",
-        "evidence": "compiler-chapter-policy:vm"
+        "status": "supported",
+        "evidence": "compiler-dedicated:constants",
+        "tests": [
+          "tests/corpus/sqlite-constants.ts"
+        ]
       },
       "anchorSource": "chapter"
     },

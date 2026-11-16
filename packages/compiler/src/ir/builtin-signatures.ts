@@ -1664,6 +1664,8 @@ function buildLibFnSignatures() {
     "mime.typeParse": { argTypes: [DYN], result: DYN },
     "mime.paramsNew": { argTypes: [], result: DYN },
     "mime.is": { argTypes: [DYN, F64], result: BOOL },
+    "sqlite.dbNew": { argTypes: [DYN, DYN], result: DYN },
+    "sqlite.is": { argTypes: [DYN, F64], result: BOOL },
     "util.callbackify": { argTypes: [DYN], result: DYN },
     /** util.promisify over an untyped function value: a native dyn function
      * whose calls answer a dyn promise the appended callback settles. */

@@ -22,6 +22,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "watcher.unref",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
+  // scr_sqlite_is compares a handle's tag.
+  "sqlite.is",
   "global.bindingValue",
   // scr_global_binding_has looks the name up in the same table.
   "global.bindingHas",

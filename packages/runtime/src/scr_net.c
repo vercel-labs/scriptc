@@ -2921,6 +2921,7 @@ static ScrNetLs *scr_net_server_event_list(ScrNetServer *s, double kind) {
   case SCR_NET_OFF_DROP: return &s->drop_ls;
   case SCR_NET_OFF_NEW_LISTENER: return &s->new_listener_ls;
   case SCR_NET_OFF_CLIENT_ERROR: return &s->client_error_ls;
+  case SCR_NET_OFF_SECURE_CONNECTION: return &s->secure_conn_ls;
   default: return NULL;
   }
 }
@@ -8275,10 +8276,15 @@ void scr_net_server_emit_connection(ScrNetServer *srv, ScrNetSocket *sock) {
     if (scr_exc_pending()) return;
   }
   if (srv->defer_conn) {
+    /* the handshake's 'secureConnection' listeners and the createServer
+     * handler wait for establishment */
     if (sock->conn_pending) scr_net_server_release(sock->conn_pending);
     sock->conn_pending = scr_net_server_retain(srv);
-    return;
+    sock->conn_pending_secure = true;
   }
+  /* Node dispatches the 'connection' event itself: the listeners see the
+   * raw socket before the transport's handshake starts, on a plain and a
+   * TLS server alike. */
   ScrNetL *snap;
   size_t n = scr_net_ls_snapshot(&srv->conn_ls, &snap);
   scr_dyn_this_push(srv, SCR_DYNH_NET_SERVER);
@@ -9890,11 +9896,12 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
       /* a connection past maxConnections: the local/remote address object */
       scr_net_server_on_drop(s, cb, once);
     } else if (scr_net_dynh_name_is(name, "secureConnection") && s->defer_conn) {
-      /* a TLS server's 'connection' list IS post-handshake (deferred) —
-       * exactly Node's secureConnection timing; on a plain server the
-       * name falls through to the fence below */
-      scr_net_server_on_connection(s, scr_dyn_listener_closure_fn(cb, (void *)&scr_net_dynh_fire_conn),
-                                   (ScrNetConnFn)&scr_net_dynh_fire_conn, once);
+      /* a TLS server's handshake-complete list, which fires at
+       * establishment — exactly Node's secureConnection timing; on a plain
+       * server the name falls through to the fence below */
+      scr_net_server_on_secure_connection(
+        s, scr_dyn_listener_closure_fn(cb, (void *)&scr_net_dynh_fire_conn),
+        (ScrNetConnFn)&scr_net_dynh_fire_conn, once);
     } else if (name->kind == SCR_DYN_STR && scr_net_dynh_http_on &&
                scr_net_dynh_http_on(s, name->v.str->data, cb, once)) {
       /* the http layer accepted the event ('request') */

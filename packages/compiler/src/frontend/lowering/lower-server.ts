@@ -1837,7 +1837,7 @@ const NET_SERVER_EVENT_KIND: Readonly<Record<string, number>> = {
   close: 2,
   listening: 3,
   connection: 4,
-  secureConnection: 4,
+  secureConnection: 9,
   timeout: 5,
   drop: 6,
   newListener: 7,

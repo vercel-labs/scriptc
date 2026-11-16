@@ -3518,26 +3518,35 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
                                            ScrClosure *cb /*moves, nullable*/,
                                            ScrStr *unix_path /*borrowed, nullable*/);
 
-ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable*/,
-                                   const ScrDyn *opts /*borrowed, nullable*/,
-                                   ScrClosure *cb /*moves, nullable*/) {
+/* Every tls.connect form's options ride this: a typed record (an options
+ * binding, SCR_DYN_TYPED_REF) materializes into the plain object the walk
+ * reads; a dyn object passes as it is. */
+static ScrNetSocket *scr_tls_connect_materialized(double port, ScrStr *host /*borrowed, nullable*/,
+                                                  const ScrDyn *opts /*borrowed, nullable*/,
+                                                  ScrClosure *cb /*moves, nullable*/,
+                                                  ScrStr *unix_path /*borrowed, nullable*/) {
   if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF)
-    return scr_tls_connect_plain(port, host, opts, cb, NULL);
-  /* a typed record (an options binding): its fields, as a plain object */
+    return scr_tls_connect_plain(port, host, opts, cb, unix_path);
   ScrDyn *plain = scr_dyn_typed_ref_materialize(opts);
   if (plain == NULL) {
     scr_closure_release(cb);
     return NULL;
   }
-  ScrNetSocket *s = scr_tls_connect_plain(port, host, plain, cb, NULL);
+  ScrNetSocket *s = scr_tls_connect_plain(port, host, plain, cb, unix_path);
   scr_dyn_release(plain);
   return s;
+}
+
+ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable*/,
+                                   const ScrDyn *opts /*borrowed, nullable*/,
+                                   ScrClosure *cb /*moves, nullable*/) {
+  return scr_tls_connect_materialized(port, host, opts, cb, NULL);
 }
 
 /* tls.connect(path[, options][, callback]): the Unix-socket client. */
 ScrNetSocket *scr_tls_connect_path(ScrStr *path /*borrowed*/, const ScrDyn *opts /*borrowed*/,
                                    ScrClosure *cb /*moves, nullable*/) {
-  return scr_tls_connect_plain(-1, NULL, opts, cb, path);
+  return scr_tls_connect_materialized(-1, NULL, opts, cb, path);
 }
 
 static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed, nullable*/,

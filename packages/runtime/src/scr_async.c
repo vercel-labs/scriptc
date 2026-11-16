@@ -2163,17 +2163,23 @@ double scr_set_immediate(ScrClosure *cb) {
 #ifdef SCR_NODE_ISLANDS
   if (scr_loop_hosted != NULL) return scr_hosted_set_immediate(cb);
 #endif
+  /* The init hook runs program code and may queue immediates of its own:
+   * track FIRST, then commit this entry, so the hook's entries land in
+   * slots of their own (Node queues them before this one, and they run
+   * first). Tracking also may grow the queue, so the capacity check must
+   * follow it, not precede it. */
+  ScrAsyncIds *async_ids = scr_async_track("Immediate", 9);
   if (scr_nimmediates == scr_immediates_cap) {
     scr_immediates_cap = scr_immediates_cap ? scr_immediates_cap * 2 : 16;
     scr_immediates = realloc(scr_immediates, scr_immediates_cap * sizeof *scr_immediates);
     if (!scr_immediates) scr_oom();
   }
   unsigned long id = scr_interval_next_id++;
-  scr_immediates[scr_nimmediates].id = id;
-  scr_immediates[scr_nimmediates].cb = cb; /* ownership moves in */
-  scr_immediates[scr_nimmediates].reffed = true;
-  scr_immediates[scr_nimmediates].async_ids = scr_async_track("Immediate", 9);
-  scr_nimmediates++;
+  ScrImmediate *im = &scr_immediates[scr_nimmediates++];
+  im->id = id;
+  im->cb = cb; /* ownership moves in */
+  im->reffed = true;
+  im->async_ids = async_ids;
   scr_pending_immediates++;
   scr_reffed_immediates++;
   return (double)id;

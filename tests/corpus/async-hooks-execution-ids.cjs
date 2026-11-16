@@ -129,6 +129,26 @@ process.nextTick(() => {
         const computedOrder = [];
         ah.createHook({ [key]: (computedOrder.push('computed'), noop) });
         console.log('computed key:', computedOrder.join(','));
+
+        // An init hook may queue another immediate while this one is being
+        // queued: the outer callback must survive (Node queues the hook's
+        // immediate first, so it runs first) and no phantom queue entry may
+        // be left behind.
+        const immediateOrder = [];
+        let queuedInner = false;
+        const queueHook = ah.createHook({
+          init(id, type) {
+            if (type !== 'Immediate' || queuedInner) return;
+            queuedInner = true;
+            setImmediate(() => immediateOrder.push('nested'));
+          },
+        });
+        queueHook.enable();
+        setImmediate(() => immediateOrder.push('outer'));
+        setImmediate(() => {
+          queueHook.disable();
+          console.log('immediate from init:', immediateOrder.join(','));
+        });
       });
     });
   }, 1);

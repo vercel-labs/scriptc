@@ -911,6 +911,8 @@ function buildLibFnSignatures() {
     /** `fs.readdirSync(path, { recursive: true })`: every entry below the
      * path, relative to it, in Node's queue order. */
     "fs.readdirRecursiveSync": { argTypes: [STRING], result: arrayOf(STRING) },
+    "fs.readdirBytesSync": { argTypes: [STRING], result: arrayOf(BYTES_U8) },
+    "fs.readdirEncodedSync": { argTypes: [STRING, STRING], result: arrayOf(STRING) },
     // Result is the call site's Dirent record array (VOID is the
     // structure-checked sentinel, the os.networkInterfaces pattern).
     /** `fs.readdirSync(path, { withFileTypes: true })` — Dirent rows over
@@ -922,6 +924,7 @@ function buildLibFnSignatures() {
      * sorts), the directory's order on Windows; no "."/"..". Throws
      * Node's scandir errno error (may-throw seed set); fresh +1 array. */
     "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
+    "fs.readdirTypesRecursiveSync": { argTypes: [STRING], result: VOID },
     /** fs.globSync / fs.glob / fs/promises glob (scr_glob.c, Node's
      * lib/internal/fs/glob.js walk): pattern and options are dyn values the
      * runtime validates in Node's order. The string forms answer string[];
@@ -4605,6 +4608,18 @@ function buildLibFnSignatures() {
     "fsp.lutimes": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.rename": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.readdir": { argTypes: [STRING], result: { kind: "promise", inner: arrayOf(STRING) } },
+    "fsp.readdirRecursive": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: arrayOf(STRING) },
+    },
+    "fsp.readdirBytes": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: arrayOf(BYTES_U8) },
+    },
+    "fsp.readdirEncoded": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: arrayOf(STRING) },
+    },
     // Result is promise<call-site Dirent record array>; the libCall case
     // validates the program-dependent record shape in validate.ts.
     /** `fs.promises.readdir(path, { withFileTypes: true })` — the settled-
@@ -4612,6 +4627,10 @@ function buildLibFnSignatures() {
      * call-site-shaped Dirent rows, then move the array into a promise;
      * scandir failure becomes its rejection. */
     "fsp.readdirTypes": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+    "fsp.readdirTypesRecursive": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.rm": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     /** `fs.promises.rm(path, options)`: fs.rmOptsSync and fs.rmRetrySync
      * behind a settled promise; their errors become its rejection. */

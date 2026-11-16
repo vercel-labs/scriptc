@@ -3928,6 +3928,21 @@ ScrPromise *scr_fsp_readdir(ScrStr *path) {
   return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
 }
 
+ScrPromise *scr_fsp_readdir_recursive(ScrStr *path) {
+  ScrArr *names = scr_fs_readdir_recursive(path);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_readdir_bytes(ScrStr *path) {
+  ScrArr *names = scr_fs_readdir_bytes(path);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_readdir_encoded(ScrStr *path, ScrStr *encoding) {
+  ScrArr *names = scr_fs_readdir_encoded(path, encoding);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
 ScrPromise *scr_fsp_rm(ScrStr *path) {
   scr_fs_rm(path);
   return scr_promise_settled_void();

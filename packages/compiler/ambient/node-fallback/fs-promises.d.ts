@@ -166,6 +166,18 @@ declare module "fs/promises" {
     options?: { recursive?: boolean; mode?: number },
   ): Promise<void>;
   export function readdir(path: string | URL): Promise<string[]>;
+  /* The bare encoding spellings and the bytes record, like readdirSync's. */
+  export function readdir(path: string | URL, options: "buffer"): Promise<Buffer[]>;
+  export function readdir(path: string | URL, options: BufferEncoding): Promise<string[]>;
+  export function readdir(
+    path: string | URL,
+    options: { encoding: "buffer"; withFileTypes?: false; recursive?: false },
+  ): Promise<Buffer[]>;
+  /* The names decoded with the record's encoding (utf8 by default). */
+  export function readdir(
+    path: string | URL,
+    options: { encoding?: BufferEncoding | null; withFileTypes?: false; recursive?: boolean },
+  ): Promise<string[]>;
   export function readdir(
     path: string | URL,
     options: {

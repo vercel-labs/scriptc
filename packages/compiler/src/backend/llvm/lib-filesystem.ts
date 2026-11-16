@@ -865,6 +865,75 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     );
     return host.own({ name: promise, type: e.type });
   }
+  if (e.fn === "fs.readdirTypesRecursiveSync" || e.fn === "fsp.readdirTypesRecursive") {
+    // The recursive Dirent form: one walk snapshot (scr_fs_scandir_recursive)
+    // whose rows carry the basename and the directory holding it, assembled
+    // into the call site's Dirent record exactly like the one-directory form.
+    const promiseForm = e.fn === "fsp.readdirTypesRecursive";
+    const arrayT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
+    if (arrayT.kind !== "array" || arrayT.elem.kind !== "record") {
+      throw new InternalCompilerError(
+        `llvm emitter bug: ${e.fn} result is not a Dirent record array`,
+      );
+    }
+    const recT = arrayT.elem;
+    const path = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fs_scandir_recursive(ptr)`);
+    host.declare(`declare ${host.sizeType} @scr_fs_scandir_count(ptr)`);
+    host.declare(`declare ptr @scr_fs_scandir_name(ptr, ${host.sizeType})`);
+    host.declare(`declare ptr @scr_fs_scandir_parent(ptr, ${host.sizeType})`);
+    host.declare(`declare double @scr_fs_scandir_type(ptr, ${host.sizeType})`);
+    host.declare(`declare void @scr_fs_scandir_free(ptr)`);
+    const snap = B.tmp();
+    B.line(`${snap} = call ptr @scr_fs_scandir_recursive(ptr ${path.name})`);
+    if (!promiseForm) host.emitPendingCheck();
+    const cnt = B.tmp();
+    B.line(`${cnt} = call ${host.sizeType} @scr_fs_scandir_count(ptr ${snap})`);
+    const arr = B.tmp();
+    B.line(`${arr} = ${arrNewCall(host.shapeHost, recT, cnt)}`);
+    const arrayOut = host.own({ name: arr, type: arrayT });
+    const iSlot = B.slot();
+    B.entryAllocas.push(`${iSlot} = alloca ${host.sizeType}`);
+    B.line(`store ${host.sizeType} 0, ptr ${iSlot}`);
+    const lc = B.newLabel("sdr.c");
+    const lb = B.newLabel("sdr.b");
+    const le = B.newLabel("sdr.e");
+    B.br(lc);
+    B.startBlock(lc);
+    const i = B.tmp();
+    const cont = B.tmp();
+    B.line(`${i} = load ${host.sizeType}, ptr ${iSlot}`);
+    B.line(`${cont} = icmp ult ${host.sizeType} ${i}, ${cnt}`);
+    B.condBr(cont, lb, le);
+    B.startBlock(lb);
+    const row = B.tmp();
+    B.line(`${row} = call ptr @${mangleRecordNew(recT.shapeId)}()`);
+    const dt = B.tmp();
+    B.line(`${dt} = call double @scr_fs_scandir_type(ptr ${snap}, ${host.sizeType} ${i})`);
+    host.storeField(host.recordFieldPtr(row, recT.shapeId, "%dtype").ptr, F64, dt, false);
+    const nm = B.tmp();
+    B.line(`${nm} = call ptr @scr_fs_scandir_name(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${nm}, ptr ${host.recordFieldPtr(row, recT.shapeId, "name").ptr}`);
+    const par = B.tmp();
+    B.line(`${par} = call ptr @scr_fs_scandir_parent(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${par}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`);
+    host.arrPush(arr, "ref", row, null);
+    const i2 = B.tmp();
+    B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
+    B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
+    B.br(lc);
+    B.startBlock(le);
+    B.line(`call void @scr_fs_scandir_free(ptr ${snap})`);
+    if (!promiseForm) return arrayOut;
+    const rc = vAdapters(host.shapeHost, arrayT);
+    host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
+    host.toHeap(arrayOut);
+    const promise = B.tmp();
+    B.line(
+      `${promise} = call ptr @scr_promise_settled_ref(ptr ${arr}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, arrayT)})`,
+    );
+    return host.own({ name: promise, type: e.type });
+  }
   if (e.fn === "dir.readSync" || e.fn === "dir.read") {
     // `Dirent | null`: scr_dir_read answers the next entry's +1 name and
     // kind, or false at the end; the row is the call site's Dirent record

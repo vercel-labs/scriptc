@@ -46757,6 +46757,8 @@
           "tests/corpus/fs-permissions-family.cjs",
           "tests/corpus/fs-read-file-sync-option-errors.cjs",
           "tests/corpus/fs-read-file-sync-options-typed.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-recursive-types.ts",
           "tests/corpus/fs-realpath-native-callback.cjs",
           "tests/corpus/fs-stat-callback-ladder.cjs",
           "tests/corpus/fs-stat-callback-options.cjs",
@@ -48189,7 +48191,9 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fsPromises.readdir",
         "tests": [
-          "tests/corpus/2942-fsp-readdir-dirent.ts"
+          "tests/corpus/2942-fsp-readdir-dirent.ts",
+          "tests/corpus/fs-readdir-encodings.ts",
+          "tests/corpus/fs-readdir-recursive-types.ts"
         ]
       },
       "anchorSource": "exact"

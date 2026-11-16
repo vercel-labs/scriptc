@@ -461,6 +461,11 @@ void scr_fs_mkdir(ScrStr *path);
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
+/* fs.readdirSync(path, { encoding: "buffer" }): the same names as Buffers. */
+ScrArr *scr_fs_readdir_bytes(ScrStr *path);
+/* fs.readdirSync(path, { encoding }): the same names decoded with that
+ * encoding (utf8 is scr_fs_readdir itself). */
+ScrArr *scr_fs_readdir_encoded(ScrStr *path, ScrStr *encoding);
 ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
@@ -792,6 +797,11 @@ ScrPromise *scr_fsp_truncate(ScrStr *path, double length);
 ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_readdir(ScrStr *path);
+/* The same listing behind already-settled promises: the names decoded with
+ * the record's encoding, the names as Buffers, and the recursive walk. */
+ScrPromise *scr_fsp_readdir_encoded(ScrStr *path, ScrStr *encoding);
+ScrPromise *scr_fsp_readdir_bytes(ScrStr *path);
+ScrPromise *scr_fsp_readdir_recursive(ScrStr *path);
 ScrPromise *scr_fsp_rm(ScrStr *path);
 ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force);
 ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries,

@@ -3061,6 +3061,25 @@
       "note": "replaces the default set and the client trust anchors for the rest of the process"
     },
     {
+      "id": "node-builtin.trace_events",
+      "kind": "node-builtin",
+      "name": "trace_events",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.trace_events.createTracing",
+      "kind": "node-builtin",
+      "name": "trace_events.createTracing",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.trace_events.getEnabledCategories",
+      "kind": "node-builtin",
+      "name": "trace_events.getEnabledCategories",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.tty",
       "kind": "node-builtin",
       "name": "tty",

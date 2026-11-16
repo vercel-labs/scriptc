@@ -668,7 +668,7 @@ import {
   widensReducedRecords,
 } from "./function-returns.js";
 import { lowerCall, lowerPromiseMethodCall, lowerFilterNarrowCall } from "./lower-calls.js";
-import { lowerFfiCall, validateFfiImports } from "./native-ffi.js";
+import { lowerFfiCall, validateFfiImports, type FfiValidationResult } from "./native-ffi.js";
 import {
   isTopLevelFnSymbol,
   lowerNestedFunctionDecl,
@@ -1351,6 +1351,17 @@ export interface LowerOptions {
    * `preflight` holds the import and package refusals coverage reports
    * beside the lowering's own blockers; they request module demotions. */
   tierReport?: { preflight: readonly ScrDiagnostic[] };
+  /** Prepared island rounds (`executable/prepare.ts`): the predicate decides
+   * a retry with more islands from a failing pass's own result, so when its
+   * failure already implies one the lowering ends there. The comparison and
+   * stream relowers exist to pick the pass a program's failure is reported
+   * from, and a round that retries discards them (D-R, "only decide once").
+   * Asked after the comparison round, or, for a program that needs the
+   * general stream representation, after the stream pass instead (decision
+   * D1 b): that pass can compile a program whose push-down pass failed, so
+   * it is the one whose diagnostics decide.
+   * Absent for every other build, which keeps the full pipeline. */
+  stopAfterPushDown?: ((result: LowerResult) => boolean) | undefined;
 }
 
 interface RuntimeFenceFallback {
@@ -1716,6 +1727,18 @@ function markModuleInitFences(lowerer: Lowerer, fences: readonly ScrDiagnostic[]
   }
 }
 
+/** A pass's result a replacing pass drops to before it lowers: the replacing
+ * pass overwrites it before anything reads it, so the replaced pass's IR
+ * does not stay reachable through the end of the pipeline. */
+function releasedLowerResult(): LowerResult {
+  return {
+    module: null,
+    diagnostics: [],
+    runtimeFences: [],
+    stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+  };
+}
+
 function lowerToIrWithIslands(
   program: ts.Program,
   entry: ts.SourceFile,
@@ -1822,93 +1845,106 @@ function lowerToIrWithIslands(
     options.abortOnStreamFlags !== false &&
     (options.unitStore ?? null) === null &&
     options.coverage !== true;
-  const validation = new Lowerer(program, entry, moduleOrder, {
-    facts,
-    frontendServices: options.frontendServices,
-    projectCheckJs: options.projectCheckJs ?? false,
-    parameterPropertiesFirst: options.parameterPropertiesFirst,
-    targetPlatform,
-    define: options.define,
-    startupCrash,
-    admittedOpinions: options.admittedOpinions,
-    inlineRequireCycleCalls,
-    dynamicImportRejections: options.dynamicImportRejections,
-    ffiImports,
-    libraryCallbacks,
-    forkTargets,
-    workerTargets,
-    workerOnlyModules,
-    workerModules,
-    externalTypes,
-    externalTypeSpecifiersByFile,
-    abortOnStreamFlags: abortReplacedPasses,
-    tierMode,
-    runtimeOptionalReport,
-    coverageReached,
-    typeClaims,
-  });
-  const ffiValidation = validateFfiImports(validation);
-  timing("ffi-validate");
-  // Reachability must use the same exact-symbol ownership as FFI validation.
-  // Otherwise a local function shadowing a configured ambient name is mistaken for FFI
-  // while computing reachability, even though ordinary lowering would
-  // correctly handle it as TypeScript. FFI-free builds reuse the validation
-  // lowerer because validation is an immediate no-op there.
-  const reachableEmit =
-    ffiImports.length === 0
-      ? validation
-      : new Lowerer(program, entry, moduleOrder, {
-          facts,
-          frontendServices: options.frontendServices,
-          projectCheckJs: options.projectCheckJs ?? false,
-          parameterPropertiesFirst: options.parameterPropertiesFirst,
-          targetPlatform,
-          define: options.define,
-          startupCrash,
-          admittedOpinions: options.admittedOpinions,
-          inlineRequireCycleCalls,
-          dynamicImportRejections: options.dynamicImportRejections,
-          ffiImports,
-          libraryCallbacks,
-          forkTargets,
-          workerTargets,
-          workerOnlyModules,
-          workerModules,
-          externalTypes,
-          externalTypeSpecifiersByFile,
-          tierMode,
-          runtimeOptionalReport,
-          coverageReached,
-          typeClaims,
-          ffiBindingSymbols: ffiValidation.symbolsByName,
-          abortOnStreamFlags: abortReplacedPasses,
-        });
-  for (const d of extraModuleCycleDiags) reachableEmit.pushDiag(d);
-  for (const d of ffiValidation.diagnostics) reachableEmit.pushDiag(d);
+  // The push-down pass is released through `pushDownEmit` once a relower
+  // replaces it: a Lowerer's mapper, unit and symbol tables are the round's
+  // largest allocation next to the IR it emits, and the interpreter keeps a
+  // dead local's slot until the function returns, so the losing pass is
+  // cleared by name rather than left to the end of the round.
+  let pushDownEmit: Lowerer | null;
+  let ffiValidation: FfiValidationResult;
+  {
+    const validation = new Lowerer(program, entry, moduleOrder, {
+      facts,
+      frontendServices: options.frontendServices,
+      projectCheckJs: options.projectCheckJs ?? false,
+      parameterPropertiesFirst: options.parameterPropertiesFirst,
+      targetPlatform,
+      define: options.define,
+      startupCrash,
+      admittedOpinions: options.admittedOpinions,
+      inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
+      ffiImports,
+      libraryCallbacks,
+      forkTargets,
+      workerTargets,
+      workerOnlyModules,
+      workerModules,
+      externalTypes,
+      externalTypeSpecifiersByFile,
+      abortOnStreamFlags: abortReplacedPasses,
+      tierMode,
+      runtimeOptionalReport,
+      coverageReached,
+      typeClaims,
+    });
+    ffiValidation = validateFfiImports(validation);
+    timing("ffi-validate");
+    // Reachability must use the same exact-symbol ownership as FFI validation.
+    // Otherwise a local function shadowing a configured ambient name is mistaken for FFI
+    // while computing reachability, even though ordinary lowering would
+    // correctly handle it as TypeScript. FFI-free builds reuse the validation
+    // lowerer because validation is an immediate no-op there, and that reuse
+    // is what keeps this validation lowerer off the arena budget.
+    pushDownEmit =
+      ffiImports.length === 0
+        ? validation
+        : new Lowerer(program, entry, moduleOrder, {
+            facts,
+            frontendServices: options.frontendServices,
+            projectCheckJs: options.projectCheckJs ?? false,
+            parameterPropertiesFirst: options.parameterPropertiesFirst,
+            targetPlatform,
+            define: options.define,
+            startupCrash,
+            admittedOpinions: options.admittedOpinions,
+            inlineRequireCycleCalls,
+            dynamicImportRejections: options.dynamicImportRejections,
+            ffiImports,
+            libraryCallbacks,
+            forkTargets,
+            workerTargets,
+            workerOnlyModules,
+            workerModules,
+            externalTypes,
+            externalTypeSpecifiersByFile,
+            tierMode,
+            runtimeOptionalReport,
+            coverageReached,
+            typeClaims,
+            ffiBindingSymbols: ffiValidation.symbolsByName,
+            abortOnStreamFlags: abortReplacedPasses,
+          });
+  }
+  for (const d of extraModuleCycleDiags) pushDownEmit.pushDiag(d);
+  for (const d of ffiValidation.diagnostics) pushDownEmit.pushDiag(d);
+  // The push-down pass's reachable set and IR are held in these two
+  // variables, not in the emitted value, so a relower that wins can replace
+  // them without the previous pass's IR staying reachable through a
+  // surviving object.
   let pushDownAborted = false;
-  let emitted: { reachable: Set<string>; result: LowerResult };
+  let reachable: Set<string>;
+  let result: LowerResult;
   try {
-    emitted = reachableEmit.emitReachable(options.libRoots, options.unitStore ?? null);
+    const emitted = pushDownEmit.emitReachable(options.libRoots, options.unitStore ?? null);
+    reachable = emitted.reachable;
+    result = emitted.result;
   } catch (e) {
     if (!(e instanceof StreamFlagsAbort)) throw e;
     // The pass asked for a stream mode, so the stream pass below replaces
     // its reachable set, result and Lowerer before any of them is read.
     pushDownAborted = true;
-    emitted = {
-      reachable: new Set(),
-      result: { module: null, diagnostics: [], runtimeFences: [], stats: reachableEmit.stats },
-    };
+    reachable = new Set();
+    result = { module: null, diagnostics: [], runtimeFences: [], stats: pushDownEmit.stats };
   }
-  let { reachable } = emitted;
-  let result = emitted.result;
-  let resultLowerer = reachableEmit;
+  let resultLowerer: Lowerer = pushDownEmit;
   timing("reachable-emit", {
     reachable: reachable.size,
     ...(pushDownAborted ? { aborted: "stream-flags" } : {}),
     // The program holds a primitive constructor in its typed form
     // (held-constructors.ts): what makes its refusals count for the
     // comparison round below.
-    ...(reachableEmit.constructorFunctionTypes ? { held_constructors: true } : {}),
+    ...(pushDownEmit.constructorFunctionTypes ? { held_constructors: true } : {}),
   });
   // The general stream representation (TypeMapperCtx.generalNodeStreams)
   // is a per-program decision: only a program whose reachable code moved
@@ -1917,8 +1953,11 @@ function lowerToIrWithIslands(
   // The stream pass below replaces this pass's result outright, so the
   // whole-slot comparison runs after it for those programs (it would
   // otherwise pay for a result the stream pass throws away).
-  const pushDownRequest = reachableEmit.requestedStreamMode();
+  const pushDownRequest = pushDownEmit.requestedStreamMode();
   const generalNodeStreams = pushDownRequest !== null;
+  // SCRIPTC_CHECK_STREAM_MODE reads this off the push-down pass, which that
+  // mode lowers to its end; the pass itself may be released by then.
+  const pushDownMetUntypedStreamFlow = pushDownEmit.requiresDynNodeStreams;
   if (pushDownAborted && !generalNodeStreams)
     throw new InternalCompilerError(
       "lowerer bug: a stream-flags abort without the general stream flag",
@@ -2046,11 +2085,21 @@ function lowerToIrWithIslands(
   };
   // Stream programs take it after their stream passes (below).
   if (!generalNodeStreams) comparisonRounds(false);
+  // A comparison pass that won stands in the push-down pass's place, so
+  // release the push-down pass here rather than at the end of the round.
+  if (resultLowerer !== pushDownEmit) pushDownEmit = null;
   // Checked-dynamic stream slots (dyn-streams.ts) are a further per-program
   // decision under the general representation: only a program that moves an
   // untyped value into a stream slot lowers again with them.
   let dynNodeStreams = pushDownRequest !== null && pushDownRequest.dyn;
   const streamPass = (dyn: boolean): Lowerer => {
+    // The stream pass always replaces the pass the comparison kept, and the
+    // whole-slot flag and class values are the only things it reads from
+    // that pass. Taking them first lets this frame reset the reachable set
+    // and the result before the new pass emits, so the replaced pass's IR is
+    // not live across the emit.
+    const wholeSlotDegradation = resultLowerer.wholeSlotDegradation;
+    const dynamicClassValues = dynamicClassValuesOf(resultLowerer);
     const general = new Lowerer(program, entry, moduleOrder, {
       facts,
       frontendServices: options.frontendServices,
@@ -2079,23 +2128,24 @@ function lowerToIrWithIslands(
       // The general pass of a program that asks for checked-dynamic slots
       // is replaced by the pass that has them.
       ...(dyn ? { dynNodeStreams: true } : { abortOnStreamFlags: abortReplacedPasses }),
-      ...(resultLowerer.wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
-      ...dynamicClassValuesOf(resultLowerer),
+      ...(wholeSlotDegradation ? { wholeSlotDegradation: true } : {}),
+      ...dynamicClassValues,
     });
     for (const d of extraModuleCycleDiags) general.pushDiag(d);
     for (const d of ffiValidation.diagnostics) general.pushDiag(d);
+    resultLowerer = general;
+    reachable = new Set();
+    result = releasedLowerResult();
     const phase = dyn ? "dyn-streams-relower" : "general-streams-relower";
-    let generalEmitted: { reachable: Set<string>; result: LowerResult };
     try {
-      generalEmitted = general.emitReachable(options.libRoots);
+      const generalEmitted = general.emitReachable(options.libRoots);
+      reachable = generalEmitted.reachable;
+      result = generalEmitted.result;
     } catch (e) {
       if (!(e instanceof StreamFlagsAbort)) throw e;
       timing(phase, { reachable: 0, aborted: "stream-flags" });
       return general;
     }
-    reachable = generalEmitted.reachable;
-    result = generalEmitted.result;
-    resultLowerer = general;
     timing(phase, { reachable: reachable.size });
     return general;
   };
@@ -2105,10 +2155,13 @@ function lowerToIrWithIslands(
       dynNodeStreams = true;
       streamPass(true);
     }
-    if (CHECK_STREAM_MODE && reachableEmit.requiresDynNodeStreams && !dynNodeStreams)
+    if (CHECK_STREAM_MODE && pushDownMetUntypedStreamFlow && !dynNodeStreams)
       throw new InternalCompilerError(
         "lowerer bug: the push-down pass met an untyped stream flow after its stream request, and the general stream pass met none",
       );
+    // The stream pass replaced the push-down pass outright; release it
+    // before the comparison round allocates its own tables.
+    pushDownEmit = null;
   }
   // The async-iteration protocol analysis (async-protocol-holders.ts) ran
   // inside the first pass that mapped a protocol type; its cost is part of
@@ -2168,6 +2221,29 @@ function lowerToIrWithIslands(
     result = emit.run();
     resultLowerer = emit;
     timing("historical-order-relower");
+  }
+  // Prepared island rounds only (LowerOptions.stopAfterPushDown): a round
+  // whose failing pass already implies a retry with more islands would
+  // discard the passes below along with their diagnostics, so the caller's
+  // predicate decides the retry from that pass's result and the rest of the
+  // pipeline is skipped. A round that compiles, or whose pass implies no
+  // retry, runs the full pipeline as before and reports from the pass that
+  // wins. The retry decision reads the pass this pipeline would keep: the
+  // comparison round, and the historical-order relower when the program
+  // needs one, have already picked it, so a dependency is not islanded for
+  // diagnostics no pass the pipeline reports carries. A program with the
+  // general stream representation is decided here from its stream pass:
+  // that pass can compile a program whose push-down pass failed, so deciding
+  // from push-down alone could island packages for diagnostics the final
+  // pass never reports (a program that compiled then refuses with SC8020).
+  if (result.module === null && options.stopAfterPushDown !== undefined) {
+    // The predicate reads the result as lowerToIr returns it: module-init
+    // fences carry their mark (lowerToIr marks them again, unchanged).
+    markModuleInitFences(resultLowerer, result.runtimeFences);
+    if (options.stopAfterPushDown(result)) {
+      timing("stop-after-push-down");
+      return result;
+    }
   }
   // A stream program whose passes still fail takes the comparison round
   // here, against the pass whose result stands: the stream pass replaces

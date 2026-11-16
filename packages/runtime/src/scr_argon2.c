@@ -428,17 +428,19 @@ static bool argon2_integer(const char *name, const ScrDyn *value, double min, do
 }
 
 /* One optional BufferSource member (+1), or NULL when absent. */
-static ScrBytes *argon2_optional_bytes(const ScrDyn *options, const char *name) {
+/* An optional BufferSource member: true with *out NULL when absent, and
+ * false with Node's TypeError pending when it is there but invalid. */
+static bool argon2_optional_bytes(const ScrDyn *options, const char *name, ScrBytes **out) {
   ScrDyn *value = scr_dyn_obj_read(options, name, strlen(name));
   if (!value || value->kind == SCR_DYN_UNDEF) {
     if (value) scr_dyn_release(value);
-    return NULL;
+    return true;
   }
   char label[64];
   snprintf(label, sizeof label, "parameters.%s", name);
-  ScrBytes *bytes = argon2_value_bytes(label, value);
+  *out = argon2_value_bytes(label, value);
   scr_dyn_release(value);
-  return bytes;
+  return *out != NULL;
 }
 
 static ScrBytes *argon2_required_bytes(const ScrDyn *options, const char *name) {
@@ -523,8 +525,10 @@ static ScrDyn *scr_argon2_run(ScrDyn *algorithm, ScrDyn *parameters) {
   uint32_t passes = 0;
   ok = ok && passes_value && argon2_integer("passes", passes_value, 1, 4294967295.0, &passes);
   if (passes_value) scr_dyn_release(passes_value);
-  ScrBytes *secret = ok ? argon2_optional_bytes(parameters, "secret") : NULL;
-  ScrBytes *ad = ok ? argon2_optional_bytes(parameters, "associatedData") : NULL;
+  ScrBytes *secret = NULL;
+  ScrBytes *ad = NULL;
+  if (ok) ok = argon2_optional_bytes(parameters, "secret", &secret);
+  if (ok) ok = argon2_optional_bytes(parameters, "associatedData", &ad);
   if (!ok) {
     scr_bytes_release(message);
     scr_bytes_release(nonce);
@@ -568,7 +572,9 @@ ScrDyn *scr_crypto_argon2_sync(ScrDyn *args) {
 static void scr_argon2_settle(ScrClosure *cb, ScrError *error, ScrBytes *value) {
   (void)error;
   ScrDyn *callback = (ScrDyn *)scr_box_get_ref(cb->caps[0]);
+  /* The queue hands the value over: the Buffer holds its own reference. */
   ScrDyn *out = scr_dyn_new_buffer(value);
+  scr_bytes_release(value);
   ScrDyn *no_error = scr_dyn_new_null();
   ScrDyn *argv[2] = {no_error, out};
   ScrDyn *r = scr_dyn_call(callback, argv, 2, "callback");
@@ -604,8 +610,6 @@ ScrDyn *scr_crypto_argon2_cb(ScrDyn *args) {
     scr_dyn_release(callback);
     return NULL;
   }
-  /* Argon2 is a job like scrypt's: its callback rides the deferred crypto
-   * queue, whose pending work holds the loop open until it runs. */
   /* Argon2 is a job like scrypt's: its callback rides the deferred crypto
    * queue, which keeps the loop live until it runs. */
   ScrBytes *bytes = scr_bytes_buffer_source(out);

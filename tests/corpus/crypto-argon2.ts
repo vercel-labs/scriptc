@@ -50,6 +50,20 @@ attempt("memory under parallelism", () =>
 attempt("tag 0", () => argon2Sync("argon2id", { ...base, tagLength: 0 }));
 attempt("passes 0", () => argon2Sync("argon2id", { ...base, passes: 0 }));
 attempt("callback not a function", () => argon2("argon2id", base, 5 as never));
+attempt("invalid secret", () =>
+  argon2(
+    "argon2id",
+    { ...base, secret: 5 } as unknown as Parameters<typeof argon2Sync>[1],
+    () => console.log("secret callback ran"),
+  ),
+);
+attempt("invalid associated data", () =>
+  argon2(
+    "argon2id",
+    { ...base, associatedData: 5 } as unknown as Parameters<typeof argon2Sync>[1],
+    () => console.log("associated callback ran"),
+  ),
+);
 
 const expected = argon2Sync("argon2id", base).toString("hex");
 let returned = false;

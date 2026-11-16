@@ -9549,6 +9549,230 @@ export function cjsVoidInitPreambleReals(
   return reals;
 }
 
+/** Whether `e` is `void <operand>` or `undefined` as written. */
+function isVoidWritten(e: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return e.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(e) && e.text === "undefined");
+}
+
+/** The operand a `void <operand>` expression evaluates, or null when the
+ * value is `undefined` itself (nothing to run). */
+function voidValueOperand(e: ts.Expression): ts.Expression | null {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return e.kind === ts.SyntaxKind.VoidExpression
+    ? ((e.expression as ts.Expression | undefined) ?? null)
+    : null;
+}
+
+/** Whether evaluating `operand` runs nothing: a literal, `undefined`, a
+ * sign applied to one, or a `void` of such. */
+function pureVoidOperand(operand: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (
+    ts.isNumericLiteral(operand) ||
+    ts.isStringLiteral(operand) ||
+    ts.isNoSubstitutionTemplateLiteral(operand)
+  )
+    return true;
+  if (
+    operand.kind === ts.SyntaxKind.TrueKeyword ||
+    operand.kind === ts.SyntaxKind.FalseKeyword ||
+    operand.kind === ts.SyntaxKind.NullKeyword
+  )
+    return true;
+  if (ts.isIdentifier(operand) && operand.text === "undefined") return true;
+  if (operand.kind === ts.SyntaxKind.VoidExpression) {
+    const inner = operand.expression as ts.Expression | undefined;
+    return inner === undefined || pureVoidOperand(inner);
+  }
+  if (
+    ts.isPrefixUnaryExpression(operand) &&
+    (operand.operator === ts.SyntaxKind.MinusToken || operand.operator === ts.SyntaxKind.PlusToken)
+  )
+    return pureVoidOperand(operand.operand);
+  return false;
+}
+
+/** The export member `exports.<name>` / `module.exports.<name>` names, or
+ * null for any other target. Syntactic: callers have already established
+ * that the receiver is the module's exports object. */
+function writtenExportMemberName(target: ts.Expression): string | null {
+  if (
+    !ts.isPropertyAccessExpression(target) ||
+    target.questionDotToken ||
+    !ts.isIdentifier(target.name)
+  )
+    return null;
+  const recv = target.expression;
+  const isExports = ts.isIdentifier(recv) && recv.text === "exports";
+  return isExports || isModuleExportsAccess(recv) ? target.name.text : null;
+}
+
+/** Whether `expr` assigns export member `name` a value other than
+ * `void 0`/`undefined`, directly or through a chain
+ * (`exports.a = exports.name = value`). */
+function assignsExportMember(expr: ts.Expression, name: string): boolean {
+  let e: ts.Expression = expr;
+  for (;;) {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+      return false;
+    if (writtenExportMemberName(e.left) === name && !isVoidWritten(e.right))
+      // A value that reads the member it initializes observes `undefined`
+      // before the store, so the statement is a read, not an assignment.
+      return !readsExportMember(e.right, name);
+    e = e.right;
+  }
+}
+
+/** Whether running `node` can read export member `name` through the
+ * exports object. Nested function bodies are skipped: they run later, if at
+ * all (`this` is declined for a different reason). */
+function readsExportMember(node: ts.Node, name: string): boolean {
+  let found = false;
+  ts.walkPreorder(node, (n) => {
+    if (found) return "stop";
+    if (n !== node && ts.isFunctionLike(n)) return "skip";
+    if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.name) && n.name.text === name) {
+      const recv = n.expression;
+      if ((ts.isIdentifier(recv) && recv.text === "exports") || isModuleExportsAccess(recv)) {
+        found = true;
+        return "stop";
+      }
+    }
+    return undefined;
+  });
+  return found;
+}
+
+/** How a statement bears on whether export member `name` is assigned before
+ * the statement list ends: it assigns it (`assigns`), it lets execution
+ * continue without touching it (`neutral`), or it can end execution, or
+ * observe the member while it is still `undefined`, first (`exits`). */
+type ExportAssignState = "assigns" | "neutral" | "exits";
+
+function exportAssignState(stmt: ts.Statement, name: string): ExportAssignState {
+  if (ts.isExpressionStatement(stmt)) {
+    if (assignsExportMember(stmt.expression, name)) return "assigns";
+    return readsExportMember(stmt.expression, name) ? "exits" : "neutral";
+  }
+  if (ts.isVariableStatement(stmt)) {
+    for (const declaration of stmt.declarationList.declarations.nodes)
+      if (declaration.initializer !== undefined && readsExportMember(declaration.initializer, name))
+        return "exits";
+    return "neutral";
+  }
+  if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) return "neutral";
+  // A class declaration runs its heritage and static initializers here.
+  if (ts.isClassDeclaration(stmt)) return "exits";
+  if (ts.isBlock(stmt)) {
+    for (const inner of stmt.statements.nodes) {
+      const state = exportAssignState(inner, name);
+      if (state !== "neutral") return state;
+    }
+    return "neutral";
+  }
+  if (ts.isIfStatement(stmt)) {
+    // The condition runs before either arm and may observe the member.
+    if (readsExportMember(stmt.expression, name)) return "exits";
+    const thenState = exportAssignState(stmt.thenStatement, name);
+    const elseState =
+      stmt.elseStatement === undefined ? "neutral" : exportAssignState(stmt.elseStatement, name);
+    if (thenState === "assigns" && elseState === "assigns") return "assigns";
+    if (thenState === "exits" || elseState === "exits") return "exits";
+    return "neutral";
+  }
+  // Loops may run zero times or observe the member, `try` may not reach its
+  // assignments, and the abrupt-completion statements end execution here.
+  return "exits";
+}
+
+/** A `void 0` export preamble write the lowering may elide. */
+export interface CjsVoidInitPreamble {
+  /** The export members the chain writes, outermost first. */
+  targets: ts.PropertyAccessExpression[];
+  /** The `void` operand the write evaluates (and whose value is discarded),
+   * or null for a pure `void 0`/`undefined`. The operand's effects still
+   * run when the write is elided. */
+  effect: ts.Expression | null;
+}
+
+/** The export preamble a `void`-valued assignment chain writes
+ * (`exports.a = exports.b = void 0` names both, outermost first), or null
+ * when any target is not such a member or the chain ends in something
+ * else. */
+function voidInitExportTargets(assign: ts.BinaryExpression): CjsVoidInitPreamble | null {
+  const targets: ts.PropertyAccessExpression[] = [];
+  let e: ts.Expression = assign;
+  for (;;) {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+      return null;
+    if (writtenExportMemberName(e.left) === null) return null;
+    targets.push(e.left as ts.PropertyAccessExpression);
+    let right: ts.Expression = e.right;
+    while (ts.isParenthesizedExpression(right)) right = right.expression;
+    if (ts.isBinaryExpression(right) && right.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      e = right;
+      continue;
+    }
+    if (!isVoidWritten(right)) return null;
+    const operand = voidValueOperand(right);
+    return { targets, effect: operand !== null && !pureVoidOperand(operand) ? operand : null };
+  }
+}
+
+/** The `void` operand an export assignment chain would evaluate before
+ * discarding its value, or null when the chain is not a `void` write or its
+ * operand is provably pure. */
+export function cjsVoidInitWriteEffect(assign: ts.BinaryExpression): ts.Expression | null {
+  return voidInitExportTargets(assign)?.effect ?? null;
+}
+
+/** The export members of a tsc-style `void 0` preamble write
+ * (`exports.name = void 0`, or a chain of them) whose member every path
+ * continuing past the write's statement list assigns a real value before
+ * execution ends or a statement that mentions the member, or null when the
+ * write should keep its ordinary lowering. The export takes its value at
+ * those assignments, so a lowering may elide the write — the same reasoning
+ * as the top-level preamble, extended to a preamble whose real assignments
+ * sit inside a conditional (scheduler's `if (…performance…) { exports.now =
+ * f } else { exports.now = g }`). A write that some path or some statement
+ * the scan reaches can observe keeps its ordinary lowering (Node answers
+ * `undefined` there); a call in the window that reaches module code reading
+ * the member is the same transient-undefined window the top-level preamble
+ * accepts. An elided write still evaluates an effectful `void` operand. */
+export function cjsVoidInitPreambleTargets(
+  assign: ts.BinaryExpression,
+): CjsVoidInitPreamble | null {
+  const target = voidInitExportTargets(assign);
+  if (target === null) return null;
+  let outer: ts.Node = assign;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  const stmt = outer.parent;
+  if (stmt === undefined || !ts.isExpressionStatement(stmt) || stmt.expression !== outer)
+    return null;
+  const list = stmt.parent;
+  if (list === undefined || (!ts.isBlock(list) && !ts.isSourceFile(list))) return null;
+  const index = list.statements.nodes.indexOf(stmt);
+  if (index < 0) return null;
+  for (const access of target.targets) {
+    const name = (access.name as ts.Identifier).text;
+    let assigned = false;
+    for (let i = index + 1; i < list.statements.nodes.length; i++) {
+      const state = exportAssignState(list.statements.nodes[i]!, name);
+      if (state === "exits") return null;
+      if (state === "assigns") {
+        assigned = true;
+        break;
+      }
+    }
+    if (!assigned) return null;
+  }
+  return target;
+}
+
 /** The members and shared value of a CHAINED member export
  * `exports.a = exports.b = module.exports.c = value` (outermost name
  * first), or null when the assignment is not a chain of at least two

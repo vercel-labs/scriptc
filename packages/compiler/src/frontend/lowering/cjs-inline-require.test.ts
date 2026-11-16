@@ -244,6 +244,25 @@ test("a member no export statement carries is absent; inherited names are not", 
   );
 });
 
+test("a void-init export whose real values ignore 'this' may be called through the exports object", () => {
+  withProgram(
+    {
+      "main.cjs": `exports.now = void 0;
+if (typeof performance === "object") {
+  exports.now = function () { return 1; };
+} else {
+  exports.now = function () { return 2; };
+}
+exports.later = function () { return exports.now(); };
+`,
+    },
+    (lowerer) => {
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "now")).toBe(true);
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "later")).toBe(true);
+    },
+  );
+});
+
 test("an export statement a path can skip holds undefined from module entry", async () => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-cjs-absent-"));
   try {
@@ -277,4 +296,32 @@ test("an export statement a path can skip holds undefined from module entry", as
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a void-init export still fails the proof when a real value reads 'this'", () => {
+  withProgram(
+    {
+      "main.cjs": `exports.now = void 0;
+exports.now = function () { return this.base; };
+exports.later = function () { return exports.now(); };
+`,
+    },
+    (lowerer) => {
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "now")).toBe(false);
+    },
+  );
+});
+
+test("a chained export assignment is proved by the value it stores", () => {
+  withProgram(
+    {
+      "main.cjs": `exports.a = exports.b = function () { return 1; };
+exports.run = function () { return exports.a() + exports.b(); };
+`,
+    },
+    (lowerer) => {
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "a")).toBe(true);
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "b")).toBe(true);
+    },
+  );
 });

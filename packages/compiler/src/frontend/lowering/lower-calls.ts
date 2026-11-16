@@ -1969,7 +1969,16 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // `exports.f =` statement assigns.
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
     const g = cjsInFileExportGlobalOf(lowerer, expr.expression);
-    if (g && (g.type.kind === "func" || g.type.kind === "dyn")) {
+    // A member some path leaves unassigned has an undefined-armed slot (the
+    // absent-member widening): the call still evaluates its arguments and
+    // then throws Node's "is not a function" TypeError when the arm is
+    // undefined, so it rides the checked-dynamic call.
+    const absentCapable =
+      g !== null &&
+      g.type.kind === "union" &&
+      lowerer.stripUndefinedArm(g.type).kind === "func" &&
+      lowerer.dynConvertible(g.type);
+    if (g && (g.type.kind === "func" || g.type.kind === "dyn" || absentCapable)) {
       const sf = ts.getSourceFileOfNode(expr);
       const member = expr.expression.name.text;
       // A function that reads `this` only for its sibling exports gets them
@@ -1979,7 +1988,11 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         : (lowerCjsExportsReceiver(lowerer, expr, sf, member) ?? null);
       const refusal = `calling '${ts.getTextOfNode(expr.expression)}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`;
       if (receiver === null) lowerer.unsupported("SC1090", expr, refusal);
-      const callee: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
+      const slot: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
+      const callee: IrExpr =
+        g.type.kind === "func" || g.type.kind === "dyn"
+          ? slot
+          : { kind: "dynFrom", value: slot, type: DYN, loc };
       const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
       if (checked) {
         if (receiver === undefined) return checked;

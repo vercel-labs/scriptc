@@ -5345,11 +5345,11 @@ void scr_timers_check_callback(const ScrDyn *cb) {
 }
 
 /* The closure that calls a dyn function value, or NULL with Node's
- * ERR_INVALID_ARG_TYPE pending for a non-function. */
+ * ERR_INVALID_ARG_TYPE pending for a non-function. The message names what
+ * arrived ("Received type number (1)"), as the timer calls' gate does. */
 static ScrClosure *scr_micro_dyn_closure(const ScrDyn *cb) {
   if (cb->kind != SCR_DYN_FUNC) {
-    static const char msg[] = "The \"callback\" argument must be of type function.";
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+    scr_dyn_arg_type_fail("callback", "of type function", cb);
     return NULL;
   }
   ScrClosure *c = scr_closure_new((void *)scr_micro_dyn_fire, 1);

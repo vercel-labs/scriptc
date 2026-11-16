@@ -1,4 +1,5 @@
-/* The standard library's prototype objects as values — Date.prototype.
+/* The standard library's prototype objects as values — Date.prototype and
+ * ArrayBuffer.prototype.
  *
  * A JavaScript source reading `Date.prototype` used to reach the
  * standard-library member fence: the checker types the read as a Date, and
@@ -6,10 +7,12 @@
  * .hasOwnProperty("getTime")` and the rest of the interface's existence
  * tests could not compile at all. This unit builds the prototype object the
  * language defines — an ordinary object whose prototype is Object.prototype,
- * carrying the interface's methods as non-enumerable, writable, configurable
- * data properties plus its constructor — and answers it from one object per
- * thread, so every read is the same object (`Date.prototype ===
- * Date.prototype`).
+ * carrying the interface's members plus its constructor — and answers it from
+ * one object per thread, so every read is the same object (`Date.prototype
+ * === Date.prototype`). ArrayBuffer's four accessors are getter properties
+ * whose getters answer a view's member and throw Node's TypeError on any
+ * other receiver, so an existence test written
+ * `hasOwnProperty.call(ArrayBuffer.prototype, "detached")` answers true.
  *
  * The method values are the invoke unit's interned builtin-method functions
  * (scr_dyn_builtin_method), which are what `Date.prototype.<method>` reads
@@ -26,6 +29,7 @@
 #include "scr_runtime.h"
 #include "scr_dyn_methods.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /* Date.prototype's interface: every method the standard defines, plus the two
@@ -68,10 +72,13 @@ static const DynDatePrototypeMember dyn_date_prototype_members[] = {
  * interned method table it is built from, and kept for the lifetime of the
  * program the way that table is. */
 static SCR_TL ScrDyn *dyn_stdlib_prototype_date;
+static SCR_TL ScrDyn *dyn_stdlib_prototype_array_buffer;
 
 static void dyn_stdlib_prototype_cleanup(void) {
   scr_dyn_release(dyn_stdlib_prototype_date);
   dyn_stdlib_prototype_date = NULL;
+  scr_dyn_release(dyn_stdlib_prototype_array_buffer);
+  dyn_stdlib_prototype_array_buffer = NULL;
 }
 
 /* Defines `value` (borrowed) on `target` as a non-enumerable, writable,
@@ -140,17 +147,125 @@ static ScrDyn *dyn_stdlib_prototype_build_date(const ScrStr *name) {
   return prototype;
 }
 
+/* ArrayBuffer.prototype's interface, in Node's own-property order: the four
+ * methods (each carrying its ECMAScript `length`), and the four accessors
+ * whose getters answer a view's byteLength, maxByteLength, resizable and
+ * detached. Their getters brand-check an ArrayBuffer receiver: a
+ * SharedArrayBuffer has its own prototype, so it throws the TypeError an
+ * incompatible receiver throws, as does any other value. */
+typedef struct {
+  const char *property;
+  /* The getter's `name`: Node's "get byteLength". NULL for a method, whose
+   * name is its property. */
+  const char *getter_name;
+  size_t length;
+  bool accessor;
+} DynArrayBufferPrototypeMember;
+
+static const DynArrayBufferPrototypeMember dyn_array_buffer_prototype_members[] = {
+  {"byteLength", "get byteLength", 0, true},
+  {"slice", NULL, 2, false},
+  {"maxByteLength", "get maxByteLength", 0, true},
+  {"resizable", "get resizable", 0, true},
+  {"resize", NULL, 1, false},
+  {"transfer", NULL, 0, false},
+  {"transferToFixedLength", NULL, 0, false},
+  {"detached", "get detached", 0, true},
+};
+
+/* The getters of those accessors: closure->fn names the member, and the
+ * receiver is the view the read ran on. Only an ArrayBuffer view answers;
+ * the dyn member read is the one that dispatches a handle's own getters. */
+static ScrDyn *dyn_stdlib_array_buffer_getter(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  const char *member = closure->fn;
+  ScrDyn *receiver = scr_dyn_this_get();
+  ScrDyn *result = NULL;
+  if (receiver->kind == SCR_DYN_HANDLE && receiver->v.handle.tag == SCR_DYNH_ARRAY_BUFFER) {
+    result = scr_dyn_obj_read(receiver, member, strlen(member));
+  } else {
+    char message[96];
+    int length = snprintf(message, sizeof message,
+                          "Method get ArrayBuffer.prototype.%s called on incompatible receiver",
+                          member);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
+  }
+  scr_dyn_release(receiver);
+  return result;
+}
+
+/* `target[name] = getter`, an accessor with the attributes every built-in
+ * prototype getter has (non-enumerable, configurable). */
+static void dyn_stdlib_define_accessor(ScrDyn *target, ScrStr *name, ScrDyn *getter) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "get", 3, scr_dyn_retain(getter));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrDyn *key = scr_dyn_new_str(name); /* retains */
+  ScrDyn *defined = scr_dyn_define_property(target, key, descriptor);
+  scr_dyn_release(defined);
+  scr_dyn_release(key);
+  scr_dyn_release(descriptor);
+}
+
+static ScrDyn *dyn_stdlib_prototype_build_array_buffer(const ScrStr *name) {
+  ScrDyn *prototype = scr_dyn_new_obj();
+  /* ArrayBuffer has its own interned constructor value (its reads, its
+   * instances' `constructor` member and this prototype all answer it), not
+   * one of the invoke unit's interned constructors. */
+  ScrDyn *ctor = scr_array_buffer_constructor();
+  if (ctor) {
+    ScrStr *constructor = scr_str_new("constructor", sizeof "constructor" - 1);
+    dyn_stdlib_define(prototype, constructor, ctor);
+    scr_str_release(constructor);
+    /* The constructor's own `prototype` is this same object, so a read of
+     * either spelling answers the same value. */
+    scr_dyn_fn_seed_prototype(ctor, scr_dyn_retain(prototype));
+    scr_dyn_release(ctor);
+  }
+  for (size_t i = 0; i < sizeof dyn_array_buffer_prototype_members / sizeof dyn_array_buffer_prototype_members[0];
+       i++) {
+    const DynArrayBufferPrototypeMember *member = &dyn_array_buffer_prototype_members[i];
+    ScrStr *property = scr_str_new(member->property, strlen(member->property));
+    if (member->accessor) {
+      ScrDyn *getter = scr_dyn_new_func(scr_closure_new((void *)member->property, 0),
+                                        dyn_stdlib_array_buffer_getter, 0, "native:getter",
+                                        member->getter_name);
+      dyn_stdlib_define_accessor(prototype, property, getter);
+      scr_dyn_release(getter);
+    } else {
+      ScrStr *method = scr_str_new(member->property, strlen(member->property));
+      ScrDyn *value = scr_dyn_builtin_method(name, method);
+      dyn_stdlib_define(prototype, property, value);
+      dyn_stdlib_define_length(value, member->length);
+      scr_dyn_release(value);
+      scr_str_release(method);
+    }
+    scr_str_release(property);
+  }
+  return prototype;
+}
+
 /* The prototype object of the named constructor, as a value;
  * dyn.stdlibPrototype's implementation. `name` is a string literal the
  * frontend emitted, so an unknown one is a compiler/runtime mismatch. */
 ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name) {
-  if (strcmp(name->data, "Date") != 0) {
-    static const char message[] = "scriptc: unknown standard library prototype\n";
-    scr_trap(message);
+  if (strcmp(name->data, "Date") == 0) {
+    if (!dyn_stdlib_prototype_date) {
+      dyn_stdlib_prototype_date = dyn_stdlib_prototype_build_date(name);
+      scr_atexit(dyn_stdlib_prototype_cleanup);
+    }
+    return scr_dyn_retain(dyn_stdlib_prototype_date);
   }
-  if (!dyn_stdlib_prototype_date) {
-    dyn_stdlib_prototype_date = dyn_stdlib_prototype_build_date(name);
-    scr_atexit(dyn_stdlib_prototype_cleanup);
+  if (strcmp(name->data, "ArrayBuffer") == 0) {
+    if (!dyn_stdlib_prototype_array_buffer) {
+      dyn_stdlib_prototype_array_buffer = dyn_stdlib_prototype_build_array_buffer(name);
+      scr_atexit(dyn_stdlib_prototype_cleanup);
+    }
+    return scr_dyn_retain(dyn_stdlib_prototype_array_buffer);
   }
-  return scr_dyn_retain(dyn_stdlib_prototype_date);
+  static const char message[] = "scriptc: unknown standard library prototype\n";
+  scr_trap(message);
+  return NULL;
 }

@@ -942,6 +942,14 @@ const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
 /** The libCall nodes the rules below test. */
 type LibCallNode = IrExpr & { kind: "libCall" };
 
+/** Whether `node` is the interned constructor value of one of `names`
+ * (`dyn.globalConstructor("RegExp")`): a program that reads a builtin
+ * class as a value may build or call one, which runs the class's unit. */
+function readsGlobalConstructor(node: LibCallNode, ...names: string[]): boolean {
+  if (node.fn !== "dyn.globalConstructor" || node.args[0]?.kind !== "strLit") return false;
+  return names.includes(node.args[0].value);
+}
+
 /** A condition over several nodes of the module (a WebCrypto call and an
  * algorithm name): the scan's one walk shows it every expression, and the
  * feature is set when `result` answers true after the walk. */
@@ -2094,11 +2102,17 @@ const RUNTIME_FEATURE_RULES = {
       ...ABORT_SIGNAL_LIB_FNS,
     ],
     prefixes: ["event."],
-    // spawn's `signal` option registers through addAbortListener. A call
-    // keeps the slot (the lowering always passes fifteen arguments); an IR
-    // fixture may spell fewer, and an absent one means no signal.
     libCall: (node) =>
-      node.fn === "cp.spawnArmed" && node.args[14] !== undefined && !isDynUndefined(node.args[14]),
+      // spawn's `signal` option registers through addAbortListener. A call
+      // keeps the slot (the lowering always passes fifteen arguments); an IR
+      // fixture may spell fewer, and an absent one means no signal.
+      (node.fn === "cp.spawnArmed" &&
+        node.args[14] !== undefined &&
+        !isDynUndefined(node.args[14])) ||
+      // A program that reads one of these classes as a value may build or
+      // call one (dyn.globalConstructor), and the construction runs this
+      // unit.
+      readsGlobalConstructor(node, "Event", "CustomEvent", "EventTarget"),
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
@@ -2126,6 +2140,9 @@ const RUNTIME_FEATURE_RULES = {
       // controller through scr_abort.c's helpers.
       "test.ctxSignal",
     ],
+    // A program that reads the AbortController class as a value may build
+    // one (dyn.globalConstructor), and the construction runs this unit.
+    libCall: (node) => readsGlobalConstructor(node, "AbortController"),
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
@@ -2285,6 +2302,10 @@ const RUNTIME_FEATURE_RULES = {
       // Unicode case mapping.
       "path.win32Relative",
     ],
+    // A program that reads the interned RegExp constructor as a value may
+    // build or call one: the checked-dynamic construction runs the regex
+    // engine, so link it as a regex literal does.
+    libCall: (node) => readsGlobalConstructor(node, "RegExp"),
     prefixes: URL_PREFIXES,
     expr: (node, _tables) =>
       node.kind === "regexLit" ||

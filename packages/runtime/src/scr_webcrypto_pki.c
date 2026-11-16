@@ -1115,6 +1115,34 @@ static ScrPromise *sw_sign(const ScrDyn *args) { return sw_sign_verify(args, fal
 
 static ScrPromise *sw_verify(const ScrDyn *args) { return sw_sign_verify(args, true); }
 
+/* getPublicKey: the public CryptoKey of a private one, with the usages the
+ * caller asks for. All of this unit's algorithms verify with their public
+ * key, and the public key is always extractable. */
+static ScrDyn *sw_get_public_key(ScrDyn *key_value, long usages) {
+  SwKey *k = sw_key_of(key_value);
+  if (!k || !scr_pki_key_is_private(k->key)) {
+    scr_throw_domex("InvalidAccessError", "key must be a private key");
+    return NULL;
+  }
+  /* The public half's usages: verify for a signing pair, encryption and
+   * wrapping for RSA-OAEP, and none for a key-agreement key (its public
+   * key is only a peer). */
+  unsigned allowed = sw_is_derive_kind(k->kind) ? 0
+                     : k->kind == SW_OAEP
+                         ? (SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_WRAP_KEY)
+                         : SCR_WC_USAGE_VERIFY;
+  if ((unsigned)usages & ~allowed) {
+    sw_unsupported_usage(k->kind);
+    return NULL;
+  }
+  ScrPkiKey *public_key = scr_pki_key_public_of(k->key);
+  if (!public_key) {
+    scr_throw_domex("OperationError", "Key generation failed");
+    return NULL;
+  }
+  return sw_key_new(public_key, k->kind, k->hash, (unsigned)usages, true);
+}
+
 static const ScrWcAsymmetric sw_table = {
     .generate_key = sw_generate_key,
     .import_key = sw_import_key,
@@ -1124,6 +1152,7 @@ static const ScrWcAsymmetric sw_table = {
     .encrypt = sw_encrypt,
     .decrypt = sw_decrypt,
     .derive_bits = sw_derive_bits,
+    .get_public_key = sw_get_public_key,
     .is_key = sw_is_key,
     .key_is_private = sw_key_is_private,
 };

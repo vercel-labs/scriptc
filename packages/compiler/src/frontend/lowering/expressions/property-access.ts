@@ -3054,6 +3054,23 @@ export function lowerIntrinsicProperty(
       loc: locOf(expr),
     };
   }
+  // ArrayBuffer.prototype in a JavaScript source: the prototype object its
+  // views inherit from (its methods and its byteLength/maxByteLength/
+  // resizable/detached getters), so an existence test such as
+  // `hasOwnProperty.call(ArrayBuffer.prototype, "detached")` answers Node's.
+  // A typed source keeps its own lowering and refusal.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    lowerer.stdlibGlobalMember(expr, "ArrayBuffer") === "prototype"
+  ) {
+    return {
+      kind: "libCall",
+      fn: "dyn.stdlibPrototype",
+      args: [{ kind: "strLit", value: "ArrayBuffer", type: STRING, loc: locOf(expr) }],
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
   if (
     ts.isPropertyAccessExpression(expr.expression) &&
     lowerer.stdlibGlobalMember(expr.expression, "Date") === "prototype"

@@ -113,6 +113,7 @@ import {
   BYTES_ELEMENT_SIZE,
   DYN_HANDLE_KINDS,
 } from "../../../ir/ir.js";
+import { isWorkerThreadsClass } from "../builtins/workers.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
@@ -495,6 +496,24 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // worker.performance: the Worker's event-loop utilization object. It is a
+  // runtime call rather than a plain handle read so a program that reads it
+  // links the loop metrics and marks the loop's start, which is what the
+  // object reports.
+  if (
+    !expr.questionDotToken &&
+    expr.name.text === "performance" &&
+    isWorkerThreadsClass(lowerer, expr.expression, "Worker")
+  ) {
+    lowerer.usesWorkers = true;
+    return {
+      kind: "libCall",
+      fn: "worker.performance",
+      args: [lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN)],
+      type: DYN,
+      loc,
+    };
+  }
   // A JavaScript source reading a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The name
   // decides: the receiver may be a checked-dynamic value.

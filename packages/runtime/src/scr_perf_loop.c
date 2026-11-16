@@ -38,8 +38,14 @@ static SCR_TL double scr_perf_loop_turns = 0;    /* loop turns taken */
 
 /* The loop's per-turn and exit hooks (scr_async.c calls them when set): one
  * turn is one iteration of the loop, its end is when the loop stops with
- * work left to do. */
-static void scr_perf_loop_turn(void) { scr_perf_loop_turns += 1; }
+ * work left to do. A worker thread also publishes the snapshot its creator
+ * reads through worker.performance (scr_worker.c installs the hook), which
+ * advances only as the loop turns, as Node's metrics do. */
+static void scr_perf_loop_turn(void) {
+  scr_perf_loop_turns += 1;
+  if (scr_context_publish_loop_metrics)
+    scr_context_publish_loop_metrics(scr_perf_loop_start_ms, scr_perf_idle_time());
+}
 
 static void scr_perf_loop_exit_mark(void) {
   if (scr_perf_loop_exit_ms < 0) scr_perf_loop_exit_ms = scr_perf_now();

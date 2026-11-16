@@ -372,7 +372,7 @@ function propertyNameText(name: ts.PropertyName): string | undefined {
 
 /** True when `node`'s type is worker_threads' `name` class (also reached
  * through its global). */
-function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: string): boolean {
+export function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: string): boolean {
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getSymbol();
   if (sym === undefined || ts.symbolName(sym) !== name) return false;

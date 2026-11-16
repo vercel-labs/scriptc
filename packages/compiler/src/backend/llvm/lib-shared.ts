@@ -1635,6 +1635,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "worker.shareEnv": "scr_worker_share_env",
   "worker.resourceLimits": "scr_worker_resource_limits",
   "worker.threadName": "scr_worker_thread_name_current",
+  "worker.performance": "scr_worker_performance",
   "worker.channel": "scr_worker_message_channel",
   "worker.receiveMessageOnPort": "scr_worker_receive_message_on_port",
   "worker.setEnvironmentData": "scr_worker_set_environment_data",

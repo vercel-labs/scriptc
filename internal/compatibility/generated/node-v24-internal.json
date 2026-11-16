@@ -121892,6 +121892,7 @@
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
           "tests/corpus/worker-env-option.ts",
+          "tests/corpus/worker-performance.ts",
           "tests/corpus/worker-share-env.ts"
         ]
       },
@@ -122796,8 +122797,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.worker.performance",
+        "tests": [
+          "tests/corpus/worker-performance.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -122819,8 +122823,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.performance.eventLoopUtilization",
+        "tests": [
+          "tests/corpus/worker-performance.ts"
+        ]
       },
       "anchorSource": "exact"
     },

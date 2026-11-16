@@ -2257,7 +2257,10 @@ const RUNTIME_FEATURE_RULES = {
   parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
   /** perf_hooks event-loop metrics (eventLoopUtilization,
    * monitorEventLoopDelay): scr_perf_loop.c. */
-  perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
+  perfLoop: rule({
+    fns: ["perf.idleTime", "worker.performance"],
+    prefixes: ["perf.loop", "perf.eld"],
+  }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */
   pki: rule({ scan: webCryptoAsymmetricScan, fns: [...PKI_LIB_FNS] }),

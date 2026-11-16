@@ -2808,6 +2808,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "worker.parentPort",
         "worker.resourceLimits",
         "worker.threadName",
+        "worker.performance",
       ],
       note: "current-thread metadata and the worker's parent message port",
     },

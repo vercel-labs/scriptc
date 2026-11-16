@@ -2055,6 +2055,9 @@ function buildLibFnSignatures() {
     /** worker_threads.threadName: the Worker's name in a worker, "" in the
      * main thread (scr_worker.c). */
     "worker.threadName": { argTypes: [], result: DYN },
+    /** worker.performance: the Worker's { eventLoopUtilization } object
+     * (scr_worker_events.c; the receiver is its Worker handle). */
+    "worker.performance": { argTypes: [DYN], result: DYN },
     /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
      * (scr_worker_events.c; the latter may throw). */
     "worker.channel": { argTypes: [], result: DYN },

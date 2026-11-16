@@ -7816,6 +7816,8 @@ export class LlEmitter {
             node.fn === "perf.loopExit" ||
             node.fn === "perf.loopCount" ||
             node.fn === "perf.idleTime" ||
+            // worker.performance reports a worker's loop metrics.
+            node.fn === "worker.performance" ||
             // performance.measure('x', 'loopStart'): the milestone name is a
             // run-time string, so any measure may reach the loop metrics.
             node.fn === "perf.measure")

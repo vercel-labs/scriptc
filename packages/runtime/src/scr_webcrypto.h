@@ -39,6 +39,9 @@ ScrBytes *scr_wc_buffer_source(const char *prefix, size_t index, ScrDyn *value);
 ScrStr *scr_wc_dom_string(const ScrDyn *value);
 const char *scr_wc_key_format(const char *prefix, ScrDyn *value);
 long scr_wc_key_usages(const char *prefix, size_t index, ScrDyn *value);
+/* The keyUsages sequence KeyObject.toCryptoKey takes, whose messages name
+ * the value "Value": a usage mask, or -1 with the TypeError pending. */
+long scr_wc_value_usages(ScrDyn *value);
 void scr_wc_missing_member(const char *dict, const char *member);
 ScrDyn *scr_wc_member(const ScrDyn *dict, const char *key);
 /* A BufferSource member of an algorithm dictionary: false with the error
@@ -69,6 +72,10 @@ typedef struct {
   ScrPromise *(*decrypt)(const ScrDyn *args);
   ScrBytes *(*derive_bits)(ScrDyn *algorithm, ScrDyn *base_key, bool null_length, double length,
                            const char *method);
+  /* KeyObject.toCryptoKey for an asymmetric KeyObject (its method
+   * arguments are borrowed), and KeyObject.from for a CryptoKey. */
+  ScrDyn *(*to_crypto_key)(const ScrDyn *key, const ScrDyn *const *args, size_t argc);
+  ScrDyn *(*key_object_from)(const ScrDyn *crypto_key);
   /* The public CryptoKey derived from a private one (getPublicKey), or NULL
    * with the DOMException pending. */
   ScrDyn *(*get_public_key)(ScrDyn *key, long usages);

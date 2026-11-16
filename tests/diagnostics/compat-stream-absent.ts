@@ -5,10 +5,6 @@
 import * as stream from "node:stream";
 import { Duplex, PassThrough, Readable, Writable } from "node:stream";
 
-// The process-wide default high-water mark: every stream the runtime
-// builds takes its default at compile time.
-stream.setDefaultHighWaterMark(false, 1024);
-
 // A connected pair of Duplex streams.
 const [left, right] = stream.duplexPair();
 left.write("x");

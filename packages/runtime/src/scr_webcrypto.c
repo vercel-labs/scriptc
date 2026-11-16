@@ -75,6 +75,9 @@ static const struct {
     {"SHA-256", "sha256"},
     {"SHA-384", "sha384"},
     {"SHA-512", "sha512"},
+    {"SHA3-256", "sha3-256"},
+    {"SHA3-384", "sha3-384"},
+    {"SHA3-512", "sha3-512"},
 };
 
 static bool scr_wc_ascii_ieq(const ScrStr *s, const char *name) {
@@ -223,6 +226,42 @@ static int scr_wc_usage_index(const ScrStr *s) {
 }
 
 /* sequence<KeyUsage> over an array: the usage mask (-1 on failure). */
+/* The keyUsages sequence KeyObject.toCryptoKey takes: Node's messages name
+ * the value "Value" rather than an argument position. */
+long scr_wc_value_usages(ScrDyn *value) {
+  ScrDyn *plain = scr_wc_plain(value);
+  if (!plain) return -1;
+  if (plain->kind != SCR_DYN_ARR) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "Value cannot be converted to sequence.");
+    scr_dyn_release(plain);
+    return -1;
+  }
+  long mask = 0;
+  double n = scr_dyn_arr_len(plain);
+  for (double i = 0; i < n; i++) {
+    ScrDyn *item = scr_dyn_arr_at(plain, i);
+    ScrStr *s = scr_wc_dom_string(item);
+    scr_dyn_release(item);
+    if (!s) {
+      scr_dyn_release(plain);
+      return -1;
+    }
+    int k = scr_wc_usage_index(s);
+    if (k < 0) {
+      scr_wc_type_error("ERR_INVALID_ARG_VALUE",
+                        "Value[%.0f] '%.*s' is not a valid enum value of type KeyUsage.", i,
+                        (int)(s->len > 200 ? 200 : s->len), s->data);
+      scr_str_release(s);
+      scr_dyn_release(plain);
+      return -1;
+    }
+    scr_str_release(s);
+    mask |= 1L << k;
+  }
+  scr_dyn_release(plain);
+  return mask;
+}
+
 long scr_wc_key_usages(const char *prefix, size_t index, ScrDyn *value) {
   ScrDyn *plain = scr_wc_plain(value);
   if (!plain) return -1;
@@ -323,6 +362,57 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
   return out;
 }
 
+/* The SHA-3 digests Node reports as experimental the first time a program
+ * uses each one. The warning is delivered on the next tick, as Node's
+ * process warning is: to the 'warning' listeners when the process-warning
+ * unit is linked, and otherwise to the default report. It does not go
+ * through scr_emit_warning, which would make every WebCrypto program link
+ * that unit. */
+static SCR_TL bool scr_wc_sha3_warned[3];
+
+static void scr_wc_warning_tick(ScrClosure *self) {
+  ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
+  ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[1]);
+  if (scr_warning_emit_hook) {
+    char name[32];
+    snprintf(name, sizeof name, "%.*s", (int)type->len, type->data);
+    scr_warning_emit_hook(name, NULL, message);
+  } else {
+    scr_stdout_settle();
+    fflush(stdout);
+    fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)type->len, type->data,
+            (int)message->len, message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    }
+  }
+  scr_str_release(type);
+  scr_str_release(message);
+}
+
+static void scr_wc_warn_sha3(const char *canonical) {
+  static const char *const names[] = {"SHA3-256", "SHA3-384", "SHA3-512"};
+  for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
+    if (strcmp(canonical, names[i]) != 0) continue;
+    if (scr_wc_sha3_warned[i]) return;
+    scr_wc_sha3_warned[i] = true;
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_puts(&b, "The ");
+    scr_jb_puts(&b, names[i]);
+    scr_jb_puts(&b, " Web Crypto API algorithm is an experimental feature and might change at any time");
+    ScrStr *message = scr_jb_finish(&b);
+    ScrClosure *tick = scr_closure_new((void *)&scr_wc_warning_tick, 2);
+    tick->caps[0] = scr_box_new(SCR_BOX_STR);
+    scr_box_set_ref(tick->caps[0], scr_str_new("ExperimentalWarning", 19));
+    tick->caps[1] = scr_box_new(SCR_BOX_STR);
+    scr_box_set_ref(tick->caps[1], message);
+    scr_next_tick(tick);
+    return;
+  }
+}
+
 /* The digest a HashAlgorithmIdentifier names: canonical name, or NULL
  * with NotSupportedError / the SC2020 refusal pending. */
 const char *scr_wc_digest_algorithm(ScrDyn *identifier, const char *method) {
@@ -334,6 +424,7 @@ const char *scr_wc_digest_algorithm(ScrDyn *identifier, const char *method) {
     scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
     return NULL;
   }
+  scr_wc_warn_sha3(canonical);
   if (!scr_wc_native_hash(canonical)) {
     scr_wc_unsupported_algorithm(method, canonical);
     return NULL;
@@ -1177,6 +1268,119 @@ ScrPromise *scr_webcrypto_import_key(ScrDyn *args) {
   return scr_wc_resolved(key);
 }
 
+/* ── KeyObject.toCryptoKey and KeyObject.from ─────────────────────────
+ * node:crypto's KeyObject converts to a CryptoKey with toCryptoKey, and a
+ * CryptoKey converts to a KeyObject with KeyObject.from. The key material
+ * is the same native key: a secret key's bytes go through the import path,
+ * and the pki unit builds the asymmetric CryptoKey and KeyObject. */
+
+static ScrDyn *scr_wc_key_object_to_crypto_key_values(const ScrDyn *key, ScrDyn *algorithm,
+                                                      ScrDyn *extractable_value,
+                                                      ScrDyn *usages_value) {
+  bool asymmetric = key && key->kind == SCR_DYN_HANDLE &&
+                    (key->v.handle.tag == SCR_DYNH_PRIVATE_KEY ||
+                     key->v.handle.tag == SCR_DYNH_PUBLIC_KEY);
+  if (asymmetric) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->to_crypto_key) {
+      scr_wc_unsupported("toCryptoKey", "an asymmetric KeyObject");
+      return NULL;
+    }
+    const ScrDyn *args[3] = {algorithm, extractable_value, usages_value};
+    return scr_wc_asymmetric->to_crypto_key(key, args, 3);
+  }
+  static const char *const names[] = {"AES-CBC", "AES-CTR", "AES-GCM", "AES-KW",
+                                      "HMAC",    "HKDF",    "PBKDF2"};
+  ScrWcAlgorithm alg;
+  if (!scr_wc_normalize(algorithm, names, SCR_WC_COUNT(names), SCR_WC_OP_IMPORT, &alg))
+    return NULL;
+  long usages = scr_wc_value_usages(usages_value);
+  if (usages < 0) return NULL;
+  size_t len = 0;
+  const unsigned char *bytes = scr_key_object_bytes(key, &len);
+  if (!bytes) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "value is not a KeyObject.");
+    return NULL;
+  }
+  ScrBytes *view = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  if (len) memcpy(view->data, bytes, len);
+  ScrDyn *out = scr_wc_import_key_sync("raw-secret", view, NULL, &alg,
+                                       scr_dyn_truthy(extractable_value), usages);
+  scr_bytes_release(view);
+  return out;
+}
+
+/* KeyObject.prototype.toCryptoKey(algorithm, extractable, keyUsages) as a
+ * compiler call: the argument vector is one dyn array. */
+ScrDyn *scr_wc_key_object_to_crypto_key(ScrDyn *args) {
+  size_t argc = (size_t)scr_dyn_arr_len(args);
+  ScrDyn *key = argc > 0 ? scr_dyn_arr_at(args, 0) : scr_dyn_undefined();
+  ScrDyn *algorithm = argc > 1 ? scr_dyn_arr_at(args, 1) : scr_dyn_undefined();
+  ScrDyn *extractable_value = argc > 2 ? scr_dyn_arr_at(args, 2) : scr_dyn_undefined();
+  ScrDyn *usages_value = argc > 3 ? scr_dyn_arr_at(args, 3) : scr_dyn_undefined();
+  ScrDyn *out =
+      scr_wc_key_object_to_crypto_key_values(key, algorithm, extractable_value, usages_value);
+  scr_dyn_release(key);
+  scr_dyn_release(algorithm);
+  scr_dyn_release(extractable_value);
+  scr_dyn_release(usages_value);
+  return out;
+}
+
+/* The CryptoKey's key material as a KeyObject (secret bytes, or the pki
+ * unit's asymmetric key), or NULL with the TypeError pending. */
+static ScrDyn *scr_wc_key_object_from_value(const ScrDyn *value) {
+  if (!scr_webcrypto_is_crypto_key(value)) {
+    scr_dyn_arg_type_fail("key", "an instance of CryptoKey", value);
+    return NULL;
+  }
+  if (scr_crypto_key_of(value)) {
+    const unsigned char *bytes = NULL;
+    size_t len = 0;
+    if (!scr_crypto_crypto_key_info || scr_crypto_crypto_key_info(value, &bytes, &len) != 1) {
+      scr_wc_unsupported("KeyObject.from", "this secret CryptoKey");
+      return NULL;
+    }
+    return scr_crypto_secret_key_object_from_bytes(bytes, len);
+  }
+  if (scr_wc_asymmetric && scr_wc_asymmetric->key_object_from)
+    return scr_wc_asymmetric->key_object_from(value);
+  scr_wc_unsupported("KeyObject.from", "an asymmetric CryptoKey from a computed algorithm");
+  return NULL;
+}
+
+/* KeyObject.from(key) as a compiler call: the argument vector is one dyn
+ * array. */
+ScrDyn *scr_wc_key_object_from(ScrDyn *args) {
+  size_t argc = (size_t)scr_dyn_arr_len(args);
+  ScrDyn *value = argc > 0 ? scr_dyn_arr_at(args, 0) : scr_dyn_undefined();
+  ScrDyn *out = scr_wc_key_object_from_value(value);
+  scr_dyn_release(value);
+  return out;
+}
+
+/* The KeyObject handles reach the two conversions through these hooks. */
+static ScrDyn *scr_wc_to_crypto_key_hook(const ScrDyn *key, const ScrDyn *const *args,
+                                         size_t argc) {
+  ScrDyn *algorithm = argc > 0 ? scr_dyn_retain(args[0]) : scr_dyn_undefined();
+  ScrDyn *extractable_value = argc > 1 ? scr_dyn_retain(args[1]) : scr_dyn_undefined();
+  ScrDyn *usages_value = argc > 2 ? scr_dyn_retain(args[2]) : scr_dyn_undefined();
+  ScrDyn *out =
+      scr_wc_key_object_to_crypto_key_values(key, algorithm, extractable_value, usages_value);
+  scr_dyn_release(algorithm);
+  scr_dyn_release(extractable_value);
+  scr_dyn_release(usages_value);
+  return out;
+}
+
+static ScrDyn *scr_wc_key_object_from_hook(const ScrDyn *crypto_key) {
+  return scr_wc_key_object_from_value(crypto_key);
+}
+
+__attribute__((constructor)) static void scr_wc_install_key_object_hooks(void) {
+  scr_crypto_to_crypto_key = scr_wc_to_crypto_key_hook;
+  scr_crypto_key_object_from = scr_wc_key_object_from_hook;
+}
+
 /* generateKey(algorithm, extractable, keyUsages) for HMAC and AES keys:
  * random bytes of the requested length (an HMAC key defaults to its
  * hash's block size; a length that is not a whole number of bytes clears
@@ -1210,6 +1414,12 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
   if (!scr_wc_check_usages(algorithm.name, usages)) goto done;
   if (usages == 0) {
     scr_throw_domex("SyntaxError", "Usages cannot be empty when creating a key.");
+    goto done;
+  }
+  /* Node derives an HMAC key length from the hash only for SHA-1 and
+   * SHA-2; a SHA-3 hash needs an explicit length. */
+  if (hmac && !algorithm.has_length && strncmp(algorithm.hash, "SHA3-", 5) == 0) {
+    scr_throw_domex("NotSupportedError", "Explicit algorithm length member is required");
     goto done;
   }
   double length = algorithm.has_length ? algorithm.length
@@ -1451,27 +1661,6 @@ ScrPromise *scr_webcrypto_verify(ScrDyn *args) {
  * next tick: to the 'warning' listeners when the process-warning unit is
  * linked, and otherwise to the default report. */
 static SCR_TL bool scr_wc_warned_get_public_key = false;
-
-static void scr_wc_warning_tick(ScrClosure *self) {
-  ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
-  ScrStr *message = (ScrStr *)scr_box_get_ref(self->caps[1]);
-  if (scr_warning_emit_hook) {
-    char name[32];
-    snprintf(name, sizeof name, "%.*s", (int)type->len, type->data);
-    scr_warning_emit_hook(name, NULL, message);
-  } else {
-    scr_stdout_settle();
-    fflush(stdout);
-    fprintf(stderr, "(node:%ld) %.*s: %.*s\n", (long)scr_process_pid(), (int)type->len, type->data,
-            (int)message->len, message->data);
-    if (!scr_warning_trace_hint_shown) {
-      scr_warning_trace_hint_shown = true;
-      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
-    }
-  }
-  scr_str_release(type);
-  scr_str_release(message);
-}
 
 static void scr_wc_warn_experimental(const char *text) {
   ScrClosure *tick = scr_closure_new((void *)&scr_wc_warning_tick, 2);
@@ -2291,6 +2480,12 @@ static bool scr_wc_derived_length(ScrDyn *identifier, const ScrWcAlgorithm *impo
     return true;
   }
   if (strcmp(canonical, "HMAC") == 0 && imported->hash) {
+    /* Node's HMAC key length comes from the hash only for SHA-1 and SHA-2;
+     * a SHA-3 hash needs an explicit length to derive a key. */
+    if (!imported->has_length && strncmp(imported->hash, "SHA3-", 5) == 0) {
+      scr_throw_domex("NotSupportedError", "Explicit algorithm length member is required");
+      return false;
+    }
     *length = imported->has_length ? imported->length
               : strcmp(imported->hash, "SHA-384") == 0 || strcmp(imported->hash, "SHA-512") == 0
                   ? 1024

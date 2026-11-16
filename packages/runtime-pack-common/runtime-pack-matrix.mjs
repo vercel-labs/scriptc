@@ -296,6 +296,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],
   ["scr_loop_wsapoll.c", any("netEffective", "dgram")],
+  // The stream defaults the net and http units read at construction.
+  ["scr_stream_defaults.c", any("stream", "netEffective", "httpEffective")],
   ["scr_net.c", "netEffective"],
   ["scr_http.c", "httpEffective"],
   ["scr_http2.c", "http2"],

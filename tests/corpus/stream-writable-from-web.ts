@@ -72,6 +72,19 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 5));
   log.push(`abort-path ${abortLog.join(",")} errored ${aborting.errored?.message}`);
 
+  // A write callback that throws reports on the stream, as Node's afterWrite
+  // does, and the 'drain' listener's throw reaches it the same way.
+  const throwLog: string[] = [];
+  const throwing = Writable.fromWeb(new WritableStream<Uint8Array>({ write(): void {} }));
+  throwing.on("error", (error: Error) => throwLog.push(`error ${error.message}`));
+  throwing.write(Buffer.from("x"), () => {
+    throw new Error("callback boom");
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  throwLog.push(`destroyed ${throwing.destroyed}`);
+
+  log.push(`callback-throw ${throwLog.join(",")}`);
+
   // An identity TransformStream's writable side is a WritableStream too.
   const fromTransform = Writable.fromWeb(new TransformStream().writable);
   log.push(`transform ${fromTransform instanceof Writable}`);

@@ -9,6 +9,8 @@
 #include "scr_runtime.h"
 #include "scr_stream.h"
 
+#include <stdio.h>
+
 typedef struct SfwwCtx SfwwCtx;
 struct SfwwCtx {
   size_t rc;
@@ -65,7 +67,10 @@ static void sfww_settle(SfwwCtx *c, int which, ScrDyn *err) {
     }
   }
   if (error) scr_error_release(error);
-  if (scr_exc_pending()) scr_exc_clear(); /* a continuation leaves none pending */
+  /* A write completion keeps a pending exception: it is the write callback's
+   * (or a 'drain' listener's) throw, which sfww_write_finish reports on the
+   * stream. Every other continuation leaves none pending. */
+  if (which != 0 && scr_exc_pending()) scr_exc_clear();
 }
 
 static ScrDyn *sfww_write_ok(ScrClosure *cl, ScrDyn *const *args, size_t argc);
@@ -98,19 +103,36 @@ static void sfww_await(SfwwCtx *c, ScrDyn *result, int which) {
   scr_dyn_release(onr);
 }
 
+/* A write completion: the user's write callback and the 'drain' listener it
+ * may run sit on this path, and Node's afterWrite reports a throw from either
+ * as the stream's error. */
+static void sfww_write_finish(SfwwCtx *c, ScrDyn *reason) {
+  sfww_settle(c, 0, reason);
+  if (scr_exc_pending()) {
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *value = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    ScrError *error = value ? scr_error_from_dyn(value) : NULL;
+    if (value) scr_dyn_release(value);
+    if (error) {
+      scr_stream_release(scr_stream_destroy(c->writable, error));
+      scr_error_release(error);
+    }
+  }
+  sfww_unref(c);
+}
+
 static ScrDyn *sfww_write_ok(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   SfwwCtx *c = sfww_of(cl);
-  sfww_settle(c, 0, NULL);
-  sfww_unref(c);
+  sfww_write_finish(c, NULL);
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
 static ScrDyn *sfww_write_err(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   SfwwCtx *c = sfww_of(cl);
-  sfww_settle(c, 0, argc > 0 ? args[0] : NULL);
-  sfww_unref(c);
+  sfww_write_finish(c, argc > 0 ? args[0] : NULL);
   return scr_dyn_retain(scr_dyn_undefined());
 }
 

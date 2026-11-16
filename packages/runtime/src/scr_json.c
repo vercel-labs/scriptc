@@ -25667,7 +25667,10 @@ void scr_error_capture_stack_trace(ScrDyn *target, const char *through, bool ski
     scr_error_release(error);
     return;
   }
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_ARR) {
+  /* An object, an array, or a function: all three carry the own property
+   * table the captured `stack` is installed on, and a function's heading is
+   * its name (scr_dyn_error_string reads it from the target). */
+  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_ARR && target->kind != SCR_DYN_FUNC) {
     static const char msg[] = "Error.captureStackTrace on this object is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     scr_str_release(frames);

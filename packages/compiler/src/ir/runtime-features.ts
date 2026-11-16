@@ -1051,10 +1051,13 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** The WebCrypto algorithms scr_webcrypto_pki.c implements over the pki
  * unit (lowercased). */
 const WEBCRYPTO_ASYMMETRIC_NAMES: ReadonlySet<string> = new Set([
+  "ecdh",
   "ecdsa",
   "ed25519",
+  "rsa-oaep",
   "rsa-pss",
   "rsassa-pkcs1-v1_5",
+  "x25519",
 ]);
 
 /** Whether a string literal in the module names Ed25519, without regard
@@ -2110,7 +2113,13 @@ const RUNTIME_FEATURE_RULES = {
    * handles. */
   abortSignal: rule({
     prefixes: ["abort.", "webstream."],
-    fns: ["util.transferableAbortSignal", "util.transferableAbortController"],
+    fns: [
+      "util.transferableAbortSignal",
+      "util.transferableAbortController",
+      // A test's t.signal (scr_test.c): the abort unit supplies its
+      // controller through scr_abort.c's helpers.
+      "test.ctxSignal",
+    ],
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),

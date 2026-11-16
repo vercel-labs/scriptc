@@ -97393,6 +97393,7 @@
           "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
@@ -99037,9 +99038,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.enable",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
@@ -99072,7 +99074,6 @@
         "tests": [
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
-          "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -99124,9 +99125,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.tick",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
@@ -99200,9 +99202,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.runAll",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5813-mock-timers-module.ts",
@@ -99235,7 +99238,6 @@
         "tests": [
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
-          "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/harness/node-test.test.ts"
         ]

@@ -70,6 +70,9 @@ enum {
   SCR_TEST_F_ONLY = 4,
   SCR_TEST_F_TIMEOUT = 8,
   SCR_TEST_F_CONCURRENCY = 16,
+  /* { expectFailure } (or the expectFailure method twin): the test passes
+   * only if its own run threw. */
+  SCR_TEST_F_EXPECT_FAILURE = 64,
 };
 /* hook kinds */
 enum { SCR_HOOK_BEFORE = 0, SCR_HOOK_AFTER = 1, SCR_HOOK_BEFORE_EACH = 2, SCR_HOOK_AFTER_EACH = 3 };
@@ -142,6 +145,7 @@ struct ScrTestCtx {
   bool run_only;
   bool only_filtered; /* registered under runOnly(true) without { only } */
   bool listed; /* a suite listed in the failing section (a failing root before) */
+  bool expect_failure; /* { expectFailure }: throwing is what passes */
   double start_ms; /* when the test started running; NaN before */
   size_t serial; /* index in scr_test_nodes, getTestContext()'s handle */
 };
@@ -335,6 +339,9 @@ static void scr_test_child_add(ScrTestCtx *parent, ScrTestCtx *child /*moves*/) 
    * are todo themselves, with a bare TODO directive, unless they carry
    * their own skip or todo. */
   if (child->mode == SCR_TEST_RUN && parent->mode == SCR_TEST_TODO) child->mode = SCR_TEST_TODO;
+  /* Node inherits expectFailure the way it inherits todo: a flagged parent
+   * flags its descendants, whose own throws are then what passes. */
+  if (parent->expect_failure) child->expect_failure = true;
   /* Subtests inherit the parent's concurrency unless they set their own. */
   if (!(child->flags & SCR_TEST_F_CONCURRENCY)) child->concurrency = parent->concurrency;
   parent->children[parent->nchildren++] = child;
@@ -441,6 +448,8 @@ static void scr_test_report_result(ScrTestCtx *t) {
     fputs(" # ", scr_test_out());
     if (t->msg) scr_test_print_str(t->msg);
     else fputs("TODO", scr_test_out());
+  } else if (t->expect_failure && t->mode == SCR_TEST_RUN) {
+    fputs(" # EXPECTED FAILURE", scr_test_out());
   }
   fputc('\n', scr_test_out());
   for (size_t i = 0; i < t->ndiags; i++) {
@@ -841,11 +850,27 @@ static void scr_test_run_node(ScrTestCtx *t) {
       scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
       if (scr_exc_pending()) t->err = scr_exc_take();
     }
+    /* { expectFailure }: the suite passes only if its own run threw. The
+     * expected failure stays t.error, but the result is a pass. */
+    bool expected_failure = false;
+    if (t->expect_failure && t->mode != SCR_TEST_SKIP) {
+      if (t->err) {
+        expected_failure = true;
+      } else {
+        static const char msg[] = "test was expected to fail but passed";
+        scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+        t->err = scr_exc_take();
+        t->listed = true; /* Node lists a failing suite's own error */
+      }
+    }
     t->dur_ms = scr_now_ms() - start;
-    if (t->err) scr_test_suite_hook_failed = true;
+    if (t->err && !expected_failure) scr_test_suite_hook_failed = true;
     if (t->mode == SCR_TEST_TODO) {
-      /* A todo suite reports its directive; its children are todo too. */
-      t->state = t->err ? SCR_TS_TODO_FAIL : SCR_TS_TODO_PASS;
+      /* A todo suite reports its directive; its children are todo too, and
+       * an expected failure keeps the suite todo-passing. */
+      t->state = (t->err && !expected_failure) ? SCR_TS_TODO_FAIL : SCR_TS_TODO_PASS;
+    } else if (expected_failure) {
+      t->state = SCR_TS_PASS;
     } else {
       t->state = t->err                     ? SCR_TS_FAIL
                  : scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL
@@ -913,6 +938,18 @@ static void scr_test_run_node(ScrTestCtx *t) {
     scr_throw_str(scr_str_new(buf, (size_t)n));
     t->err = scr_exc_take();
     failed = true;
+  }
+  /* { expectFailure }: the test passes only if its own run threw; an
+   * expected failure keeps t.error for the hooks but counts as a pass. */
+  if (t->expect_failure && t->mode != SCR_TEST_SKIP) {
+    if (failed && t->err) {
+      failed = false;
+    } else if (!failed) {
+      static const char msg[] = "test was expected to fail but passed";
+      scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+      t->err = scr_exc_take();
+      failed = true;
+    }
   }
   /* Node's pass()/fail(): afterEach hooks already see the outcome. */
   t->passed = !failed;
@@ -1026,6 +1063,8 @@ static void scr_test_print_failure(ScrTestCtx *t) {
     fputs(" # ", scr_test_out());
     if (t->msg) scr_test_print_str(t->msg);
     else fputs("TODO", scr_test_out());
+  } else if (t->expect_failure && t->mode == SCR_TEST_RUN) {
+    fputs(" # EXPECTED FAILURE", scr_test_out());
   }
   fputc('\n', scr_test_out());
   if (t->err) {
@@ -1821,6 +1860,7 @@ static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, dou
                                    double concurrency) {
   if (plan >= 0) t->plan = (int)plan;
   if ((int)flags & SCR_TEST_F_TIMEOUT) t->timeout = timeout;
+  if ((int)flags & SCR_TEST_F_EXPECT_FAILURE) t->expect_failure = true;
   if ((int)flags & SCR_TEST_F_CONCURRENCY) {
     /* `true` runs every subtest at once: Node uses Infinity for any test
      * with a parent, and os.availableParallelism() - 1 only for its root. */

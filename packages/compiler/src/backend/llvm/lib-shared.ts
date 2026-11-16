@@ -151,6 +151,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "mime.typeParse": "scr_mime_type_parse",
   "mime.paramsNew": "scr_mime_params_new",
   "mime.is": "scr_mime_is",
+  "sqlite.dbNew": "scr_sqlite_db_new",
+  "sqlite.is": "scr_sqlite_is",
   "util.callbackify": "scr_util_callbackify",
   "util.promisifyDyn": "scr_util_promisify",
   "util.promisifyCustom": "scr_util_promisify_custom",

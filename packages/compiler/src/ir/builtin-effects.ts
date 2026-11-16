@@ -879,6 +879,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.throttle",
   "mime.typeNew",
   "mime.typeParse",
+  // node:sqlite opens (or validates) a connection; every option it reads
+  // can refuse the call.
+  "sqlite.dbNew",
   "util.callbackify",
   "util.promisifyDyn",
   // The typed promisify's custom protocol: a truthy non-function throws

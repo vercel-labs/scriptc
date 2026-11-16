@@ -283,15 +283,6 @@
     },
     {
       "binding": {
-        "module": "node:sqlite",
-        "access": "import"
-      },
-      "code": "SC1010",
-      "message": "the 'node:sqlite' module (it wraps the SQLite library bundled into the node executable, and scriptc binaries bundle no SQLite engine) is not supported yet",
-      "layer": "load"
-    },
-    {
-      "binding": {
         "module": "node:test/reporters",
         "access": "import"
       },

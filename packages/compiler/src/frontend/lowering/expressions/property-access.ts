@@ -116,6 +116,7 @@ import {
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
+import { fenceSqliteStaticRead } from "../builtins/sqlite.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
   cjsConditionalAliasMemberReadOf,
@@ -1372,6 +1373,7 @@ export function lowerPropertyAccessExpr(
     // rather than reading undefined through the field and dynamic reads.
     fenceBuiltinConstructorStaticRead(lowerer, expr) ??
     fenceMimeStaticRead(lowerer, expr) ??
+    fenceSqliteStaticRead(lowerer, expr) ??
     lowerer.lowerFieldRead(expr);
   // A union-typed field read narrows like an identifier when the
   // checker has narrowed this use to one arm.

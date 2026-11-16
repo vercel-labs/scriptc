@@ -202,6 +202,9 @@ export interface CcOptions {
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
   mime?: boolean;
+  /** node:sqlite: compiles scr_sqlite.c and links the vendored SQLite
+   * archive. */
+  sqlite?: boolean;
   /** `--large-pages`: compiles scr_text_pages.c. */
   largePages?: boolean;
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and

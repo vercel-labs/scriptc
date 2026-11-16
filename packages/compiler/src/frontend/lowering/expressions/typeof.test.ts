@@ -108,3 +108,22 @@ console.log(isObject({}));
   );
   expect(expressions(mod).some((e) => e.kind === "dynTest")).toBe(true);
 });
+
+test("a typeof test on a builtin class prototype keeps the runtime answer", async () => {
+  const mod = await lowerProgram({
+    "main.mjs": `
+if (typeof ArrayBuffer.prototype === "object") {
+  console.log("object");
+} else {
+  console.log("other");
+}
+`,
+  });
+  // The census describes the pinned Node release; the native runtime has no
+  // ArrayBuffer.prototype value, so the test must not fold — the feature test
+  // that follows would evaluate a member of an object the program lacks.
+  const folded = statements(mod).flatMap((stmt) =>
+    stmt.kind === "if" && stmt.cond.kind === "boolLit" ? [stmt.cond.value] : [],
+  );
+  expect(folded).toEqual([]);
+});

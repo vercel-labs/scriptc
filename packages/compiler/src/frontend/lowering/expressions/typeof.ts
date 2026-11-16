@@ -45,8 +45,8 @@ import {
   nodeUndefinedGlobalProperty,
 } from "../lower-namespaces.js";
 import { isF64HandleTyped } from "../f64-handles.js";
-import { nodeValueTypeof } from "../node-value-reads.js";
-import { nodeModuleMemberKind } from "../node-values.js";
+import { nodeGlobalObjectOf, nodeValueTypeof } from "../node-value-reads.js";
+import { nodeGlobalKind, nodeModuleMemberKind } from "../node-values.js";
 import { COMMONJS_MODULE_BINDINGS } from "../../builtin-modules.js";
 import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
 import { undeclaredGlobalTypeof } from "../global-object-names.js";
@@ -744,7 +744,26 @@ export function lowerDynTypeofTest(
           ? stdlibGlobalNameOf(lowerer, operand.expression)
           : null;
       const globalName = direct !== null && direct !== "globalThis" ? direct : receiver;
-      if (globalName === null || !programMayWriteGlobalName(lowerer, globalName, operand)) {
+      // A MEMBER is the census's answer only for a Node global OBJECT the
+      // runtime provides (performance, process, console, crypto, navigator).
+      // An ECMAScript builtin class's member is NOT: the census describes the
+      // pinned Node release, and the native runtime has no
+      // `ArrayBuffer.prototype` value at all, so `typeof ArrayBuffer.prototype
+      // === "object"` must keep answering "undefined" as the runtime does —
+      // folding it true would make the feature test that follows
+      // (`typeof ArrayBuffer.prototype.resize === "function"`) evaluate a
+      // member of an object the program does not have.
+      const memberRead = ts.isPropertyAccessExpression(operand) && !operand.questionDotToken;
+      let nodeObjectMember = true;
+      if (memberRead && ts.isPropertyAccessExpression(operand)) {
+        const object = nodeGlobalObjectOf(lowerer, operand.expression);
+        const kind = object === null ? null : nodeGlobalKind(object);
+        nodeObjectMember = kind !== null && kind.kind === "value" && kind.type === "object";
+      }
+      if (
+        nodeObjectMember &&
+        (globalName === null || !programMayWriteGlobalName(lowerer, globalName, operand))
+      ) {
         const answer = nodeValueTypeof(lowerer, a.expression);
         if (answer !== null)
           return { kind: "boolLit", value: (answer === b.text) !== negated, type: BOOL, loc };

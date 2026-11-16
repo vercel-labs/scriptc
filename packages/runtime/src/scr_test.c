@@ -153,6 +153,10 @@ struct ScrTestCtx {
   bool only_filtered; /* registered under runOnly(true) without { only } */
   bool listed; /* a suite listed in the failing section (a failing root before) */
   bool expect_failure; /* { expectFailure }: throwing is what passes */
+  /* The failing-section message, rendered when the result settles: exit-time
+   * reporting must not run custom inspectors, because module-level values are
+   * released before scr_test_exit_code prints the summary. */
+  ScrStr *fail_msg; /* owned */
   double start_ms; /* when the test started running; NaN before */
   size_t serial; /* index in scr_test_nodes, getTestContext()'s handle */
   bool finished; /* its result line has been reported */
@@ -186,6 +190,10 @@ static void scr_test_abort_now(ScrTestCtx *t) {
 }
 
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
+
+/* The failing-section message for a settled failure (scr_test_print_failure),
+ * rendered while the program's own values are still alive. */
+static ScrStr *scr_test_failure_message(const ScrTestCtx *t);
 /* Where registrations attach: the suite body being collected or the test
  * currently running (its nested test()/t.test() calls are subtests). */
 static SCR_TL ScrTestCtx *scr_test_reg_parent = NULL;
@@ -267,6 +275,7 @@ void scr_testctx_release(ScrTestCtx *t) {
   scr_promise_release(t->done);
   scr_promise_release(t->slot);
   scr_dyn_release(t->abort_controller);
+  scr_str_release(t->fail_msg);
   scr_promise_release(t->plan_met);
   for (size_t i = 0; i < t->ndiags; i++) scr_str_release(t->diags[i]);
   free(t->diags);
@@ -461,6 +470,9 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
  * a task the test left behind must already see it finished. */
 static void scr_test_report_result(ScrTestCtx *t) {
   t->finished = true;
+  if (t->err && !t->fail_msg && t->state != SCR_TS_PASS && t->state != SCR_TS_TODO_PASS &&
+      t->state != SCR_TS_CHILDFAIL && t->state != SCR_TS_PENDING)
+    t->fail_msg = scr_test_failure_message(t);
   if (scr_test_defer > 0) return;
   scr_test_ensure_started(t->parent);
   int depth = scr_test_depth(t);
@@ -1243,6 +1255,26 @@ static void scr_test_print_at(const ScrStr *at) {
   fputc('\n', scr_test_out());
 }
 
+/* Node prints a failure inspected: a thrown string is quoted, and numbers,
+ * booleans and checked-dynamic values (thrown records, arrays, null and
+ * undefined) print as util.inspect renders them, which may run the value's
+ * own custom inspector. Errors and other payloads print their string form.
+ * +1, or NULL without an error. */
+static ScrStr *scr_test_failure_message(const ScrTestCtx *t) {
+  const ScrCaught *err = t->err;
+  if (!err) return NULL;
+  if (err->kind == SCR_EXC_STR) return scr_insp_str(err->payload);
+  if (err->kind == SCR_EXC_F64 || err->kind == SCR_EXC_BOOL ||
+      ((err->kind == SCR_EXC_REF || err->kind == SCR_EXC_PRIMITIVE_REF) &&
+       err->retain_fn == scr_dyn_retain_v)) {
+    ScrDyn *value = scr_caught_to_dyn(err);
+    ScrStr *msg = scr_insp_dyn(value, 0, 2);
+    scr_dyn_release(value);
+    return msg;
+  }
+  return scr_caught_to_string(err);
+}
+
 static void scr_test_print_failure(ScrTestCtx *t) {
   fputc('\n', scr_test_out());
   if (t->at) scr_test_print_at(t->at);
@@ -1264,23 +1296,10 @@ static void scr_test_print_failure(ScrTestCtx *t) {
   }
   fputc('\n', scr_test_out());
   if (t->err) {
-    /* Node prints the failure inspected: a thrown string is quoted, and
-     * numbers, booleans and checked-dynamic values (thrown records, arrays,
-     * null and undefined) print as util.inspect renders them. Errors and
-     * other payloads print their string form. */
-    const ScrCaught *err = t->err;
-    ScrStr *msg;
-    if (err->kind == SCR_EXC_STR) {
-      msg = scr_insp_str(err->payload);
-    } else if (err->kind == SCR_EXC_F64 || err->kind == SCR_EXC_BOOL ||
-               ((err->kind == SCR_EXC_REF || err->kind == SCR_EXC_PRIMITIVE_REF) &&
-                err->retain_fn == scr_dyn_retain_v)) {
-      ScrDyn *value = scr_caught_to_dyn(err);
-      msg = scr_insp_dyn(value, 0, 2);
-      scr_dyn_release(value);
-    } else {
-      msg = scr_caught_to_string(err);
-    }
+    /* The message was rendered when the result settled: the summary prints at
+     * exit, after the program's own values are released, and rendering then
+     * could run a custom inspector over freed state. */
+    ScrStr *msg = t->fail_msg ? scr_str_retain(t->fail_msg) : scr_test_failure_message(t);
     if (msg) {
       const char *p = msg->data;
       const char *end = msg->data + msg->len;
@@ -1965,6 +1984,7 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
   ScrTestHook *after_failed = scr_test_run_hooks_of(root, SCR_HOOK_AFTER, root);
   if (scr_exc_pending()) {
     root->err = scr_exc_take();
+    root->fail_msg = scr_test_failure_message(root);
     root->dur_ms = scr_now_ms() - after_start;
     root->state = SCR_TS_FAIL;
     if (after_failed && after_failed->at) {

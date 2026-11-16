@@ -93,6 +93,7 @@ import { lowerParallelCall } from "./parallel-loops.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
+  heritageChecksFor,
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
@@ -21527,6 +21528,12 @@ export class Lowerer {
 
   lowerStaticFieldInits(info: ClassInfo): IrStmt[] {
     return lowerStaticFieldInits(this, info);
+  }
+
+  /** The initialization checks a class statement carries for the cycle
+   * classes its `extends` clause reads. */
+  heritageChecksFor(decl: ts.ClassLikeDeclaration, loc: SrcLoc): IrStmt[] {
+    return heritageChecksFor(this, decl, loc);
   }
 
   /** Method-like members with their collected method-map names. Body

@@ -499,10 +499,17 @@ function coversReference(flag: CycleInitFlag, loc: SrcLoc): boolean {
  * clause before everything else the statement runs. */
 export function withClassInitFlag(lowerer: Lowerer, info: ClassInfo, stmts: IrStmt[]): IrStmt[] {
   const loc = info.decl ? locOf(info.decl) : (stmts[0]?.loc ?? { file: "", start: 0, end: 0 });
+  // A decorated class evaluates its decorator factories before it reads the
+  // heritage: its checks go inside that sequence (lowerClassDecoration),
+  // not before it.
+  const decorationsFirst =
+    info.classDecorators !== undefined &&
+    !info.classDecorators.poisoned &&
+    info.classDecorators.shapes !== undefined;
   // A generic class's instantiations share the declaration; the family is
   // the class whose statement runs, so only it emits the checks.
   const checks =
-    info.decl != null && info.genericInstance === undefined
+    !decorationsFirst && info.decl != null && info.genericInstance === undefined
       ? lowerer.heritageClassChecks.get(info.decl)
       : undefined;
   const flag = lowerer.classInitFlags.get(info.def.name);
@@ -513,6 +520,20 @@ export function withClassInitFlag(lowerer: Lowerer, info: ClassInfo, stmts: IrSt
     ...(flag === undefined ? [] : [setFlag(flag, loc)]),
   ];
   return [{ kind: "block", body, loc }];
+}
+
+/** The checks a class statement emits for the cycle classes its `extends`
+ * clause reads, at `loc` (the statement). A decorated class calls this from
+ * its decoration sequence, after the decorator factories Node evaluates
+ * first; every other class gets them at the head of its statement
+ * (withClassInitFlag). */
+export function heritageChecksFor(
+  lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
+  loc: SrcLoc,
+): IrStmt[] {
+  const checks = lowerer.heritageClassChecks.get(decl);
+  return checks === undefined ? [] : checks.map((flag) => classInitCheck(flag, loc));
 }
 
 /** The check of a flagged class's initialization, throwing Node's

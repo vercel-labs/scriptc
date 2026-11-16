@@ -976,9 +976,19 @@ static void scr_worker_dispatch(void) {
   if (event->kind == SCR_WORKER_EXIT) {
     scr_worker_thread_join(view->thread);
     view->closed = true;
+    /* The list holds a call at the head when it is made, and Node settles
+     * the calls in the order they were made: reverse it first, so each
+     * promise's reactions run in call order. */
+    ScrTermWait *settle = NULL;
     while (view->termination) {
       ScrTermWait *wait = view->termination;
       view->termination = wait->next;
+      wait->next = settle;
+      settle = wait;
+    }
+    while (settle) {
+      ScrTermWait *wait = settle;
+      settle = wait->next;
       scr_promise_fulfill_ref(wait->promise, scr_dyn_new_num(event->code),
                               scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
       scr_promise_release(wait->promise);

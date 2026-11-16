@@ -34506,6 +34506,7 @@
           "tests/corpus/compat-errors-net.mjs",
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-worker.mjs",
+          "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/console-error-codes.cjs",
           "tests/corpus/crypto-create-mac-errors.mjs",
@@ -37368,8 +37369,11 @@
       "anchor": "err_http2_invalid_packed_settings_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH",
+        "tests": [
+          "tests/corpus/compat-http2-ping-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37404,8 +37408,11 @@
       "anchor": "err_http2_invalid_session",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_SESSION",
+        "tests": [
+          "tests/corpus/compat-http2-ping-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37422,8 +37429,11 @@
       "anchor": "err_http2_invalid_setting_value",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_INVALID_SETTING_VALUE",
+        "tests": [
+          "tests/corpus/compat-http2-ping-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37584,8 +37594,11 @@
       "anchor": "err_http2_ping_cancel",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP2_PING_CANCEL"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_PING_CANCEL",
+        "tests": [
+          "tests/corpus/compat-http2-ping-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37602,8 +37615,11 @@
       "anchor": "err_http2_ping_length",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP2_PING_LENGTH"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_PING_LENGTH",
+        "tests": [
+          "tests/corpus/compat-http2-ping-settings.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

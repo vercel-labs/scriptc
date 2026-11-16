@@ -57,6 +57,18 @@ try {
   const e = error as { message: string; code: string; errcode: number; errstr: string };
   console.log("dqs:", e.message, e.code, e.errcode, e.errstr);
 }
+// ArrayBuffers bind their whole storage as a BLOB, like Node.
+db.exec("CREATE TABLE bin (x)");
+const bindBinary = db.prepare("INSERT INTO bin VALUES (?)");
+const arrayBuffer = new ArrayBuffer(3);
+new Uint8Array(arrayBuffer).set([4, 5, 6]);
+const shared = new SharedArrayBuffer(2);
+new Uint8Array(shared).set([7, 8]);
+// The declared input type lists views only (as @types/node does); Node's
+// runtime also takes whole ArrayBuffers, so the calls cast.
+console.log(bindBinary.run(arrayBuffer as any), bindBinary.run(shared as any));
+console.log(db.prepare("SELECT typeof(x) AS t, x FROM bin").all());
+
 const dqs = new DatabaseSync(":memory:", { enableDoubleQuotedStringLiterals: true });
 console.log(dqs.prepare('SELECT "hi" AS s').get());
 dqs.close();

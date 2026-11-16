@@ -324,6 +324,25 @@ static ScrDyn *scr_sqlite_column_value(sqlite3_stmt *stmt, int column, bool big_
 
 /* ── value conversion: JavaScript -> SQLite binds ───────────────────── */
 
+/* The bytes of a binary value Node binds as a BLOB: a view's elements, or an
+ * ArrayBuffer's (and SharedArrayBuffer's) whole storage. */
+static bool scr_sqlite_binary_bytes(const ScrDyn *value, const void **data, size_t *len) {
+  if (value->kind == SCR_DYN_BYTES) {
+    const ScrBytes *b = value->v.bytes;
+    *data = b->data;
+    *len = b->len * scr_bytes_elem_size(b->elem);
+    return true;
+  }
+  if (value->kind == SCR_DYN_HANDLE && (value->v.handle.tag == SCR_DYNH_ARRAY_BUFFER ||
+                                        value->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER)) {
+    const ScrBytes *b = value->v.handle.ptr;
+    *data = b->data;
+    *len = (size_t)scr_bytes_byte_len(b);
+    return true;
+  }
+  return false;
+}
+
 /* Node's BindValue: binds parameter `index`, answering false with the
  * exception pending for a value SQLite cannot take. */
 static bool scr_sqlite_bind_value(ScrSqliteStmt *s, int index, const ScrDyn *value) {
@@ -339,10 +358,17 @@ static bool scr_sqlite_bind_value(ScrSqliteStmt *s, int index, const ScrDyn *val
   case SCR_DYN_NULL:
     r = sqlite3_bind_null(s->stmt, index);
     break;
-  case SCR_DYN_BYTES: {
-    const ScrBytes *b = value->v.bytes;
-    size_t bytes = b->len * scr_bytes_elem_size(b->elem);
-    r = sqlite3_bind_blob64(s->stmt, index, b->data, (sqlite3_uint64)bytes, SQLITE_TRANSIENT);
+  case SCR_DYN_BYTES:
+  case SCR_DYN_HANDLE: {
+    const void *data = NULL;
+    size_t length = 0;
+    if (!scr_sqlite_binary_bytes(value, &data, &length)) {
+      char msg[128];
+      snprintf(msg, sizeof msg, "Provided value cannot be bound to SQLite parameter %d.", index);
+      scr_sqlite_invalid_arg_type(msg);
+      return false;
+    }
+    r = sqlite3_bind_blob64(s->stmt, index, data, (sqlite3_uint64)length, SQLITE_TRANSIENT);
     break;
   }
   case SCR_DYN_BOOL:

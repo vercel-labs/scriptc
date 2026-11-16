@@ -2,7 +2,7 @@
 // constructor, a table created through exec(), inserts and reads through
 // prepared statements (run/get/all), the connection's state getters, and
 // the error a closed database answers.
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 
 const db = new DatabaseSync(":memory:");
 console.log(db.isOpen, db.isTransaction, db.location());
@@ -11,6 +11,7 @@ const insert = db.prepare("INSERT INTO people (name, age) VALUES (?, ?)");
 console.log(insert.run("Ada", 36));
 console.log(insert.run("Grace", 85));
 const select = db.prepare("SELECT * FROM people ORDER BY id");
+console.log(db instanceof DatabaseSync, select instanceof StatementSync);
 console.log(select.all());
 console.log(select.get());
 const byName = db.prepare("SELECT name, age FROM people WHERE name = ?");

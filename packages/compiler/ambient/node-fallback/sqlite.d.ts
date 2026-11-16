@@ -90,7 +90,8 @@ declare module "node:sqlite" {
     return(value?: unknown): IteratorResult<T>;
     [Symbol.iterator](): StatementSyncIterator<T>;
   }
-  interface StatementSync {
+  class StatementSync {
+    private constructor();
     all(
       namedParameters: Record<string, SQLInputValue>,
       ...anonymousParameters: SQLInputValue[]

@@ -3885,6 +3885,12 @@ export class Lowerer {
    * TypeScript bindings that take the values of an open spread value's
    * enumeration as they are (analyzeOpenEnumerations). */
   readonly jsWidenedBindings = new Set<ts.Symbol>();
+  /** JavaScript functions that return a binding a for-in head writes a key
+   * into (analyzeJsForInKeyBindings). The checker types the return from the
+   * binding's declaration, so the function's returned value would be
+   * converted back to that type; the return slot follows the value instead
+   * (declaredReturnType). */
+  readonly jsWidenedReturnDecls = new Set<ts.SignatureDeclaration>();
   /** JavaScript class fields written values outside their JSDoc type
    * (analyzeJsWidenedFields), by declaring class and field name: checked-
    * dynamic storage, like the fields the checker leaves untyped. Keyed by
@@ -6375,11 +6381,12 @@ export class Lowerer {
     // The inline `comptime` callbacks of a source file are its text, read
     // again when a unit replays (comptimeCallbacksOf in lower-comptime.ts).
     "comptimeCallbacks",
-    // The whole-program prepasses analyzeJsWidenedFields and
-    // analyzeJsWidenedBindings compute these sets before lowering begins: a
-    // pure function of the program's modules.
+    // The whole-program prepasses analyzeJsWidenedFields,
+    // analyzeJsForInKeyBindings and analyzeJsWidenedBindings compute these
+    // sets before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
     "jsWidenedFields",
+    "jsWidenedReturnDecls",
     // Preflight's admitted opinions are a program fact computed before any
     // unit lowers.
     "admittedOpinions",
@@ -9900,6 +9907,125 @@ export class Lowerer {
     }
   }
 
+  /** A `for (k in obj)` head writes the key string into its binding. The
+   * binding's collected storage must admit a string before any signature
+   * is built, so this runs ahead of collection: a JSDoc-typed parameter's
+   * slot becomes checked-dynamic instead of keeping the annotation's type
+   * (`@param {number} key` beside `for (key in obj)`), and a module binding
+   * is collected as a checked-dynamic global. Binding the read side is the
+   * later scan's job (analyzeJsWidenedBindings), which also re-asserts
+   * these symbols after the runtime-optional array reads can overwrite a
+   * local's promotion. */
+  analyzeJsForInKeyBindings(parts: FileParts[]): void {
+    const widened = new Set<ts.Symbol>();
+    for (const { sf } of parts) {
+      if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+      if (this.checkedJsFile(sf)) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (!ts.isForInStatement(node) || ts.isVariableDeclarationList(node.initializer))
+          return undefined;
+        let target: ts.Node = node.initializer;
+        while (ts.isParenthesizedExpression(target)) target = target.expression;
+        if (!ts.isIdentifier(target)) return undefined;
+        const symbol = this.checker.getSymbolAtLocation(target);
+        if (!symbol) return undefined;
+        const decl = symbol.valueDeclaration;
+        if (
+          decl === undefined ||
+          !(ts.isVariableDeclaration(decl) || ts.isParameter(decl)) ||
+          !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName)
+        )
+          return undefined;
+        const declared = this.checker.getTypeOfSymbol(symbol);
+        if (
+          jsTypeIsTyped(declared) &&
+          !this.checker.isTypeAssignableTo(declared, this.checker.getStringType())
+        ) {
+          this.runtimeOptionalBindingTypes.set(symbol, DYN);
+          this.jsWidenedBindings.add(symbol);
+          widened.add(symbol);
+        }
+        return undefined;
+      });
+    }
+    if (widened.size === 0) return;
+    // The value a widened binding holds flows into the bindings that store
+    // it (`var out = key`) and into the functions that return it (`return
+    // key`). Both slots are fixed when the declaration or signature is
+    // collected, so collect the flow edges and return sites here, close the
+    // widened set over the edges, and record the returning functions
+    // (declaredReturnType reads that set).
+    const edges: { target: ts.Symbol; source: ts.Symbol }[] = [];
+    const returns: { owner: ts.SignatureDeclaration; symbol: ts.Symbol }[] = [];
+    const flowSymbol = (node: ts.Expression): ts.Symbol | null => {
+      let expression = node;
+      while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+      return ts.isIdentifier(expression)
+        ? (this.checker.getSymbolAtLocation(expression) ?? null)
+        : null;
+    };
+    for (const { sf } of parts) {
+      if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+      if (this.checkedJsFile(sf)) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.initializer !== undefined
+        ) {
+          const source = flowSymbol(node.initializer);
+          const target = source && this.checker.getSymbolAtLocation(node.name);
+          if (source && target) edges.push({ target, source });
+          return undefined;
+        }
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left)
+        ) {
+          const source = flowSymbol(node.right);
+          const target = source && this.checker.getSymbolAtLocation(node.left);
+          if (source && target) edges.push({ target, source });
+          return undefined;
+        }
+        if (ts.isReturnStatement(node) && node.expression !== undefined) {
+          const symbol = flowSymbol(node.expression);
+          if (symbol === null) return undefined;
+          let owner = node.parent;
+          while (owner !== undefined && !ts.isFunctionLike(owner)) owner = owner.parent;
+          // A generator's result channel keeps the checker's generator
+          // shape, which its consumers are typed against; only a function's
+          // return slot follows the widened value.
+          if (
+            owner !== undefined &&
+            ts.isSignatureDeclaration(owner) &&
+            owner.asteriskToken === undefined
+          )
+            returns.push({ owner, symbol });
+        }
+        return undefined;
+      });
+    }
+    const bySource = new Map<ts.Symbol, ts.Symbol[]>();
+    for (const { target, source } of edges) {
+      const stored = bySource.get(source);
+      if (stored) stored.push(target);
+      else bySource.set(source, [target]);
+    }
+    const queue = [...widened];
+    for (let index = 0; index < queue.length; index++) {
+      for (const target of bySource.get(queue[index]!) ?? []) {
+        if (widened.has(target)) continue;
+        widened.add(target);
+        this.runtimeOptionalBindingTypes.set(target, DYN);
+        this.jsWidenedBindings.add(target);
+        queue.push(target);
+      }
+    }
+    for (const { owner, symbol } of returns)
+      if (widened.has(symbol)) this.jsWidenedReturnDecls.add(owner);
+  }
+
   /** A JavaScript `let`/`var` binding assigned a value its declared type
    * does not admit (`let t = parseInt(s); if (isNaN(t)) t = undefined`):
    * TypeScript types the binding from its initializer and reports the
@@ -9920,7 +10046,8 @@ export class Lowerer {
    * and otherwise reports TS7032; reading the parameter at the inferred type
    * would check the caller's value back into it and throw where Node stores
    * it as is. A JSDoc `@param` type keeps its declared storage, exactly like
-   * a variable's `@type`. */
+   * a variable's `@type`; a for-in head's binding is the exception
+   * (analyzeJsForInKeyBindings). */
   analyzeJsWidenedBindings(parts: FileParts[]): void {
     for (const { sf } of parts) {
       if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
@@ -9952,7 +10079,9 @@ export class Lowerer {
         // reuses one `var` for keys and for a value of another type
         // (`var propName = arguments.length - 2` beside a key loop), so
         // the binding takes checked-dynamic storage and reads answer the
-        // string Node stored.
+        // string Node stored. This overwrites a runtime-optional promotion
+        // the array-read scan gave the same binding (`var key = list[0]`
+        // types `number | undefined`): the loop proves a string reaches it.
         if (
           !checked &&
           ts.isForInStatement(node) &&
@@ -9962,7 +10091,7 @@ export class Lowerer {
           while (ts.isParenthesizedExpression(target)) target = target.expression;
           if (!ts.isIdentifier(target)) return undefined;
           const symbol = this.resolveValueSymbol(target);
-          if (!symbol || this.runtimeOptionalBindingTypes.has(symbol)) return undefined;
+          if (!symbol) return undefined;
           const decl = symbol.valueDeclaration;
           if (
             decl === undefined ||
@@ -10040,6 +10169,13 @@ export class Lowerer {
         widenBinding(symbol);
         return undefined;
       });
+    }
+    // A module binding widened before collection (analyzeJsForInKeyBindings
+    // closes that set over the bindings that store a key) keeps its global
+    // storage dynamic for every read, including the exports that name it.
+    for (const symbol of this.jsWidenedBindings) {
+      const global = this.globalsBySymbol.get(symbol);
+      if (global) global.type = DYN;
     }
   }
 
@@ -13631,8 +13767,13 @@ export class Lowerer {
     }
     this.prefetchProgramSymbols(parts);
     // Class layouts choose their field storage as they collect, so the
-    // field half of the JavaScript widening scan runs first.
-    this.speculativeTypeQueries(() => this.analyzeJsWidenedFields(parts));
+    // field half of the JavaScript widening scan runs first. The for-in
+    // head bindings must be known before parameters and globals are
+    // collected, since their storage is fixed there.
+    this.speculativeTypeQueries(() => {
+      this.analyzeJsWidenedFields(parts);
+      this.analyzeJsForInKeyBindings(parts);
+    });
     this.collectProgram(parts);
     this.speculativeTypeQueries(() => {
       extendAssertedRecordMembers(
@@ -13640,6 +13781,12 @@ export class Lowerer {
         parts.map((fp) => fp.sf),
       );
       this.analyzeRuntimeOptionalArrayReads(parts);
+      // A binding the for-in scan widened before collection keeps
+      // checked-dynamic storage; an array-read promotion must not replace
+      // it with an optional union (`var out = key` where the key loop
+      // proves a string reaches both).
+      for (const symbol of this.jsWidenedBindings)
+        this.runtimeOptionalBindingTypes.set(symbol, DYN);
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
       this.analyzeJsWidenedBindings(parts);
@@ -14385,8 +14532,13 @@ export class Lowerer {
     // reported is still a bug and stays a crash.
     try {
       // Class layouts choose their field storage as they collect, so the
-      // field half of the JavaScript widening scan runs first.
-      this.speculativeTypeQueries(() => this.analyzeJsWidenedFields(parts));
+      // field half of the JavaScript widening scan runs first. The for-in
+      // head bindings must be known before parameters and globals are
+      // collected, since their storage is fixed there.
+      this.speculativeTypeQueries(() => {
+        this.analyzeJsWidenedFields(parts);
+        this.analyzeJsForInKeyBindings(parts);
+      });
       this.collectProgram(parts);
       this.speculativeTypeQueries(() => {
         extendAssertedRecordMembers(
@@ -14394,6 +14546,12 @@ export class Lowerer {
           parts.map((fp) => fp.sf),
         );
         this.analyzeRuntimeOptionalArrayReads(parts);
+        // A binding the for-in scan widened before collection keeps
+        // checked-dynamic storage; an array-read promotion must not replace
+        // it with an optional union (`var out = key` where the key loop
+        // proves a string reaches both).
+        for (const symbol of this.jsWidenedBindings)
+          this.runtimeOptionalBindingTypes.set(symbol, DYN);
         this.analyzeDateJsonResults(parts);
         this.analyzeGuardedRecordReadGlobals(parts);
         this.analyzeJsWidenedBindings(parts);

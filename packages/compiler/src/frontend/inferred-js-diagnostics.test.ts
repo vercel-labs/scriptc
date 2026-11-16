@@ -508,6 +508,48 @@ test("a checked JavaScript for-in keeps tsc's head diagnostics", () => {
   expect(kept.some((message) => message.includes("right-hand side of a 'for...in'"))).toBe(true);
 });
 
+test("an unchecked JavaScript for-in key keeps the string an array read leaves it to hold", () => {
+  // The read may leave the binding undefined, so its collected storage is
+  // `number | undefined`; the loop still writes the key string into it.
+  const library = `/** @param {number[]} list */
+export function first(list) {
+  var key = list[0];
+  for (key in { a: 1 }) console.log(typeof key, key);
+  var out = key;
+  return out;
+}`;
+  expect(
+    diagnostics(library, 'import { first } from "./library.js"; console.log(first([]));'),
+  ).toEqual([]);
+});
+
+test("an unchecked JavaScript JSDoc parameter holds a for-in key string", () => {
+  // The annotation types the parameter `number`; the loop writes the key
+  // string into it and the function answers it, as Node does.
+  const library = `/** @param {number} key */
+export function walk(key) {
+  for (key in { a: 1 }) console.log(typeof key, key);
+  var out = key;
+  return out;
+}`;
+  expect(
+    diagnostics(library, 'import { walk } from "./library.js"; console.log(walk(1));'),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript JSDoc parameter keeps tsc's head diagnostic", () => {
+  const library = `// @ts-check
+/** @param {number} key */
+export function walk(key) {
+  for (key in { a: 1 }) console.log(typeof key, key);
+  return key;
+}`;
+  const kept = diagnostics(library, 'import { walk } from "./library.js"; console.log(walk(1));');
+  expect(
+    kept.some((diagnostic) => diagnostic.message.includes("left-hand side of a 'for...in'")),
+  ).toBe(true);
+});
+
 test("TypeScript keeps the for-in head diagnostics of the same source", () => {
   const kept = diagnostics(
     RETYPED_FOR_IN,

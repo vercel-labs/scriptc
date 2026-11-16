@@ -102,6 +102,10 @@ ScrBytes *scr_fs_scandir_bytes(const ScrScandir *s, size_t i);
  * path, each name a basename and each parent the directory holding it
  * (relative to the path; the path itself for the top level). */
 ScrScandir *scr_fs_scandir_recursive(ScrStr *path);
+/* fs/promises' recursive forms: Node's async walk keeps a stack, so the
+ * order differs from the synchronous one once a directory has several
+ * subdirectories; `follow_links` is false for the withFileTypes form. */
+ScrScandir *scr_fs_scandir_recursive_async(ScrStr *path, bool follow_links);
 ScrStr *scr_fs_scandir_parent(const ScrScandir *s, size_t i); /* +1 */
 double scr_fs_scandir_type(const ScrScandir *s, size_t i);
 void scr_fs_scandir_free(ScrScandir *s); /* NULL-tolerant */

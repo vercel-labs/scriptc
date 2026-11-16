@@ -466,6 +466,9 @@ ScrArr *scr_fs_readdir_bytes(ScrStr *path);
 /* fs.readdirSync(path, { encoding }): the same names decoded with that
  * encoding (utf8 is scr_fs_readdir itself). */
 ScrArr *scr_fs_readdir_encoded(ScrStr *path, ScrStr *encoding);
+/* fs.promises.readdir(path, { recursive: true }) — the async walk's
+ * depth-first order, each entry's path relative to the base. */
+ScrArr *scr_fs_readdir_recursive_async(ScrStr *path);
 ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's

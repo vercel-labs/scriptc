@@ -3929,7 +3929,7 @@ ScrPromise *scr_fsp_readdir(ScrStr *path) {
 }
 
 ScrPromise *scr_fsp_readdir_recursive(ScrStr *path) {
-  ScrArr *names = scr_fs_readdir_recursive(path);
+  ScrArr *names = scr_fs_readdir_recursive_async(path);
   return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
 }
 

@@ -879,13 +879,20 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const recT = arrayT.elem;
     const path = host.emitExpr(e.args[0]!);
     host.declare(`declare ptr @scr_fs_scandir_recursive(ptr)`);
+    host.declare(`declare ptr @scr_fs_scandir_recursive_async(ptr, i1 zeroext)`);
     host.declare(`declare ${host.sizeType} @scr_fs_scandir_count(ptr)`);
     host.declare(`declare ptr @scr_fs_scandir_name(ptr, ${host.sizeType})`);
     host.declare(`declare ptr @scr_fs_scandir_parent(ptr, ${host.sizeType})`);
     host.declare(`declare double @scr_fs_scandir_type(ptr, ${host.sizeType})`);
     host.declare(`declare void @scr_fs_scandir_free(ptr)`);
     const snap = B.tmp();
-    B.line(`${snap} = call ptr @scr_fs_scandir_recursive(ptr ${path.name})`);
+    // The promise form answers Node's async walk (depth-first, and it does
+    // not follow a symlinked directory); the sync form keeps the queue.
+    B.line(
+      promiseForm
+        ? `${snap} = call ptr @scr_fs_scandir_recursive_async(ptr ${path.name}, i1 false)`
+        : `${snap} = call ptr @scr_fs_scandir_recursive(ptr ${path.name})`,
+    );
     if (!promiseForm) host.emitPendingCheck();
     const cnt = B.tmp();
     B.line(`${cnt} = call ${host.sizeType} @scr_fs_scandir_count(ptr ${snap})`);

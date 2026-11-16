@@ -1594,12 +1594,22 @@ export function lowerFsReaddirTypesCall(
   const noteEncoding = (node: ts.Expression): void => {
     const t = lowerer.typeOf(node);
     if (t.isStringLiteralType()) encodingLiteral = t.value;
-    else if (lowerer.mapTypeOf(t)?.kind !== "string") {
-      lowerer.noLowering(
-        `${operation} with this encoding`,
-        node,
-        "the encoding is a BufferEncoding name",
+    else {
+      // A runtime-selected name decodes at run time; a nullish value is
+      // Node's default, as getOptions reads it.
+      const parts: readonly ts.Type[] = t.isUnionType() ? ts.constituentTypes(t) : [t];
+      const nameLike = parts.every(
+        (part) =>
+          (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
+          (part.flags & ts.TypeFlags.StringLike) !== 0,
       );
+      if (!nameLike) {
+        lowerer.noLowering(
+          `${operation} with this encoding`,
+          node,
+          "the encoding is a BufferEncoding name",
+        );
+      }
     }
     encodingNode = node;
   };
@@ -1880,7 +1890,12 @@ function lowerFsReaddirNamesByEncoding(
       "the names are strings, or Buffers with encoding: 'buffer'",
     );
   }
-  if (encodingLiteral === null || encodingLiteral === "utf8" || encodingLiteral === "utf-8") {
+  // No encoding argument at all, or the literal utf8 default, is the plain
+  // listing. Every other name — another literal, or one the program picks
+  // at run time — decodes the entry bytes at run time, so its expression is
+  // still evaluated (a nullish one is Node's default).
+  const plain = encodingNode === null || encodingLiteral === "utf8" || encodingLiteral === "utf-8";
+  if (plain) {
     return {
       kind: "libCall",
       fn: promiseForm ? "fsp.readdir" : "fs.readdirSync",
@@ -1889,10 +1904,11 @@ function lowerFsReaddirNamesByEncoding(
       loc,
     };
   }
+  const utf8Default = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
   return {
     kind: "libCall",
     fn: promiseForm ? "fsp.readdirEncoded" : "fs.readdirEncodedSync",
-    args: [path, lowerer.lowerExprExpecting(encodingNode!, STRING)],
+    args: [path, lowerBuiltinOptionalDefault(lowerer, encodingNode!, STRING, utf8Default, true)],
     type: expectedNames,
     loc,
   };

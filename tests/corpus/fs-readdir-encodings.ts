@@ -37,7 +37,18 @@ showBytes("recursive false buffer", fs.readdirSync(dir, { encoding: "buffer", re
 showNames("recursive false hex", fs.readdirSync(dir, { encoding: "hex", recursive: false }));
 showNames("promise latin1", await fsp.readdir(dir, { encoding: "latin1" }));
 
-// A dynamic encoding name reads at run time, like the literal spelling.
+// A name the program picks at run time decodes at run time, and its
+// expression still runs (the plain listing would drop the call).
+let picked = 0;
+const pick = (name: BufferEncoding): BufferEncoding => {
+  picked++;
+  return name;
+};
+showNames("runtime sync", fs.readdirSync(dir, pick("hex")));
+showNames("runtime promise", await fsp.readdir(dir, pick("latin1")));
+console.log("picked", picked);
+
+// A const with a literal type is the same listing as the literal.
 const dynamic: BufferEncoding = "hex";
 showNames("dynamic", fs.readdirSync(dir, dynamic));
 

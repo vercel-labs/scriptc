@@ -57661,9 +57661,13 @@
           "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/http-client-max-headers-count.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-server-client-error.ts",
           "tests/corpus/http-server-limit-values.ts",
           "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-set-headers.mjs",
+          "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-write-backpressure.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-dispose-http.ts",
           "tests/corpus/net-server-socket-peer-close.cjs",
@@ -61607,8 +61611,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http"
+        "status": "partial",
+        "evidence": "compiler-feature:http.outgoingMessage.pipe",
+        "tests": [
+          "tests/corpus/http-outgoing-pipe.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -61682,10 +61689,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.outgoingMessage.setHeaders",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-set-headers.mjs",
+          "tests/corpus/http-write-backpressure.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61769,7 +61778,8 @@
         "evidence": "compiler-feature:http.outgoingMessage.write",
         "tests": [
           "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs"
+          "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/http-write-backpressure.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61957,7 +61967,8 @@
         "evidence": "compiler-feature:http.writableHighWaterMark",
         "tests": [
           "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs"
+          "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/http-write-backpressure.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -61980,10 +61991,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.writableLength",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-set-headers.mjs",
+          "tests/corpus/http-write-backpressure.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62010,7 +62023,8 @@
         "evidence": "compiler-feature:http.writableObjectMode",
         "tests": [
           "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs"
+          "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/http-write-backpressure.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62033,10 +62047,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.'drain'",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-set-headers.mjs",
+          "tests/corpus/http-write-backpressure.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62089,7 +62105,8 @@
         "evidence": "compiler-feature:http.'prefinish'",
         "tests": [
           "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs"
+          "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/http-write-backpressure.ts"
         ]
       },
       "anchorSource": "exact"

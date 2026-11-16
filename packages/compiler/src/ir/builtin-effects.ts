@@ -477,6 +477,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.sockEndDyn",
   "http.resWriteDyn",
   "http.resEndDyn",
+  // setHeaders walks the argument (a Map's entries) and throws Node's
+  // ERR_INVALID_ARG_TYPE for anything else, ERR_HTTP_HEADERS_SENT once the
+  // head is out, and the header name/value checks. pipe() emits
+  // ERR_STREAM_CANNOT_PIPE, whose unhandled 'error' is the throw at the
+  // call.
+  "http.resSetHeaders",
+  "http.resPipe",
+  "http.clientPipe",
   "http.resAddTrailers",
   "http.resFlushHeaders",
   "http.resUncork",

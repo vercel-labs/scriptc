@@ -12,6 +12,16 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // The OutgoingMessage write-buffer readers compare and sum stored byte
+  // counts (the corked buffer's length, the held head's, the socket's
+  // pending bytes) and a boolean flag; registering a 'drain' listener
+  // appends to a list. None of them runs program code.
+  "http.resWritableLength",
+  "http.resWritableNeedDrain",
+  "http.clientWritableLength",
+  "http.clientWritableNeedDrain",
+  "http.resOnDrain",
+  "http.clientOnDrain",
   "process.finalization",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.

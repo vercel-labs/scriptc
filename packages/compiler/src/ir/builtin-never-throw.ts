@@ -172,6 +172,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // on first use; it takes no argument, and running out of memory ends the
   // process.
   "worker.shareEnv",
+  // scr_worker_performance answers the Worker's { eventLoopUtilization }
+  // object, made once per Worker; a handle of another class reads undefined,
+  // and running out of memory ends the process.
+  "worker.performance",
   // scr_emitter_symbol_name allocates the registry key of the symbol it is
   // given (scr_str_symbol_key); running out of memory ends the process.
   "emitter.symName",

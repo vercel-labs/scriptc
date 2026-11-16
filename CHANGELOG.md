@@ -6,6 +6,12 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+### Highlights
+
+- **Node.js parity:**
+  - A CommonJS `require()` of an ES module compiles natively, and requiring an ES module that is still evaluating throws Node.js's `ERR_REQUIRE_CYCLE_MODULE` at the call instead of failing the build.
+  - A require cycle compiles with Node.js's partial exports: a module required mid-cycle reads the exports object as it stands, a member assigned later reads `undefined` and reports Node.js's circular-dependency warning, and a member assigned after the read stays visible to every module that holds the object.
+
 ## 0.4.15
 
 ### Highlights

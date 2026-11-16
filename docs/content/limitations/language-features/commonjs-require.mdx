@@ -9,7 +9,8 @@
   A computed key whose value is only known at run time is unsupported.
   Any pattern works on a JSON document.
   Defaults, rest elements, and nested patterns over other modules are unsupported.
-  A require cycle compiles when each of its modules assigns all of its exports before its first `require` and uses the other modules of the cycle only inside functions that its top-level code can't call.
-  Other require cycles are rejected with `SC1016`.
+  A require cycle compiles with Node.js's partial exports: a module that requires into the cycle reads the exports object as it stands, so a member assigned after the `require` reads `undefined` and the miss reports Node.js's circular-dependency warning.
+  Requiring an ES module that is still evaluating throws `ERR_REQUIRE_CYCLE_MODULE` at the call.
+  Top-level code that reaches another member of the cycle only through a call or an escaping value is rejected with `SC1016`.
   A top-level `return` ends the module's evaluation.
   It is unsupported when the module assigns exports after it, or when a function that exists before it runs reads a binding declared after it, such as a callback created above the `return` or a function declaration.

@@ -24,6 +24,14 @@ export class ProgramAnalysis {
   readonly moduleSourceCandidates = new Map<SourceFile, ModuleSourceCandidates>();
   /** The modules of every import cycle the exact initialization rule admitted. */
   readonly exactCycleMembers = new Set<SourceFile>();
+  /** CommonJS modules of require() cycles whose partially-initialized
+   * exports are observable: their exports object is the live
+   * checked-dynamic object Node hands a requiring module mid-cycle. */
+  readonly partialCjsCycleMembers = new Set<SourceFile>();
+  /** ES modules a require() call targets: each carries a %evaluating flag,
+   * so require() of one that is still evaluating throws Node's
+   * ERR_REQUIRE_CYCLE_MODULE at the call. */
+  readonly requireEsmTargets = new Set<SourceFile>();
   cycleEarlyBindings: EarlyBindingsMemo | null = null;
   /** Whether some program file can name node:child_process (namesChildProcess). */
   namesChildProcess: boolean | null = null;
@@ -66,6 +74,8 @@ export class ProgramAnalysis {
     this.prunedNpmReexports.clear();
     this.moduleSourceCandidates.clear();
     this.exactCycleMembers.clear();
+    this.partialCjsCycleMembers.clear();
+    this.requireEsmTargets.clear();
     this.cycleEarlyBindings = null;
     this.namesChildProcess = null;
     this.methodNameWrites.clear();

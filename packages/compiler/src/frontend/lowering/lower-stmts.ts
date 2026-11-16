@@ -149,6 +149,9 @@ import {
 } from "./cjs-inline-require.js";
 import {
   cjsExportMemberWriteGlobalOf,
+  cjsPartialExportMirror,
+  cjsPartialExportRead,
+  cjsPartialExportsReplaceStmt,
   isCjsExportsIdentifier,
   isCjsModuleExports,
   isFreshExportsReset,
@@ -2915,6 +2918,25 @@ function lowerVarDeclarator(
       if (island !== null) return [island];
       const init = lowerer.requireInitStmt(spec, decl);
       const out: IrStmt[] = init ? [init] : [];
+      // A binding of a partial require() cycle module keeps the exports
+      // object this require answered (per-requirer identity).
+      if (ts.isIdentifier(decl.name)) {
+        const symbol =
+          lowerer.checker.getSymbolAtLocation(decl.name) ??
+          lowerer.resolveValueSymbol(decl.name) ??
+          undefined;
+        const capture =
+          symbol === undefined ? undefined : lowerer.cjsPartialRequireObjects.get(symbol);
+        const exportsThis =
+          capture === undefined ? undefined : lowerer.cjsExportsThis.get(capture.dep);
+        if (capture !== undefined && exportsThis !== undefined)
+          out.push({
+            kind: "assign",
+            localId: capture.object.id,
+            value: { kind: "varRef", localId: exportsThis.id, type: DYN, loc: locOf(decl) },
+            loc: locOf(decl),
+          });
+      }
       // Snapshot bindings and nested patterns evaluate in pattern order,
       // immediately after the required module has initialized.
       const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
@@ -3094,7 +3116,11 @@ function lowerCjsBindingSnapshot(
   key: string,
 ): IrStmt {
   const target = lowerer.globalOf(name);
-  const value = cjsExportValueByName(lowerer, dep, key, name);
+  // The live exports object of a partial require() cycle: the binding
+  // snapshots the member as it stands at this require (Node's
+  // destructuring read, its warning for a missing member included).
+  const partial = cjsPartialExportRead(lowerer, dep, key, name);
+  const value = partial ?? cjsExportValueByName(lowerer, dep, key, name);
   if (target === null || value === null) {
     lowerer.unsupported(
       "SC1090",
@@ -10316,7 +10342,20 @@ function lowerCjsExportStatement(
     }
     const lowered = lowerer.lowerExprExpecting(value, g.type);
     if (root?.type.kind !== "dyn" || !ts.isIdentifier(nameNode)) {
-      return { kind: "assign", localId: g.id, value: lowered, loc: locOf(value) };
+      const assign: IrStmt = { kind: "assign", localId: g.id, value: lowered, loc: locOf(value) };
+      const mirror = ts.isIdentifier(nameNode)
+        ? cjsPartialExportMirror(
+            lowerer,
+            ts.getSourceFileOfNode(cjs.expr),
+            nameNode.text,
+            lowered,
+            value,
+            locOf(value),
+          )
+        : [];
+      return mirror.length === 0
+        ? assign
+        : { kind: "block", body: [assign, ...mirror], loc: locOf(value) };
     }
     // A factory whole export is represented by its checked-dynamic root.
     // A later `module.exports.name = value` mutates THAT same object in
@@ -10457,6 +10496,9 @@ function lowerCjsExportStatement(
   }
   const table = tableObj!;
   const body: IrStmt[] = [];
+  // A module of a require() cycle replaces its live exports object at this
+  // statement, exactly where Node does; entries land in the fresh object.
+  const replace = cjsPartialExportsReplaceStmt(lowerer, ts.getSourceFileOfNode(cjs.expr), loc);
   // Identifier-valued properties are alias plumbing (importers resolve
   // through to the declaration) — EXACT for const/function bindings, a
   // live-binding lie for `let`: Node copies the VALUE into the table at
@@ -10473,13 +10515,37 @@ function lowerCjsExportStatement(
       );
     }
   };
+  if (replace !== null) body.push(replace);
   for (const prop of table.properties.nodes) {
     if (ts.isShorthandPropertyAssignment(prop)) {
-      fenceMutable(prop.name as ts.Identifier);
+      const shorthandName = prop.name as ts.Identifier;
+      fenceMutable(shorthandName);
+      body.push(
+        ...cjsPartialExportMirror(
+          lowerer,
+          ts.getSourceFileOfNode(cjs.expr),
+          shorthandName.text,
+          lowerer.lowerExpr(shorthandName),
+          shorthandName,
+          locOf(prop),
+        ),
+      );
       continue; // alias plumbing
     }
     if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.initializer)) {
       fenceMutable(prop.initializer);
+      const name = prop.name;
+      if (ts.isIdentifier(name) || ts.isStringLiteralLike(name))
+        body.push(
+          ...cjsPartialExportMirror(
+            lowerer,
+            ts.getSourceFileOfNode(cjs.expr),
+            name.text,
+            lowerer.lowerExpr(prop.initializer),
+            prop.initializer,
+            locOf(prop),
+          ),
+        );
       continue;
     }
     if (ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) {
@@ -10509,12 +10575,19 @@ function lowerCjsExportStatement(
         const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
         if (g) {
           const fn = lowerer.lowerLambda(method);
-          body.push({
-            kind: "assign",
-            localId: g.id,
-            value: typeEquals(fn.type, g.type) ? fn : lowerer.coerceInto(method, fn, g.type),
-            loc: locOf(method),
-          });
+          const lowered = typeEquals(fn.type, g.type) ? fn : lowerer.coerceInto(method, fn, g.type);
+          body.push({ kind: "assign", localId: g.id, value: lowered, loc: locOf(method) });
+          if (ts.isIdentifier(method.name) || ts.isStringLiteralLike(method.name))
+            body.push(
+              ...cjsPartialExportMirror(
+                lowerer,
+                ts.getSourceFileOfNode(cjs.expr),
+                method.name.text,
+                lowered,
+                method,
+                locOf(method),
+              ),
+            );
           continue;
         }
       }
@@ -11156,8 +11229,14 @@ export function lowerExprStatement(
     );
   }
   if (topLevelJs && ts.isExpressionStatement(stmtNode)) {
-    if (isFreshExportsReset(lowerer, stmtNode))
-      return { kind: "block", body: [], loc: locOf(expr) };
+    if (isFreshExportsReset(lowerer, stmtNode)) {
+      const fresh = cjsPartialExportsReplaceStmt(
+        lowerer,
+        ts.getSourceFileOfNode(stmtNode),
+        locOf(expr),
+      );
+      return { kind: "block", body: fresh === null ? [] : [fresh], loc: locOf(expr) };
+    }
     // Any other `exports = …` rebinds the wrapper's exports binding: the
     // members later attached through it belong to the new value.
     if (
@@ -12065,7 +12144,16 @@ export function lowerExprStatement(
           const loc = locOf(expr);
           const value = lowerer.lowerExprExpecting(expr.right, g.type);
           if (!lowerer.hasCjsConditionalExportMirrors(g.id)) {
-            return { kind: "assign", localId: g.id, value, loc };
+            const assign: IrStmt = { kind: "assign", localId: g.id, value, loc };
+            const mirror = cjsPartialExportMirror(
+              lowerer,
+              ts.getSourceFileOfNode(expr),
+              expr.left.name.text,
+              value,
+              expr.right,
+              loc,
+            );
+            return mirror.length === 0 ? assign : { kind: "block", body: [assign, ...mirror], loc };
           }
           // A module that chose this table for its own `module.exports` while
           // it ran answers Node's shared exports object: the member keeps

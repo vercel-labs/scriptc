@@ -665,6 +665,7 @@ ScrNetSocket *scr_http_req_socket(ScrHttpReq *r) {
 static void scr_http_emit_push(int kind, void *h /*moves +1*/);
 static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n);
 static void scr_http_res_cork_flush(ScrHttpRes *r);
+static void scr_http_res_queue_wcb_handoff(ScrHttpRes *r);
 #define SCR_HTTP_EMIT_REQ_DRAIN_K 6
 
 static bool scr_http_req_holding(const ScrHttpReq *r) {
@@ -1110,10 +1111,12 @@ struct ScrHttpRes {
   ScrAlsCtx *end_als;
   bool end_ctx_set;
   ScrNetLs endcb_ls;  /* res.end(cb) — fires just before the 'finish' listeners */
-  ScrNetLs wcb_ls;    /* res.write(chunk, cb) — fires from the queue */
+  ScrNetLs wcb_ls;    /* res.write(chunk, cb) — fires once the bytes flushed */
   bool writable_finished; /* set where Node emits 'finish' (writableFinished) */
   bool finish_queued;
+  bool finish_wait; /* 'finish' waits on the socket's write completion */
   bool wcb_queued;
+  bool wcb_handed; /* the callbacks wait on the socket's write completion */
   bool close_queued;
   bool close_emitted;
 };
@@ -2153,6 +2156,7 @@ static void scr_http_res_emit(ScrHttpRes *r, const ScrHttpBuf *head, const char 
   }
   scr_net_sock_writev_native(r->sock, v, n);
   free(tail.data);
+  scr_http_res_queue_wcb_handoff(r);
 }
 
 /* Writes while corked coalesce here and flush as ONE write when the
@@ -2728,7 +2732,7 @@ static void scr_http_client_release_internal(struct ScrHttpClientReq *c);
 static void scr_http_client_settle(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_socket(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_finish(struct ScrHttpClientReq *c);
-static void scr_http_client_fire_queued_wcb(struct ScrHttpClientReq *c);
+static void scr_http_client_queue_wcb_handoff(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_destroy_error(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_abort(struct ScrHttpClientReq *c);
 
@@ -2884,10 +2888,14 @@ void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
  * cb off the writing stack, Node's contract). */
 void scr_http_res_on_write_flush(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
   scr_net_ls_add(&r->wcb_ls, cb, NULL, true);
-  if (!r->wcb_queued) {
-    r->wcb_queued = true;
-    scr_http_emit_push(SCR_HTTP_EMIT_RES_WCB, scr_http_res_retain(r));
-  }
+}
+
+/* The response's write callbacks are handed to the socket once its bytes
+ * reach it: scr_http_res_emit and the cork flush queue this. */
+static void scr_http_res_queue_wcb_handoff(ScrHttpRes *r) {
+  if (!scr_net_ls_has_live(&r->wcb_ls) || r->wcb_queued || r->wcb_handed) return;
+  r->wcb_queued = true;
+  scr_http_emit_push(SCR_HTTP_EMIT_RES_WCB, scr_http_res_retain(r));
 }
 
 static bool scr_http_proto_pending(void) { return scr_http_emits_head < scr_http_emits_len; }
@@ -2908,6 +2916,36 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_REQ_ABORTED: return ((ScrHttpReq *)e->h)->als;
   default: return scr_http_client_ctx((struct ScrHttpClientReq *)e->h);
   }
+}
+
+/* The response's write callbacks run when the socket has sent their chunks
+ * (Node's afterWrite), which is what paces a callback-driven stream. */
+static void scr_http_res_wcb_drained_nt(ScrClosure *cb) {
+  ScrHttpRes *res = scr_box_get_ref(cb->caps[0]);
+  res->wcb_handed = false;
+  ScrNetLs due = res->wcb_ls;
+  res->wcb_ls = (ScrNetLs){0};
+  scr_net_fire0_this(&due, res, SCR_DYNH_HTTP_RES);
+  scr_net_ls_drop(&due);
+  scr_http_res_release(res);
+}
+
+/* A 'finish' held up by the socket's buffer re-queues when the buffer
+ * empties: Node's 'finish' follows afterWrite, not a timer. */
+static void scr_http_res_finish_flushed_nt(ScrClosure *cb) {
+  ScrHttpRes *res = scr_box_get_ref(cb->caps[0]);
+  res->finish_wait = false;
+  scr_http_queue_res_finish(res);
+  scr_http_res_release(res);
+}
+
+static void scr_http_res_arm_finish_flush(ScrHttpRes *res) {
+  if (res->finish_wait) return;
+  res->finish_wait = true;
+  ScrClosure *cb = scr_closure_new((void *)&scr_http_res_finish_flushed_nt, 1);
+  cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_http_res_retain(res));
+  scr_net_sock_on_write_flush(res->sock, cb);
 }
 
 static void scr_http_proto_sweep(void) {
@@ -2934,13 +2972,26 @@ static void scr_http_proto_sweep(void) {
         scr_net_ls_drop(&res->prefinish_ls);
         scr_net_ls_drop(&res->endcb_ls);
         scr_net_ls_drop(&res->wcb_ls);
+        res->wcb_handed = false; /* the socket's callbacks find empty lists */
+        res->finish_wait = false;
       }
       break;
     }
     case SCR_HTTP_EMIT_RES_WCB: {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
       res->wcb_queued = false; /* later write(chunk, cb)s re-queue */
-      scr_net_fire0_this(&res->wcb_ls, res, SCR_DYNH_HTTP_RES);
+      if (!scr_net_ls_has_live(&res->wcb_ls)) break;
+      if (res->sock == NULL || res->close_emitted) {
+        scr_net_ls_drop(&res->wcb_ls);
+        break;
+      }
+      if (!res->wcb_handed) {
+        res->wcb_handed = true;
+        ScrClosure *cb = scr_closure_new((void *)&scr_http_res_wcb_drained_nt, 1);
+        cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
+        scr_box_set_ref(cb->caps[0], scr_http_res_retain(res));
+        scr_net_sock_on_write_flush(res->sock, cb);
+      }
       break;
     }
     case SCR_HTTP_EMIT_REQ_CLOSE: {
@@ -2995,7 +3046,7 @@ static void scr_http_proto_sweep(void) {
       scr_http_client_emit_socket((struct ScrHttpClientReq *)e.h);
       break;
     case SCR_HTTP_EMIT_CLIENT_WCB:
-      scr_http_client_fire_queued_wcb((struct ScrHttpClientReq *)e.h);
+      scr_http_client_queue_wcb_handoff((struct ScrHttpClientReq *)e.h);
       break;
     case SCR_HTTP_EMIT_CLIENT_FINISH:
       scr_http_client_emit_finish((struct ScrHttpClientReq *)e.h);
@@ -3009,6 +3060,21 @@ static void scr_http_proto_sweep(void) {
     case SCR_HTTP_EMIT_RES_FINISH: {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
       res->finish_queued = false; /* a later on('finish') on the finished res re-queues */
+      /* Node's 'finish' follows the body leaving the socket buffer and its
+       * writes' callbacks: retry from the next tick while either is due. */
+      if (res->sock != NULL && scr_net_sock_writable_length(res->sock) != 0) {
+        scr_http_res_arm_finish_flush(res);
+        break;
+      }
+      /* the body is out: a write callback still waiting for the socket's own
+       * flush runs before the response finishes, as Node's afterWrite does */
+      if (scr_net_ls_has_live(&res->wcb_ls)) {
+        ScrNetLs due = res->wcb_ls;
+        res->wcb_ls = (ScrNetLs){0};
+        scr_net_fire0_this(&due, res, SCR_DYNH_HTTP_RES);
+        scr_net_ls_drop(&due);
+      }
+      res->wcb_handed = false;
       res->writable_finished = true;
       ScrNetLs endcbs = res->endcb_ls;
       res->endcb_ls = (ScrNetLs){0};
@@ -5256,6 +5322,8 @@ struct ScrHttpClientReq {
   bool response_done;
   bool had_error;
   bool wcb_queued; /* a write-flush callback emit is in the queue */
+  bool wcb_handed; /* the callbacks wait on the socket's write completion */
+  bool finish_wait; /* 'finish' waits on the socket's write completion */
   bool close_queued;
   bool close_emitted; /* settled: listeners dropped, off the registry */
   ScrHttpReq *res; /* +1 once the head parses */
@@ -5439,6 +5507,8 @@ static void scr_http_client_settle(struct ScrHttpClientReq *c) {
   scr_net_ls_drop(&c->socket_ls);
   scr_net_ls_drop(&c->finish_ls);
   scr_net_ls_drop(&c->wcb_ls);
+  c->wcb_handed = false; /* the socket's callbacks find empty lists */
+  c->finish_wait = false;
   scr_net_ls_drop(&c->continue_ls);
   scr_net_ls_drop(&c->info_ls);
   scr_net_ls_drop(&c->drain_ls);
@@ -5481,9 +5551,40 @@ static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
   scr_net_ls_drop(&c->socket_ls);
 }
 
+static void scr_http_client_finish_flushed_nt(ScrClosure *cb) {
+  ScrHttpClientReq *c = scr_box_get_ref(cb->caps[0]);
+  c->finish_wait = false;
+  scr_http_client_queue_finish(c);
+  scr_http_client_release(c);
+}
+
+static void scr_http_client_arm_finish_flush(ScrHttpClientReq *c) {
+  if (c->finish_wait) return;
+  c->finish_wait = true;
+  ScrClosure *cb = scr_closure_new((void *)&scr_http_client_finish_flushed_nt, 1);
+  cb->caps[0] = scr_box_new_obj(&scr_http_client_retain_v, &scr_http_client_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_http_client_retain(c));
+  scr_net_sock_on_write_flush(c->sock, cb);
+}
+
 static void scr_http_client_emit_finish(ScrHttpClientReq *c) {
   c->finish_queued = false;
   if (c->destroyed || c->close_emitted || !c->ended || !c->sock_ready || c->writable_finished) return;
+  /* Node's 'finish' comes after the body left the socket buffer and after
+   * the writes' own callbacks ran: a request still waiting for either
+   * retries from the next tick, never by re-queueing inside the sweep. */
+  if (c->sock != NULL && scr_net_sock_writable_length(c->sock) != 0) {
+    scr_http_client_arm_finish_flush(c);
+    return;
+  }
+  /* the body is out: its writes' callbacks run before the request finishes */
+  if (scr_net_ls_has_live(&c->wcb_ls)) {
+    ScrNetLs due = c->wcb_ls;
+    c->wcb_ls = (ScrNetLs){0};
+    scr_net_fire0_this(&due, c, SCR_DYNH_HTTP_CLIENT);
+    scr_net_ls_drop(&due);
+  }
+  c->wcb_handed = false;
   c->writable_finished = true;
   scr_net_fire0_this(&c->finish_ls, c, SCR_DYNH_HTTP_CLIENT);
   scr_net_ls_drop(&c->finish_ls);
@@ -5807,11 +5908,42 @@ static void scr_http_client_fire_write_flush(ScrHttpClientReq *c) {
   scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_WCB, scr_http_client_retain(c));
 }
 
-/* The queued write-flush callbacks: the chunks' bytes are on the socket. */
-static void scr_http_client_fire_queued_wcb(ScrHttpClientReq *c) {
+static void scr_http_client_wcb_drained_nt(ScrClosure *cb);
+
+/* The message's write callbacks move to the socket's write completion: their
+ * chunks' bytes have reached it, and Node's afterWrite runs when the socket
+ * has sent them, which is what paces a callback-driven upload. */
+static void scr_http_client_queue_wcb_handoff(ScrHttpClientReq *c) {
   c->wcb_queued = false;
-  scr_net_fire0_this(&c->wcb_ls, c, SCR_DYNH_HTTP_CLIENT);
-  scr_net_ls_drop(&c->wcb_ls);
+  if (!scr_net_ls_has_live(&c->wcb_ls)) return;
+  if (c->sock == NULL) {
+    scr_net_ls_drop(&c->wcb_ls);
+    return;
+  }
+  if (!c->wcb_handed) {
+    c->wcb_handed = true;
+    ScrClosure *cb = scr_closure_new((void *)&scr_http_client_wcb_drained_nt, 1);
+    cb->caps[0] = scr_box_new_obj(&scr_http_client_retain_v, &scr_http_client_release_v, NULL);
+    scr_box_set_ref(cb->caps[0], scr_http_client_retain(c));
+    scr_net_sock_on_write_flush(c->sock, cb);
+  }
+}
+
+/* The socket's write buffer emptied: the chunks are out, so their callbacks
+ * run — before the request's own 'finish'. */
+static void scr_http_client_wcb_drained_nt(ScrClosure *cb) {
+  ScrHttpClientReq *c = scr_box_get_ref(cb->caps[0]);
+  c->wcb_handed = false;
+  /* the due callbacks leave the list before any runs: one that writes
+   * again registers its own, which the flush leaves for the next pass */
+  ScrNetLs due = c->wcb_ls;
+  c->wcb_ls = (ScrNetLs){0};
+  scr_net_fire0_this(&due, c, SCR_DYNH_HTTP_CLIENT);
+  scr_net_ls_drop(&due);
+  if (c->ended && !c->finish_queued && !c->writable_finished && !c->close_emitted) {
+    scr_http_client_queue_finish(c);
+  }
+  scr_http_client_release(c);
 }
 
 static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, size_t len) {

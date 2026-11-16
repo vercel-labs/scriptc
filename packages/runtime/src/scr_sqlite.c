@@ -1270,20 +1270,30 @@ ScrDyn *scr_sqlite_backup(ScrDyn *source, ScrDyn *path, ScrDyn *options) {
                           SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, NULL);
   free(destination);
   if (r != SQLITE_OK) {
-    const char *message = job.dest != NULL ? sqlite3_errmsg(job.dest) : sqlite3_errstr(r);
-    ScrDyn *str = scr_sqlite_str_dyn(message);
+    /* The message belongs to the destination handle, so copy it before the
+     * handle closes. Node rejects the promise (the destination is opened
+     * before the work starts), so the error becomes the rejection. */
+    int errcode = job.dest != NULL ? sqlite3_extended_errcode(job.dest) : r;
+    const char *text = job.dest != NULL ? sqlite3_errmsg(job.dest) : sqlite3_errstr(r);
+    ScrStr *message = scr_str_new(text, strlen(text));
     scr_sqlite_backup_close(&job);
-    /* Node rejects the promise (the destination is opened before the work
-     * starts), so the error becomes the rejection. */
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "ERR_SQLITE_ERROR");
-    scr_dyn_release(str);
-    ScrPromise *promise = scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+    scr_str_release(message);
+    scr_error_set_code(e, "ERR_SQLITE_ERROR");
+    ScrStr *errstr = scr_str_new(sqlite3_errstr(errcode), strlen(sqlite3_errstr(errcode)));
+    ScrDyn *errstr_dyn = scr_dyn_new_str(errstr);
+    scr_str_release(errstr);
+    scr_error_set_prop(e, "errcode", 7, scr_dyn_new_num((double)errcode));
+    scr_error_set_prop(e, "errstr", 6, errstr_dyn);
+    scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+    ScrPromise *promise =
+        scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
     scr_dyn_release(progress);
     scr_str_release(held_source);
     scr_str_release(held_target);
     ScrDyn *box = scr_dyn_new_promise(promise);
-  scr_promise_release(promise);
-  return box;
+    scr_promise_release(promise);
+    return box;
   }
   sqlite3_backup *copy = sqlite3_backup_init(job.dest, dest_db, db->conn, source_db);
   if (copy == NULL) {

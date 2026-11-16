@@ -225,7 +225,12 @@ import {
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
 } from "./symbol-fields.js";
-import { lowerHttpAgentNew, lowerHttpServerNew, lowerTlsSocketNew } from "./lower-server.js";
+import {
+  lowerHttpAgentNew,
+  lowerHttpServerNew,
+  lowerNetSocketNew,
+  lowerTlsSocketNew,
+} from "./lower-server.js";
 import {
   ambientNsRootOf,
   ambientUndefReadType,
@@ -12711,6 +12716,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
+  }
+  // `new net.Socket(options?)`: Node's client-socket constructor — the
+  // same native socket net.connect dials.
+  {
+    const netSocket = lowerNetSocketNew(lowerer, expr);
+    if (netSocket) return netSocket;
   }
   // `new dns.Resolver(options?)` / `new dns.promises.Resolver(options?)`:
   // the module's Resolver class builds a stub-resolver handle value.

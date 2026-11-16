@@ -1420,6 +1420,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "tls.serverOnClientError",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
   "net.sockResetAndDestroy",
+  // new net.Socket's option ladder and connect()'s state/argument errors,
+  // destroy(error)'s state, and the write/end encoding checks.
+  "net.socketNew",
+  "net.sockConnect",
+  "net.sockConnectCb",
+  "net.sockConnectPath",
+  "net.sockConnectPathCb",
+  "net.sockConnectOpts",
+  "net.sockConnectOptsCb",
+  "net.sockDestroyError",
+  "net.sockWriteEnc",
+  "net.sockEndEnc",
   // SocketAddress's option checks and parse()'s input check.
   "net.socketAddressNew",
   "net.socketAddressParse",

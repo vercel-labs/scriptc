@@ -231,6 +231,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_net_server_async_dispose allocates the promise, adds a close
   // listener and starts the close; a later close failure is a rejection.
   "net.serverAsyncDispose",
+  // socket.timeout: a field read, never throws.
+  "net.sockTimeout",
   // scr_util_transferable_abort_controller allocates a controller and its
   // signal state; running out of memory ends the process, and no argument
   // is read (surplus arguments are evaluated by the call site).

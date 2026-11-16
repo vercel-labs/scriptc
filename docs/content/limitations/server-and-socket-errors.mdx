@@ -4,3 +4,4 @@ A server that has closed does not listen again: a later `listen()` call is ignor
 After a server has closed, another `close(callback)` call runs the callback with `ERR_SERVER_NOT_RUNNING`, as in Node, but the server's `'close'` listeners do not run a second time.
 A write callback of a socket that is destroyed before it connects, or whose connection is refused, receives `ERR_SOCKET_CLOSED_BEFORE_CONNECTION`, as in Node.
 A write callback of a connected socket that is destroyed while the write is pending runs without an error, and the callback of `socket.end()` does not run; Node passes both the error of the cancelled write.
+A socket whose `'close'` event already fired refuses `connect()` with an `SC2020` error; Node keeps the socket's listeners and dials again on the same object.

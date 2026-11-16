@@ -67,6 +67,24 @@ const oaepPublic = rsa.publicKey.toCryptoKey({ name: "RSA-OAEP", hash: "SHA-256"
 const sealed = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, oaepPublic, Buffer.from("hello"));
 console.log("rsa-oaep", sealed.byteLength, await crypto.subtle.decrypt({ name: "RSA-OAEP" }, rsa.privateKey.toCryptoKey({ name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"]), sealed).then((plain) => Buffer.from(plain).toString()));
 
+// An RSA-PSS key is not a plain RSA key or an EC key: asking for an ECDSA
+// or ECDH CryptoKey answers Node's key-type error, never a crash on its
+// absent curve name.
+const pssOnly = generateKeyPairSync("rsa-pss", { modulusLength: 1024 });
+for (const [label, algorithm] of [
+  ["pss to ecdsa", { name: "ECDSA", namedCurve: "P-256" }],
+  ["pss to ecdh", { name: "ECDH", namedCurve: "P-256" }],
+] as const) {
+  let result: string;
+  try {
+    pssOnly.privateKey.toCryptoKey(algorithm, true, ["sign"]);
+    result = "resolved";
+  } catch (error) {
+    result = `${(error as Error).name} ${(error as Error).message}`;
+  }
+  console.log(label, result);
+}
+
 // Key agreement keys keep their derive usages on the private half only.
 const ecdh = generateKeyPairSync("ec", { namedCurve: "P-256" });
 const ecdhPrivate = ecdh.privateKey.toCryptoKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);

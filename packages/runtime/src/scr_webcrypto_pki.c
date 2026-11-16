@@ -706,10 +706,13 @@ static ScrDyn *sw_import(const ScrDyn *args) {
     scr_throw_domex("DataError", "Invalid key type");
     goto done;
   }
-  if (sw_is_ec_kind(kind) && strcmp(scr_pki_key_curve(key), curve) != 0) {
-    scr_pki_key_release(key);
-    scr_throw_domex("DataError", "Named curve mismatch");
-    goto done;
+  if (sw_is_ec_kind(kind)) {
+    const char *actual = scr_pki_key_curve(key);
+    if (actual == NULL || strcmp(actual, curve) != 0) {
+      scr_pki_key_release(key);
+      scr_throw_domex("DataError", "Named curve mismatch");
+      goto done;
+    }
   }
   if (private_key && usages == 0) {
     scr_pki_key_release(key);
@@ -1139,8 +1142,11 @@ static ScrDyn *sw_to_crypto_key(const ScrDyn *key_value, const ScrDyn *const *ar
   bool private_key = scr_pki_key_is_private(material);
   bool ed = scr_pki_key_is_ed25519(material);
   bool x = scr_pki_key_is_x25519(material);
-  bool rsa = scr_pki_key_is_rsa(material) && !scr_pki_key_is_rsa_pss(material);
-  bool ec = !ed && !x && !rsa;
+  bool rsa_key = scr_pki_key_is_rsa(material);
+  bool rsa = rsa_key && !scr_pki_key_is_rsa_pss(material);
+  /* An RSA-PSS key is RSA-shaped but not a plain RSA key; it is never an
+   * EC key, and its curve name is NULL. */
+  bool ec = !ed && !x && !rsa_key;
   const char *name = sw_algorithm_name(algorithm);
   if (!name) goto done;
   SwKind kind = sw_kind_of(name);
@@ -1167,15 +1173,25 @@ static ScrDyn *sw_to_crypto_key(const ScrDyn *key_value, const ScrDyn *const *ar
   }
   long usages = scr_wc_value_usages(usages_value);
   if (usages < 0) goto done;
+  /* Node validates the usages against the algorithm before it looks at the
+   * key, so a usage the algorithm never takes is that error even when the
+   * key itself has the wrong type. */
+  if ((unsigned)usages & ~sw_pair_usages(kind)) {
+    sw_unsupported_usage(kind);
+    goto done;
+  }
   bool matches = (kind == SW_ED25519 && ed) || (kind == SW_X25519 && x) ||
                  (sw_is_ec_kind(kind) && ec) || (sw_is_rsa_kind(kind) && rsa);
   if (!matches) {
     scr_throw_domex("DataError", "Invalid key type");
     goto done;
   }
-  if (sw_is_ec_kind(kind) && strcmp(scr_pki_key_curve(material), curve) != 0) {
-    scr_throw_domex("DataError", "Named curve mismatch");
-    goto done;
+  if (sw_is_ec_kind(kind)) {
+    const char *actual = scr_pki_key_curve(material);
+    if (actual == NULL || strcmp(actual, curve) != 0) {
+      scr_throw_domex("DataError", "Named curve mismatch");
+      goto done;
+    }
   }
   unsigned allowed = sw_import_allowed(kind, private_key);
   if ((unsigned)usages & ~allowed) {

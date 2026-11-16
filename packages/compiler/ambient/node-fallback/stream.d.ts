@@ -443,6 +443,13 @@ declare module "stream" {
     /* Duplex.from: an async generator function, an iterable, a string or
      * a stream (duplexify.js). */
     static from(body: unknown): Duplex;
+    /* A Duplex over a web stream pair: the readable side reads `readable`
+     * and the writable side writes `writable`. The options have no lowering
+     * yet. */
+    static fromWeb(
+      pair: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> },
+      options?: {},
+    ): Duplex;
     constructor(opts: ObjectDuplexOptions);
     constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);

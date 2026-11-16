@@ -2243,6 +2243,7 @@ export function lowerStreamStaticCall(
   }
   if (member === "fromWeb" && cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
   if (member === "fromWeb" && cls === "%Writable") return lowerWritableFromWeb(lowerer, call, loc);
+  if (member === "fromWeb" && cls === "%Duplex") return lowerDuplexFromWeb(lowerer, call, loc);
   // Readable.isDisturbed is stream.isDisturbed, which every stream class
   // inherits from the module's legacy Stream.
   if (member === "isDisturbed") {
@@ -2441,6 +2442,83 @@ function lowerWritableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
     fn: "webstream.writableFromWeb",
     args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
     type: { kind: "object", className: "%Writable" },
+    loc,
+  };
+}
+
+/** Duplex.fromWeb(pair[, options]): the readable and writable sides wrapped
+ * by the two adapters and joined by duplexify (pipeline.js's
+ * newStreamDuplexFromReadableWritablePair). The options have no lowering
+ * yet. */
+function lowerDuplexFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
+    lowerer.noLowering(
+      `Duplex.fromWeb with ${args.length} arguments`,
+      call,
+      "the supported form is Duplex.fromWeb({ readable, writable })",
+    );
+  }
+  const options = args[1];
+  if (options !== undefined) {
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "Duplex.fromWeb options that are not an object literal",
+        options,
+        "pass no options, or an empty object literal",
+      );
+    }
+    for (const option of options.properties.nodes) {
+      const key =
+        (ts.isPropertyAssignment(option) || ts.isShorthandPropertyAssignment(option)) &&
+        ts.isIdentifier(option.name)
+          ? option.name.text
+          : null;
+      lowerer.noLowering(
+        key === null
+          ? "Duplex.fromWeb options with this member"
+          : `the Duplex.fromWeb option '${key}'`,
+        option,
+        "the supported form is Duplex.fromWeb({ readable, writable })",
+      );
+    }
+  }
+  const duplexType: IrType = { kind: "object", className: "%Duplex" };
+  const pair = lowerer.lowerExprExpecting(args[0]!, DYN);
+  const pairLocal = lowerer.declareHiddenLocal("%fromWebPair", DYN);
+  const pairRef = varRef(pairLocal.id, DYN, loc);
+  const member = (name: string): IrExpr => ({
+    kind: "dynKeyGet",
+    value: pairRef,
+    key: { kind: "strLit", value: name, type: STRING, loc },
+    type: DYN,
+    loc,
+  });
+  const readable: IrExpr = {
+    kind: "libCall",
+    fn: "fetch.readableFromWeb",
+    args: [member("readable"), boolLit(false, loc), numLit(-1, loc), strLit("", loc)],
+    type: { kind: "object", className: "%Readable" },
+    loc,
+  };
+  const writable: IrExpr = {
+    kind: "libCall",
+    fn: "webstream.writableFromWeb",
+    args: [member("writable"), numLit(0, loc)],
+    type: { kind: "object", className: "%Writable" },
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: pairLocal.id, init: pair, loc }],
+    result: {
+      kind: "libCall",
+      fn: "stream.duplexifyPairHalf",
+      args: [readable, writable, boolLit(false, loc)],
+      type: duplexType,
+      loc,
+    },
+    type: duplexType,
     loc,
   };
 }

@@ -5965,6 +5965,7 @@ function buildLibFnSignatures() {
     "stream.duplexifyReadable": { argTypes: [null], result: VOID },
     "stream.duplexifyWritable": { argTypes: [null], result: VOID },
     "stream.duplexifyPair": { argTypes: [null, null], result: VOID },
+    "stream.duplexifyPairHalf": { argTypes: [null, null, BOOL], result: VOID },
     /** Duplex.from(promise): the promise and its box helper. */
     "stream.duplexFromPromise": { argTypes: [null, null], result: VOID },
     /** Duplex.from(asyncFunction): the stage, its source helper and the

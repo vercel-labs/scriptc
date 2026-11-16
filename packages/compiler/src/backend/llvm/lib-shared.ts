@@ -1708,6 +1708,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.duplexifyReadable": "scr_stream_duplexify_readable",
   "stream.duplexifyWritable": "scr_stream_duplexify_writable",
   "stream.duplexifyPair": "scr_stream_duplexify_pair",
+  "stream.duplexifyPairHalf": "scr_stream_duplexify_pair_opt",
   "stream.duplexFromPromise": "scr_stream_duplex_from_promise",
   "stream.duplexFromAsyncFn": "scr_stream_duplex_from_async_fn",
   "stream.duplexFromGenSignal": "scr_stream_duplex_from_gen_signal",

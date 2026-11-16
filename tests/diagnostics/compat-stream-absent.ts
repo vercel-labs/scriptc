@@ -3,7 +3,7 @@
 // program for marking the rows a verified absence instead of an
 // unverified registry gap.
 import * as stream from "node:stream";
-import { Duplex, PassThrough, Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 
 // A connected pair of Duplex streams.
 const [left, right] = stream.duplexPair();
@@ -16,8 +16,7 @@ const old = new PassThrough();
 const wrapped = new Readable().wrap(old);
 wrapped.resume();
 
-// The web-stream adapter pair going out.
+// The web-stream transform's own class.
 const transform = new TransformStream();
-const fromPair = Duplex.fromWeb({ readable: transform.readable, writable: transform.writable });
 const pair = Duplex.toWeb(new PassThrough());
-console.log(typeof fromPair, typeof pair);
+console.log(typeof transform.readable, typeof pair);

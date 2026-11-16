@@ -335,6 +335,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexifyReadable",
   "stream.duplexifyWritable",
   "stream.duplexifyPair",
+  "stream.duplexifyPairHalf",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",

@@ -720,6 +720,9 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w);
 ScrStream *scr_stream_duplexify_readable(ScrStream *r);
 ScrStream *scr_stream_duplexify_writable(ScrStream *w);
 ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w);
+/* The same pair with an explicit allowHalfOpen (Duplex.fromWeb's default is
+ * false where Duplex.from's is true). */
+ScrStream *scr_stream_duplexify_pair_opt(ScrStream *r, ScrStream *w, bool allow_half_open);
 /* Duplex.from(promise): a readable Duplexify of the promise's value. p and
  * box (the compiler's promise → dyn promise helper) borrowed. +1. */
 ScrStream *scr_stream_duplex_from_promise(struct ScrPromise *p, ScrClosure *box);

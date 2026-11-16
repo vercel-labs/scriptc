@@ -6039,6 +6039,7 @@ function validateFunction(
       e.fn === "stream.duplexifyReadable" ||
       e.fn === "stream.duplexifyWritable" ||
       e.fn === "stream.duplexifyPair" ||
+      e.fn === "stream.duplexifyPairHalf" ||
       e.fn === "stream.duplexFromPromise" ||
       e.fn === "stream.duplexFromAsyncFn" ||
       e.fn === "stream.duplexFromGenSignal" ||
@@ -6109,12 +6110,25 @@ function validateFunction(
       if (
         e.fn === "stream.duplexifyReadable" ||
         e.fn === "stream.duplexifyWritable" ||
-        e.fn === "stream.duplexifyPair"
+        e.fn === "stream.duplexifyPair" ||
+        e.fn === "stream.duplexifyPairHalf"
       ) {
-        // Duplex.from over streams: (r), (w) or (r, w) → a Duplex.
-        const want = e.fn === "stream.duplexifyPair" ? 2 : 1;
-        if (e.args.length !== want || !e.args.every((a) => isStreamObject(a.type)))
-          err(`libCall ${e.fn} takes ${want} stream argument(s)`, e.loc);
+        // Duplex.from over streams: (r), (w) or (r, w) → a Duplex;
+        // Duplex.fromWeb's pair adds allowHalfOpen.
+        const want = e.fn === "stream.duplexifyPair" || e.fn === "stream.duplexifyPairHalf" ? 2 : 1;
+        const half = e.fn === "stream.duplexifyPairHalf";
+        const streams = half ? e.args.slice(0, 2) : e.args;
+        if (
+          e.args.length !== (half ? want + 1 : want) ||
+          !streams.every((a) => isStreamObject(a.type)) ||
+          (half && e.args[2]?.type.kind !== "bool")
+        )
+          err(
+            half
+              ? `libCall ${e.fn} takes two streams and the allowHalfOpen flag`
+              : `libCall ${e.fn} takes ${want} stream argument(s)`,
+            e.loc,
+          );
         if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream class`, e.loc);
         return true;
       }

@@ -5603,6 +5603,14 @@ ScrStream *scr_stream_duplex_from_promise(ScrPromise *p, ScrClosure *box) {
 ScrStream *scr_stream_duplexify_readable(ScrStream *r) { return scr_stream_duplexify(r, NULL); }
 ScrStream *scr_stream_duplexify_writable(ScrStream *w) { return scr_stream_duplexify(NULL, w); }
 ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w) { return scr_stream_duplexify(r, w); }
+/* Duplex.fromWeb's pair: duplexify defaults allowHalfOpen true, while Node's
+ * adapter passes false (adapters.js's newStreamDuplexFromReadableWritablePair
+ * defaults it). */
+ScrStream *scr_stream_duplexify_pair_opt(ScrStream *r, ScrStream *w, bool allow_half_open) {
+  ScrStream *d = scr_stream_duplexify(r, w);
+  if (d->st) d->st->allow_half_open = allow_half_open;
+  return d;
+}
 
 /* ── node:stream/promises ─────────────────────────────────────────────
  * The promise forms ride the callback machinery above with a settling

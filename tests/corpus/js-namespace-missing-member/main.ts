@@ -10,6 +10,7 @@ import { bump } from "./lib.ts";
 import * as live from "./live.ts";
 import { advance } from "./live.ts";
 import * as shape from "./shape.ts";
+import * as reexported from "./reexport.ts";
 
 console.log(typeof (lib as any).log, (lib as any).missing);
 console.log(lib.now(), lib.later(), Object.keys(lib).join());
@@ -29,6 +30,14 @@ console.log((live as any).default);
 
 // An object literal default reads the object the export stored.
 console.log((shape as any).default.kind, (shape as any).default === shape.default, (shape as any).sibling);
+
+// `export { default } from "./lib.ts"` forwards that export, snapshot and
+// all, through a module of its own; `export { default as liveCopy }` forwards
+// the live binding underneath it.
+console.log((reexported as any).default, (reexported as any).fromShape.kind, (reexported as any).liveCopy);
+bump();
+advance();
+console.log((reexported as any).default, (reexported as any).fromShape.kind, (reexported as any).liveCopy);
 
 // The receiver runs before the read, whatever the member answers.
 console.log((console.log("effect"), lib as any).missing);

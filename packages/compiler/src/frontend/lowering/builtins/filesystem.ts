@@ -42,6 +42,13 @@ type FsSyncBufferWindowSource =
   | { kind: "options"; node: ts.Expression | undefined }
   | { kind: "offset"; node: ts.Expression };
 
+/** The documented members of a FileHandle read or write options record that
+ * have no lowering: `flush` (fsync after the write) and `signal` (an
+ * abortable operation). `encoding` selects the codec, and `mode` and `flag`
+ * are read and ignored over an already-open handle. Any other key drops like
+ * Node drops it. */
+const FILE_HANDLE_DATA_FENCED_OPTIONS: ReadonlySet<string> = new Set(["flush", "signal"]);
+
 /** Normalize fs.readSync/fs.writeSync's shorthand and inline-options buffer
  * forms into the existing fixed-width descriptor IR. fd and buffer bind
  * first, option values bind in object-literal order, and only then do the
@@ -620,6 +627,78 @@ export function lowerFileHandleMethodCall(
     }
     return { value: lowerer.coerceInto(node ?? call, value, F64), defaulted: boolLit(false, loc) };
   };
+  /* The encoding a FileHandle read or write names: the bare encoding string,
+   * the options record's `encoding` member, or the utf8 default. Node
+   * validates the name and decodes with it, and every BufferEncoding is
+   * lowered, so any string-valued expression passes. The record's other
+   * documented members take Node's own stance over an open handle — mode and
+   * flag are ignored there — while flush and signal have no lowering; an
+   * undocumented key drops like Node drops it. */
+  /* Whether an encoding-valued expression can reach the decoder: every
+   * non-nullish constituent is a string (a literal name and the
+   * BufferEncoding union both count). */
+  const encodingLike = (node: ts.Expression): boolean => {
+    const nodeType = lowerer.typeOf(node);
+    const parts: readonly ts.Type[] = nodeType.isUnionType()
+      ? ts.constituentTypes(nodeType)
+      : [nodeType];
+    return parts.every(
+      (t) =>
+        (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
+        (t.flags & ts.TypeFlags.StringLike) !== 0,
+    );
+  };
+  const dataEncoding = (node: ts.Expression | undefined): IrExpr => {
+    const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
+    if (!node) return dflt;
+    if (!ts.isObjectLiteralExpression(node)) {
+      if (!encodingLike(node)) {
+        lowerer.noLowering(
+          `FileHandle.${name} with this encoding`,
+          node,
+          "the encoding is a BufferEncoding name",
+        );
+      }
+      return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
+    }
+    let encoding: IrExpr = dflt;
+    for (const prop of node.properties.nodes) {
+      const member = optionMember(prop);
+      if (member === null) {
+        lowerer.noLowering(`FileHandle.${name} with a non-plain options member`, prop);
+      }
+      if (member.name === "encoding") {
+        const value = member.value;
+        if (!encodingLike(value)) {
+          lowerer.noLowering(
+            `FileHandle.${name} with this encoding`,
+            value,
+            "the encoding is a BufferEncoding name",
+          );
+        }
+        // Node reads the member's truthiness: null and undefined name the
+        // default codec. The helper evaluates the expression exactly once
+        // (its side effects included) and substitutes utf8 for the nullish
+        // arms, so a runtime-nullish encoding behaves like Node's.
+        encoding = lowerBuiltinOptionalDefault(lowerer, value, STRING, dflt, true);
+        continue;
+      }
+      fenceOrDropOptionKey(
+        lowerer,
+        prop,
+        member.name,
+        `FileHandle.${name}`,
+        FILE_HANDLE_DATA_FENCED_OPTIONS,
+        "the record carries encoding; mode and flag are ignored over an open handle, and flush and signal have no lowering",
+      );
+    }
+    return encoding;
+  };
+
+  /* FileHandle.write's string form: the fixed-width write writes the
+   * string's utf8 bytes, so any other encoding leaves this lowering and
+   * takes the checked-dynamic write, which encodes with the name Node
+   * validates. */
   const utf8 = (node: ts.Expression | undefined): IrExpr => {
     const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
     if (!node) return dflt;
@@ -636,7 +715,7 @@ export function lowerFileHandleMethodCall(
       lowerer.noLowering(
         `FileHandle.${name} with a non-utf8 encoding`,
         node,
-        "only utf8 data is supported",
+        "the fixed-width string write is utf8; another encoding takes the checked-dynamic write",
       );
     }
     return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
@@ -660,6 +739,21 @@ export function lowerFileHandleMethodCall(
       kind: "libCall",
       fn: name === "truncate" ? "fileHandle.truncate" : "fileHandle.chmod",
       args: [receiver(), num(call.arguments.nodes[0], 0).value],
+      type: promise(VOID),
+      loc,
+    };
+  }
+  if (name === "chown") {
+    if (call.arguments.nodes.length !== 2)
+      lowerer.noLowering(`FileHandle.chown with ${call.arguments.nodes.length} arguments`, call);
+    return {
+      kind: "libCall",
+      fn: "fileHandle.chown",
+      args: [
+        receiver(),
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64),
+        lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64),
+      ],
       type: promise(VOID),
       loc,
     };
@@ -715,7 +809,7 @@ export function lowerFileHandleMethodCall(
     }
     const type = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (type?.kind !== "promise") lowerer.badType(call, lowerer.typeOf(call));
-    const encoding = utf8(call.arguments.nodes[0]);
+    const encoding = dataEncoding(call.arguments.nodes[0]);
     if (typeEquals(type.inner, BYTES_U8)) {
       return {
         kind: "libCall",
@@ -743,7 +837,7 @@ export function lowerFileHandleMethodCall(
     const dataT = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     // Evaluate a supplied utf8 encoding even for Buffer data, matching
     // Node's argument order; it does not affect the bytes.
-    const encoding = utf8(call.arguments.nodes[1]);
+    const encoding = dataEncoding(call.arguments.nodes[1]);
     if (dataT?.kind === "string") {
       return {
         kind: "libCall",
@@ -1205,12 +1299,11 @@ function watchListenerArity(lowerer: Lowerer, cb: IrExpr): 0 | 1 | 2 | null {
  * null) — the filename is the entry name on a directory watch and the
  * watched file's basename otherwise (Linux inotify names both; a macOS
  * directory watch has no name source until F3). The options record follows the options-record
- * stance: persistent: true, recursive: false, and encoding: "utf8"
- * state the lowered behavior and are accepted; persistent: false
- * (a watcher that does NOT hold the loop), recursive: true (kqueue
- * watches one inode), signal, and non-utf8 encodings fence by name;
- * undocumented keys drop like Node. An open watcher keeps the loop
- * alive until watcher.close(). */
+ * stance: persistent (default true) is the watcher's loop liveness and is
+ * passed through, recursive: false and encoding: "utf8" state the lowered
+ * behavior and are accepted; recursive: true (kqueue watches one inode),
+ * signal, and non-utf8 encodings fence by name; undocumented keys drop
+ * like Node. A reffed watcher keeps the loop alive until watcher.close(). */
 export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (
     expr.arguments.nodes.length < 1 ||
@@ -1232,6 +1325,7 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
       "pass the options as an object literal: watch(path, { recursive?, persistent?, encoding? }, listener)",
     );
   }
+  let persistent: IrExpr = boolLit(true, loc);
   if (hasOptions) {
     for (const prop of (expr.arguments.nodes[1] as ts.ObjectLiteralExpression).properties.nodes) {
       if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
@@ -1251,15 +1345,14 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
       const key = prop.name.text;
       const init = ts.isPropertyAssignment(prop) ? prop.initializer : null;
       if (key === "persistent") {
-        // true IS the lowering (an open watcher holds the loop) —
-        // stating the default is a no-op; false has no lowering.
-        if (init !== null && init.kind === ts.SyntaxKind.TrueKeyword) continue;
-        lowerer.noLowering(
-          "fs.watch with persistent disabled",
-          prop,
-          "an open watcher keeps the loop alive until close() — that IS the lowering; " +
-            "persistent: false (a watcher the process does not wait for) has no lowering",
-        );
+        // The watcher's initial loop liveness: Node reads the option's
+        // truthiness (an absent one is true), so any expression lowers.
+        const value = init ?? (ts.isShorthandPropertyAssignment(prop) ? prop.name : null);
+        if (value === null) {
+          lowerer.noLowering("fs.watch with this persistent member", prop);
+        }
+        persistent = lowerer.lowerExprExpecting(value, BOOL);
+        continue;
       }
       if (key === "recursive") {
         if (init !== null && init.kind === ts.SyntaxKind.FalseKeyword) continue;
@@ -1291,7 +1384,7 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
         key,
         "fs.watch",
         FS_WATCH_DOCUMENTED_OPTIONS,
-        'persistent: true, recursive: false, and encoding: "utf8" are the accepted options',
+        'persistent, recursive: false, and encoding: "utf8" are the accepted options',
       );
       // An undocumented key, dropped like Node drops it.
     }
@@ -1316,9 +1409,11 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
     }
     args.push(cb);
   }
+  const hasListener = args.length === 2;
+  args.push(persistent); // fs.watch: [path, persistent]; fs.watchCb: [path, cb, persistent]
   return {
     kind: "libCall",
-    fn: args.length === 2 ? "fs.watchCb" : "fs.watch",
+    fn: hasListener ? "fs.watchCb" : "fs.watch",
     args,
     type: FSWATCHER_T,
     loc,
@@ -1448,11 +1543,12 @@ export function lowerFsWatchFileCall(
 }
 
 /** Method calls on FSWatcher receivers: close() (idempotent, statement
- * position — Node returns void there too) and the EventEmitter surface for
- * 'change', 'error' and 'close' (on/once/addListener/prependListener/
- * prependOnceListener/off/removeListener, registered as their own
- * statement). Everything else @types/node declares (ref/unref, other
- * events) fences member-qualified. Null for non-watcher receivers. */
+ * position — Node returns void there too), ref()/unref() (the loop-liveness
+ * toggle, a statement like the bundle's other handles) and the EventEmitter
+ * surface for 'change', 'error' and 'close' (on/once/addListener/
+ * prependListener/prependOnceListener/off/removeListener, registered as
+ * their own statement). Everything else @types/node declares (other events)
+ * fences member-qualified. Null for non-watcher receivers. */
 export function lowerWatcherMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1466,6 +1562,16 @@ export function lowerWatcherMethodCall(
   if (name === "close" && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
     return { kind: "libCall", fn: "watcher.close", args: [receiver], type: VOID, loc };
+  }
+  if ((name === "ref" || name === "unref") && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExpr(access.expression);
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "watcher.ref" : "watcher.unref",
+      args: [receiver],
+      type: VOID,
+      loc,
+    };
   }
   // The EventEmitter surface for the three events the watcher emits:
   // "change" (the listener shapes fs.watch takes), "error", and "close".
@@ -1542,7 +1648,7 @@ export function lowerWatcherMethodCall(
   lowerer.noLowering(
     `FSWatcher.${name}`,
     call,
-    'close(), and on/once/addListener/prependListener/prependOnceListener/off/removeListener for "change", "error", and "close" are the supported FSWatcher members',
+    'close(), ref(), unref(), and on/once/addListener/prependListener/prependOnceListener/off/removeListener for "change", "error", and "close" are the supported FSWatcher members',
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

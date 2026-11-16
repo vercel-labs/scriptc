@@ -1,5 +1,5 @@
-// Error.captureStackTrace gives a stack to errors and untyped objects; a
-// typed object has no stack property to receive it, and a constructor
+// Error.captureStackTrace gives a stack to errors, function values and
+// untyped objects; a typed record has no stack property to receive it, and a constructor
 // argument other than a function declaration or the constructing class
 // cannot be found on the stack.
 interface Report {

@@ -619,7 +619,7 @@ function reflectedMethodValue(
     // asks the class value's table, which is where a subclass's
     // redeclaration answers. An accessor's getter/setter receives the same
     // receiver from the table.
-    const value = lowerer.lowerLambda(member, tableValue && staticMethod);
+    const value = lowerer.lowerLambda(member, tableValue && staticMethod, tableValue);
     const pending = lowerer.methodLambdasInProgress.get(member);
     if (
       pending &&

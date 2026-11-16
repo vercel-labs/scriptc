@@ -299,6 +299,7 @@ ScrPromise *scr_webcrypto_import_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_generate_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_export_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_sign(ScrDyn *args);
+ScrPromise *scr_webcrypto_get_public_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_verify(ScrDyn *args);
 ScrPromise *scr_webcrypto_digest(ScrDyn *args);
 /* encrypt and decrypt (scr_webcrypto_aes.c, linked with the cipher

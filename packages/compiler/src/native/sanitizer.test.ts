@@ -40,6 +40,7 @@ const features = {
   arrJoinStr: false,
   eventsOnceSignal: false,
   mime: false,
+  sqlite: false,
   largePages: false,
   webStreams: false,
   webBodies: false,

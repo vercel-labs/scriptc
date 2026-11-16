@@ -740,7 +740,16 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // JS promise identity; the runtime's scr_promise_{retain,release,trace}_v
     // adapters already serve Map values and boxed captures.
     t.kind === "promise" ||
-    t.kind === "date"
+    t.kind === "date" ||
+    // A Map, a Set and a typed array are one object each for their whole
+    // life, so pointer identity is JS identity here too (JavaScript compares
+    // every object key by identity). Their runtime families already carry
+    // the ref-slot adapters this table needs: scr_map_retain/release/trace_v
+    // serve Maps and Sets, and a typed array is a leaf
+    // (scr_bytes_retain/release_v, no trace).
+    t.kind === "map" ||
+    t.kind === "set" ||
+    t.kind === "bytes"
   );
 }
 

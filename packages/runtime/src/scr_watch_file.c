@@ -53,8 +53,13 @@ struct ScrWatchFiler {
   size_t rc;
   ScrStr *path;     /* the resolved path (+1): the registry key and the stat target */
   double interval;  /* the first call's interval, reused for every poll */
-  bool reffed;      /* keeps the loop alive: Node's one StatWatcher per path
-                     * owns this, so every call on the path shares it */
+  /* Node's StatWatcher ref bookkeeping (lib/internal/fs/watchers.js): one
+   * handle per path, whose loop liveness is `handle_reffed`. Each watchFile
+   * call raises refs and ref_max by one, unwatchFile lowers them, and
+   * ref()/unref() only move the handle once refs reaches 0 or ref_max. */
+  long refs;
+  long ref_max;
+  bool handle_reffed;
   ScrStatWatcher *watcher; /* the handle every call on this path answers (+1) */
   int state;        /* libuv's busy_polling: 0 before the first poll, 1 after
                      * a success, -errno after a failure */
@@ -116,7 +121,7 @@ static ScrWatchFiler *scr_watch_file_find(ScrStr *resolved) {
 
 /* Arms the next poll: the first one at 0 (libuv stats on a later loop
  * turn, never synchronously), then one per interval. */
-static bool scr_watch_file_live(const ScrWatchFiler *p) { return p->reffed; }
+static bool scr_watch_file_live(const ScrWatchFiler *p) { return p->handle_reffed; }
 
 /* A timer the handle is armed with keeps the loop alive only while some
  * registration on the poller is reffed. */
@@ -295,15 +300,23 @@ void scr_stat_watcher_release(ScrStatWatcher *w) {
 void scr_stat_watcher_release_v(void *p) { scr_stat_watcher_release((ScrStatWatcher *)p); }
 
 void scr_stat_watcher_ref(ScrStatWatcher *w) {
-  if (w->poller->reffed) return;
-  w->poller->reffed = true;
-  scr_watch_file_apply_liveness(w->poller);
+  ScrWatchFiler *p = w->poller;
+  /* ref(): a full count cannot ref again (the comment Node keeps on the
+   * same branch); only the crossing out of zero moves the handle. */
+  if (p->refs == p->ref_max) return;
+  if (p->refs++ == 0) {
+    p->handle_reffed = true;
+    scr_watch_file_apply_liveness(p);
+  }
 }
 
 void scr_stat_watcher_unref(ScrStatWatcher *w) {
-  if (!w->poller->reffed) return;
-  w->poller->reffed = false;
-  scr_watch_file_apply_liveness(w->poller);
+  ScrWatchFiler *p = w->poller;
+  if (p->refs == 0) return;
+  if (--p->refs == 0) {
+    p->handle_reffed = false;
+    scr_watch_file_apply_liveness(p);
+  }
 }
 
 static ScrStatWatcher *scr_stat_watcher_new(ScrWatchFiler *p) {
@@ -333,6 +346,8 @@ ScrStatWatcher *scr_fs_watch_file(ScrStr *path, double interval, bool persistent
      * listener and answers the same handle, so the path's `persistent` (and
      * every ref()/unref()) is that one watcher's. */
     scr_watch_file_add(existing, cb, fn);
+    existing->refs++;
+    existing->ref_max++;
     return scr_stat_watcher_retain(existing->watcher);
   }
   if (!scr_watch_file_interval_ok(interval)) {
@@ -349,7 +364,10 @@ ScrStatWatcher *scr_fs_watch_file(ScrStr *path, double interval, bool persistent
   p->rc = 1;
   p->path = resolved;
   p->interval = interval;
-  p->reffed = persistent;
+  p->refs = 1;
+  p->ref_max = 1;
+  p->handle_reffed = persistent;
+  if (!persistent) p->refs = 0; /* start()'s `if (!persistent) this.unref()` */
   p->watcher = NULL;
   p->state = 0;
   p->node_status = -1;
@@ -385,7 +403,8 @@ void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb) {
   scr_str_release(resolved);
   if (p == NULL) return;
   if (cb != NULL) {
-    /* The LAST listener registered with this closure goes (Node's rule). */
+    /* The LAST listener registered with this closure goes (Node's rule),
+     * and the StatWatcher gives up one ref with it. */
     for (size_t i = p->n; i-- > 0;) {
       if (p->ls[i].cb == cb) {
         scr_closure_release(p->ls[i].cb);
@@ -394,9 +413,14 @@ void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb) {
         break;
       }
     }
+    if (p->ref_max > 0) p->ref_max--;
+    if (p->refs > 0 && --p->refs == 0) p->handle_reffed = false;
   } else {
     for (size_t i = 0; i < p->n; i++) scr_closure_release(p->ls[i].cb);
     p->n = 0;
+    p->ref_max = 0;
+    p->refs = 0;
+    p->handle_reffed = false;
   }
   if (p->n == 0) scr_watch_file_stop(p);
   else scr_watch_file_apply_liveness(p);

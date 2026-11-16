@@ -1929,13 +1929,21 @@ function lowerFsReaddirNamesByEncoding(
   const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
   const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
   if (callType && typeEquals(callType, expectedBuffers)) {
-    return {
-      kind: "libCall",
-      fn: promiseForm ? "fsp.readdirBytes" : "fs.readdirBytesSync",
-      args: [path],
-      type: expectedBuffers,
+    // The names are Buffers, but Node still evaluates the encoding
+    // expression: its side effects and exceptions run in argument order.
+    return withReaddirEncodingEffects(
+      lowerer,
+      path,
+      encodingNode,
+      (pathArg) => ({
+        kind: "libCall",
+        fn: promiseForm ? "fsp.readdirBytes" : "fs.readdirBytesSync",
+        args: [pathArg],
+        type: expectedBuffers,
+        loc,
+      }),
       loc,
-    };
+    );
   }
   const namesArm =
     callType !== null &&
@@ -2000,25 +2008,43 @@ function lowerFsReaddirNames(
   });
   const recursiveFn: IrLibFn = promiseForm ? "fsp.readdirRecursive" : "fs.readdirRecursiveSync";
   const plainFn: IrLibFn = promiseForm ? "fsp.readdir" : "fs.readdirSync";
-  return withReaddirEncodingEffects(
-    lowerer,
-    path,
-    encodingNode,
-    (pathArg) => {
-      if (literal === "true") return listing(recursiveFn, pathArg);
-      if (literal === "false") return listing(plainFn, pathArg);
-      const flag = lowerer.lowerExprExpecting(recursive, BOOL);
-      return {
-        kind: "ternary",
-        cond: flag,
-        then: listing(recursiveFn, pathArg),
-        else_: listing(plainFn, pathArg),
-        type: resultType,
-        loc,
-      };
-    },
+  if (literal !== null) {
+    return withReaddirEncodingEffects(
+      lowerer,
+      path,
+      encodingNode,
+      (pathArg) => listing(literal === "true" ? recursiveFn : plainFn, pathArg),
+      loc,
+    );
+  }
+  // A flag only the run time knows: the path binds first, the options
+  // record's encoding expression runs next (its side effects and exceptions
+  // included), the flag binds last, and the call reads all three —
+  // JavaScript's argument order, which a ternary over the flag would
+  // reverse by reading it before the path.
+  const pathLocal = lowerer.declareHiddenLocal("%readdirPath", STRING);
+  const pathRef = varRef(pathLocal.id, STRING, loc);
+  const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc }];
+  if (encodingNode !== null && !ts.isStringLiteralLike(encodingNode)) {
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(encodingNode), loc });
+  }
+  const flagLocal = lowerer.declareHiddenLocal("%readdirRecursive", BOOL);
+  stmts.push({
+    kind: "varDecl",
+    localId: flagLocal.id,
+    init: lowerer.lowerExprExpecting(recursive, BOOL),
     loc,
-  );
+  });
+  const flagRef = varRef(flagLocal.id, BOOL, loc);
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: flagRef,
+    then: listing(recursiveFn, pathRef),
+    else_: listing(plainFn, pathRef),
+    type: resultType,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
 /** fs.statSync / fs.lstatSync's documented option keys. */

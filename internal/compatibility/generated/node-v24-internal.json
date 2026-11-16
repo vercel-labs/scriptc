@@ -55476,6 +55476,7 @@
           "tests/corpus/compat-web-stream-members.ts",
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
+          "tests/corpus/globals-navigator.ts",
           "tests/corpus/headers-static-accessors.ts",
           "tests/corpus/js-abort-portable.js",
           "tests/corpus/node24-url-factories.ts",
@@ -57815,10 +57816,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:globals.navigator",
         "tests": [
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/globals-navigator.ts",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/project-config.test.ts",
           "tests/corpus/6331-jose-root-entry/main.ts"
@@ -57871,10 +57873,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:globals.language",
         "tests": [
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/globals-navigator.ts",
           "tests/fixtures/node-types/navigator.ts"
         ]
       },
@@ -57898,10 +57901,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:globals.languages",
         "tests": [
           "tests/corpus/8162-navigator-global.cjs",
+          "tests/corpus/globals-navigator.ts",
           "tests/fixtures/node-types/navigator.ts"
         ]
       },

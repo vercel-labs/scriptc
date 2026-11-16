@@ -990,6 +990,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "program roots of the entry package",
   ),
+  scan(
+    "frontend/program.ts#cjsStarReexportSources",
+    2,
+    "discovery",
+    "the files whose `export *` re-exports a CommonJS module, which the lowering rewrites with the Node lexer's names; the text test picks a helper binding the file does not already spell",
+  ),
   decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
   scan(
     "frontend/program.ts#lowerProgramJsx7",

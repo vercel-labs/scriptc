@@ -44,6 +44,12 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name, double mode, ScrStr *msg, 
 void scr_test_ctx_skip(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
+/* t.signal: the test's AbortSignal handle (+1), made on the first read and
+ * aborted when the test times out, is cancelled, or finishes; undefined
+ * when the abort unit is absent (it links only for a program reading one).
+ * t.error: Node's ERR_TEST_FAILURE wrapper over the failure (+1), or null. */
+ScrDyn *scr_test_ctx_signal(ScrTestCtx *t);
+ScrDyn *scr_test_ctx_error(ScrTestCtx *t);
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
 void scr_test_ctx_plan(ScrTestCtx *t, double count);
 /* t.runOnly(shouldRunOnlyTests): subtests registered under `t` from now on

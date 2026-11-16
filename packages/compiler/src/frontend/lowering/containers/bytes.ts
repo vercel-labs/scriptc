@@ -1618,10 +1618,18 @@ export function lowerBytesMethodCall(
     // end stays omitted (2 intrinsic args) — the emitter supplies the
     // receiver's length, because EXPLICIT negative ends clamp to empty
     // in Node and no in-band sentinel can represent "omitted" safely.
+    // An undefined start or end is Node's default: toString reads a
+    // start <= 0 as 0 and an end > the length (Infinity included) as the
+    // length, so those constants stand in for an undefined argument.
     if (nArgs > 1) {
-      const start = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64);
+      const start = lowerOptionalArgument(lowerer, call.arguments.nodes[1]!, F64, numLit(0, loc));
       if (nArgs === 3) {
-        const end = lowerer.lowerExprExpecting(call.arguments.nodes[2]!, F64);
+        const end = lowerOptionalArgument(
+          lowerer,
+          call.arguments.nodes[2]!,
+          F64,
+          numLit(Infinity, loc),
+        );
         return {
           kind: "bytesIntrinsic",
           method,
@@ -1663,8 +1671,15 @@ export function lowerBytesMethodCall(
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     const offsetNode = call.arguments.nodes[required];
+    // Node's BigInt accessors declare `offset = 0`, so an undefined offset
+    // reads or writes at 0.
     const offset: IrExpr = offsetNode
-      ? lowerer.lowerExprExpecting(offsetNode, F64)
+      ? lowerOptionalArgument(lowerer, offsetNode, F64, {
+          kind: "numLit",
+          value: 0,
+          type: F64,
+          loc,
+        })
       : { kind: "numLit", value: 0, type: F64, loc };
     const sign: IrExpr = { kind: "boolLit", value: bigKind.sign, type: BOOL, loc };
     const le: IrExpr = { kind: "boolLit", value: bigKind.le, type: BOOL, loc };
@@ -2114,6 +2129,24 @@ function numericArguments(lowerer: Lowerer, call: ts.CallExpression): boolean {
   return call.arguments.nodes.every((a) => lowerer.mapTypeOf(lowerer.typeOf(a))?.kind === "f64");
 }
 
+/** Whether an optional position argument is statically a number. Only then
+ * may the typed intrinsic stand in for it: Node's offset ladder SKIPS a
+ * validation for an undefined argument and converts anything else, so a
+ * union that may hold undefined (or an explicit undefined) takes the
+ * checked-dynamic method, which runs the same ladder at runtime. */
+function staticallyNumberArgument(lowerer: Lowerer, arg: ts.Expression): boolean {
+  return lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "f64";
+}
+
+/** An argument of a checked-dynamic Buffer method call. An explicit
+ * undefined lowers to the dyn undefined — the runtime reads it as the
+ * absent argument Node defaults — with any effects of the spelling kept. */
+function dynBufferArgument(lowerer: Lowerer, arg: ts.Expression, loc: SrcLoc): IrExpr {
+  const undef = lowerStaticallyUndefinedArgument(lowerer, arg);
+  if (undef) return defaultAfterUndefined(undef, dynUndefinedExpr(loc));
+  return lowerer.lowerExprExpecting(arg, DYN);
+}
+
 /** A numeric read/write with an argument that is not a number (a string
  * offset from untyped JavaScript): the checked-dynamic Buffer method runs
  * Node's argument validation at runtime. */
@@ -2280,7 +2313,12 @@ function lowerBufferInstanceMethod(
     const resultT = name === "includes" ? BOOL : F64;
     const vT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
     const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
-    const off = offNode ? lowerer.lowerExprExpecting(offNode, F64) : undefined;
+    // An undefined byteOffset is NaN to Node's search: it starts at 0 going
+    // forward and at the last position going back, which is the intrinsic's
+    // own reading of an omitted offset.
+    const off = offNode
+      ? lowerOptionalArgument(lowerer, offNode, F64, numLit(NaN, loc))
+      : undefined;
     if (vT?.kind === "f64") {
       // A number needle wraps & 0xFF at runtime (Buffer semantics). Node
       // reads the encoding only for string and Buffer needles, but the
@@ -2414,7 +2452,11 @@ function lowerBufferInstanceMethod(
       ) ||
       idxNodes.length > 2 ||
       (encNode !== undefined && vT.kind !== "string") ||
-      idxNodes.some((_, i) => untyped(i + 1))
+      idxNodes.some((_, i) => untyped(i + 1)) ||
+      // An undefined (or possibly undefined) offset or end is absent to
+      // Node's fill, which then validates the range it defaults to rather
+      // than any constant.
+      !idxNodes.every((a) => staticallyNumberArgument(lowerer, a))
     ) {
       const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
       return {
@@ -2424,7 +2466,7 @@ function lowerBufferInstanceMethod(
           recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
           method: name,
           calleeName: ts.getTextOfNode(access),
-          args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+          args: call.arguments.nodes.map((a) => dynBufferArgument(lowerer, a, loc)),
           type: DYN,
           loc,
         },
@@ -2482,9 +2524,17 @@ function lowerBufferInstanceMethod(
     // Node's copyImpl accepts any ArrayBuffer view as the target and
     // measures every offset in bytes over it, so a target of another
     // element type runs as the checked-dynamic method, which re-views it
-    // over its bytes before the copy.
+    // over its bytes before the copy. A position that is not statically a
+    // number (an explicit undefined, or a union that may hold one) takes
+    // the same path: copyImpl skips the validation of an undefined
+    // position and defaults it to the end of the source, which no constant
+    // sentinel can stand in for.
     const targetIr = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-    if (targetIr?.kind === "bytes" && targetIr.elem !== "u8") {
+    const positions = args.slice(1);
+    if (
+      (targetIr?.kind === "bytes" && targetIr.elem !== "u8") ||
+      !positions.every((a) => staticallyNumberArgument(lowerer, a))
+    ) {
       const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
       return {
         kind: "dynCheck",
@@ -2493,7 +2543,7 @@ function lowerBufferInstanceMethod(
           recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
           method: name,
           calleeName: ts.getTextOfNode(access),
-          args: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+          args: call.arguments.nodes.map((a) => dynBufferArgument(lowerer, a, loc)),
           type: DYN,
           loc,
         },
@@ -2566,17 +2616,88 @@ function lowerBufferInstanceMethod(
       idxNodes = idxNodes.slice(0, -1);
     }
     if (idxNodes.length > 2) lowerer.noLowering(`.write with ${nArgs} arguments`, call);
+    const s = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
+    // A missing or undefined offset is Node's whole-buffer utf8 form:
+    // utf8Write(string, 0, this.length), so the length and encoding
+    // arguments are evaluated but IGNORED (write(s, undefined, 1) writes
+    // all of s). An offset whose value is only known at run time may hold
+    // undefined, so it runs the checked-dynamic method, whose ladder
+    // implements the same rule.
+    // write(string, encoding) reads its encoding from the offset position,
+    // so an encoding promoted to `encNode` with no offset node left is that
+    // overload — offset 0, the rest of the buffer — and NOT the absent-offset
+    // form below.
+    const offsetNode = idxNodes[0];
+    const offsetUndefined = offsetNode
+      ? lowerStaticallyUndefinedArgument(lowerer, offsetNode)
+      : null;
+    if (offsetUndefined || (!offsetNode && encNode === undefined)) {
+      const recvLocal = lowerer.declareHiddenLocal("%bufferReceiver", BYTES_U8);
+      const strLocal = lowerer.declareHiddenLocal("%bufferString", STRING);
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: recvLocal.id, init: receiver, loc },
+        { kind: "varDecl", localId: strLocal.id, init: s, loc },
+      ];
+      // The ignored arguments still evaluate, left to right, after the
+      // string; a bare unit literal carries nothing and is dropped.
+      const keepEffects = (expr: IrExpr): void => {
+        if (!isSafeToDiscard(expr)) stmts.push({ kind: "exprStmt", expr, loc });
+      };
+      if (offsetUndefined) keepEffects(offsetUndefined);
+      if (idxNodes[1]) keepEffects(lowerer.lowerExpr(idxNodes[1]));
+      if (encNode) keepEffects(lowerer.lowerExpr(encNode));
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: {
+          kind: "bytesIntrinsic",
+          method: "writeStr",
+          receiver: varRef(recvLocal.id, BYTES_U8, loc),
+          args: [
+            varRef(strLocal.id, STRING, loc),
+            { kind: "strLit", value: "utf8", type: STRING, loc },
+            numLit(0, loc),
+          ],
+          type: F64,
+          loc,
+        },
+        type: F64,
+        loc,
+      };
+    }
+    // Otherwise the offset validates and the length defaults to the rest of
+    // the buffer, so a length that is not statically a number (a union that
+    // may hold undefined) runs as the checked-dynamic method, which
+    // defaults it.
+    if (
+      (offsetNode && !staticallyNumberArgument(lowerer, offsetNode)) ||
+      (idxNodes[1] && !staticallyNumberArgument(lowerer, idxNodes[1]))
+    ) {
+      return {
+        kind: "dynCheck",
+        value: {
+          kind: "dynInvoke",
+          recv: { kind: "dynFrom", value: receiver, type: DYN, loc, liveRef: true },
+          method: name,
+          calleeName: ts.getTextOfNode(access),
+          args: call.arguments.nodes.map((a) => dynBufferArgument(lowerer, a, loc)),
+          type: DYN,
+          loc,
+        },
+        type: F64,
+        loc,
+      };
+    }
+    const offset: IrExpr = offsetNode
+      ? lowerer.lowerExprExpecting(offsetNode, F64)
+      : { kind: "numLit", value: 0, type: F64, loc };
+    const length = idxNodes[1] ? lowerer.lowerExprExpecting(idxNodes[1], F64) : undefined;
     // write reads an empty encoding as utf8 and throws on any other name
     // Node does not know, after the offset and length validate.
     const enc = encNode
       ? bufEncodingArgument(lowerer, "Buffer.write", encNode, "emptyUtf8", loc)
       : { literal: "utf8" };
-    const s = lowerer.lowerExprExpecting(args[0]!, STRING);
-    const offset: IrExpr = idxNodes[0]
-      ? lowerer.lowerExprExpecting(idxNodes[0], F64)
-      : { kind: "numLit", value: 0, type: F64, loc };
-    const receiver = lowerer.lowerExprExpecting(access.expression, BYTES_U8);
-    const length = idxNodes[1] ? lowerer.lowerExprExpecting(idxNodes[1], F64) : undefined;
     // A run-time name stays raw: Node reports a bad offset or length before
     // it looks the name up, so the runtime entry normalizes it afterwards.
     return withBufEncoding(
@@ -3295,24 +3416,167 @@ function lowerBufferStaticValue(
         // concatenating.
         const value: IrExpr =
           list.type.kind === "dyn" ? list : { kind: "dynFrom", value: list, type: DYN, loc };
+        const dynSum = (valueRef: IrExpr): IrExpr => ({
+          kind: "libCall",
+          fn: "buffer.concatDyn",
+          args: [valueRef],
+          type: BYTES_U8,
+          loc,
+        });
+        const dynLen = (valueRef: IrExpr, total: IrExpr): IrExpr => ({
+          kind: "libCall",
+          fn: "buffer.concatLenDyn",
+          args: [valueRef, total],
+          type: BYTES_U8,
+          loc,
+        });
         if (args.length === 2) {
-          const total = lowerer.lowerExprExpecting(args[1]!, F64);
+          const totalNode = args[1]!;
+          const undef = lowerStaticallyUndefinedArgument(lowerer, totalNode);
+          if (undef) {
+            const listLocal = lowerer.declareHiddenLocal("%concatList", value.type);
+            return {
+              kind: "seqExpr",
+              stmts: [{ kind: "varDecl", localId: listLocal.id, init: value, loc }],
+              result: defaultAfterUndefined(undef, dynSum(varRef(listLocal.id, value.type, loc))),
+              type: BYTES_U8,
+              loc,
+            };
+          }
+          const total = lowerer.lowerExpr(totalNode);
+          if (total.type.kind === "union") {
+            const def = lowerer.unions.get(total.type.unionId);
+            const undefTag = def?.arms.findIndex((arm) => arm.kind === "undefinedT") ?? -1;
+            const numTag = def?.arms.findIndex((arm) => typeEquals(arm, F64)) ?? -1;
+            if (def?.arms.length === 2 && undefTag >= 0 && numTag >= 0) {
+              const listLocal = lowerer.declareHiddenLocal("%concatList", value.type);
+              const totalLocal = lowerer.declareHiddenLocal("%concatTotal", total.type);
+              const listRef: IrExpr = varRef(listLocal.id, value.type, loc);
+              const totalRef: IrExpr = varRef(totalLocal.id, total.type, loc);
+              return {
+                kind: "seqExpr",
+                stmts: [
+                  { kind: "varDecl", localId: listLocal.id, init: value, loc },
+                  { kind: "varDecl", localId: totalLocal.id, init: total, loc },
+                ],
+                result: {
+                  kind: "ternary",
+                  cond: {
+                    kind: "unionIsTag",
+                    unionId: total.type.unionId,
+                    tag: undefTag,
+                    negated: false,
+                    value: totalRef,
+                    type: BOOL,
+                    loc,
+                  },
+                  then: dynSum(listRef),
+                  else_: dynLen(listRef, {
+                    kind: "unionNarrow",
+                    unionId: total.type.unionId,
+                    tag: numTag,
+                    value: totalRef,
+                    type: F64,
+                    loc,
+                  }),
+                  type: BYTES_U8,
+                  loc,
+                },
+                type: BYTES_U8,
+                loc,
+              };
+            }
+          }
+          return dynLen(value, lowerer.coerceInto(totalNode, total, F64));
+        }
+        return dynSum(value);
+      }
+    }
+    if (args.length === 2) {
+      const totalNode = args[1]!;
+      // Node reads an undefined totalLength as absent (the sum form). The
+      // list evaluates first, as it does in Node.
+      const sum = (listRef: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "buffer.concat",
+        args: [listRef],
+        type: BYTES_U8,
+        loc,
+      });
+      const undef = lowerStaticallyUndefinedArgument(lowerer, totalNode);
+      if (undef) {
+        const listLocal = lowerer.declareHiddenLocal("%concatList", list.type);
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: listLocal.id, init: list, loc }],
+          result: defaultAfterUndefined(undef, sum(varRef(listLocal.id, list.type, loc))),
+          type: BYTES_U8,
+          loc,
+        };
+      }
+      const total = lowerer.lowerExpr(totalNode);
+      if (total.type.kind === "union") {
+        const def = lowerer.unions.get(total.type.unionId);
+        const undefTag = def?.arms.findIndex((arm) => arm.kind === "undefinedT") ?? -1;
+        const numTag = def?.arms.findIndex((arm) => typeEquals(arm, F64)) ?? -1;
+        if (def?.arms.length === 2 && undefTag >= 0 && numTag >= 0) {
+          const listLocal = lowerer.declareHiddenLocal("%concatList", list.type);
+          const totalLocal = lowerer.declareHiddenLocal("%concatTotal", total.type);
+          const listRef: IrExpr = varRef(listLocal.id, list.type, loc);
+          const totalRef: IrExpr = varRef(totalLocal.id, total.type, loc);
           return {
-            kind: "libCall",
-            fn: "buffer.concatLenDyn",
-            args: [value, total],
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: listLocal.id, init: list, loc },
+              { kind: "varDecl", localId: totalLocal.id, init: total, loc },
+            ],
+            result: {
+              kind: "ternary",
+              cond: {
+                kind: "unionIsTag",
+                unionId: total.type.unionId,
+                tag: undefTag,
+                negated: false,
+                value: totalRef,
+                type: BOOL,
+                loc,
+              },
+              then: sum(listRef),
+              else_: {
+                kind: "libCall",
+                fn: "buffer.concatLen",
+                args: [
+                  listRef,
+                  {
+                    kind: "unionNarrow",
+                    unionId: total.type.unionId,
+                    tag: numTag,
+                    value: totalRef,
+                    type: F64,
+                    loc,
+                  },
+                ],
+                type: BYTES_U8,
+                loc,
+              },
+              type: BYTES_U8,
+              loc,
+            },
             type: BYTES_U8,
             loc,
           };
         }
-        return { kind: "libCall", fn: "buffer.concatDyn", args: [value], type: BYTES_U8, loc };
       }
-    }
-    if (args.length === 2) {
       // The totalLength form truncates or zero-pads (and THROWS Node's
       // 'length' RangeError on bad totals).
-      const total = lowerer.lowerExprExpecting(args[1]!, F64);
-      return { kind: "libCall", fn: "buffer.concatLen", args: [list, total], type: BYTES_U8, loc };
+      const totalNum = lowerer.coerceInto(totalNode, total, F64);
+      return {
+        kind: "libCall",
+        fn: "buffer.concatLen",
+        args: [list, totalNum],
+        type: BYTES_U8,
+        loc,
+      };
     }
     return { kind: "libCall", fn: "buffer.concat", args: [list], type: BYTES_U8, loc };
   }
@@ -3475,6 +3739,52 @@ function lowerBufferStaticValue(
       call,
       "supported: Buffer.byteLength(string, literalEncoding?) or Buffer.byteLength(typedArray)",
     );
+  }
+  if (member === "copyBytesFrom") {
+    // Buffer.copyBytesFrom(view[, offset[, length]]): a pooled copy of the
+    // view's underlying bytes over [offset, offset + length) in ELEMENT
+    // indices, so a wider typed array copies view.length *
+    // BYTES_PER_ELEMENT bytes. The runtime runs Node's validation, so the
+    // positions ride as (offset, length, mask); a statically undefined
+    // position is absent, like an omitted one. A position whose value is
+    // only known at run time could name either, and no in-band sentinel
+    // separates undefined from a number Node validates, so it is refused
+    // rather than guessed.
+    if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`Buffer.copyBytesFrom with ${args.length} arguments`, call);
+    }
+    const view = lowerer.lowerExpr(args[0]!);
+    if (!(view.type.kind === "bytes")) {
+      lowerer.noLowering(
+        `Buffer.copyBytesFrom of '${lowerer.fmt(view.type)}' values`,
+        args[0]!,
+        "a typed array is the lowered view",
+      );
+    }
+    const position = (i: number): { value: IrExpr; present: boolean } => {
+      const node = args[i];
+      if (!node) return { value: numLit(0, loc), present: false };
+      const undef = lowerStaticallyUndefinedArgument(lowerer, node);
+      if (undef) return { value: defaultAfterUndefined(undef, numLit(0, loc)), present: false };
+      if (lowerer.mapTypeOf(lowerer.typeOf(node))?.kind !== "f64") {
+        lowerer.noLowering(
+          `Buffer.copyBytesFrom with a '${lowerer.checker.typeToString(lowerer.typeOf(node))}' position`,
+          node,
+          "a number, or undefined, is the lowered position",
+        );
+      }
+      return { value: lowerer.lowerExprExpecting(node, F64), present: true };
+    };
+    const offset = position(1);
+    const length = position(2);
+    const mask = numLit((offset.present ? 1 : 0) | (length.present ? 2 : 0), loc);
+    return {
+      kind: "libCall",
+      fn: "buffer.copyBytesFrom",
+      args: [view, offset.value, length.value, mask],
+      type: BYTES_U8,
+      loc,
+    };
   }
   if (member === "isEncoding") {
     // The runtime alias-set test — a plain bool over any string value

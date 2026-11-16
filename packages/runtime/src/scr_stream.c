@@ -52,7 +52,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-
 static void scr_stream_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();

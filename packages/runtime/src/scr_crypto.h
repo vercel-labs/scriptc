@@ -250,6 +250,13 @@ typedef struct ScrKeccakCtx {
 void scr_keccak_init(ScrKeccakCtx *ctx, size_t rate, unsigned char pad);
 void scr_keccak_update(ScrKeccakCtx *ctx, const unsigned char *data, size_t len);
 void scr_keccak_final(const ScrKeccakCtx *ctx, unsigned char *out, size_t len);
+/* KMAC (NIST SP 800-185): cSHAKE over the byte-padded key, the message
+ * and right_encode(output bits) under the "KMAC" function name. The
+ * context starts with the empty message already absorbed; finalization
+ * squeezes `out_bytes` bytes and clears the low bits past `bits`. */
+void scr_kmac_init(ScrKeccakCtx *ctx, bool kmac256, const unsigned char *key, size_t keylen,
+                   const unsigned char *custom, size_t customlen);
+void scr_kmac_final(const ScrKeccakCtx *ctx, size_t out_bytes, size_t bits, unsigned char *out);
 typedef struct ScrRipemd160Ctx {
   uint32_t h[5];
   uint64_t bytes;

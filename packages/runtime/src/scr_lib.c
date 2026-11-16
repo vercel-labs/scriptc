@@ -11316,6 +11316,11 @@ struct ScrCryptoHash {
    * repeated final() or an update() after it throws (Hmac answers an empty
    * digest instead). */
   bool mac;
+  /* createMac's KMAC: the Keccak sponge's inner state holds the absorbed
+   * key prefix, and the message continues from there. The digest kind is
+   * the matching KECCAK-KMAC one, whose xof size supplies the default
+   * output length. */
+  bool kmac;
   /* The digest was computed, by digest() or by the stream's flush. Node's
    * native handle keeps it, so a Hash flushed as a stream answers one more
    * digest() with it, and every later update fails. */
@@ -11767,6 +11772,12 @@ static bool scr_crypto_integer(double value, const char *name, double min, doubl
  * computed. A Hash keeps a copy for a later digest() or flush. */
 static size_t scr_crypto_hash_compute(ScrCryptoHash *hash, unsigned char *out) {
   hash->digested = true;
+  if (hash->kmac) {
+    scr_kmac_final(&hash->inner.state.keccak, hash->out_len, hash->out_len * 8, out);
+    size_t n = hash->out_len;
+    scr_crypto_hash_cache(hash, out, n);
+    return n;
+  }
   if (hash->hmac) return scr_hmac_final(&hash->inner, &hash->outer, out);
   size_t n;
   if (scr_digest_info[hash->inner.alg].xof) {
@@ -12352,6 +12363,38 @@ static void scr_crypto_mac_digest_unsupported(void) {
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
+/* OpenSSL's KMAC refuses an output length above 2^21 - 1 bytes with
+ * EVP_R_INVALID_OUTPUT_LENGTH, which createMac rethrows with its message
+ * and reason properties. */
+static void scr_crypto_mac_output_length(void) {
+  static const char message[] = "error:1C8000D9:Provider routines::invalid output length";
+  static const char code[] = "ERR_OSSL_INVALID_OUTPUT_LENGTH";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("Provider routines", 17)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("invalid output length", 21)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* OpenSSL's KMAC key length lies between 4 and 512 bytes; outside it the
+ * provider answers EVP_R_INVALID_KEY_LENGTH, which Node rethrows as its
+ * empty-error message with the reason properties. */
+static void scr_crypto_mac_key_length(void) {
+  static const char message[] = "error:1C800069:Provider routines::invalid key length";
+  static const char code[] = "ERR_OSSL_INVALID_KEY_LENGTH";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("Provider routines", 17)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("invalid key length", 18)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* Node's normalizeKey(): a secret KeyObject's bytes, an ArrayBuffer, a
  * Buffer, a TypedArray or a DataView. A private or public KeyObject gets
  * the same argument-type error, named by its class. +1 or NULL. */
@@ -12616,6 +12659,7 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
   const ScrDyn *digest = NULL;
   bool has_cipher = false, has_iv = false, has_customization = false, has_salt = false;
   bool has_output_length = false;
+  double output_length = 0;
   if (options->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *value = scr_dyn_typed_ref_materialize(options);
     if (!value) return NULL;
@@ -12658,7 +12702,7 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
     if (option) {
       double length;
       if (!scr_crypto_uint32(option, "options.outputLength", &length)) return NULL;
-      (void)length;
+      output_length = length;
       has_output_length = true;
     }
   }
@@ -12668,6 +12712,66 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
     scr_crypto_invalid_mac(name);
     scr_bytes_release(bytes);
     return NULL;
+  }
+  bool kmac256 = false;
+  bool kmac = scr_digest_name_is(name->data, name->len, "kmac128") ||
+              scr_digest_name_is(name->data, name->len, "kmac-128");
+  if (!kmac) {
+    kmac256 = scr_digest_name_is(name->data, name->len, "kmac256") ||
+              scr_digest_name_is(name->data, name->len, "kmac-256");
+    kmac = kmac256;
+  }
+  if (kmac) {
+    /* KMAC's options are the customization and the output length; the
+     * HMAC-only option names draw Node's unsupported-option error, spelled
+     * with the algorithm name as the caller wrote it. */
+    static const char *const unsupported[4] = {"options.digest", "options.cipher", "options.iv",
+                                               "options.salt"};
+    bool const present[4] = {digest != NULL, has_cipher, has_iv, has_salt};
+    for (int i = 0; i < 4; i++) {
+      if (!present[i]) continue;
+      scr_crypto_mac_option_unsupported(unsupported[i], name);
+      scr_bytes_release(bytes);
+      return NULL;
+    }
+    double out = has_output_length ? output_length : kmac256 ? 64 : 32;
+    /* OpenSSL's KMAC refuses output lengths above 2^21 - 1 bytes. */
+    if (out > 2097151) {
+      scr_crypto_mac_output_length();
+      scr_bytes_release(bytes);
+      return NULL;
+    }
+    size_t keylen = (size_t)scr_bytes_byte_len(bytes);
+    if (keylen < 4 || keylen > 512) {
+      scr_crypto_mac_key_length();
+      scr_bytes_release(bytes);
+      return NULL;
+    }
+    ScrBytes *custom = NULL;
+    if (has_customization) {
+      const ScrDyn *option = scr_crypto_option(options, "customization");
+      custom = option ? scr_bytes_buffer_source(option) : NULL;
+      if (!custom) {
+        scr_bytes_release(bytes);
+        return NULL;
+      }
+    }
+    ScrCryptoHash *mac = calloc(1, sizeof *mac);
+    if (!mac) scr_trap("scriptc: out of memory\n");
+    mac->rc = 1;
+    mac->kmac = true;
+    mac->mac = true;
+    mac->out_len = (size_t)out;
+    mac->inner.alg = kmac256 ? SCR_DIGEST_KECCAK_KMAC256 : SCR_DIGEST_KECCAK_KMAC128;
+    scr_kmac_init(&mac->inner.state.keccak, kmac256, bytes->data, keylen,
+                  custom ? custom->data : NULL,
+                  custom ? (size_t)scr_bytes_byte_len(custom) : 0);
+    scr_bytes_release(custom);
+    scr_bytes_release(bytes);
+    scr_crypto_mac_dyn_install();
+    ScrDyn *box = scr_dyn_new_handle(mac, SCR_DYNH_MAC);
+    scr_crypto_hash_release(mac);
+    return box;
   }
   if (!scr_digest_name_is(name->data, name->len, "hmac")) {
     static const char msg[] =

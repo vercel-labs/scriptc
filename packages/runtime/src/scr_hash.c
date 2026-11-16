@@ -148,6 +148,73 @@ void scr_keccak_final(const ScrKeccakCtx *source, unsigned char *out, size_t len
   }
 }
 
+/* ── KMAC (SP 800-185) ──────────────────────────────────────────────── */
+
+/* left_encode/right_encode: the byte count, then the big-endian bytes. */
+static size_t scr_kmac_left_encode(unsigned char out[9], uint64_t x) {
+  size_t n = 1;
+  while (n < 8 && (x >> (8 * n)) != 0) n++;
+  out[0] = (unsigned char)n;
+  for (size_t i = 0; i < n; i++) out[1 + i] = (unsigned char)(x >> (8 * (n - 1 - i)));
+  return n + 1;
+}
+
+static size_t scr_kmac_right_encode(unsigned char out[9], uint64_t x) {
+  size_t n = 1;
+  while (n < 8 && (x >> (8 * n)) != 0) n++;
+  for (size_t i = 0; i < n; i++) out[i] = (unsigned char)(x >> (8 * (n - 1 - i)));
+  out[n] = (unsigned char)n;
+  return n + 1;
+}
+
+/* encode_string(S) = left_encode(len(S) in bits) || S, absorbed as it
+ * goes; the byte count feeds bytepad's zero padding. */
+static size_t scr_kmac_encode_string(ScrKeccakCtx *ctx, const unsigned char *s, size_t len) {
+  unsigned char head[9];
+  size_t n = scr_kmac_left_encode(head, (uint64_t)len * 8);
+  scr_keccak_update(ctx, head, n);
+  if (len != 0) scr_keccak_update(ctx, s, len);
+  return n + len;
+}
+
+/* bytepad's zero padding: the bytes absorbed so far modulo the rate. */
+static void scr_kmac_pad_to_rate(ScrKeccakCtx *ctx, size_t absorbed) {
+  static const unsigned char zeros[168];
+  size_t rem = absorbed % ctx->rate;
+  if (rem != 0) scr_keccak_update(ctx, zeros, ctx->rate - rem);
+}
+
+void scr_kmac_init(ScrKeccakCtx *ctx, bool kmac256, const unsigned char *key, size_t keylen,
+                   const unsigned char *custom, size_t customlen) {
+  size_t rate = kmac256 ? 136 : 168;
+  scr_keccak_init(ctx, rate, 0x04);
+  /* bytepad(encode_string("KMAC") || encode_string(S), rate) */
+  unsigned char head[9];
+  size_t n = scr_kmac_left_encode(head, rate);
+  scr_keccak_update(ctx, head, n);
+  size_t absorbed = n;
+  absorbed += scr_kmac_encode_string(ctx, (const unsigned char *)"KMAC", 4);
+  absorbed += scr_kmac_encode_string(ctx, custom, customlen);
+  scr_kmac_pad_to_rate(ctx, absorbed);
+  /* bytepad(encode_string(K), rate) */
+  n = scr_kmac_left_encode(head, rate);
+  scr_keccak_update(ctx, head, n);
+  absorbed = n + scr_kmac_encode_string(ctx, key, keylen);
+  scr_kmac_pad_to_rate(ctx, absorbed);
+}
+
+void scr_kmac_final(const ScrKeccakCtx *source, size_t out_bytes, size_t bits,
+                    unsigned char *out) {
+  ScrKeccakCtx ctx = *source;
+  unsigned char tail[9];
+  size_t n = scr_kmac_right_encode(tail, (uint64_t)bits);
+  scr_keccak_update(&ctx, tail, n);
+  scr_keccak_final(&ctx, out, out_bytes);
+  size_t extra = bits % 8;
+  if (extra != 0 && out_bytes != 0)
+    out[out_bytes - 1] &= (unsigned char)(0xffu << (8 - extra));
+}
+
 /* ── RIPEMD-160 ─────────────────────────────────────────────────────── */
 
 static uint32_t scr_rotl32(uint32_t x, unsigned n) { return (x << n) | (x >> (32 - n)); }

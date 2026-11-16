@@ -20289,6 +20289,7 @@
           "tests/corpus/crypto-checked-arguments.cjs",
           "tests/corpus/crypto-constants-object.ts",
           "tests/corpus/crypto-create-mac-errors.mjs",
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
@@ -21023,9 +21024,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.createMac",
         "tests": [
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-create-mac-errors.mjs"
         ]
@@ -24648,9 +24650,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.Mac",
         "tests": [
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-create-mac-errors.mjs"
         ]
@@ -24675,9 +24678,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.mac.final",
         "tests": [
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-create-mac-errors.mjs"
         ]
@@ -24702,9 +24706,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.mac.update",
         "tests": [
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-create-mac-errors.mjs"
         ]
@@ -115412,6 +115417,7 @@
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/webcrypto-rsa-oaep.ts",
           "tests/corpus/webcrypto-sha3-digest.ts",
           "tests/corpus/webcrypto-x25519-key-agreement.ts",
@@ -118281,9 +118287,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118307,9 +118314,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118360,9 +118368,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118386,9 +118395,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118439,9 +118449,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118465,9 +118476,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118518,9 +118530,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.algorithm",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118544,9 +118557,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.outputLength",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118570,9 +118584,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.customization",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },

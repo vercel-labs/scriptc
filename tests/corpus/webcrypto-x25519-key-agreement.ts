@@ -102,6 +102,12 @@ const keyOps = await crypto.subtle
   .then(() => "resolved", (error: Error) => `${error.name} ${error.message}`);
 console.log("jwk key_ops", keyOps);
 
+// Node reads no "alg" member of an X25519 JWK: every value imports.
+for (const alg of ["X25519", "ECDH-ES", "ECDH-ES+A128KW", "nope"]) {
+  const imported = await crypto.subtle.importKey("jwk", { ...aliceJwk, alg }, "X25519", true, ["deriveBits"]);
+  console.log("jwk alg", alg, imported.type, imported.algorithm.name);
+}
+
 const jwkCrv = await crypto.subtle
   .importKey("jwk", { kty: "OKP", crv: "Ed25519", x: bobPublicJwk.x }, "X25519", true, [])
   .then(() => "resolved", (error: Error) => `${error.name} ${error.message}`);

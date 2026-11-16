@@ -661,10 +661,6 @@ static ScrDyn *sw_import(const ScrDyn *args) {
       scr_throw_domex("DataError", "JWK \"alg\" does not match the requested algorithm");
       goto done;
     }
-    if (kind == SW_X25519 && alg && !sw_jwk_is(alg, "X25519") && !sw_jwk_is(alg, "ECDH-ES")) {
-      scr_throw_domex("DataError", "JWK \"alg\" does not match the requested algorithm");
-      goto done;
-    }
     if (sw_is_rsa_kind(kind) && alg) {
       char expected[16];
       sw_rsa_jwk_alg(kind, hash, expected);
@@ -901,12 +897,14 @@ static ScrPromise *sw_decrypt(const ScrDyn *args) { return sw_oaep(args, true); 
 
 /* ── ECDH and X25519 deriveBits ───────────────────────────────────────── */
 
-/* The field size of a key-agreement key, in bits. */
+/* The shared secret's size in bits: the field's byte width times eight,
+ * which for P-521 is 528 rather than the curve's 521, as Node derives it
+ * (an omitted length takes all of it). */
 static unsigned sw_agreement_bits(const SwKey *k) {
   if (k->kind == SW_X25519) return 256;
   const char *curve = scr_pki_key_curve(k->key);
   if (curve && strcmp(curve, "P-384") == 0) return 384;
-  if (curve && strcmp(curve, "P-521") == 0) return 521;
+  if (curve && strcmp(curve, "P-521") == 0) return 528;
   return 256;
 }
 

@@ -78,6 +78,46 @@ for (const [label, value] of [
   console.log(label, value);
 }
 
+// P-521's shared secret is 66 bytes: an omitted length takes all 528 bits
+// unmasked, and shorter lengths clear the final byte's unused bits.
+const p521Import = { name: "ECDH", namedCurve: "P-521" };
+const p521Alice = await crypto.subtle.importKey(
+  "jwk",
+  {
+    kty: "EC",
+    crv: "P-521",
+    x: "ASGuvztm4KpTyzDltfU7XlOc3pKhqWfmFnaL2BZpGTUlxavAjLR-oQHMrNk4DDauI2DmLhaynMGoSd5CJ86NyDZs",
+    y: "Ae2lkHOhDKU7bX14OjD10NUg14fgdFftH2yFEc6R1qYAGbN09lp_tgFSKQxF9siyPeDZlNTFvmo6nHXFQUnI1D5d",
+    d: "AK-fZHuARFIi_zojhKZkb6bgNuCY0umiyIaHR6pALDAYmOES_moEStsj_2iFvSkIq4bpgxwjOrIimSi8qiZoR6yL",
+  },
+  p521Import,
+  true,
+  ["deriveBits"],
+);
+const p521Bob = await crypto.subtle.importKey(
+  "jwk",
+  {
+    kty: "EC",
+    crv: "P-521",
+    x: "AZ_0UFtCFeipGMA5MxoAt0ENKVIyFD23aseauFGutB8i0RYc__rW_gx3WbNHeCV7iH7cHaqkWG1uqnOR4n3RgDWo",
+    y: "APcuQvUeTS17-1HUI6Fj6hublIDoJNTnjDzX3wykIK8o9i9qk4kybEEPMiOX_0Op7RvUDwo1zg7tTfxPT0-0waWR",
+  },
+  p521Import,
+  true,
+  [],
+);
+for (const length of [null, 521, 522, 527, 528]) {
+  const secret =
+    length === null
+      ? await crypto.subtle.deriveBits({ name: "ECDH", public: p521Bob }, p521Alice)
+      : await crypto.subtle.deriveBits({ name: "ECDH", public: p521Bob }, p521Alice, length);
+  console.log("p521", length, secret.byteLength, hex(secret));
+}
+const p521TooLong = await crypto.subtle
+  .deriveBits({ name: "ECDH", public: p521Bob }, p521Alice, 529)
+  .then(() => "resolved", (error: Error) => `${error.name} ${error.message}`);
+console.log("p521 too long", p521TooLong);
+
 const p384 = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-384" }, true, ["deriveBits"]);
 const mismatch = await crypto.subtle
   .deriveBits({ name: "ECDH", public: p384.publicKey }, alice, 256)

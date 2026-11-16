@@ -24,8 +24,12 @@ afterEach(() => {
 });
 
 /** The ES-module-bundle prologue scriptc compiles natively only with runtime
- * fences (getters over live bindings, a constructor function with prototype
- * methods): a package the fence rule islands, never the lowering rule. */
+ * fences (getters over live bindings, and a prototype write outside a class's
+ * declared members — a constructor function's own prototype writes lower to
+ * the object model and no longer fence): a package the fence rule islands,
+ * never the lowering rule. Its named export is not statically resolvable
+ * (`__export`'s getters over a local object), which is why the package needs
+ * the island and why the fixture cannot be built natively either way. */
 function fencedBundle(value: string): string {
   return `"use strict";
 var __defProp = Object.defineProperty;
@@ -35,8 +39,10 @@ var __export = (target, all) => {
 var src_exports = {};
 __export(src_exports, { value: () => value });
 module.exports = src_exports;
-function Schema(kind) {
-  this.kind = kind;
+class Schema {
+  constructor(kind) {
+    this.kind = kind;
+  }
 }
 Schema.prototype.describe = function () {
   return this.kind;

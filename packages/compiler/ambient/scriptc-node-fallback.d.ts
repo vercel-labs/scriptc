@@ -989,7 +989,7 @@ interface CryptoKeyPair {
  * encrypts and decrypts. */
 interface SubtleCrypto {
   decrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -1007,7 +1007,7 @@ interface SubtleCrypto {
   ): Promise<CryptoKey>;
   digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
   encrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -1026,7 +1026,11 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;
   generateKey(
-    algorithm: AesKeyGenParams | HmacKeyGenParams,
+    algorithm:
+      | AesKeyGenParams
+      | HmacKeyGenParams
+      | "ChaCha20-Poly1305"
+      | { name: "ChaCha20-Poly1305" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;

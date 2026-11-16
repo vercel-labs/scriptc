@@ -8647,8 +8647,10 @@ static ScrDyn *scr_dirent_prototype(void) {
 ScrDyn *scr_dirent_dyn(ScrStr *name, ScrStr *parent, double kind) {
   ScrDyn *object = scr_dyn_new_obj();
   object->prototype = scr_dyn_retain(scr_dirent_prototype());
-  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(scr_str_retain(name)));
-  scr_dyn_obj_set(object, "parentPath", 10, scr_dyn_new_str(scr_str_retain(parent)));
+  /* scr_dyn_new_str keeps its own reference, so the entry's strings are
+   * retained once: the caller's reference stays the caller's. */
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(name));
+  scr_dyn_obj_set(object, "parentPath", 10, scr_dyn_new_str(parent));
   scr_stats_define(object, "%dtype", scr_dyn_new_num(kind), NULL, NULL, false);
   return object;
 }

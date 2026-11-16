@@ -1557,9 +1557,18 @@ static ScrDyn *scr_fs_cb_readdir(const ScrDyn *options, ScrStr *path, bool *thro
      * (scr_fs_cb_option materializes either); the callback itself is the
      * two-argument form's second slot. */
     ScrDyn *enc = scr_fs_cb_option(options, "encoding");
-    if (enc != NULL && !scr_fs_dyn_absent(enc)) {
+    if (enc == NULL) {
+      /* The member read threw: getOptions runs at the call, so it throws. */
+      *throw_now = true;
+      return NULL;
+    }
+    /* assertEncoding: only a truthy value is checked, and every truthy
+     * value that is not an encoding name is Node's ERR_INVALID_ARG_VALUE at
+     * the call — a non-string one is the same error, not a type error. */
+    if (scr_dyn_truthy(enc)) {
       if (enc->kind != SCR_DYN_STR) {
-        scr_dyn_arg_type_fail("encoding", "of type string", enc);
+        scr_dyn_arg_value_fail("encoding", "is invalid encoding", enc);
+        *throw_now = true;
         scr_dyn_release(enc);
         return NULL;
       }
@@ -1609,8 +1618,11 @@ static ScrDyn *scr_fs_cb_readdir(const ScrDyn *options, ScrStr *path, bool *thro
     ScrArr *names = scr_fs_readdir_bytes(path);
     if (names != NULL) {
       out = scr_dyn_new_arr();
-      for (size_t i = 0; i < (size_t)scr_arr_len(names); i++)
-        scr_dyn_arr_push(out, scr_dyn_new_buffer(scr_arr_get_ref(names, (double)i)));
+      for (size_t i = 0; i < (size_t)scr_arr_len(names); i++) {
+        ScrBytes *bytes = scr_arr_get_ref(names, (double)i); /* +1 */
+        scr_dyn_arr_push(out, scr_dyn_new_buffer(bytes));
+        scr_bytes_release(bytes); /* the Buffer value keeps its own */
+      }
       scr_arr_release(names);
     }
   } else {

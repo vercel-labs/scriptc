@@ -76,6 +76,28 @@ void scr_watch_file_thunk1(ScrClosure *cb, ScrStats *current, ScrStats *previous
 void scr_watch_file_thunk2(ScrClosure *cb, ScrStats *current, ScrStats *previous);
 void scr_watch_file_install(void);
 
+/* ── fsPromises.watch (scr_watch_async.c — linked only when the program
+ * uses it): Node's async-iterable form, a queue over a scr_watch.c
+ * watcher. The `for await` lowering awaits wait() and pops one entry with
+ * take(); close() is the loop's finally. */
+typedef struct ScrPromise ScrPromise;
+typedef struct ScrWatchEvents ScrWatchEvents;
+/* fsPromises.watch(path[, options]): opens the watch NOW (+1 state). A
+ * path that fails validation or cannot be watched throws and answers NULL. */
+ScrWatchEvents *scr_watch_events_new(ScrStr *path, bool persistent);
+ScrWatchEvents *scr_watch_events_retain(ScrWatchEvents *st);
+void scr_watch_events_release(ScrWatchEvents *st);
+void *scr_watch_events_retain_v(void *p);
+void scr_watch_events_release_v(void *p);
+/* A bool promise (+1) settled when an entry is queued (true) or the state
+ * closed (false); awaiting it is the loop's wait for the next event. */
+ScrPromise *scr_watch_events_wait(ScrWatchEvents *st);
+/* Pops the oldest entry as a +1 `{ eventType, filename }` object the
+ * caller only asks for after a true wait(). */
+ScrDyn *scr_watch_events_take(ScrWatchEvents *st);
+void scr_watch_events_close(ScrWatchEvents *st); /* idempotent */
+void scr_watch_events_install(void);
+
 /* The loop-side registration (scr_async.c, always linked) — the net
  * hook's exact shape, one more nullable slot set. */
 void scr_loop_set_watch(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void));

@@ -553,6 +553,50 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "fsp.watch") {
+    // fsPromises.watch(path, persistent): the iterator state (+1). The
+    // watch opens NOW, so a bad or unopenable path throws here (Node's
+    // first next() does the same); a reffed state holds the loop like a
+    // reffed fs.watch handle. The standard pending check.
+    host.usesTimers = true;
+    const path = host.emitExpr(e.args[0]!);
+    const persistent = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_watch_events_new(ptr, i1 zeroext)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_watch_events_new(ptr ${path.name}, i1 zeroext ${persistent.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "watchEvents.wait") {
+    // The loop's wait for the next event: a +1 bool promise, settled now
+    // with true when an entry is queued and false when the state closed.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_watch_events_wait(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_watch_events_wait(ptr ${st.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "watchEvents.take") {
+    // The dynamic `{ eventType, filename }` record the iterator queued
+    // (+1); the loop only takes one after a true wait, and checks it into
+    // the iteration record there.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_watch_events_take(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_watch_events_take(ptr ${st.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "watchEvents.close") {
+    // The loop's finally: closes the watch (idempotent) and drops the
+    // queue. Never throws.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare void @scr_watch_events_close(ptr)`);
+    B.line(`call void @scr_watch_events_close(ptr ${st.name})`);
+    return host.own({ name: "null", type: e.type });
+  }
   if (e.fn === "watcher.on") {
     // (recv, event, flags, listener) — flags: 1 once, 2 prepend. The
     // listener MOVES in; the adapter follows the event (0 change, 1

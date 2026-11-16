@@ -1615,6 +1615,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "watcher.off",
   "fs.watchFile",
   "fs.unwatchFile",
+  // fsPromises.watch opens the path now and throws Node's fs error
+  // (ENOENT, EACCES, a null byte) from scr_watch_events_new.
+  "fsp.watch",
   "crypto.x509Fingerprint",
   "crypto.x509FingerprintStr",
   "crypto.x509ValidFrom",

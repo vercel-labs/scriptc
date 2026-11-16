@@ -296,6 +296,8 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
+  /** fsPromises.watch: scr_watch_async.c (with scr_watch.c). */
+  watchEvents: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -389,6 +391,7 @@ const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
+  watchEvents: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,

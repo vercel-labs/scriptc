@@ -18,6 +18,7 @@ import {
   F64,
   FILEHANDLE_T,
   FSWATCHER_T,
+  WATCHEVENTS_T,
   HTTP2SESSION_T,
   HTTP2STREAM_T,
   HTTPCLIENTREQ_T,
@@ -1798,6 +1799,17 @@ function buildLibFnSignatures() {
      * takes a borrowed listener; the null slot is the absent one. */
     "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: VOID },
     "fs.unwatchFile": { argTypes: [STRING, null], result: VOID },
+    /** fsPromises.watch(path, persistent) → the async iterator
+     * (scr_watch_async.c — its own gated unit over scr_watch.c's watcher;
+     * moduleUsesFsWatchEvents is the switch, and scr_watch_events_install()
+     * is emitted with it). Consumed only as a `for await` source: the loop
+     * awaits watchEvents.wait and pops one entry with watchEvents.take,
+     * whose `{ eventType, filename } | null` result the lowering types.
+     * close() is the loop's finally. */
+    "fsp.watch": { argTypes: [STRING, BOOL], result: WATCHEVENTS_T },
+    "watchEvents.wait": { argTypes: [WATCHEVENTS_T], result: { kind: "promise", inner: BOOL } },
+    "watchEvents.take": { argTypes: [WATCHEVENTS_T], result: DYN },
+    "watchEvents.close": { argTypes: [WATCHEVENTS_T], result: VOID },
     /** The composed `new crypto.X509Certificate(data).fingerprint` read
      * (scr_lib.c — no certificate handle exists): the SHA-1 of the DER,
      * uppercase colon-separated, over PEM or raw-DER Buffer input; other

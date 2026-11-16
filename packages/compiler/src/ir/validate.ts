@@ -5407,6 +5407,12 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "watchEvents.take") {
+      // Result: the dynamic `{ eventType, filename }` record the iterator
+      // queued (the loop checks it into the binding's record type).
+      if (e.type.kind !== "dyn") err(`libCall ${e.fn} must return a dynamic record`, e.loc);
+      return true;
+    }
     if (e.fn === "os.networkInterfaces") {
       // Result: a pure index-signature record whose value is
       // `Info[] | undefined`, Info a two-record union (one arm's

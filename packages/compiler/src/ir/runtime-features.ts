@@ -2164,6 +2164,12 @@ const RUNTIME_FEATURE_RULES = {
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
   fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
+  /** fsPromises.watch (scr_watch_async.c): the async iterable the
+   * `for await` lowering drains, over the fs.watch watcher unit. */
+  fsWatchEvents: rule({
+    fns: ["fsp.watch", "watchEvents.wait", "watchEvents.take", "watchEvents.close"],
+    types: ["watchEvents"],
+  }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -2723,6 +2729,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
+    fsWatchEvents: false,
     genBind: false,
     http2: false,
     http: false,
@@ -3131,6 +3138,14 @@ export function moduleUsesFsWatch(mod: IrModule): boolean {
  * and keep their exact link line. */
 export function moduleUsesFsWatchFile(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "fsWatchFile").fsWatchFile;
+}
+
+/** True when the module contains an fsPromises.watch libCall or a
+ * watchEvents handle type — the link switch that pulls scr_watch_async.c
+ * (and, with it, scr_watch.c) into the binary and has the emitted main call
+ * scr_watch_events_install (the moduleUsesFsWatchFile precedent). */
+export function moduleUsesFsWatchEvents(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "fsWatchEvents").fsWatchEvents;
 }
 
 /** True when the module contains any test.* libCall or a testCtx handle

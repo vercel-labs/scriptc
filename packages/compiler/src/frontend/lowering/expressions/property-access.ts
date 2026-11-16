@@ -518,7 +518,12 @@ export function lowerPropertyAccessExpr(
   // `fs.readFileSync` where `fs` is a require binding the file reassigns
   // (rebindable-requires.ts): the binding's storage holds whatever the
   // program stored, so the member is read from that checked-dynamic value.
-  if (reboundRequireBindingOf(lowerer, expr.expression) !== null) {
+  if (
+    reboundRequireBindingOf(lowerer, expr.expression) !== null &&
+    // A private name is never a string key: it stays the class's own
+    // brand-checked access.
+    !ts.isPrivateIdentifier(expr.name)
+  ) {
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),

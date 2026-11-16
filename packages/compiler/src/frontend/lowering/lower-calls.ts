@@ -14923,6 +14923,8 @@ function lowerReboundRequireCall(lowerer: Lowerer, expr: ts.CallExpression): IrE
   )
     return null;
   if (reboundRequireBindingOf(lowerer, access.expression) === null) return null;
+  // A private name is never a string key (see the property read).
+  if (ts.isPropertyAccessExpression(access) && ts.isPrivateIdentifier(access.name)) return null;
   const loc = locOf(expr);
   const receiver = lowerer.declareHiddenLocal("%reboundReceiver", DYN);
   const callee = lowerer.declareHiddenLocal("%reboundCallee", DYN);

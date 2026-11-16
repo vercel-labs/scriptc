@@ -57,3 +57,17 @@ function nestedSignature() {
   return first + ":" + pick() + ":" + typeof pick();
 }
 console.log(nestedSignature());
+
+// A concise arrow forwarding the rebound binding's call answers the value the
+// replacement returned, not the declaration's inferred result.
+function forwarded() {
+  function pick() {
+    return 1;
+  }
+  const read = () => pick();
+  pick = function () {
+    return "text";
+  };
+  return read() + ":" + typeof read();
+}
+console.log(forwarded());

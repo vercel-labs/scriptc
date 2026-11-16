@@ -1049,6 +1049,10 @@ struct ScrHttpRes {
   bool head_sent;
   bool chunked;
   bool finished;
+  /* writableHighWaterMark as it was when the response was created: the
+   * server's value (or the current default for an h2 response), kept after
+   * the connection detaches. */
+  double hwm;
   bool no_date; /* res.sendDate = false: suppress the implicit Date header */
   /* removeHeader('connection' / 'content-length' / 'transfer-encoding'):
    * the head adds no such header of its own (Node's _removedConnection,
@@ -2178,12 +2182,7 @@ double scr_http_res_writable_corked(ScrHttpRes *r) { return (double)r->corked; }
  * highWaterMark, which createServer takes from the stream default at that
  * moment (Node's ServerResponse), and false. createServer's highWaterMark
  * option is not accepted. */
-static double scr_http_conn_hwm(struct ScrHttpConn *conn);
-
-double scr_http_res_writable_high_water_mark(ScrHttpRes *r) {
-  double hwm = scr_http_conn_hwm(r->conn);
-  return hwm > 0 ? hwm : scr_stream_get_default_hwm(false);
-}
+double scr_http_res_writable_high_water_mark(ScrHttpRes *r) { return r->hwm; }
 
 bool scr_http_res_writable_object_mode(ScrHttpRes *r) {
   (void)r;
@@ -3376,13 +3375,6 @@ typedef struct ScrHttpSrvCtx {
   double hwm;
 } ScrHttpSrvCtx;
 
-/* The server highWaterMark a connection's responses take (0: client mode
- * or no context, where the caller falls back to the current default). */
-static double scr_http_conn_hwm(struct ScrHttpConn *conn) {
-  if (conn == NULL || conn->srv == NULL) return 0;
-  return conn->srv->hwm;
-}
-
 static ScrHttpSrvCtx *scr_http_srv_ctx_retain(ScrHttpSrvCtx *ctx) {
   ctx->rc++;
   return ctx;
@@ -4017,6 +4009,7 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
 #ifdef SCR_RC_AUDIT
   scr_http_live++;
 #endif
+  res->hwm = conn->srv != NULL ? conn->srv->hwm : scr_stream_get_default_hwm(false);
   res->sock = scr_net_sock_retain(conn->sock);
   res->conn = conn;
   res->keep_alive = req_keep_alive;
@@ -4839,6 +4832,7 @@ ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
   if (!res) scr_http_oom();
   res->rc = 1;
   res->als = scr_als_capture();
+  res->hwm = scr_stream_get_default_hwm(false);
   res->sock = sock ? scr_net_sock_retain(sock) : NULL;
   res->h2_stream = scr_http_h2_ops->retain(stream);
   res->keep_alive = true; /* inert on h2 — no Connection header exists */

@@ -175,3 +175,52 @@ test(
     );
   },
 );
+
+test(
+  "a namespace import through a bridge and a re-exporting implementation keep their runtime binding",
+  { timeout: 600_000 },
+  async () => {
+    // Two routes the twin mapping must keep: a member read through a module
+    // namespace whose declaration re-exports another declaration (the
+    // vendored-copy bridge), and a JavaScript implementation that re-exports
+    // the function its own declaration names instead of declaring a body.
+    const files = {
+      "package.json": '{ "type": "module" }\n',
+      "card-types.d.ts": "export declare function Card(props?: { title?: string }): string;\n",
+      "deps/d1-card.d.ts": 'export * from "../card-types";\n',
+      "deps/d1-card.js":
+        'export function Card(props) {\n  return "card " + (props === undefined ? "-" : props.title);\n}\n',
+      "impl.js": 'export function wave(who) {\n  return "wave " + who;\n}\n',
+      "link.d.ts": "export declare function wave(who?: string): string;\n",
+      "link.js": 'export { wave } from "./impl.js";\n',
+    };
+    const dir = project({
+      ...files,
+      "main.ts":
+        'import * as cards from "./deps/d1-card.js";\n' +
+        'import { wave } from "./link.js";\n' +
+        "console.log(cards.Card({}));\n" +
+        "console.log(wave());\n",
+    });
+    const result = await build(join(dir, "main.ts"), "namespace-and-reexport");
+    expect(messages(result)).toBe("");
+    if (!result.ok) return;
+    const { stdout } = await execFileAsync(result.binaryPath, [], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    expect(stdout).toBe("card undefined\nwave undefined\n");
+
+    const bad = project({
+      ...files,
+      "bad.ts":
+        'import * as cards from "./deps/d1-card.js";\n' +
+        "console.log(cards.Card({ title: 3 }));\n",
+    });
+    const rejected = await build(join(bad, "bad.ts"), "namespace-and-reexport-rejects");
+    expect(rejected.ok).toBe(false);
+    expect(messages(rejected)).toContain(
+      "SC0001: Type 'number' is not assignable to type 'string'.",
+    );
+  },
+);

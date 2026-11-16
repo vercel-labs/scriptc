@@ -8,6 +8,8 @@ import { label } from "./label.mjs";
 import { triple } from "./math.cjs";
 import format from "./format.js";
 import { Widget } from "./widget.cjs";
+import * as panels from "./panel.js";
+import { wave } from "./link.js";
 
 console.log(greet({}));
 console.log(greet({ name: "ada" }));
@@ -18,3 +20,7 @@ console.log(format("x"));
 // dependency takes): its declared optional prop is what types `Widget({})`.
 console.log(Widget({}));
 console.log(Widget({ label: "w" }));
+// The same bridge read through a namespace, and an implementation that
+// re-exports the function its declaration names.
+console.log(panels.Panel({}));
+console.log(wave());

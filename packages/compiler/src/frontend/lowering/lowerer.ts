@@ -8588,7 +8588,9 @@ export class Lowerer {
     // loads, so a reference re-binds to the implementation's export of the
     // same name. The checker's type at the site still comes from the
     // declaration.
-    const twin = this.declarationTwinExportSymbolOf(symbol, importAlias);
+    const twin =
+      this.declarationTwinExportSymbolOf(symbol, importAlias) ??
+      this.declarationTwinMemberSymbolOf(ident, symbol);
     if (twin) symbol = twin;
     this.flushDeferred(symbol);
     return symbol;
@@ -8640,6 +8642,33 @@ export class Lowerer {
     return this.moduleExportSymbolOf(implementation, ts.symbolName(symbol), symbol);
   }
 
+  /** A member read through a module namespace (`m.Card` of
+   * `import * as m from "./deps/d1-props.js"`): the checker resolves the
+   * member to the declaration the module's declaration names, so the
+   * reference re-binds to the implementation's export of the same name. */
+  private declarationTwinMemberSymbolOf(ident: ts.Identifier, symbol: ts.Symbol): ts.Symbol | null {
+    const parent = ident.parent;
+    if (parent === undefined || !ts.isPropertyAccessExpression(parent) || parent.name !== ident)
+      return null;
+    const declarations = symbol.declarations;
+    if (declarations.length === 0) return null;
+    if (!declarations.some((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)) return null;
+    const receiver = parent.expression;
+    if (!ts.isIdentifier(receiver)) return null;
+    const namespaceImport = this.checker
+      .getSymbolAtLocation(receiver)
+      ?.declarations.find(ts.isNamespaceImport);
+    if (namespaceImport === undefined) return null;
+    const stmt = namespaceImport.parent?.parent;
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) return null;
+    const dep = this.facts.importedModule(
+      ts.getSourceFileOfNode(namespaceImport),
+      stmt.moduleSpecifier.text,
+    );
+    if (dep === null || dep.isDeclarationFile) return null;
+    return this.moduleExportSymbolOf(dep, ident.text, symbol);
+  }
+
   /** The compiled module an import of `symbol` names, and that module's
    * export under the name the import asked for. */
   private declarationTwinRoutedSymbolOf(symbol: ts.Symbol, alias: ts.Symbol): ts.Symbol | null {
@@ -8670,7 +8699,17 @@ export class Lowerer {
   ): ts.Symbol | null {
     const moduleSymbol = this.checker.getSymbolAtLocation(module);
     if (moduleSymbol === undefined) return null;
-    const exported = moduleSymbol.getExports().get(ts.escapedSymbolName(name));
+    let exported = moduleSymbol.getExports().get(ts.escapedSymbolName(name));
+    if (exported === undefined || exported === symbol) return null;
+    // The implementation may RE-EXPORT the name (`export { greet } from
+    // "./impl.js"`) of a module that also re-exports it: an alias owns no
+    // storage, so the reference binds to the declaration the chain ends at.
+    for (let hop = 0; hop < 16 && exported !== undefined; hop++) {
+      if ((exported.flags & ts.SymbolFlags.Alias) === 0) break;
+      const target = this.checker.getAliasedSymbol(exported);
+      if (target === undefined || target === exported) break;
+      exported = target;
+    }
     return exported !== undefined && exported !== symbol ? exported : null;
   }
 

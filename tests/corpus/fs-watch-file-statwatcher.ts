@@ -27,10 +27,23 @@ watcher.unref();
 watcher.ref();
 watcher.ref();
 
+// The watcher is an ordinary object value: truthiness and typeof see it.
+console.log("truthy", Boolean(watcher), watcher ? "yes" : "no", !watcher);
+
 // A second registration on a DIFFERENT path, started unref'd: it does not
 // hold the loop and is never unwatched.
 const quiet = fs.watchFile(other, { interval: 20, persistent: false }, () => {});
 quiet.unref();
+
+// Node keys one StatWatcher per resolved path: a second call on the same
+// path answers the same handle, so unref'ing it (twice) leaves nothing on
+// the loop.
+const shared = (current: fs.Stats, previous: fs.Stats): void => {};
+const firstOf = fs.watchFile(other, { interval: 20 }, shared);
+const secondOf = fs.watchFile(other, { interval: 20 }, shared);
+firstOf.unref();
+secondOf.unref();
+console.log("shared handle", firstOf === secondOf);
 
 const ticker = setInterval(() => fs.appendFileSync(file, "x"), 20);
 setTimeout(() => {

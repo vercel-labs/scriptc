@@ -148,6 +148,7 @@ const LIB_MODE_REFUSED_KINDS: ReadonlyMap<string, string> = new Map([
   ["http2Stream", "the node:http2 surface"],
   ["dgramSocket", "the node:dgram surface"],
   ["fsWatcher", "fs.watch"],
+  ["statWatcher", "fs.watchFile"],
   ["testCtx", "the node:test surface"],
   ["httpReq", "the node:http surface"],
   ["httpRes", "the node:http surface"],

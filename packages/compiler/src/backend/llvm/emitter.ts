@@ -5643,6 +5643,7 @@ export class LlEmitter {
       case "childWriter":
       case "generator":
       case "fsWatcher":
+      case "statWatcher":
       case "cryptoHash":
       case "cryptoHmac":
       case "netSocket":

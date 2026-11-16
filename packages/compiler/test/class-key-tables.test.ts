@@ -213,10 +213,19 @@ test("a subclass shares a large base's key table, a small hierarchy keeps its ow
     `
 class Base {
 ${fields}
+  get value(): number {
+    return 1;
+  }
 }
 class Left extends Base {
   left = 1;
 }
+Object.defineProperty(Left.prototype, "value", {
+  get() {
+    return 24;
+  },
+  configurable: true,
+});
 class Right extends Base {
   right = 1;
 }
@@ -240,12 +249,15 @@ console.log(total);
     .map((name) => {
       const fn = module.functions.find((table) => table.name === name);
       expect(fn, name).toBeDefined();
-      return { table: name, delegate: callees(fn!, "%dyn.class.keys.") };
+      return { table: name, delegate: callees(fn!, "%dyn.class.keys."), body: fn!.body };
     })
     .filter((entry) => entry.delegate.length > 0);
   expect(delegates).toHaveLength(2);
   expect(delegates[0]!.delegate).toEqual(delegates[1]!.delegate);
   expect(delegates[0]!.delegate).toHaveLength(1);
+  // A name the program reflects on a prototype must stay in each subclass's
+  // table: its replacement answers through the receiver's own class view.
+  for (const { body } of delegates) expect(JSON.stringify(body)).toContain('"value":"value"');
   // The small hierarchy of the test above repeats its names instead.
   const small = await lower(
     "small.ts",

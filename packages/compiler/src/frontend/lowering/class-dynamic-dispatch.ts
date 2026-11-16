@@ -5793,6 +5793,19 @@ export class ClassDynamicDispatch {
               if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) names.add(name);
             }
           }
+          // A name the program reflects on some class prototype answers from
+          // the receiver's own class's prototype view, which the base's table
+          // cannot do: keep it in every table so the view starts at the
+          // receiver's class.
+          if (lowerer.prototypeMethodAccesses.size > 0) {
+            for (const name of collectNames()) {
+              if (!lowerer.prototypeMethodAccesses.has(name)) continue;
+              const accessor =
+                findMethodOn(lowerer, info, `get:${name}`) ??
+                findMethodOn(lowerer, info, `set:${name}`);
+              if (accessor !== null && prototypeViewable(accessor.declarer)) names.add(name);
+            }
+          }
         }
         const delegateName =
           delegate === null

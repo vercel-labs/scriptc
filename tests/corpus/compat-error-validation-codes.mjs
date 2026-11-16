@@ -142,6 +142,33 @@ report("assert.throws.getter-throws", () => {
     };
   }, "dup");
 });
+// The message is read a second time for the diagnostic's quoted text, as
+// lib/assert.js interpolates it: a stateful getter is quoted by its second
+// answer, and a getter that throws on the second read propagates that error.
+const stateful = {
+  reads: 0,
+  get message() {
+    return this.reads++ === 0 ? "dup" : "changed";
+  },
+};
+report("assert.throws.stateful-getter", () => {
+  assert.throws(() => {
+    throw stateful;
+  }, "dup");
+});
+console.log("assert.throws.stateful-reads", stateful.reads);
+const secondReadThrows = {
+  reads: 0,
+  get message() {
+    if (this.reads++ === 0) return "dup";
+    throw new Error("second read");
+  },
+};
+report("assert.throws.second-read-throws", () => {
+  assert.throws(() => {
+    throw secondReadThrows;
+  }, "dup");
+});
 // A bare assertion and a string-message assertion of the same callback type
 // are different checks: the bare one must not hide the ambiguous one.
 const shared = () => {

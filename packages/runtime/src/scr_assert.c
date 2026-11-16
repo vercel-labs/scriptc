@@ -2738,8 +2738,11 @@ static void scr_assert_ambiguous_throw(ScrStr *text) {
  * object whose `message` is that string, or the string itself. The message
  * is an ordinary property read, as lib/assert.js's `actual.message` is: an
  * inherited one counts and a getter runs, its exception propagating as
- * Node's does. The check runs only once the callback threw; a callback that
- * returned reaches the missing-exception throw instead. Borrows both. */
+ * Node's does. lib/assert.js reads it twice — in the comparison and again in
+ * the diagnostic's quoted text — so a matching getter runs a second time and
+ * a stateful one is quoted by its second answer. The check runs only once
+ * the callback threw; a callback that returned reaches the missing-exception
+ * throw instead. Borrows both. */
 void scr_assert_throws_ambiguous(ScrDyn *actual, ScrStr *message) {
   const bool object = actual->kind == SCR_DYN_OBJ || actual->kind == SCR_DYN_ARR ||
                       actual->kind == SCR_DYN_BYTES || actual->kind == SCR_DYN_HANDLE ||
@@ -2755,15 +2758,22 @@ void scr_assert_throws_ambiguous(ScrDyn *actual, ScrStr *message) {
   }
   ScrDyn *member = scr_dyn_obj_read(actual, "message", 7);
   if (member == NULL) return; /* the getter threw: its exception is pending */
-  if (member->kind != SCR_DYN_STR || !scr_str_eq(member->v.str, message)) {
-    scr_dyn_release(member);
-    return;
-  }
+  const bool matched = member->kind == SCR_DYN_STR && scr_str_eq(member->v.str, message);
+  scr_dyn_release(member);
+  if (!matched) return;
+  /* The quoted text is a second read, as the diagnostic's interpolation is
+   * in lib/assert.js: a getter's exception propagates and a stateful getter
+   * answers with its second value. */
+  ScrDyn *quoted = scr_dyn_obj_read(actual, "message", 7);
+  if (quoted == NULL) return; /* pending */
+  ScrStr *text = scr_dyn_string_coerce_js(quoted);
+  scr_dyn_release(quoted);
+  if (text == NULL) return; /* pending: a Symbol answers no string */
   ScrAssertBuf b = {0};
   ab_cstr(&b, "The \"error/message\" argument is ambiguous. The error message \"");
-  ab_str(&b, member->v.str);
+  ab_str(&b, text);
   ab_cstr(&b, "\" is identical to the message.");
-  scr_dyn_release(member);
+  scr_str_release(text);
   scr_assert_ambiguous_throw(ab_take(&b));
 }
 

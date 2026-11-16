@@ -156,3 +156,46 @@ const carrier = new Carrier();
 carrier.emit("plain");
 carrier.emit("again");
 console.log(carrier.events.join(","));
+
+// An added parameter typed by a CONCRETE container reserves like any other:
+// `string[]` names no type parameter, so the ancestor can carry the slot. The
+// shape walk must not read the array's own members to decide that — they
+// answer types one nesting deeper at every step (`(string | ConcatArray<string>)[]`,
+// and so on) and emptied the stack before this case was added.
+class Collector {
+  log: string[] = [];
+  take(name: string): void {
+    this.log.push(name);
+  }
+}
+
+class ArrayCollector extends Collector {
+  sizes: number[] = [];
+  override take(name: string, items: string[] = ["x"]): void {
+    super.take(name);
+    this.sizes.push(items.length);
+  }
+}
+
+const collector = new Collector();
+const arrayCollector = new ArrayCollector();
+const asCollector: Collector = arrayCollector;
+asCollector.take("a");
+arrayCollector.take("b", ["p", "q"]);
+collector.take("c");
+console.log(arrayCollector.log.join(","), arrayCollector.sizes.join(","));
+
+// An added parameter typed by an ARRAY OF the subclass's type parameter is
+// still unnameable on the ancestor (`T[]`), and is found through the array's
+// type argument, so the family reserves nothing and the base keeps its shape.
+class GenericList<T> extends Collector {
+  batches: number[] = [];
+  override take(name: string, items?: T[]): void {
+    super.take(name);
+    this.batches.push(items === undefined ? 0 : items.length);
+  }
+}
+
+const genericBase = new Collector();
+genericBase.take("d");
+console.log(genericBase.log.join(","));

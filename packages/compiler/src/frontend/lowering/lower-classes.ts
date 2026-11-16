@@ -9936,6 +9936,12 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
   }
 }
 
+/** The deepest nesting the shape walk follows. A written recursive alias can
+ * build a fresh instantiation at every level (`type Rec<T> = { next?:
+ * Rec<Rec<T>> }`), so past this depth the answer is the conservative one —
+ * no reservation, which leaves the family the exactness fence it had. */
+const TYPE_PARAMETER_SHAPE_DEPTH = 32;
+
 /** Whether a declared type names a type parameter anywhere inside it — a
  * bare `T`, a union arm, a type argument, or a record member or index
  * signature. `mentionsTypeParameter` answers only for the first three;
@@ -9946,28 +9952,36 @@ function mentionsTypeParameterInShape(
   lowerer: Lowerer,
   type: ts.Type,
   seen: Set<ts.Type> = new Set(),
+  depth = 0,
 ): boolean {
   if ((type.flags & ts.TypeFlags.TypeParameter) !== 0) return true;
   if (seen.has(type)) return false;
+  if (depth >= TYPE_PARAMETER_SHAPE_DEPTH) return true;
   seen.add(type);
   const mentions = (part: ts.Type | undefined): boolean =>
-    part !== undefined && mentionsTypeParameterInShape(lowerer, part, seen);
+    part !== undefined && mentionsTypeParameterInShape(lowerer, part, seen, depth + 1);
   if (type.isUnionType() || type.isIntersectionType())
     return ts.constituentTypes(type).some(mentions);
   if (type.getAliasTypeArguments().some(mentions)) return true;
   const checker = lowerer.checker;
+  if ((type.flags & ts.TypeFlags.Object) !== 0) {
+    const object = type as ts.ObjectType;
+    if ((object.objectFlags & ts.ObjectFlags.Reference) !== 0) {
+      // A reference's members are its target's with these arguments
+      // substituted, so only the arguments can name a type parameter now.
+      // Its members must not be walked: `string[]`'s own methods answer
+      // types that nest one array deeper at every step
+      // (`(string | ConcatArray<string>)[]`, and so on), which is how a
+      // slot typed `items?: string[]` overflowed the stack.
+      return checker.getTypeArguments(object as ts.TypeReference).some(mentions);
+    }
+  }
   const signatureMentions = (signature: ts.Signature): boolean =>
     mentions(checker.getReturnTypeOfSignature(signature)) ||
     signature.getParameters().some((parameter) => mentions(checker.getTypeOfSymbol(parameter)));
   if (checker.getCallSignatures(type).some(signatureMentions)) return true;
   if (checker.getConstructSignatures(type).some(signatureMentions)) return true;
   if ((type.flags & ts.TypeFlags.Object) !== 0) {
-    const object = type as ts.ObjectType;
-    if (
-      (object.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
-      checker.getTypeArguments(object as ts.TypeReference).some(mentions)
-    )
-      return true;
     if (
       checker
         .getPropertiesOfType(type)

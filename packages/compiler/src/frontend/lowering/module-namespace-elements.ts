@@ -13,7 +13,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { canonicalBuiltinModule, locOf, resolveImport } from "../program.js";
+import { canonicalBuiltinModule, locOf } from "../program.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
 import { builtinModuleMemberNames } from "./surfaces.js";
@@ -782,6 +782,12 @@ function namespaceMemberValue(
     exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
   if (!(target.flags & ts.SymbolFlags.Value)) return null;
   const loc = locOf(expr);
+  // An export that IS a module namespace (`export * as boxed from "./m"`,
+  // `import * as m from "./m"; export { m as default }`): the read answers
+  // that module's own namespace object, the value a typed reference boxed
+  // into an untyped slot already gets.
+  const nested = namespaceExportValue(lowerer, target, loc);
+  if (nested !== null) return nested;
   // The module global the export owns, following any `export … from` chain:
   // an expression default (`export default 42`), a CommonJS
   // `exports.name = <expr>`, and the SNAPSHOT a default over a mutable
@@ -838,10 +844,14 @@ function anonymousDefaultValue(
   return null;
 }
 
-/** The module global an export owns, following `export … from` chains: a
- * re-export is alias plumbing with no storage of its own, so the value lives
- * where the module that declares (or evaluates) the export keeps it. Null for
- * an export whose value only its declaration names. */
+/** The module global an export owns, following its alias chain one step at a
+ * time: `export { v } from "./m"`, `import v from "./m"; export { v }`, a
+ * local specifier without a rename, and a default over a mutable binding all
+ * pass the value along. Each step is alias plumbing with no storage of its
+ * own, so the value lives where the chain reaches storage — the FIRST step
+ * that owns one, which keeps a snapshot a snapshot (a default over a mutable
+ * binding stopped there when the export statement ran) and a live binding
+ * live. Undefined for an export whose value only its declaration names. */
 function exportStorageOf(lowerer: Lowerer, symbol: ts.Symbol): IrGlobal | undefined {
   const seen = new Set<ts.Symbol>();
   let current: ts.Symbol | undefined = symbol;
@@ -849,66 +859,10 @@ function exportStorageOf(lowerer: Lowerer, symbol: ts.Symbol): IrGlobal | undefi
     seen.add(current);
     const stored = lowerer.globalsBySymbol.get(current);
     if (stored !== undefined) return stored;
-    current = reexportedExportOf(lowerer, current);
+    // The chain ends at the first symbol that is not an alias (the checker
+    // answers getImmediateAliasedSymbol only for aliases).
+    if ((current.flags & ts.SymbolFlags.Alias) === 0) return undefined;
+    current = lowerer.checker.getImmediateAliasedSymbol(current);
   }
   return undefined;
-}
-
-/** The export symbol the SOURCE module of a re-export (`export { name } from
- * "./m"`) ships under the same name, or undefined for every other
- * declaration. */
-function reexportedExportOf(lowerer: Lowerer, symbol: ts.Symbol): ts.Symbol | undefined {
-  for (const decl of symbol.declarations ?? []) {
-    if (!ts.isExportSpecifier(decl)) continue;
-    // The specifier sits in a NamedExports node inside the declaration.
-    const declaration = decl.parent?.parent;
-    if (declaration === undefined || !ts.isExportDeclaration(declaration)) continue;
-    const name = (decl.propertyName ?? decl.name).text;
-    if (declaration.moduleSpecifier !== undefined)
-      return moduleExportOf(lowerer, declaration, name);
-    // A LOCAL specifier names a binding of this module; when that binding is
-    // an import, the value lives in the module it came from.
-    const local = lowerer.checker.getSymbolAtLocation(decl.propertyName ?? decl.name);
-    if (local === undefined) continue;
-    const imported = importedExportOf(lowerer, local);
-    if (imported !== undefined) return imported;
-    return local.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(local) : local;
-  }
-  return undefined;
-}
-
-/** The export symbol an imported binding reads (`import d from "./m"`,
- * `import { x } from "./m"`, `import { y as z } from "./m"`), or undefined
- * for a binding the module declares itself. */
-function importedExportOf(lowerer: Lowerer, symbol: ts.Symbol): ts.Symbol | undefined {
-  for (const decl of symbol.declarations ?? []) {
-    if (ts.isImportClause(decl)) {
-      const declaration = decl.parent;
-      if (declaration !== undefined && decl.name !== undefined)
-        return moduleExportOf(lowerer, declaration, "default");
-      continue;
-    }
-    if (ts.isImportSpecifier(decl)) {
-      // ImportSpecifier → NamedImports → ImportClause → ImportDeclaration.
-      const declaration = decl.parent?.parent?.parent;
-      if (declaration !== undefined)
-        return moduleExportOf(lowerer, declaration, (decl.propertyName ?? decl.name).text);
-    }
-  }
-  return undefined;
-}
-
-/** The export symbol `name` of the module an import or export declaration
- * names. */
-function moduleExportOf(lowerer: Lowerer, node: ts.Node, name: string): ts.Symbol | undefined {
-  if (!ts.isImportDeclaration(node) && !ts.isExportDeclaration(node)) return undefined;
-  const specifier = node.moduleSpecifier;
-  if (specifier === undefined || !ts.isStringLiteral(specifier)) return undefined;
-  const source = resolveImport(lowerer.program, ts.getSourceFileOfNode(node), specifier.text);
-  if (source === null) return undefined;
-  const moduleSymbol = lowerer.checker.getSymbolAtLocation(source);
-  if (moduleSymbol === undefined) return undefined;
-  return lowerer.checker
-    .getExportsOfModule(moduleSymbol)
-    .find((exported) => ts.symbolName(exported) === name);
 }

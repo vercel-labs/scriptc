@@ -38,12 +38,21 @@ console.log((shape as any).default.kind, (shape as any).default === shape.defaul
 console.log((reexported as any).default, (reexported as any).fromShape.kind, (reexported as any).liveCopy);
 
 // The same forwarding through a LOCAL specifier over an imported binding
-// (`import v from "./lib.ts"; export { v as default }`).
-console.log((local as any).default, (local as any).forwardedShape.kind);
+// (`import v from "./lib.ts"; export { v as default }`), including the
+// shorthand form that keeps the binding's own name.
+console.log((local as any).default, (local as any).forwardedShape.kind, (local as any).forwarded);
 bump();
 advance();
 console.log((reexported as any).default, (reexported as any).fromShape.kind, (reexported as any).liveCopy);
-console.log((local as any).default);
+console.log((local as any).default, (local as any).forwarded);
+
+// `export * as shapeNs from "./shape.ts"` exports that module's own namespace
+// object, which the read answers like any other value.
+console.log(
+  typeof (reexported as any).shapeNs,
+  (reexported as any).shapeNs.sibling,
+  (reexported as any).shapeNs.default.kind,
+);
 
 // The receiver runs before the read, whatever the member answers.
 console.log((console.log("effect"), lib as any).missing);

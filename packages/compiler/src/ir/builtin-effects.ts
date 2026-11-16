@@ -70,6 +70,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generatePrimeCb",
   // node:test's { timeout } and { concurrency } range checks.
   "test.register",
+  // t.error builds Node's wrapper over the failure through the inspect
+  // unit's rendering, which can raise.
+  "test.ctxError",
   "test.registerEmpty",
   "test.sub",
   "test.subEmpty",

@@ -12,6 +12,9 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
+  // controller runs no program code and raises no catchable error.
+  "test.ctxSignal",
   "process.finalization",
   // scr_watcher_ref / scr_watcher_unref move one open watcher's loop-liveness
   // flag; a closed watcher ignores them, and nothing user-visible runs.

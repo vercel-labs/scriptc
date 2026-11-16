@@ -34,6 +34,7 @@ declare module "node:test" {
     readonly filePath: string | undefined;
     readonly attempt: number;
     readonly passed: boolean;
+    readonly signal: AbortSignal;
     diagnostic(message: string): void;
   }
   interface TestOptions {
@@ -52,6 +53,11 @@ declare module "node:test" {
     readonly passed: boolean;
     readonly workerId: number | undefined;
     readonly tags: readonly string[];
+    /* Aborted when the test times out, is cancelled, or finishes. */
+    readonly signal: AbortSignal;
+    /* Node's ERR_TEST_FAILURE wrapper over the failure, its `cause` the
+     * value the test threw; null while the test has not failed. */
+    readonly error: Error | null;
     readonly assert: TestContextAssert;
     readonly mock: MockTracker;
     test(name?: string, fn?: TestFn): Promise<void>;

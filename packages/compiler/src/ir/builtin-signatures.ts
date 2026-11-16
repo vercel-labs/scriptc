@@ -2543,6 +2543,11 @@ function buildLibFnSignatures() {
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
+    // t.signal: the test's AbortSignal handle (created on first read; the
+    // abortSignal runtime feature links the unit), and t.error: Node's
+    // ERR_TEST_FAILURE wrapper over the failure, or null.
+    "test.ctxSignal": { argTypes: [TESTCTX_T], result: DYN },
+    "test.ctxError": { argTypes: [TESTCTX_T], result: DYN },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for

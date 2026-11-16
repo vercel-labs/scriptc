@@ -2437,7 +2437,12 @@ static void scr_http_res_cork_flush(ScrHttpRes *r) {
    * uncork() with no write while corked sends nothing. */
   bool wrote = r->cork_wrote;
   r->cork_wrote = false;
-  if (r->cork_len == 0 && (r->held_head_len == 0 || !wrote)) return;
+  if (r->cork_len == 0 && (r->held_head_len == 0 || !wrote)) {
+    /* nothing to send, but a write with no bytes still completes its
+     * callback at the flush */
+    scr_http_res_queue_wcb_handoff(r);
+    return;
+  }
   char *held = r->cork_buf;
   size_t held_len = r->cork_len;
   r->cork_buf = NULL;
@@ -6029,7 +6034,12 @@ bool scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*
 }
 
 static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
-  if (c->cork_len == 0 && c->held_head == NULL) return;
+  if (c->cork_len == 0 && c->held_head == NULL) {
+    /* a write with no bytes flushes nothing but still completes its
+     * callback at the flush */
+    scr_http_client_fire_write_flush(c);
+    return;
+  }
   char *held = c->cork_buf;
   size_t held_len = c->cork_len;
   c->cork_buf = NULL;

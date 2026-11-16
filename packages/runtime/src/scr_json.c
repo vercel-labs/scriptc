@@ -10275,11 +10275,25 @@ void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
   scr_dyn_stamp_prototype_name(prototype, name->data, name->len);
 }
 
+/* The Function constructor's refusal, shared by `Function(...)`,
+ * `new Function(...)` and `new (fn.constructor)(...)`: V8 converts every
+ * parameter and the body to a string in order before it checks, so the
+ * program sees its toString calls and their exceptions first (defined with
+ * the constructor values below). */
+static bool scr_function_constructor_refuse(ScrDyn *const *args, size_t argc);
+static ScrDyn *scr_function_constructor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc);
+
 /* Ordinary native function constructors retain their live prototype table.
  * A constructor may replace the fresh receiver with another object. */
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what) {
   if (scr_ni_dyn_handle(callee))
     return scr_ni_dyn_ops->construct((ScrDyn *)callee, args->v.arr.items, args->v.arr.len);
+  /* Constructing the Function constructor refuses as calling it does:
+   * `new (fn.constructor)("return 1")` is the same code generation. */
+  if (callee->kind == SCR_DYN_FUNC && callee->v.fn.thunk == scr_function_constructor_call) {
+    (void)scr_function_constructor_refuse(args->v.arr.items, args->v.arr.len);
+    return NULL;
+  }
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.class_obj ||
       (scr_closure_identity(callee->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) != SCR_CLOSURE_KIND_OWN_PROTOTYPE)
     return scr_bytes_construct(callee, args, what);
@@ -19098,10 +19112,22 @@ static void scr_function_constructors_cleanup(void) {
   }
 }
 
+static bool scr_function_constructor_refuse(ScrDyn *const *args, size_t argc) {
+  for (size_t i = 0; i < argc; i++) {
+    ScrStr *text = scr_dyn_string_coerce_js(args[i]);
+    if (!text) return false; /* the conversion threw */
+    scr_str_release(text);
+  }
+  static const char message[] = "Code generation from strings disallowed for this context";
+  scr_throw_error_msg(SCR_ERR_EVAL, message, sizeof message - 1);
+  return false;
+}
+
 static ScrDyn *scr_function_constructor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  (void)closure; (void)args; (void)argc;
-  static const char message[] = "constructing functions from source text is not supported in static code";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2010");
+  (void)closure;
+  /* Function(...) is the Function constructor itself, which a compiled
+   * program answers as `node --disallow-code-generation-from-strings` does. */
+  (void)scr_function_constructor_refuse(args, argc);
   return NULL;
 }
 

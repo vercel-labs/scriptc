@@ -80,6 +80,8 @@ import {
 import { callableMemberFieldTarget, lowerCallableAssign } from "./callable-properties.js";
 import type { Lowerer } from "./lowerer.js";
 import {
+  cjsAbsentMemberValue,
+  cjsModuleLacksExport,
   inlineNamespaceRequireOf,
   lowerInlineRequireValue,
   lowerUncompiledRequireCall,
@@ -758,9 +760,12 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
     const req = inlineNamespaceRequireOf(lowerer, expr.expression.expression);
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
-      // Node calls the member with `this` bound to the module's exports.
+      // Node calls the member with `this` bound to the module's exports. A
+      // member the module does not carry is undefined, so no `this` is
+      // ever bound: the call is Node's "is not a function" TypeError.
       if (
         ts.isIdentifier(expr.expression.name) &&
+        !cjsModuleLacksExport(lowerer, req.dep, expr.expression.name.text, expr.expression.name) &&
         !cjsExportCallIgnoresThis(lowerer, req.dep, expr.expression.name.text)
       ) {
         lowerer.unsupported(
@@ -1903,6 +1908,25 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (!ts.isIdentifier(nameId)) {
       lowerer.unsupported("SC1090", nameId, "private-named module members");
     }
+    // A member the module's exports object does not carry is undefined;
+    // Node evaluates the arguments and then throws its "is not a function"
+    // TypeError (the checked-dynamic call's answer for a non-callable).
+    {
+      const recv = expr.expression.expression;
+      const dep = ts.isIdentifier(recv)
+        ? lowerer.cjsModuleBindingDepOf(recv)
+        : lowerer.cjsModuleRefDepOf(recv);
+      if (dep !== null && cjsModuleLacksExport(lowerer, dep, nameId.text, nameId)) {
+        const callee: IrExpr = {
+          kind: "dynFrom",
+          value: cjsAbsentMemberValue(lowerer, expr.expression, nameId),
+          type: DYN,
+          loc,
+        };
+        const missing = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+        if (missing) return missing;
+      }
+    }
     // A conditional whole export answers below through a slot; the receiver
     // check comes first so that path cannot invoke a receiver-dependent
     // export with no `this`.
@@ -1945,7 +1969,16 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // `exports.f =` statement assigns.
   if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
     const g = cjsInFileExportGlobalOf(lowerer, expr.expression);
-    if (g && (g.type.kind === "func" || g.type.kind === "dyn")) {
+    // A member some path leaves unassigned has an undefined-armed slot (the
+    // absent-member widening): the call still evaluates its arguments and
+    // then throws Node's "is not a function" TypeError when the arm is
+    // undefined, so it rides the checked-dynamic call.
+    const absentCapable =
+      g !== null &&
+      g.type.kind === "union" &&
+      lowerer.stripUndefinedArm(g.type).kind === "func" &&
+      lowerer.dynConvertible(g.type);
+    if (g && (g.type.kind === "func" || g.type.kind === "dyn" || absentCapable)) {
       const sf = ts.getSourceFileOfNode(expr);
       const member = expr.expression.name.text;
       // A function that reads `this` only for its sibling exports gets them
@@ -1955,7 +1988,11 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         : (lowerCjsExportsReceiver(lowerer, expr, sf, member) ?? null);
       const refusal = `calling '${ts.getTextOfNode(expr.expression)}' through the module's exports object when the function may read 'this' (Node binds it to the exports object, which compiles to a static table — call a local function instead)`;
       if (receiver === null) lowerer.unsupported("SC1090", expr, refusal);
-      const callee: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
+      const slot: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
+      const callee: IrExpr =
+        g.type.kind === "func" || g.type.kind === "dyn"
+          ? slot
+          : { kind: "dynFrom", value: slot, type: DYN, loc };
       const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
       if (checked) {
         if (receiver === undefined) return checked;
@@ -4261,7 +4298,11 @@ function lowerObjectPrototypeCall(
     immediate === null &&
     receiver.type.kind === "func" &&
     (receiver.type.ret.kind === "promise" || receiver.type.ret.kind === "generator");
-  const tag = immediate?.tag ?? (kindTagged ? null : objectToStringTag(lowerer, receiver.type));
+  // A perf entry's tag comes from the entryType it holds (below), not from
+  // its record shape, which the plain-record rule would answer as Object.
+  const perfEntry = receiver.type.kind === "record" && isPerfEntryType(lowerer, receiver.type);
+  const tag =
+    immediate?.tag ?? (kindTagged || perfEntry ? null : objectToStringTag(lowerer, receiver.type));
   if (tag === null && immediate === null && !kindTagged && call.arguments.nodes.length === 1) {
     const classTag = classObjectTag(lowerer, receiver, receiverNode);
     if (classTag) return classTag;
@@ -4270,6 +4311,7 @@ function lowerObjectPrototypeCall(
   if (
     tag === null &&
     !kindTagged &&
+    !perfEntry &&
     receiver.type.kind !== "dyn" &&
     receiver.type.kind !== "generator"
   ) {
@@ -4291,17 +4333,21 @@ function lowerObjectPrototypeCall(
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(extra), loc: locOf(extra) });
   }
   const result: IrExpr =
-    tag === null
-      ? {
-          kind: "libCall",
-          fn: "dyn.objectTag",
-          args: [
-            ref.type.kind === "generator" || kindTagged ? lowerer.coerceToExpected(ref, DYN) : ref,
-          ],
-          type: STRING,
-          loc,
-        }
-      : { kind: "strLit", value: "[object " + tag + "]", type: STRING, loc };
+    tag !== null
+      ? { kind: "strLit", value: "[object " + tag + "]", type: STRING, loc }
+      : perfEntry && receiver.type.kind === "record"
+        ? perfEntryTag(lowerer, ref, receiver.type, loc)
+        : {
+            kind: "libCall",
+            fn: "dyn.objectTag",
+            args: [
+              ref.type.kind === "generator" || kindTagged
+                ? lowerer.coerceToExpected(ref, DYN)
+                : ref,
+            ],
+            type: STRING,
+            loc,
+          };
   return { kind: "seqExpr", stmts, result, type: STRING, loc };
 }
 
@@ -5942,6 +5988,9 @@ const DYN_STRING_PROTO_ONLY_NAMES = new Set([
  * is-not-a-function where the kind's prototype lacks the name, and
  * throws the 'not supported yet' Error on real-but-unimplemented pairs. */
 const DYN_DISPATCH_METHODS = new Set([
+  // KeyObject.prototype's conversion dispatches on the handle, which has no
+  // stored member value to read (scr_lib.c/scr_pki.c reach it).
+  "toCryptoKey",
   "toFixed",
   "toExponential",
   "segment",
@@ -7371,6 +7420,73 @@ export function lowerTaggedTemplate(lowerer: Lowerer, expr: ts.TaggedTemplateExp
       ...values.map((a) => lowerer.lowerExprExpecting(a, DYN)),
     ];
     const calleeName = v8CalleeText(expr.tag);
+    // `recv.tag\`...\`` runs with `recv` as `this`, like `recv.tag(...)`:
+    // the receiver evaluates first and the member is read off it. A tag
+    // that is not a property read is a value call with no receiver.
+    if (ts.isElementAccessExpression(expr.tag) && !expr.tag.questionDotToken) {
+      const receiverLocal = lowerer.declareHiddenLocal("%dynTagReceiver", DYN);
+      const receiver: IrExpr = { kind: "varRef", localId: receiverLocal.id, type: DYN, loc };
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: receiverLocal.id,
+            init: lowerer.lowerExprExpecting(expr.tag.expression, DYN),
+            loc,
+          },
+        ],
+        result: {
+          kind: "dynCall",
+          callee: {
+            kind: "dynKeyGet",
+            value: receiver,
+            key: lowerer.lowerExprExpecting(expr.tag.argumentExpression, DYN),
+            type: DYN,
+            loc,
+          },
+          receiver,
+          calleeName,
+          args,
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
+    if (ts.isPropertyAccessExpression(expr.tag) && !expr.tag.questionDotToken) {
+      const receiverLocal = lowerer.declareHiddenLocal("%dynTagReceiver", DYN);
+      const receiver: IrExpr = { kind: "varRef", localId: receiverLocal.id, type: DYN, loc };
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: receiverLocal.id,
+            init: lowerer.lowerExprExpecting(expr.tag.expression, DYN),
+            loc,
+          },
+        ],
+        result: {
+          kind: "dynCall",
+          callee: {
+            kind: "dynKeyGet",
+            value: receiver,
+            key: { kind: "strLit", value: expr.tag.name.text, type: STRING, loc },
+            type: DYN,
+            loc,
+          },
+          receiver,
+          calleeName,
+          args,
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
     return { kind: "dynCall", callee, calleeName, args, type: DYN, loc };
   }
   lowerer.unsupported(

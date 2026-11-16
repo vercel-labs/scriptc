@@ -4,7 +4,23 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Highlights
+
+- **Node.js parity:**
+  - `Set` and `Map` take `Map`, `Set` and typed-array elements: each is one object for its whole life, so JavaScript compares it by identity, and the collection holds it, finds it, deletes and re-adds it, iterates it in insertion order and seeds another `Map` from `[key, value]` pairs holding it, instead of failing with SC2020; `Set<Uint8Array>` and `Map<Map<string, number>, T>` compile and keep two objects with equal contents apart.
+  - A collection constructor's seed cast from an untyped value, `new Set(u as Key[])` where `u` is `unknown`, lowers as the ordinary checked array conversion rather than as a single key, so it compiles like `const keys = u as Key[]; new Set(keys)` and every element keeps the identity the untyped name still sees; a key written on its own (`set.add(u as Key)`) stays refused, because copying a key would change the object the collection holds.
+- **TypeScript parity:**
+  - A relative JavaScript import resolves to its sibling declaration for types, as tsc resolves it: `./lib.js` is typed by `lib.d.ts`, `./lib.mjs` by `lib.d.mts` and `./lib.cjs` by `lib.d.cts` when the file sits beside the JavaScript, while the compiled module is the JavaScript Node loads. A call is checked against the declaration (an optional declared parameter stays optional although the JavaScript's inferred parameter type requires it), so a vendored dependency keeps its published types instead of losing them to the JavaScript's inferred shape. A declaration a project's tsconfig `include` loads beside its implementation also stays in the program, where a JSX project previously reported it as a missing file.
+
 <!-- release:start -->
+
+### Fixes
+
+- An operator in an unchecked JavaScript file reads the value a binding actually holds, not the shape one assignment gave it: shipped JavaScript reuses one `var` for a property descriptor, an array of stack lines and a count, so `1 <= namePropDescriptor`, `RunInRootFrame++`, `hostSiblings += 1` and `getTargetInstFunc && …` compile to the dynamic conversion Node applies instead of failing with SC0001 or SC1090. A `var` read before its first assignment answers `undefined`, as the hoisted declaration does in Node. A `// @ts-check` file keeps the checker's diagnostics, and an operator whose operand is a static object keeps its refusal.
+- A module namespace object read through a value the checker cannot resolve, such as `(ns as any).log`, answers `undefined` for a name the module does not export and the export for one it does, as Node does, instead of failing with SC1090.
+- A checked value from an indexed object's optional member, such as `JsonWebKey`'s `alg?: string` over `[key: string]: unknown`, keeps the present `undefined` a `(T | undefined)[]` slot admits instead of throwing `expected string at $, got undefined`: an array literal, an index write, `push`, `unshift`, `splice`, `toSpliced`, `with`, `fill`, `Array.of` and `new Array(...)` print `null` from `JSON.stringify` and read back as `undefined`, as Node does.
+- A property descriptor read from a class's prototype through an untyped value, such as a UI SDK's `Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")`, builds and answers Node's descriptor — the accessor pair the class declares, with its attributes — instead of failing the build with an empty SC3004: a class value's static table reflects a static method whose parameters complete as the checked-dynamic function Node holds, and a member the table cannot hold leaves the class's statics fenced rather than aborting lowering. Building the prototype view itself no longer reports the retry's diagnostic for a member whose body cannot run over a dynamic receiver (a typed field used as a `Map` key, say); that statement fences at run time. A native build that fails inside the compiler now names the failure, and no SC3002–SC3004 diagnostic is empty.
+- A class method read from a prototype view — an untyped value's `Object.getPrototypeOf`, or a descriptor taken from it — runs its class's compiled method instead of throwing at run time: a member whose body reads a generic method through `this` (a DOM node's `insertBefore` calling `this.appendChild`) has no checked-dynamic form to hand out, so the view answers that member's compiled, receiver-checked value and the body keeps the class's own `this`, where the generic call lowers as its typed call site does.
 
 ## 0.4.15
 

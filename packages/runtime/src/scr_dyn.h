@@ -270,6 +270,12 @@ typedef enum {
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
+  Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
+  Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
+  Y(SQLITE_SESSION) /* node:sqlite Session (scr_sqlite.c) */ \
+  Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
+  Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
@@ -1392,6 +1398,9 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
+/* Whether key is Symbol.iterator (false before the symbol unit registered
+ * it). Handle symbol_get ops outside that unit use it for their iterators. */
+bool scr_dyn_is_iterator_symbol(const ScrDyn *key);
 /* Symbol.for('nodejs.util.inspect.custom'): the symbol unit installs it
  * when the registry creates it; NULL (borrowed) until then. */
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key);

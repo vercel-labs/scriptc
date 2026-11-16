@@ -515,13 +515,16 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
   }
   if (e.fn === "fs.watch") {
     // The callback-less form: NULL listener/adapter. Throws Node-shaped
-    // fs errors when the path won't open; an open watcher holds the
-    // loop (usesTimers).
+    // fs errors when the path won't open; a reffed watcher holds the
+    // loop (usesTimers), one created with persistent: false does not.
     host.usesTimers = true;
     const path = host.emitExpr(e.args[0]!);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
+    const persistent = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext)`);
     const t = B.tmp();
-    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false)`);
+    B.line(
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false, i1 ${persistent.name})`,
+    );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
@@ -538,16 +541,68 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
       throw new InternalCompilerError("llvm emitter bug: fs.watchCb callback not a func");
     const path = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
+    const persistent = host.emitExpr(e.args[2]!);
     host.toHeap(cb);
     const adapter = watchChangeAdapter(host, cbT);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"})`,
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"}, i1 ${persistent.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
+  }
+  if (e.fn === "fsp.watch") {
+    // fsPromises.watch(path, persistent, maxQueue, overflowIsError): the
+    // iterator state (+1). The watch opens NOW, so a bad or unopenable path
+    // throws here (Node's first next() does the same), as does a maxQueue
+    // validateInteger rejects; a reffed state holds the loop like a reffed
+    // fs.watch handle. The standard pending check.
+    host.usesTimers = true;
+    const path = host.emitExpr(e.args[0]!);
+    const persistent = host.emitExpr(e.args[1]!);
+    const maxQueue = host.emitExpr(e.args[2]!);
+    const overflowError = host.emitExpr(e.args[3]!);
+    host.declare(`declare ptr @scr_watch_events_new(ptr, i1 zeroext, double, i1 zeroext)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_watch_events_new(ptr ${path.name}, i1 zeroext ${persistent.name}, double ${maxQueue.name}, i1 zeroext ${overflowError.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "watchEvents.wait") {
+    // The loop's wait for the next event: a +1 bool promise, settled now
+    // with true when an entry is queued and false when the state closed.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_watch_events_wait(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_watch_events_wait(ptr ${st.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "watchEvents.take") {
+    // The dynamic `{ eventType, filename }` record the iterator queued
+    // (+1); the loop only takes one after a true wait, and checks it into
+    // the iteration record there. A queue that overflowed under
+    // overflow: "error" throws Node's ERR_FS_WATCH_QUEUE_OVERFLOW here —
+    // the standard pending check.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_watch_events_take(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_watch_events_take(ptr ${st.name})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "watchEvents.close") {
+    // The loop's finally: closes the watch (idempotent) and drops the
+    // queue. Never throws.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare void @scr_watch_events_close(ptr)`);
+    B.line(`call void @scr_watch_events_close(ptr ${st.name})`);
+    return host.own({ name: "null", type: e.type });
   }
   if (e.fn === "watcher.on") {
     // (recv, event, flags, listener) — flags: 1 once, 2 prepend. The
@@ -602,6 +657,15 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const w = host.emitExpr(e.args[0]!);
     host.declare(`declare void @scr_watcher_close(ptr)`);
     B.line(`call void @scr_watcher_close(ptr ${w.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "watcher.ref" || e.fn === "watcher.unref") {
+    // The loop-liveness toggle; a closed watcher ignores both, so neither
+    // throws.
+    const w = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "watcher.ref" ? "scr_watcher_ref" : "scr_watcher_unref";
+    host.declare(`declare void @${sym}(ptr)`);
+    B.line(`call void @${sym}(ptr ${w.name})`);
     return { name: "", type: e.type };
   }
   if (e.fn === "fs.watchFile") {

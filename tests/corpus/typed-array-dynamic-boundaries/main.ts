@@ -59,6 +59,21 @@ const dynRows: unknown = rows;
 const fromDyn = new Set(dynRows as { name: string; hits: number }[]);
 console.log(fromDyn.size, fromDyn.has(rows[0]!));
 
+// A seed cast from a dynamic value converts each element and keeps its
+// identity: the object the Set holds is the one the untyped name reads.
+const dynOnly: unknown = [{ label: "one" }];
+const dynSet = new Set(dynOnly as { label: string }[]);
+const dynList = dynOnly as { label: string }[];
+dynList[0]!.label = "two";
+console.log(dynSet.has(dynList[0]!), [...dynSet][0]!.label, dynList[0]!.label);
+
+// A fixed tuple seed is the same sequence: each position keeps its identity.
+const dynTuple: unknown = [{ label: "one" }];
+const tupleSet = new Set(dynTuple as [{ label: string }]);
+const tupleBack = dynTuple as { label: string }[];
+tupleBack[0]!.label = "tuple";
+console.log(tupleSet.size, tupleSet.has(tupleBack[0]!), [...tupleSet][0]!.label);
+
 // Maps and typed arrays are objects too: a Set of them holds each one.
 const counts = new Map([["a", 1]]);
 const names = new Set(["a"]);

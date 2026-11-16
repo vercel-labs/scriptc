@@ -58134,6 +58134,7 @@
           "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/http-set-headers.mjs",
           "tests/corpus/http-set-headers.ts",
+          "tests/corpus/http-write-args.ts",
           "tests/corpus/http-write-backpressure.ts",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-dispose-http.ts",
@@ -62246,6 +62247,7 @@
         "tests": [
           "tests/corpus/compat-http-message-tail.ts",
           "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/http-write-args.ts",
           "tests/corpus/http-write-backpressure.ts"
         ]
       },
@@ -62435,6 +62437,7 @@
         "tests": [
           "tests/corpus/compat-http-message-tail.ts",
           "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/http-write-args.ts",
           "tests/corpus/http-write-backpressure.ts"
         ]
       },
@@ -62491,6 +62494,7 @@
         "tests": [
           "tests/corpus/compat-http-message-tail.ts",
           "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/http-write-args.ts",
           "tests/corpus/http-write-backpressure.ts"
         ]
       },
@@ -62573,6 +62577,7 @@
         "tests": [
           "tests/corpus/compat-http-message-tail.ts",
           "tests/corpus/compat-http-message-tail.mjs",
+          "tests/corpus/http-write-args.ts",
           "tests/corpus/http-write-backpressure.ts"
         ]
       },

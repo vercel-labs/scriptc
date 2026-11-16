@@ -7854,6 +7854,118 @@ static bool scr_http_dynh_encode(const ScrDyn *chunk, const ScrDyn *enc, ScrByte
   return true;
 }
 
+/* ── write/end with the extra arguments (encoding, callback) ──────────
+ * A typed call may carry an encoding for a string chunk and a callback that
+ * runs once the chunk is flushed: OutgoingMessage.write(chunk[, encoding]
+ * [, callback]) and end([data[, encoding]][, callback]). The arguments
+ * cross as checked-dynamic values — the chunk is a string or a Buffer, the
+ * encoding applies only to a string (a buffer ignores it, as in Node), and
+ * the callback is a function. */
+
+/* The string chunk in `encoding` (+1), or NULL when the chunk carries its
+ * own bytes or no encoding was given; *failed is set with the exception
+ * pending for an unknown encoding. */
+static ScrBytes *scr_http_typed_encoded(const ScrDyn *chunk, const ScrDyn *encoding, bool *failed) {
+  *failed = false;
+  if (chunk->kind != SCR_DYN_STR) return NULL;
+  if (encoding->kind == SCR_DYN_UNDEF || encoding->kind == SCR_DYN_NULL) return NULL;
+  ScrBytes *out = NULL;
+  if (!scr_http_dynh_encode(chunk, encoding, &out)) {
+    *failed = true;
+    return NULL;
+  }
+  return out;
+}
+
+bool scr_http_res_write_args(ScrHttpRes *r, const ScrDyn *chunk, const ScrDyn *encoding,
+                             const ScrDyn *callback) {
+  if (!scr_http_dynh_chunk_ok(chunk)) return false;
+  bool failed = false;
+  ScrBytes *decoded = scr_http_typed_encoded(chunk, encoding, &failed);
+  if (failed) return false;
+  if (callback->kind == SCR_DYN_FUNC)
+    scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(callback));
+  bool accepted;
+  if (decoded != NULL) {
+    accepted = scr_http_res_write_bytes(r, decoded);
+    scr_bytes_release(decoded);
+  } else if (chunk->kind == SCR_DYN_STR) {
+    accepted = scr_http_res_write_str(r, chunk->v.str);
+  } else {
+    accepted = scr_http_res_write_bytes(r, chunk->v.bytes);
+  }
+  return accepted;
+}
+
+void scr_http_res_end_args(ScrHttpRes *r, const ScrDyn *chunk, const ScrDyn *encoding,
+                           const ScrDyn *callback) {
+  bool has_body = chunk->kind != SCR_DYN_UNDEF && chunk->kind != SCR_DYN_NULL;
+  if (!has_body) {
+    if (callback->kind == SCR_DYN_FUNC)
+      scr_http_res_on_end_callback(r, scr_dyn_listener_closure0(callback));
+    scr_http_res_end(r);
+    return;
+  }
+  if (!scr_http_dynh_chunk_ok(chunk)) return;
+  bool failed = false;
+  ScrBytes *decoded = scr_http_typed_encoded(chunk, encoding, &failed);
+  if (failed) return;
+  if (callback->kind == SCR_DYN_FUNC)
+    scr_http_res_on_end_callback(r, scr_dyn_listener_closure0(callback));
+  if (decoded != NULL) {
+    scr_http_res_end_bytes(r, decoded);
+    scr_bytes_release(decoded);
+  } else if (chunk->kind == SCR_DYN_STR) {
+    scr_http_res_end_str(r, chunk->v.str);
+  } else {
+    scr_http_res_end_bytes(r, chunk->v.bytes);
+  }
+}
+
+bool scr_http_client_write_args(ScrHttpClientReq *c, const ScrDyn *chunk, const ScrDyn *encoding,
+                                const ScrDyn *callback) {
+  if (!scr_http_dynh_chunk_ok(chunk)) return false;
+  bool failed = false;
+  ScrBytes *decoded = scr_http_typed_encoded(chunk, encoding, &failed);
+  if (failed) return false;
+  /* the request's chunk is flushed when the socket takes everything of it */
+  if (callback->kind == SCR_DYN_FUNC && c->sock != NULL)
+    scr_net_sock_on_write_flush(c->sock, scr_dyn_listener_closure0(callback));
+  bool accepted;
+  if (decoded != NULL) {
+    accepted = scr_http_client_write_bytes(c, decoded);
+    scr_bytes_release(decoded);
+  } else if (chunk->kind == SCR_DYN_STR) {
+    accepted = scr_http_client_write_str(c, chunk->v.str);
+  } else {
+    accepted = scr_http_client_write_bytes(c, chunk->v.bytes);
+  }
+  return accepted;
+}
+
+void scr_http_client_end_args(ScrHttpClientReq *c, const ScrDyn *chunk, const ScrDyn *encoding,
+                              const ScrDyn *callback) {
+  bool has_body = chunk->kind != SCR_DYN_UNDEF && chunk->kind != SCR_DYN_NULL;
+  if (!has_body) {
+    scr_http_client_end(c);
+    return;
+  }
+  if (!scr_http_dynh_chunk_ok(chunk)) return;
+  bool failed = false;
+  ScrBytes *decoded = scr_http_typed_encoded(chunk, encoding, &failed);
+  if (failed) return;
+  if (callback->kind == SCR_DYN_FUNC && c->sock != NULL)
+    scr_net_sock_on_write_flush(c->sock, scr_dyn_listener_closure0(callback));
+  if (decoded != NULL) {
+    scr_http_client_end_bytes(c, decoded);
+    scr_bytes_release(decoded);
+  } else if (chunk->kind == SCR_DYN_STR) {
+    scr_http_client_end_str(c, chunk->v.str);
+  } else {
+    scr_http_client_end_bytes(c, chunk->v.bytes);
+  }
+}
+
 /* ── IncomingMessage (SCR_DYNH_HTTP_REQ) ─────────────────────────────── */
 
 static ScrDyn *scr_http_dynh_req_invoke(void *h, ScrDyn *self, const char *method,

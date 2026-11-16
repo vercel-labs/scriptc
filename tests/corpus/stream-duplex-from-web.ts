@@ -36,6 +36,45 @@ async function main(): Promise<void> {
   // finish: allowHalfOpen false closes it (Node's endReadableNT).
   await tick();
   log.push(`after end destroyed ${duplex.destroyed}`);
+
+  // A rejected web sink write reaches the caller's write callback, and the
+  // duplex reports the failure.
+  const rejected = Duplex.fromWeb({
+    readable: new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.close();
+      },
+    }),
+    writable: new WritableStream<Uint8Array>({
+      write(): void {
+        throw new Error("sink fail");
+      },
+    }),
+  });
+  rejected.on("error", (error: Error) => log.push(`rejected error ${error.message}`));
+  await new Promise<void>((resolve) => {
+    rejected.write(Buffer.from("x"), (error) => {
+      log.push(`rejected cb ${error ? error.message : "ok"}`);
+      resolve();
+    });
+  });
+  await tick();
+
+  // destroy() without an error closes cleanly: no error event.
+  const clean = Duplex.fromWeb({
+    readable: new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.close();
+      },
+    }),
+    writable: new WritableStream<Uint8Array>({
+      write(): void {},
+    }),
+  });
+  clean.on("error", (error: Error) => log.push(`clean error ${error.message}`));
+  clean.destroy();
+  await tick();
+  log.push(`clean destroyed ${clean.destroyed} errored ${clean.errored?.message ?? "-"}`);
 }
 
 main().then(() => {

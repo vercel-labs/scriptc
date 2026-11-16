@@ -461,6 +461,9 @@ void scr_stream_uncork(ScrStream *s);
  * fn(cb, err-or-NULL)) receives the error this write completion carries
  * (NULL is Node's null). */
 ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrError *));
+/* The error the current write callback is receiving (NULL for success): read
+ * inside a write completion that forwards the error to another stream. */
+ScrError *scr_stream_write_cb_error(void);
 #endif
 
 /* Shared lifecycle. destroy's err is BORROWED (may be NULL). */

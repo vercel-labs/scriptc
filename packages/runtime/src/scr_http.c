@@ -7906,11 +7906,28 @@ static ScrArr *scr_http_dynh_header_pairs(const ScrDyn *headers) {
   }
   for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
     ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
-    ScrHttpBuf b = {NULL, 0, 0};
-    scr_http_buf_dyn_str(&b, e.value);
-    scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
-    scr_arr_push_ref(pairs, scr_str_new(b.data != NULL ? b.data : "", b.len));
-    free(b.data);
+    ScrStr *name = scr_str_new(e.key, e.key_len);
+    /* Node's processInformationHeader: the name check, then the value
+     * check (an undefined value is ERR_HTTP_INVALID_HEADER_VALUE, not the
+     * text "undefined"), then the template's string form — an array joins
+     * with commas, an object is "[object Object]", as `${value}` is. */
+    scr_http_validate_header_name(name, NULL);
+    if (!scr_exc_pending()) scr_http_validate_header_value(name, e.value);
+    if (scr_exc_pending()) {
+      scr_str_release(name);
+      break;
+    }
+    ScrStr *text = scr_dyn_string_coerce_js(e.value);
+    if (text == NULL) {
+      scr_str_release(name);
+      break;
+    }
+    scr_arr_push_ref(pairs, name);
+    scr_arr_push_ref(pairs, text);
+  }
+  if (scr_exc_pending()) {
+    scr_arr_release(pairs);
+    return NULL;
   }
   return pairs;
 }
@@ -8145,6 +8162,10 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
     if (strcmp(method, "writeContinue") == 0) scr_http_res_write_continue(r);
     else scr_http_res_write_processing(r);
     if (scr_exc_pending()) return NULL;
+    /* writeContinue(cb)/writeProcessing(cb): the callback fires once the
+     * head has gone out (Node's _writeRaw callback). */
+    if (argc > 0 && args[0]->kind == SCR_DYN_FUNC)
+      scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[0]));
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (strcmp(method, "writeEarlyHints") == 0) {
@@ -8153,6 +8174,8 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
     scr_http_res_write_early_hints(r, pairs);
     scr_arr_release(pairs);
     if (scr_exc_pending()) return NULL;
+    if (argc > 1 && args[1]->kind == SCR_DYN_FUNC)
+      scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[1]));
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (strcmp(method, "writeInformation") == 0) {
@@ -8166,6 +8189,8 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
     bool accepted = scr_http_res_write_information(r, status->v.num, pairs);
     scr_arr_release(pairs);
     if (scr_exc_pending()) return NULL;
+    if (argc > 2 && args[2]->kind == SCR_DYN_FUNC)
+      scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[2]));
     return scr_dyn_new_bool(accepted);
   }
   {

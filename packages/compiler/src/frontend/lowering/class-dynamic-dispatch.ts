@@ -7315,15 +7315,53 @@ export class ClassDynamicDispatch {
     }
   }
 
+  /** Whether `className` is one a conditional heritage's selected arm alone
+   * puts on an instance's prototype chain: the arm class or an ancestor of
+   * it strictly below the class's typed base (relational.ts armOnlyClasses).
+   * The class laid out as the typed base, and the classes below it, walk a
+   * chain their class tag does not name. */
+  private armOnlyClass(lowerer: Lowerer, className: string): boolean {
+    for (const [conditional, recorded] of lowerer.computedHeritageArms) {
+      const typedBase = lowerer.classes.get(conditional)?.base?.def.name;
+      if (typedBase === undefined) continue;
+      for (const arm of recorded.arms) {
+        for (
+          let current = lowerer.classes.get(arm) ?? null;
+          current !== null && current.def.name !== typedBase;
+          current = current.base
+        ) {
+          if (current.def.name === className) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /** `value instanceof C` on an untyped value (classInstanceOf) walks the
    * value's prototype chain: three steps and more for a value that is no
    * instance. A capsule of a class of the key table needs no walk: a class
    * and the classes below it are one run of slots, so the capsule's slot
    * answers, inside the run or outside it, whatever the number of classes.
-   * Every other value keeps the walk (its slot is -1): a dynamic object
+   * The slot answers only when every capsule's class tag names the class
+   * whose prototype chain the walk would follow. Two program shapes break
+   * that, and keep the walk for the classes they touch:
+   *
+   * - An `Object.setPrototypeOf` call may give an instance of any class
+   *   another prototype (the corpus's `setPrototypeOf(moved, plain)`), and
+   *   that prototype may be a class's (reprototyped-reads.ts). Every helper
+   *   keeps the walk then, since a reprototyped capsule of any class can be
+   *   an instance of any class.
+   * - A conditional heritage lays a class out as the class its type names
+   *   while `instanceof` follows the selected arm (relational.ts), so a
+   *   capsule of that class reaches an arm class's prototype without its
+   *   class's static subtree holding that class. The helper of an arm class
+   *   (below the typed base) keeps the walk.
+   *
+   * Every other value keeps the walk too (its slot is -1): a dynamic object
    * made over a class's prototype, a function, a primitive. */
   private answerInstanceofBySlot(lowerer: Lowerer, slots: ReadonlyMap<string, number>): void {
     if (slots.size === 0) return;
+    if (lowerer.reprototypedClasses.all || lowerer.reprototypedClasses.decls.size > 0) return;
     const classes = new Map<string, ClassInfo>();
     for (const info of lowerer.classes.values()) classes.set(info.def.name, info);
     for (const fn of lowerer.liftedFns) {
@@ -7335,6 +7373,10 @@ export class ClassDynamicDispatch {
         (stmt) => stmt.kind === "varDecl" && stmt.localId === "candidate",
       );
       if (walk < 0) continue;
+      // An arm class of a conditional heritage: a capsule of the class laid
+      // out under it reaches its prototype while naming a class outside its
+      // static subtree, and the slot would answer false there.
+      if (this.armOnlyClass(lowerer, info.def.name)) continue;
       let first = Infinity,
         last = -1,
         count = 0;

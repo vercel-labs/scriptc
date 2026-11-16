@@ -49,6 +49,8 @@ function context() {
     protocolDispatches: new Map(),
     classMethodValueSelections: new Map(),
     isSubclassOf: () => false,
+    reprototypedClasses: { all: false, decls: new Set() },
+    computedHeritageArms: new Map(),
     nodeAtLoc: () => null,
   } as unknown as Lowerer;
   const boxed = fn("box", [
@@ -1100,4 +1102,63 @@ test("answers an untyped instanceof of a table class from the capsule's slot", (
   // A second pass adds nothing.
   dispatch.finalize(lowerer);
   expect(left.body).toHaveLength(4);
+});
+
+test("keeps the walk when a setPrototypeOf call may reprototype an instance", () => {
+  const made = context();
+  const { lowerer, liftedFns } = made;
+  const names = ["Root", "Left", "Leaf"];
+  const dispatch = boxing(made, names);
+  const helper: IrFunction = {
+    name: "%dyn.class.instanceof:Root",
+    params: [{ localId: "value", name: "value", type: DYN }],
+    returnType: BOOL,
+    locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+    body: [
+      { kind: "varDecl", localId: "candidate", init: variable("value"), loc },
+      { kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc },
+    ],
+    loc,
+  };
+  liftedFns.push(helper);
+  // A capsule of a reprototyped class still names the class, so its slot
+  // cannot answer the test: every helper keeps its walk.
+  lowerer.reprototypedClasses.all = true;
+  dispatch.finalize(lowerer);
+  expect(helper.locals.map((local) => local.id)).toEqual(["value"]);
+  expect(helper.body.map((stmt) => stmt.kind)).toEqual(["varDecl", "return"]);
+});
+
+test("keeps the walk for a class only a conditional heritage's arm reaches", () => {
+  const made = context();
+  const { lowerer, liftedFns } = made;
+  // Root < Left, and Pick extends (cond ? Left : Root): a Pick capsule's
+  // chain passes through Left.prototype while its class tag names Pick.
+  const names = ["Root", "Left", "Pick"];
+  const dispatch = boxing(made, names);
+  const info = (name: string): ClassInfo => lowerer.classes.get(name)!;
+  for (const name of ["Left", "Pick"]) {
+    (info(name) as { base: ClassInfo | null }).base = info("Root");
+    info("Root").subclasses.push(info(name));
+  }
+  lowerer.computedHeritageArms.set("Pick", { arms: ["Left", "Root"] });
+  const helper = (name: string): IrFunction => ({
+    name: `%dyn.class.instanceof:${name}`,
+    params: [{ localId: "value", name: "value", type: DYN }],
+    returnType: BOOL,
+    locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+    body: [
+      { kind: "varDecl", localId: "candidate", init: variable("value"), loc },
+      { kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc },
+    ],
+    loc,
+  });
+  const left = helper("Left");
+  const root = helper("Root");
+  liftedFns.push(left, root);
+  dispatch.finalize(lowerer);
+  expect(left.locals.map((local) => local.id)).toEqual(["value"]);
+  expect(left.body.map((stmt) => stmt.kind)).toEqual(["varDecl", "return"]);
+  // The typed base is on every arm's path, so its slot answer holds.
+  expect(root.locals.map((local) => local.id)).toEqual(["value", "slot"]);
 });

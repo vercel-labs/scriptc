@@ -783,6 +783,10 @@ struct ScrNetSocket {
   /* conn_pending names the handshake's secure list (TLS accept), not the
    * plain 'connection' list of a demux emission. */
   bool conn_pending_secure;
+  /* connect() called on an already-established socket (Node re-runs the
+   * connect flow: 'connect' fires again, no new dial): the sweep fires
+   * the listeners without starting a dial or a poller registration. */
+  bool reconnect_ready;
   /* the idle timer (setTimeout): a one-shot poller timer keyed by this
    * socket's pointer, re-armed on every read/write/connect activity —
    * 'timeout' fires once per idle period and never destroys the socket,
@@ -5269,6 +5273,15 @@ static bool scr_net_sock_connect_ready(ScrNetSocket *s /*nullable*/, ScrClosure 
     do { static const char refusal[] = "connecting a closed socket is not supported yet"; scr_throw_error_msg_code(SCR_ERR_ERROR, refusal, sizeof refusal - 1, "SC2020"); } while (0);
     return false;
   }
+  /* Node runs the connect flow again on an established socket: its
+   * 'connect' listeners (and this call's listener) fire, but nothing is
+   * dialed and no descriptor changes hands. */
+  if (s->fd >= 0 && !s->connecting && (s->peer_ip[0] != '\0' || s->unix_path != NULL)) {
+    if (cb) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
+    s->reconnect_ready = true;
+    scr_net_sock_register(s);
+    return false;
+  }
   return true;
 }
 
@@ -5392,6 +5405,8 @@ void scr_net_sock_connect_opts(ScrNetSocket *s, const ScrDyn *options,
     if (m->kind != SCR_DYN_STR) {
       scr_dyn_prop_type_fail("options.host", "of type string", m);
       ok = false;
+    } else if (!scr_net_host_chk(m->v.str)) {
+      ok = false;
     } else {
       host = scr_str_retain(m->v.str);
     }
@@ -5466,7 +5481,9 @@ ScrDyn *scr_net_sock_timeout(ScrNetSocket *s) {
  * temporary's statement cleanup cannot free it before the sweep. A settled
  * socket ignores it. */
 void scr_net_sock_destroy_error(ScrNetSocket *s, ScrError *err /*borrowed*/) {
-  if (s->close_emitted || s->destroy_error != NULL) return;
+  /* A socket already destroyed (or closing with an Error queued) keeps the
+   * teardown it has: Node ignores a later destroy(err). */
+  if (s->destroyed_flag || s->close_emitted || s->destroy_error != NULL) return;
   s->destroy_error = scr_error_retain(err);
   s->had_error = true;
   scr_net_sock_destroy(s);
@@ -8649,6 +8666,8 @@ bool scr_net_is_ipv4(const ScrDyn *input) { return scr_net_is_ip(input) == 4; }
 bool scr_net_is_ipv6(const ScrDyn *input) { return scr_net_is_ip(input) == 6; }
 
 void scr_net_sock_destroy(ScrNetSocket *s) {
+  /* destroyed answers true from the call on, as Node's stream flag does */
+  s->destroyed_flag = true;
   if (s->adopted_by != NULL) {
     scr_net_sock_destroy(s->adopted_by);
     return;
@@ -9446,6 +9465,14 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     ScrDyn *no_error = scr_dyn_new_null();
     scr_net_fire_arg_this(&sock->wcb_ls, no_error, sock, SCR_DYNH_NET_SOCKET);
     scr_dyn_release(no_error);
+    if (scr_exc_pending()) return false;
+  }
+  if (sock->reconnect_ready) {
+    /* connect() on an established socket: Node re-emits 'connect' */
+    sock->reconnect_ready = false;
+    ScrAlsCtx *prev = scr_als_dispatch_enter(sock->als);
+    scr_net_sock_connected(sock);
+    scr_als_dispatch_leave(prev);
     if (scr_exc_pending()) return false;
   }
   if (sock->finish_pending) {

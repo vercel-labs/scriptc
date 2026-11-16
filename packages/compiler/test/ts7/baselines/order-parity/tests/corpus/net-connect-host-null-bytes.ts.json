@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/net-connect-host-null-bytes.ts"
+ ],
+ "diags": []
+}

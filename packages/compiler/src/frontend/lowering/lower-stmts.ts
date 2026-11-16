@@ -17454,39 +17454,55 @@ function requireReboundValue(
     if (boxed !== null) return boxed;
   }
   // A module whose exports are one object literal (`module.exports = { … }`)
-  // has no first-class exports object in the lowering, so a plain
-  // checked-dynamic object built from its export table answers every member
-  // read as the exports object does at the declaration. A module that assigns
-  // members one by one (`exports.x = …`) keeps the refusal: its member reads
-  // resolve through the checker's export aliases, which would answer the
-  // module's values after the reassignment.
-  if (dep !== null && assignsExportsObjectLiteral(dep)) {
-    const rawTag = lowerer.fileTag.get(dep) ?? "";
-    const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
-    const prefix = `%g.${tag}%export.`;
-    const loc = locOf(decl);
-    const fields = lowerer.globalsList
-      .filter((g) => g.id.startsWith(prefix))
-      .map((g) => ({
-        key: { kind: "strLit" as const, value: g.id.slice(prefix.length), type: STRING, loc },
-        value: lowerer.coerceInto(
-          decl,
-          { kind: "varRef" as const, localId: g.id, type: g.type, loc },
-          DYN,
-        ),
-      }));
-    if (fields.length > 0) return { kind: "dynObjLit", fields, type: DYN, loc };
+  // has no first-class exports object in the lowering, so a checked-dynamic
+  // object built from its export table answers every member read as the
+  // exports object does. A member with no export global (an alias-backed or
+  // computed key) has no value form, and the declaration keeps the refusal
+  // instead of dropping it.
+  if (dep !== null) {
+    const literal = exportsObjectLiteralOf(dep);
+    if (literal !== null) {
+      const loc = locOf(decl);
+      const rawTag = lowerer.fileTag.get(dep) ?? "";
+      const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
+      const prefix = `%g.${tag}%export.`;
+      const globals = new Map<string, { id: string; type: IrType }>();
+      for (const g of lowerer.globalsList)
+        if (g.id.startsWith(prefix)) globals.set(g.id.slice(prefix.length), g);
+      const fields: { key: IrExpr; value: IrExpr }[] = [];
+      for (const prop of literal.properties.nodes) {
+        const name =
+          prop.name === undefined
+            ? null
+            : ts.isIdentifier(prop.name)
+              ? prop.name.text
+              : ts.isStringLiteralLike(prop.name)
+                ? prop.name.text
+                : null;
+        const global = name === null ? undefined : globals.get(name);
+        if (name === null || global === undefined) return null;
+        fields.push({
+          key: { kind: "strLit", value: name, type: STRING, loc },
+          value: lowerer.coerceInto(
+            decl,
+            { kind: "varRef", localId: global.id, type: global.type, loc },
+            DYN,
+          ),
+        });
+      }
+      if (fields.length > 0) return { kind: "dynObjLit", fields, type: DYN, loc };
+    }
   }
   return null;
 }
 
-/** Whether `dep` replaces its exports with one object literal
- * (`module.exports = { … }`). */
-function assignsExportsObjectLiteral(dep: ts.SourceFile): boolean {
-  return dep.statements.nodes.some((stmt) => {
-    if (!ts.isExpressionStatement(stmt)) return false;
+/** The object literal `dep` replaces its exports with
+ * (`module.exports = { … }`), or null. */
+export function exportsObjectLiteralOf(dep: ts.SourceFile): ts.ObjectLiteralExpression | null {
+  for (const stmt of dep.statements.nodes) {
+    if (!ts.isExpressionStatement(stmt)) continue;
     const value = stmt.expression;
-    return (
+    if (
       ts.isBinaryExpression(value) &&
       value.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       ts.isPropertyAccessExpression(value.left) &&
@@ -17494,6 +17510,8 @@ function assignsExportsObjectLiteral(dep: ts.SourceFile): boolean {
       value.left.expression.text === "module" &&
       value.left.name.text === "exports" &&
       ts.isObjectLiteralExpression(value.right)
-    );
-  });
+    )
+      return value.right;
+  }
+  return null;
 }

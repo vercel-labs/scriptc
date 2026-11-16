@@ -1,4 +1,5 @@
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
+import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { mayReplacePrototype } from "./class-method-mutations.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
@@ -592,6 +593,11 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // `fs.readFileSync(…)` where `fs` is a require binding the file
+  // reassigns: the binding's storage holds whatever the program stored, so
+  // the method is read and called through that checked-dynamic value.
+  const reboundCall = lowerReboundRequireCall(lowerer, expr);
+  if (reboundCall !== null) return reboundCall;
   // A call that asks an arguments object what it is (arguments-object.ts).
   return (
     lowerArgumentsObjectCall(lowerer, expr, locOf(expr), () => lowerOrdinaryCall(lowerer, expr)) ??
@@ -14899,6 +14905,72 @@ export function lowerBase64Call(
     fn: name === "atob" ? "str.atob" : "str.btoa",
     args: [data],
     type: STRING,
+    loc,
+  };
+}
+
+/** A method call whose callee is read off a require binding the file
+ * reassigns (rebindable-requires.ts): its storage holds whatever the program
+ * stored, so the receiver and the method are read from that checked-dynamic
+ * value and the call is Node's dynamic invocation. Null for every other
+ * call. */
+function lowerReboundRequireCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr | null {
+  if (expr.questionDotToken !== undefined) return null;
+  const access = expr.expression;
+  if (
+    (!ts.isPropertyAccessExpression(access) && !ts.isElementAccessExpression(access)) ||
+    access.questionDotToken !== undefined
+  )
+    return null;
+  if (reboundRequireBindingOf(lowerer, access.expression) === null) return null;
+  const loc = locOf(expr);
+  const receiver = lowerer.declareHiddenLocal("%reboundReceiver", DYN);
+  const callee = lowerer.declareHiddenLocal("%reboundCallee", DYN);
+  const stmts: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: receiver.id,
+      init: lowerer.coerceToExpected(lowerer.lowerExpr(access.expression), DYN),
+      loc,
+    },
+  ];
+  const key = ts.isPropertyAccessExpression(access)
+    ? lowerer.coerceInto(
+        access,
+        { kind: "strLit", value: access.name.text, type: STRING, loc },
+        DYN,
+      )
+    : lowerer.lowerExprExpecting(access.argumentExpression, DYN);
+  stmts.push({
+    kind: "varDecl",
+    localId: callee.id,
+    init: {
+      kind: "dynKeyGet",
+      value: varRef(receiver.id, DYN, loc),
+      key,
+      type: DYN,
+      loc,
+    },
+    loc,
+  });
+  const args: IrExpr[] = [];
+  for (const argument of expr.arguments.nodes) {
+    if (ts.isSpreadElement(argument)) return null;
+    args.push(lowerer.lowerExprExpecting(argument, DYN));
+  }
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "dynCall",
+      callee: varRef(callee.id, DYN, loc),
+      receiver: varRef(receiver.id, DYN, loc),
+      calleeName: ts.getTextOfNode(access),
+      args,
+      type: DYN,
+      loc,
+    },
+    type: DYN,
     loc,
   };
 }

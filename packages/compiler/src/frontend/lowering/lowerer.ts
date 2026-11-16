@@ -145,7 +145,7 @@ import {
 } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
-import { isRebindableRequireDecl } from "./rebindable-requires.js";
+import { isRebindableRequireDecl, reboundRequireBindingOf } from "./rebindable-requires.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
@@ -23684,6 +23684,15 @@ export class Lowerer {
    * member access that IS a module in its own right (`fs.promises` — the
    * same object as node:fs/promises, Node's rule). Null otherwise. */
   builtinNamespaceModuleOf(expr: ts.Expression): string | null {
+    // A require binding the file reassigns owns checked-dynamic storage
+    // (rebindable-requires.ts): its member reads and calls read that storage,
+    // never the builtin's static surface.
+    if (ts.isIdentifier(expr)) {
+      const decl = this.checker
+        .getSymbolAtLocation(expr)
+        ?.declarations.find(ts.isVariableDeclaration);
+      if (decl !== undefined && isRebindableRequireDecl(this, decl)) return null;
+    }
     // A function declaration is never a module namespace. Answering that
     // from the symbol skips the type mapping below (every direct call asks).
     if (ts.isIdentifier(expr)) {
@@ -23955,6 +23964,9 @@ export class Lowerer {
    * { module, member } shape builtinImportOf gives named imports, so both
    * import forms key the same lowering tables. Null for everything else. */
   builtinMemberOf(access: ts.PropertyAccessExpression): { module: string; member: string } | null {
+    // A member read through a require binding the file reassigns reads that
+    // binding's storage, not the builtin's static surface.
+    if (reboundRequireBindingOf(this, access.expression) !== null) return null;
     // A guarded step keeps its chain lowering, except one the chain lowering
     // has already found to be a plain access (a namespace is never nullish).
     if (access.questionDotToken && !this.chainHandled.has(access)) return null;

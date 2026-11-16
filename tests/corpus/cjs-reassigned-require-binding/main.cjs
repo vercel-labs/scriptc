@@ -27,3 +27,10 @@ var shape = require("./object.cjs");
 console.log(shape.version, shape.label);
 shape = { version: 5, label: "replaced" };
 console.log(shape.version, shape.label);
+
+// A builtin require binding is the same mutable var: a method call after the
+// reassignment reaches the stored function, not the builtin.
+var fsLike = require("node:path");
+console.log(typeof fsLike.join, fsLike.join("a", "b"));
+fsLike = { join: function () { return "replaced"; } };
+console.log(fsLike.join("a", "b"));

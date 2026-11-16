@@ -56,3 +56,17 @@ export function collectRebindableRequireDecls(
 export function isRebindableRequireDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
   return lowerer.rebindableRequireDecls.has(decl);
 }
+
+/** The identifier read of a require binding the file reassigns, when `expr`
+ * is such a read: its storage holds whatever the program stored, so every
+ * member read or call through it is a checked-dynamic member read. */
+export function reboundRequireBindingOf(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): ts.Identifier | null {
+  if (!ts.isIdentifier(expr)) return null;
+  const decl = lowerer.checker
+    .getSymbolAtLocation(expr)
+    ?.declarations.find(ts.isVariableDeclaration);
+  return decl !== undefined && isRebindableRequireDecl(lowerer, decl) ? expr : null;
+}

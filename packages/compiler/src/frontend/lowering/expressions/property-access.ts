@@ -1,4 +1,5 @@
 import { callableMemberFieldTarget } from "../callable-properties.js";
+import { reboundRequireBindingOf } from "../rebindable-requires.js";
 import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
@@ -513,6 +514,18 @@ export function lowerPropertyAccessExpr(
       loc,
     };
     return workerStdioSequence(read, loc);
+  }
+  // `fs.readFileSync` where `fs` is a require binding the file reassigns
+  // (rebindable-requires.ts): the binding's storage holds whatever the
+  // program stored, so the member is read from that checked-dynamic value.
+  if (reboundRequireBindingOf(lowerer, expr.expression) !== null) {
+    return {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
   }
   // A JavaScript source reading a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The name

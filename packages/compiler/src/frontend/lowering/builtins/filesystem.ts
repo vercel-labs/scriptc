@@ -42,6 +42,13 @@ type FsSyncBufferWindowSource =
   | { kind: "options"; node: ts.Expression | undefined }
   | { kind: "offset"; node: ts.Expression };
 
+/** The documented members of a FileHandle read or write options record that
+ * have no lowering: `flush` (fsync after the write) and `signal` (an
+ * abortable operation). `encoding` selects the codec, and `mode` and `flag`
+ * are read and ignored over an already-open handle. Any other key drops like
+ * Node drops it. */
+const FILE_HANDLE_DATA_FENCED_OPTIONS: ReadonlySet<string> = new Set(["flush", "signal"]);
+
 /** Normalize fs.readSync/fs.writeSync's shorthand and inline-options buffer
  * forms into the existing fixed-width descriptor IR. fd and buffer bind
  * first, option values bind in object-literal order, and only then do the
@@ -620,26 +627,72 @@ export function lowerFileHandleMethodCall(
     }
     return { value: lowerer.coerceInto(node ?? call, value, F64), defaulted: boolLit(false, loc) };
   };
-  const utf8 = (node: ts.Expression | undefined): IrExpr => {
-    const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
-    if (!node) return dflt;
+  /* The encoding a FileHandle read or write names: the bare encoding string,
+   * the options record's `encoding` member, or the utf8 default. Node
+   * validates the name and decodes with it, and every BufferEncoding is
+   * lowered, so any string-valued expression passes. The record's other
+   * documented members take Node's own stance over an open handle — mode and
+   * flag are ignored there — while flush and signal have no lowering; an
+   * undocumented key drops like Node drops it. */
+  /* Whether an encoding-valued expression can reach the decoder: every
+   * non-nullish constituent is a string (a literal name and the
+   * BufferEncoding union both count). */
+  const encodingLike = (node: ts.Expression): boolean => {
     const nodeType = lowerer.typeOf(node);
     const parts: readonly ts.Type[] = nodeType.isUnionType()
       ? ts.constituentTypes(nodeType)
       : [nodeType];
-    const supported = parts.every(
+    return parts.every(
       (t) =>
         (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
-        (t.isStringLiteralType() && (t.value === "utf8" || t.value === "utf-8")),
+        (t.flags & ts.TypeFlags.StringLike) !== 0,
     );
-    if (!supported) {
-      lowerer.noLowering(
-        `FileHandle.${name} with a non-utf8 encoding`,
-        node,
-        "only utf8 data is supported",
+  };
+  const utf8 = (node: ts.Expression | undefined): IrExpr => {
+    const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
+    if (!node) return dflt;
+    if (!ts.isObjectLiteralExpression(node)) {
+      if (!encodingLike(node)) {
+        lowerer.noLowering(
+          `FileHandle.${name} with this encoding`,
+          node,
+          "the encoding is a BufferEncoding name",
+        );
+      }
+      return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
+    }
+    let encoding: IrExpr = dflt;
+    for (const prop of node.properties.nodes) {
+      const member = optionMember(prop);
+      if (member === null) {
+        lowerer.noLowering(`FileHandle.${name} with a non-plain options member`, prop);
+      }
+      if (member.name === "encoding") {
+        const value = member.value;
+        const nullish =
+          (lowerer.typeOf(value).flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0 ||
+          value.kind === ts.SyntaxKind.NullKeyword;
+        if (nullish) continue;
+        if (!encodingLike(value)) {
+          lowerer.noLowering(
+            `FileHandle.${name} with this encoding`,
+            value,
+            "the encoding is a BufferEncoding name",
+          );
+        }
+        encoding = lowerer.lowerExprExpecting(value, STRING);
+        continue;
+      }
+      fenceOrDropOptionKey(
+        lowerer,
+        prop,
+        member.name,
+        `FileHandle.${name}`,
+        FILE_HANDLE_DATA_FENCED_OPTIONS,
+        "the record carries encoding; mode and flag are ignored over an open handle, and flush and signal have no lowering",
       );
     }
-    return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
+    return encoding;
   };
 
   if (name === "sync" || name === "datasync") {
@@ -660,6 +713,21 @@ export function lowerFileHandleMethodCall(
       kind: "libCall",
       fn: name === "truncate" ? "fileHandle.truncate" : "fileHandle.chmod",
       args: [receiver(), num(call.arguments.nodes[0], 0).value],
+      type: promise(VOID),
+      loc,
+    };
+  }
+  if (name === "chown") {
+    if (call.arguments.nodes.length !== 2)
+      lowerer.noLowering(`FileHandle.chown with ${call.arguments.nodes.length} arguments`, call);
+    return {
+      kind: "libCall",
+      fn: "fileHandle.chown",
+      args: [
+        receiver(),
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64),
+        lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64),
+      ],
       type: promise(VOID),
       loc,
     };

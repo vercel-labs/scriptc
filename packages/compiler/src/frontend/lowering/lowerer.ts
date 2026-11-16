@@ -23710,7 +23710,11 @@ export class Lowerer {
     // access-mode bits the named-import form bakes (lowerFsConstantsProperty).
     if (!expr.questionDotToken && ts.isPropertyAccessExpression(expr.expression)) {
       const inner = this.builtinMemberOf(expr.expression);
-      if (inner && inner.module === "fs" && inner.member === "constants") {
+      if (
+        inner &&
+        (inner.module === "fs" || inner.module === "fs/promises") &&
+        inner.member === "constants"
+      ) {
         const MODES: Record<string, number | undefined> = {
           F_OK: 0,
           X_OK: 1,
@@ -23829,8 +23833,11 @@ export class Lowerer {
       const global = globalMemberValue(this, bi, expr, loc);
       if (global) return global;
     }
-    // A bare `fs.constants` read (not one of the baked bits above).
-    if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // A bare `fs.constants` read (not one of the baked bits above);
+    // fs/promises re-exports the same group.
+    if (bi.member === "constants" && (bi.module === "fs" || bi.module === "fs/promises")) {
+      return fsConstantsObject(loc);
+    }
     // `zlib.constants` as a value: the module's singleton record.
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `crypto.constants` as a value: the same story over the OpenSSL table.

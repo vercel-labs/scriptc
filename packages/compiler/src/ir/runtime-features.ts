@@ -198,6 +198,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "blob.new",
   "blob.slice",
   "blob.text",
+  // buffer.resolveObjectURL rebuilds a Blob handle from a registration.
+  "buffer.resolveObjectURL",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "dc.chanUnbindStore",

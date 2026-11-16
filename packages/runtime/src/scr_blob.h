@@ -18,9 +18,9 @@
 ScrDyn *scr_blob_new(ScrDyn *args);
 ScrDyn *scr_file_new(ScrDyn *args);
 ScrDyn *scr_blob_slice(ScrDyn *self, ScrDyn *args);
-/* A new Blob handle over an existing handle's bytes and type (each call
- * answers a distinct object); interned undefined for a non-Blob. */
-ScrDyn *scr_blob_fresh_copy(const ScrDyn *blob); /* +1, or undefined */
+/* buffer.resolveObjectURL(id): ToString(id), then the Blob registered under
+ * the object URL's id as a fresh handle (+1), or undefined. */
+ScrDyn *scr_buffer_resolve_object_url(const struct ScrDyn *id);
 ScrPromise *scr_blob_text(ScrDyn *self);
 ScrPromise *scr_blob_bytes(ScrDyn *self);
 ScrPromise *scr_blob_array_buffer(ScrDyn *self);

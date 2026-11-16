@@ -183,7 +183,11 @@ export function lowerBuiltinCall(
     if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
       lowerer.noLowering("buffer.resolveObjectURL with this argument shape", expr);
     }
-    const id = lowerer.lowerExprExpecting(args[0]!, STRING);
+    // Node coerces the argument with the template-literal ToString, so any
+    // value is boxed and the runtime converts it — a symbol throws there.
+    const value = lowerer.lowerExpr(args[0]!);
+    const id: IrExpr =
+      value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
     return { kind: "libCall", fn: "buffer.resolveObjectURL", args: [id], type: DYN, loc };
   }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {

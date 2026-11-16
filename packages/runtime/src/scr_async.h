@@ -382,6 +382,10 @@ extern SCR_TL void (*scr_promise_inspect_dyn_fn)(const ScrPromise *p, bool *pend
 void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
+/* process.emit(event, ...args): the argument vector as one dyn array (the
+ * event first), Node's EventEmitter dispatch over the process registries.
+ * The answer is whether a listener ran. */
+bool scr_process_emit(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
 /* process.emitWarning = fn (borrowed; the runtime keeps its own
  * reference). Later process.emitWarning(...) calls apply the replacement

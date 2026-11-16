@@ -2476,3 +2476,105 @@ void scr_events_install(void) {
   scr_process_before_exit_hook = &scr_run_before_exit_listeners;
   scr_stdin_destroy_hook = &scr_stdin_destroy;
 }
+
+/* ── process.emit's lifecycle events ──────────────────────────────────
+ * process.emit('exit', code), process.emit('beforeExit', code) and
+ * process.emit('SIGINT', ...): EventEmitter.emit over the registries this
+ * unit owns, synchronously and mid-program. Unlike the loop's own emission
+ * these leave every regular listener registered (Node's emit does), remove
+ * a `once` wrapper before calling it, and let a listener's throw propagate
+ * from the call. The event and its arguments are the caller's; only 'exit'
+ * and 'beforeExit' read an argument, as the code the typed listeners
+ * receive (an omitted or non-numeric one reads 0). */
+
+static double scr_emit_code_of(ScrDyn *const *args, size_t argc) {
+  return argc >= 1 && args[0]->kind == SCR_DYN_NUM ? args[0]->v.num : 0;
+}
+
+static bool scr_emit_exit_listeners(double code) {
+  size_t n = scr_exit_n;
+  if (n == 0) return false;
+  ScrExitListener *snap = malloc(n * sizeof *snap);
+  if (snap == NULL) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = scr_exit_ls[i];
+    if (snap[i].cb != NULL) snap[i].cb = scr_closure_retain(snap[i].cb);
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (snap[i].once) {
+      for (size_t j = 0; j < scr_exit_n; j++) {
+        if (scr_exit_ls[j].cb == NULL || !scr_closure_identity_equal(scr_exit_ls[j].cb, snap[i].cb))
+          continue;
+        scr_closure_release(scr_exit_ls[j].cb);
+        memmove(scr_exit_ls + j, scr_exit_ls + j + 1, (scr_exit_n - j - 1) * sizeof *scr_exit_ls);
+        scr_exit_n--;
+        break;
+      }
+    }
+    if (snap[i].island != 0 && scr_island_emit != NULL) {
+      ScrStr *exit_name = scr_str_new("exit", 4);
+      scr_island_emit(SCR_EVENTS_ISLAND_EXIT, snap[i].island, exit_name, (int)code);
+      scr_str_release(exit_name);
+    } else if (snap[i].island == 0) {
+      snap[i].fn(snap[i].cb, code);
+    }
+    if (scr_exc_pending()) break; /* the listener's throw propagates */
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (snap[i].cb != NULL) scr_closure_release(snap[i].cb);
+  }
+  free(snap);
+  return true;
+}
+
+static bool scr_emit_signal_listeners(const ScrStr *name, ScrDyn *const *args, size_t argc) {
+  int sig = scr_signal_from_name(name);
+  if (sig < 0) sig = 0;
+  ScrSigReg *reg = scr_sig_regs;
+  while (reg != NULL && reg->sig != sig) reg = reg->next;
+  if (reg == NULL || reg->n == 0) return false;
+  size_t count = reg->n;
+  ScrSigListener *snap = malloc(count * sizeof *snap);
+  if (snap == NULL) scr_events_oom();
+  for (size_t i = 0; i < count; i++) {
+    snap[i] = reg->ls[i];
+    snap[i].cb = scr_dyn_retain(snap[i].cb);
+    snap[i].name = scr_str_retain(snap[i].name);
+  }
+  for (size_t i = 0; i < count; i++) {
+    if (snap[i].once) {
+      /* Node's once wrapper leaves the live list before its call, so an
+       * `off` from inside it finds the entry gone. */
+      for (size_t j = 0; j < reg->n; j++) {
+        if (reg->ls[j].id != snap[i].id) continue;
+        scr_sig_remove(reg, j);
+        break;
+      }
+    }
+    if (snap[i].island == 0) {
+      ScrDyn *r = scr_dyn_call(snap[i].cb, args, argc, "listener");
+      scr_dyn_release(r);
+      if (scr_exc_pending()) break;
+    }
+  }
+  for (size_t i = 0; i < count; i++) {
+    scr_dyn_release(snap[i].cb);
+    scr_str_release(snap[i].name);
+  }
+  free(snap);
+  return true;
+}
+
+static bool scr_events_emit_lifecycle(const ScrStr *event, ScrDyn *const *args, size_t argc) {
+  if (event->len == 4 && memcmp(event->data, "exit", 4) == 0)
+    return scr_emit_exit_listeners(scr_emit_code_of(args, argc));
+  if (event->len == 10 && memcmp(event->data, "beforeExit", 10) == 0)
+    return scr_run_before_exit_listeners(scr_emit_code_of(args, argc));
+  if (event->len >= 3 && memcmp(event->data, "SIG", 3) == 0)
+    return scr_emit_signal_listeners(event, args, argc);
+  return false;
+}
+
+__attribute__((constructor)) static void scr_emit_lifecycle_hook_install(void) {
+  scr_process_emit_lifecycle_hook = scr_events_emit_lifecycle;
+}

@@ -2087,6 +2087,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.offWarning": "scr_process_off_warning",
   "process.emitWarning": "scr_process_emit_warning",
   "process.emitWarningText": "scr_process_emit_warning_text",
+  "process.emit": "scr_process_emit",
   "process.deprecationFlag": "scr_process_deprecation_flag",
   "process.setDeprecationFlag": "scr_process_set_deprecation_flag",
   "process.setEmitWarning": "scr_process_set_emit_warning",

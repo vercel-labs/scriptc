@@ -1175,3 +1175,9 @@ ScrDyn *scr_buffer_prototype_member(const ScrDyn *key) {
   if (at < 0 || !scr_buffer_proto_own[at].name) return scr_dyn_retain(scr_dyn_undefined());
   return scr_buffer_proto_fn((size_t)at);
 }
+
+/* Object.getPrototypeOf(a Buffer) (scr_json.c's scr_dyn_get_prototype): the
+ * same Buffer.prototype object the program's own reads answer. +1. */
+__attribute__((constructor)) static void scr_buffer_prototype_hook_install(void) {
+  scr_dyn_buffer_prototype_hook = scr_buffer_prototype_object;
+}

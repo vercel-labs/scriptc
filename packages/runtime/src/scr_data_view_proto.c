@@ -275,6 +275,7 @@ static ScrDyn *scr_dv_proto_accessor(const ScrDvProtoAccessor *accessor) {
  * non-enumerable, configurable own data property. `tag_key` (borrowed) is the
  * Symbol.toStringTag key the frontend emitted. */
 static void scr_dv_define_tag(ScrDyn *target, ScrDyn *tag_key) {
+  if (tag_key == NULL) return; /* built by getPrototypeOf before the frontend's key */
   ScrStr *tag = scr_str_new("DataView", sizeof "DataView" - 1);
   ScrDyn *value = scr_dyn_new_str(tag);
   scr_str_release(tag);
@@ -290,7 +291,12 @@ static void scr_dv_define_tag(ScrDyn *target, ScrDyn *tag_key) {
 
 /* `DataView.prototype` as a value. */
 ScrDyn *scr_data_view_prototype(ScrDyn *tag_key) {
-  if (scr_dv_proto_object) return scr_dyn_retain(scr_dv_proto_object);
+  if (scr_dv_proto_object) {
+    /* Object.getPrototypeOf built the object first, without the key; the
+     * program's own read supplies it. */
+    scr_dv_define_tag(scr_dv_proto_object, tag_key);
+    return scr_dyn_retain(scr_dv_proto_object);
+  }
   ScrDyn *prototype = scr_dyn_new_obj(); /* an ordinary object: Object.prototype behind it */
   scr_dv_define_tag(prototype, tag_key);
   for (size_t i = 0; i < sizeof scr_dv_proto_methods / sizeof scr_dv_proto_methods[0]; i++) {
@@ -322,4 +328,12 @@ ScrDyn *scr_data_view_prototype(ScrDyn *tag_key) {
   scr_dyn_release(ctor);
   scr_atexit(scr_dv_proto_cleanup);
   return scr_dyn_retain(scr_dv_proto_object);
+}
+
+/* Object.getPrototypeOf(a DataView) (scr_json.c's scr_dyn_get_prototype):
+ * the same DataView.prototype object the program's own reads answer. +1. */
+static ScrDyn *scr_dv_proto_value(void) { return scr_data_view_prototype(NULL); }
+
+__attribute__((constructor)) static void scr_dv_proto_hook_install(void) {
+  scr_dyn_data_view_prototype_hook = scr_dv_proto_value;
 }

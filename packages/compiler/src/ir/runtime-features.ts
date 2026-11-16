@@ -127,6 +127,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.finalization",
   "process.emitWarning",
   "process.emitWarningText",
+  // process.emit dispatches the same warning/uncaught/rejection registries.
+  "process.emit",
   "process.offMultipleResolves",
   "process.offRejectionHandled",
   "process.offUncaughtException",

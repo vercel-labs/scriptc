@@ -1361,8 +1361,17 @@ static ScrDyn *scr_collection_prototype_build(const ScrCollectionClass *cls) {
   return scr_dyn_retain(prototype);
 }
 
+/* Object.getPrototypeOf's answer for a collection handle (defined below,
+ * with scr_dyn_collection_get_prototype). */
+static ScrDyn *scr_collection_get_prototype_value(const ScrDyn *value);
+
 /* %<Class>.prototype% as a value; dyn.collectionPrototype's implementation. */
 ScrDyn *scr_dyn_collection_prototype(const ScrStr *klass) {
+  /* Sharing the object with getPrototypeOf needs the hook set before the
+   * first answer; setting it here (not in a load-time initializer) keeps
+   * this unit's prototype build out of programs that link the unit only
+   * for its collection operations. */
+  scr_dyn_collection_prototype_hook = scr_collection_get_prototype_value;
   const ScrCollectionClass *cls = scr_collection_class(klass->data);
   if (!cls) {
     static const char message[] = "scriptc: unknown collection class\n";
@@ -1371,6 +1380,18 @@ ScrDyn *scr_dyn_collection_prototype(const ScrStr *klass) {
   ScrDyn *prototype = scr_collection_prototypes[cls - scr_collection_classes];
   if (prototype) return scr_dyn_retain(prototype);
   return scr_collection_prototype_build(cls);
+}
+
+/* Object.getPrototypeOf's answer for a collection handle over the
+ * checked-dynamic tree (scr_json.c's scr_dyn_get_prototype): the one
+ * %<Class>.prototype% object, or NULL for a value of another class. +1. */
+static ScrDyn *scr_collection_get_prototype_value(const ScrDyn *value) {
+  const ScrCollectionClass *cls = scr_collection_class_of(value);
+  if (!cls) return NULL;
+  ScrStr *name = scr_str_new(cls->klass, strlen(cls->klass));
+  ScrDyn *prototype = scr_dyn_collection_prototype(name);
+  scr_str_release(name);
+  return prototype;
 }
 
 /* Object.getPrototypeOf on a collection value: its class prototype. */

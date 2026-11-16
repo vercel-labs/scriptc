@@ -154,3 +154,16 @@ ScrDyn *scr_dyn_stdlib_prototype(const ScrStr *name) {
   }
   return scr_dyn_retain(dyn_stdlib_prototype_date);
 }
+
+/* Object.getPrototypeOf(new Date()) (scr_json.c's scr_dyn_get_prototype):
+ * the same Date.prototype object the program's own reads answer. +1. */
+static ScrDyn *scr_dyn_date_prototype_value(void) {
+  ScrStr *name = scr_str_new("Date", sizeof "Date" - 1);
+  ScrDyn *prototype = scr_dyn_stdlib_prototype(name);
+  scr_str_release(name);
+  return prototype;
+}
+
+__attribute__((constructor)) static void scr_dyn_date_prototype_hook_install(void) {
+  scr_dyn_date_prototype_hook = scr_dyn_date_prototype_value;
+}

@@ -113,6 +113,7 @@ import {
   BYTES_ELEMENT_SIZE,
   DYN_HANDLE_KINDS,
 } from "../../../ir/ir.js";
+import { isWorkerThreadsClass, workerStdioSequence } from "../builtins/workers.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
@@ -495,6 +496,23 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // worker.stdout and worker.stderr are Readables Node always answers, with
+  // or without the Worker's stdout/stderr option. The streams unit is entered
+  // before the read, so the stream the runtime creates on first read exists.
+  if (
+    !expr.questionDotToken &&
+    (expr.name.text === "stdout" || expr.name.text === "stderr") &&
+    isWorkerThreadsClass(lowerer, expr.expression, "Worker")
+  ) {
+    const read: IrExpr = {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+    return workerStdioSequence(read, loc);
+  }
   // A JavaScript source reading a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The name
   // decides: the receiver may be a checked-dynamic value.

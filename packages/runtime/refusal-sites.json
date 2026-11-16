@@ -2024,18 +2024,6 @@
  {
   "file": "scr_worker_events.c",
   "function": "scr_worker_view_get",
-  "message": "worker.stderr without the stderr option is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
-  "function": "scr_worker_view_get",
-  "message": "worker.stdout without the stdout option is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
-  "function": "scr_worker_view_get",
   "message": "worker.resourceLimits is not supported yet",
   "code": "SC2020"
  },

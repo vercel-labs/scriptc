@@ -69,3 +69,14 @@ const detached3 = base3.add;
 console.log(detached3(3), moved.mock.calls[1]!.this === undefined);
 moved.mock.restore();
 console.log(base3.add(4), copy3.add(5));
+
+// The wrapper stored under another member name runs against the object that
+// call goes through too.
+const source3: Adder = { base: 7, add: (x: number) => x };
+const renamed = mock.method(source3, "add", function (this: Adder, x: number) {
+  return x + 100;
+});
+const underAnotherName = { run: source3.add };
+console.log(underAnotherName.run(1), renamed.mock.calls[0]!.this === underAnotherName);
+renamed.mock.restore();
+console.log(source3.add(2), underAnotherName.run(3));

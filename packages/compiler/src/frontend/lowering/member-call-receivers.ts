@@ -56,7 +56,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
-import { mockMethodTarget } from "./mock-callsites.js";
+import { isMockTrackerCall } from "./mock-callsites.js";
 
 export interface MemberCallReceivers {
   /** Whether a call of member `name` on a record passes the record. */
@@ -178,17 +178,15 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
   const readers = new Set<ts.Node>();
   /** The names the declarations among them have. */
   const declared = new Set<string>();
-  /** The member names `mock.method(object, "name", …)` replaces. The wrapper
-   * a mock stores reads the receiver of the call that runs it, so a member
-   * call of that name passes its holder whether or not a source function
-   * stored under the name reads `this`. */
-  const mockNames = new Set<string>();
+  /** Whether the program creates a mock. The wrapper a mock makes reads the
+   * receiver of the call that runs it, and the program can store it under
+   * any member name (the returned value, a copy of a mocked member, a
+   * property under another name), so it escapes like any other
+   * receiver-reading function: every member call carries its holder. */
+  let mockCreated = false;
   for (const sf of sources)
     ts.walkPreorder(sf, (node) => {
-      if (ts.isCallExpression(node)) {
-        const mock = mockMethodTarget(lowerer, node);
-        if (mock !== null) mockNames.add(mock.name);
-      }
+      if (ts.isCallExpression(node) && isMockTrackerCall(lowerer, node)) mockCreated = true;
       if (
         (ts.isFunctionDeclaration(node) ||
           ts.isFunctionExpression(node) ||
@@ -201,10 +199,8 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
           declared.add(node.name.text);
       }
     });
-  if (readers.size === 0)
-    return mockNames.size === 0
-      ? NO_READERS
-      : { any: true, all: false, names: mockNames, keyed: true };
+  if (mockCreated) return { any: true, all: true, names: new Set(), keyed: true };
+  if (readers.size === 0) return NO_READERS;
 
   /** The name a member is stored under: an identifier, a literal, or a
    * computed key that folds to a string. Null when it is not known. */
@@ -829,7 +825,6 @@ function takeCensus(lowerer: Lowerer): CensusFacts {
   };
   const carriers = new Set<string>(declaredUnder);
   for (const name of stores.keys()) if (holds(name)) carriers.add(name);
-  for (const name of mockNames) carriers.add(name);
   if (start !== 0) report(start, readers.size, carriers.size, true, false);
   return { any: true, all: false, names: carriers, keyed: true };
 }

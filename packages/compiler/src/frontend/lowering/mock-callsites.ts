@@ -9,10 +9,23 @@
  *
  * Two censuses read this: the class-method mutation census, so a class's
  * compiled calls observe the property the mock writes, and the member-call
- * receiver census, so a member call of the mocked name passes its holder —
- * the mock's wrapper runs against the receiver its call binds. */
+ * receiver census, which treats a mock creation as an escape of a
+ * receiver-reading function — the value a mock returns can be stored under
+ * any member name, and the wrapper it makes runs against the receiver its
+ * call binds. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+
+/** Whether `call` creates a mock through node:test's tracker: `mock.fn(…)`,
+ * `mock.method(…)`, or the `t.mock` twins. What it returns is a function
+ * that reads the receiver of the call that runs it, and the program can
+ * store that value under any member name. */
+export function isMockTrackerCall(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee)) return false;
+  if (callee.name.text !== "fn" && callee.name.text !== "method") return false;
+  return isMockOwner(lowerer, callee.expression);
+}
 
 /** The method name `call` replaces, and the object expression it replaces
  * it on. Null for every other call, and for a name that is not a string

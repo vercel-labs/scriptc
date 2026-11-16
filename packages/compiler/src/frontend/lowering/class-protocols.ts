@@ -185,13 +185,34 @@ export class ClassProtocols {
         }
       }
       if (ts.isObjectLiteralExpression(node)) {
+        // A receiver-dependent method of a DICTIONARY literal keeps checked
+        // identity: its type is an open key set, so every read and write of
+        // the object goes through the keyed path, and the live object is the
+        // representation that path already models (`methods.twice()` over
+        // `{ [key: string]: () => number }`).
+        const dictionary = (): boolean => {
+          for (const type of [
+            this.checker.getTypeAtLocation(node),
+            this.checker.getContextualType(node),
+          ]) {
+            if (
+              type !== undefined &&
+              attempt(() => this.checker.getIndexInfosOfType(type).length > 0) === true
+            )
+              return true;
+          }
+          return false;
+        };
+        const receiverDependent = (property: ts.ObjectLiteralElementLike): boolean => {
+          if (!property.body || !usesReceiver(property.body)) return false;
+          if (ts.isMethodDeclaration(property)) return dictionary();
+          return ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property);
+        };
         if (
           node.properties.nodes.some(
             (property) =>
               (conversionProtocolMethod(property) && usesReceiver(property.body!)) ||
-              ((ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) &&
-                property.body !== undefined &&
-                usesReceiver(property.body)),
+              receiverDependent(property),
           )
         ) {
           // A receiver-dependent ACCESSOR needs a live object even without a

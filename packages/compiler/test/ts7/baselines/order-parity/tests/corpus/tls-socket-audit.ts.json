@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-socket-audit.ts"
+ ],
+ "diags": []
+}

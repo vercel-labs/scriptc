@@ -5,11 +5,14 @@ import { type Lowerer, ladderFenceExpr } from "../lowerer.js";
 import { lowerFsPath } from "./fs-paths.js";
 import { fsStreamOptionsMayHoldSignal } from "./fs-streams.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import {
   builtinModuleFnOf,
   FS_READDIR_DOCUMENTED_OPTIONS,
   FS_WATCH_DOCUMENTED_OPTIONS,
   FS_WATCH_FILE_DOCUMENTED_OPTIONS,
+  FS_WATCH_PROMISES_DOCUMENTED_OPTIONS,
+  FS_WATCH_PROMISES_OPTION_HINTS,
   fenceOrDropOptionKey,
 } from "../surfaces.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
@@ -29,6 +32,7 @@ import {
   type IrType,
   STATS_T,
   STRING,
+  WATCHEVENTS_T,
   type SrcLoc,
   VOID,
   arrayOf,
@@ -1533,6 +1537,148 @@ export function lowerFsWatchFileCall(
     fn: "fs.watchFile",
     args: [path, interval ?? numLit(5007, loc), persistent ?? boolLit(true, loc), cb],
     type: STATWATCHER_T,
+    loc,
+  };
+}
+
+/** `fsPromises.watch(path[, options])` → the async-iterator libCall the
+ * `for await` lowering drains (scr_watch_async.c). The options record
+ * follows the options-record stance: `persistent: true/false` and
+ * `encoding: "utf8"` are accepted, the documented keys this surface cannot
+ * model fence by name (recursive's non-native walker, signal's
+ * AbortSignal, ignore's matcher, and maxQueue/overflow's overflow policy),
+ * and undocumented keys drop like Node. Returns null for any untyped shape
+ * so the checked-dynamic ladder keeps its current IR. */
+/** True when the call is the iteration expression of a `for await` loop —
+ * the one position Node's async generator is consumed in. A standalone
+ * `fsPromises.watch(path)` answers an iterator Node never starts (the
+ * process exits), so lowering it would open a watch nothing closes. */
+function isForAwaitSource(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  for (;;) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) return false;
+    if (ts.isForOfStatement(parent)) {
+      return parent.awaitModifier !== undefined && parent.expression === node;
+    }
+    if (
+      (ts.isParenthesizedExpression(parent) ||
+        ts.isAsExpression(parent) ||
+        ts.isTypeAssertion(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isNonNullExpression(parent)) &&
+      (parent as ts.Expression).expression === node
+    ) {
+      node = parent;
+      continue;
+    }
+    return false;
+  }
+}
+
+export function lowerFsPromisesWatchCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (!isForAwaitSource(expr)) return null;
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 1 || nodes.length > 2 || nodes.some(ts.isSpreadElement)) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(nodes[0]!))?.kind !== "string") return null;
+  const path = lowerer.lowerExprExpecting(nodes[0]!, STRING);
+  let persistent: IrExpr | null = null;
+  let maxQueue: IrExpr | null = null;
+  let overflowError: IrExpr | null = null;
+  if (nodes.length === 2) {
+    const options = nodes[1]!;
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "fsPromises.watch with a non-literal options value",
+        options,
+        'the options record is a literal: persistent, encoding: "utf8", maxQueue and overflow: "ignore" | "error" are the accepted entries',
+      );
+    }
+    for (const prop of options.properties.nodes) {
+      if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
+        lowerer.noLowering(
+          "fsPromises.watch options with computed keys or spreads",
+          prop,
+          "each option must be a plain `name: value` entry with a literal key",
+        );
+      }
+      if (!ts.isIdentifier(prop.name) && !ts.isStringLiteral(prop.name)) {
+        lowerer.noLowering(
+          "fsPromises.watch options with computed keys",
+          prop,
+          "each option must be a plain `name: value` entry with a literal key",
+        );
+      }
+      const key = prop.name.text;
+      const value = ts.isPropertyAssignment(prop)
+        ? prop.initializer
+        : ts.isShorthandPropertyAssignment(prop)
+          ? prop.name
+          : null;
+      if (key === "persistent" && value !== null) {
+        persistent = lowerer.lowerExprExpecting(value, BOOL);
+        continue;
+      }
+      if (key === "maxQueue" && value !== null) {
+        maxQueue = lowerer.lowerExprExpecting(value, F64);
+        continue;
+      }
+      if (key === "overflow" && value !== null) {
+        // Node's overflow policy past maxQueue: "error" fails the
+        // iteration, "ignore" drops the event with a warning.
+        const mode = withoutParenthesesAssertionsNonNull(value);
+        const text = mode.kind === ts.SyntaxKind.StringLiteral ? (mode.text ?? null) : null;
+        if (text === "error") overflowError = boolLit(true, loc);
+        else if (text === "ignore") overflowError = boolLit(false, loc);
+        else {
+          lowerer.noLowering(
+            "fsPromises.watch with this overflow policy",
+            value,
+            'overflow: "error" and overflow: "ignore" are the two policies',
+          );
+        }
+        continue;
+      }
+      if (key === "encoding" && value !== null) {
+        // Node's `encoding: "utf8"` is the utf8 the record carries; every
+        // other codec (and "buffer") would change the entry names.
+        const enc = withoutParenthesesAssertionsNonNull(value);
+        const text = enc.kind === ts.SyntaxKind.StringLiteral ? (enc.text ?? null) : null;
+        if (text !== null && (text.toLowerCase() === "utf8" || text.toLowerCase() === "utf-8")) {
+          continue;
+        }
+        lowerer.noLowering(
+          "fsPromises.watch with this encoding",
+          value,
+          'the entry names are strings: encoding: "utf8" is the accepted value',
+        );
+      }
+      fenceOrDropOptionKey(
+        lowerer,
+        prop,
+        key,
+        "fsPromises.watch",
+        FS_WATCH_PROMISES_DOCUMENTED_OPTIONS,
+        'persistent: true/false, encoding: "utf8", maxQueue and overflow: "ignore" | "error" are the accepted options',
+        FS_WATCH_PROMISES_OPTION_HINTS,
+      );
+      // An undocumented key, dropped like Node drops it.
+    }
+  }
+  return {
+    kind: "libCall",
+    fn: "fsp.watch",
+    args: [
+      path,
+      persistent ?? boolLit(true, loc),
+      maxQueue ?? numLit(2048, loc),
+      overflowError ?? boolLit(false, loc),
+    ],
+    type: WATCHEVENTS_T,
     loc,
   };
 }

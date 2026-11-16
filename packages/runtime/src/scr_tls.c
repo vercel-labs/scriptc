@@ -277,10 +277,17 @@ ScrSecureCtx *scr_tls_create_secure_context(const char *cert, size_t cert_len,
   mbedtls_x509_crt_init(&c->cert);
   mbedtls_x509_crt_init(&c->ca);
   mbedtls_pk_init(&c->pk);
-  int r = scr_tls_parse_crt(&c->cert, cert, cert_len);
-  if (r != 0) scr_tls_bad_material("certificate", r);
-  r = scr_tls_parse_key(&c->pk, key, key_len);
-  if (r != 0) scr_tls_bad_material("private key", r);
+  /* An absent cert or key (the empty context createSecureContext() makes)
+   * is not parsed: the PEM parser rejects zero-length input. */
+  int r = 0;
+  if (cert_len > 0) {
+    r = scr_tls_parse_crt(&c->cert, cert, cert_len);
+    if (r != 0) scr_tls_bad_material("certificate", r);
+  }
+  if (key_len > 0) {
+    r = scr_tls_parse_key(&c->pk, key, key_len);
+    if (r != 0) scr_tls_bad_material("private key", r);
+  }
 #ifdef SCR_RC_AUDIT
   scr_live_secure_ctx++;
 #endif
@@ -843,6 +850,9 @@ typedef struct ScrTlsSock {
   unsigned char *hello; /* the raw ClientHello flight, replayed at DONE */
   size_t hello_len, hello_cap;
   ScrSecureCtx *sni_ctx; /* owned; the answer (NULL = default cert) */
+  /* the server_name a client sent (a server socket): Node's
+   * tlsSocket.servername (+1, NULL without one) */
+  ScrStr *sni_name;
   /* scr_tls_f_cert verified client certificates against sni_ctx's ca
    * (or the default store without one), not the server's */
   bool ctx_verifies;
@@ -1330,8 +1340,11 @@ static const ScrNetTransportOps SCR_TLS_OPS;
 
 static int scr_tls_f_sni(void *p, mbedtls_ssl_context *ssl, const unsigned char *name,
                           size_t len) {
-  (void)p; (void)name; (void)len;
+  (void)p;
   ScrTlsSock *t = scr_tls_current;
+  /* Node records the requested name on the socket (tlsSocket.servername) */
+  if (t != NULL && t->sni_name == NULL && name != NULL && len > 0 && len < 256)
+    t->sni_name = scr_str_new((const char *)name, len);
   if (t != NULL && t->sni_ctx != NULL) {
     return mbedtls_ssl_set_hs_own_cert(ssl, &t->sni_ctx->cert, &t->sni_ctx->pk);
   }
@@ -1886,6 +1899,7 @@ static void scr_tls_free(void *tctx) {
   scr_net_ls_drop(&t->secure_ls);
   free(t->hello);
   scr_secure_ctx_release(t->sni_ctx);
+  scr_str_release(t->sni_name);
   mbedtls_x509_crt_free(&t->served_chain);
   if (t->server) scr_net_server_release(t->server);
   free(t->held);
@@ -1971,8 +1985,11 @@ static ScrNetServer *scr_tls_create_server_alpn(const char *cert, size_t cert_le
   if (sni_cb != NULL) {
     srv->sni_cb = sni_cb; /* moves; released with srv */
     srv->sni_answer_fn = sni_answer_fn;
-    mbedtls_ssl_conf_sni(&srv->conf, &scr_tls_f_sni, NULL);
   }
+  /* The SNI callback runs for every server: it records the requested name
+   * (tlsSocket.servername) and hands the context an SNI answer replaces
+   * the default certificate only when one is configured. */
+  mbedtls_ssl_conf_sni(&srv->conf, &scr_tls_f_sni, NULL);
   srv->max_tls12 = max_version == 12;
   if (!scr_tls_conf_versions(&srv->conf, min_version, max_version)) {
     /* Node's server then fails every handshake; nothing here models
@@ -1990,9 +2007,13 @@ static ScrNetServer *scr_tls_create_server_alpn(const char *cert, size_t cert_le
     srv->alpn = alpn;
     mbedtls_ssl_conf_alpn_protocols(&srv->conf, (const char **)srv->alpn);
   }
-  ScrNetServer *s = scr_net_create_server(handler, fn);
+  /* The handler is Node's 'secureConnection': it rides the handshake's
+   * own list, so the server's 'connection' listeners still fire at
+   * accept. */
+  ScrNetServer *s = scr_net_create_server(NULL, NULL);
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
-  scr_net_server_defer_connections(s); /* the handler is 'secureConnection' */
+  scr_net_server_defer_connections(s);
+  if (handler != NULL) scr_net_server_on_secure_connection(s, handler, fn, false);
   return s;
 }
 
@@ -3309,6 +3330,8 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
     return NULL;
   }
   srv->max_tls12 = max_version == 12;
+  /* record the client's SNI name (tlsSocket.servername) */
+  mbedtls_ssl_conf_sni(&srv->conf, &scr_tls_f_sni, NULL);
   ScrNetSocket *t = scr_net_sock_adopt(raw);
   if (t == NULL) {
     scr_tls_srv_release(srv);
@@ -3483,7 +3506,7 @@ static const char *const SCR_TLS_CONNECT_FENCED_OPTIONS[] = {
   "ciphers", "clientCertEngine", "crl", "dhparam", "ecdhCurve",
   "enableTrace", "family", "fd", "hints", "highWaterMark",
   "honorCipherOrder", "keepAlive", "keepAliveInitialDelay",
-  "localAddress", "localPort", "lookup", "minDHSize", "noDelay", "onread", "passphrase", "path", "pfx",
+  "localAddress", "localPort", "lookup", "minDHSize", "noDelay", "onread", "passphrase", "pfx",
   "privateKeyEngine", "privateKeyIdentifier", "pskCallback", "readable",
   "secureContext", "secureOptions", "secureProtocol", "session",
   "sessionIdContext", "sigalgs", "signal", "ticketKeys",
@@ -3492,26 +3515,44 @@ static const char *const SCR_TLS_CONNECT_FENCED_OPTIONS[] = {
 
 static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed, nullable*/,
                                            const ScrDyn *opts /*borrowed, nullable*/,
-                                           ScrClosure *cb /*moves, nullable*/);
+                                           ScrClosure *cb /*moves, nullable*/,
+                                           ScrStr *unix_path /*borrowed, nullable*/);
 
-ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable*/,
-                                   const ScrDyn *opts /*borrowed, nullable*/,
-                                   ScrClosure *cb /*moves, nullable*/) {
-  if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF) return scr_tls_connect_plain(port, host, opts, cb);
-  /* a typed record (an options binding): its fields, as a plain object */
+/* Every tls.connect form's options ride this: a typed record (an options
+ * binding, SCR_DYN_TYPED_REF) materializes into the plain object the walk
+ * reads; a dyn object passes as it is. */
+static ScrNetSocket *scr_tls_connect_materialized(double port, ScrStr *host /*borrowed, nullable*/,
+                                                  const ScrDyn *opts /*borrowed, nullable*/,
+                                                  ScrClosure *cb /*moves, nullable*/,
+                                                  ScrStr *unix_path /*borrowed, nullable*/) {
+  if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF)
+    return scr_tls_connect_plain(port, host, opts, cb, unix_path);
   ScrDyn *plain = scr_dyn_typed_ref_materialize(opts);
   if (plain == NULL) {
     scr_closure_release(cb);
     return NULL;
   }
-  ScrNetSocket *s = scr_tls_connect_plain(port, host, plain, cb);
+  ScrNetSocket *s = scr_tls_connect_plain(port, host, plain, cb, unix_path);
   scr_dyn_release(plain);
   return s;
 }
 
+ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable*/,
+                                   const ScrDyn *opts /*borrowed, nullable*/,
+                                   ScrClosure *cb /*moves, nullable*/) {
+  return scr_tls_connect_materialized(port, host, opts, cb, NULL);
+}
+
+/* tls.connect(path[, options][, callback]): the Unix-socket client. */
+ScrNetSocket *scr_tls_connect_path(ScrStr *path /*borrowed*/, const ScrDyn *opts /*borrowed*/,
+                                   ScrClosure *cb /*moves, nullable*/) {
+  return scr_tls_connect_materialized(-1, NULL, opts, cb, path);
+}
+
 static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed, nullable*/,
                                            const ScrDyn *opts /*borrowed, nullable*/,
-                                           ScrClosure *cb /*moves, nullable*/) {
+                                           ScrClosure *cb /*moves, nullable*/,
+                                           ScrStr *unix_path /*borrowed, nullable*/) {
   scr_tls_rng_init();
   bool reject = true;
   ScrBytes *ca = NULL;
@@ -3552,6 +3593,16 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         continue;
       }
       if (v->kind == SCR_DYN_UNDEF) continue;
+      if (strcmp(e.key, "path") == 0) {
+        /* a Unix-socket client (tls.connect({ path })) */
+        if (v->kind != SCR_DYN_STR) {
+          scr_dyn_prop_type_fail("options.path", "of type string", v);
+          ok = false;
+        } else {
+          unix_path = v->v.str;
+        }
+        continue;
+      }
       if (strcmp(e.key, "port") == 0) {
         if (port >= 0) continue; /* the argument form wins, like Node */
         if (v->kind == SCR_DYN_NUM) port = v->v.num;
@@ -3650,7 +3701,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
                       "a client certificate lowers with both cert and key");
     ok = false;
   }
-  if (ok && port < 0 && wrap == NULL) {
+  if (ok && port < 0 && wrap == NULL && unix_path == NULL) {
     scr_dyn_arg_type_fail("options.port", "of type number", scr_dyn_undefined());
     ok = false;
   }
@@ -3694,6 +3745,10 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
       scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
       return NULL;
     }
+  } else if (unix_path != NULL) {
+    /* the Unix-socket TLS client: the same wrap over a path dial */
+    s = scr_net_connect_path(unix_path, false);
+    if (cb) scr_net_sock_on_connect(s, cb, true); /* post-handshake */
   } else {
     ScrStr *dial_addr = dial_host != NULL ? scr_net_blocking_lookup(dial_host) : NULL;
     s = scr_net_connect(port, dial_addr, cb); /* cb fires post-handshake — secureConnect */
@@ -3806,13 +3861,14 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
  * path), the established session otherwise (1.2). Node fires per
  * received ticket; the once-latch satisfies the suite's once-listener
  * shapes, and resumption itself stays out (divergence 55). */
-static void scr_tls_fire_session(ScrTlsSock *t) {
-  if (t->session_fired || t->session_ls.n == 0 || t->cli == NULL) return;
+/* The current session as a Buffer (+1), NULL when the handshake has no
+ * resumable session yet (a TLS 1.3 client before its ticket). */
+static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
   mbedtls_ssl_session sess;
   mbedtls_ssl_session_init(&sess);
   if (mbedtls_ssl_get_session(&t->ssl, &sess) != 0) {
-    mbedtls_ssl_session_free(&sess); /* no resumable session yet (1.3 pre-ticket) */
-    return;
+    mbedtls_ssl_session_free(&sess);
+    return NULL;
   }
   size_t need = 0;
   (void)mbedtls_ssl_session_save(&sess, NULL, 0, &need);
@@ -3823,8 +3879,15 @@ static void scr_tls_fire_session(ScrTlsSock *t) {
   mbedtls_ssl_session_free(&sess);
   if (!ok) {
     scr_bytes_release(buf);
-    return;
+    return NULL;
   }
+  return buf;
+}
+
+static void scr_tls_fire_session(ScrTlsSock *t) {
+  if (t->session_fired || t->session_ls.n == 0 || t->cli == NULL) return;
+  ScrBytes *buf = scr_tls_session_bytes(t);
+  if (buf == NULL) return; /* no resumable session yet (1.3 pre-ticket) */
   t->session_fired = true;
   ScrNetL *snap;
   size_t n = scr_net_ls_snapshot(&t->session_ls, &snap);
@@ -3858,6 +3921,47 @@ static bool scr_tls_sock_verdict(const ScrTlsSock *t) {
   if (t->cli != NULL) return t->established && t->cli->verify_recorded;
   return t->srv != NULL && t->srv->request_cert && !t->srv->standalone &&
          (t->established || t->vrfy_seen);
+}
+
+/* tlsSocket.servername: the client's SNI name on a server socket, the
+ * name this client offered otherwise; false when there is none. +1. */
+ScrDyn *scr_tls_sock_servername(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  ScrStr *name = NULL;
+  if (t != NULL) {
+    if (t->cli != NULL) {
+      if (t->cli->hostname != NULL)
+        name = scr_str_new(t->cli->hostname, strlen(t->cli->hostname));
+    } else if (t->sni_name != NULL) {
+      name = scr_str_retain(t->sni_name);
+    }
+  }
+  if (name == NULL) return scr_dyn_new_bool(false);
+  /* the dyn owns its own reference; the one taken here is released now */
+  ScrDyn *answer = scr_dyn_new_str(name);
+  scr_str_release(name);
+  return answer;
+}
+
+/* tlsSocket.getSession(): the session a resumption would use. +1 dyn
+ * (a Buffer, or null when the handshake has no resumable session yet). */
+ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  ScrBytes *b = t != NULL ? scr_tls_session_bytes(t) : NULL;
+  if (b == NULL) return scr_dyn_new_null();
+  ScrDyn *d = scr_dyn_new_bytes(b);
+  scr_bytes_release(b);
+  return d;
+}
+
+/* tlsSocket.disableRenegotiation(): TLS renegotiation is off in this
+ * provider by default (mbedTLS 3.x), which is what the call asks for. */
+void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }
+
+/* tlsSocket.servername (which == 0) and getSession (1) over the shared
+ * checked-dynamic member entry. */
+ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which) {
+  return (int)which == 1 ? scr_tls_sock_get_session(s) : scr_tls_sock_servername(s);
 }
 
 bool scr_tls_sock_authorized(ScrNetSocket *s) {

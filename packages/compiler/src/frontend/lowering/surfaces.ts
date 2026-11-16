@@ -450,6 +450,26 @@ export const FS_WATCH_FILE_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "bigint",
 ]);
 
+/** fsPromises.watch's documented option keys (@types/node's WatchOptions). */
+export const FS_WATCH_PROMISES_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
+  "encoding",
+  "persistent",
+  "recursive",
+  "signal",
+  "ignore",
+  "maxQueue",
+  "overflow",
+]);
+
+/** Why each documented fsPromises.watch option this surface cannot model
+ * fences by name. */
+export const FS_WATCH_PROMISES_OPTION_HINTS: Record<string, string | undefined> = {
+  recursive:
+    "recursive: true watches with Node's non-native recursive walker, which has no lowering",
+  signal: "options.signal (an AbortSignal ending the iteration) has no lowering",
+  ignore: "options.ignore (a matcher over entry names) has no lowering",
+};
+
 /** fs.readdirSync's documented option keys. */
 export const FS_READDIR_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "encoding",

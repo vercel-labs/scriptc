@@ -41,6 +41,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // flag; a closed watcher ignores them, and nothing user-visible runs.
   "watcher.ref",
   "watcher.unref",
+  // watchEvents.wait builds a promise or answers a settled one, and
+  // scr_watch_events_close closes an already-open watcher (a closed one
+  // returns at once). Neither runs program code. watchEvents.take and
+  // fsp.watch are deliberately absent: a queue over its bound raises
+  // ERR_FS_WATCH_QUEUE_OVERFLOW, and opening the path throws Node's fs
+  // error.
+  "watchEvents.wait",
+  "watchEvents.close",
   // scr_stat_watcher_ref / scr_stat_watcher_unref move one registration's
   // liveness flag; a registration fs.unwatchFile already removed is a no-op.
   "statWatcher.ref",
@@ -113,6 +121,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http2.getPackedSettings0",
   // Copies the values a name has in a string pairs array.
   "http2.pairsValues",
+  // stream.getDefaultHighWaterMark reads the runtime's default for the mode:
+  // no allocation, no coercion and no program code.
+  "stream.getDefaultHwm",
   // The child stream's flowing state is set or read; held chunks go to the
   // listeners on a later tick, never inside the call.
   "stream.childPause",
@@ -245,6 +256,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_net_server_async_dispose allocates the promise, adds a close
   // listener and starts the close; a later close failure is a rejection.
   "net.serverAsyncDispose",
+  // scr_tls_sock_dyn_member reads the name the client asked for (the SNI
+  // name a server recorded) into a string, or false, and copies the
+  // established session into a Buffer, or null before there is one. It
+  // runs no program code.
+  "tls.sockDynMember",
+  // scr_tls_sock_disable_renegotiation does nothing: the provider keeps
+  // renegotiation off, which is what the call asks for.
+  "tls.sockDisableRenegotiation",
   // scr_util_transferable_abort_controller allocates a controller and its
   // signal state; running out of memory ends the process, and no argument
   // is read (surplus arguments are evaluated by the call site).

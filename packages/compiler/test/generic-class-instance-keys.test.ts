@@ -105,3 +105,27 @@ console.log(typeof wide.get(), wide.get() + 1, typeof thin.get(), thin.get().len
 `);
   expect(stdout).toBe("number 42 string 4 string\n");
 });
+
+test("a class is keyed by an argument an interface hands to a conditional through extends", async () => {
+  // The derived interface declares no member of its own: the conditional
+  // lives in its base and reaches the argument through the heritage clause
+  // (`interface Wrapped<U> extends Holder<U>`). `Array<T>` must not be what
+  // marks `T` sensitive (`Array`'s conditional sits over a method's own
+  // parameters), so this program is refused unless the heritage is read.
+  const stdout = await run(`
+type Slot<T> = T extends "wide" ? number : string;
+interface Holder<T> { held: Slot<T>; }
+interface Wrapped<U> extends Holder<U> {}
+class Shelf<T> {
+  items: Array<T> = [];
+  box: Wrapped<T>;
+  constructor(box: Wrapped<T>) { this.box = box; }
+  held(): Wrapped<T>["held"] { return this.box.held; }
+  show(): string { return String(this.box.held) + this.items.length; }
+}
+const wide = new Shelf<"wide">({ held: 41 });
+const thin = new Shelf<"thin">({ held: "reed" });
+console.log(typeof wide.held(), wide.held() + 1, typeof thin.held(), thin.held().length);
+`);
+  expect(stdout).toBe("number 42 string 4\n");
+});

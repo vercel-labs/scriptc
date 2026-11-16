@@ -6139,7 +6139,45 @@ function literalSensitiveTypeParams(lowerer: Lowerer, gci: GenericClassInfo): Se
         if (own.size === 0) continue;
         const named = new Set<ts.Symbol>();
         if (ts.isTypeAliasDeclaration(d)) scan(d.type, own, named);
-        else for (const member of d.members.nodes) scan(member, own, named);
+        else {
+          for (const member of d.members.nodes) scan(member, own, named);
+          // An interface inherits its bases' members: a conditional a base
+          // declares over its own parameter reaches this interface's
+          // arguments by position, exactly as a reference to the base hands
+          // them on (`interface Wrapped<U> extends Holder<U>`, with
+          // `interface Holder<T> { held: Slot<T> }`). Its own members cannot
+          // show that dependency.
+          for (const clause of d.heritageClauses?.nodes ?? []) {
+            if (clause.token === ts.SyntaxKind.ImplementsKeyword) continue;
+            for (const element of clause.types.nodes) {
+              // The ts7 adapter spells an interface's extends element as a
+              // type reference; the TypeScript AST spells it as an
+              // ExpressionWithTypeArguments.
+              const typeName = ts.isTypeReferenceNode(element)
+                ? element.typeName
+                : ts.isExpressionWithTypeArguments(element)
+                  ? element.expression
+                  : undefined;
+              if (typeName === undefined) continue;
+              const name = ts.isIdentifier(typeName)
+                ? typeName
+                : ts.isPropertyAccessExpression(typeName)
+                  ? typeName.name
+                  : typeName.right;
+              if (name === undefined) continue;
+              const symbol = lowerer.checker.getSymbolAtLocation(name);
+              if (symbol === undefined || own.has(symbol)) continue;
+              const inherited = sensitivePositions(symbol);
+              const typeArguments = (
+                element as unknown as { typeArguments?: { nodes: readonly ts.Node[] } }
+              ).typeArguments;
+              typeArguments?.nodes.forEach((argument, i) => {
+                if (inherited.has(i)) collect(argument, own, named);
+                else scan(argument, own, named);
+              });
+            }
+          }
+        }
         // A reference that leaves an argument out takes the parameter's
         // default: what the default of a parameter a conditional depends on
         // names picks the branch too (`type Slot<T, K = T> = K extends "wide"

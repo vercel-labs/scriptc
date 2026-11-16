@@ -23799,7 +23799,11 @@ export class Lowerer {
     // access-mode bits the named-import form bakes (lowerFsConstantsProperty).
     if (!expr.questionDotToken && ts.isPropertyAccessExpression(expr.expression)) {
       const inner = this.builtinMemberOf(expr.expression);
-      if (inner && inner.module === "fs" && inner.member === "constants") {
+      if (
+        inner &&
+        (inner.module === "fs" || inner.module === "fs/promises") &&
+        inner.member === "constants"
+      ) {
         const MODES: Record<string, number | undefined> = {
           F_OK: 0,
           X_OK: 1,
@@ -23918,8 +23922,11 @@ export class Lowerer {
       const global = globalMemberValue(this, bi, expr, loc);
       if (global) return global;
     }
-    // A bare `fs.constants` read (not one of the baked bits above).
-    if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // A bare `fs.constants` read (not one of the baked bits above);
+    // fs/promises re-exports the same group.
+    if (bi.member === "constants" && (bi.module === "fs" || bi.module === "fs/promises")) {
+      return fsConstantsObject(loc);
+    }
     // `zlib.constants` as a value: the module's singleton record.
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `crypto.constants` as a value: the same story over the OpenSSL table.
@@ -24029,7 +24036,8 @@ export class Lowerer {
     if (callable !== null) return callable;
     if (module === "crypto" && member === "webcrypto")
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
-    if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    if ((module === "fs" || module === "fs/promises") && member === "constants")
+      return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
     return null;

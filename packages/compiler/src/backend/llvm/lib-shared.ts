@@ -1223,6 +1223,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fileHandle.datasync": "scr_file_handle_datasync_promise",
   "fileHandle.truncate": "scr_file_handle_truncate_promise",
   "fileHandle.chmod": "scr_file_handle_chmod_promise",
+  "fileHandle.chown": "scr_file_handle_chown_promise",
   "fileHandle.utimes": "scr_file_handle_utimes_promise",
   "fileHandle.readFile": "scr_file_handle_read_file_promise",
   "fileHandle.readFileBytes": "scr_file_handle_read_file_bytes_promise",

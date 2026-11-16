@@ -24,6 +24,7 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
+import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { PoisonError, newFnCtx } from "./lowerer.js";
 import { classMethodValue, runsOverDynamicReceiver } from "./class-method-values.js";
 import { iteratorPrototypeExpr } from "./iterator-prototype.js";
@@ -512,16 +513,35 @@ function dynamicPrototypeMemberValue(
   lowerer.currentClass = info;
   lowerer.fnStack.push(context);
   const before = lowerer.diags.length;
+  // The member is lowered a second time, over a dynamic receiver. A statement
+  // in its body that refuses that receiver (a typed field read used where the
+  // checker requires its static type, a collection key) is no lowering of this
+  // attempt, and its diagnostic is not the program's: the member's own
+  // lowering at its declaration reports what that source refuses. Recording it
+  // would fail a build over a view the source never asked for (getPrototypeOf
+  // over an untyped value builds one for every class).
+  //
+  // A JavaScript statement that refuses becomes a run-time fence, so the
+  // attempt still holds every statement of the body. A TypeScript statement
+  // that refuses becomes nothing — the source keeps compile fences — so a
+  // value built here would run the member with part of its body missing. Any
+  // diagnostic the attempt captured therefore discards the value, and the
+  // member falls back to the compiled receiver-checked wrapper (as a member
+  // that needs a native receiver already does).
+  const held = lowerer.diagSink;
+  const captured: ScrDiagnostic[] = [];
+  lowerer.diagSink = captured;
   try {
-    return lowerer.coerceToExpected(lowerer.lowerLambda(member, true), DYN);
+    const value = lowerer.coerceToExpected(lowerer.lowerLambda(member, true), DYN);
+    return captured.length === 0 ? value : null;
   } catch (error) {
     // A member whose signature cannot lower as a value (a rest parameter,
-    // for one) falls back to the compiled receiver-checked wrapper; the
-    // attempt's own diagnostic must not fail the build.
+    // for one) takes the same road.
     if (!(error instanceof PoisonError)) throw error;
-    lowerer.diags.splice(before);
     return null;
   } finally {
+    lowerer.diagSink = held;
+    lowerer.diags.splice(before);
     lowerer.fnStack.pop();
     lowerer.currentClass = previousClass;
   }

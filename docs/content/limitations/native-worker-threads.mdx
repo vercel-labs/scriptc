@@ -18,6 +18,7 @@ A worker's uncaught exception reaches its `error` listeners as Node's error seri
 An unhandled rejection whose reason is not error-like arrives as an `UnhandledPromiseRejection` Error with code `ERR_UNHANDLED_REJECTION` quoting the reason.
 A thrown value that does not clone, such as a function, arrives as an `ERR_WORKER_UNSERIALIZABLE_ERROR` Error, where Node sends its `util.inspect` string.
 `new MessageChannel()` from `node:worker_threads` makes two entangled MessagePorts, in one thread or across threads once a port is transferred, with `receiveMessageOnPort`.
+The `MessageChannel` global constructs the channel `new MessageChannel()` builds, so `new` through a stored value (`const Channel = MessageChannel; new Channel()`) builds one too.
 Port messages arrive in Node's order: each port's queued messages as one batch before `setImmediate` callbacks, a port's own `'close'` after the poll phase, and the other port's `'close'` after its queued messages while the loop keeps running.
 A worker's messages to its parent, and the parent's messages in the worker, also arrive as one batch before `setImmediate` callbacks, each followed by its microtasks, as in Node: the messages queued when delivery starts, and those that arrive meanwhile until the batch holds 1000.
 `receiveMessageOnPort(parentPort)` in a worker takes the parent's next message.

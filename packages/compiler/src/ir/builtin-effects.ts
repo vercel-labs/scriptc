@@ -97,6 +97,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.label",
   "console.countReset",
   "console.table",
+  // Console construction validates its options in the runtime, and the
+  // instance twins of the throwing members share their fences.
+  "console.new",
+  "console.instCount",
+  "console.instCountReset",
+  "console.instTable",
+  "console.instTrace",
   "console.dirDyn",
   "console.dirHidden",
   "worker.new",
@@ -1264,6 +1271,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
   "buffer.poolFromDynRange",
+  "buffer.copyBytesFrom",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
@@ -1310,6 +1318,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.appendFileData",
   "fsp.writeFileDataFlags",
   "fileHandle.writeFileData",
+  // fchown(2) over the handle raises for a closed descriptor and for an id
+  // outside Node's range.
+  "fileHandle.chown",
   "zlib.inflateSync",
   "zlib.inflateRawSync",
   "zlib.gunzipSync",

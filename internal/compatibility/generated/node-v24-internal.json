@@ -20286,6 +20286,7 @@
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/crypto-checked-arguments.cjs",
           "tests/corpus/crypto-constants-object.ts",
           "tests/corpus/crypto-create-mac-errors.mjs",
@@ -20617,8 +20618,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.argon2",
+        "tests": [
+          "tests/corpus/crypto-argon2.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20640,8 +20644,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.argon2Sync",
+        "tests": [
+          "tests/corpus/crypto-argon2.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -115422,6 +115429,7 @@
           "tests/corpus/compat-webcrypto-algorithms.mjs",
           "tests/corpus/compat-webcrypto-algorithms.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/jose-jwe-asymmetric/main.mjs",
           "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/key-object-from-crypto-key.ts",
@@ -117130,6 +117138,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -117639,6 +117648,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -117791,6 +117801,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -117914,6 +117925,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -118037,6 +118049,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -118651,6 +118664,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -118802,6 +118816,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -118894,6 +118909,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -119045,6 +119061,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",

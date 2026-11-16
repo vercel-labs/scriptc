@@ -1651,6 +1651,10 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.createPublicKey",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
+  // Argon2 reads its parameters object (whose members convert strings and
+  // BufferSources) and may run program code through those conversions.
+  "crypto.argon2Sync",
+  "crypto.argon2Cb",
   // getPublicKey converts its keyUsages sequence (whose strings' conversions
   // run program code) and reads the key's members through the handle.
   "webcrypto.getPublicKey",

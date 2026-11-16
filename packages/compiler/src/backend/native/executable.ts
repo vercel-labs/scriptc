@@ -129,6 +129,7 @@ interface RuntimeUnitContext {
   cipher: boolean;
   ecdh: boolean;
   dh: boolean;
+  argon2: boolean;
   pki: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
@@ -506,6 +507,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.webcrypto === true && u.opts.pki === true, "scr_webcrypto_pki.c"),
   unit((u) => u.opts.pki === true && u.opts.ed25519 === true, "scr_ed25519.c"),
   unit((u) => u.opts.x509 === true, "scr_x509.c"),
+  // Argon2 (crypto.argon2 and crypto.argon2Sync) is self-contained.
+  unit((u) => u.opts.argon2 === true, "scr_argon2.c"),
   // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
   unit((u) => u.tls && u.opts.x509 === true, "scr_tls_x509.c"),
   // The crypto global's object extends scr_async_dyn.c's.
@@ -681,6 +684,7 @@ export async function compileCInternal(
   const cipher = opts.cipher ?? false;
   const ecdh = opts.ecdh ?? false;
   const dh = opts.dh ?? false;
+  const argon2 = opts.argon2 ?? false;
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
   const brotli = (opts.zlib ?? false) && opts.brotli === true;
@@ -1136,6 +1140,7 @@ export async function compileCInternal(
       cipher,
       ecdh,
       dh,
+      argon2,
       pki,
       lreObjects,
       zlibObjects,

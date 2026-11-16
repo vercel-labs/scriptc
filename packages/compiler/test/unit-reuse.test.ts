@@ -524,3 +524,30 @@ test("the changed-unit set names what a build lowered, and nothing it applied", 
     await workspace.dispose();
   }
 }, 300_000);
+
+test("a class expression's lowered units join the changed set", async () => {
+  // The constructor and methods of a class expression are registered while
+  // lowering and own no source file: they must still be named when a build
+  // lowers their bodies again.
+  const workspace = await Workspace.create({
+    "main.ts": [
+      "const Box = class {",
+      "  value(): number {",
+      "    return 1;",
+      "  }",
+      "};",
+      "console.log(new Box().value());",
+      "",
+    ].join("\n"),
+  });
+  try {
+    await workspace.build();
+    await workspace.build();
+    await workspace.edit("main.ts", "return 1;", "return 2;");
+    await workspace.build();
+    const changed = workspace.buildChanged;
+    expect(changed.some((unit) => unit.includes(".value"))).toBe(true);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);

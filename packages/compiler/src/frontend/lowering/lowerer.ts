@@ -15226,6 +15226,7 @@ export class Lowerer {
             note: (name, record, applied, files) => {
               const file = fileOfUnit(name);
               if (file !== null) reuse.note(name, file, record, applied, files);
+              else reuse.noteUnfiled(name, applied);
             },
           };
     const recordLines: string[] = [];
@@ -15259,8 +15260,10 @@ export class Lowerer {
           try {
             const fn = lowerUnitBody(name);
             if (fn) loweredUnits.set(name, fn);
+            reuse?.noteUnfiled(name, false);
             relieveHeapPressure();
           } catch (e) {
+            reuse?.noteUnfiled(name, false);
             if (!(e instanceof PoisonError)) throw e;
           }
         }

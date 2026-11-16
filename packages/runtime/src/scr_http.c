@@ -1719,6 +1719,9 @@ static bool scr_http_early_link_format(const ScrStr *link) {
  * present it is always the first field, followed by the other object
  * properties in insertion order. This static entry accepts string-valued
  * fields. */
+static void scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*borrowed*/,
+                                                ScrArr *pairs /*borrowed*/);
+
 void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
   if (!scr_http_res_informational_h1(r, "writeEarlyHints")) return;
   size_t count = (size_t)scr_arr_len(pairs);
@@ -1753,11 +1756,20 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
     scr_str_release(link);
     return;
   }
+  scr_http_res_write_early_hints_head(r, link, pairs);
+  scr_str_release(link);
+}
+
+/* The 103 head with its Link line and the remaining fields: `link` has
+ * already been through validateLinkHeaderValue (a string, or an array of
+ * them joined with ", "), and the pairs are the other headers. */
+static void scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*borrowed*/,
+                                                ScrArr *pairs /*borrowed*/) {
+  size_t count = (size_t)scr_arr_len(pairs);
   ScrHttpBuf b = {NULL, 0, 0};
   scr_http_buf_str(&b, "HTTP/1.1 103 Early Hints\r\nLink: ");
   scr_http_buf_header_value(&b, link);
   scr_http_buf_str(&b, "\r\n");
-  scr_str_release(link);
   ScrStr *empty_label = scr_str_new("", 0);
   for (size_t i = 0; i + 1 < count; i += 2) {
     ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
@@ -7896,7 +7908,26 @@ static ScrArr *scr_http_dynh_flat_pairs(const ScrDyn *list) {
  * argument: an ordinary object's own entries in insertion order, every value
  * in Node's template spelling (numbers and booleans as text, arrays joined by
  * commas). +1; NULL with the argument TypeError pending for a non-object. */
-static ScrArr *scr_http_dynh_header_pairs(const ScrDyn *headers) {
+/* One [name, value] pair appended to an informational response's pairs, with
+ * Node's processInformationHeader checks: the name, the value as given (an
+ * undefined value is ERR_HTTP_INVALID_HEADER_VALUE, not the text), then the
+ * template's string form — an array joins with commas. */
+static bool scr_http_dynh_push_pair(ScrArr *pairs, const ScrStr *name, const ScrDyn *value) {
+  scr_http_validate_header_name((ScrStr *)name, NULL);
+  if (!scr_exc_pending()) scr_http_validate_header_value((ScrStr *)name, value);
+  if (scr_exc_pending()) return false;
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (text == NULL) return false;
+  scr_arr_push_ref(pairs, scr_str_retain((ScrStr *)name));
+  scr_arr_push_ref(pairs, text);
+  return true;
+}
+
+/* The pairs of an informational headers object, in insertion order; a
+ * `skip` key is left out (writeEarlyHints writes its own Link line). +1;
+ * NULL with the exception pending for a bad name, value or coercion. */
+static ScrArr *scr_http_dynh_header_pairs_skip(const ScrDyn *headers, const char *skip,
+                                               size_t skip_len) {
   ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 8);
   if (headers->kind == SCR_DYN_UNDEF || headers->kind == SCR_DYN_NULL) return pairs;
   if (headers->kind != SCR_DYN_OBJ) {
@@ -7906,30 +7937,80 @@ static ScrArr *scr_http_dynh_header_pairs(const ScrDyn *headers) {
   }
   for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
     ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+    if (skip != NULL && e.key_len == skip_len && memcmp(e.key, skip, skip_len) == 0) continue;
     ScrStr *name = scr_str_new(e.key, e.key_len);
-    /* Node's processInformationHeader: the name check, then the value
-     * check (an undefined value is ERR_HTTP_INVALID_HEADER_VALUE, not the
-     * text "undefined"), then the template's string form — an array joins
-     * with commas, an object is "[object Object]", as `${value}` is. */
-    scr_http_validate_header_name(name, NULL);
-    if (!scr_exc_pending()) scr_http_validate_header_value(name, e.value);
-    if (scr_exc_pending()) {
-      scr_str_release(name);
-      break;
-    }
-    ScrStr *text = scr_dyn_string_coerce_js(e.value);
-    if (text == NULL) {
-      scr_str_release(name);
-      break;
-    }
-    scr_arr_push_ref(pairs, name);
-    scr_arr_push_ref(pairs, text);
+    bool ok = scr_http_dynh_push_pair(pairs, name, e.value);
+    scr_str_release(name);
+    if (!ok) break;
   }
   if (scr_exc_pending()) {
     scr_arr_release(pairs);
     return NULL;
   }
   return pairs;
+}
+
+static ScrArr *scr_http_dynh_header_pairs(const ScrDyn *headers) {
+  return scr_http_dynh_header_pairs_skip(headers, NULL, 0);
+}
+
+/* validateLinkHeaderValue: one link string, or an array of them joined with
+ * ", " (an empty array answers the empty string). +1, or NULL with Node's
+ * ERR_INVALID_ARG_VALUE pending for an element or value that is not a link. */
+static ScrStr *scr_http_early_link_value_plain(const ScrDyn *link) {
+  static const char *const format_hint =
+    "must be an array or string of format \"</styles.css>; rel=preload; as=style\"";
+  if (link->kind == SCR_DYN_STR) {
+    if (!scr_http_early_link_format(link->v.str)) {
+      ScrDyn *received = scr_dyn_new_str(link->v.str);
+      scr_dyn_arg_value_fail("hints", format_hint, received);
+      scr_dyn_release(received);
+      return NULL;
+    }
+    return scr_str_retain(link->v.str);
+  }
+  if (link->kind == SCR_DYN_ARR) {
+    double n = scr_dyn_arr_len(link);
+    if (n == 0) return scr_str_new("", 0);
+    ScrHttpBuf b = {NULL, 0, 0};
+    for (double i = 0; i < n; i++) {
+      ScrDyn *item = scr_dyn_index_get(link, i);
+      if (item == NULL) {
+        free(b.data);
+        return NULL;
+      }
+      if (item->kind == SCR_DYN_STR && scr_http_early_link_format(item->v.str)) {
+        if (i > 0) scr_http_buf_str(&b, ", ");
+        scr_http_buf_append(&b, item->v.str->data, item->v.str->len);
+        scr_dyn_release(item);
+        continue;
+      }
+      ScrDyn *received =
+        item->kind == SCR_DYN_STR ? scr_dyn_new_str(item->v.str) : scr_dyn_retain(item);
+      scr_dyn_arg_value_fail("hints", format_hint, received);
+      scr_dyn_release(received);
+      scr_dyn_release(item);
+      free(b.data);
+      return NULL;
+    }
+    ScrStr *out = scr_str_new(b.data != NULL ? b.data : "", b.len);
+    free(b.data);
+    return out;
+  }
+  ScrDyn *received = scr_dyn_retain((ScrDyn *)link);
+  scr_dyn_arg_value_fail("hints", format_hint, received);
+  scr_dyn_release(received);
+  return NULL;
+}
+
+/* The value as a plain dyn first: an array written in a typed source arrives
+ * as a live typed ref, not a dyn array. */
+static ScrStr *scr_http_early_link_value(const ScrDyn *link) {
+  ScrDyn *plain = scr_http_header_value_plain((ScrDyn *)link);
+  if (plain == NULL) return NULL;
+  ScrStr *out = scr_http_early_link_value_plain(plain);
+  scr_dyn_release(plain);
+  return out;
 }
 
 static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *method,
@@ -8169,10 +8250,41 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (strcmp(method, "writeEarlyHints") == 0) {
-    ScrArr *pairs = scr_http_dynh_header_pairs(argc > 0 ? args[0] : scr_dyn_undefined());
-    if (pairs == NULL) return NULL;
-    scr_http_res_write_early_hints(r, pairs);
-    scr_arr_release(pairs);
+    /* Node's writeEarlyHints: the hints object, its link (a string or an
+     * array joined with ", "), and no head at all — no callback either —
+     * when the link is absent, null, undefined, or an empty array. */
+    const ScrDyn *hints = argc > 0 ? args[0] : scr_dyn_undefined();
+    if (hints->kind != SCR_DYN_OBJ) {
+      scr_dyn_arg_type_fail("hints", "of type object", hints);
+      return NULL;
+    }
+    const ScrDyn *link = scr_dyn_obj_get(hints, "link", 4);
+    if (link == NULL || link->kind == SCR_DYN_NULL || link->kind == SCR_DYN_UNDEF)
+      return scr_dyn_retain(scr_dyn_undefined());
+    ScrStr *link_value = scr_http_early_link_value(link);
+    if (link_value == NULL) return NULL;
+    if (link_value->len == 0) {
+      scr_str_release(link_value);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    ScrArr *rest = scr_http_dynh_header_pairs_skip(hints, "link", 4);
+    if (rest == NULL) {
+      scr_str_release(link_value);
+      return NULL;
+    }
+    if (!scr_http_res_informational_h1(r, "writeEarlyHints")) {
+      scr_str_release(link_value);
+      scr_arr_release(rest);
+      return NULL;
+    }
+    if (!scr_http_headers_unsent(r->head_sent, "write")) {
+      scr_str_release(link_value);
+      scr_arr_release(rest);
+      return NULL;
+    }
+    scr_http_res_write_early_hints_head(r, link_value, rest);
+    scr_str_release(link_value);
+    scr_arr_release(rest);
     if (scr_exc_pending()) return NULL;
     if (argc > 1 && args[1]->kind == SCR_DYN_FUNC)
       scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[1]));

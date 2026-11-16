@@ -791,7 +791,13 @@ function untypedJsListener(lowerer: Lowerer, node: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (ts.isArrowFunction(e) || ts.isFunctionExpression(e))
     return e.parameters.nodes.some((param) => !documentedParameter(param));
-  return (lowerer.typeOf(e).flags & ts.TypeFlags.Any) !== 0;
+  if ((lowerer.typeOf(e).flags & ts.TypeFlags.Any) !== 0) return true;
+  /* A function passed by name (an identifier or a member read): its
+   * parameters are untyped when one of them lowers to the dynamic kind —
+   * the JavaScript declaration case, and any listener whose parameters are
+   * unknown. Those register through the socket's checked-dynamic handle. */
+  const t = lowerer.mapTypeOf(lowerer.typeOf(e));
+  return t !== null && t.kind === "func" && t.params.some((p) => p.kind === "dyn");
 }
 
 /** True when a bind argument is Node's options record rather than a port. */

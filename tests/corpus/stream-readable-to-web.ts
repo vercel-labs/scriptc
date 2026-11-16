@@ -44,6 +44,20 @@ async function main(): Promise<void> {
     Readable.toWeb(Readable.from([Buffer.from("hello "), Buffer.from("world")])),
   );
   log.push(`response ${await response.text()}`);
+
+  // Node's adapter enqueues each buffered chunk by itself, and copies a
+  // Buffer chunk into a plain Uint8Array detached from the readable.
+  const buffered = new Readable({ read(): void {} });
+  buffered.push(Buffer.from("ab"));
+  buffered.push(Buffer.from("cd"));
+  buffered.push(null);
+  const bufferedReader = Readable.toWeb(buffered).getReader();
+  const bufferedOne = await bufferedReader.read();
+  const bufferedTwo = await bufferedReader.read();
+  const bufferedFirst = bufferedOne.value as Uint8Array;
+  const bufferedSecond = bufferedTwo.value as Uint8Array;
+  log.push(`chunks ${decoder.decode(bufferedFirst)}/${decoder.decode(bufferedSecond)} ${bufferedFirst.length}/${bufferedSecond.length}`);
+
 }
 
 main().then(

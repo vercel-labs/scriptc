@@ -9,6 +9,9 @@
 #include "scr_runtime.h"
 #include "scr_stream.h"
 
+#include <string.h>
+#include <stdio.h>
+
 typedef struct StwCtx StwCtx;
 struct StwCtx {
   size_t rc;
@@ -74,14 +77,36 @@ static ScrClosure *stw_job(void *fn, StwRead *r) {
 
 static StwRead *stw_job_read(ScrClosure *cl) { return scr_box_get_ref(cl->caps[0]); /* +1 */ }
 
+/* Node's adapter copies a Buffer chunk into a plain Uint8Array before it
+ * enqueues it (`new Uint8Array(chunk)`, detached from the Buffer pool), so
+ * the web stream never shares the readable's storage and answers the
+ * Uint8Array brand; an object-mode chunk passes through unchanged. +1 when
+ * it copied, otherwise the borrowed value. */
+static ScrDyn *stw_detach_chunk(StwCtx *c, ScrDyn *value) {
+  if (value->kind != SCR_DYN_BYTES || !value->buffer) return value;
+  if (scr_stream_readable_object_entries(c->readable)) return value;
+  ScrBytes *src = value->v.bytes;
+  ScrBytes *copy = scr_bytes_new(SCR_BYTES_U8, (double)src->len);
+  memcpy(copy->data, src->data, src->len);
+  copy->is_buffer = false;
+  ScrDyn *out = scr_dyn_new_bytes(copy);
+  scr_bytes_release(copy);
+  return out;
+}
+
 /* The read settled: the chunk, or the end marker; the sink answers the
  * pull either way. */
 static ScrDyn *stw_on_chunk(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   StwRead *r = stw_job_read(cl);
   ScrDyn *value = argc > 0 ? args[0] : scr_dyn_undefined();
   ScrDyn *end = scr_stream_from_done();
-  if (value == end) r->sink->close(r->sink_ctx);
-  else r->sink->chunk(r->sink_ctx, value);
+  if (value == end) {
+    r->sink->close(r->sink_ctx);
+  } else {
+    ScrDyn *chunk = stw_detach_chunk(r->ctx, value);
+    r->sink->chunk(r->sink_ctx, chunk);
+    if (chunk != value) scr_dyn_release(chunk);
+  }
   scr_dyn_release(end);
   stw_read_drop(r);
   if (scr_exc_pending()) scr_exc_clear(); /* a continuation leaves none pending */
@@ -99,10 +124,11 @@ static ScrDyn *stw_on_error(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
-/* read_into: one read of the readable, answered through the sink. */
+/* read_into: one read of the readable, one buffered chunk at a time (Node's
+ * adapter enqueues each 'data' chunk), answered through the sink. */
 static bool stw_read_into(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx) {
   StwCtx *c = ctx;
-  ScrPromise *p = scr_stream_next_chunk_dyn(c->readable);
+  ScrPromise *p = scr_stream_next_chunk_dyn_single(c->readable);
   if (!p) return false; /* the read reported its own error; the caller drops */
   StwRead *r = stw_read_new(c, sink, sink_ctx);
   ScrClosure *fc = stw_job((void *)&stw_on_chunk, r);

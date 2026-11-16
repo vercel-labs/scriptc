@@ -42,17 +42,6 @@
     "start": 862,
     "end": 870
    }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'toWeb' does not exist on type 'typeof Duplex'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 945,
-    "end": 950
-   },
-   "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
   }
  ]
 }

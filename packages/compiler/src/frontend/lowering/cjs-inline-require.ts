@@ -1761,12 +1761,31 @@ export function cjsRuntimeOptionalExportStorage(
   // No compiled CommonJS export table in the program: nothing to look up.
   if (lowerer.cjsInFileExportMemberGlobals.size === 0) return null;
   const recv = access.expression;
+  if (ts.isCallExpression(recv)) {
+    // `require("./m").name`: the require runs at this read's position, so
+    // the module's %init — its side effects, and the entry value every slot
+    // starts from — runs before the storage is read.
+    const req = inlineProgramRequireOf(lowerer, recv);
+    if (req === null) return null;
+    const storage = cjsRuntimeOptionalExportStorageOf(lowerer, req.dep, access);
+    return storage === null || lowerer.inlineRequireInitDone.has(req.call)
+      ? storage
+      : withRequireInit(lowerer, req, storage);
+  }
   const dep = ts.isIdentifier(recv)
     ? lowerer.cjsModuleBindingDepOf(recv)
-    : ts.isCallExpression(recv) || ts.isPropertyAccessExpression(recv)
+    : ts.isPropertyAccessExpression(recv)
       ? lowerer.cjsModuleRefDepOf(recv)
       : null;
-  if (dep === null) return null;
+  return dep === null ? null : cjsRuntimeOptionalExportStorageOf(lowerer, dep, access);
+}
+
+/** The runtime-optional slot behind `access`, read from module `dep`. */
+function cjsRuntimeOptionalExportStorageOf(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
   const target = cjsNamespaceTargetOf(lowerer, dep) ?? dep;
   const name = access.name.text;
   const symbol = lowerer.cjsModuleExportSymbol(target, name);

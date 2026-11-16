@@ -17,7 +17,7 @@ import { InternalCompilerError } from "../../errors.js";
  * seeds), npm/JSON import collection, per-file %init functions, %main, and
  * the module artifacts (globals, embedded npm tables) the IR module carries. */
 import * as ts from "../ts7/adapter.js";
-import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isVoidLiteralCast } from "../js-void-initializers.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
@@ -2245,11 +2245,6 @@ function registerCjsConditionalAliasGlobals(
  * a `&&`/`||`/`??` operand, a conditional expression, or a function nothing
  * invokes at this position. */
 function cjsInitPathOf(node: ts.Node, sf: ts.SourceFile): ts.IfStatement[] | null {
-  const unwrap = (e: ts.Expression): ts.Node => {
-    let n: ts.Node = e;
-    while (ts.isParenthesizedExpression(n)) n = n.expression;
-    return n;
-  };
   const ifs: ts.IfStatement[] = [];
   let cur: ts.Node = node;
   for (;;) {
@@ -2293,7 +2288,7 @@ function cjsInitPathOf(node: ts.Node, sf: ts.SourceFile): ts.IfStatement[] | nul
         cur = parent;
         continue;
       }
-      if (unwrap(cur as ts.Expression) === unwrap(parent.expression)) {
+      if (withoutParentheses(cur as ts.Expression) === withoutParentheses(parent.expression)) {
         cur = parent;
         continue;
       }

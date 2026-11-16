@@ -20,6 +20,15 @@ console.log('conditional', conditional.always, conditional.sometimes === undefin
 console.log('conditional typeof', typeof conditional.sometimes, conditional.sometimes ?? 'unset');
 console.log('picked', picked.always, picked.sometimes === undefined, picked.sometimes ?? 'unset');
 
+// A probe through an inline require() evaluates the module at that position
+// (its side effect runs first) and reads its storage afterwards.
+console.log(
+  'inline probe',
+  require('./probe-side.cjs').sometimes === undefined,
+  typeof require('./probe-side.cjs').sometimes,
+  require('./probe-side.cjs').always,
+);
+
 // Calling the absent member evaluates its arguments first, then throws
 // Node's "is not a function" TypeError naming the member.
 try {

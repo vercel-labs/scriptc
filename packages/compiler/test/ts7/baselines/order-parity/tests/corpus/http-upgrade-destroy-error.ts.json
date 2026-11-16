@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/http-upgrade-destroy-error.ts"
- ],
- "diags": []
-}

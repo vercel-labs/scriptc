@@ -794,7 +794,6 @@ struct ScrNetSocket {
   ScrNetNativeErrFn native_err; /* true = consumed (the protocol layer owns
                                  * the error story); false falls through to
                                  * this socket's own err_ls */
-  ScrNetNativeErrObjFn native_err_obj; /* the destroy(err) arm's claim */
   bool (*native_idle)(void *); /* HTTP parser: no active request or partial head */
   void *native_ctx;
   void (*native_ctx_free)(void *);
@@ -8943,11 +8942,6 @@ void scr_net_sock_clear_native_reader(ScrNetSocket *s) {
   s->native_closed = NULL;
   s->native_idle = NULL; /* upgraded and CONNECT sockets are outside HTTP close sweeps */
   s->native_http_timeout = NULL;
-  /* the parser stepped aside: the socket is raw again, so its errors are
-   * the socket's own (Node's upgraded and CONNECT sockets leave the
-   * server's error story) */
-  s->native_err = NULL;
-  s->native_err_obj = NULL;
   scr_net_sock_update_read(s);
 }
 
@@ -8977,10 +8971,6 @@ void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout
                                      ScrNetNativeErrFn err) {
   s->native_timeout = timeout;
   s->native_err = err;
-}
-
-void scr_net_sock_set_native_error_obj(ScrNetSocket *s, ScrNetNativeErrObjFn fn) {
-  s->native_err_obj = fn;
 }
 
 void scr_net_sock_set_native_http_timeout(ScrNetSocket *s, ScrNetNativeTimeoutHandledFn fn) {
@@ -9449,25 +9439,17 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     if (scr_exc_pending()) return false;
   }
   if (sock->destroy_error != NULL) {
-    /* destroy(err): the protocol layer gets first claim on the Error (an
-     * HTTP server hands it to clientError and tears the request down);
-     * unconsumed errors fire the 'error' event with the Error the program
+    /* destroy(err): the 'error' event carries the Error the program
      * passed — the same object — then 'close' with hadError. */
     ScrError *err = sock->destroy_error;
     sock->destroy_error = NULL;
     ScrStr *msg = scr_str_retain(err->message);
+    ScrError *saved = scr_event_error_payload;
+    scr_event_error_payload = err;
     ScrAlsCtx *prev = scr_als_dispatch_enter(sock->als);
-    bool consumed = sock->native_err_obj != NULL && sock->native_err_obj(sock->native_ctx, err);
-    /* The protocol handler stands in for Node's internal listener: the
-     * program's own 'error' listeners still run beside it, and only an
-     * error neither of them took ends the process. */
-    if (!scr_exc_pending() && (sock->err_ls.n > 0 || !consumed)) {
-      ScrError *saved = scr_event_error_payload;
-      scr_event_error_payload = err;
-      scr_net_fire_err_this(&sock->err_ls, msg, sock, SCR_DYNH_NET_SOCKET);
-      scr_event_error_payload = saved;
-    }
+    scr_net_fire_err_this(&sock->err_ls, msg, sock, SCR_DYNH_NET_SOCKET);
     scr_als_dispatch_leave(prev);
+    scr_event_error_payload = saved;
     scr_str_release(msg);
     scr_error_release(err);
     if (scr_exc_pending()) return false;

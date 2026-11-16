@@ -5345,11 +5345,11 @@ void scr_timers_check_callback(const ScrDyn *cb) {
 }
 
 /* The closure that calls a dyn function value, or NULL with Node's
- * ERR_INVALID_ARG_TYPE pending for a non-function. */
+ * ERR_INVALID_ARG_TYPE pending for a non-function. The message names what
+ * arrived ("Received type number (1)"), as the timer calls' gate does. */
 static ScrClosure *scr_micro_dyn_closure(const ScrDyn *cb) {
   if (cb->kind != SCR_DYN_FUNC) {
-    static const char msg[] = "The \"callback\" argument must be of type function.";
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+    scr_dyn_arg_type_fail("callback", "of type function", cb);
     return NULL;
   }
   ScrClosure *c = scr_closure_new((void *)scr_micro_dyn_fire, 1);
@@ -5543,6 +5543,12 @@ void scr_loop_set_watch(bool (*pending)(void), void (*dispatch)(void), int (*pol
   scr_watch_pollfd_fn = pollfd;
 }
 
+/* Watch io without liveness: an unref'd (or persistent: false) watcher
+ * still delivers events while the loop runs for other work, but does not
+ * keep it alive — the net_io story one slot over. */
+static SCR_TL bool (*scr_watch_io_fn)(void) = NULL;
+
+void scr_loop_set_watch_io(bool (*io)(void)) { scr_watch_io_fn = io; }
 
 /* The child-process hook (scr_child.c, installed with the first spawned
  * child or IPC channel). Programs that never create one keep it NULL and
@@ -6285,6 +6291,7 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
   bool net_io = net || (scr_net_io_fn != NULL && scr_net_io_fn());
   bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
   bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
+  bool watch_io = watch || (scr_watch_io_fn != NULL && scr_watch_io_fn());
   bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
   bool stream = scr_stream_pending_fn != NULL && scr_stream_pending_fn();
   bool renames = scr_fs_renames_pending();
@@ -6337,7 +6344,7 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
     if (fd >= 0) scr_hosted_io_fd(st, fd);
     else scr_hosted_io_cap(st, SCR_SIGNAL_POLL_MS);
   }
-  if (watch) {
+  if (watch_io) {
     int fd = scr_watch_pollfd_fn != NULL ? scr_watch_pollfd_fn() : -1;
     if (fd >= 0) scr_hosted_io_fd(st, fd);
     else scr_hosted_io_cap(st, SCR_SIGNAL_POLL_MS);
@@ -6376,9 +6383,9 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
 #else
   (void)evw;
 #ifdef SCR_NODE_ISLANDS
-  if (evw || net_io || dgram || watch || ffi || kids || renames || workers || islands)
+  if (evw || net_io || dgram || watch_io || ffi || kids || renames || workers || islands)
 #else
-  if (evw || net_io || dgram || watch || ffi || kids || renames || workers)
+  if (evw || net_io || dgram || watch_io || ffi || kids || renames || workers)
 #endif
     scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
 #endif
@@ -6776,7 +6783,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * whether the sleep polls the net unit's fd */
     bool net_io = net || (scr_net_io_fn != NULL && scr_net_io_fn());
     bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
+    /* `watch` keeps the process alive; `watch_io` (unref'd watchers too)
+     * decides whether the sleep polls the watch unit's fd */
     bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
+    bool watch_io = watch || (scr_watch_io_fn != NULL && scr_watch_io_fn());
     bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
     bool renames = scr_fs_renames_pending();
     bool crypto = scr_crypto_bytes_pending() || scr_loop_deferred_pending();
@@ -6902,18 +6912,18 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * With island units linked the loop's own poll takes the sleep
      * instead, and it watches the island wake fd too. */
     bool island_wake = scr_ni_remote_pollfd() >= 0;
-    if (workers && scr_workers_wait_fn && !islands && !island_wake && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+    if (workers && scr_workers_wait_fn && !islands && !island_wake && !kids && !evw && !net_io && !dgram && !watch_io && !ffi && !renames && !crypto) {
 #else
-    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch_io && !ffi && !renames && !crypto) {
 #endif
       scr_workers_wait_fn(due > now ? due - now : 0);
       now = scr_now_ms();
     } else
 #endif
 #ifdef SCR_NODE_ISLANDS
-    if (evw || net_io || dgram || watch || ffi || workers || islands || renames_fd >= 0) {
+    if (evw || net_io || dgram || watch_io || ffi || workers || islands || renames_fd >= 0) {
 #else
-    if (evw || net_io || dgram || watch || ffi || workers || renames_fd >= 0) {
+    if (evw || net_io || dgram || watch_io || ffi || workers || renames_fd >= 0) {
 #endif
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
@@ -6928,7 +6938,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
        * show up in a profile, the upgrade is a real waitable arm —
        * WaitForMultipleObjects over WSAEVENTs, or IOCP. */
       if (evw && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
-      if ((net_io || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+      if ((net_io || dgram || watch_io) && due > now + SCR_CHILD_POLL_MS)
+        due = now + SCR_CHILD_POLL_MS;
       if ((ffi || workers) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (due > now) {
@@ -6991,7 +7002,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           due = now + SCR_SIGNAL_POLL_MS;
         }
       }
-      if (watch) {
+      if (watch_io) {
         /* The watch unit's event fd — the net slot's exact story. */
         int wfd = scr_watch_pollfd_fn != NULL ? scr_watch_pollfd_fn() : -1;
         if (wfd >= 0) {

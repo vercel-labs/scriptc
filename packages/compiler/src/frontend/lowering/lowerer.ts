@@ -166,6 +166,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
+import { lowerSqliteNew } from "./builtins/sqlite.js";
 import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
@@ -19209,8 +19210,13 @@ export class Lowerer {
 
   /** A key conversion may rebox or upcast a reference, but must never copy
    * its referent. Apply the ordinary checked narrowing to absent arms from
-   * runtime-optional reads; only present reference arms participate here. */
-  lowerCollectionKey(node: ts.Expression, expected: IrType): IrExpr {
+   * runtime-optional reads; only present reference arms participate here.
+   * `seed` marks a collection CONSTRUCTOR's seed, which is lowered at the
+   * array (or fixed tuple) type it is declared with rather than at a single
+   * key: the value is the sequence of keys, so the checked cast that builds
+   * it is the ordinary one (`u as Key[]`, which preserves the identity of
+   * every reference it holds), not a key conversion. */
+  lowerCollectionKey(node: ts.Expression, expected: IrType, opts?: { seed?: boolean }): IrExpr {
     if (expected.kind === "dyn") {
       const value = this.lowerExprExpecting(node, expected);
       // The Error boundary snapshots mutable fields, so its copy is no live
@@ -19280,8 +19286,9 @@ export class Lowerer {
         const from = this.mapTypeOf(this.typeOf(asserted.expression));
         const to = this.mapTypeOf(this.checker.getTypeFromTypeNode(asserted.type));
         if (
-          from?.kind === "dyn" ||
-          (from?.kind === "record" && to?.kind === "record" && !typeEquals(from, to))
+          opts?.seed !== true &&
+          (from?.kind === "dyn" ||
+            (from?.kind === "record" && to?.kind === "record" && !typeEquals(from, to)))
         ) {
           this.noLowering(
             "collection key assertion requiring a structural copy or dynamic conversion",
@@ -23050,8 +23057,9 @@ export class Lowerer {
       | ts.GetAccessorDeclaration
       | ts.SetAccessorDeclaration,
     checkedReceiver = false,
+    intoDynamicValue = false,
   ): IrExpr {
-    return lowerLambda(this, node, checkedReceiver);
+    return lowerLambda(this, node, checkedReceiver, intoDynamicValue);
   }
 
   lowerArrayMethodCall(
@@ -23257,6 +23265,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
+      lowerSqliteNew(this, expr) ??
       lowerPerfNew(this, expr) ??
       lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
@@ -23791,7 +23800,11 @@ export class Lowerer {
     // access-mode bits the named-import form bakes (lowerFsConstantsProperty).
     if (!expr.questionDotToken && ts.isPropertyAccessExpression(expr.expression)) {
       const inner = this.builtinMemberOf(expr.expression);
-      if (inner && inner.module === "fs" && inner.member === "constants") {
+      if (
+        inner &&
+        (inner.module === "fs" || inner.module === "fs/promises") &&
+        inner.member === "constants"
+      ) {
         const MODES: Record<string, number | undefined> = {
           F_OK: 0,
           X_OK: 1,
@@ -23910,8 +23923,11 @@ export class Lowerer {
       const global = globalMemberValue(this, bi, expr, loc);
       if (global) return global;
     }
-    // A bare `fs.constants` read (not one of the baked bits above).
-    if (bi.member === "constants" && bi.module === "fs") return fsConstantsObject(loc);
+    // A bare `fs.constants` read (not one of the baked bits above);
+    // fs/promises re-exports the same group.
+    if (bi.member === "constants" && (bi.module === "fs" || bi.module === "fs/promises")) {
+      return fsConstantsObject(loc);
+    }
     // `zlib.constants` as a value: the module's singleton record.
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `crypto.constants` as a value: the same story over the OpenSSL table.
@@ -24021,7 +24037,8 @@ export class Lowerer {
     if (callable !== null) return callable;
     if (module === "crypto" && member === "webcrypto")
       return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
-    if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    if ((module === "fs" || module === "fs/promises") && member === "constants")
+      return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
     return null;

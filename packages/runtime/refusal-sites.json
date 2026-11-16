@@ -283,6 +283,12 @@
  },
  {
   "file": "scr_console_native.c",
+  "function": "scr_console_clear",
+  "message": "Calling %s on this value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
   "function": "scr_console_dir_dyn",
   "message": "console.dir of a Buffer has no lowering",
   "code": "SC2020"
@@ -301,25 +307,25 @@
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_table_impl",
   "message": "console.table of this value has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_table_impl",
   "message": "console.table of an Error value has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_table_impl",
   "message": "console.table with a properties argument other than an array of strings has no lowering",
   "code": "SC2020"
  },
  {
   "file": "scr_console_native.c",
-  "function": "scr_console_table",
+  "function": "scr_console_table_impl",
   "message": "console.table rows of this kind have no lowering",
   "code": "SC2020"
  },
@@ -1659,6 +1665,12 @@
   "file": "scr_require.c",
   "function": "req_refuse",
   "message": "' with a computed specifier is not supported; require it with a string literal",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_sqlite.c",
+  "function": "scr_sqlite_not_supported",
+  "message": "'%s.prototype.%s' on a dynamic value is not supported yet",
   "code": "SC2020"
  },
  {

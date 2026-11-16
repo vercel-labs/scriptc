@@ -1,6 +1,6 @@
 - **Test mocks:** `mock.fn`, `mock.method`, `mock.restoreAll` and `mock.reset` compile, on the module's `mock` and on `t.mock`.
   `mock.method` mocks a function-valued field of a record, such as an object literal or an interface-typed object.
-  Class instances, builtin objects, and object literals whose methods use `this` throw `SC2020`.
+  Class instances, builtin objects, and object literals whose methods use `this` throw `SC2020`: a method that reads `this` lowers its object through the dynamic tier, and a dynamic value's field is not a record field the mock can replace.
   Calls through the object record it as `this`, including calls of a method read off the object and called on its own, where Node records `undefined`.
   `object.method === mock` is `false`, because the field holds a wrapper of the mock.
   `mock.fn()` without an original returns `undefined` and records the arguments of each call, as in Node; with a function type whose return type does not include `undefined`, such as `mock.fn<() => number>()`, it throws `SC2020`.

@@ -497,3 +497,26 @@ test("TypeScript keeps the missing-group error of a non-Unicode regex", () => {
   const result = diagnostics("export const pattern = /\\1/;", 'import "./library.js";', "ts");
   expect(result.some((d) => d.message.includes("backreference"))).toBe(true);
 });
+
+test("a JavaScript descriptor's get and set are callable with an explicit receiver", () => {
+  // `base.get`/`base.set` are possibly undefined functions to the checker, so
+  // `.call` rejects the this type (TS2684); JavaScript still binds whatever
+  // receiver the call names, and the descriptor's functions run on it.
+  expect(
+    diagnostics(
+      `export class Field {
+        #value = "";
+        get value() { return this.#value; }
+        set value(next) { this.#value = next; }
+      }
+      export function wrap(el) {
+        const base = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
+        return {
+          read() { return base.get.call(el); },
+          write(next) { base.set.call(el, next); },
+        };
+      }`,
+      'import { Field, wrap } from "./library.js";\nconst field = new Field();\nwrap(field).write("value");\nconsole.log(field.value);',
+    ),
+  ).toEqual([]);
+});

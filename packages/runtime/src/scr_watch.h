@@ -31,9 +31,16 @@ void scr_watcher_release_v(void *p);
  * MOVES. Opens the path NOW and THROWS Node's fs error when it cannot
  * ("ENOENT: ..., watch 'x'" — the polling-fallback catch shape). A
  * CHANGE listener that reads the filename (wants_name) on a macOS
- * directory watch has no lowering yet and THROWS [SC2020]. +1. */
-ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb, ScrWatchFn fn, bool wants_name);
+ * directory watch has no lowering yet and THROWS [SC2020]. `persistent`
+ * (Node's default true) is the watcher's initial loop liveness: a false
+ * one does not keep the process alive, and ref()/unref() move it. +1. */
+ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb, ScrWatchFn fn, bool wants_name,
+                         bool persistent);
 void scr_watcher_close(ScrWatcher *w); /* idempotent */
+/* watcher.ref()/watcher.unref(): loop-liveness toggles on an open watcher
+ * (no-ops on a closed one, as Node's handle-less methods are). */
+void scr_watcher_ref(ScrWatcher *w);
+void scr_watcher_unref(ScrWatcher *w);
 /* watcher.on/once/addListener/prependListener(event, listener): cb MOVES
  * in. On a closed watcher the listener is released at once (it can never
  * run). Directory watches on macOS cannot name entries (slice F3), so a
@@ -72,5 +79,8 @@ void scr_watch_file_install(void);
 /* The loop-side registration (scr_async.c, always linked) — the net
  * hook's exact shape, one more nullable slot set. */
 void scr_loop_set_watch(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void));
+/* The io-without-liveness slot (the net_io precedent): unref'd watchers
+ * are still polled, but do not keep the loop alive. */
+void scr_loop_set_watch_io(bool (*io)(void));
 
 #endif /* SCR_WATCH_H */

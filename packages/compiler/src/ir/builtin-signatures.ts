@@ -1664,6 +1664,8 @@ function buildLibFnSignatures() {
     "mime.typeParse": { argTypes: [DYN], result: DYN },
     "mime.paramsNew": { argTypes: [], result: DYN },
     "mime.is": { argTypes: [DYN, F64], result: BOOL },
+    "sqlite.dbNew": { argTypes: [DYN, DYN], result: DYN },
+    "sqlite.is": { argTypes: [DYN, F64], result: BOOL },
     "util.callbackify": { argTypes: [DYN], result: DYN },
     /** util.promisify over an untyped function value: a native dyn function
      * whose calls answer a dyn promise the appended callback settles. */
@@ -1770,9 +1772,11 @@ function buildLibFnSignatures() {
      * shape (zero-param, or the (eventType: string) form — runtime-
      * provided); an open watcher keeps the loop alive until watcher.close()
      * (idempotent, receiver borrowed, statement position only). */
-    "fs.watch": { argTypes: [STRING], result: FSWATCHER_T },
-    "fs.watchCb": { argTypes: [STRING, null], result: FSWATCHER_T },
+    "fs.watch": { argTypes: [STRING, BOOL], result: FSWATCHER_T },
+    "fs.watchCb": { argTypes: [STRING, null, BOOL], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
+    "watcher.ref": { argTypes: [FSWATCHER_T], result: VOID },
+    "watcher.unref": { argTypes: [FSWATCHER_T], result: VOID },
     // FSWatcher's EventEmitter surface: (receiver, event code, once|prepend
     // flags, listener) for on/once/addListener/prependListener/
     // prependOnceListener, and (receiver, event code, listener) for
@@ -2573,6 +2577,11 @@ function buildLibFnSignatures() {
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
+    // t.signal: the test's AbortSignal handle (created on first read; the
+    // abortSignal runtime feature links the unit), and t.error: Node's
+    // ERR_TEST_FAILURE wrapper over the failure, or null.
+    "test.ctxSignal": { argTypes: [TESTCTX_T], result: DYN },
+    "test.ctxError": { argTypes: [TESTCTX_T], result: DYN },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
@@ -4275,6 +4284,14 @@ function buildLibFnSignatures() {
     /** Buffer.from(value, byteOffset, length): an ArrayBuffer's range with
      * Node's fromArrayBuffer checks; other values as poolFromDynOffset. */
     "buffer.poolFromDynRange": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
+    /** Buffer.copyBytesFrom(view[, offset[, length]]): a pooled Buffer
+     * holding a copy of the view's underlying bytes over the element window
+     * [offset, offset + length). The view is any typed array — its element
+     * kind travels in the ScrBytes header and decides the byte count, so the
+     * slot takes a program-dependent type. `mask` bit 0 marks a supplied
+     * offset and bit 1 a supplied length; the runtime runs Node's
+     * validation. */
+    "buffer.copyBytesFrom": { argTypes: [null, F64, F64, F64], result: BYTES_U8 },
     "buffer.poolSize": { argTypes: [], result: F64 },
     "buffer.setPoolSize": { argTypes: [F64], result: VOID },
     /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
@@ -4664,6 +4681,10 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fileHandle.chmod": { argTypes: [FILEHANDLE_T, F64], result: { kind: "promise", inner: VOID } },
+    "fileHandle.chown": {
+      argTypes: [FILEHANDLE_T, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
     "fileHandle.utimes": {
       argTypes: [FILEHANDLE_T, DYN, DYN],
       result: { kind: "promise", inner: VOID },
@@ -5094,11 +5115,13 @@ function buildLibFnSignatures() {
     "global.undefRead": { argTypes: [STRING], result: VOID },
     "console.native": { argTypes: [], result: DYN },
     /** node:console Console instances (scr_console_native.c): new mints the
-     * handle over the stdout/stderr fds (1/2; 0 = a stream binds next) and
-     * the ignoreErrors flag; bind attaches a borrowed writable stream to
-     * target 0 (stdout) or 1 (stderr); write prints `text\n` to the
-     * selected target of an instance or the global console handle. */
-    "console.new": { argTypes: [F64, F64, BOOL], result: DYN },
+     * handle over the stdout/stderr fds (1/2; 0 = a stream binds next), the
+     * ignoreErrors flag and the groupIndentation (a number, or null for
+     * undefined: Node's validateInteger runs here); bind attaches a borrowed
+     * writable stream to target 0 (stdout) or 1 (stderr); write prints
+     * `text\n` to the selected target of an instance or the global console
+     * handle. */
+    "console.new": { argTypes: [F64, F64, BOOL, DYN], result: DYN },
     "console.bind": { argTypes: [DYN, F64, null], result: VOID },
     "console.write": { argTypes: [DYN, STRING, BOOL], result: VOID },
     /** The global console's remaining members (scr_console_native.c; the
@@ -5128,6 +5151,27 @@ function buildLibFnSignatures() {
     "console.table": { argTypes: [DYN, DYN], result: VOID },
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
     "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
+    /** The same members on a Console instance (scr_console_native.c), which
+     * keeps its own counters, timers and group indentation and writes to
+     * its own stdout/stderr targets. count prints "label: n"; countReset
+     * answers the warning text for an unknown (or non-string) label, ""
+     * otherwise; time answers the duplicate-label warning text or "";
+     * timeEnd/timeLog answer the formatted elapsed time, or "" for an
+     * unknown label (timeEnd drops the timer). group adds (+1) or removes
+     * (-1) one indentation step of the instance's groupIndentationWidth.
+     * clear writes the cursor-home and erase-down sequences when the
+     * instance's stdout is a terminal. table renders and prints Node's
+     * table; trace prints "Trace[: text]" and the captured frames to the
+     * instance's stderr. */
+    "console.instCount": { argTypes: [DYN, STRING], result: VOID },
+    "console.instCountReset": { argTypes: [DYN, DYN], result: STRING },
+    "console.instTime": { argTypes: [DYN, STRING], result: STRING },
+    "console.instTimeEnd": { argTypes: [DYN, STRING], result: STRING },
+    "console.instTimeLog": { argTypes: [DYN, STRING], result: STRING },
+    "console.instGroup": { argTypes: [DYN, F64], result: VOID },
+    "console.instClear": { argTypes: [DYN], result: VOID },
+    "console.instTable": { argTypes: [DYN, DYN, DYN], result: VOID },
+    "console.instTrace": { argTypes: [DYN, STRING], result: VOID },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Arms the runtime check for the Node globals the native runtime does not

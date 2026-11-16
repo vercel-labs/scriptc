@@ -416,10 +416,12 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
 }
 
 /* "<sym> <name> (<dur>ms)[ # directive]" + queued ℹ diagnostics. Held
- * while subtests run concurrently (scr_test_report_tree prints them). */
+ * while subtests run concurrently (scr_test_report_tree prints them). A
+ * concurrent parent buffering the line does not delay the test's finish:
+ * a task the test left behind must already see it finished. */
 static void scr_test_report_result(ScrTestCtx *t) {
-  if (scr_test_defer > 0) return;
   t->finished = true;
+  if (scr_test_defer > 0) return;
   scr_test_ensure_started(t->parent);
   int depth = scr_test_depth(t);
   scr_test_indent(depth);
@@ -2061,6 +2063,14 @@ void scr_test_hook(double which, ScrClosure *cb /*moves*/, double flags, ScrStr 
  * the runner fiber at their call site (Node's awaited-subtest ordering) —
  * runs it immediately. Returns the settled promise `await t.test(...)`
  * consumes. */
+/* One fact counts against t.plan — an assertion, a subtest, or a subtest a
+ * timer registers — and a plan's { wait } stops as soon as the count is
+ * met, whichever fact met it. */
+static void scr_test_plan_bump(ScrTestCtx *t) {
+  t->plan_count++;
+  if (t->plan_met && t->plan_count >= t->plan) scr_promise_fulfill_void(t->plan_met);
+}
+
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
                           ScrStr *msg /*borrowed*/, ScrClosure *cb /*moves, may be NULL*/,
                           double flags, ScrStr *at /*borrowed*/, double plan, double timeout,
@@ -2073,7 +2083,7 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
   scr_test_options_apply(sub, flags, plan, timeout, concurrency);
   /* Node's t.test() counts the subtest against the parent plan before it
    * creates it, so one dropped by t.runOnly(true) counts too. */
-  t->plan_count++;
+  scr_test_plan_bump(t);
   if (t->finished) {
     /* t.test() from a task the body left behind, after the test finished:
      * Node fails it the same way. */
@@ -2756,11 +2766,7 @@ void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait) 
   if (has_wait) t->plan_wait = wait;
 }
 
-void scr_test_ctx_count(ScrTestCtx *t) {
-  t->plan_count++;
-  /* A plan's { wait } stops as soon as the count is met. */
-  if (t->plan_met && t->plan_count >= t->plan) scr_promise_fulfill_void(t->plan_met);
-}
+void scr_test_ctx_count(ScrTestCtx *t) { scr_test_plan_bump(t); }
 
 /* t.log(message[, data]): Node's 'test:log' event prints at once, at the
  * test's indentation and in execution order, ahead of the buffered result

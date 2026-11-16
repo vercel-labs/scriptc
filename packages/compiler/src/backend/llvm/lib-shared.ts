@@ -1709,6 +1709,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "readable.isPaused": "scr_stream_is_paused",
   "readable.setEncoding": "scr_stream_set_encoding",
   "readable.encodingName": "scr_stream_set_encoding_name",
+  "stream.getDefaultHwm": "scr_stream_get_default_hwm",
+  "stream.setDefaultHwm": "scr_stream_set_default_hwm",
   "stream.is": "scr_stream_util_is",
   "stream.isDyn": "scr_stream_util_is_dyn",
   "stream.stateDyn": "scr_stream_state_dyn",

@@ -991,6 +991,19 @@ function completionDataIsChunk(
 
 /** Parses the options object literal of a stream constructor. `which`
  * names the callbacks this class accepts, in canonical flag order. */
+/** The object-mode default highWaterMark: stream.setDefaultHighWaterMark
+ * changes it for the streams constructed after the call, so the runtime
+ * answers it here instead of a folded 16. */
+function defaultObjectHwm(loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "stream.getDefaultHwm",
+    args: [boolLit(true, loc)],
+    type: F64,
+    loc,
+  };
+}
+
 function parseStreamOptions(
   lowerer: Lowerer,
   ctorName: string,
@@ -1070,8 +1083,8 @@ function parseStreamOptions(
         p.initializer.kind !== ts.SyntaxKind.TrueKeyword &&
         p.initializer.kind !== ts.SyntaxKind.FalseKeyword,
     );
-  if (out.readableObject) out.hwmR = numLit(16, loc);
-  if (out.writableObject) out.hwmW = numLit(16, loc);
+  if (out.readableObject) out.hwmR = defaultObjectHwm(loc);
+  if (out.writableObject) out.hwmW = defaultObjectHwm(loc);
   const tuples = cbTuples(lowerer);
   const present = new Map<string, IrExpr>();
   for (const prop of optsLit?.properties?.nodes ?? []) {
@@ -3921,19 +3934,40 @@ function lowerStreamModuleCallbackCall(
   const args = call.arguments.nodes;
 
   if (bi.member === "getDefaultHighWaterMark") {
-    // Node 24: 65536 bytes / 16 objects — compile-time literals only.
-    // The byte default is platform-split at Node's source
-    // (lib/internal/streams/state.js: win32 keeps 16 KiB), so the fold
-    // follows the TARGET platform like the path-module binding.
-    if (args.length === 1 && args[0]!.kind === ts.SyntaxKind.FalseKeyword) {
-      return numLit(lowerer.targetPlatform === "win32" ? 16384 : 65536, loc);
+    // The runtime keeps Node's defaults (65536 bytes, 16 KiB on a win32
+    // target; 16 objects), which setDefaultHighWaterMark changes for the
+    // streams created after it.
+    if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+      lowerer.noLowering(
+        `getDefaultHighWaterMark with ${args.length} arguments`,
+        call,
+        "the supported form is getDefaultHighWaterMark(objectMode)",
+      );
     }
-    if (args.length === 1 && args[0]!.kind === ts.SyntaxKind.TrueKeyword) return numLit(16, loc);
-    lowerer.noLowering(
-      "getDefaultHighWaterMark with a non-literal argument",
-      call,
-      "the objectMode flag must be a compile-time boolean",
-    );
+    return {
+      kind: "libCall",
+      fn: "stream.getDefaultHwm",
+      args: [lowerer.lowerExprExpecting(args[0]!, BOOL)],
+      type: F64,
+      loc,
+    };
+  }
+
+  if (bi.member === "setDefaultHighWaterMark") {
+    if (args.length !== 2 || args.some((a) => ts.isSpreadElement(a))) {
+      lowerer.noLowering(
+        `setDefaultHighWaterMark with ${args.length} arguments`,
+        call,
+        "the supported form is setDefaultHighWaterMark(objectMode, value)",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "stream.setDefaultHwm",
+      args: [lowerer.lowerExprExpecting(args[0]!, BOOL), lowerer.lowerExprExpecting(args[1]!, F64)],
+      type: VOID,
+      loc,
+    };
   }
 
   const predicate = STREAM_PREDICATES.get(bi.member);

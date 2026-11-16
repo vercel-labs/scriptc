@@ -91645,8 +91645,10 @@
         "tests": [
           "tests/corpus/1685-stream-readable-basics.ts",
           "tests/corpus/1688-stream-writable-basics.ts",
+          "tests/corpus/1744-stream-set-encoding.ts",
           "tests/corpus/1746-stream-for-await.ts",
           "tests/corpus/1814-stream-pipeline.cjs",
+          "tests/corpus/2100-stream-default-hwm.ts",
           "tests/corpus/2861-readable-iterator-close.ts",
           "tests/corpus/2893-child-stdin-duplex.ts",
           "tests/corpus/2894-child-stdin-backpressure.ts",
@@ -91689,6 +91691,8 @@
           "tests/corpus/stream-erased-data-listener.ts",
           "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/stream-predicate-values.ts",
+          "tests/corpus/stream-set-default-hwm.ts",
+          "tests/corpus/stream-set-encoding-hwm.ts",
           "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/stream-web-predicates.ts",
           "tests/corpus/writable-error-callbacks.ts",
@@ -92513,10 +92517,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.setDefaultHighWaterMark",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-set-default-hwm.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93207,10 +93212,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:stream.stream.setDefaultHighWaterMark",
         "tests": [
-          "tests/diagnostics/compat-stream-absent.ts"
+          "tests/corpus/stream-set-default-hwm.ts",
+          "tests/corpus/2100-stream-default-hwm.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -96474,8 +96480,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:stream"
+        "status": "supported",
+        "evidence": "compiler-feature:stream.highWaterMark",
+        "tests": [
+          "tests/corpus/stream-set-encoding-hwm.ts",
+          "tests/corpus/1744-stream-set-encoding.ts"
+        ]
       },
       "anchorSource": "exact"
     },

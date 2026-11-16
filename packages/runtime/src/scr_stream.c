@@ -62,6 +62,36 @@
 #define SCR_STREAM_DEFAULT_HWM 65536
 #endif
 
+/* stream.setDefaultHighWaterMark changes what new streams take; both
+ * defaults are process state (Node keeps them in
+ * lib/internal/streams/state.js), and getDefaultHighWaterMark answers
+ * them. A stream created with an explicit highWaterMark is unaffected. */
+static SCR_TL double scr_default_hwm_bytes = SCR_STREAM_DEFAULT_HWM;
+static SCR_TL double scr_default_hwm_objects = 16;
+
+void scr_stream_set_default_hwm(bool object_mode, double value) {
+  /* validateInteger(value, 'value', 0): a fractional, NaN or infinite
+   * value names the integer it must be; an integer outside the safe
+   * range names its bounds. */
+  bool integer = isfinite(value) && trunc(value) == value;
+  if (!integer || value < 0 || value > 9007199254740991.0) {
+    char received[48];
+    scr_num_received(value, received);
+    char text[192];
+    int n = snprintf(text, sizeof text,
+                     "The value of \"value\" is out of range. It must be %s. Received %s",
+                     integer ? ">= 0 && <= 9007199254740991" : "an integer", received);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  if (object_mode) scr_default_hwm_objects = value;
+  else scr_default_hwm_bytes = value;
+}
+
+double scr_stream_get_default_hwm(bool object_mode) {
+  return object_mode ? scr_default_hwm_objects : scr_default_hwm_bytes;
+}
+
 static void scr_stream_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();
@@ -1865,7 +1895,7 @@ static ScrStream *scr_from_stream(ScrFromSrc *f, ScrStreamReadInv read_inv, bool
     return NULL;
   }
   if (hwm_kind == SCR_FROM_HWM_FROM && !f->single) hwm = 1;
-  else if (hwm_kind != SCR_FROM_HWM_SET) hwm = object_mode ? 16 : -1;
+  else if (hwm_kind != SCR_FROM_HWM_SET) hwm = object_mode ? scr_default_hwm_objects : -1;
   ScrClosure *read = scr_closure_new((void *)read_inv, 1);
   read->caps[0] = scr_box_new_obj(scr_from_src_retain_v, scr_from_src_release_v, NULL);
   scr_box_set_ref(read->caps[0], f); /* moves */
@@ -1897,7 +1927,7 @@ ScrStream *scr_stream_new_from_readable(ScrClosure *read, ScrStreamReadInv read_
     return NULL;
   }
   bool object_mode = (bits & SCR_FROM_BYTE_MODE) == 0;
-  if (bits & SCR_FROM_DEFAULT_HWM) hwm = object_mode ? 16 : -1;
+  if (bits & SCR_FROM_DEFAULT_HWM) hwm = object_mode ? scr_default_hwm_objects : -1;
   else if (!(bits & SCR_FROM_HAS_HWM)) hwm = 1;
   ScrStream *s = scr_from_new((bits & SCR_FROM_DUPLEX) != 0, hwm, read, read_inv, destroy, destroy_inv);
   if (object_mode) s->st->r.object_entries = true;
@@ -2749,8 +2779,8 @@ static ScrStreamState *scr_stream_state_new(bool has_r, bool has_w,
   st->auto_destroy = auto_destroy;
   st->emit_close = emit_close;
   st->allow_half_open = allow_half_open;
-  st->r.hwm = rhwm >= 0 ? (size_t)rhwm : SCR_STREAM_DEFAULT_HWM;
-  st->w.hwm = whwm >= 0 ? (size_t)whwm : SCR_STREAM_DEFAULT_HWM;
+  st->r.hwm = rhwm >= 0 ? (size_t)rhwm : (size_t)scr_default_hwm_bytes;
+  st->w.hwm = whwm >= 0 ? (size_t)whwm : (size_t)scr_default_hwm_bytes;
   st->r.flowing = -1;
   /* Node's ReadableState.sync starts TRUE: pushes before the first _read
    * attempt take the buffered path (never the direct 'data' emit). */
@@ -3377,8 +3407,8 @@ static bool scr_stream_parse_dyn_opts(const ScrDyn *opts, char base, ScrStreamDy
     if (hwm == -2) return false;
     out->rhwm = out->whwm = hwm;
   }
-  if (out->rhwm == -1 && out->readable_object) out->rhwm = 16;
-  if (out->whwm == -1 && out->writable_object) out->whwm = 16;
+  if (out->rhwm == -1 && out->readable_object) out->rhwm = scr_default_hwm_objects;
+  if (out->whwm == -1 && out->writable_object) out->whwm = scr_default_hwm_objects;
   out->auto_destroy = !scr_stream_dynopt_false(scr_dyn_obj_get((ScrDyn *)opts, "autoDestroy", 11));
   out->emit_close = !scr_stream_dynopt_false(scr_dyn_obj_get((ScrDyn *)opts, "emitClose", 9));
   if (duplexish) {
@@ -5206,7 +5236,8 @@ static ScrStream *scr_stream_compose_impl(size_t n, ScrStream **streams, const S
   bool object_mode = c->tail->st->has_r && c->tail->st->r.object_entries;
   bool w_object = c->head && c->head->st->has_w && c->head->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
-      object_mode ? 16 : -1, w_object ? 16 : -1, true, true, true, c->readable, c->writable,
+      object_mode ? scr_default_hwm_objects : -1, w_object ? scr_default_hwm_objects : -1,
+      true, true, true, c->readable, c->writable,
       c->readable ? scr_compose_closure((void *)&scr_compose_read_inv, c) : NULL,
       c->readable ? &scr_compose_read_inv : NULL,
       c->writable ? scr_compose_closure((void *)&scr_compose_write_inv, c) : NULL,
@@ -5518,7 +5549,8 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
   bool r_object = r && r->st->has_r && r->st->r.object_entries;
   bool w_object = w && w->st->has_w && w->st->w.object_mode;
   ScrStream *d = scr_stream_new_duplex(
-      r_object ? 16 : -1, w_object ? 16 : -1, true, true, true, x->readable, x->writable,
+      r_object ? scr_default_hwm_objects : -1, w_object ? scr_default_hwm_objects : -1,
+      true, true, true, x->readable, x->writable,
       x->readable ? scr_dupx_closure((void *)&scr_dupx_read_inv, x) : NULL,
       x->readable ? &scr_dupx_read_inv : NULL,
       x->writable ? scr_dupx_closure((void *)&scr_dupx_write_inv, x) : NULL,

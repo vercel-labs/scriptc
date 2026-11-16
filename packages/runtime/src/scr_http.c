@@ -4818,6 +4818,19 @@ void scr_http_h2_req_aborted(ScrHttpReq *r) {
 
 void scr_http_h2_req_close(ScrHttpReq *r) { scr_http_queue_req_close(r); }
 
+void scr_http_h2_req_trailers(ScrHttpReq *r, ScrArr *pairs /*borrowed*/) {
+  size_t n = (size_t)scr_arr_len(pairs);
+  for (size_t i = 0; i + 1 < n; i += 2) {
+    ScrStr *name = scr_arr_get_ref(pairs, (double)i);
+    ScrStr *value = scr_arr_get_ref(pairs, (double)(i + 1));
+    scr_http_req_add_trailer(r, name->data, name->len, value->data, value->len);
+    scr_str_release(name);
+    scr_str_release(value);
+  }
+  /* the trailers arrived: the compat request's 'end' carries them */
+  r->received = true;
+}
+
 ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
                                  void *stream /*borrowed*/) {
   scr_http_install();
@@ -4835,6 +4848,47 @@ ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
 }
 
 void scr_http_h2_res_close(ScrHttpRes *r) { scr_http_queue_res_close(r); }
+
+bool scr_http_h2_res_write_information(ScrHttpRes *r, double status,
+                                        ScrArr *pairs /*borrowed*/) {
+  char recv[32], msg[64];
+  if (!(trunc(status) == status) || status < 100 || status > 199 || status == 101) {
+    scr_num_received(status, recv);
+    int len = snprintf(msg, sizeof msg, "Invalid status code: %s", recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_HTTP2_STATUS_INVALID");
+    return false;
+  }
+  /* Node's compat response answers false once the response started (or the
+   * pair has no h2 stream to write to). */
+  if (r->head_sent || r->h2_stream == NULL) return false;
+  size_t n = pairs != NULL ? (size_t)scr_arr_len(pairs) : 0;
+  size_t nh = n / 2;
+  ScrStr **names = nh > 0 ? calloc(nh, sizeof *names) : NULL;
+  ScrStr **values = nh > 0 ? calloc(nh, sizeof *values) : NULL;
+  if (nh > 0 && (!names || !values)) scr_http_oom();
+  for (size_t i = 0; i < nh; i++) {
+    names[i] = scr_arr_get_ref(pairs, (double)(i * 2));
+    values[i] = scr_arr_get_ref(pairs, (double)(i * 2 + 1));
+  }
+  scr_http_h2_ops->write_info(r->h2_stream, status, (ScrStr *const *)names,
+                              (ScrStr *const *)values, nh);
+  for (size_t i = 0; i < nh; i++) {
+    scr_str_release(names[i]);
+    scr_str_release(values[i]);
+  }
+  free(names);
+  free(values);
+  return true;
+}
+
+ScrArr *scr_http_h2_res_trailer_pairs(ScrHttpRes *r) {
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, r->trailers.len * 2);
+  for (size_t i = 0; i < r->trailers.len; i++) {
+    scr_arr_push_ref(pairs, scr_str_retain(r->trailers.names[i]));
+    scr_arr_push_ref(pairs, scr_str_retain(r->trailers.values[i]));
+  }
+  return pairs;
+}
 
 bool scr_http_h2_res_finished(ScrHttpRes *r) { return r->finished; }
 

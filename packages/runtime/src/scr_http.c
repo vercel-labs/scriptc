@@ -7431,6 +7431,9 @@ static ScrHttpAgent *scr_http_agent_alloc(bool secure, bool keep_alive, double k
   a->ka_msecs = ka_msecs >= 0 ? ka_msecs : 1000;
   a->max_sockets = max_sockets >= 0 ? max_sockets : (double)INFINITY;
   a->max_free = max_free >= 0 ? max_free : 256;
+  /* Node's validateNumber(options.maxTotalSockets, 'maxTotalSockets', 1)
+   * runs in the constructor, before the agent exists (see
+   * scr_http_agent_new); a negative value here means the option was absent. */
   a->max_total = max_total >= 0 ? max_total : (double)INFINITY;
   a->timeout_ms = timeout_ms;
   /* an agent-options `port` merges under portless request options (Node
@@ -7446,10 +7449,22 @@ static ScrHttpAgent *scr_http_agent_alloc(bool secure, bool keep_alive, double k
 }
 
 ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
-                            double max_sockets, double max_free, double max_total,
-                            double timeout_ms, double port /* < 0 = unset */,
+                            double max_sockets, double max_free, bool has_max_total,
+                            double max_total, double timeout_ms, double port /* < 0 = unset */,
                             const ScrDyn *scheduling) {
   scr_http_install();
+  /* Node's validateNumber(maxTotalSockets, 'maxTotalSockets', 1): zero,
+   * a negative value and NaN are out of range, and the constructor throws
+   * before the agent exists. */
+  if (has_max_total && (isnan(max_total) || max_total < 1)) {
+    char recv[48], msg[176];
+    scr_num_received(max_total, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"maxTotalSockets\" is out of range. It must be >= 1. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
   /* Node: options.scheduling || 'lifo', then validateOneOf */
   bool fifo = false;
   if (scheduling != NULL && scr_dyn_truthy(scheduling)) {
@@ -7461,7 +7476,7 @@ ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
     }
   }
   ScrHttpAgent *a = scr_http_agent_alloc(secure, keep_alive, ka_msecs, max_sockets, max_free,
-                                         max_total, timeout_ms, port, fifo);
+                                         has_max_total ? max_total : -1, timeout_ms, port, fifo);
   ScrDyn *d = scr_dyn_new_handle(a, SCR_DYNH_HTTP_AGENT);
   scr_http_agent_release(a); /* the handle's retain holds it */
   return d;
@@ -7474,7 +7489,7 @@ static SCR_TL ScrDyn *scr_http_global_agents[2];
 
 const ScrDyn *scr_http_global_agent(bool secure) {
   ScrDyn **slot = &scr_http_global_agents[secure ? 1 : 0];
-  if (*slot == NULL) *slot = scr_http_agent_new(secure, true, -1, -1, -1, -1, 5000, -1, NULL);
+  if (*slot == NULL) *slot = scr_http_agent_new(secure, true, -1, -1, -1, false, -1, 5000, -1, NULL);
   return *slot;
 }
 

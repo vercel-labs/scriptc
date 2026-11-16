@@ -5865,6 +5865,7 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
   let maxSockets: IrExpr = numLit(-1, loc);
   let maxFree: IrExpr = numLit(-1, loc);
   let maxTotal: IrExpr = numLit(-1, loc);
+  let maxTotalSet = false;
   let timeout: IrExpr = numLit(-1, loc);
   let port: IrExpr = numLit(-1, loc);
   let scheduling: IrExpr = lowerer.coerceToExpected(strLit("lifo", loc), DYN);
@@ -5943,8 +5944,10 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
           maxFree = lowerVal("f64");
           break;
         case "maxTotalSockets":
-          // Node's cap across every name, not just this one
+          // Node's cap across every name, not just this one; the runtime
+          // validates it the way the constructor does (>= 1)
           maxTotal = lowerVal("f64");
+          maxTotalSet = true;
           break;
         case "timeout":
           timeout = lowerVal("f64");
@@ -5986,6 +5989,7 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
       kaMsecs,
       maxSockets,
       maxFree,
+      boolLit(maxTotalSet, loc),
       maxTotal,
       timeout,
       port,

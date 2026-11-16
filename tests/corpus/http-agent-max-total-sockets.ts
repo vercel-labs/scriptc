@@ -3,6 +3,33 @@
 // getter and the setter all reaching the same accounting.
 import * as http from "node:http";
 
+// The constructor validates the option the way Node does: the cap must be a
+// number >= 1, so zero, a negative value and NaN throw before the agent
+// exists. The property itself is a plain field, so assignment is unvalidated.
+for (const [label, value] of [
+  ["zero", 0],
+  ["negative", -1],
+  ["nan", Number.NaN],
+] as const) {
+  try {
+    new http.Agent({ maxTotalSockets: value });
+    console.log(label, "accepted");
+  } catch (err) {
+    const e = err as { code?: string; message?: string };
+    console.log(label, e.code, e.message);
+  }
+}
+const fractional = new http.Agent({ maxTotalSockets: 1.5 });
+console.log("fractional", fractional.maxTotalSockets);
+fractional.destroy();
+const infinite = new http.Agent({ maxTotalSockets: Infinity });
+console.log("infinite", infinite.maxTotalSockets);
+infinite.destroy();
+const assigned = new http.Agent({ keepAlive: true, maxTotalSockets: 2 });
+assigned.maxTotalSockets = 0;
+console.log("assigned", assigned.maxTotalSockets);
+assigned.destroy();
+
 const one = http.createServer((req, res) => {
   console.log("one request");
   setTimeout(() => {

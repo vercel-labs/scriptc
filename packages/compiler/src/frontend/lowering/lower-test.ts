@@ -1238,7 +1238,7 @@ export function lowerTestMethodCall(
 function lowerTestCtxValue(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
-  member: "filePath" | "attempt" | "passed" | "workerId" | "tags",
+  member: "filePath" | "attempt" | "passed" | "workerId" | "tags" | "signal" | "error",
 ): IrExpr {
   const loc = locOf(expr);
   const receiver = lowerer.lowerExpr(expr.expression);
@@ -1260,6 +1260,24 @@ function lowerTestCtxValue(
       return after(numLit(0, loc));
     case "tags":
       return after({ kind: "arrayLit", elems: [], type: declared, loc });
+    case "signal":
+    case "error":
+      /* t.signal is the test's AbortSignal (a checked-dynamic handle the
+       * abort unit supplies), t.error Node's ERR_TEST_FAILURE wrapper over
+       * the failure or null; both arrive as checked-dynamic values and are
+       * coerced to the declared member type. */
+      return after(
+        lowerer.coerceToExpected(
+          {
+            kind: "libCall",
+            fn: member === "signal" ? "test.ctxSignal" : "test.ctxError",
+            args: [receiver],
+            type: DYN,
+            loc,
+          },
+          declared,
+        ),
+      );
     case "passed":
       return lowerer.coerceToExpected(
         { kind: "libCall", fn: "test.ctxPassed", args: [receiver], type: BOOL, loc },
@@ -1334,7 +1352,9 @@ export function lowerTestCtxProperty(
     member === "attempt" ||
     member === "passed" ||
     member === "workerId" ||
-    member === "tags"
+    member === "tags" ||
+    member === "signal" ||
+    member === "error"
   ) {
     return lowerTestCtxValue(lowerer, expr, member);
   }

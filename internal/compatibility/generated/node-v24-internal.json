@@ -96627,10 +96627,12 @@
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/diagnostics/compat-absent-node-values.ts",
+          "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-signal.ts",
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
           "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
           "tests/fixtures/node-test/cases/get-test-context.ts",
@@ -99473,8 +99475,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.error",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-error.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -99577,8 +99583,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.signal",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-signal.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -99754,8 +99764,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.signal",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-signal.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

@@ -2110,7 +2110,13 @@ const RUNTIME_FEATURE_RULES = {
    * handles. */
   abortSignal: rule({
     prefixes: ["abort.", "webstream."],
-    fns: ["util.transferableAbortSignal", "util.transferableAbortController"],
+    fns: [
+      "util.transferableAbortSignal",
+      "util.transferableAbortController",
+      // A test's t.signal (scr_test.c): the abort unit supplies its
+      // controller through scr_abort.c's helpers.
+      "test.ctxSignal",
+    ],
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),

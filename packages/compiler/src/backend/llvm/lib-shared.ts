@@ -944,6 +944,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "webcrypto.deriveKey": "scr_webcrypto_derive_key",
   "webcrypto.sign": "scr_webcrypto_sign",
   "webcrypto.getPublicKey": "scr_webcrypto_get_public_key",
+  "webcrypto.keyObjectToCryptoKey": "scr_wc_key_object_to_crypto_key",
+  "webcrypto.keyObjectFrom": "scr_wc_key_object_from",
   "webcrypto.verify": "scr_webcrypto_verify",
   "webcrypto.digest": "scr_webcrypto_digest",
   "webcrypto.isCryptoKey": "scr_webcrypto_is_crypto_key",

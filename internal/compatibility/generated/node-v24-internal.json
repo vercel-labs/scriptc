@@ -20319,6 +20319,9 @@
           "tests/corpus/crypto-sign-write-encoding.ts",
           "tests/corpus/crypto-signer-encodings.ts",
           "tests/corpus/crypto-spkac-certificate.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/node-crypto-cipher-aad-state.cjs",
           "tests/corpus/node-crypto-cipher-key-arguments.cjs",
           "tests/corpus/node-crypto-hash-arguments.cjs",
@@ -20334,6 +20337,7 @@
           "tests/fixtures/node-types/crypto-spkac-certificate.ts",
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
+          "tests/fixtures/node-types/fenced.ts",
           "tests/fixtures/node-types/keys.ts",
           "tests/fixtures/node-types/x509-issuer-certificate.ts",
           "tests/fixtures/node-types/x509-methods.ts",
@@ -24507,8 +24511,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.keyObject.toCryptoKey",
+        "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
+          "tests/fixtures/node-types/fenced.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114569,6 +114579,9 @@
           "tests/corpus/compat-webcrypto-algorithms.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts",
           "tests/corpus/jose-jwe-asymmetric/main.mjs",
+          "tests/corpus/key-object-from-arguments.mjs",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/node24-crypto-kdf-options.ts",
           "tests/corpus/node24-crypto-kdf.ts",
@@ -116255,6 +116268,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -116761,6 +116777,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -116910,6 +116929,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117030,6 +117052,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117150,6 +117175,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117761,6 +117789,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117909,6 +117940,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -117998,6 +118032,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -118146,6 +118183,9 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/2556-crypto-introspection.ts",

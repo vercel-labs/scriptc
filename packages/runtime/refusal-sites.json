@@ -2059,32 +2059,14 @@
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_view_get",
-  "message": "worker.resourceLimits is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
   "function": "scr_broadcast_invoke",
   "message": "This BroadcastChannel method is not supported yet",
   "code": "SC2020"
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_resource_limits",
-  "message": "resourceLimits in a worker is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
   "function": "scr_worker_arguments",
   "message": "Worker argv strings containing null bytes are not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
-  "function": "scr_worker_stack_size",
-  "message": "Worker resourceLimits heap limits are not supported yet",
   "code": "SC2020"
  },
  {

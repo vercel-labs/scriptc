@@ -413,7 +413,14 @@ test("a counter scaled by a positive integer bounds the loop's accesses", () => 
   const step: IrStmt = { kind: "assign", localId: "i", value: bin("+", ref("i"), num(1)), loc };
   const loop: IrStmt & { kind: "while" } = {
     kind: "while",
-    cond: { kind: "bin", op: "<", left: bin("*", num(2), ref("i")), right: ref("n"), type: BOOL, loc },
+    cond: {
+      kind: "bin",
+      op: "<",
+      left: bin("*", num(2), ref("i")),
+      right: ref("n"),
+      type: BOOL,
+      loc,
+    },
     body: [
       set(ref("out", f64s), ref("i"), get(ref("src", f64s), bin("-", ref("n"), ref("i")))),
       step,
@@ -441,6 +448,45 @@ test("a counter scaled by a positive integer bounds the loop's accesses", () => 
     [ref("out", f64s), 0],
     [ref("src", f64s), 1],
   ]);
+  expect(version.counters.map((c) => [c.ref.kind === "varRef" && c.ref.localId, c.min])).toEqual([
+    ["i", 0],
+  ]);
+});
+
+test("a scaled counter starts at zero even when an access is offset", () => {
+  // while (2 * i < n) { out[i] = src[i + 1]; i = i + 1 }
+  // `src[i + 1]` alone would let the counter start at -1; the scaled bound
+  // needs the counter non-negative, so the guard tests that.
+  const step: IrStmt = { kind: "assign", localId: "i", value: bin("+", ref("i"), num(1)), loc };
+  const loop: IrStmt & { kind: "while" } = {
+    kind: "while",
+    cond: {
+      kind: "bin",
+      op: "<",
+      left: bin("*", num(2), ref("i")),
+      right: ref("n"),
+      type: BOOL,
+      loc,
+    },
+    body: [
+      set(ref("out", f64s), ref("i"), get(ref("src", f64s), bin("+", ref("i"), num(1)))),
+      step,
+    ],
+    loc,
+  };
+  const f = fn([{ kind: "varDecl", localId: "i", init: num(0), loc }, loop]);
+  const ranges = analyzeIntegerRanges(f);
+  const version = matchBytesLoopVersion(loop, null, {
+    locals: new Map(f.locals.map((l) => [l.id, l])),
+    invariantGlobals: new Set(),
+    captured: new Set(),
+    ranges,
+    initialized: findInitializedByteLoopBindings(f).get(loop) ?? new Set(),
+    proven: new Set(),
+    scalarStrings: new Set(),
+    workers: false,
+    owned: new Set(),
+  })!;
   expect(version.counters.map((c) => [c.ref.kind === "varRef" && c.ref.localId, c.min])).toEqual([
     ["i", 0],
   ]);

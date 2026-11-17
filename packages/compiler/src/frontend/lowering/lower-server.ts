@@ -10158,33 +10158,59 @@ function lowerHttpResMethodCall(
     let cbArg: IrExpr | null = null;
     let dataNode: ts.Expression | undefined = args[0];
     if (name === "write" && args.length >= 2) {
-      // write(data, callback) and write(data, "utf8" | "utf-8", callback);
-      // another encoding would need a conversion this surface does not do.
-      let cbIndex = 1;
-      if (args.length === 3) {
-        const encoding = lowerer.typeOf(args[1]!);
+      // write(data[, "utf8" | "utf-8"][, callback]): the encoding names the
+      // bytes this surface already writes, so it is read and dropped; an
+      // explicit undefined is Node's absent encoding.
+      const second = args[1]!;
+      const secondType = lowerer.typeOf(second);
+      const secondMapped = lowerer.mapTypeOf(secondType);
+      let cbIndex: number | null = null;
+      if (secondType.isStringLiteralType() || secondMapped?.kind === "string") {
         if (
-          !encoding.isStringLiteralType() ||
-          (encoding.value !== "utf8" && encoding.value !== "utf-8")
+          !secondType.isStringLiteralType() ||
+          (secondType.value !== "utf8" && secondType.value !== "utf-8")
         ) {
           lowerer.noLowering(
             "res.write with an encoding other than utf8",
-            args[1]!,
+            second,
+            "write(data), write(data, 'utf8'), write(data, 'utf8', callback) or write(data, callback)",
+          );
+        }
+        if (args.length === 3) cbIndex = 2;
+      } else if (
+        secondMapped !== null &&
+        (secondMapped.kind === "undefinedT" ||
+          secondMapped.kind === "void" ||
+          secondMapped.kind === "nullT")
+      ) {
+        if (args.length === 3) cbIndex = 2;
+      } else {
+        if (args.length === 3) {
+          lowerer.noLowering(
+            "res.write with an encoding argument that is not the literal 'utf8'",
+            second,
             "write(data, callback) or write(data, 'utf8', callback)",
           );
         }
-        cbIndex = 2;
+        cbIndex = 1;
       }
-      const { cb } = lowerCallbackArg(
-        lowerer,
-        args[cbIndex]!,
-        "write callbacks",
-        0,
-        () => false,
-        "use ()",
-        [],
-      );
-      cbArg = cb;
+      const cbType = cbIndex === null ? null : lowerer.mapTypeOf(lowerer.typeOf(args[cbIndex]!));
+      if (
+        cbIndex !== null &&
+        (cbType === null ||
+          (cbType.kind !== "undefinedT" && cbType.kind !== "void" && cbType.kind !== "nullT"))
+      ) {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[cbIndex]!,
+          "write callbacks",
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        cbArg = cb;
+      }
     } else if (name === "end" && args.length === 2) {
       const { cb } = lowerCallbackArg(
         lowerer,

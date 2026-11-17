@@ -98,4 +98,24 @@ function phaseTrailers(next: () => void): void {
   });
 }
 
-phaseWrites(() => phaseCork(() => phaseFlush(() => phaseTrailers(() => console.log("done")))));
+function phaseEncodings(next: () => void): void {
+  const server = createServer((_req, res) => {
+    res.sendDate = false;
+    res.write("u", "utf8");
+    res.write("v", "utf-8", () => console.log("encoding cb"));
+    res.write("w", "utf8", undefined);
+    res.end("x");
+  });
+  server.listen(0, "127.0.0.1", () => {
+    get(portOf(server), "/", (body) => {
+      console.log("encoding body", body);
+      server.close(next);
+    });
+  });
+}
+
+phaseWrites(() =>
+  phaseCork(() =>
+    phaseFlush(() => phaseTrailers(() => phaseEncodings(() => console.log("done")))),
+  ),
+);

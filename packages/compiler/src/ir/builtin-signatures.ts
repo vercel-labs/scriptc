@@ -2543,7 +2543,7 @@ function buildLibFnSignatures() {
      * BORROWED, callbacks MOVE. register/suite/hook attach to the runner
      * tree (register: name, mode 0|1|2 run/skip/todo, directive message ""
      * = none, cb or absent via registerEmpty, flags 1 async | 2 takes-ctx
-     * | 4 only, "file:line:col"); suite runs its body AT registration
+     * | 4 only | 32 an explicit only: false, "file:line:col"); suite runs its body AT registration
      * (Node's collection phase). sub is t.test — runs the subtest INLINE
      * on the runner fiber and returns the settled promise the await
      * consumes. ctxSkip/ctxTodo mark the running test; ctxDiagnostic
@@ -2575,6 +2575,7 @@ function buildLibFnSignatures() {
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
+    "test.ctxLog": { argTypes: [TESTCTX_T, STRING], result: VOID },
     // t.signal: the test's AbortSignal handle (created on first read; the
     // abortSignal runtime feature links the unit), and t.error: Node's
     // ERR_TEST_FAILURE wrapper over the failure, or null.
@@ -2593,8 +2594,9 @@ function buildLibFnSignatures() {
     // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
     // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
-    // t.plan(count), and the count of one t.assert call.
-    "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+    // t.plan(count[, { wait }]) — hasWait says whether the options object
+    // carried the property; the count of one t.assert call follows.
+    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64], result: VOID },
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },

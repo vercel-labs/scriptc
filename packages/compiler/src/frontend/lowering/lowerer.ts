@@ -75,6 +75,7 @@ import {
   jsStoresWrittenValue,
   jsWritableBindingDeclaration,
   operatorOperandNodes,
+  voidTruthinessHeldCall,
   voidTruthinessNeedsRuntimeValue,
 } from "../tsc-codes.js";
 import {
@@ -3814,6 +3815,12 @@ export class Lowerer {
    * census (builtin-member-writes.ts): each reads its members at build
    * time. */
   readonly builtinFeatureTests = new Set<ts.Expression>();
+  /** The void-typed calls whose value a variable held for a truthiness
+   * test (`var v = Internals.d.f(); if (v)`, tsc-codes.ts TS1345): the
+   * binding stores the call's checked-dynamic result, so the lowering
+   * performs this call through the checked-dynamic invocation even though
+   * the operand itself is the binding. */
+  readonly voidTruthinessValueCalls = new Set<ts.CallExpression>();
   /** Per file, the `const` names that may denote a built-in object, for
    * the syntactic test in front of the write detection
    * (builtin-member-writes.ts): a function of the file alone. */
@@ -10304,6 +10311,23 @@ export class Lowerer {
           const calleeBinding = this.voidTruthinessCalleeBinding(node);
           if (calleeBinding !== null && !this.runtimeOptionalBindingTypes.has(calleeBinding)) {
             widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
+        // The same test over a variable that held the call's result
+        // (`var v = Internals.d.f(); if (v)`): Node reads the value the
+        // call answered, so the binding stores that checked-dynamic value
+        // and the call lowers through the checked-dynamic invocation. The
+        // callee's root binding widens too, so the member read follows the
+        // function the program stored there.
+        if (ts.isIdentifier(node) && this.opinionAt(node, 1345)) {
+          const held = voidTruthinessHeldCall(node, this.program);
+          if (held !== null) {
+            this.voidTruthinessValueCalls.add(held);
+            const binding = this.resolveValueSymbol(node);
+            if (binding !== null) widenBinding(binding);
+            const calleeBinding = this.voidTruthinessCalleeBinding(held);
+            if (calleeBinding !== null) widenBinding(calleeBinding);
             return undefined;
           }
         }

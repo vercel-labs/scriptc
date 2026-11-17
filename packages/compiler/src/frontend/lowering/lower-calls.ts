@@ -597,8 +597,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // A void-typed call whose result a truthiness test reads (tsc-codes.ts
   // TS1345): Node's test reads what the call answered, and the callee may
   // answer any value, so the call runs through the checked-dynamic
-  // invocation and the test reads that value.
-  const voidValue = lowerVoidTruthinessCall(lowerer, expr);
+  // invocation and the test reads that value. The operand may be the call
+  // itself or a variable that held its result (the analysis marks those
+  // calls, lowerer.ts analyzeJsWidenedBindings).
+  const voidValue =
+    lowerVoidTruthinessCall(lowerer, expr) ??
+    (lowerer.voidTruthinessValueCalls.has(expr)
+      ? lowerVoidTruthinessCall(lowerer, expr, true)
+      : null);
   if (voidValue !== null) return voidValue;
   // A call that asks an arguments object what it is (arguments-object.ts).
   return (
@@ -626,9 +632,16 @@ function staticallyStringPattern(lowerer: Lowerer, pattern: ts.Expression | unde
  * the arguments follow, and the runtime applies the callee's own `this` and
  * returns its value — which the test then reads. Null for every other call,
  * so a program that admitted no such site keeps its IR. */
-function lowerVoidTruthinessCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr | null {
+function lowerVoidTruthinessCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  /** The call is a variable's initializer whose truthiness the program
+   * tests: preflight admitted the test at the binding's read (tsc-codes.ts
+   * voidTruthinessHeldCall), so the call's own node carries no opinion. */
+  held = false,
+): IrExpr | null {
   if (expr.questionDotToken !== undefined) return null;
-  if (!lowerer.opinionAt(expr, 1345)) return null;
+  if (!held && !lowerer.opinionAt(expr, 1345)) return null;
   const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
   if (result?.kind !== "void") return null;
   if (!voidTruthinessNeedsRuntimeValue(expr, lowerer.program)) return null;

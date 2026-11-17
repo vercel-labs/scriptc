@@ -1541,10 +1541,10 @@ function jsxElementSlotText7(
 }
 
 /** The props type of a value-based element as a type expression over its
- * tag: `Parameters<typeof Button>[0]` for a function component,
- * `ConstructorParameters<typeof Button>[0]` for a class one. Undefined when
- * the tag's type does not name it exactly: an intrinsic tag, an arbitrary
- * tag expression, an overload set, or a generic component. */
+ * tag: `Parameters<typeof Button>[0]` for a function component and
+ * `InstanceType<typeof Button>["props"]` for a class one. Undefined when the
+ * tag's type does not name it exactly: an intrinsic tag, an arbitrary tag
+ * expression, an overload set, or a generic component. */
 function jsxElementPropsText7(
   checker: ReturnType<ts.Program["getTypeChecker"]>,
   opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
@@ -1608,7 +1608,7 @@ function jsxSlot7(expression: ts.Expression): JsxSlot7 | null {
   const parent = holder.parent;
   if (ts.isJsxAttribute(parent)) {
     const name = jsxAttributeNameText(parent.name);
-    // A key is JSX's own attribute, not a props member.
+    // JSX types a key and a ref through its own attributes as well as props.
     if (name === undefined || name === "key" || name === "ref") return null;
     return jsxSlotOfAttributes(parent.parent, name);
   }

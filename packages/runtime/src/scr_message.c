@@ -476,7 +476,9 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     scr_message_push(encoder, id);
     return id;
   }
-  if (scr_message_wrapper_ops && scr_message_wrapper_ops->is_wrapper(value)) {
+  const ScrMessageWrapperOps *wrapper_ops =
+      atomic_load_explicit(&scr_message_wrapper_ops, memory_order_relaxed);
+  if (wrapper_ops && wrapper_ops->is_wrapper(value)) {
     /* Its [[PrimitiveValue]] rides an internal slot the message format does
      * not carry; encoding the object would send a silently empty one. */
     static const char message[] =

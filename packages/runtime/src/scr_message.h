@@ -2,6 +2,7 @@
 #define SCR_MESSAGE_H
 
 #include "scr_runtime.h"
+#include <stdatomic.h>
 
 /* Queues own messages independently of either runtime heap. Encoding may
  * invoke getters and throw on the sender. Decoding creates recipient-local
@@ -38,7 +39,10 @@ extern const ScrMessagePortOps *scr_message_port_ops;
 typedef struct {
   bool (*is_wrapper)(const ScrDyn *value);
 } ScrMessageWrapperOps;
-extern const ScrMessageWrapperOps *scr_message_wrapper_ops;
+/* Written by every thread that makes its first wrapper, so it is atomic:
+ * every writer stores the same static table's address, and a reader may see
+ * NULL (no wrapper in the program) or that address, never a torn value. */
+extern _Atomic(const ScrMessageWrapperOps *) scr_message_wrapper_ops;
 void scr_message_set_wrapper_ops(const ScrMessageWrapperOps *ops);
 ScrDyn *scr_message_decode(const ScrMessage *message);
 void scr_message_free(ScrMessage *message);

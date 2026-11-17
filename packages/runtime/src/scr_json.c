@@ -96,10 +96,10 @@ SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value) = NULL;
  * NULL, as in a program without wrappers, means no message carries one. The
  * variable lives here because every program links this unit, while neither
  * the wrapper unit nor the message unit links the other. */
-const ScrMessageWrapperOps *scr_message_wrapper_ops = NULL;
+_Atomic(const ScrMessageWrapperOps *) scr_message_wrapper_ops = NULL;
 
 void scr_message_set_wrapper_ops(const ScrMessageWrapperOps *ops) {
-  scr_message_wrapper_ops = ops;
+  atomic_store_explicit(&scr_message_wrapper_ops, ops, memory_order_relaxed);
 }
 #ifdef SCR_JS_OBJECT_MODEL
 /* Set by scr_dyn_invoke.c when the object model build links it, so a

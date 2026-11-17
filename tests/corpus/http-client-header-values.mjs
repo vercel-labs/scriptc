@@ -4,9 +4,9 @@
 import { createServer, request } from "node:http";
 
 const server = createServer((req, res) => {
-  const names = ["x-num", "x-list", "x-listnum", "x-nil", "x-replace", "x-fresh-append", "x-drop"];
+  const names = ["x-num", "x-list", "x-listnum", "x-nil", "x-replace", "x-fresh-append", "x-drop", "cookie"];
   for (const name of names) console.log("server", name, JSON.stringify(req.headers[name] ?? "<absent>"));
-  const raw = req.rawHeaders.filter((value, i) => (i % 2 === 1 ? true : /^x-/.test(value)));
+  const raw = req.rawHeaders.filter((value, i) => (i % 2 === 1 ? true : /^(?:x-|Cookie$)/.test(value)));
   console.log("server raw", JSON.stringify(raw.map((value) => value.replace(/^127\.0\.0\.1:\d+$/, "host"))));
   res.end("ok");
 });
@@ -22,6 +22,7 @@ server.listen(0, "127.0.0.1", () => {
   const mixed = /** @type {any} */ ([1, 2]);
   req.setHeader("x-listnum", mixed);
   req.setHeader("x-nil", null);
+  req.setHeader("Cookie", ["a=1", "b=2"]);
   req.setHeader("x-replace", "old");
   req.setHeader("x-replace", "new");
   req.appendHeader("x-replace", ["two", "three"]);

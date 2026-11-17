@@ -6594,6 +6594,23 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
   scr_http_buf_str(&b, " HTTP/1.1\r\n");
   for (size_t i = 0; i < c->nheaders; i++) {
     if (c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR) {
+      bool cookie = c->hnames[i]->len == 6;
+      for (size_t j = 0; j < 6 && cookie; j++)
+        if (tolower((unsigned char)c->hnames[i]->data[j]) != "cookie"[j]) cookie = false;
+      if (cookie) {
+        /* Node joins a Cookie array into one line with "; " */
+        scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
+        scr_http_buf_str(&b, ": ");
+        for (size_t k = 0; k < c->hraw[i]->v.arr.len; k++) {
+          ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
+          if (text == NULL) continue;
+          if (k > 0) scr_http_buf_str(&b, "; ");
+          scr_http_buf_append(&b, text->data, text->len);
+          scr_str_release(text);
+        }
+        scr_http_buf_str(&b, "\r\n");
+        continue;
+      }
       for (size_t k = 0; k < c->hraw[i]->v.arr.len; k++) {
         ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
         if (text == NULL) continue;
@@ -10043,7 +10060,11 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
       scr_dyn_arg_type_fail("name", "of type string", name);
       return NULL;
     }
-    return scr_http_client_get_header(c, name->v.str);
+    ScrStr *value = scr_http_client_get_header(c, name->v.str);
+    if (value == NULL) return scr_dyn_undefined();
+    ScrDyn *boxed = scr_dyn_new_str(value);
+    scr_str_release(value);
+    return boxed;
   }
   if (strcmp(method, "hasHeader") == 0) {
     const ScrDyn *name = argc > 0 ? args[0] : scr_dyn_undefined();

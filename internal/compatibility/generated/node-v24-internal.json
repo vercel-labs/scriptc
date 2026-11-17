@@ -30141,7 +30141,8 @@
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -30210,10 +30211,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.hasSubscribers",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30236,10 +30239,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.channel",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.channel",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30262,10 +30267,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.subscribe",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.subscribe",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30288,10 +30295,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.unsubscribe",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.unsubscribe",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30314,10 +30323,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.tracingChannel",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.tracingChannel",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30363,11 +30374,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.start",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30390,11 +30402,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.end",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30417,11 +30430,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.asyncStart",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30444,11 +30458,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.asyncEnd",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30471,11 +30486,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.error",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31809,13 +31825,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.Channel",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31838,13 +31854,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.channel.publish",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31867,13 +31883,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.channel.subscribe",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31896,13 +31912,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.channel.unsubscribe",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31928,10 +31944,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.channel.bindStore",
         "tests": [
-          "tests/corpus/2094-diagnostics-channel.ts",
-          "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31957,10 +31971,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.channel.unbindStore",
         "tests": [
-          "tests/corpus/2094-diagnostics-channel.ts",
-          "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31986,10 +31998,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.channel.runStores",
         "tests": [
-          "tests/corpus/2094-diagnostics-channel.ts",
-          "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32012,10 +32022,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.hasSubscribers",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -32038,13 +32049,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.TracingChannel",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32067,13 +32078,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.subscribe",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32096,13 +32107,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.unsubscribe",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32125,13 +32136,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.traceSync",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32154,13 +32165,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.tracePromise",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32183,13 +32194,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.traceCallback",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32212,10 +32223,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.hasSubscribers",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -58219,8 +58231,6 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
           "tests/corpus/2672-http-request-response-callback.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts",
           "tests/corpus/2700-http-static-trailers.ts",
@@ -58239,11 +58249,8 @@
           "tests/corpus/2977-http-static-incoming-timeout.ts",
           "tests/corpus/2978-http-static-client-timeout.ts",
           "tests/corpus/2979-http-static-server-timeout.ts",
-          "tests/corpus/2980-http-static-server-timeout-default.ts",
           "tests/corpus/2981-http-static-events.ts",
           "tests/corpus/2982-http-static-close-all.ts",
-          "tests/corpus/2983-http-static-close-idle.ts",
-          "tests/corpus/2984-http-static-close-upgrade.ts",
           "tests/corpus/2985-http-static-message-destroy.ts",
           "tests/corpus/2986-http-static-client-socket-finish.ts",
           "tests/corpus/2987-http-static-timeout-errors.ts",
@@ -58257,22 +58264,21 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-agent-max-total-sockets.ts",
           "tests/corpus/http-client-max-headers-count.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-server-client-error.ts",
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/http-server-lifecycle-limits.ts",
           "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-server-listen-forms.ts",
           "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts",
           "tests/corpus/http-set-headers.mjs",
           "tests/corpus/http-set-headers.ts",
           "tests/corpus/http-write-backpressure.ts",
-          "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-dispose-http.ts",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
           "tests/diagnostics/compat-absent-http-members.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/server/cases/http-trailers/main.ts",
@@ -58649,10 +58655,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.maxTotalSockets",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-agent-max-total-sockets.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59846,17 +59852,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "status": "supported",
+        "evidence": "compiler-feature:http.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59879,12 +59883,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.server.closeAllConnections",
         "tests": [
-          "tests/corpus/2982-http-static-close-all.ts",
-          "tests/corpus/2983-http-static-close-idle.ts",
-          "tests/corpus/2984-http-static-close-upgrade.ts"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59907,12 +59914,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.server.closeIdleConnections",
         "tests": [
-          "tests/corpus/2982-http-static-close-all.ts",
-          "tests/corpus/2983-http-static-close-idle.ts",
-          "tests/corpus/2984-http-static-close-upgrade.ts"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59935,17 +59945,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:http.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59968,11 +59976,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.server.setTimeout",
         "tests": [
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/2979-http-static-server-timeout.ts",
-          "tests/corpus/2980-http-static-server-timeout-default.ts"
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60049,10 +60061,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.listening",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60131,12 +60148,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.maxRequestsPerSocket",
         "tests": [
-          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
           "tests/corpus/http-server-limit-values.ts",
-          "tests/corpus/http-max-requests-per-socket.ts"
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60403,12 +60423,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'dropRequest'",
         "tests": [
-          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
           "tests/corpus/http-server-limit-values.ts",
-          "tests/corpus/http-max-requests-per-socket.ts"
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60876,10 +60899,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeContinue",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60902,10 +60927,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeEarlyHints",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60982,10 +61009,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeProcessing",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61373,10 +61402,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.message.destroy",
         "tests": [
-          "tests/corpus/2985-http-static-message-destroy.ts"
+          "tests/corpus/2976-http-static-incoming-state.ts",
+          "tests/corpus/2977-http-static-incoming-timeout.ts",
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61399,12 +61431,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.message.setTimeout",
         "tests": [
           "tests/corpus/2976-http-static-incoming-state.ts",
           "tests/corpus/2977-http-static-incoming-timeout.ts",
-          "tests/corpus/2987-http-static-timeout-errors.ts"
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61859,10 +61892,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'aborted'",
         "tests": [
-          "tests/corpus/2985-http-static-message-destroy.ts"
+          "tests/corpus/2976-http-static-incoming-state.ts",
+          "tests/corpus/2977-http-static-incoming-timeout.ts",
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -97698,23 +97734,35 @@
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
-          "tests/diagnostics/compat-absent-node-values.ts",
+          "tests/diagnostics/compat-absent-test-snapshot.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-log.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/fixtures/node-test/cases/ctx-signal.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
           "tests/fixtures/node-test/cases/get-test-context.ts",
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/only-false.ts",
+          "tests/fixtures/node-test/cases/only-filter.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/plan-wait.ts",
+          "tests/fixtures/node-test/cases/root-hooks.ts",
+          "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
@@ -97883,8 +97931,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.only",
+        "tests": [
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/only-filter.ts",
+          "tests/fixtures/node-test/cases/only-false.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98466,10 +98520,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:test.snapshot",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98492,10 +98547,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:test.snapshot.setDefaultSnapshotSerializers",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98521,7 +98577,7 @@
         "status": "not-implemented",
         "evidence": "compiler-feature:test.snapshot.setResolveSnapshotPath",
         "tests": [
-          "tests/diagnostics/compat-absent-node-values.ts"
+          "tests/diagnostics/compat-absent-test-snapshot.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98682,8 +98738,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.MockFunctionContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98705,9 +98766,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.callCount",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98733,9 +98795,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.mockImplementation",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98761,9 +98824,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.mockImplementationOnce",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98789,9 +98853,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.resetCalls",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98817,9 +98882,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.restore",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -98845,9 +98911,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.calls",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/harness/node-test.test.ts"
@@ -99103,8 +99170,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.MockTracker",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99255,15 +99329,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.reset",
         "tests": [
           "tests/fixtures/node-test/cases/mock-method.ts",
-          "tests/corpus/5810-mock-method-records.ts",
+          "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
-          "tests/corpus/class-instance-method-value-this.ts",
-          "tests/corpus/object-literal-method-this.ts",
-          "tests/corpus/prototype-method-value-this.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99287,15 +99358,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.restoreAll",
         "tests": [
           "tests/fixtures/node-test/cases/mock-method.ts",
-          "tests/corpus/5810-mock-method-records.ts",
+          "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
-          "tests/corpus/class-instance-method-value-this.ts",
-          "tests/corpus/object-literal-method-this.ts",
-          "tests/corpus/prototype-method-value-this.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99342,8 +99410,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.MockTimers",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99396,9 +99469,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.reset",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5814-mock-timers-date.ts",
@@ -99560,9 +99634,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers.setTime",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/corpus/5814-mock-timers-date.ts",
@@ -100026,8 +100101,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.TestContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100049,11 +100132,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.before",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
-          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100077,11 +100160,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.beforeEach",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
-          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100105,11 +100188,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.after",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
-          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100133,11 +100216,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.afterEach",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
-          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100161,9 +100244,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.diagnostic",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100187,8 +100276,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.log",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100213,8 +100306,8 @@
         "status": "partial",
         "evidence": "compiler-feature:test.context.plan",
         "tests": [
-          "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100238,10 +100331,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.runOnly",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100265,9 +100363,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.skip",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.skip",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100291,9 +100395,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.todo",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.todo",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100343,10 +100453,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.waitFor",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100370,9 +100485,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.assert",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.assert",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100450,10 +100571,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.filePath",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100477,11 +100603,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.fullName",
         "tests": [
-          "tests/fixtures/node-test/cases/ctx-hooks.ts",
-          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100505,9 +100635,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.name",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100531,10 +100667,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.passed",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100585,10 +100726,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.attempt",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100639,10 +100785,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.workerId",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100666,7 +100817,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.signal",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-signal.ts",
@@ -100693,8 +100844,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.SuiteContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-context.ts",
+          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100716,9 +100872,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.diagnostic",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100743,8 +100900,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.log",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100766,9 +100927,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.filePath",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100793,9 +100955,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.fullName",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100820,9 +100983,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.name",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100847,7 +101011,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.signal",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-signal.ts",
@@ -100874,9 +101038,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.passed",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100901,9 +101066,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.attempt",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -101394,9 +101560,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:before",
+        "status": "supported",
+        "evidence": "compiler-feature:test.before",
         "tests": [
+          "tests/fixtures/node-test/cases/root-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -101420,9 +101589,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:after",
+        "status": "supported",
+        "evidence": "compiler-feature:test.after",
         "tests": [
+          "tests/fixtures/node-test/cases/root-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -101446,9 +101618,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:beforeEach",
+        "status": "supported",
+        "evidence": "compiler-feature:test.beforeEach",
         "tests": [
+          "tests/fixtures/node-test/cases/root-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -101472,9 +101647,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:afterEach",
+        "status": "supported",
+        "evidence": "compiler-feature:test.afterEach",
         "tests": [
+          "tests/fixtures/node-test/cases/root-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -105859,8 +106037,18 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/compat-errors-net.mjs",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-udp6.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -105932,10 +106120,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:dgram.createSocket",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.dgram.createSocket",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -105958,8 +106158,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.dgram.Socket",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105981,11 +106196,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.addMembership",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106008,8 +106234,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.addSourceSpecificMembership",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106031,10 +106272,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.address",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.address",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106057,10 +106310,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.bind",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.bind",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106109,8 +106374,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.bindSync",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106132,10 +106412,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.close",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.close",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106158,8 +106450,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106181,10 +106488,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.connect",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106207,8 +106526,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.connectSync",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106230,8 +106564,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.disconnect",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106253,11 +106602,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.dropMembership",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106280,8 +106640,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.dropSourceSpecificMembership",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106303,11 +106678,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.getRecvBufferSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106330,11 +106716,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.getSendBufferSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106357,11 +106754,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.getSendQueueSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106384,11 +106792,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.getSendQueueCount",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106411,10 +106830,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.ref",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.ref",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106437,10 +106868,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.remoteAddress",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.remoteAddress",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106463,10 +106906,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.send",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.send",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106512,11 +106967,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setBroadcast",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106539,11 +107005,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setMulticastInterface",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106589,11 +107066,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setMulticastLoopback",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106616,11 +107104,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setMulticastTTL",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106643,11 +107142,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setRecvBufferSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106670,11 +107180,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setSendBufferSize",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106697,11 +107218,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.socket.setTTL",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106724,10 +107256,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.unref",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.unref",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106750,11 +107294,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.'close'",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106777,8 +107332,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.'connect'",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106800,8 +107370,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:dgram"
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.'error'",
+        "tests": [
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106823,11 +107408,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.'listening'",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -106850,11 +107446,22 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:dgram.'message'",
         "tests": [
           "tests/corpus/compat-dgram-socket.mjs",
-          "tests/corpus/compat-dgram-socket.ts"
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-udp6.ts",
+          "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-sync-members.mjs",
+          "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/2597-dgram-send-ladders.cjs",
+          "tests/corpus/5655-dgram-socket-options.ts",
+          "tests/corpus/5656-dgram-option-states.ts",
+          "tests/corpus/compat-errors-net.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -123187,8 +123794,11 @@
           "tests/corpus/native-worker-terminate-loop.ts",
           "tests/corpus/native-worker-terminate-suspended.ts",
           "tests/corpus/native-worker-terminate-wait.ts",
+          "tests/corpus/worker-cpu-usage-quiet/main.ts",
+          "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/worker-env-option.ts",
           "tests/corpus/worker-performance.ts",
+          "tests/corpus/worker-resource-limits-echo.ts",
           "tests/corpus/worker-share-env.ts"
         ]
       },
@@ -123842,8 +124452,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "supported",
+        "evidence": "compiler-feature:worker_threads.worker.cpuUsage",
+        "tests": [
+          "tests/corpus/worker-cpu-usage.ts",
+          "tests/corpus/worker-cpu-usage-quiet/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -124145,10 +124759,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:worker_threads.resourceLimits",
         "tests": [
-          "tests/corpus/5806-worker-resource-limits.ts"
+          "tests/corpus/5806-worker-resource-limits.ts",
+          "tests/corpus/worker-resource-limits-echo.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -124744,10 +125359,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:worker_threads.resourceLimits",
         "tests": [
-          "tests/corpus/5806-worker-resource-limits.ts"
+          "tests/corpus/5806-worker-resource-limits.ts",
+          "tests/corpus/worker-resource-limits-echo.ts"
         ]
       },
       "anchorSource": "chapter"

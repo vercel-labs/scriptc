@@ -1147,18 +1147,72 @@ function lowerAssertOk(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): 
   return { kind: "seqExpr", stmts, result, type: VOID, loc };
 }
 
+/** The deprecated fail(actual, expected[, message[, operator[, stackStartFn]]]):
+ * every argument evaluates in order, then the call reports DEP0094 (once,
+ * from the events unit) and throws the runtime's AssertionError. A message
+ * that is an Error is thrown itself; a nullish message leaves Node's
+ * generated `${inspect(actual)} ${operator} ${inspect(expected)}`. The
+ * operator defaults to "!=" for exactly two arguments and "fail" otherwise.
+ * `stackStartFn` only picks where Node's stack starts, so it is evaluated
+ * and its value dropped. */
+function lowerAssertFailDeprecated(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = expr.arguments.nodes;
+  const stmts: IrStmt[] = [];
+  const boxed = (node: ts.Expression, name: string): IrExpr =>
+    stableValue(lowerer, stmts, recordedValue(lowerer, lowerer.lowerExpr(node), loc), name, loc);
+  const actual = boxed(args[0]!, "%assertFailActual");
+  const expected = boxed(args[1]!, "%assertFailExpected");
+  const messageNode = args[2];
+  // A message crosses as the value Node reads: an Error is thrown itself,
+  // anything else becomes String(value), and a nullish one leaves the
+  // runtime's generated text.
+  const message: IrExpr =
+    messageNode === undefined
+      ? dynUndefinedExpr(loc)
+      : stableValue(
+          lowerer,
+          stmts,
+          recordedValue(lowerer, lowerer.lowerExpr(messageNode), loc),
+          "%assertFailMessage",
+          loc,
+        );
+  const operatorNode = args[3];
+  const operator: IrExpr =
+    operatorNode !== undefined &&
+    !(ts.isIdentifier(operatorNode) && operatorNode.text === "undefined")
+      ? stableValue(
+          lowerer,
+          stmts,
+          lowerer.coerceToExpected(lowerer.lowerExpr(operatorNode), DYN),
+          "%assertFailOperator",
+          loc,
+        )
+      : lowerer.coerceToExpected(strLit(args.length === 2 ? "!=" : "fail", loc), DYN);
+  const stackStart = args[4];
+  if (stackStart !== undefined) {
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(stackStart), loc });
+  }
+  stmts.push({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "assert.failDeprecation", args: [], type: VOID, loc },
+    loc,
+  });
+  const result: IrExpr = {
+    kind: "libCall",
+    fn: "assert.failDeprecated",
+    args: [actual, expected, message, operator, boolLit(messageNode !== undefined, loc)],
+    type: VOID,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result, type: VOID, loc };
+}
+
 /** assert.fail([message]): an unconditional AssertionError — "Failed"
  * when the message is omitted (Node's internal default). Lowers as
  * assert.ok over a false literal. */
 function lowerAssertFail(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   requireStatementPosition(lowerer, expr, "assert.fail");
-  if (expr.arguments.nodes.length > 1) {
-    lowerer.noLowering(
-      `assert.fail with ${expr.arguments.nodes.length} arguments`,
-      expr,
-      "the supported form is fail(message?) — the deprecated fail(actual, expected, ...) has no lowering",
-    );
-  }
+  if (expr.arguments.nodes.length > 1) return lowerAssertFailDeprecated(lowerer, expr, loc);
   let msg: IrExpr;
   let generated: IrExpr;
   const msgNode = expr.arguments.nodes[0];

@@ -267,6 +267,56 @@ void scr_assert_fail(ScrStr *message, bool generated) {
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
+/* assert.fail(actual, expected[, message[, operator[, stackStartFn]]]) —
+ * the deprecated multi-argument form (Node's innerFail). A message that is
+ * an Error is thrown itself; otherwise the AssertionError carries actual,
+ * expected and the operator value, and either the message's String() form
+ * (generatedMessage `!message`, so the empty string counts as generated) or
+ * Node's generated `${inspect(actual)} ${operator} ${inspect(expected)}`
+ * when the message is absent or nullish. The lowering supplies the
+ * operator default ("!=" for exactly two arguments, "fail" otherwise).
+ * Everything moves in. Throws. */
+static ScrStr *scr_assert_cf_inspect(const ScrDyn *d); /* the dyn renderer below */
+
+void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *message,
+                                ScrDyn *operator_value, bool has_message) {
+  if (has_message && message &&
+      (scr_dyn_ref_is_error(message) || scr_dyn_is_error_prototype(message))) {
+    scr_dyn_throw(scr_dyn_retain(message));
+    return;
+  }
+  bool generated;
+  ScrStr *text;
+  if (!has_message || !message || scr_dyn_is_nullish(message)) {
+    ScrStr *ia = scr_assert_cf_inspect(actual);
+    ScrStr *ib = scr_assert_cf_inspect(expected);
+    ScrStr *op = scr_dyn_string_coerce_js(operator_value);
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_write(&b, ia->data, ia->len);
+    scr_jb_putc(&b, ' ');
+    if (op) scr_jb_write(&b, op->data, op->len);
+    scr_jb_putc(&b, ' ');
+    scr_jb_write(&b, ib->data, ib->len);
+    scr_str_release(ia);
+    scr_str_release(ib);
+    if (op) scr_str_release(op);
+    text = scr_jb_finish(&b);
+    generated = true;
+  } else {
+    text = scr_dyn_string_coerce_js(message);
+    generated = !scr_dyn_truthy(message);
+  }
+  ScrError *e = scr_error_new(SCR_ERR_ASSERTION, text);
+  scr_str_release(text);
+  e->name_present = true;
+  scr_assert_attach_values(e, generated, scr_dyn_retain(actual), scr_dyn_retain(expected),
+                           scr_dyn_retain(operator_value),
+                           scr_assert_dyn_text(scr_assert_diff_full() ? "full" : "simple"));
+  g_instance_options = 0;
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* A custom message that Node passes to the AssertionError constructor
  * (innerFail): the message is kept as is, and generatedMessage is
  * `!message`, so the empty string counts as generated. Borrows msg. */

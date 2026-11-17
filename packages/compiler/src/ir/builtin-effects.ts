@@ -1534,6 +1534,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   // and the shape accumulator's begin/slot/test calls throws the
   // catchable AssertionError on failure.
   "assert.ok",
+  "assert.failDeprecated",
   "assert.errorNew",
   "assert.eqF64",
   "assert.eqBigInt",

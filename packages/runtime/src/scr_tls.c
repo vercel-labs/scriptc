@@ -3943,6 +3943,68 @@ ScrDyn *scr_tls_sock_servername(ScrNetSocket *s) {
   return answer;
 }
 
+/* tlsSocket.exportKeyingMaterial(length, label[, context]): Node's
+ * validation ladder (validateInteger length 1..4294967295, a string label,
+ * a Buffer/TypedArray context) then the provider's TLS exporter. +1
+ * Buffer, NULL with an exception pending. */
+ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const ScrDyn *length,
+                                              const ScrDyn *label, const ScrDyn *context,
+                                              bool has_context) {
+  if (length->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("length", "of type number", length);
+    return NULL;
+  }
+  double len = length->v.num;
+  if (floor(len) != len || len < 1 || len > 4294967295.0) {
+    char recv[48];
+    char msg[192];
+    int n;
+    scr_num_received(len, recv);
+    if (floor(len) != len) {
+      n = snprintf(msg, sizeof msg,
+                   "The value of \"length\" is out of range. It must be an integer. Received %s", recv);
+    } else {
+      n = snprintf(msg, sizeof msg,
+                   "The value of \"length\" is out of range. It must be >= 1 && <= 4294967295. Received %s",
+                   recv);
+    }
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  if (label->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("label", "of type string", label);
+    return NULL;
+  }
+  const ScrBytes *ctx = NULL;
+  if (has_context && context->kind != SCR_DYN_UNDEF && context->kind != SCR_DYN_NULL) {
+    if (context->kind != SCR_DYN_BYTES) {
+      scr_dyn_arg_type_fail("context", "an instance of Buffer, TypedArray, or DataView", context);
+      return NULL;
+    }
+    ctx = context->v.bytes;
+  }
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || !scr_net_sock_established(s)) {
+    static const char msg[] = "TLS socket connection must be securely established";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_INVALID_STATE");
+    return NULL;
+  }
+  size_t key_len = (size_t)len;
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)key_len);
+  out->is_buffer = true;
+  int rc = mbedtls_ssl_export_keying_material(
+    &t->ssl, out->data, key_len, (const char *)label->v.str->data, label->v.str->len,
+    ctx != NULL ? ctx->data : NULL, ctx != NULL ? ctx->len : 0, ctx != NULL ? 1 : 0);
+  if (rc != 0) {
+    scr_bytes_release(out);
+    static const char msg[] =
+      "the TLS provider cannot export keying material for these parameters";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_SSL_TLS_ILLEGAL_EXPORTER_LABEL");
+    return NULL;
+  }
+  return out;
+}
+
 /* tlsSocket.getSession(): the session a resumption would use. +1 dyn
  * (a Buffer, or null when the handshake has no resumable session yet). */
 ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {

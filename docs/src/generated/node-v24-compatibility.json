@@ -34959,7 +34959,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35051,7 +35051,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35074,7 +35074,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35097,7 +35097,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35120,7 +35120,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35143,7 +35143,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35166,7 +35166,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35189,7 +35189,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35212,7 +35212,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35235,7 +35235,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35258,7 +35258,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35281,7 +35281,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35350,7 +35350,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35373,7 +35373,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35557,7 +35557,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35580,7 +35580,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35603,7 +35603,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35626,7 +35626,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35672,7 +35672,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35718,7 +35718,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35741,7 +35741,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35856,7 +35856,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35948,7 +35948,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -35971,7 +35971,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36040,7 +36040,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36086,7 +36086,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36109,7 +36109,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36132,7 +36132,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36155,7 +36155,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36178,7 +36178,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36201,7 +36201,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36224,7 +36224,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36247,7 +36247,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36270,7 +36270,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36293,7 +36293,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36316,7 +36316,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36338,8 +36338,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36385,7 +36385,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36407,8 +36407,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36431,7 +36431,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36453,8 +36453,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36476,8 +36476,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36499,8 +36499,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36569,7 +36569,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36592,7 +36592,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36615,7 +36615,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36638,7 +36638,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36661,7 +36661,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36684,7 +36684,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36707,7 +36707,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36730,7 +36730,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36753,7 +36753,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36776,7 +36776,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36822,7 +36822,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -36844,8 +36844,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
     },
@@ -36867,7 +36867,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -36890,7 +36890,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -36913,8 +36913,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36936,8 +36936,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36959,8 +36959,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37006,7 +37006,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37097,8 +37097,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37120,9 +37120,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -37190,7 +37190,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37258,7 +37258,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37304,7 +37304,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static HTTP request metadata and message state support the tested lifecycle.",
         "verification": "test-backed"
       }
@@ -37327,7 +37327,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37350,7 +37350,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37420,7 +37420,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37443,7 +37443,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37466,7 +37466,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37489,7 +37489,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37512,7 +37512,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37534,8 +37534,8 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37557,7 +37557,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static HTTP request metadata and message state support the tested lifecycle.",
         "verification": "test-backed"
       }
@@ -37581,7 +37581,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37603,8 +37603,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37626,7 +37626,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static IncomingMessage header and trailer reads support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37649,7 +37649,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static HTTP request metadata and message state support the tested lifecycle.",
         "verification": "test-backed"
       }
@@ -37672,7 +37672,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static HTTP request metadata and message state support the tested lifecycle.",
         "verification": "test-backed"
       }
@@ -37695,7 +37695,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static IncomingMessage header and trailer reads support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37718,7 +37718,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static IncomingMessage header and trailer reads support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37764,7 +37764,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37833,7 +37833,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static IncomingMessage header and trailer reads support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37856,7 +37856,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static IncomingMessage header and trailer reads support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37879,7 +37879,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static HTTP request metadata and message state support the tested lifecycle.",
         "verification": "test-backed"
       }
@@ -37903,7 +37903,7 @@
       },
       "static": {
         "status": "supported",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37926,7 +37926,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37949,7 +37949,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37972,7 +37972,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -37995,7 +37995,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38018,7 +38018,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38041,7 +38041,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38064,7 +38064,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38087,7 +38087,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38110,7 +38110,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38133,7 +38133,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38156,7 +38156,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38179,7 +38179,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38202,7 +38202,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38225,7 +38225,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38248,7 +38248,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38271,7 +38271,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38317,7 +38317,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38340,7 +38340,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38432,7 +38432,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38501,7 +38501,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38524,7 +38524,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38547,7 +38547,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38570,7 +38570,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38593,7 +38593,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38616,7 +38616,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38869,7 +38869,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38892,7 +38892,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38915,7 +38915,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },
@@ -38938,7 +38938,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "detail": "Implemented for the documented node:http server subset.",
         "verification": "test-backed"
       }
     },

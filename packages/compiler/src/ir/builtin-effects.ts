@@ -394,6 +394,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resWriteHeadObject",
   "http.resSetHeader",
   "http.resSetHeaderDyn",
   "http.resRemoveHeader",
@@ -417,6 +418,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resOnPrefinish",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
+  "http.serverHeadersTimeoutDefault",
+  "http.serverConnectionsCheckingInterval",
+  "http.serverRejectNonStandardBodyWrites",
   "net.sockSetEncoding",
   "net.sockSetEncodingDyn",
   // setKeepAlive's positional coercions and its object form run ToNumber

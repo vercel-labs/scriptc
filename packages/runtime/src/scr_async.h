@@ -404,6 +404,10 @@ void scr_process_emit_warning(ScrDyn *args);
  * existed (Node's EventEmitter return). The compiler refuses the typed
  * listener families, and a name none of these matches answers false. */
 bool scr_process_emit_named(ScrDyn *event, ScrDyn *args);
+/* process.emit('error', ...): no 'error' listener can be registered, so
+ * Node's EventEmitter contract throws — an Error payload throws itself, any
+ * other payload throws ERR_UNHANDLED_ERROR. */
+void scr_process_emit_error(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
 /* process.emitWarning = fn (borrowed; the runtime keeps its own
  * reference). Later process.emitWarning(...) calls apply the replacement

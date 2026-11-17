@@ -6865,6 +6865,9 @@ function buildLibFnSignatures() {
      * event name and its argument vector arrive as checked values; the
      * result is whether any listener existed. */
     "process.emit": { argTypes: [DYN, DYN], result: BOOL },
+    /** process.emit('error', ...): no listener can be registered for it, so
+     * the runtime throws Node's unhandled-error contract. */
+    "process.emitError": { argTypes: [DYN], result: VOID },
     "process.emitWarning": { argTypes: [DYN], result: VOID },
     /** A Warning-typed process warning with this message (the console
      * members' warnings), emitted on the next tick as Node's emitWarning

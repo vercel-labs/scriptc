@@ -2165,6 +2165,75 @@ bool scr_process_emit_named(ScrDyn *event, ScrDyn *args) {
   return false;
 }
 
+/* process.emit('error', ...): no 'error' listener can be registered on
+ * process here, so Node's EventEmitter contract throws. An Error payload
+ * throws itself; any other payload throws ERR_UNHANDLED_ERROR whose message
+ * quotes it (the primitive payloads this unit renders, as the events unit
+ * does; an object payload is refused there and here). */
+void scr_process_emit_error(ScrDyn *args) {
+  const ScrDyn *er =
+      args != NULL && args->kind == SCR_DYN_ARR && args->v.arr.len > 0
+          ? args->v.arr.items[0]
+          : scr_dyn_undefined();
+  if (scr_dyn_err_instanceof(er, SCR_ERR_ERROR)) {
+    scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
+    return;
+  }
+  ScrJsonBuf shown_buf;
+  scr_jb_init(&shown_buf);
+  bool shown = true;
+  switch (er->kind) {
+  case SCR_DYN_UNDEF: scr_jb_puts(&shown_buf, "undefined"); break;
+  case SCR_DYN_NULL: scr_jb_puts(&shown_buf, "null"); break;
+  case SCR_DYN_BOOL: scr_jb_puts(&shown_buf, er->v.b ? "true" : "false"); break;
+  case SCR_DYN_NUM: {
+    char num[32];
+    if (er->v.num == 0 && 1 / er->v.num < 0) {
+      scr_jb_puts(&shown_buf, "-0");
+    } else {
+      size_t len = scr_f64_to_str(er->v.num, num);
+      scr_jb_write(&shown_buf, num, len);
+    }
+    break;
+  }
+  case SCR_DYN_STR: {
+    const ScrStr *s = er->v.str;
+    for (size_t i = 0; i < s->len && shown; i++) {
+      unsigned char c = (unsigned char)s->data[i];
+      if (c < 0x20 || c == 0x7f || c == '\'' || c == '\\') shown = false;
+    }
+    if (s->len > 10000) shown = false;
+    if (shown) {
+      scr_jb_putc(&shown_buf, '\'');
+      scr_jb_write(&shown_buf, s->data, s->len);
+      scr_jb_putc(&shown_buf, '\'');
+    }
+    break;
+  }
+  default: shown = false; break;
+  }
+  ScrStr *shown_text = scr_jb_finish(&shown_buf);
+  if (!shown) {
+    scr_str_release(shown_text);
+    static const char refusal[] =
+        "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, refusal, sizeof refusal - 1, "SC2020");
+    return;
+  }
+  ScrJsonBuf text;
+  scr_jb_init(&text);
+  scr_jb_puts(&text, "Unhandled error. (");
+  scr_jb_write(&text, shown_text->data, shown_text->len);
+  scr_jb_putc(&text, ')');
+  ScrStr *message = scr_jb_finish(&text);
+  scr_str_release(shown_text);
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(err, "ERR_UNHANDLED_ERROR");
+  scr_error_set_prop(err, "context", 7, scr_dyn_retain((ScrDyn *)er));
+  scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* A caught-exception snapshot as a dyn value — identity-preserving for
  * dyn payloads (a dyn-thrown value is retained, not copied), the
  * identity-cached %error encoding above for Error-family objects,

@@ -48,6 +48,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_async_dyn.c",
+  "function": "scr_process_emit_error",
+  "message": "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_blob.c",
   "function": "scr_blob_source_list",
   "message": "new Blob(sources) over this iterable has no lowering; pass an array",

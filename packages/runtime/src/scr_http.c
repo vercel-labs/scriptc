@@ -1772,7 +1772,7 @@ static void scr_http_buf_header_value(ScrHttpBuf *b, const ScrStr *s) {
     unsigned char ch = (unsigned char)s->data[i];
     if ((ch == 0xc2 || ch == 0xc3) && i + 1 < s->len) {
       unsigned char next = (unsigned char)s->data[++i];
-      char byte = (char)(((ch & 1) << 6) | (next & 0x3f));
+      char byte = (char)(((ch & 0x03) << 6) | (next & 0x3f));
       scr_http_buf_append(b, &byte, 1);
     } else {
       scr_http_buf_append(b, s->data + i, 1);
@@ -2955,9 +2955,34 @@ void scr_http_res_write_head_object(ScrHttpRes *r, double status, ScrArr *names 
     if (progressive) {
       scr_http_res_set_header_dyn(r, name, value);
     } else if (scr_http_res_header_valid(r, name, NULL)) {
+      /* The fast path still validates every value: append_header runs the
+       * header-content check the pairs path uses, so a CR/LF value raises
+       * ERR_INVALID_CHAR instead of reaching the wire. Array values write
+       * one line per element. */
       ScrDyn *plain = scr_http_header_value_plain(value);
-      if (plain != NULL)
-        (void)scr_http_res_insert_value(r, r->nheaders, name, plain, false);
+      if (plain != NULL) {
+        size_t reps = plain->kind == SCR_DYN_ARR ? plain->v.arr.len : 1;
+        ScrStr **texts = reps > 0 ? malloc(reps * sizeof *texts) : NULL;
+        if (reps > 0 && texts == NULL) scr_http_oom();
+        size_t ready = 0;
+        for (size_t k = 0; k < reps && !scr_exc_pending(); k++) {
+          const ScrDyn *one = plain->kind == SCR_DYN_ARR ? plain->v.arr.items[k] : plain;
+          ScrStr *text = scr_http_header_value_text(name, one);
+          if (text == NULL) break;
+          if (!scr_http_res_header_valid(r, name, text)) {
+            scr_str_release(text);
+            break;
+          }
+          texts[ready++] = text;
+        }
+        /* Node validates the whole write before it stores any header: an
+         * invalid element leaves no partial line behind. */
+        if (!scr_exc_pending() && ready == reps) {
+          for (size_t k = 0; k < ready; k++) scr_http_res_append_header(r, name, texts[k]);
+        }
+        for (size_t k = 0; k < ready; k++) scr_str_release(texts[k]);
+        free(texts);
+      }
       scr_dyn_release(plain);
     }
     scr_str_release(name);

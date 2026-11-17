@@ -65,6 +65,18 @@ const server = createServer((req, res) => {
     res.end("ok");
     return;
   }
+  if (path === "/writehead-bad-object-value") {
+    attempt("bad object value", () => res.writeHead(200, { "X-Bad": "a\rb" }));
+    res.writeHead(200, { "Content-Length": "2" });
+    res.end("ok");
+    return;
+  }
+  if (path === "/writehead-bad-array-value") {
+    attempt("bad array value", () => res.writeHead(200, { "X-Arr": ["ok", "a\rb"] }));
+    res.writeHead(200, { "Content-Length": "2" });
+    res.end("ok");
+    return;
+  }
   if (path === "/writehead-object") {
     res.writeHead(203, { "X-A": "1", "X-B": ["2", "3"] });
     res.end();
@@ -114,6 +126,8 @@ server.listen(0, () => {
     "/writehead-case-fast",
     "/writehead-case-progressive",
     "/writehead-array-value",
+    "/writehead-bad-object-value",
+    "/writehead-bad-array-value",
     "/writehead-object",
     "/writehead-odds",
     "/date",

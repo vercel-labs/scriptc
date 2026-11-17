@@ -97626,7 +97626,6 @@
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
-          "tests/diagnostics/compat-absent-test-snapshot.ts",
           "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
@@ -97655,6 +97654,7 @@
           "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/fixtures/node-test/cases/root-hooks.ts",
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
@@ -98466,10 +98466,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:test.snapshot.setResolveSnapshotPath",
         "tests": [
-          "tests/diagnostics/compat-absent-test-snapshot.ts"
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"

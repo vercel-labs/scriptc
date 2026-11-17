@@ -1,0 +1,9 @@
+exports[`first 1`] = `
+{
+  "id": 1
+}
+`;
+
+exports[`second 1`] = `
+"two"
+`;

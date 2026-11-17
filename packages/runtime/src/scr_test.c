@@ -1525,6 +1525,10 @@ static SCR_TL ScrSnapFile *scr_snap_files = NULL;
 /* snapshot.setDefaultSnapshotSerializers: the list every serialization that
  * has no serializers of its own runs through (+1). */
 static SCR_TL ScrDyn *scr_snap_default_serializers = NULL;
+/* snapshot.setResolveSnapshotPath: the resolver mapping a test file's path to
+ * its snapshot file (+1), and the one path it answered (+1). */
+static SCR_TL ScrClosure *scr_snap_resolve_path = NULL;
+static SCR_TL ScrStr *scr_snap_resolved = NULL;
 /* Node's --test-update-snapshots: a runtime argument of the binary,
  * which scr_test_init takes out of process.argv. */
 static SCR_TL bool scr_test_update_snapshots = false;
@@ -1673,6 +1677,44 @@ void scr_test_snapshot_set_default_serializers(ScrDyn *serializers /*borrowed*/)
   }
   scr_dyn_release(scr_snap_default_serializers);
   scr_snap_default_serializers = scr_dyn_retain(serializers);
+}
+
+/* snapshot.setResolveSnapshotPath(fn): Node stores a (path: string) => string
+ * resolver and calls it once per test file, with the file's path, when the
+ * file's snapshot file is first needed. The closure moves in; a new resolver
+ * forgets the path the previous one answered. */
+void scr_test_snapshot_set_resolve_path(ScrClosure *cb /*moves*/) {
+  scr_closure_release(scr_snap_resolve_path);
+  scr_snap_resolve_path = cb;
+  scr_str_release(scr_snap_resolved);
+  scr_snap_resolved = NULL;
+}
+
+/* The snapshot file for `file`: "<file>.snapshot" without a resolver, else
+ * the resolver's answer, computed once per program as Node computes it once
+ * per test file. +1, or NULL after a throw from the resolver. */
+ScrStr *scr_test_snapshot_path(ScrStr *file /*borrowed*/) {
+  if (!scr_snap_resolve_path) {
+    size_t n = file->len + sizeof ".snapshot" - 1;
+    char *buf = malloc(n ? n : 1);
+    if (!buf) scr_test_oom();
+    memcpy(buf, file->data, file->len);
+    memcpy(buf + file->len, ".snapshot", sizeof ".snapshot" - 1);
+    ScrStr *out = scr_str_new(buf, n);
+    free(buf);
+    return out;
+  }
+  if (scr_snap_resolved) return scr_str_retain(scr_snap_resolved);
+  /* The closure owns its argument and answers a retained string, as every
+   * generated closure does. */
+  ScrStr *out = ((ScrStr *(*)(ScrClosure *, ScrStr *))scr_snap_resolve_path->fn)(
+      scr_snap_resolve_path, scr_str_retain(file));
+  if (!out || scr_exc_pending()) {
+    scr_str_release(out);
+    return NULL;
+  }
+  scr_snap_resolved = scr_str_retain(out);
+  return out;
 }
 
 ScrStr *scr_test_snapshot_value(ScrStr *serialized) {
@@ -2132,6 +2174,10 @@ static void scr_snap_write_all(void) {
 static void scr_snap_free_all(void) {
   scr_dyn_release(scr_snap_default_serializers);
   scr_snap_default_serializers = NULL;
+  scr_closure_release(scr_snap_resolve_path);
+  scr_snap_resolve_path = NULL;
+  scr_str_release(scr_snap_resolved);
+  scr_snap_resolved = NULL;
   while (scr_snap_files) {
     ScrSnapFile *f = scr_snap_files;
     scr_snap_files = f->next;

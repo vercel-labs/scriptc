@@ -79,6 +79,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // snapshot.setDefaultSnapshotSerializers validates its list (Node's
   // ERR_INVALID_ARG_TYPE).
   "test.snapshotSetDefaultSerializers",
+  // The snapshot path resolver is program code and may throw.
+  "test.snapshotPath",
   "test.snapshotSerialize",
   "test.mockTimersEnable",
   "test.mockTimersTick",

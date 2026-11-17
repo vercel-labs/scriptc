@@ -2665,6 +2665,10 @@ function buildLibFnSignatures() {
     // snapshot.setDefaultSnapshotSerializers(serializers): the list is a
     // checked-dynamic array of serializer functions.
     "test.snapshotSetDefaultSerializers": { argTypes: [DYN], result: VOID },
+    // snapshot.setResolveSnapshotPath(fn): a (path: string) => string closure
+    // moves in; test.snapshotPath asks a test file's snapshot path (+1).
+    "test.snapshotSetResolvePath": { argTypes: [null], result: VOID },
+    "test.snapshotPath": { argTypes: [STRING], result: STRING },
     "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
     "test.mockTimersTick": { argTypes: [F64], result: VOID },
     "test.mockTimersRunAll": { argTypes: [], result: VOID },

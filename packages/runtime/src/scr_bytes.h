@@ -169,6 +169,9 @@ void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
 ScrDyn *scr_worker_get_environment_data(ScrDyn *key);
 ScrDyn *scr_worker_resource_limits(void);
 ScrDyn *scr_worker_thread_name_current(void);
+/* worker.performance over a Worker handle: its { eventLoopUtilization }
+ * object (scr_worker_events.c; the value borrowed, the result +1). */
+ScrDyn *scr_worker_performance(ScrDyn *value);
 /* worker_threads.SHARE_ENV (+1): the symbol the Worker env option
  * compares against (scr_worker_events.c). */
 ScrSym *scr_worker_share_env(void);
@@ -405,6 +408,18 @@ void scr_js_buffers_arm(void);
  * Answers true when the view is usable. */
 bool scr_js_bytes_live(const ScrBytes *b);
 void scr_js_bytes_throw_detached(const char *label);
+/* The typed-array callback methods' entry guard (t262-dc2): Node's
+ * ValidateTypedArray runs once before a forEach/map/... visit, so a
+ * detached or out-of-bounds receiver throws even when the visit would run
+ * no iterations. `method` names the method in the message. */
+void scr_js_bytes_require_live(const ScrBytes *b, const ScrStr *method);
+/* The element at `i` as a JavaScript value (+1) for a visit whose bound was
+ * captured before the buffer could shrink: undefined past the live length
+ * (Node's IntegerIndexedElementGet). */
+ScrDyn *scr_bytes_item_dyn(const ScrBytes *b, double i);
+/** The %TypedArray%.prototype method name Node prints in a detached-receiver
+ * TypeError (findLastIndex reports V8's own "findIndexLast" label). */
+const char *scr_js_typed_detached_method(const char *method);
 /* Whether `b` is a length-tracking view. */
 bool scr_js_bytes_tracking(const ScrBytes *b);
 /* `.byteLength` / `.byteOffset` for a view whose owner may move: a DataView
@@ -671,6 +686,13 @@ void scr_buffer_pool_reset(void);
 /* A pooled copy of an unpooled u8 Buffer below the pool threshold; others
  * are returned as they are. Consumes `b`. */
 ScrBytes *scr_buffer_pool_adopt(ScrBytes *b);
+/* Buffer.copyBytesFrom(view[, offset[, length]]): a pooled copy of the
+ * view's underlying bytes over the element window [offset, offset+length).
+ * `mask` bit 0 marks a supplied offset and bit 1 a supplied length; a
+ * supplied position takes Node's validateInteger, and an empty view answers
+ * an empty Buffer. NULL with the exception pending. */
+ScrBytes *scr_buffer_copy_bytes_from(const ScrBytes *view, double offset, double length,
+                                     double mask);
 ScrBytes *scr_bytes_from_str_checked(const ScrStr *s, const ScrStr *enc);
 
 /* Buffer.byteLength(string, enc) — enc NORMALIZED like from_str — and

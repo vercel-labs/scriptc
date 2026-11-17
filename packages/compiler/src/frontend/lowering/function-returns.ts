@@ -5,6 +5,7 @@ import { dynUndefinedExpr } from "../../ir/build.js";
 import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import { isRebindableFunction } from "./rebindable-functions.js";
 import {
   BOOL,
   DYN,
@@ -279,6 +280,17 @@ export function declaredReturnType(
       decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) ===
       true;
     return isAsync ? { kind: "promise", inner: DYN } : DYN;
+  }
+  // A JavaScript body that returns a call of a function declaration the
+  // program reassigns answers whatever that binding held, so the checker's
+  // inference from the declaration's own signature cannot settle the result.
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && returnsRebindableCall(lowerer, decl)) {
+    // An async function answers a promise of that value; a generator keeps
+    // its own channels.
+    const asyncDecl =
+      decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+    const generator = (decl as ts.FunctionLikeDeclaration).asteriskToken !== undefined;
+    return asyncDecl && !generator ? { kind: "promise", inner: DYN } : DYN;
   }
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
@@ -941,4 +953,33 @@ export function widensReducedRecords(lowerer: Lowerer, narrow: IrType, wide: IrT
       );
     })
   );
+}
+
+/** Whether a JavaScript body returns a call of a function declaration the
+ * program reassigns (rebindable-functions.ts): the call answers whatever that
+ * binding held, so the checker's inference from the declaration's own
+ * signature cannot settle the enclosing result. A concise arrow's body IS
+ * the forwarded expression. */
+function returnsRebindableCall(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
+  const body = decl.body;
+  if (body === undefined) return false;
+  if (!ts.isBlock(body)) return isRebindableForwardCall(lowerer, body as ts.Expression);
+  let found = false;
+  ts.walkPreorder(body, (child) => {
+    if (found) return "skip";
+    if (child !== body && ts.isFunctionLike(child)) return "skip";
+    if (!ts.isReturnStatement(child) || child.expression === undefined) return undefined;
+    if (isRebindableForwardCall(lowerer, child.expression)) found = true;
+    return undefined;
+  });
+  return found;
+}
+
+/** Whether `expr` is a call of a function declaration the program reassigns. */
+function isRebindableForwardCall(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let value: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isCallExpression(value) || !ts.isIdentifier(value.expression)) return false;
+  const symbol = lowerer.resolveValueSymbol(value.expression);
+  return symbol !== null && symbol.declarations.some((d) => isRebindableFunction(lowerer, d));
 }

@@ -682,9 +682,15 @@ interface Settle {
 class ScopeAnalysis {
   private readonly js: boolean;
   /** Whether a function declaration's references all settle, by scope
-   * and settling index (in progress counts as settled: a function only
-   * its own body names is never called through that name). */
+   * and settling index. Only final answers are here: a key whose proof is
+   * running answers optimistically (see functionSettles), and an answer
+   * that leaned on one is not remembered. */
   private readonly functionMemo = new Map<string, boolean>();
+  /** The keys whose proof is running right now. */
+  private readonly functionPending = new Set<string>();
+  /** How many optimistic answers the running proofs have leaned on, in
+   * total: a `true` proof that saw the count change is not final. */
+  private provisionalAnswers = 0;
   private readonly functionRefs = new Map<ts.Node, ts.Identifier[]>();
   /** The same answers for one `let` binding's stores. */
   private readonly lexicalFunctionMemo = new Map<StoreAnalysis, Map<ts.Node, boolean>>();
@@ -847,10 +853,19 @@ class ScopeAnalysis {
   }
 
   private functionSettles(scope: Scope, settle: Settle, fn: ts.FunctionDeclaration): boolean {
-    const key = `${fn.pos}:${settle.index}:${settle.end}:${settle.loop}`;
+    const scopeKey = ts.isSourceFile(scope) ? "file" : `${scope.pos}`;
+    const key = `${scopeKey}:${fn.pos}:${settle.index}:${settle.end}:${settle.loop}`;
     const known = this.functionMemo.get(key);
     if (known !== undefined) return known;
-    this.functionMemo.set(key, true);
+    if (this.functionPending.has(key)) {
+      // A reference inside the cycle being proven: answer with the
+      // optimistic "settled". The proof that asked may only rely on it
+      // until it finishes, so its answer is not remembered below.
+      this.provisionalAnswers++;
+      return true;
+    }
+    this.functionPending.add(key);
+    const provisionalAt = this.provisionalAnswers;
     const references = this.referencesOf(fn.name!);
     // An exported function runs after the module's body, which stores the
     // binding only when one of its statements does.
@@ -863,7 +878,13 @@ class ScopeAnalysis {
         (ref) =>
           isInside(ref, fn) || isExportedName(ref) || this.settles(scope, settle, ref, false),
       );
-    this.functionMemo.set(key, result);
+    this.functionPending.delete(key);
+    // A `true` answer that leaned on an optimistic one may not survive the
+    // proof that started the cycle, which can still find a callable-before-
+    // assignment function; remembering it would classify another binding as
+    // settled and let the lowering read an empty slot. A `false` answer only
+    // ever under-approximates, so it is kept.
+    if (!result || this.provisionalAnswers === provisionalAt) this.functionMemo.set(key, result);
     return result;
   }
 

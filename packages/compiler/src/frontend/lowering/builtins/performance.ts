@@ -158,10 +158,59 @@ export function lowerPerfHooksCall(
     const entry = lowerer.lowerExpr(access.expression);
     if (entry.type.kind !== "record")
       lowerer.badType(access.expression, lowerer.typeOf(access.expression));
-    const json = perfValueIsResourceTiming(lowerer, access.expression)
-      ? perfResourceJson(lowerer, entry, entry.type, loc)
-      : perfEntryJson(lowerer, entry, entry.type, loc);
-    return { kind: "dynFrom", value: json, type: DYN, loc };
+    const entryT = entry.type;
+    if (perfValueIsResourceTiming(lowerer, access.expression)) {
+      return {
+        kind: "dynFrom",
+        value: perfResourceJson(lowerer, entry, entryT, loc),
+        type: DYN,
+        loc,
+      };
+    }
+    // A PerformanceEntry-typed value may be any entry class: answer the
+    // resource toJSON for a resource entry and the base one otherwise,
+    // exactly as the class's own toJSON would. The receiver is bound once,
+    // so a call expression runs once.
+    const local = lowerer.declareHiddenLocal("%perfEntryToJson", entryT);
+    const ref = (): IrExpr => varRef(local.id, entryT, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: entry, loc }],
+      result: {
+        kind: "ternary",
+        cond: {
+          kind: "strEq",
+          negated: false,
+          left: {
+            kind: "recordGet",
+            obj: ref(),
+            shapeId: entryT.shapeId,
+            field: "entryType",
+            type: STRING,
+            loc,
+          },
+          right: { kind: "strLit", value: "resource", type: STRING, loc },
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "dynFrom",
+          value: perfResourceJson(lowerer, ref(), entryT, loc),
+          type: DYN,
+          loc,
+        },
+        else_: {
+          kind: "dynFrom",
+          value: perfEntryJson(lowerer, ref(), entryT, loc),
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      },
+      type: DYN,
+      loc,
+    };
   }
   if (
     access.name.text === "toJSON" &&

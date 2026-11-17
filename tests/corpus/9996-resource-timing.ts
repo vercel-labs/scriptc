@@ -85,6 +85,7 @@ console.log("all", all.map((each) => `${each.entryType}:${each.name}`).join(",")
 // (timing fields, no detail).
 const asEntry: PerformanceEntry = listed[0]!;
 console.log("entry json", JSON.stringify(asEntry));
+console.log("entry toJSON", JSON.stringify(asEntry.toJSON()));
 console.log("array json", JSON.stringify(performance.getEntriesByType("resource")));
 
 // A cached resource transfers nothing; a local one 300 bytes.

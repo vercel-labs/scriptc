@@ -1563,10 +1563,17 @@ static void scr_stream_iter_step(ScrStream *s) {
      * their own instead of arriving as one merged read. */
     double want = -1;
     if (st->r.next_single && !st->r.object_entries && st->r.n == 0 && !st->r.ended &&
-        !st->r.reading) {
-      ScrEntryKind fill_kind;
-      void *filled = scr_stream_read_n_kind(s, 0, &fill_kind);
-      if (filled) scr_stream_entry_release_kind(st, filled, fill_kind);
+        !st->r.reading && !st->destroyed && !st->errored && !st->constructing &&
+        st->r.read_cb != NULL) {
+      /* Run the stream's _read once, the way read(0) does, so its synchronous
+       * pushes buffer as entries of their own; read(0) itself can return
+       * before _read when the highWaterMark is 0. */
+      st->r.reading = true;
+      st->r.in_read_sync = true;
+      st->r.in_read_call = true;
+      st->r.read_inv(st->r.read_cb, s, (double)st->r.hwm);
+      st->r.in_read_call = false;
+      st->r.in_read_sync = false;
     }
     if (st->r.next_single && !st->r.object_entries && st->r.n > 0) {
       /* Take the head entry directly: an explicit read size would grow the

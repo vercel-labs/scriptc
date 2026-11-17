@@ -97,6 +97,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
+  // crypto.argon2 and crypto.argon2Sync.
+  ["scr_argon2.c", "argon2"],
   // The worker unit's SHARE_ENV symbol reaches the symbol unit
   // (scr_worker_events.c), which assembles symbol equality messages here.
   ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
@@ -192,6 +194,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // events.once with options registers through the emitter and event-target units.
   ["scr_events_once_signal.c", "eventsOnceSignal"],
   ["scr_mime.c", "mime"],
+  // node:sqlite over the vendored SQLite archive (see vendorArchives).
+  ["scr_sqlite.c", "sqlite"],
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
@@ -294,6 +298,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],
   ["scr_loop_wsapoll.c", any("netEffective", "dgram")],
+  // The stream defaults the net and http units read at construction.
+  ["scr_stream_defaults.c", any("stream", "netEffective", "httpEffective")],
   ["scr_net.c", "netEffective"],
   ["scr_http.c", "httpEffective"],
   ["scr_http2.c", "http2"],
@@ -308,8 +314,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
   // TextEncoder and TextDecoder records boxed as untyped values.
   ["scr_text_codec_dyn.c", "textCodecDyn"],
-  ["scr_watch.c", "watch"],
+  ["scr_watch.c", any("watch", "watchEvents")],
   ["scr_watch_file.c", "watchFile"],
+  ["scr_watch_async.c", "watchEvents"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
@@ -350,6 +357,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // its file symbol in the executable, so no other program gets it.
   ["scr_node_island_child.c", "islandChild"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // Writable.fromWeb wraps a web WritableStream's writer.
+  ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
@@ -817,6 +826,7 @@ export function createRuntimePackMatrix({
     { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
+    { id: "sqlite", predicate: "sqlite" },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({

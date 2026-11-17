@@ -62,6 +62,10 @@ bool scr_worker_thread_post(ScrWorkerThread *worker, ScrMessage *message);
 /* A worker.stdin chunk (data copied), or with end the end of the input.
  * False once the worker's inbox has closed. */
 bool scr_worker_thread_post_stdin(ScrWorkerThread *worker, const void *data, size_t len, bool end);
+/* worker.performance: the worker's last published loop metrics (its loop
+ * start and idle time in milliseconds on the process timeline), false
+ * before its loop has turned. Any thread holding a reference may read. */
+bool scr_worker_thread_metrics(ScrWorkerThread *worker, double *loop_start_ms, double *idle_ms);
 /* worker.cpuUsage(): asks the worker's thread to measure its own CPU usage
  * (false once the worker's inbox closed), and answers from that thread with
  * the two microsecond values. The answer carries `seq`. */

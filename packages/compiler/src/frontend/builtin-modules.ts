@@ -38,6 +38,8 @@ export const SUPPORTED_BUILTIN_MODULES = [
   "timers",
   "timers/promises",
   "diagnostics_channel",
+  "sqlite",
+  "trace_events",
   "perf_hooks",
   "module",
   "console",
@@ -139,7 +141,7 @@ export const NODE_BUILTIN_MODULES_V24: readonly string[] = [
  * (a builtin always wins over a same-named npm package for the bare
  * specifier — the npm package named "module" is unreachable in Node too),
  * so both spellings key the same lowering tables here. */
-const PREFIX_ONLY_BUILTIN_MODULES: ReadonlySet<string> = new Set(["test", "sea"]);
+const PREFIX_ONLY_BUILTIN_MODULES: ReadonlySet<string> = new Set(["test", "sea", "sqlite"]);
 
 /** The builtin modules whose DEFAULT import binding lowers: node:assert's
  * module object IS a callable function (`import assert from "node:assert";
@@ -220,8 +222,6 @@ const OUT_OF_SCOPE_BUILTIN_REASONS: Record<string, string | undefined> = {
     "it drives the V8 inspector protocol — debugger, profiler, heap access — and a compiled binary embeds no V8 engine to inspect",
   "inspector/promises":
     "it drives the V8 inspector protocol — debugger, profiler, heap access — and a compiled binary embeds no V8 engine to inspect",
-  sqlite:
-    "it wraps the SQLite library bundled into the node executable, and scriptc binaries bundle no SQLite engine",
   domain:
     "deprecated in Node and slated for removal; its implicit error interception hooks every async callback at engine level, which is not modeled",
   _http_agent: NODE_INTERNAL_REASON,

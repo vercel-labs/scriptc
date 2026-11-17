@@ -2649,8 +2649,11 @@ static ScrDyn *sp_key_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
     return scr_dyn_new_bool(same);
   }
   if (strcmp(method, "toCryptoKey") == 0) {
-    sp_not_supported("KeyObject.toCryptoKey");
-    return NULL;
+    if (!scr_crypto_to_crypto_key) {
+      sp_not_supported("KeyObject.toCryptoKey");
+      return NULL;
+    }
+    return scr_crypto_to_crypto_key(self, args, argc);
   }
   scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
@@ -6086,6 +6089,17 @@ void scr_pki_key_release(ScrPkiKey *key) { sp_key_release(key); }
 
 bool scr_pki_key_is_private(const ScrPkiKey *key) { return key->private_key; }
 
+ScrPkiKey *scr_crypto_key_object_material(const ScrDyn *value) {
+  SpKey *key = sp_key_of(value);
+  return key ? sp_key_retain(key) : NULL;
+}
+
+ScrDyn *scr_crypto_key_object_from_material(ScrPkiKey *key) {
+  return sp_key_box(sp_key_retain(key));
+}
+
+bool scr_pki_key_is_rsa_pss(const ScrPkiKey *key) { return key->rsa_pss; }
+
 bool scr_pki_key_is_rsa(const ScrPkiKey *key) { return sp_is_rsa(key); }
 
 bool scr_pki_key_is_ed25519(const ScrPkiKey *key) { return sp_is_ed(key); }
@@ -6109,9 +6123,10 @@ ScrBytes *scr_pki_key_exponent(const ScrPkiKey *key) {
 }
 
 ScrPkiKey *scr_pki_key_parse_der(const uint8_t *der, size_t len, bool private_key) {
-  if ((private_key && len == 48 && memcmp(der, sp_ed_pkcs8_prefix, 16) == 0) ||
-      (!private_key && len == 44 && memcmp(der, sp_ed_spki_prefix, 12) == 0))
-  {
+  if ((private_key && len == 48 &&
+       (memcmp(der, sp_ed_pkcs8_prefix, 16) == 0 || memcmp(der, sp_x_pkcs8_prefix, 16) == 0)) ||
+      (!private_key && len == 44 &&
+       (memcmp(der, sp_ed_spki_prefix, 12) == 0 || memcmp(der, sp_x_spki_prefix, 12) == 0))) {
     bool failed;
     return sp_ed_from_der(der, len, private_key, &failed);
   }
@@ -6201,6 +6216,44 @@ ScrBytes *scr_pki_export_ed25519_raw(ScrPkiKey *key) {
   return out;
 }
 
+ScrPkiKey *scr_pki_generate_x25519(void) {
+  SpKey *k = sp_key_alloc(true);
+  k->x25519 = true;
+  sp_random(NULL, k->ed_seed, 32);
+  if (!sp_x25519(k->ed_seed, NULL, k->ed_pub)) {
+    sp_key_release(k);
+    return NULL;
+  }
+  return k;
+}
+
+bool scr_pki_key_is_x25519(const ScrPkiKey *key) { return sp_is_x(key); }
+
+ScrPkiKey *scr_pki_key_from_x25519_raw(const uint8_t *raw, size_t len) {
+  if (len != 32) return NULL;
+  SpKey *k = sp_key_alloc(false);
+  k->x25519 = true;
+  memcpy(k->ed_pub, raw, 32);
+  return k;
+}
+
+ScrBytes *scr_pki_export_x25519_raw(ScrPkiKey *key) {
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, 32);
+  memcpy(out->data, key->ed_pub, 32);
+  return out;
+}
+
+ScrBytes *scr_pki_shared_secret(ScrPkiKey *private_key, ScrPkiKey *public_key) {
+  ScrDyn *dyn = sp_dh_compute(private_key, public_key, false);
+  if (!dyn) {
+    scr_exc_clear();
+    return NULL;
+  }
+  ScrBytes *out = scr_bytes_buffer_source(dyn);
+  scr_dyn_release(dyn);
+  return out;
+}
+
 ScrBytes *scr_pki_export_der(ScrPkiKey *key) {
   unsigned char *der = malloc(SP_DER_MAX);
   if (!der) scr_trap("scriptc: out of memory\n");
@@ -6234,8 +6287,34 @@ static bool sp_webcrypto_md(const char *hash, mbedtls_md_type_t *md) {
   else if (strcmp(hash, "SHA-256") == 0) *md = MBEDTLS_MD_SHA256;
   else if (strcmp(hash, "SHA-384") == 0) *md = MBEDTLS_MD_SHA384;
   else if (strcmp(hash, "SHA-512") == 0) *md = MBEDTLS_MD_SHA512;
+  else if (strcmp(hash, "SHA3-256") == 0) *md = MBEDTLS_MD_SHA3_256;
+  else if (strcmp(hash, "SHA3-384") == 0) *md = MBEDTLS_MD_SHA3_384;
+  else if (strcmp(hash, "SHA3-512") == 0) *md = MBEDTLS_MD_SHA3_512;
   else return false;
   return true;
+}
+
+ScrBytes *scr_pki_rsa_oaep(ScrPkiKey *key, const char *hash, const ScrBytes *label,
+                           const ScrBytes *input, bool decrypt) {
+  mbedtls_md_type_t md;
+  if (!sp_is_rsa(key) || !sp_webcrypto_md(hash, &md)) {
+    scr_exc_clear();
+    return NULL;
+  }
+  SpRsaOp op = {.key = sp_key_retain(key),
+                .padding = SP_PAD_OAEP,
+                .md = md,
+                .mgf1 = md,
+                .label = label ? scr_bytes_retain((ScrBytes *)label) : NULL};
+  ScrDyn *dyn = decrypt ? sp_rsa_decrypt(&op, input) : sp_rsa_encrypt(&op, input);
+  sp_rsa_release(&op);
+  if (!dyn) {
+    scr_exc_clear();
+    return NULL;
+  }
+  ScrBytes *out = scr_bytes_buffer_source(dyn);
+  scr_dyn_release(dyn);
+  return out;
 }
 
 ScrBytes *scr_pki_sign(ScrPkiKey *key, const char *hash, bool pss, int salt, const uint8_t *data,

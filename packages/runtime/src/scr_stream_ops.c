@@ -2861,8 +2861,10 @@ static ScrStream *op_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source,
     op_unref(c);
     return NULL;
   }
-  /* Duplexify({ objectMode: true, readable: false, write, final, destroy }) */
-  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, false, true, NULL, NULL,
+  /* Duplexify({ objectMode: true, readable: false, write, final, destroy }),
+   * with duplexify.js's async-function channel highWaterMark of 1 on both
+   * sides rather than the default (Node 24 reads 1 here). */
+  ScrStream *d = scr_stream_new_duplex(1, 1, true, true, true, false, true, NULL, NULL,
                                        op_chan_closure((void *)&op_chan_write_inv, c), &op_chan_write_inv,
                                        op_chan_closure((void *)&op_chan_final_async_inv, c),
                                        &op_chan_final_async_inv,

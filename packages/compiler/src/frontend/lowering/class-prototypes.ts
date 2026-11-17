@@ -24,6 +24,7 @@ import {
   type ClassInfo,
 } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
+import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { PoisonError, newFnCtx } from "./lowerer.js";
 import { classMethodValue, runsOverDynamicReceiver } from "./class-method-values.js";
 import { iteratorPrototypeExpr } from "./iterator-prototype.js";
@@ -370,71 +371,92 @@ export function receiverPrototypeView(
   const name = `%class.prototypeView:${start.def.name}`;
   lowerer.shareHelper(name);
   if (lowerer.liftedFnNamed(name) === undefined) {
-    const instanceId = "%prototype.instance";
-    const params = [{ localId: "value", name: "value", type: DYN }];
-    const instance: IrExpr = {
-      kind: "varRef",
-      localId: instanceId,
-      type: { kind: "object", className: start.def.name },
+    // Claim the name before lowering the members: a member body's typed read
+    // of a reflected member of this chain asks for this same view while it is
+    // being built, and its call must name this one helper rather than push a
+    // second function of the same name.
+    const reserved: IrFunction = {
+      name,
+      params: [{ localId: "value", name: "value", type: DYN }],
+      returnType: DYN,
+      locals: [],
+      body: [],
       loc,
     };
-    const body: IrStmt[] = [
+    lowerer.liftedFns.push(reserved);
+    // The members of the classes below `start` all refused a view: the
+    // helper still answers `start`'s own prototype, which is what a caller
+    // that cannot select a descendant gets.
+    reserved.body = buildPrototypeView(lowerer, start, descendants, staticView, loc) ?? [
+      { kind: "return", value: staticView, loc },
+    ];
+    reserved.locals = [
+      { id: "value", name: "value", type: DYN, mutable: false },
       {
-        kind: "varDecl",
-        localId: instanceId,
-        init: {
-          kind: "dynCheck",
-          value: varRef("value", DYN, loc),
-          type: { kind: "object", className: start.def.name },
-          loc,
-        },
-        loc,
+        id: "%prototype.instance",
+        name: "%prototype.instance",
+        type: { kind: "object", className: start.def.name },
+        mutable: false,
       },
     ];
-    for (const descendant of descendants) {
-      const view = reflectClassPrototype(lowerer, descendant, loc, {
+  }
+  return { prototype: { kind: "call", callee: name, args: [value], type: DYN, loc }, start };
+}
+
+/** The body of the helper that selects a constructible descendant's
+ * prototype at run time; null when every descendant refused a view. */
+function buildPrototypeView(
+  lowerer: Lowerer,
+  start: ClassInfo,
+  descendants: readonly ClassInfo[],
+  staticView: IrExpr,
+  loc: SrcLoc,
+): IrStmt[] | null {
+  const instanceId = "%prototype.instance";
+  const instance: IrExpr = {
+    kind: "varRef",
+    localId: instanceId,
+    type: { kind: "object", className: start.def.name },
+    loc,
+  };
+  const body: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: instanceId,
+      init: {
         kind: "dynCheck",
         value: varRef("value", DYN, loc),
-        type: { kind: "object", className: descendant.def.name },
+        type: { kind: "object", className: start.def.name },
         loc,
-      });
-      if (!view || descendant.prototypeReflectionRefusal !== undefined) continue;
-      body.push({
-        kind: "if",
-        cond: {
-          kind: "instanceOf",
-          value: instance,
-          className: descendant.def.name,
-          type: BOOL,
-          loc,
-        },
-        then: [{ kind: "return", value: view, loc }],
-        else_: null,
+      },
+      loc,
+    },
+  ];
+  for (const descendant of descendants) {
+    const view = reflectClassPrototype(lowerer, descendant, loc, {
+      kind: "dynCheck",
+      value: varRef("value", DYN, loc),
+      type: { kind: "object", className: descendant.def.name },
+      loc,
+    });
+    if (!view || descendant.prototypeReflectionRefusal !== undefined) continue;
+    body.push({
+      kind: "if",
+      cond: {
+        kind: "instanceOf",
+        value: instance,
+        className: descendant.def.name,
+        type: BOOL,
         loc,
-      });
-    }
-    if (body.length > 1) {
-      body.push({ kind: "return", value: staticView, loc });
-      lowerer.liftedFns.push({
-        name,
-        params,
-        locals: [
-          { id: "value", name: "value", type: DYN, mutable: false },
-          {
-            id: instanceId,
-            name: instanceId,
-            type: { kind: "object", className: start.def.name },
-            mutable: false,
-          },
-        ],
-        returnType: DYN,
-        body,
-        loc,
-      });
-    }
+      },
+      then: [{ kind: "return", value: view, loc }],
+      else_: null,
+      loc,
+    });
   }
-  if (lowerer.liftedFnNamed(name) === undefined) return { prototype: staticView, start };
-  return { prototype: { kind: "call", callee: name, args: [value], type: DYN, loc }, start };
+  if (body.length === 1) return null;
+  body.push({ kind: "return", value: staticView, loc });
+  return body;
 }
 
 export function hasClassPrototypeData(info: ClassInfo): boolean {
@@ -473,6 +495,63 @@ export function prototypeReflectedFlag(lowerer: Lowerer, info: ClassInfo): strin
   return id;
 }
 
+/** Whether the member's body reads or calls a member of its class through
+ * `this` that the checked-dynamic dispatch cannot answer: a generic method
+ * whose type parameters do not come from its parameters (the dispatch has no
+ * specialization to hand out, and fences at run time), or one a subclass
+ * overrides. Such a body cannot run over a checked-dynamic receiver, so the
+ * view takes the member's compiled, receiver-checked value instead: its body
+ * then keeps the class's typed `this`, and a read of the generic method
+ * lowers as the typed call site does (monomorphized where the call sits). */
+function bodyNeedsTypedReceiver(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: ts.MethodDeclaration | ts.AccessorDeclaration,
+): boolean {
+  if (member.body === undefined) return false;
+  let refused = false;
+  ts.walkPreorder(member.body, (node) => {
+    if (refused) return "skip";
+    // `this` inside a nested function, method, accessor or class body is
+    // that construct's own receiver, never the class instance's, so the scan
+    // does not cross into one: a helper object's `appendChild` is not the
+    // class's, and an inner class's field initializer (even one holding an
+    // arrow) reads the inner instance. An arrow keeps the enclosing `this`,
+    // so a read through one still counts.
+    if (
+      ts.isFunctionExpression(node) ||
+      ts.isFunctionDeclaration(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isGetAccessorDeclaration(node) ||
+      ts.isSetAccessorDeclaration(node) ||
+      ts.isConstructorDeclaration(node) ||
+      ts.isClassDeclaration(node) ||
+      ts.isClassExpression(node)
+    )
+      return "skip";
+    if (
+      (!ts.isPropertyAccessExpression(node) && !ts.isElementAccessExpression(node)) ||
+      node.expression.kind !== ts.SyntaxKind.ThisKeyword
+    )
+      return undefined;
+    const name = ts.isPropertyAccessExpression(node)
+      ? node.name.text
+      : ts.isStringLiteralLike(node.argumentExpression)
+        ? node.argumentExpression.text
+        : null;
+    if (name === null || findMethodOn(lowerer, info, name) !== null) return undefined;
+    const generic = findGenericMethodOn(lowerer, info, name);
+    if (generic === null) return undefined;
+    const specialized =
+      generic.info.implicitParams !== undefined &&
+      generic.declarer.decl !== undefined &&
+      !lowerer.overrideBelow(info, name);
+    if (!specialized) refused = true;
+    return undefined;
+  });
+  return refused;
+}
+
 /** The prototype-view value of a TypeScript member that can run over a
  * checked-dynamic receiver: the declaration lowered with `this` as that
  * receiver (lowerLambda's checked receiver), so an object made from the
@@ -491,16 +570,38 @@ function dynamicPrototypeMemberValue(
   lowerer.currentClass = info;
   lowerer.fnStack.push(context);
   const before = lowerer.diags.length;
+  // The member is lowered a second time, over a dynamic receiver. A statement
+  // in its body that refuses that receiver (a typed field read used where the
+  // checker requires its static type, a collection key) is no lowering of this
+  // attempt, and its diagnostic is not the program's: the member's own
+  // lowering at its declaration reports what that source refuses. Recording it
+  // would fail a build over a view the source never asked for (getPrototypeOf
+  // over an untyped value builds one for every class).
+  //
+  // A JavaScript statement that refuses becomes a run-time fence, so the
+  // attempt still holds every statement of the body. A TypeScript statement
+  // that refuses becomes nothing — the source keeps compile fences — so a
+  // value built here would run the member with part of its body missing. Any
+  // diagnostic the attempt captured therefore discards the value, and the
+  // member falls back to the compiled receiver-checked wrapper (as a member
+  // that needs a native receiver already does).
+  const held = lowerer.diagSink;
+  const heldDiscarded = lowerer.discardedCapture;
+  const captured: ScrDiagnostic[] = [];
+  lowerer.diagSink = captured;
+  lowerer.discardedCapture = true;
   try {
-    return lowerer.coerceToExpected(lowerer.lowerLambda(member, true), DYN);
+    const value = lowerer.coerceToExpected(lowerer.lowerLambda(member, true), DYN);
+    return captured.length === 0 ? value : null;
   } catch (error) {
     // A member whose signature cannot lower as a value (a rest parameter,
-    // for one) falls back to the compiled receiver-checked wrapper; the
-    // attempt's own diagnostic must not fail the build.
+    // for one) takes the same road.
     if (!(error instanceof PoisonError)) throw error;
-    lowerer.diags.splice(before);
     return null;
   } finally {
+    lowerer.diagSink = held;
+    lowerer.discardedCapture = heldDiscarded;
+    lowerer.diags.splice(before);
     lowerer.fnStack.pop();
     lowerer.currentClass = previousClass;
   }
@@ -641,9 +742,16 @@ export function reflectClassPrototype(
       let before = lowerer.diags.length;
       let value: IrExpr | null;
       try {
-        value =
-          dynamicPrototypeMemberValue(lowerer, info, member) ??
-          classMethodValue(lowerer, info.decl, info, method, loc);
+        // A member whose body reads another member through `this` that the
+        // checked-dynamic dispatch cannot answer (a generic method) keeps
+        // its compiled, receiver-checked value, so its body runs with the
+        // class's typed `this` instead of fencing at run time. Every other
+        // member takes the dynamic-receiver view.
+        value = bodyNeedsTypedReceiver(lowerer, info, member)
+          ? (classMethodValue(lowerer, info.decl, info, method, loc) ??
+            dynamicPrototypeMemberValue(lowerer, info, member))
+          : (dynamicPrototypeMemberValue(lowerer, info, member) ??
+            classMethodValue(lowerer, info.decl, info, method, loc));
       } catch (error) {
         if (!(error instanceof PoisonError)) throw error;
         lowerer.diags.splice(before);
@@ -912,6 +1020,10 @@ function readOnlyPrototypeUse(lowerer: Lowerer, node: ts.Expression, depth: numb
       (objectMethod !== null ? READING_OBJECT_FUNCTIONS.get(objectMethod) : undefined) ??
       (reflectMethod !== null ? READING_REFLECT_FUNCTIONS.get(reflectMethod) : undefined);
     if (position !== undefined) return args[position] === child;
+    // `mock.method(C.prototype, "name", …)`: the mock installs its wrapper
+    // through the prototype object, the representation a named prototype
+    // write reaches.
+    if (args[0] === child && parent.expression.name.text === "method") return true;
   }
   if (ts.isTypeOfExpression(parent)) return true;
   if (

@@ -113,6 +113,8 @@ interface TestOptions {
   timeout: IrExpr | null;
   /** The { concurrency } count (-1 for true, 1 for false), null without one. */
   concurrency: IrExpr | null;
+  /** The { signal } an AbortSignal value, null without one. */
+  signal: IrExpr | null;
   /** The non-literal option values, evaluated in source order before the
    * registration call reads them. */
   pre: IrStmt[];
@@ -129,6 +131,7 @@ const noOptions = (): TestOptions => ({
   plan: -1,
   timeout: null,
   concurrency: null,
+  signal: null,
   pre: [],
 });
 
@@ -185,8 +188,8 @@ function lowerTestOptions(
       `${what} with a non-literal options argument`,
       node,
       suite
-        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency?, timeout? }"
-        : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout? }",
+        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency?, timeout?, signal? }"
+        : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout?, signal? }",
     );
   }
   const out = noOptions();
@@ -273,6 +276,16 @@ function lowerTestOptions(
           "concurrency takes the literal true/false or a number here",
         );
       }
+    } else if (name === "signal") {
+      /* The AbortSignal whose abort cancels the run; its reason is the
+       * failure, as in Node. */
+      const loc = locOf(init);
+      out.signal = optionValue(
+        lowerer,
+        out,
+        lowerer.coerceToExpected(lowerer.lowerExpr(init), DYN),
+        loc,
+      );
     } else if (name === "timeout") {
       out.timeout = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), locOf(init));
     } else if (name === "expectFailure") {
@@ -306,8 +319,8 @@ function lowerTestOptions(
         `${what} option '${name}'`,
         prop,
         suite
-          ? "skip, todo, only, concurrency and timeout are the supported suite options"
-          : "skip, todo, only, concurrency, plan, and timeout are the supported options",
+          ? "skip, todo, only, concurrency, timeout and signal are the supported suite options"
+          : "skip, todo, only, concurrency, plan, timeout and signal are the supported options",
       );
     }
   }
@@ -532,14 +545,31 @@ function lowerRegistration(
         ? {
             kind: "libCall",
             fn: "test.subEmpty",
-            args: [sub, name, mode, msg, emptyFlags, at, ...planTimeout],
+            args: [
+              sub,
+              name,
+              mode,
+              msg,
+              emptyFlags,
+              at,
+              ...planTimeout,
+              opts.signal ?? dynUndefinedExpr(loc),
+            ],
             type: VOID,
             loc,
           }
         : {
             kind: "libCall",
             fn: "test.registerEmpty",
-            args: [name, mode, msg, emptyFlags, at, ...planTimeout],
+            args: [
+              name,
+              mode,
+              msg,
+              emptyFlags,
+              at,
+              ...planTimeout,
+              opts.signal ?? dynUndefinedExpr(loc),
+            ],
             type: VOID,
             loc,
           },
@@ -555,7 +585,17 @@ function lowerRegistration(
       {
         kind: "libCall",
         fn: "test.sub",
-        args: [sub, name, mode, msg, cb, flagsLit, at, ...planTimeout],
+        args: [
+          sub,
+          name,
+          mode,
+          msg,
+          cb,
+          flagsLit,
+          at,
+          ...planTimeout,
+          opts.signal ?? dynUndefinedExpr(loc),
+        ],
         type: promiseVoid,
         loc,
       },
@@ -567,7 +607,16 @@ function lowerRegistration(
     {
       kind: "libCall",
       fn: "test.register",
-      args: [name, mode, msg, cb, flagsLit, at, ...planTimeout],
+      args: [
+        name,
+        mode,
+        msg,
+        cb,
+        flagsLit,
+        at,
+        ...planTimeout,
+        opts.signal ?? dynUndefinedExpr(loc),
+      ],
       type: VOID,
       loc,
     },
@@ -644,6 +693,7 @@ function lowerSuite(
         flags,
         opts.concurrency ?? numLit(0, loc),
         opts.timeout ?? numLit(0, loc),
+        opts.signal ?? dynUndefinedExpr(loc),
       ],
       type: VOID,
       loc,

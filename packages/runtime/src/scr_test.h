@@ -30,9 +30,9 @@ void scr_testctx_release(ScrTestCtx *t);
 void *scr_testctx_retain_v(void *t);
 void scr_testctx_release_v(void *t);
 void scr_test_register(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at,
-                       double plan, double timeout, double concurrency);
+                       double plan, double timeout, double concurrency, ScrDyn *signal);
 void scr_test_suite(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, ScrStr *at,
-                    double flags, double concurrency, double timeout);
+                    double flags, double concurrency, double timeout, ScrDyn *signal);
 /* before/after/beforeEach/afterEach on the CURRENT registration parent
  * (`which`: 0 before, 1 after, 2 beforeEach, 3 afterEach); `at` is the
  * hook call's "file:line:col". The root's before and after hooks run
@@ -41,7 +41,7 @@ void scr_test_hook(double which, ScrClosure *cb, double flags, ScrStr *at);
 /* t.test(...): registers under `t`, runs the subtest INLINE on the
  * runner fiber, and returns the settled promise the `await` consumes (+1). */
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at,
-                         double plan, double timeout, double concurrency);
+                         double plan, double timeout, double concurrency, ScrDyn *signal);
 void scr_test_ctx_skip(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);

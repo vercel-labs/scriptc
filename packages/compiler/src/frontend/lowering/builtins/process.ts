@@ -287,31 +287,55 @@ function lowerProcStreamCursorCall(
 ): IrExpr {
   const name = access.name.text;
   const args = [...call.arguments.nodes];
+  const optional = call.questionDotToken !== undefined;
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`WritableStream.${name} with a spread argument`, call);
   }
+  const isFuncNode = (node: ts.Expression): boolean =>
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
   const numberCount = kind === 0 || kind === 1 ? 2 : kind === 2 ? 1 : 0;
   const minimum = kind === 1 ? 2 : kind === 2 ? 1 : 0;
-  let numbers = args.slice(0, numberCount).filter((arg) => !isNullishNode(arg));
-  let callbackNode: ts.Expression | undefined = args[numberCount];
-  if (kind === 0 && args.length >= 2 && !isNullishNode(args[0]!) && isNullishNode(args[1]!)) {
+  let numberNodes: ts.Expression[];
+  let callbackNode: ts.Expression | undefined;
+  if (kind === 0 && args.length === 2 && isFuncNode(args[1]!)) {
+    // cursorTo(x, callback): the second slot is the completion callback.
+    numberNodes = [args[0]!];
+    callbackNode = args[1];
+  } else if (kind === 0 && args.length === 3 && args[2] !== undefined && isFuncNode(args[2])) {
+    // cursorTo(x, y, callback), and cursorTo(x, undefined, callback).
+    numberNodes = isNullishNode(args[1]!) ? [args[0]!] : [args[0]!, args[1]!];
     callbackNode = args[2];
+  } else {
+    numberNodes = args.slice(0, numberCount);
+    callbackNode = args[numberCount];
   }
-  if (args.length > numberCount + 1 || numbers.length < minimum) {
+  const numeric = numberNodes.filter((node) => !isNullishNode(node));
+  if (args.length > numberCount + 1 || numeric.length < minimum) {
     lowerer.noLowering(`WritableStream.${name} with ${args.length} arguments`, call);
   }
-  const stmts: IrStmt[] = [];
+  const prelude: IrStmt[] = [];
+  const stream = (() => {
+    const slot = lowerer.declareHiddenLocal("%cursorStream", lowerer.irTypeOf(access.expression));
+    const value = lowerer.lowerExpr(access.expression);
+    prelude.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    return { kind: "varRef" as const, localId: slot.id, type: value.type, loc };
+  })();
+  const isTTY = processStreamValueMember(lowerer, "isTTY", stream, loc);
+  const terminal = isTTY === null ? null : lowerer.ensureBool(isTTY, access.expression);
+  // Everything below runs only when the stream really is a terminal: Node
+  // skips an optional call (and its arguments) on a pipe, and a plain one
+  // throws.
+  const callStmts: IrStmt[] = [];
   const hold = (label: string, value: IrExpr): IrExpr => {
     const slot = lowerer.declareHiddenLocal(label, value.type);
-    stmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    callStmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
     return { kind: "varRef", localId: slot.id, type: value.type, loc };
   };
-  const stream = hold("%cursorStream", lowerer.lowerExpr(access.expression));
   let noX = false;
   const values: IrExpr[] = [];
   let hasB = false;
-  for (let i = 0; i < numbers.length; i++) {
-    const node = numbers[i]!;
+  for (let i = 0; i < numberNodes.length; i++) {
+    const node = numberNodes[i]!;
     if (kind === 0 && isNullishNode(node)) {
       if (i === 0) {
         noX = true;
@@ -350,13 +374,6 @@ function lowerProcStreamCursorCall(
     type: STRING,
     loc,
   });
-  const then: IrStmt | null = callback
-    ? {
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn: "process.nextTick", args: [callback], type: VOID, loc },
-        loc,
-      }
-    : null;
   const write: IrExpr = {
     kind: "libCall",
     fn: "procStream.write",
@@ -364,45 +381,67 @@ function lowerProcStreamCursorCall(
     type: BOOL,
     loc,
   };
-  const withCallback = (body: IrExpr): IrExpr =>
-    callback ? { kind: "seqExpr", stmts: [then!], result: body, type: BOOL, loc } : body;
+  /* The write runs first; the callback is scheduled only after it (Node
+   * passes it to the write, so a write that throws never runs it). The
+   * sequence is branch-local: a ternary's other arm must not schedule the
+   * callback the taken arm did. */
+  const withCallback = (body: IrExpr): IrExpr => {
+    if (!callback) return body;
+    const slot = lowerer.declareHiddenLocal("%cursorWritten", BOOL);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: slot.id, init: body, loc },
+        {
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn: "process.nextTick", args: [callback], type: VOID, loc },
+          loc,
+        },
+      ],
+      result: { kind: "varRef", localId: slot.id, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+  };
   const skip: IrExpr = withCallback(boolLit(true, loc));
-  let terminalBody: IrExpr;
+  let callBody: IrExpr;
   if (noX && !hasB) {
-    terminalBody = skip;
+    callBody = skip;
   } else if (kind === 1) {
-    terminalBody = {
+    callBody = {
       kind: "ternary",
       cond: { kind: "libCall", fn: "rl.moves", args: [values[0]!, values[1]!], type: BOOL, loc },
       then: withCallback(write),
-      else_: skip,
+      else_: callback ? skip : boolLit(true, loc),
       type: BOOL,
       loc,
     };
   } else {
-    terminalBody = withCallback(write);
+    callBody = withCallback(write);
   }
-  const isTTY = processStreamValueMember(lowerer, "isTTY", stream, loc);
-  const terminal = isTTY === null ? null : lowerer.ensureBool(isTTY, access.expression);
-  if (terminal === null) return terminalBody;
+  const body: IrExpr = { kind: "seqExpr", stmts: callStmts, result: callBody, type: BOOL, loc };
+  if (terminal === null) {
+    return { kind: "seqExpr", stmts: prelude, result: body, type: BOOL, loc };
+  }
+  const absent: IrExpr = optional
+    ? lowerer.coerceToExpected(
+        { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        lowerer.withUndefinedArmOf(BOOL) ?? BOOL,
+      )
+    : nodeThrowExpr(1, "", `${ts.getTextOfNode(call.expression)} is not a function`, BOOL, loc);
+  const resultType = optional ? (lowerer.withUndefinedArmOf(BOOL) ?? BOOL) : BOOL;
   return {
     kind: "seqExpr",
-    stmts,
+    stmts: prelude,
     result: {
       kind: "ternary",
       cond: terminal,
-      then: terminalBody,
-      else_: nodeThrowExpr(
-        1,
-        "",
-        `${ts.getTextOfNode(call.expression)} is not a function`,
-        BOOL,
-        loc,
-      ),
-      type: BOOL,
+      then: lowerer.coerceToExpected(body, resultType),
+      else_: absent,
+      type: resultType,
       loc,
     },
-    type: BOOL,
+    type: resultType,
     loc,
   };
 }

@@ -14,3 +14,6 @@ outcome("cursor", () => process.stdout.cursorTo(0, 0));
 outcome("move", () => process.stdout.moveCursor(1, -1));
 outcome("clear", () => process.stdout.clearLine(0));
 outcome("clearScreen", () => process.stdout.clearScreenDown());
+outcome("cursorWithCallback", () => process.stdout.cursorTo(1, () => {}));
+console.log("optional calls", process.stdout.clearLine?.(0) === undefined,
+  process.stdout.cursorTo?.(1, () => {}) === undefined);

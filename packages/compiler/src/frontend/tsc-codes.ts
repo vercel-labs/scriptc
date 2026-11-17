@@ -703,31 +703,58 @@ export function jsFieldDeclaringClass(field: ts.Symbol): ts.ClassLikeDeclaration
   return undefined;
 }
 
-/** Whether `node` is the target of a write to a JavaScript binding or field
- * that declares its type with JSDoc, at a site the widening scans handle.
- * TS2739 is the elaborated form of the assignability diagnostics for a class
- * target; on such a target the value is legal JavaScript and the storage
- * follows the values the program writes (analyzeJsWidenedBindings and
- * analyzeJsWidenedFields). A write the scans do not reach keeps the code's
+/** Whether `node` is the target of a write into a JavaScript binding or
+ * field whose storage follows the values the program writes: a JSDoc-typed
+ * target, or an unannotated `let`/`var`. TS2739 is the elaborated form of
+ * the assignability diagnostics for a class or record target; in JavaScript
+ * the value is legal and the storage follows what the program writes
+ * (analyzeJsWidenedBindings and analyzeJsWidenedFields). A `const` keeps
+ * its inferred type, and a write the scans do not reach keeps the code's
  * triage decision, which refuses it instead of failing in the lowering. */
-const jsdocTypedStorageWrite = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+const jsStorageWriteTarget = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
   if (!jsWideningWriteTarget(node)) return false;
   const checker = program.getTypeChecker();
   if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
     const symbol = checker.getSymbolAtLocation(node.name);
     return symbol !== undefined && jsFieldDeclaringClass(symbol) !== undefined;
   }
-  if (ts.isIdentifier(node)) {
-    const decl = checker.getSymbolAtLocation(node)?.valueDeclaration;
-    return (
-      decl !== undefined &&
-      ts.isVariableDeclaration(decl) &&
-      isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) &&
-      decl.parent?.parent !== undefined &&
-      jsTypeTagIn(decl, decl.parent.parent.pos)
-    );
-  }
-  return false;
+  if (!ts.isIdentifier(node)) return false;
+  const decl = checker.getSymbolAtLocation(node)?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    !ts.isIdentifier(decl.name) ||
+    !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) ||
+    decl.parent === undefined
+  )
+    return false;
+  if (decl.parent.parent !== undefined && jsTypeTagIn(decl, decl.parent.parent.pos)) return true;
+  // An unannotated `let`/`var` takes the storage the program writes to it;
+  // a `const` keeps its inferred type, so its write stays refused.
+  return (decl.parent.flags & ts.NodeFlags.Const) === 0;
+};
+
+/** Whether `node` is the binding a `for...in` head writes each key into.
+ * The key is always a string, whatever the binding was declared to hold
+ * (TS2405), and analyzeJsWidenedBindings gives such a binding
+ * checked-dynamic storage. A member target is not admitted here: the
+ * lowering writes the key through the binding it resolves, which a member
+ * access is not. */
+const jsForInKeyBinding = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  if (!ts.isIdentifier(node)) return false;
+  const decl = program.getTypeChecker().getSymbolAtLocation(node)?.valueDeclaration;
+  if (decl === undefined || !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName))
+    return false;
+  if (ts.isParameter(decl)) return true;
+  return (
+    ts.isVariableDeclaration(decl) &&
+    ts.isIdentifier(decl.name) &&
+    decl.parent !== undefined &&
+    // A catch binding's snapshot is read-only in the lowering, which
+    // refuses the write with its own diagnostic.
+    !ts.isCatchClause(decl.parent) &&
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  );
 };
 
 /** Whether `node`, a member access, is written: an assignment or compound
@@ -1111,20 +1138,47 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ]),
     ),
   ],
-  // 2322's elaborated form when the target is a class: the value lacks a
-  // required property. On a JavaScript binding or field whose type comes
-  // from a JSDoc tag, the assignment is legal JavaScript, and the storage
-  // follows the values the program writes to it (analyzeJsWidenedBindings
-  // and analyzeJsWidenedFields). Every other 2739 site keeps its triage row.
+  // 2322's elaborated form when the target is a class or record: the value
+  // lacks a required property. In JavaScript the assignment is legal, and
+  // the storage follows the values the program writes to it
+  // (analyzeJsWidenedBindings and analyzeJsWidenedFields). Every other 2739
+  // site keeps its triage row.
   [
     2739,
     at(
-      jsdocTypedStorageWrite,
+      jsStorageWriteTarget,
       inCheckedJs(
-        WIDEN(
-          "the storage follows the values a JavaScript program writes to a JSDoc-typed target",
-          ["tests/corpus/jsdoc-field-foreign-instance/main.js"],
-        ),
+        WIDEN("the storage follows the values a JavaScript program writes to a typed target", [
+          "tests/corpus/jsdoc-field-foreign-instance/main.js",
+          "tests/corpus/js-frozen-object-reassignment.js",
+        ]),
+      ),
+    ),
+  ],
+  // for-in's head, both sides. Node assigns the key string to the head's
+  // binding whatever its declared type, and enumerates the right side's
+  // value whatever the checker inferred there; a JavaScript program
+  // retypes a head binding and reassigns a walked value all the time. A
+  // binding written this way takes checked-dynamic storage
+  // (analyzeJsWidenedBindings), and the lowering enumerates an admitted
+  // right side dynamically.
+  [
+    2405,
+    at(
+      jsForInKeyBinding,
+      inCheckedJs(
+        WIDEN("the key a for-in walks is a string, so the binding it writes holds one", [
+          "tests/corpus/js-retyped-for-in.js",
+        ]),
+      ),
+    ),
+  ],
+  [
+    2407,
+    inCheckedJs(
+      CHECKER(
+        "for-in enumerates whatever value the right side holds; the checker's primitive type is not what the program stored",
+        ["tests/corpus/js-retyped-for-in.js"],
       ),
     ),
   ],
@@ -2173,15 +2227,7 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the lowering pins the first declaration's storage type; a redeclaration must widen it (sloppy Annex B semantics)",
     ),
   ],
-  [2405, KEEP(KEEP_GRAMMAR)],
   [2406, KEEP(KEEP_GRAMMAR)],
-  [
-    2407,
-    REFUSE(
-      "'for...in' over a value the checker types 'never'",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
   [
     2409,
     REWRITE(

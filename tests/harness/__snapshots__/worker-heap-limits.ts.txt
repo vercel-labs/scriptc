@@ -1,0 +1,8 @@
+worker-heap-limits.ts:8:21 - error SC2020: 'Worker resourceLimits.maxOldGenerationSizeMb' is part of the standard library types but has no scriptc lowering yet
+
+  7 | const worker = new Worker(new URL(import.meta.url), {
+  8 |   resourceLimits: { maxOldGenerationSizeMb: 64, stackSizeMb: 2 },
+    |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 | });
+
+  hint: worker threads share the process heap, so a heap limit cannot be enforced; resourceLimits supports stackSizeMb

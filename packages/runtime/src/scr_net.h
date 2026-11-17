@@ -160,6 +160,8 @@ double scr_net_server_idle_ms(ScrNetServer *s);
  * keepAliveTimeoutBuffer. Typed reads validate that no dynamic write left
  * a non-number in the ordinary JS property slot. */
 double scr_net_server_timeout_get(ScrNetServer *s, double field);
+/* As the HTTP timeout checker reads a field: a non-number reads 0. */
+double scr_net_server_timeout_raw(ScrNetServer *s, double field);
 void scr_net_server_timeout_set(ScrNetServer *s, double field, double value);
 void scr_net_server_set_timeout_plain(ScrNetServer *s, double ms);
 void scr_net_server_set_timeout_cb(ScrNetServer *s, double ms, ScrClosure *cb /*moves*/, ScrNetConnFn fn);
@@ -229,6 +231,9 @@ enum {
   SCR_NET_OFF_DROP = 6,
   SCR_NET_OFF_NEW_LISTENER = 7,
   SCR_NET_OFF_CLIENT_ERROR = 8,
+  /* The TLS handshake-complete list ('secureConnection'), which fires
+   * beside the 'connection' list but is a separate registry. */
+  SCR_NET_OFF_SECURE_CONNECTION = 9,
 };
 void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 /* server.listeners(event): a +1 closure array of the event's listeners in

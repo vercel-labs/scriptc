@@ -1,4 +1,5 @@
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
+import { requireLiveBytes } from "./buffers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import {
   keepsInitializerLayout,
@@ -149,6 +150,7 @@ import {
 } from "./cjs-inline-require.js";
 import {
   cjsExportMemberWriteGlobalOf,
+  cjsInFileExportGlobalOf,
   isCjsExportsIdentifier,
   isCjsModuleExports,
   isFreshExportsReset,
@@ -216,6 +218,9 @@ import {
   cjsExportAssignmentOf,
   cjsExportChainOf,
   cjsVoidInitPreambleReals,
+  cjsVoidInitPreambleTargets,
+  cjsVoidInitWriteEffect,
+  type CjsVoidInitPreamble,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
   isCjsJsFile,
@@ -301,7 +306,12 @@ import {
 } from "./lower-mixins.js";
 import type { ClassInfo, ClassIteratorInfo } from "./lower-classes.js";
 import { checkRefusedAccessorWrite } from "./class-member-refusals.js";
-import { isCompiledPrototypeMember } from "./class-prototypes.js";
+import {
+  isCompiledPrototypeMember,
+  isPrototypeMadeBinding,
+  isPrototypeViewBinding,
+  prototypeMadeSource,
+} from "./class-prototypes.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { objectFactorySignature } from "./object-factory-new.js";
 import { isClassCallback, lowerClassCallbackAssign } from "./class-callbacks.js";
@@ -396,6 +406,7 @@ import { observesDeclaration } from "./observable-write.js";
 import {
   isParseArgsDynTypeName,
   isUnitOnlyTsType,
+  withUnitArm,
   jsOpenObjectType,
   unitOnlyUnion,
   holdsPrimitiveConstructors,
@@ -1080,7 +1091,11 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           if (e instanceof InternalCompilerError) noteCrashSite(e, () => locOf(stmt));
           throw e;
         }
-        if (!lowerer.suppressStats) lowerer.countStatementFailed(stmt, sf?.fileName);
+        // A capture buffer that drops its diagnostics (the prototype view's
+        // dynamic-receiver attempt) owns this refusal: the member lowers again
+        // over its own receiver, and the program judges nothing here.
+        if (!lowerer.suppressStats && !lowerer.discardedCapture)
+          lowerer.countStatementFailed(stmt, sf?.fileName);
         // Localized failure (report-only): the statement's committed
         // diagnostics that are not themselves type failures or rejected
         // declarations are cascades of the rejected declarations it used.
@@ -1121,9 +1136,12 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             },
           });
           if (fence) out.push(fence);
-        } else if (deferFences) {
+        } else {
           // Inside a capture buffer the owner keeps the diagnostics, but
-          // the statement still must not vanish from a result it keeps.
+          // the statement still must not vanish from a result it keeps. A
+          // JavaScript source gets the same fence it makes outside a buffer;
+          // a TypeScript source gets it too, so a member lowered a second
+          // time for run-time use holds every statement of its body.
           const fence = lowerer.capturedRuntimeFence(sinkMark, stmt);
           if (fence) out.push(fence);
         }
@@ -1393,6 +1411,9 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // declared type says: its own declaration lowers as one, and so must
     // the slot a closure captured first.
     if (islandHandleBinding(lowerer, decl.name)) type = DYN;
+    // So does a binding of a class's prototype view, and one of an object
+    // made from that view.
+    if (isPrototypeViewBinding(lowerer, decl) || isPrototypeMadeBinding(lowerer, decl)) type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     // `let x;` is undefined once its declaration runs, so the box holds the
     // declared type's undefined-armed form: the declaration initializes it
@@ -7397,6 +7418,15 @@ function stdlibDeclaredCall(lowerer: Lowerer, call: ts.CallExpression): boolean 
   return declaration !== undefined && lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration));
 }
 
+/** The expression a binding whose storage is checked-dynamic lowers: the
+ * Object.create call behind a prototype-made binding (`const made =
+ * Object.create(C.prototype) as C`), whose cast the checked-dynamic storage
+ * subsumes, else the initializer itself. */
+function dynamicBindingInitializer(lowerer: Lowerer, decl: ts.VariableDeclaration): ts.Expression {
+  const made = prototypeMadeSource(lowerer, decl);
+  return made !== null && isPrototypeMadeBinding(lowerer, decl) ? made : decl.initializer!;
+}
+
 export function lowerVarDecl(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -7726,13 +7756,22 @@ export function lowerVarDecl(
       return null;
     }
     // `const files = pkg.list()`: an undeclared island object stays a
-    // handle (lower-node-island.ts), so the binding holds it as dyn.
-    if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
+    // handle (lower-node-island.ts), so the binding holds it as dyn, and a
+    // binding of a class's prototype view holds the prototype object.
+    if (
+      ts.isIdentifier(decl.name) &&
+      (islandHandleBinding(lowerer, decl.name) ||
+        isPrototypeViewBinding(lowerer, decl) ||
+        isPrototypeMadeBinding(lowerer, decl))
+    ) {
       g.type = DYN;
       return {
         kind: "assign",
         localId: g.id,
-        value: lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN),
+        value: lowerer.coerceToExpected(
+          lowerer.lowerExpr(dynamicBindingInitializer(lowerer, decl)),
+          DYN,
+        ),
         ...(g.tdz ? { initializes: true as const } : {}),
         loc: locOf(decl),
       };
@@ -7957,8 +7996,16 @@ export function lowerVarDecl(
     return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
   }
 
-  if (ts.isIdentifier(decl.name) && islandHandleBinding(lowerer, decl.name)) {
-    const init = lowerer.coerceToExpected(lowerer.lowerExpr(decl.initializer), DYN);
+  if (
+    ts.isIdentifier(decl.name) &&
+    (islandHandleBinding(lowerer, decl.name) ||
+      isPrototypeViewBinding(lowerer, decl) ||
+      isPrototypeMadeBinding(lowerer, decl))
+  ) {
+    const init = lowerer.coerceToExpected(
+      lowerer.lowerExpr(dynamicBindingInitializer(lowerer, decl)),
+      DYN,
+    );
     const local = lowerer.declareLocal(decl.name, decl.name.text, DYN, isLet);
     return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
   }
@@ -10233,6 +10280,37 @@ function lowerFunctionConstructorWrite(
   };
 }
 
+/** A preamble write's elision: nothing for a pure `void 0`, and the `void`
+ * operand's evaluation for an effectful one (its value is discarded at the
+ * original statement position too). */
+function cjsVoidInitElision(lowerer: Lowerer, preamble: CjsVoidInitPreamble, loc: SrcLoc): IrStmt {
+  if (preamble.effect === null) return { kind: "block", body: [], loc };
+  return { kind: "exprStmt", expr: lowerer.lowerExpr(preamble.effect), loc };
+}
+
+/** Whether a `void 0` preamble write's targets may be elided: every target
+ * is either a static slot that cannot hold undefined (where the write would
+ * otherwise trap) or a slot the module entry initializes to undefined (a
+ * member some path leaves unassigned, so eliding leaves exactly Node's
+ * transient value). Dynamic storage that starts as an uninitialized trap,
+ * and explicitly optional storage without an entry init, keep their
+ * ordinary lowering. */
+function cjsVoidInitTargetsElidable(
+  lowerer: Lowerer,
+  targets: readonly ts.PropertyAccessExpression[],
+): boolean {
+  for (const target of targets) {
+    const g = cjsInFileExportGlobalOf(lowerer, target);
+    if (!g) return false;
+    const entryInit = lowerer.varGlobalEntryInits.get(ts.getSourceFileOfNode(target))?.includes(g);
+    if (entryInit === true) continue;
+    if (g.type.kind === "dyn" || g.type.kind === "void") return false;
+    const widened = withUnitArm(g.type, "undefinedT", lowerer.unions) ?? g.type;
+    if (typeEquals(widened, g.type)) return false;
+  }
+  return true;
+}
+
 /** A top-level CommonJS export statement (see cjsExportAssignmentOf):
  * `exports.f = <expr>` and each expression-valued property of
  * `module.exports = { ... }` assign their pre-registered export globals
@@ -10348,7 +10426,27 @@ function lowerCjsExportStatement(
     // the real assignment's position already orders. Preambles with no
     // later real assignment keep the ordinary path (the export IS
     // undefined then).
-    if (cjsVoidInitPreambleReals(cjs) !== null) return { kind: "block", body: [], loc };
+    {
+      const preamble = cjsVoidInitPreambleTargets(cjs.expr);
+      // The preamble's real assignments may sit inside a conditional
+      // (`if (…) { exports.now = f } else { exports.now = g }`): every path
+      // past the statement assigns the export, and a static slot without an
+      // undefined arm cannot hold the transient value. A later top-level
+      // real assignment elides the write even for other storage. Both keep
+      // an effectful `void` operand's evaluation.
+      if (
+        preamble !== null &&
+        (cjsVoidInitPreambleReals(cjs) !== null ||
+          cjsVoidInitTargetsElidable(lowerer, preamble.targets))
+      )
+        return cjsVoidInitElision(lowerer, preamble, loc);
+      if (cjsVoidInitPreambleReals(cjs) !== null) {
+        const effect = cjsVoidInitWriteEffect(cjs.expr);
+        return effect === null
+          ? { kind: "block", body: [], loc }
+          : { kind: "exprStmt", expr: lowerer.lowerExpr(effect), loc };
+      }
+    }
     const sf = ts.getSourceFileOfNode(cjs.expr);
     let root: IrGlobal | undefined;
     for (const stmt of sf.statements.nodes) {
@@ -12032,6 +12130,15 @@ export function lowerExprStatement(
         const g = cjsExportMemberWriteGlobalOf(lowerer, expr.left);
         if (g) {
           const loc = locOf(expr);
+          // A `void 0` preamble write whose every continuing path assigns
+          // this export later, in a slot that cannot hold undefined, is
+          // elided instead of trapping at load; an effectful `void` operand
+          // still runs.
+          {
+            const preamble = cjsVoidInitPreambleTargets(expr);
+            if (preamble !== null && cjsVoidInitTargetsElidable(lowerer, preamble.targets))
+              return cjsVoidInitElision(lowerer, preamble, loc);
+          }
           const value = lowerer.lowerExprExpecting(expr.right, g.type);
           if (!lowerer.hasCjsConditionalExportMirrors(g.id)) {
             return { kind: "assign", localId: g.id, value, loc };
@@ -14176,7 +14283,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     lowerer.unsupported(
       "SC1070",
       stmt,
-      "'for await' over this value (supported: typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams)",
+      "'for await' over this value (supported: fsPromises.watch, typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams)",
     );
   }
   if (awaitArray && !lowerer.ctx.isAsync) {
@@ -15116,6 +15223,17 @@ function lowerForOfBytes(
     kind: "block",
     body: [
       { kind: "varDecl", localId: source.id, init: iterable, loc },
+      // A for-of head calls %TypedArray%.prototype.values, which validates
+      // the receiver: a detached view throws before the loop starts.
+      ...(lowerer.buffersMutable && iterable.type.kind === "bytes"
+        ? [
+            requireLiveBytes(
+              { kind: "varRef", localId: source.id, type: iterable.type, loc },
+              "values",
+              loc,
+            ),
+          ]
+        : []),
       {
         kind: "varDecl",
         localId: index.id,

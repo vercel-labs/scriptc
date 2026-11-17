@@ -828,7 +828,19 @@ export function lowerWithArraySpecies(
   } finally {
     lowerer.stagedArguments.delete(key);
   }
-  if (result === null || result.type.kind !== "array") return result;
+  if (result === null) return result;
+  if (result.type.kind !== "array")
+    // The method lowered through the receiver's checked-dynamic view, not
+    // into an array of its own: no species instance is created, but the
+    // receiver was staged above and must still be evaluated once, in
+    // source order, before the result.
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+      result,
+      type: result.type,
+      loc,
+    };
   const receiverRef: IrExpr = { kind: "varRef", localId: local.id, type: receiver.type, loc };
   if (mode.callback) {
     // The species constructor runs before the first callback: the

@@ -103,6 +103,7 @@ import {
   tryLowerBytesReadNumberEquality,
 } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
+import { cjsRuntimeOptionalExportStorage } from "../cjs-inline-require.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
 import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
@@ -415,6 +416,8 @@ function mayLowerAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
     );
   }
   if (ts.isPropertyAccessExpression(expr)) {
+    // A CommonJS module member the module may leave unassigned.
+    if (cjsRuntimeOptionalExportStorage(lowerer, expr) !== null) return true;
     const type = lowerer.checker.getTypeAtLocation(expr.expression);
     if (lowerer.checker.getPropertyOfType(type, expr.name.text)) return false;
     return lowerer.checker.getIndexInfosOfType(type).length > 0;

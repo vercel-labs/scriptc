@@ -20,10 +20,12 @@ import {
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
 import {
+  failureText,
   nativeBuildPartitions,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "./native-codegen-core.js";
+import { nativeCodegenDiag } from "../diagnostics/diagnostic.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -698,3 +700,27 @@ test.skipIf(process.platform === "win32")(
     expect(await readFile(output, "utf8")).toContain("define i32 @answer");
   },
 );
+
+test("an error without a message names what failed and where it was thrown", () => {
+  class Refusal extends Error {
+    override name = "Refusal";
+  }
+  const unnamed = failureText(new Refusal());
+  expect(unnamed).toContain("internal compiler error (Refusal)");
+  expect(unnamed).toContain("native-codegen.test");
+  expect(failureText(new Error("the linker ran out of memory"))).toBe(
+    "the linker ran out of memory",
+  );
+  expect(failureText("not an error")).toBe("not an error");
+});
+
+test("a native-helper diagnostic never reports an empty message", () => {
+  for (const code of ["SC3002", "SC3003", "SC3004"] as const) {
+    const diagnostic = nativeCodegenDiag(code, "   ", "entry.ts");
+    expect(diagnostic.code).toBe(code);
+    expect(diagnostic.message.trim()).not.toBe("");
+  }
+  expect(nativeCodegenDiag("SC3004", "the helper wrote no object", "entry.ts").message).toBe(
+    "the helper wrote no object",
+  );
+});

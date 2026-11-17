@@ -376,32 +376,23 @@ static void scr_js_wrapper_define_members(int kind, ScrDyn *prototype) {
       scr_js_wrapper_define_hidden(prototype, m->name, scr_js_wrapper_method_value(m->name, kind, m->length));
 }
 
-static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
-  /* getPrototypeOf shares this object with the program's own wrapper
-   * reads. The hook is set here, not at load: taking the builder's address
-   * in a load-time initializer would keep this unit's method dispatch
-   * (and the invoke unit it calls) in every program that links the unit
-   * for its guard alone. */
+/* The hook is installed at load, so Object.getPrototypeOf(<primitive>)'
+ * very first call builds the real wrapper prototype (with its primitive
+ * slot) instead of a plain canonical object. This unit is linked only for
+ * the primitiveWrapper feature, whose programs answer wrapper values. */
+static void scr_js_wrapper_install_consumers(void);
+
+__attribute__((constructor)) static void scr_js_wrapper_install_prototype_hook(void) {
   scr_dyn_wrapper_prototype_hook = scr_js_wrapper_primitive_prototype;
-  /* Object.getPrototypeOf(<primitive>) may have answered first, before the
-   * hook was installed, and built the canonical object for this class: that
-   * object IS the class's prototype, so the program's own <Ctor>.prototype
-   * read must answer it (with the members this wrapper adds). */
-  ScrDyn *canonical = scr_dyn_canonical_prototype_for(scr_js_wrapper_names[kind]);
-  if (canonical != NULL) {
-    scr_js_wrapper_define_members(kind, canonical);
-    /* Seed the constructor's own `prototype` member once: a canonical
-     * object built by a primitive's getPrototypeOf already seeded the
-     * compiled constructor, and that member is read-only, so a second
-     * assignment would throw where Node's read succeeds. */
-    if (constructor != NULL && scr_dyn_obj_get(canonical, "constructor", 11) == NULL) {
-      scr_js_wrapper_define_hidden(canonical, "constructor", scr_dyn_retain(constructor));
-      scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(canonical));
-    }
-    scr_js_wrapper_register_cleanup();
-    scr_js_wrapper_prototypes[kind] = canonical; /* the slot owns the +1 */
-    return canonical;
-  }
+  /* Wrapper recognition (Object.prototype.toString's tag, structuredClone
+   * and the message dispatch) is installed with the unit: <Ctor>.prototype
+   * is itself a wrapper, and reading it before any wrapper was constructed
+   * must already answer its primitive tag. */
+  scr_js_wrapper_install_consumers();
+}
+
+static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
+  scr_dyn_wrapper_prototype_hook = scr_js_wrapper_primitive_prototype;
   if (scr_js_wrapper_prototypes[kind]) {
     /* Object.getPrototypeOf built the object first (its hook passes no
      * constructor); the program's own `String.prototype` read seeds the
@@ -417,6 +408,21 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
       }
     }
     return scr_js_wrapper_prototypes[kind];
+  }
+  /* A canonical object can only exist for this class if another path built
+   * it (a primitive's getPrototypeOf before this unit installed its hook):
+   * that object IS the class's prototype, so this read answers it. The slot
+   * above is empty here, so storing the reference into it releases nothing. */
+  ScrDyn *canonical = scr_dyn_canonical_prototype_for(scr_js_wrapper_names[kind]);
+  if (canonical != NULL) {
+    scr_js_wrapper_define_members(kind, canonical);
+    if (constructor != NULL && scr_dyn_obj_get(canonical, "constructor", 11) == NULL) {
+      scr_js_wrapper_define_hidden(canonical, "constructor", scr_dyn_retain(constructor));
+      scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(canonical));
+    }
+    scr_js_wrapper_register_cleanup();
+    scr_js_wrapper_prototypes[kind] = canonical; /* the slot owns the +1 */
+    return canonical;
   }
   scr_js_wrapper_register_cleanup();
   ScrDyn *primitive;

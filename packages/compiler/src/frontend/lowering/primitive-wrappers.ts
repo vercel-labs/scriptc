@@ -72,6 +72,22 @@ export function programCreatesWrappers(lowerer: Lowerer): boolean {
           return;
         }
       }
+      /* `String.prototype` / `Number.prototype` / `Boolean.prototype` is
+       * itself a wrapper object (Node's prototype carries the primitive
+       * slot), so reading one is a wrapper site for the consumers that
+       * answer from the slot. */
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        node.name.text === "prototype" &&
+        ts.isIdentifier(node.expression) &&
+        (node.expression.text === "String" ||
+          node.expression.text === "Number" ||
+          node.expression.text === "Boolean") &&
+        lowerer.isStdlibGlobal(node.expression, node.expression.text)
+      ) {
+        found = true;
+        return;
+      }
       ts.forEachChild(node, visit);
     };
     visit(sf);

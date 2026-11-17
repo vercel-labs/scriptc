@@ -219,6 +219,7 @@ import {
   jsxEmitName,
   jsxEmitPlan,
   jsxPragmas,
+  isIntrinsicJsxName,
   jsxSlotNeedsContext,
   lowerJsx,
   type JsxContextTypes,
@@ -1492,48 +1493,159 @@ function lowerProgramJsx7(
 /** The contextual type text of a JSX slot expression that the rewrite must
  * keep typing in a TypeScript file, or undefined. A TypeScript file's
  * implicit-any report stops the build; a JavaScript file admits it (the
- * JS_OPINIONS rows), so it keeps the lowering it had. The type is printed
- * with fully qualified names
+ * JS_OPINIONS rows), so it keeps the lowering it had. For a component, the
+ * slot type is read through the tag (`Parameters<typeof Button>[0]["onPick"]`),
+ * which names a module-private prop type the site cannot spell; elsewhere it
+ * is printed with fully qualified names
  * (`import("react").MouseEventHandler<HTMLButtonElement>`) so the text reads
  * the same from the rewritten file. The checker is asked only for the sites
  * whose functions need it, and is built on the first such site. */
 function jsxContextTypes7(program: ts.Program): JsxContextTypes {
   let checker: ReturnType<ts.Program["getTypeChecker"]> | null = null;
-  const printed = new WeakMap<ts.Expression, string | undefined>();
+  const cached = new WeakMap<ts.Expression, string | undefined>();
   return (expression) => {
     if (!/\.[mc]?tsx$/i.test(expression.getSourceFile().fileName)) return undefined;
-    const cached = printed.get(expression);
-    if (cached !== undefined || printed.has(expression)) return cached;
+    if (cached.has(expression)) return cached.get(expression);
     let text: string | undefined;
     if (jsxSlotNeedsContext(expression)) {
       try {
         checker ??= program.getTypeChecker();
-        const type = checker.getContextualType(expression);
-        if (type !== undefined)
-          text = checker.typeToString(
-            type,
-            expression,
-            ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseFullyQualifiedType,
-          );
+        text = jsxElementSlotText7(checker, expression) ?? jsxContextTypeText7(checker, expression);
       } catch {
         text = undefined;
       }
-      // A type without a call signature gives the functions no parameter
-      // type, and printer comments (`/*unresolved*/`) do not parse.
-      if (
-        text === undefined ||
-        text === "" ||
-        text === "any" ||
-        text === "unknown" ||
-        text === "never" ||
-        text === "error" ||
-        text.includes("/*")
-      )
-        text = undefined;
     }
-    printed.set(expression, text);
+    cached.set(expression, text);
     return text;
   };
+}
+
+/** The slot's type read from the element: the props member the expression
+ * fills, or the props type for a spread. Reading it through the tag keeps a
+ * type whose name the site cannot see (a component's module-private prop
+ * type) usable, because the indexed access resolves where the component is
+ * declared. Undefined for an intrinsic tag, a tag that is not an entity name,
+ * a `key` or `ref` (which come from JSX's intrinsic attributes rather than
+ * the props type), and a generic component whose props the JSX site
+ * instantiates (the printed contextual type has those arguments). */
+function jsxElementSlotText7(
+  checker: ReturnType<ts.Program["getTypeChecker"]>,
+  expression: ts.Expression,
+): string | undefined {
+  const slot = jsxSlot7(expression);
+  if (slot === null) return undefined;
+  const props = jsxElementPropsText7(checker, slot.opening);
+  if (props === undefined) return undefined;
+  if (slot.name === null) return `${props} & { ref?: any; key?: any }`;
+  return `${props}[${JSON.stringify(slot.name)}]`;
+}
+
+/** The props type of a value-based element as a type expression over its
+ * tag: `Parameters<typeof Button>[0]` for a function component,
+ * `ConstructorParameters<typeof Button>[0]` for a class one. Undefined when
+ * the tag's type does not name it exactly: an intrinsic tag, an arbitrary
+ * tag expression, an overload set, or a generic component. */
+function jsxElementPropsText7(
+  checker: ReturnType<ts.Program["getTypeChecker"]>,
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+): string | undefined {
+  const tagText = jsxValueTagText(opening.tagName);
+  if (tagText === undefined) return undefined;
+  const tagType = checker.getTypeAtLocation(opening.tagName);
+  const construct = checker.getConstructSignatures(tagType);
+  // A generic component instantiates its props at the JSX site; naming the
+  // component's own type would name another instantiation.
+  if (construct.some((signature) => signature.getTypeParameters().length > 0)) return undefined;
+  if (construct.length > 0) return `NonNullable<InstanceType<typeof ${tagText}>["props"]>`;
+  // JSX checks a function component against one call signature; an overload
+  // set would name a different one.
+  const call = checker.getCallSignatures(tagType);
+  if (call.length !== 1 || call[0]!.getTypeParameters().length > 0) return undefined;
+  return `NonNullable<Parameters<typeof ${tagText}>[0]>`;
+}
+
+/** The contextual type the as-written program gives the expression. */
+function jsxContextTypeText7(
+  checker: ReturnType<ts.Program["getTypeChecker"]>,
+  expression: ts.Expression,
+): string | undefined {
+  const type = checker.getContextualType(expression);
+  if (type === undefined) return undefined;
+  const text = checker.typeToString(
+    type,
+    expression,
+    ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseFullyQualifiedType,
+  );
+  // A type without a call signature gives the functions no parameter type,
+  // and printer comments (`/*unresolved*/`) do not parse.
+  if (
+    text === "" ||
+    text === "any" ||
+    text === "unknown" ||
+    text === "never" ||
+    text === "error" ||
+    text.includes("/*")
+  )
+    return undefined;
+  return text;
+}
+
+/** The JSX slot an expression fills, and the element whose attributes type
+ * gives it its type, or null when the expression is not in a slot a
+ * component's props type answers (an intrinsic tag's attribute is answered
+ * by JSX.IntrinsicElements; a fragment has no tag). */
+interface JsxSlot7 {
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement;
+  /** The props member the expression fills; null for a spread of props. */
+  name: string | null;
+}
+
+function jsxSlot7(expression: ts.Expression): JsxSlot7 | null {
+  const holder = expression.parent;
+  if (holder === undefined) return null;
+  if (ts.isJsxSpreadAttribute(holder)) return jsxSlotOfAttributes(holder.parent, null);
+  if (!ts.isJsxExpression(holder) || holder.parent === undefined) return null;
+  const parent = holder.parent;
+  if (ts.isJsxAttribute(parent)) {
+    const name = jsxAttributeNameText(parent.name);
+    // A key is JSX's own attribute, not a props member.
+    if (name === undefined || name === "key" || name === "ref") return null;
+    return jsxSlotOfAttributes(parent.parent, name);
+  }
+  if (ts.isJsxElement(parent)) return { opening: parent.openingElement, name: "children" };
+  return null;
+}
+
+function jsxSlotOfAttributes(node: ts.Node | undefined, name: string | null): JsxSlot7 | null {
+  const parent = node?.parent;
+  if (parent === undefined) return null;
+  if (ts.isJsxOpeningElement(parent) || ts.isJsxSelfClosingElement(parent))
+    return { opening: parent, name };
+  return null;
+}
+
+function jsxAttributeNameText(name: ts.JsxAttributeName): string | undefined {
+  if (ts.isIdentifier(name)) return name.text;
+  if (ts.isJsxNamespacedName(name)) return `${name.namespace.text}:${name.name.text}`;
+  return undefined;
+}
+
+/** The tag's text when it names a value a type query can read
+ * (`Tag`, `UI.Tag`), or undefined for an intrinsic tag, a namespaced one, and
+ * an expression such as `this.Tag`. */
+function jsxValueTagText(tag: ts.JsxTagNameExpression): string | undefined {
+  if (ts.isIdentifier(tag)) return isIntrinsicJsxName(tag.text) ? undefined : tag.text;
+  if (ts.isPropertyAccessExpression(tag)) return jsxEntityText(tag);
+  return undefined;
+}
+
+function jsxEntityText(node: ts.Expression): string | undefined {
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isPropertyAccessExpression(node)) {
+    const left = jsxEntityText(node.expression);
+    return left === undefined ? undefined : `${left}.${node.name.text}`;
+  }
+  return undefined;
 }
 
 function loadProgram7(

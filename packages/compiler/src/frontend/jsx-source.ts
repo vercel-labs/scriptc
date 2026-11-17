@@ -940,7 +940,7 @@ function jsxSelf(node: ts.Node): string {
 }
 
 /** TypeScript's intrinsic-element test: a lowercase first letter or a dash. */
-function isIntrinsicJsxName(name: string): boolean {
+export function isIntrinsicJsxName(name: string): boolean {
   const ch = name.charCodeAt(0);
   return (ch >= 97 && ch <= 122) || name.includes("-");
 }

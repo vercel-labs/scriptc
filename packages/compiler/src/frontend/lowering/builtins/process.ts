@@ -1,7 +1,14 @@
 import { keyedHelperName } from "../stable-names.js";
 import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
-import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  boolLit,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import { withIgnoredArguments } from "./call-arguments.js";
 import { checkedTimerStyleCallback } from "../lower-timers.js";
 import { isTimerHandleTyped } from "./timers.js";
@@ -247,6 +254,159 @@ export const NODE_COMPAT_VERSION = "24.22.1";
  * the original stdout/stderr descriptor. Other declared stream members
  * retain member-qualified diagnostics.
  * Null for non-procStream receivers. */
+/** The tty.WriteStream cursor methods a process stream has only while its
+ * descriptor is a terminal, by the rl.seq kind that builds their escape
+ * sequence: cursorTo(x[, y]), moveCursor(dx, dy), clearLine(dir) and
+ * clearScreenDown(). */
+const CURSOR_STREAM_METHODS: ReadonlyMap<string, number> = new Map([
+  ["cursorTo", 0],
+  ["moveCursor", 1],
+  ["clearLine", 2],
+  ["clearScreenDown", 3],
+]);
+
+function isNullishNode(node: ts.Expression): boolean {
+  const value = withoutParenthesesTypeWrappers(node);
+  return (
+    value.kind === ts.SyntaxKind.NullKeyword ||
+    (ts.isIdentifier(value) && value.text === "undefined")
+  );
+}
+
+/** `out.cursorTo(x[, y][, callback])`, `out.moveCursor(dx, dy[, callback])`,
+ * `out.clearLine(dir[, callback])` and `out.clearScreenDown([callback])`:
+ * the escape sequence rl.seq builds, written through the stream. A stream
+ * whose descriptor is no terminal has none of these methods in Node, so the
+ * call throws Node's TypeError there instead of writing. */
+function lowerProcStreamCursorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  kind: number,
+  loc: SrcLoc,
+): IrExpr {
+  const name = access.name.text;
+  const args = [...call.arguments.nodes];
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`WritableStream.${name} with a spread argument`, call);
+  }
+  const numberCount = kind === 0 || kind === 1 ? 2 : kind === 2 ? 1 : 0;
+  const minimum = kind === 1 ? 2 : kind === 2 ? 1 : 0;
+  let numbers = args.slice(0, numberCount).filter((arg) => !isNullishNode(arg));
+  let callbackNode: ts.Expression | undefined = args[numberCount];
+  if (kind === 0 && args.length >= 2 && !isNullishNode(args[0]!) && isNullishNode(args[1]!)) {
+    callbackNode = args[2];
+  }
+  if (args.length > numberCount + 1 || numbers.length < minimum) {
+    lowerer.noLowering(`WritableStream.${name} with ${args.length} arguments`, call);
+  }
+  const stmts: IrStmt[] = [];
+  const hold = (label: string, value: IrExpr): IrExpr => {
+    const slot = lowerer.declareHiddenLocal(label, value.type);
+    stmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    return { kind: "varRef", localId: slot.id, type: value.type, loc };
+  };
+  const stream = hold("%cursorStream", lowerer.lowerExpr(access.expression));
+  let noX = false;
+  const values: IrExpr[] = [];
+  let hasB = false;
+  for (let i = 0; i < numbers.length; i++) {
+    const node = numbers[i]!;
+    if (kind === 0 && isNullishNode(node)) {
+      if (i === 0) {
+        noX = true;
+        values.push(numLit(0, loc));
+      }
+      continue;
+    }
+    if (!(lowerer.typeOf(node).flags & ts.TypeFlags.NumberLike)) {
+      lowerer.noLowering(`WritableStream.${name} with an argument that is not a number`, node);
+    }
+    values.push(hold("%cursorArg", lowerer.lowerExprExpecting(node, F64)));
+    if (i === 1) hasB = true;
+  }
+  let callback: IrExpr | null = null;
+  if (callbackNode !== undefined && !isNullishNode(callbackNode)) {
+    const c = lowerer.lowerExpr(callbackNode);
+    if (c.type.kind !== "func" || c.type.params.length > 0 || c.type.ret.kind !== "void") {
+      lowerer.noLowering(
+        `WritableStream.${name} callbacks with parameters or a return value`,
+        callbackNode,
+        "() => void callbacks are supported",
+      );
+    }
+    callback = hold("%cursorCallback", voidizedCallback(lowerer, c, loc));
+  }
+  const seqKind = noX && hasB && kind === 0 ? 4 : kind;
+  const seq = hold("%cursorSeq", {
+    kind: "libCall",
+    fn: "rl.seq",
+    args: [
+      numLit(seqKind, loc),
+      values[0] ?? numLit(0, loc),
+      values[1] ?? numLit(0, loc),
+      boolLit(hasB, loc),
+    ],
+    type: STRING,
+    loc,
+  });
+  const then: IrStmt | null = callback
+    ? {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "process.nextTick", args: [callback], type: VOID, loc },
+        loc,
+      }
+    : null;
+  const write: IrExpr = {
+    kind: "libCall",
+    fn: "procStream.write",
+    args: [stream, seq],
+    type: BOOL,
+    loc,
+  };
+  const withCallback = (body: IrExpr): IrExpr =>
+    callback ? { kind: "seqExpr", stmts: [then!], result: body, type: BOOL, loc } : body;
+  const skip: IrExpr = withCallback(boolLit(true, loc));
+  let terminalBody: IrExpr;
+  if (noX && !hasB) {
+    terminalBody = skip;
+  } else if (kind === 1) {
+    terminalBody = {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "rl.moves", args: [values[0]!, values[1]!], type: BOOL, loc },
+      then: withCallback(write),
+      else_: skip,
+      type: BOOL,
+      loc,
+    };
+  } else {
+    terminalBody = withCallback(write);
+  }
+  const isTTY = processStreamValueMember(lowerer, "isTTY", stream, loc);
+  const terminal = isTTY === null ? null : lowerer.ensureBool(isTTY, access.expression);
+  if (terminal === null) return terminalBody;
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "ternary",
+      cond: terminal,
+      then: terminalBody,
+      else_: nodeThrowExpr(
+        1,
+        "",
+        `${ts.getTextOfNode(call.expression)} is not a function`,
+        BOOL,
+        loc,
+      ),
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
+}
+
 export function lowerProcStreamMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -278,6 +438,10 @@ export function lowerProcStreamMethodCall(
         loc,
       };
     }
+  }
+  const cursorKind = CURSOR_STREAM_METHODS.get(name);
+  if (cursorKind !== undefined) {
+    return lowerProcStreamCursorCall(lowerer, call, access, cursorKind, loc);
   }
   const terminalArity = TERMINAL_STREAM_METHODS.get(name);
   if (

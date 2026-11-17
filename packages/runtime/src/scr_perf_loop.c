@@ -956,8 +956,12 @@ double scr_histo_stat(double handle, double which) {
 ScrBigInt *scr_histo_stat_big(double handle, double which) {
   if (handle >= 1) {
     ScrEld *eld = scr_eld_of(handle);
-    int w = (int)scr_histo_eld_selector((int)which);
-    if (eld == NULL) return scr_bigint_from_i64(w == 0 ? INT64_MAX : 0);
+    /* This switch reads the createHistogram selector order (0 count,
+     * 1 min, 2 max, 5 exceeds) directly from the event-loop histogram's
+     * fields; it does not go through scr_histo_eld_selector, which maps to
+     * the order scr_eld_stat's own switch uses. */
+    int w = (int)which;
+    if (eld == NULL) return scr_bigint_from_i64(w == 1 ? INT64_MAX : 0);
     switch (w) {
       case 0:
         return scr_bigint_from_i64((int64_t)eld->count);

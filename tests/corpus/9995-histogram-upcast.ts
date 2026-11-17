@@ -33,6 +33,19 @@ console.log(
   Number(asHistogram.percentileBigInt(50)) === eld.percentile(50),
   asHistogram.exceeds === eld.exceeds,
 );
+console.log(
+  "upcast big",
+  Number(asHistogram.countBigInt) === asHistogram.count,
+  Number(asHistogram.minBigInt) === asHistogram.min,
+  Number(asHistogram.maxBigInt) === asHistogram.max,
+  asHistogram.exceedsBigInt === 0n,
+);
 console.log("upcast countAt", asHistogram.countAt(asHistogram.min) > 0, asHistogram.cdf(1e15) > 0);
 asHistogram.reset();
 console.log("upcast reset", asHistogram.count, eld.count, asHistogram.percentile(50), eld.percentile(50));
+console.log(
+  "upcast reset big",
+  asHistogram.countBigInt,
+  asHistogram.minBigInt === 9223372036854775807n,
+  Number(asHistogram.minBigInt) === asHistogram.min,
+);

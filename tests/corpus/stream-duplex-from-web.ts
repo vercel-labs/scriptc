@@ -153,6 +153,31 @@ async function main(): Promise<void> {
   erroring.on("error", (error: Error) => log.push(`readable error ${error.message}`));
   await tick();
   log.push(`readable destroyed ${erroring.destroyed} errored ${erroring.errored?.message ?? "-"}`);
+
+  // A readable error ends the pair on both sides, so the Duplex reports it
+  // even when the sink's abort hook never settles (destroy does not wait for
+  // the aborts once either side has closed).
+  let abortCalls = 0;
+  const stalled = Duplex.fromWeb({
+    readable: new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.error(new Error("readable fail"));
+      },
+    }),
+    writable: new WritableStream<Uint8Array>({
+      write(): void {},
+      abort(): Promise<void> {
+        abortCalls++;
+        return new Promise<void>(() => {});
+      },
+    }),
+  });
+  stalled.on("error", (error: Error) => log.push(`stalled error ${error.message}`));
+  stalled.on("close", () => log.push("stalled close"));
+  await tick();
+  log.push(
+    `stalled abort ${abortCalls} destroyed ${stalled.destroyed} errored ${stalled.errored?.message ?? "-"}`,
+  );
 }
 
 main().then(() => {

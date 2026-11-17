@@ -344,6 +344,10 @@ static void sdfw_closed_settle(SdfwCtx *c, ScrDyn *reason) {
   c->writer_closed = true;
   if (!d) return;
   if (reason) {
+    /* A rejected writer.closed has already failed the pair: both sides are
+     * closed, so the destroy completes without aborting or cancelling (Node
+     * records both flags before it destroys). */
+    c->reader_closed = true;
     sdfw_destroy_with(c, reason);
   } else if (scr_stream_prop(d, "writableEnded") == 0) {
     ScrStr *message = scr_str_new("Premature close", 15);
@@ -387,7 +391,11 @@ static void sdfw_reader_closed_entry(ScrFiber *fiber, void *arg) {
     ScrCaught *caught = scr_exc_take();
     ScrDyn *reason = scr_caught_to_dyn(caught);
     scr_caught_release(caught);
+    /* The readable failed, so the pair is over on both sides: the destroy
+     * completes at once instead of waiting for the writer's abort hook
+     * (Node marks both closed before it destroys). */
     w.ctx->reader_closed = true;
+    w.ctx->writer_closed = true;
     sdfw_destroy_with(w.ctx, reason);
     if (reason) scr_dyn_release(reason);
   }

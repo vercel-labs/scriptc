@@ -700,6 +700,7 @@ struct ScrH2Stream {
   bool trailers_ready;  /* 'wantTrailers' fired: sendTrailers may go out */
   bool sent_trailers;
   bool got_response;    /* client: the final response HEADERS arrived */
+  bool got_trailers;    /* the request/response trailer block arrived */
   ScrNetLs data_ls, end_ls, close_ls, err_ls, resp_ls, aborted_ls, ready_ls,
       trailers_ls, wanttrailers_ls, push_ls, frameerr_ls, headers_ls, continue_ls;
   /* The AsyncLocalStorage context of the request() call that created a
@@ -2863,6 +2864,18 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
         scr_h2_stream_settle(st);
         return;
       }
+      if (st->got_trailers || st->end_recv) {
+        /* the trailer block already arrived: further HEADERS on the stream
+         * are a protocol error, and accepting them would keep appending to
+         * the request's trailer storage while the response is pending. */
+        scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+        st->rst_code = 1;
+        st->destroyed = true;
+        scr_h2_stream_begin_close(st);
+        scr_h2_stream_settle(st);
+        return;
+      }
+      st->got_trailers = true;
       /* a second HEADERS block on an open server stream: the request's
        * trailers. They land in the compat request's trailer fields, fire
        * the stream's 'trailers' event, and END_STREAM ends the request. */

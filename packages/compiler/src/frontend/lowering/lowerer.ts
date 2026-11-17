@@ -75,6 +75,7 @@ import {
   jsStoresWrittenValue,
   jsWritableBindingDeclaration,
   operatorOperandNodes,
+  voidTruthinessHeldCall,
   voidTruthinessNeedsRuntimeValue,
 } from "../tsc-codes.js";
 import {
@@ -3824,6 +3825,12 @@ export class Lowerer {
    * census (builtin-member-writes.ts): each reads its members at build
    * time. */
   readonly builtinFeatureTests = new Set<ts.Expression>();
+  /** The void-typed calls whose value a variable held for a truthiness
+   * test (`var v = Internals.d.f(); if (v)`, tsc-codes.ts TS1345): the
+   * binding stores the call's checked-dynamic result, so the lowering
+   * performs this call through the checked-dynamic invocation even though
+   * the operand itself is the binding. */
+  readonly voidTruthinessValueCalls = new Set<ts.CallExpression>();
   /** Per file, the `const` names that may denote a built-in object, for
    * the syntactic test in front of the write detection
    * (builtin-member-writes.ts): a function of the file alone. */
@@ -10595,6 +10602,20 @@ export class Lowerer {
         const global = this.globalsBySymbol.get(symbol);
         if (global) global.type = DYN;
       };
+      // Bindings a void-truthiness test reads. A later assignment of another
+      // void-typed member call into one of them must keep the call's value
+      // too; collect the bindings before the walk so an assignment written
+      // before the test (or in a function the test reaches) is covered.
+      const truthinessBindings = new Set<ts.Symbol>();
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isIdentifier(node) && this.opinionAt(node, 1345)) {
+          if (voidTruthinessHeldCall(node, this.program) !== null) {
+            const symbol = this.resolveValueSymbol(node);
+            if (symbol !== null) truthinessBindings.add(symbol);
+          }
+        }
+        return undefined;
+      });
       ts.walkPreorder(sf, (node) => {
         if (
           ts.isParameter(node) &&
@@ -10656,6 +10677,47 @@ export class Lowerer {
           const calleeBinding = this.voidTruthinessCalleeBinding(node);
           if (calleeBinding !== null && !this.runtimeOptionalBindingTypes.has(calleeBinding)) {
             widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
+        // The same test over a variable that held the call's result
+        // (`var v = Internals.d.f(); if (v)`): Node reads the value the
+        // call answered, so the binding stores that checked-dynamic value
+        // and the call lowers through the checked-dynamic invocation. The
+        // callee's root binding widens too, so the member read follows the
+        // function the program stored there.
+        if (ts.isIdentifier(node) && this.opinionAt(node, 1345)) {
+          const held = voidTruthinessHeldCall(node, this.program);
+          if (held !== null) {
+            this.voidTruthinessValueCalls.add(held);
+            const binding = this.resolveValueSymbol(node);
+            if (binding !== null) widenBinding(binding);
+            const calleeBinding = this.voidTruthinessCalleeBinding(held);
+            if (calleeBinding !== null) widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
+        // A later assignment of another void-typed member call into a binding
+        // the truthiness test reads (`v = Other.d.f()`): Node's assignment
+        // stores the value the call answered, so the call lowers through the
+        // checked-dynamic invocation and the callee's own storage widens to
+        // keep that value.
+        if (
+          truthinessBindings.size > 0 &&
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left) &&
+          ts.isCallExpression(node.right)
+        ) {
+          const symbol = this.resolveValueSymbol(node.left);
+          if (
+            symbol !== null &&
+            truthinessBindings.has(symbol) &&
+            voidTruthinessNeedsRuntimeValue(node.right, this.program)
+          ) {
+            this.voidTruthinessValueCalls.add(node.right);
+            const calleeBinding = this.voidTruthinessCalleeBinding(node.right);
+            if (calleeBinding !== null) widenBinding(calleeBinding);
             return undefined;
           }
         }

@@ -54,4 +54,28 @@ const lines: string[] = [];
   });
 }
 
+// A one-shot listener that sends the block on a later turn still owns the
+// stream: no empty block closes it first.
+{
+  const server = http2.createServer();
+  server.on("stream", (stream) => {
+    stream.respond({ ":status": 200 }, { waitForTrailers: true });
+    stream.once("wantTrailers", () => {
+      setTimeout(() => stream.sendTrailers({ "x-late": "1" }), 10);
+    });
+    stream.end("late");
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const client = http2.connect(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const request = client.request({ ":path": "/late" });
+      request.on("trailers", (trailers) => lines.push(`late trailers ${trailers["x-late"]}`));
+      request.resume();
+      request.on("end", () => lines.push("late end"));
+      request.on("close", () => client.close(() => server.close(() => resolve())));
+      request.end();
+    });
+  });
+}
+
 for (const line of lines.sort()) console.log(line);

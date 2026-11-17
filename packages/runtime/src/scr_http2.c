@@ -2127,8 +2127,13 @@ static void scr_h2_stream_want_trailers(ScrH2Stream *st) {
     scr_h2_send_trailers_block(st, pairs);
     scr_arr_release(pairs);
   }
+  /* Node's auto-send happens only when the emit had no listeners at all.
+   * A one-shot listener leaves the list as it runs, so the count is read
+   * BEFORE the fire: a listener that defers sendTrailers() must not find
+   * an empty block already closing the stream. */
+  bool listened = st->wanttrailers_ls.n > 0;
   scr_net_fire0_this(&st->wanttrailers_ls, st, SCR_DYNH_H2_STREAM);
-  if (!scr_h2_stream_local_closed(st) && st->wanttrailers_ls.n == 0 && st->compat_res == NULL) {
+  if (!listened && !scr_h2_stream_local_closed(st) && st->compat_res == NULL) {
     scr_h2_send_trailers_block(st, NULL);
   }
 }

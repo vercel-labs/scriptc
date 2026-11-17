@@ -8739,6 +8739,11 @@ void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg) {
 
 void scr_net_server_defer_connections(ScrNetServer *s) { s->defer_conn = true; }
 
+/* Whether this server speaks TLS: the handshake-complete event is the
+ * marker (tls.createServer/tls.Server and https set it; a plain net
+ * server and http2's secure server do not). */
+bool scr_net_server_is_tls(const ScrNetServer *s) { return s->defer_conn; }
+
 void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, void **ctx,
                                      void (**ctx_free)(void *)) {
   *fn = s->native_conn;

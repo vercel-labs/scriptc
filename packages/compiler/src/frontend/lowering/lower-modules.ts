@@ -20,6 +20,7 @@ import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isVoidLiteralCast } from "../js-void-initializers.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
+import { collectRebindableRequireDecls, isRebindableRequireDecl } from "./rebindable-requires.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -421,6 +422,9 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
   return files.map((sf) => {
     const fp: FileParts = { sf, fnDecls: [], classDecls: [], topStmts: [] };
     const rebindable = collectRebindableFunctions(lowerer, sf);
+    // A require binding the file reassigns owns a module global
+    // (rebindable-requires.ts); collectGlobals registers it.
+    collectRebindableRequireDecls(lowerer, sf);
     for (const stmt of sf.statements.nodes) {
       // A reassigned JavaScript declaration lives in a module global that
       // the init body assigns first (rebindable-functions.ts).
@@ -2519,6 +2523,43 @@ export function collectGlobals(
       lowerer.globalsList.push(g);
       continue;
     }
+    if (ts.isVariableStatement(stmt)) {
+      // A require binding the file reassigns owns a checked-dynamic module
+      // global (rebindable-requires.ts): the declaration stores the module's
+      // value there, and reads and writes of the binding alias it. Every
+      // other statement continues into the registration below, and so does
+      // a MIXED statement (`var a = require("x"), b = 1`): its siblings
+      // need their ordinary globals or a function reading one has no
+      // storage at all. The registration below leaves the rebound
+      // declarator alone — its symbol is registered here already.
+      let rebound = false;
+      let siblings = false;
+      for (const decl of stmt.declarationList.declarations.nodes) {
+        if (!ts.isIdentifier(decl.name) || !isRebindableRequireDecl(lowerer, decl)) {
+          siblings = true;
+          continue;
+        }
+        rebound = true;
+        const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+        if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+          const g: IrGlobal = {
+            id: `%g.${tag}${decl.name.text}`,
+            name: decl.name.text,
+            type: DYN,
+            mutable: true,
+          };
+          lowerer.globalsBySymbol.set(symbol, g);
+          lowerer.globalsByDeclNode.set(decl, g);
+          lowerer.globalsList.push(g);
+          // JavaScript hoists this `var` to undefined at module entry: a
+          // read above the declaration must see native undefined, never the
+          // C-level NULL a dyn slot starts as (truthiness would dereference
+          // it).
+          noteVarGlobalEntryInit(lowerer, sf, g);
+        }
+      }
+      if (rebound && !siblings) continue;
+    }
     if (ts.isFunctionDeclaration(stmt) && stmt.name && isRebindableFunction(lowerer, stmt)) {
       const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
       if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
@@ -2959,6 +3000,9 @@ export function collectGlobals(
       // probes below would otherwise claim the call-initializer shape
       // and put its fences on the build.
       if (provenanceElidedConstDecl(lowerer, decl)) continue;
+      // A require binding the file reassigns owns checked-dynamic storage
+      // from the registration at the top of this pass; nothing here.
+      if (ts.isIdentifier(decl.name) && isRebindableRequireDecl(lowerer, decl)) continue;
       // A require declarator beside other declarators (`var EventEmitter =
       // require("events"), R = class extends EventEmitter {}`): the
       // statement lowering treats it as the alias plumbing of a whole

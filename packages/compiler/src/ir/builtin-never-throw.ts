@@ -293,6 +293,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_tls_sock_disable_renegotiation does nothing: the provider keeps
   // renegotiation off, which is what the call asks for.
   "tls.sockDisableRenegotiation",
+  // scr_net_server_is_tls and scr_tls_server_is_dyn read a handle's tag
+  // for `instanceof tls.Server`; no program code runs.
+  "tls.serverIs",
+  "tls.serverIsDyn",
   // scr_dgram_async_dispose allocates the promise and registers the close
   // listener; the only failure is allocation, which aborts.
   "dgram.asyncDispose",

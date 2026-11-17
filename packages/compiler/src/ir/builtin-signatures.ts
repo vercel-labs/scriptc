@@ -2599,7 +2599,7 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     // The suite body takes no parameters or its SuiteContext (flag 2).
-    "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64], result: VOID },
+    "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64], result: VOID },
     // The trailing string is the hook call's "file:line:col".
     "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
     "test.sub": {
@@ -3312,6 +3312,10 @@ function buildLibFnSignatures() {
     /** tlsSocket.servername (string or false) and getSession() (a Buffer
      * or null) as dyn values, and disableRenegotiation's no-op. */
     "tls.sockDynMember": { argTypes: [NETSOCKET_T, F64], result: DYN },
+    /** `x instanceof tls.Server`: the server handle's TLS marker. */
+    "tls.serverIs": { argTypes: [NETSERVER_T], result: BOOL },
+    /** The same test over a checked-dynamic value (a union operand). */
+    "tls.serverIsDyn": { argTypes: [DYN], result: BOOL },
     /** disableRenegotiation(): a no-op call, so the receiver is still
      * evaluated (and its exceptions still surface). */
     "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },

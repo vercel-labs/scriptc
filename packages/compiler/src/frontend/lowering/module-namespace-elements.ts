@@ -638,6 +638,24 @@ export function moduleNamespaceBuiltinDynValue(
   return value;
 }
 
+/** Whether the boxed value of a builtin module namespace serves `member`:
+ * the member has a checked-dynamic value lowering, so a read through the
+ * box answers what Node's module object holds. An unserved member reads
+ * undefined there, and a caller that needs Node's answer has to fall back
+ * to the module's static member tables. Builds (and caches) the box when
+ * this is the first ask. */
+export function builtinNamespaceBoxServes(
+  lowerer: Lowerer,
+  moduleId: string,
+  member: string,
+  loc: SrcLoc,
+): boolean {
+  if (!moduleId.startsWith("builtin:")) return false;
+  if (!lowerer.builtinNamespaceBoxKeys.has(moduleId))
+    moduleNamespaceBuiltinDynValue(lowerer, moduleId, loc);
+  return lowerer.builtinNamespaceBoxKeys.get(moduleId)?.includes(member) ?? false;
+}
+
 /** Every member key the box tries, sorted: the lowering tables' value
  * members, the sub-module members and the module-level objects. */
 function builtinBoxMemberNames(lowerer: Lowerer, module: string): string[] {

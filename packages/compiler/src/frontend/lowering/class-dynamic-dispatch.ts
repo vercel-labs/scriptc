@@ -1028,6 +1028,11 @@ function mergePositions(left: readonly number[], right: readonly number[]): numb
  * against a test of every receiver. */
 const CHECK_CANDIDATES = process.env["SCRIPTC_CHECK_DISPATCH_CANDIDATES"] === "1";
 
+/** Inherited names a class table repeats before it is worth sharing them with
+ * a base class's table: below this, the per-read delegation call costs more
+ * than the branches it saves. */
+const INHERITED_NAMES_TO_SHARE = 32;
+
 export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = false): IrFunction {
   const name = readOnly ? READ_PROPERTIES : "%dyn.class.properties";
   lowerer.shareHelper(name);
@@ -5396,7 +5401,11 @@ export class ClassDynamicDispatch {
     }
     for (const dispatch of this.computed.values()) {
       if (!dispatch.instances) continue;
-      for (const plan of this.propertyReceivers(lowerer, true)) {
+      const plans = this.propertyReceivers(lowerer, true);
+      // The classes that get a table of their own for this dispatch, which a
+      // class may delegate to.
+      const tableClasses = new Set(plans.map((plan) => plan.info.def.name));
+      for (const plan of plans) {
         if (dispatch.classes.has(plan.key)) continue;
         const { info } = plan;
         dispatch.classes.add(plan.key);
@@ -5720,7 +5729,92 @@ export class ClassDynamicDispatch {
           changed = true;
           continue;
         }
-        const names = new Set([...info.fields.keys()].filter(isClassOwnEnumerableFieldName));
+        // A class with enough inherited names delegates the ones it does not
+        // declare to a base class that has a table of its own for this
+        // operation, so the inherited branches are not repeated. A runtime
+        // base (Error, EventTarget, Date, a stream) has no table, so the
+        // first program class in the chain answers its runtime members
+        // itself. The base's table takes the same value, key, stored value
+        // and Reflect receiver; the instance is upcast to it, whose fields
+        // are an identical prefix of this class's layout.
+        const collectNames = (): Set<string> => {
+          const found = new Set<string>();
+          for (const field of info.fields.keys())
+            if (isClassOwnEnumerableFieldName(field)) found.add(field);
+          const addMethods = (owner: ClassInfo): void => {
+            const methodNames = [...owner.methods.keys()];
+            if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
+            for (const method of methodNames) {
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
+              if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) found.add(name);
+            }
+          };
+          for (let owner: ClassInfo | null = info; owner; owner = owner.base) addMethods(owner);
+          return found;
+        };
+        let delegate: ClassInfo | null = null;
+        for (let owner = info.base; owner !== null; owner = owner.base) {
+          if (owner.decl !== null && !owner.def.runtime && tableClasses.has(owner.def.name)) {
+            delegate = owner;
+            break;
+          }
+        }
+        if (delegate !== null) {
+          // Only the names above the delegating base are shared, so they are
+          // only worth sharing when this class would otherwise repeat them
+          // and some other table would repeat them too.
+          let inheritedNames = 0;
+          for (let owner: ClassInfo | null = delegate; owner !== null; owner = owner.base) {
+            inheritedNames += [...owner.fields.keys()].filter(isClassOwnEnumerableFieldName).length;
+            inheritedNames += owner.methods.size + (owner.genericMethods?.size ?? 0);
+          }
+          let siblings = 0;
+          for (const name of tableClasses) {
+            if (name === info.def.name || name === delegate.def.name) continue;
+            if (lowerer.isSubclassOf(name, delegate.def.name)) siblings++;
+          }
+          if (inheritedNames < INHERITED_NAMES_TO_SHARE || siblings === 0) delegate = null;
+        }
+        const names = delegate === null ? collectNames() : new Set<string>();
+        if (delegate !== null) {
+          for (
+            let owner: ClassInfo | null = info;
+            owner !== null && owner !== delegate;
+            owner = owner.base
+          ) {
+            for (const field of owner.fieldOrder)
+              if (isClassOwnEnumerableFieldName(field.name)) names.add(field.name);
+            const methodNames = [...owner.methods.keys()];
+            if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
+            for (const method of methodNames) {
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
+              if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) names.add(name);
+            }
+          }
+          // A name the program reflects on some class prototype answers from
+          // the receiver's own class's prototype view, which the base's table
+          // cannot do: keep it in every table so the view starts at the
+          // receiver's class.
+          if (lowerer.prototypeMethodAccesses.size > 0) {
+            for (const name of collectNames()) {
+              if (!lowerer.prototypeMethodAccesses.has(name)) continue;
+              const accessor =
+                findMethodOn(lowerer, info, `get:${name}`) ??
+                findMethodOn(lowerer, info, `set:${name}`);
+              if (accessor !== null && prototypeViewable(accessor.declarer)) names.add(name);
+            }
+          }
+        }
+        const delegateName =
+          delegate === null
+            ? null
+            : keyedHelperName(
+                lowerer,
+                "%dyn.class.keys",
+                JSON.stringify([dispatch.operation, delegate.def.name]),
+              );
         // A class rooted at Error also has the own properties its runtime
         // base keeps in slots (`stack`, `cause`), which are neither declared
         // fields nor bag entries. A read or a presence test of a name the
@@ -5733,29 +5827,42 @@ export class ClassDynamicDispatch {
         // `stack` is read and written through the native slot, as the
         // by-name dispatch does.
         const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
-        if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
-        if (info.builtinStream)
-          for (const name of [
-            ...STREAM_BOOL_PROPERTIES,
-            ...STREAM_NUM_PROPERTIES,
-            ...STREAM_STATE_GETTERS.keys(),
-          ])
-            names.add(name);
-        const inherited = eventTargetApiMembers(info);
-        if (inherited) for (const name of inherited) names.add(name);
-        if (dateRootOf(info))
-          for (const name of DATE_PROTOTYPE_METHOD_NAMES)
-            if (dateInheritedMember(lowerer, info, name)) names.add(name);
-
-        for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
-          const methodNames = [...owner.methods.keys()];
-          if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
-          for (const method of methodNames) {
-            const name =
-              method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
-            if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) names.add(name);
-          }
+        if (delegateName === null) {
+          if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
+          if (info.builtinStream)
+            for (const name of [
+              ...STREAM_BOOL_PROPERTIES,
+              ...STREAM_NUM_PROPERTIES,
+              ...STREAM_STATE_GETTERS.keys(),
+            ])
+              names.add(name);
+          const inherited = eventTargetApiMembers(info);
+          if (inherited) for (const name of inherited) names.add(name);
+          if (dateRootOf(info))
+            for (const name of DATE_PROTOTYPE_METHOD_NAMES)
+              if (dateInheritedMember(lowerer, info, name)) names.add(name);
         }
+        const delegateTo = (table: string): IrStmt[] => {
+          const call: IrExpr = {
+            kind: "call",
+            callee: table,
+            args: [
+              varRef("p.0", DYN, loc),
+              varRef(TABLE_KEY, STRING, loc),
+              ...(dispatch.write ? [varRef("p.1", DYN, loc)] : []),
+              ...(dispatch.reflect ? [varRef("p.reflectReceiver", DYN, loc)] : []),
+              lowerer.upcastTo(receiver, delegate!.def.name),
+            ],
+            type: dispatch.fn.returnType,
+            loc,
+          };
+          return dispatch.write && !dispatch.reflect
+            ? [
+                { kind: "exprStmt", expr: call, loc },
+                { kind: "return", value: null, loc },
+              ]
+            : [{ kind: "return", value: call, loc }];
+        };
         const branch: IrStmt[] = [];
         for (const name of names) {
           if (dispatch.numericKey && String(Number(name)) !== name) continue;
@@ -5860,23 +5967,25 @@ export class ClassDynamicDispatch {
           })),
           body: [
             ...branch,
-            ...(errorRooted && !dispatch.write
-              ? dispatch.probe || dispatch.reflect
-                ? viewFallthrough()
-                : [
-                    {
-                      kind: "if" as const,
-                      cond: transformExpr(dispatch.bagHas(), {
-                        stmt: (statement) => statement,
-                        expr: inTable,
-                      }),
-                      then: bagFallthrough(),
-                      else_: null,
-                      loc,
-                    },
-                    ...viewFallthrough(),
-                  ]
-              : bagFallthrough()),
+            ...(delegateName !== null
+              ? delegateTo(delegateName)
+              : errorRooted && !dispatch.write
+                ? dispatch.probe || dispatch.reflect
+                  ? viewFallthrough()
+                  : [
+                      {
+                        kind: "if" as const,
+                        cond: transformExpr(dispatch.bagHas(), {
+                          stmt: (statement) => statement,
+                          expr: inTable,
+                        }),
+                        then: bagFallthrough(),
+                        else_: null,
+                        loc,
+                      },
+                      ...viewFallthrough(),
+                    ]
+                : bagFallthrough()),
           ],
           loc,
         };

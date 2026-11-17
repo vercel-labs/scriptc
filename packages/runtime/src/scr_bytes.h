@@ -169,6 +169,9 @@ void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
 ScrDyn *scr_worker_get_environment_data(ScrDyn *key);
 ScrDyn *scr_worker_resource_limits(void);
 ScrDyn *scr_worker_thread_name_current(void);
+/* worker.performance over a Worker handle: its { eventLoopUtilization }
+ * object (scr_worker_events.c; the value borrowed, the result +1). */
+ScrDyn *scr_worker_performance(ScrDyn *value);
 /* worker_threads.SHARE_ENV (+1): the symbol the Worker env option
  * compares against (scr_worker_events.c). */
 ScrSym *scr_worker_share_env(void);
@@ -683,6 +686,13 @@ void scr_buffer_pool_reset(void);
 /* A pooled copy of an unpooled u8 Buffer below the pool threshold; others
  * are returned as they are. Consumes `b`. */
 ScrBytes *scr_buffer_pool_adopt(ScrBytes *b);
+/* Buffer.copyBytesFrom(view[, offset[, length]]): a pooled copy of the
+ * view's underlying bytes over the element window [offset, offset+length).
+ * `mask` bit 0 marks a supplied offset and bit 1 a supplied length; a
+ * supplied position takes Node's validateInteger, and an empty view answers
+ * an empty Buffer. NULL with the exception pending. */
+ScrBytes *scr_buffer_copy_bytes_from(const ScrBytes *view, double offset, double length,
+                                     double mask);
 ScrBytes *scr_bytes_from_str_checked(const ScrStr *s, const ScrStr *enc);
 
 /* Buffer.byteLength(string, enc) — enc NORMALIZED like from_str — and

@@ -37,11 +37,18 @@ declare module "node:fs" {
   ): string | Buffer;
   export function readFileSync(path: string | URL, options: unknown): string | Buffer;
   /* Error-first callbacks select string or Buffer data from their encoding.
-   * Unknown options retain that union until the caller validates the value. */
+   * Unknown options retain that union until the caller validates the value.
+   * Without options the data is the file's bytes. A failed read calls back
+   * with the error and NO data, so the parameter is `any` (the stance the
+   * stat family's completion takes): read or test whatever arrived. */
+  export function readFile(
+    path: string,
+    callback: (error: NodeJS.ErrnoException | null, data: any) => void,
+  ): void;
   export function readFile(
     path: string,
     options: unknown,
-    callback: (error: Error | null, data: string | Buffer) => void,
+    callback: (error: NodeJS.ErrnoException | null, data: any) => void,
   ): void;
   /* The options form carries the mode (a number or an octal string,
    * applied at CREATION only, like Node — an existing file keeps its
@@ -265,13 +272,22 @@ declare module "node:fs" {
   ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
-  /* The recursive form: every entry below the path, relative to it. */
+  /* The bare encoding spellings name the codec for the entry names; the
+   * bytes form answers them as Buffers, byte for byte. */
+  export function readdirSync(path: string | URL, options: "buffer"): Buffer[];
+  export function readdirSync(path: string | URL, options: BufferEncoding): string[];
+  export function readdirSync(
+    path: string | URL,
+    options: { encoding: "buffer"; withFileTypes?: false; recursive?: false },
+  ): Buffer[];
+  /* The recursive form: every entry below the path, relative to it. A
+   * recursive listing decodes its names as utf8. */
   export function readdirSync(
     path: string | URL,
     options: {
       recursive?: boolean;
       withFileTypes?: false;
-      encoding?: "utf8" | "utf-8";
+      encoding?: BufferEncoding | null;
       [option: string]: unknown;
     },
   ): string[];
@@ -772,9 +788,16 @@ declare module "node:fs" {
    * path that cannot be stat'd polls as all-zero Stats. One poller per
    * resolved path is shared by every listener on it. interval defaults to
    * 5007 ms, persistent defaults to true; bigint: true (BigIntStats) has
-   * no lowering. The call is a statement: Node's StatWatcher has no
-   * lowering. */
-  export interface StatWatcher {}
+   * no lowering. The call answers the StatWatcher its listener registered
+   * on, whose ref()/unref() move that registration's loop liveness. */
+  export interface StatWatcher {
+    /* The registration's loop liveness: a reffed watcher keeps the process
+     * alive (the default, and what the `persistent` option sets), an
+     * unref'd one lets it exit. fs.unwatchFile is the removal API; after it
+     * removes this listener both are no-ops. */
+    ref(): void;
+    unref(): void;
+  }
   export function watchFile(
     filename: string,
     options: { interval?: number; persistent?: boolean; bigint?: false },
@@ -1020,18 +1043,18 @@ declare module "node:fs" {
   export function fstat(...args: any[]): void;
   export function open(
     path: string | URL,
-    callback: (err: NodeJS.ErrnoException | null, fd?: number) => void,
+    callback: (err: NodeJS.ErrnoException | null, fd: number) => void,
   ): void;
   export function open(
     path: string | URL,
     flags: string | number | undefined,
-    callback: (err: NodeJS.ErrnoException | null, fd?: number) => void,
+    callback: (err: NodeJS.ErrnoException | null, fd: number) => void,
   ): void;
   export function open(
     path: string | URL,
     flags: string | number | undefined,
     mode: number | string,
-    callback: (err: NodeJS.ErrnoException | null, fd?: number) => void,
+    callback: (err: NodeJS.ErrnoException | null, fd: number) => void,
   ): void;
   export function open(...args: any[]): void;
   export function writeFile(
@@ -1118,6 +1141,11 @@ declare module "node:fs" {
     buffer: Uint8Array,
     options: WriteSyncOptions | null | undefined,
     callback: (err: NodeJS.ErrnoException | null, written?: number, buffer?: Uint8Array) => void,
+  ): void;
+  export function write(
+    fd: number,
+    string: string,
+    callback: (err: NodeJS.ErrnoException | null, written?: number, string?: string) => void,
   ): void;
   export function write(
     fd: number,

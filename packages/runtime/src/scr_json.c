@@ -22,6 +22,7 @@
  *   serializers (and the error messages here).
  */
 #include "scr_runtime.h"
+#include "scr_message.h" /* the message format's wrapper hook */
 #include "scr_key.h"
 #include "scr_record_source_private.h"
 
@@ -88,6 +89,18 @@ const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
  * namespace. Thread-local like the boxes it answers for: a thread that
  * boxed no namespace has no branded value. */
 SCR_TL bool (*scr_module_namespace_dyn_is)(const ScrDyn *value) = NULL;
+/* The primitive-wrapper unit's structuredClone case (scr_js_wrapper.c
+ * installs it); NULL keeps the refusal for a program without wrappers. */
+SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value) = NULL;
+/* The same unit's answer to the message format's encoder (scr_message.h):
+ * NULL, as in a program without wrappers, means no message carries one. The
+ * variable lives here because every program links this unit, while neither
+ * the wrapper unit nor the message unit links the other. */
+_Atomic(const ScrMessageWrapperOps *) scr_message_wrapper_ops = NULL;
+
+void scr_message_set_wrapper_ops(const ScrMessageWrapperOps *ops) {
+  atomic_store_explicit(&scr_message_wrapper_ops, ops, memory_order_relaxed);
+}
 #ifdef SCR_JS_OBJECT_MODEL
 /* Set by scr_dyn_invoke.c when the object model build links it, so a
  * DataView's `constructor` is the global's own interned value. A program that
@@ -7388,6 +7401,7 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
     {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
     {"WeakRef", SCR_DYNH_WEAK_REF},
+    {"ArrayBuffer", SCR_DYNH_ARRAY_BUFFER},
     {"SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER},
   };
   bool promise = strcmp(callee->v.fn.name, "Promise") == 0;
@@ -11889,7 +11903,17 @@ static ScrDyn *scr_dyn_symbol_key_get_receiver(const ScrDyn *value, const ScrDyn
   if (value->kind == SCR_DYN_HANDLE) {
     const ScrDynHandleOps *ops = scr_dyn_handle_ops(value->v.handle.tag);
     ScrDyn *member = ops->symbol_get ? ops->symbol_get(value->v.handle.ptr, key) : NULL;
-    if (member || scr_exc_pending()) return member;
+    if (member || scr_exc_pending()) {
+      /* A class's own Symbol.iterator answers when it is a native function
+       * (the statement iterator answering itself). A foreign function a
+       * Node island handle carries cannot be called by the native iterator
+       * protocol, so that value keeps the generic iterable answer below, as
+       * it did before an own member was consulted. */
+      bool iterator_key =
+          scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value;
+      if (!iterator_key || member == NULL || member->kind == SCR_DYN_FUNC) return member;
+      scr_dyn_release(member);
+    }
   }
   bool builtin = scr_iterator_symbol && key->v.symbol.value == scr_iterator_symbol->v.symbol.value && scr_builtin_iterable(value);
   if (builtin && value->kind != SCR_DYN_ARR) return scr_builtin_iterator_method(value);
@@ -19775,6 +19799,16 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
   }
   case SCR_DYN_ARR:
   case SCR_DYN_OBJ: {
+    /* A primitive wrapper's [[PrimitiveValue]] is not an own property: the
+     * unit that owns the slot answers the copy. */
+    if (scr_js_wrapper_clone_hook != NULL) {
+      ScrDyn *wrapper = scr_js_wrapper_clone_hook(v);
+      if (wrapper != NULL) {
+        region->intact = false;
+        return wrapper;
+      }
+      if (scr_exc_pending()) return NULL;
+    }
     for (const ScrScParent *p = up; p != NULL; p = p->up) {
       if (p->node == v) {
         static const char msg[] =

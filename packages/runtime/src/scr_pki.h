@@ -33,6 +33,11 @@ bool scr_pki_ed25519_ready(void);
 ScrPkiKey *scr_pki_key_retain(ScrPkiKey *key);
 void scr_pki_key_release(ScrPkiKey *key);
 bool scr_pki_key_is_private(const ScrPkiKey *key);
+/* The key material of an asymmetric KeyObject, retained, or NULL. */
+ScrPkiKey *scr_crypto_key_object_material(const ScrDyn *value);
+/* An asymmetric KeyObject over retained `key` (a new reference). */
+ScrDyn *scr_crypto_key_object_from_material(ScrPkiKey *key);
+
 bool scr_pki_key_is_rsa(const ScrPkiKey *key);
 /* An id-RSASSA-PSS key (node:crypto's "rsa-pss" KeyObjects), which WebCrypto
  * does not accept where a plain RSA key is required. */

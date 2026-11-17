@@ -304,7 +304,7 @@ function lowerBoundedWorkerNew(
 
 /** `create` after the worker-stdio capture: the streams unit is entered
  * before the worker starts. */
-function workerStdioSequence(create: IrExpr, loc: SrcLoc): IrExpr {
+export function workerStdioSequence(create: IrExpr, loc: SrcLoc): IrExpr {
   return {
     kind: "seqExpr",
     stmts: [
@@ -343,8 +343,12 @@ const HEAP_LIMITS = new Set([
   "codeRangeSizeMb",
 ]);
 
-/** resourceLimits' V8 heap fields, when an options literal spells them
- * with numbers (Node ignores other values; the runtime refuses the rest). */
+/** resourceLimits' V8 heap fields, when an options literal spells them with
+ * numbers. A compiled program has one heap for every thread, so a heap limit
+ * cannot be enforced: requesting one is refused here, and the runtime
+ * refuses the same request when the options object is not a literal. A
+ * limit the program does not ask for stays unset, and `worker.resourceLimits`
+ * reports it as Node does (-1). */
 function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined): void {
   if (!options || !ts.isObjectLiteralExpression(options)) return;
   for (const option of options.properties.nodes) {
@@ -360,7 +364,7 @@ function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined):
       lowerer.noLowering(
         `Worker resourceLimits.${name}`,
         limit,
-        "worker threads have no separate V8 heap; resourceLimits supports stackSizeMb",
+        "worker threads share the process heap, so a heap limit cannot be enforced; resourceLimits supports stackSizeMb",
       );
     }
   }
@@ -372,7 +376,7 @@ function propertyNameText(name: ts.PropertyName): string | undefined {
 
 /** True when `node`'s type is worker_threads' `name` class (also reached
  * through its global). */
-function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: string): boolean {
+export function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: string): boolean {
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getSymbol();
   if (sym === undefined || ts.symbolName(sym) !== name) return false;

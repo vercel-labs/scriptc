@@ -24,12 +24,7 @@ mock.method(obj, "value"); // lowers
 mock.restoreAll(); // lowers
 mock.reset(); // lowers
 
-class Counter {
-  count(): number {
-    return 1;
-  }
-}
-mock.method(new Counter(), "count"); // class instance
+mock.method(new Map(), "get"); // builtin class instance
 mock.method(console, "log"); // builtin object
 mock.method(obj, "value", { ...{ times: 1 } }); // spread options
 const other = mock.method(obj, "value", () => "one"); // implementation of another type

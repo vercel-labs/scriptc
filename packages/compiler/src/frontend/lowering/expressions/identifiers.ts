@@ -801,7 +801,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (bi.module === "module" && bi.member === "constants") {
         return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
       }
-      if (bi.module === "fs" && bi.member === "constants")
+      if ((bi.module === "fs" || bi.module === "fs/promises") && bi.member === "constants")
         return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
       // `import { constants } from "node:zlib"`: the module's singleton
       // record (zlibConstantsValue), the same object the property form

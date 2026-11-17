@@ -240,6 +240,9 @@ declare module "http" {
       socketPath?: string;
       [option: string]: unknown;
     }): string;
+    /* 'lifo' by default; a plain property, so an assignment is kept as
+     * given (the constructor validates its own option). */
+    scheduling: "fifo" | "lifo";
     maxSockets: number;
     maxFreeSockets: number;
     /* Node's cap across every name: requests queue once the agent's live

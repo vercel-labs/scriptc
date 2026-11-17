@@ -7663,6 +7663,7 @@ typedef struct ScrHttpAgent {
   bool secure;      /* https.Agent: protocol/defaultPort answers */
   bool keep_alive;  /* keepAlive: finished connections return to free_socks */
   bool fifo;        /* scheduling: 'fifo' takes the oldest free socket, 'lifo' the newest */
+  ScrDyn *scheduling_val; /* the property: the constructor's value, then any assignment */
   double ka_msecs;
   double max_sockets; /* INFINITY = Node's default */
   double max_free;
@@ -7725,6 +7726,7 @@ static void scr_http_agent_release(ScrHttpAgent *a) {
     free(e);
     e = next;
   }
+  scr_dyn_release(a->scheduling_val);
   scr_http_sock_count_release(a->sock_count);
   free(a);
 }
@@ -8068,6 +8070,11 @@ static ScrHttpAgent *scr_http_agent_alloc(bool secure, bool keep_alive, double k
   a->secure = secure;
   a->keep_alive = keep_alive;
   a->fifo = fifo;
+  {
+    ScrStr *sched = scr_str_new(fifo ? "fifo" : "lifo", 4);
+    a->scheduling_val = scr_dyn_new_str(sched);
+    scr_str_release(sched);
+  }
   a->ka_msecs = ka_msecs >= 0 ? ka_msecs : 1000;
   a->max_sockets = max_sockets >= 0 ? max_sockets : (double)INFINITY;
   a->max_free = max_free >= 0 ? max_free : 256;
@@ -8143,13 +8150,22 @@ ScrDyn *scr_http_global_agent_value(bool secure) {
  * sockets too; there is no free pool here. */
 static void scr_http_agent_destroy(ScrHttpAgent *a) {
   a->destroyed = true;
-  /* idle pooled sockets close; their 'close' removes each from the list */
-  while (a->free_socks) {
-    ScrNetSocket *sock = scr_net_sock_retain(a->free_socks->sock);
-    struct ScrHttpConn *conn = a->free_socks->conn;
-    scr_http_agent_free_remove(a, conn, false);
-    scr_net_sock_destroy(sock);
-    scr_net_sock_release(sock);
+  /* Idle pooled sockets close; each leaves the bookkeeping at its own
+   * 'close', as Node's do, so freeSockets still lists them right after
+   * destroy() and empties as they settle. */
+  size_t nfree = 0;
+  for (ScrHttpAgentFree *f = a->free_socks; f; f = f->next) nfree++;
+  if (nfree != 0) {
+    ScrNetSocket **socks = malloc(nfree * sizeof *socks);
+    if (!socks) scr_http_oom();
+    size_t i = 0;
+    for (ScrHttpAgentFree *f = a->free_socks; f != NULL && i < nfree; f = f->next)
+      socks[i++] = scr_net_sock_retain(f->sock);
+    for (size_t k = 0; k < i; k++) {
+      scr_net_sock_destroy(socks[k]);
+      scr_net_sock_release(socks[k]);
+    }
+    free(socks);
   }
   /* destroying sockets detaches entries re-entrantly — walk a snapshot */
   for (;;) {
@@ -9644,12 +9660,7 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
   if (strcmp(key, "maxFreeSockets") == 0) return scr_dyn_new_num(a->max_free);
   if (strcmp(key, "keepAlive") == 0) return scr_dyn_new_bool(a->keep_alive);
   if (strcmp(key, "keepAliveMsecs") == 0) return scr_dyn_new_num(a->ka_msecs);
-  if (strcmp(key, "scheduling") == 0) {
-    ScrStr *s = scr_str_new(a->fifo ? "fifo" : "lifo", 4);
-    ScrDyn *d = scr_dyn_new_str(s);
-    scr_str_release(s);
-    return d;
-  }
+  if (strcmp(key, "scheduling") == 0) return scr_dyn_retain(a->scheduling_val);
   if (strcmp(key, "defaultPort") == 0) return scr_dyn_new_num(a->default_port);
   if (strcmp(key, "protocol") == 0) {
     ScrStr *s = scr_str_new(a->secure ? "https:" : "http:", a->secure ? 6 : 5);
@@ -9699,6 +9710,12 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
 static bool scr_http_dynh_agent_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
   ScrHttpAgent *a = (ScrHttpAgent *)h;
   (void)key_len;
+  if (strcmp(key, "scheduling") == 0) {
+    /* a plain property: any assigned value is kept, as Node's is */
+    scr_dyn_release(a->scheduling_val);
+    a->scheduling_val = scr_dyn_retain((ScrDyn *)value);
+    return true;
+  }
   if (strcmp(key, "defaultPort") == 0 || strcmp(key, "maxSockets") == 0 ||
       strcmp(key, "maxTotalSockets") == 0 || strcmp(key, "maxFreeSockets") == 0 ||
       strcmp(key, "keepAliveMsecs") == 0) {

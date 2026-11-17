@@ -199,6 +199,13 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
     ScrClosure *flush_fb, ScrStreamPlainInv flush_fb_inv,
     ScrClosure *destroy_fb, ScrStreamErrInv destroy_fb_inv);
 
+/* Readable.toWeb(readable[, options]) (scr_stream_to_web.c): a web
+ * ReadableStream over the readable's chunks. +1. flags bit 1 asks for a byte
+ * stream. */
+struct ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags);
+/* The same over a checked-dynamic value (a boxed native stream unwraps; any
+ * other value throws the not-supported Error). */
+struct ScrDyn *scr_stream_to_web_readable_dyn(const struct ScrDyn *value, double flags);
 /* Writable.fromWeb(writableStream[, options]) (scr_stream_from_web_writable.c):
  * a Writable over the web stream's writer, +1, or NULL with
  * ERR_INVALID_ARG_TYPE pending for a value that is not a WritableStream. */
@@ -339,6 +346,10 @@ bool scr_stream_write_dyn(ScrStream *s, const ScrDyn *d, ScrClosure *cb); /* cb 
 bool scr_stream_write_enc(ScrStream *s, const ScrDyn *chunk, ScrDyn *enc, ScrClosure *cb);
 ScrPromise *scr_stream_next_chunk(ScrStream *s);
 ScrPromise *scr_stream_next_chunk_dyn(ScrStream *s);
+/* One buffered chunk per read (Readable.toWeb's 'data' granularity). */
+ScrPromise *scr_stream_next_chunk_dyn_single(ScrStream *s);
+/* Whether the readable side buffers object entries (objectMode). */
+bool scr_stream_readable_object_entries(ScrStream *s);
 /* The same step resolving with an iterator result ({ value, done }). */
 ScrPromise *scr_stream_next_result_dyn(ScrStream *s);
 /* The native readable stream behind a checked-dynamic value (+1), or NULL. */

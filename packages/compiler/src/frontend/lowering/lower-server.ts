@@ -6693,6 +6693,156 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
     : { kind: "libCall", fn: "tls.connect", args: [port, host, opts], type: NETSOCKET_T, loc };
 }
 
+/** `new tls.Server(options[, secureConnectionListener])`: Node's Server
+ * constructor, the same lowering tls.createServer takes. */
+export function lowerTlsServerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  const callee = expr.expression;
+  const isTlsServer =
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "Server" &&
+      lowerer.builtinMemberOf(callee)?.module === "tls") ||
+    (ts.isIdentifier(callee) &&
+      lowerer.builtinImportOf(callee)?.module === "tls" &&
+      lowerer.builtinImportOf(callee)?.member === "Server");
+  if (!isTlsServer) return null;
+  const loc = locOf(expr);
+  const args = expr.arguments?.nodes ?? [];
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      "new tls.Server with a spread argument",
+      expr,
+      "the supported form is new tls.Server({ cert, key }, socket => ...)",
+    );
+  }
+  return lowerTlsCreateServer(lowerer, expr, args, loc);
+}
+
+/** `x instanceof tls.Server`: the server handle's TLS marker. Null when
+ * the right side is not tls.Server. */
+export function lowerTlsServerInstanceOf(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const callee = expr.right;
+  const isTlsServer =
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "Server" &&
+      lowerer.builtinMemberOf(callee)?.module === "tls") ||
+    (ts.isIdentifier(callee) &&
+      lowerer.builtinImportOf(callee)?.module === "tls" &&
+      lowerer.builtinImportOf(callee)?.member === "Server");
+  if (!isTlsServer) return null;
+  const value = lowerer.lowerExpr(expr.left);
+  if (value.type.kind === "netServer") {
+    return { kind: "libCall", fn: "tls.serverIs", args: [value], type: BOOL, loc };
+  }
+  // A union (a server or null) and an untyped value answer through the
+  // handle tag at run time.
+  if (value.type.kind === "dyn" || value.type.kind === "union") {
+    return {
+      kind: "libCall",
+      fn: "tls.serverIsDyn",
+      args: [lowerer.coerceToExpected(value, DYN)],
+      type: BOOL,
+      loc,
+    };
+  }
+  // Every other value is no tls.Server; the operand still runs. A bare
+  // null/undefined literal is a pure no-op with no IR value of its own, so it
+  // drops instead of tripping the validator's bare-unitLit rule.
+  if (value.kind === "unitLit") return { kind: "boolLit", value: false, type: BOOL, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: { kind: "boolLit", value: false, type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
+}
+
+/** tls.createServer(options[, secureConnectionListener]) and
+ * `new tls.Server(...)`: the same constructor either way. */
+function lowerTlsCreateServer(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr {
+  if (args.length < 1 || args.length > 2) {
+    lowerer.noLowering(
+      `createServer with ${args.length} arguments`,
+      expr,
+      "the supported form is createServer({ cert, key }, socket => ...)",
+    );
+  }
+  const opts = lowerTlsServerOptionsOrDyn(
+    lowerer,
+    args[0]!,
+    "tls.createServer",
+    false,
+    TLS_SERVER_RUNTIME_OPTIONS,
+    true,
+  );
+  if (args.length === 1) {
+    if (opts.dyn !== undefined)
+      return {
+        kind: "libCall",
+        fn: "tls.createServerDyn",
+        args: [opts.dyn],
+        type: NETSERVER_T,
+        loc,
+      };
+    return opts.sni !== undefined
+      ? {
+          kind: "libCall",
+          fn: "tls.createServerSni",
+          args: [opts.cert, opts.key, opts.sni],
+          type: NETSERVER_T,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: "tls.createServer",
+          args: [opts.cert, opts.key],
+          type: NETSERVER_T,
+          loc,
+        };
+  }
+  const { cb } = lowerCallbackArg(
+    lowerer,
+    args[1]!,
+    "secureConnection listeners",
+    1,
+    (p) => p.kind === "netSocket",
+    "use (socket) or ()",
+    [NETSOCKET_T],
+  );
+  if (opts.dyn !== undefined)
+    return {
+      kind: "libCall",
+      fn: "tls.createServerDynCb",
+      args: [opts.dyn, cb],
+      type: NETSERVER_T,
+      loc,
+    };
+  return opts.sni !== undefined
+    ? {
+        kind: "libCall",
+        fn: "tls.createServerSniCb",
+        args: [opts.cert, opts.key, opts.sni, cb],
+        type: NETSERVER_T,
+        loc,
+      }
+    : {
+        kind: "libCall",
+        fn: "tls.createServerCb",
+        args: [opts.cert, opts.key, cb],
+        type: NETSERVER_T,
+        loc,
+      };
+}
+
 /** Module-function calls on tls import bindings: createServer(options[,
  * secureConnectionListener]) — the listener fires post-handshake with a
  * socket that behaves exactly like a net socket. Everything else the
@@ -6706,78 +6856,7 @@ function lowerTlsModuleCall(
 ): IrExpr {
   const args = expr.arguments.nodes;
   if (bi.member === "createServer") {
-    if (args.length < 1 || args.length > 2) {
-      lowerer.noLowering(
-        `createServer with ${args.length} arguments`,
-        expr,
-        "the supported form is createServer({ cert, key }, socket => ...)",
-      );
-    }
-    const opts = lowerTlsServerOptionsOrDyn(
-      lowerer,
-      args[0]!,
-      "tls.createServer",
-      false,
-      TLS_SERVER_RUNTIME_OPTIONS,
-      true,
-    );
-    if (args.length === 1) {
-      if (opts.dyn !== undefined)
-        return {
-          kind: "libCall",
-          fn: "tls.createServerDyn",
-          args: [opts.dyn],
-          type: NETSERVER_T,
-          loc,
-        };
-      return opts.sni !== undefined
-        ? {
-            kind: "libCall",
-            fn: "tls.createServerSni",
-            args: [opts.cert, opts.key, opts.sni],
-            type: NETSERVER_T,
-            loc,
-          }
-        : {
-            kind: "libCall",
-            fn: "tls.createServer",
-            args: [opts.cert, opts.key],
-            type: NETSERVER_T,
-            loc,
-          };
-    }
-    const { cb } = lowerCallbackArg(
-      lowerer,
-      args[1]!,
-      "secureConnection listeners",
-      1,
-      (p) => p.kind === "netSocket",
-      "use (socket) or ()",
-      [NETSOCKET_T],
-    );
-    if (opts.dyn !== undefined)
-      return {
-        kind: "libCall",
-        fn: "tls.createServerDynCb",
-        args: [opts.dyn, cb],
-        type: NETSERVER_T,
-        loc,
-      };
-    return opts.sni !== undefined
-      ? {
-          kind: "libCall",
-          fn: "tls.createServerSniCb",
-          args: [opts.cert, opts.key, opts.sni, cb],
-          type: NETSERVER_T,
-          loc,
-        }
-      : {
-          kind: "libCall",
-          fn: "tls.createServerCb",
-          args: [opts.cert, opts.key, cb],
-          type: NETSERVER_T,
-          loc,
-        };
+    return lowerTlsCreateServer(lowerer, expr, args, loc);
   }
   if (bi.member === "connect") {
     return lowerTlsConnectCall(lowerer, expr, loc);
@@ -9830,8 +9909,15 @@ function lowerHttpResMethodCall(
     if (resultIsDiscarded(call)) return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
     return receiverReturningCall(lowerer, fn, callArgs, HTTPRES_T, loc);
   }
-  if (name === "writeContinue" || name === "writeProcessing" || name === "writeEarlyHints") {
-    requireStatementPosition(lowerer, call, `res.${name}(...)`);
+  if (
+    name === "writeContinue" ||
+    name === "writeProcessing" ||
+    name === "writeEarlyHints" ||
+    name === "writeInformation"
+  ) {
+    // writeInformation answers write()'s boolean, so it may stand in an
+    // expression; the three delegating forms are statements.
+    if (name !== "writeInformation") requireStatementPosition(lowerer, call, `res.${name}(...)`);
     if (ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse") {
       lowerer.noLowering(
         `Http2ServerResponse.${name}`,
@@ -9840,7 +9926,9 @@ function lowerHttpResMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
-    if (name !== "writeEarlyHints") {
+    if (name === "writeContinue" || name === "writeProcessing") {
+      /* the callback form fires once the informational head is written;
+       * writeEarlyHints and writeInformation fall through below */
       if (args.length > 1)
         lowerer.noLowering(
           `res.${name} with ${args.length} arguments`,
@@ -9873,41 +9961,37 @@ function lowerHttpResMethodCall(
         loc,
       };
     }
-    if (args.length < 1 || args.length > 2)
-      lowerer.noLowering(
-        "res.writeEarlyHints arguments",
-        call,
-        "use writeEarlyHints(headers[, callback])",
-      );
-    const node = args[0]!;
-    let pairs: IrExpr;
-    if (ts.isObjectLiteralExpression(node)) {
-      const elems: IrExpr[] = [];
-      for (const prop of node.properties.nodes) {
-        const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
-        if (!ts.isPropertyAssignment(prop) || key === null) {
-          lowerer.noLowering(
-            "writeEarlyHints headers with dynamic keys, spreads, or shorthand entries",
-            prop,
-            "use literal header keys and string values",
-          );
+    /** The headers argument as the flat [name, value, ...] array the runtime
+     * writes one line per pair from: an object literal's static keys, or a
+     * Record<string, string> through the env.pairs helper. */
+    const headerPairs = (node: ts.Expression, what: string): IrExpr => {
+      if (ts.isObjectLiteralExpression(node)) {
+        const elems: IrExpr[] = [];
+        for (const prop of node.properties.nodes) {
+          const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
+          if (!ts.isPropertyAssignment(prop) || key === null) {
+            lowerer.noLowering(
+              `${what} headers with dynamic keys, spreads, or shorthand entries`,
+              prop,
+              "use literal header keys and string values",
+            );
+          }
+          const value = lowerer.lowerExpr(prop.initializer);
+          if (value.type.kind !== "string") {
+            lowerer.noLowering(
+              `${what} value of type '${lowerer.fmt(value.type)}'`,
+              prop.initializer,
+              "header values must be strings here",
+            );
+          }
+          elems.push({ kind: "strLit", value: key, type: STRING, loc }, value);
         }
-        const value = lowerer.lowerExpr(prop.initializer);
-        if (value.type.kind !== "string") {
-          lowerer.noLowering(
-            `writeEarlyHints value of type '${lowerer.fmt(value.type)}'`,
-            prop.initializer,
-            "header values must be strings here",
-          );
-        }
-        elems.push({ kind: "strLit", value: key, type: STRING, loc }, value);
+        return { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
       }
-      pairs = { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
-    } else {
       const value = lowerer.lowerExpr(node);
       if (value.type.kind !== "record") {
         lowerer.noLowering(
-          `writeEarlyHints headers of '${lowerer.fmt(value.type)}'`,
+          `${what} headers of '${lowerer.fmt(value.type)}'`,
           node,
           "pass an object literal or a Record<string, string>",
         );
@@ -9915,13 +9999,42 @@ function lowerHttpResMethodCall(
       const helper = lowerer.envToPairsHelper(value.type.shapeId, loc);
       if (helper === null) {
         lowerer.noLowering(
-          "writeEarlyHints header values",
+          `${what} header values`,
           node,
           "use a Record<string, string> with string values",
         );
       }
-      pairs = { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+      return { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+    };
+    if (name === "writeInformation") {
+      if (args.length < 1 || args.length > 2) {
+        lowerer.noLowering(
+          `res.writeInformation with ${args.length} arguments`,
+          call,
+          "the supported forms are writeInformation(status) and writeInformation(status, headers) (no callback)",
+        );
+      }
+      const status = lowerer.lowerExprExpecting(args[0]!, F64);
+      const pairs: IrExpr =
+        args.length === 2
+          ? headerPairs(args[1]!, "writeInformation")
+          : { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
+      return {
+        kind: "libCall",
+        fn: "http.resWriteInformation",
+        args: [receiver, status, pairs],
+        type: BOOL,
+        loc,
+      };
     }
+    if (args.length < 1 || args.length > 2)
+      lowerer.noLowering(
+        "res.writeEarlyHints arguments",
+        call,
+        "use writeEarlyHints(headers[, callback])",
+      );
+    const node = args[0]!;
+    const pairs = headerPairs(node, "writeEarlyHints");
     if (args.length === 2) {
       const { cb } = lowerCallbackArg(
         lowerer,

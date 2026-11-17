@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-conditional-export-differing-members/lean.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-differing-members/full.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-differing-members/index-full.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-differing-members/index-lean.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-differing-members/main.js"
+ ],
+ "diags": []
+}

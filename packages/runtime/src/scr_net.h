@@ -570,6 +570,7 @@ void scr_net_sock_on_established(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool
  * tls.createServer's handler is the 'secureConnection' event, fired with
  * the socket only once the TLS layer stands (Node's timing). */
 void scr_net_server_defer_connections(ScrNetServer *s);
+bool scr_net_server_is_tls(const ScrNetServer *s);
 /* The current native-connection hook (the https wrapper reads the http
  * parser installer it is about to wrap). */
 void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, void **ctx, void (**ctx_free)(void *));

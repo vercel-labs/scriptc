@@ -1,8 +1,9 @@
-// tlsSocket.exportKeyingMaterial's context argument and TLS 1.3's exporter
-// label ceiling: a context changes the exported secret while the same
-// context reproduces it, and a label longer than RFC 8446's 255-byte ceiling
-// less the provider's prefix throws ERR_SSL_TLS_ILLEGAL_EXPORTER_LABEL on a
-// TLS 1.3 connection where a TLS 1.2 connection exports it.
+// tlsSocket.exportKeyingMaterial's context argument and its label rules: a
+// context changes the exported secret while the same context reproduces it,
+// a label longer than RFC 8446's 255-byte ceiling less the provider's prefix
+// throws ERR_SSL_TLS_ILLEGAL_EXPORTER_LABEL on a TLS 1.3 connection, and a
+// TLS 1.2 connection refuses the reserved PRF names RFC 5705 lists while
+// exporting any other label.
 import * as tls from "node:tls";
 import { readFileSync } from "node:fs";
 
@@ -46,6 +47,13 @@ await new Promise<void>((resolve) => {
       const e = err as NodeJS.ErrnoException & { library?: string; reason?: string };
       console.log("long label", e.code, e.library, e.reason, e.message);
     }
+    // RFC 5705's reserved PRF names are TLS 1.2's rule; a TLS 1.3 exporter
+    // accepts them.
+    console.log(
+      "reserved name",
+      client.exportKeyingMaterial(16, "key expansion").length,
+      client.exportKeyingMaterial(16, "client finished").length,
+    );
     client.end();
   });
   client.on("data", () => {});
@@ -62,7 +70,22 @@ await new Promise<void>((resolve) => {
     () => {
       console.log("tls12 protocol", client.getProtocol());
       console.log("tls12 long label", client.exportKeyingMaterial(16, "a".repeat(300)).length);
-      console.log("tls12 reserved label", client.exportKeyingMaterial(16, "TLS_foo").length);
+      for (const label of [
+        "client finished",
+        "server finished",
+        "master secret",
+        "extended master secret",
+        "key expansion",
+        "key expansion extra",
+        "Client finished",
+        "client finishe",
+      ]) {
+        try {
+          console.log("tls12 label", JSON.stringify(label), client.exportKeyingMaterial(16, label).length);
+        } catch (err) {
+          console.log("tls12 label", JSON.stringify(label), (err as NodeJS.ErrnoException).code);
+        }
+      }
       client.end();
     },
   );

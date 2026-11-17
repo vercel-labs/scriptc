@@ -3943,10 +3943,29 @@ ScrDyn *scr_tls_sock_servername(ScrNetSocket *s) {
   return answer;
 }
 
-/* The error OpenSSL raises for an exporter label a TLS 1.3 connection
- * refuses, as Node reports it: "error:0A00016F:SSL routines::tls illegal
- * exporter label" with own library, reason and code properties in Node's
- * key order. */
+/* Whether `label` begins with one of the PRF labels RFC 5705 reserves for
+ * the handshake ("client finished", "server finished", "master secret",
+ * "extended master secret", "key expansion"): the provider compares the
+ * PRF argument's leading bytes, so the label's own prefix decides. */
+static bool scr_tls_reserved_exporter_label(const ScrStr *label) {
+  static const char *const reserved[] = {
+    "client finished",
+    "server finished",
+    "master secret",
+    "extended master secret",
+    "key expansion",
+  };
+  for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
+    size_t n = strlen(reserved[i]);
+    if (label->len >= n && memcmp(label->data, reserved[i], n) == 0) return true;
+  }
+  return false;
+}
+
+/* The error OpenSSL raises for an exporter label it refuses (a TLS 1.2
+ * connection's reserved PRF names, a TLS 1.3 connection's over-long label),
+ * as Node reports it: "error:0A00016F:SSL routines::tls illegal exporter
+ * label" with own library, reason and code properties in Node's key order. */
 static void scr_tls_throw_illegal_exporter_label(void) {
   static const char text[] = "error:0A00016F:SSL routines::tls illegal exporter label";
   static const char library[] = "SSL routines";
@@ -4012,10 +4031,18 @@ ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const ScrDyn *len
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_INVALID_STATE");
     return NULL;
   }
+  /* RFC 5705's reserved names: a TLS 1.2 exporter builds its PRF argument
+   * from the label, so a label that begins with one of the handshake's own
+   * PRF labels is refused; TLS 1.3 exporters have no such names. */
+  bool tls13 = strcmp(mbedtls_ssl_get_version(&t->ssl), "TLSv1.3") == 0;
+  if (!tls13 && scr_tls_reserved_exporter_label(label->v.str)) {
+    scr_tls_throw_illegal_exporter_label();
+    return NULL;
+  }
   /* RFC 8446's 255-byte label ceiling less the provider's "tls13 " prefix:
    * a TLS 1.3 connection refuses a longer label where a TLS 1.2 connection
    * exports any label. */
-  if (label->v.str->len > 249 && strcmp(mbedtls_ssl_get_version(&t->ssl), "TLSv1.3") == 0) {
+  if (tls13 && label->v.str->len > 249) {
     scr_tls_throw_illegal_exporter_label();
     return NULL;
   }

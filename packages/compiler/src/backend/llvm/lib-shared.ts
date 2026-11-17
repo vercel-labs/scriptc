@@ -877,6 +877,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.cipherNew": "scr_crypto_cipher_new",
   "crypto.ecdhNew": "scr_crypto_ecdh_new",
   "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
+  "crypto.argon2Sync": "scr_crypto_argon2_sync",
+  "crypto.argon2Cb": "scr_crypto_argon2_cb",
   "crypto.dhNew": "scr_crypto_dh_new",
   "crypto.checkPrimeSync": "scr_crypto_check_prime_sync",
   "crypto.getCipherInfo": "scr_crypto_get_cipher_info",
@@ -1294,6 +1296,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.responseJsonStatic": "scr_fetch_response_json_static",
   "fetch.input": "scr_fetch_input",
   "abort.controllerNew": "scr_fetch_abort_controller_new",
+  "abort.signalIs": "scr_dyn_abort_signal_is",
   "event.targetNew": "scr_event_target_new",
   "event.new": "scr_event_new",
   "event.customNew": "scr_custom_event_new",
@@ -2243,6 +2246,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.new": "scr_regex_new",
   "regex.resetLastIndex": "scr_regex_reset_last_index",
   "regex.newChecked": "scr_regex_new_checked",
+  "regex.callChecked": "scr_regex_call_checked",
   "regex.replaceCallback": "scr_regex_replace_callback",
   "regex.groupEquals": "scr_regex_group_eq",
   "regex.groupNumber": "scr_regex_group_number",
@@ -2319,6 +2323,7 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.scryptAnyCb",
   "crypto.randomBytesAnyCb",
   "crypto.randomIntAnyCb",
+  "crypto.argon2Cb",
   "process.emitWarning",
   // The finalization registration reports its ExperimentalWarnings through
   // the deferred tick queue, and its callbacks run from the exit listeners

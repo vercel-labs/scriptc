@@ -2073,6 +2073,8 @@ const RUNTIME_FEATURE_RULES = {
    * generatePrime; unknown encodings and argument values render through
    * the inspect unit. */
   dh: rule({ fns: [...DH_LIB_FNS] }),
+  /** Argon2: scr_argon2.c. */
+  argon2: rule({ fns: ["crypto.argon2Sync", "crypto.argon2Cb"] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -2734,6 +2736,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     ecdh: false,
     x509: false,
     dh: false,
+    argon2: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,

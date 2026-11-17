@@ -20286,9 +20286,11 @@
           "tests/corpus/compat-crypto-catalogs.ts",
           "tests/corpus/compat-x509-keyobject.mjs",
           "tests/corpus/compat-x509-keyobject.ts",
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/crypto-checked-arguments.cjs",
           "tests/corpus/crypto-constants-object.ts",
           "tests/corpus/crypto-create-mac-errors.mjs",
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
@@ -20617,8 +20619,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.argon2",
+        "tests": [
+          "tests/corpus/crypto-argon2.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20640,8 +20645,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.argon2Sync",
+        "tests": [
+          "tests/corpus/crypto-argon2.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21023,9 +21031,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.crypto.createMac",
         "tests": [
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-create-mac-errors.mjs"
         ]
@@ -24648,9 +24657,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.Mac",
         "tests": [
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-create-mac-errors.mjs"
         ]
@@ -24675,9 +24685,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.mac.final",
         "tests": [
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-create-mac-errors.mjs"
         ]
@@ -24702,9 +24713,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:crypto.mac.update",
         "tests": [
+          "tests/corpus/crypto-create-mac-kmac.ts",
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-create-mac-errors.mjs"
         ]
@@ -46808,6 +46820,7 @@
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
           "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5571-fs-cp-deep.ts",
           "tests/corpus/5747-fs-stat-throw-if-no-entry.ts",
           "tests/corpus/5748-fs-stat-throw-if-no-entry-js.cjs",
           "tests/corpus/6207-fs-constants-object.ts",
@@ -46837,9 +46850,11 @@
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-permissions-family.cjs",
           "tests/corpus/fs-promises-constants.ts",
+          "tests/corpus/fs-promises-watch-overflow.cjs",
           "tests/corpus/fs-promises-watch.ts",
           "tests/corpus/fs-read-file-sync-option-errors.cjs",
           "tests/corpus/fs-read-file-sync-options-typed.ts",
+          "tests/corpus/fs-readdir-callback-options.ts",
           "tests/corpus/fs-readdir-encodings.ts",
           "tests/corpus/fs-readdir-recursive-types.ts",
           "tests/corpus/fs-realpath-native-callback.cjs",
@@ -47946,13 +47961,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fsPromises.cp",
         "tests": [
           "tests/corpus/5567-fs-cpsync.ts",
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
-          "tests/corpus/5570-fs-cp-async.ts"
+          "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5571-fs-cp-deep.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47975,7 +47991,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fsPromises.glob",
         "tests": [
           "tests/corpus/5448-fs-glob-patterns.ts",
@@ -48696,7 +48712,8 @@
         "status": "partial",
         "evidence": "compiler-feature:fs.fsPromises.watch",
         "tests": [
-          "tests/corpus/fs-promises-watch.ts"
+          "tests/corpus/fs-promises-watch.ts",
+          "tests/corpus/fs-promises-watch-overflow.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -48859,7 +48876,8 @@
         "evidence": "compiler-feature:fs.fs.chmod",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48963,7 +48981,8 @@
         "evidence": "compiler-feature:fs.fs.copyFile",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48986,13 +49005,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.cp",
         "tests": [
           "tests/corpus/5567-fs-cpsync.ts",
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
-          "tests/corpus/5570-fs-cp-async.ts"
+          "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5571-fs-cp-deep.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49221,7 +49241,8 @@
         "evidence": "compiler-feature:fs.fs.fsync",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49300,7 +49321,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.glob",
         "tests": [
           "tests/corpus/5448-fs-glob-patterns.ts",
@@ -49474,7 +49495,8 @@
         "evidence": "compiler-feature:fs.fs.mkdir",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49528,7 +49550,8 @@
         "evidence": "compiler-feature:fs.fs.open",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49577,11 +49600,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.opendir",
         "tests": [
           "tests/corpus/fs-opendir-callbacks.ts",
-          "tests/corpus/fs-opendir-buffer-size-uncaught.cjs"
+          "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
+          "tests/corpus/fs-dir-listing.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49608,7 +49632,8 @@
         "evidence": "compiler-feature:fs.fs.read",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49635,7 +49660,8 @@
         "evidence": "compiler-feature:fs.fs.read",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49662,7 +49688,8 @@
         "evidence": "compiler-feature:fs.fs.read",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49689,7 +49716,8 @@
         "evidence": "compiler-feature:fs.fs.readdir",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49846,7 +49874,8 @@
         "evidence": "compiler-feature:fs.fs.realpath",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -49936,7 +49965,8 @@
         "evidence": "compiler-feature:fs.fs.rmdir",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50107,7 +50137,8 @@
         "evidence": "compiler-feature:fs.fs.unlink",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50352,7 +50383,8 @@
         "evidence": "compiler-feature:fs.fs.write",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50379,7 +50411,8 @@
         "evidence": "compiler-feature:fs.fs.write",
         "tests": [
           "tests/corpus/5548-fs-callback-arguments.cjs",
-          "tests/corpus/5549-fs-callback-option-checks.cjs"
+          "tests/corpus/5549-fs-callback-option-checks.cjs",
+          "tests/corpus/fs-readdir-callback-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50712,13 +50745,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.cpSync",
         "tests": [
           "tests/corpus/5567-fs-cpsync.ts",
           "tests/corpus/5568-fs-cp-errors.js",
           "tests/corpus/5569-fs-cp-symlinks.ts",
-          "tests/corpus/5570-fs-cp-async.ts"
+          "tests/corpus/5570-fs-cp-async.ts",
+          "tests/corpus/5571-fs-cp-deep.ts"
         ]
       },
       "anchorSource": "exact"
@@ -50970,7 +51004,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.globSync",
         "tests": [
           "tests/corpus/5448-fs-glob-patterns.ts",
@@ -52009,9 +52043,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.Dir",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },
@@ -52199,9 +52234,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.dir",
         "tests": [
+          "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/5544-fs-opendir.cjs"
         ]
       },
@@ -97551,7 +97587,12 @@
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
+          "tests/corpus/class-instance-method-value-this.ts",
+          "tests/corpus/object-literal-method-this.ts",
+          "tests/corpus/prototype-method-value-this.ts",
           "tests/diagnostics/compat-absent-node-values.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-log.ts",
@@ -98574,7 +98615,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.callCount",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98602,7 +98643,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.mockImplementation",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98630,7 +98671,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.mockImplementationOnce",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98658,7 +98699,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.resetCalls",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98686,7 +98727,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.restore",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98714,7 +98755,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.calls",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -99059,6 +99100,9 @@
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
+          "tests/corpus/class-instance-method-value-this.ts",
+          "tests/corpus/object-literal-method-this.ts",
+          "tests/corpus/prototype-method-value-this.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99128,11 +99172,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.reset",
         "tests": [
           "tests/fixtures/node-test/cases/mock-method.ts",
-          "tests/corpus/5810-mock-method-records.ts",
+          "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -99157,11 +99201,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.restoreAll",
         "tests": [
           "tests/fixtures/node-test/cases/mock-method.ts",
-          "tests/corpus/5810-mock-method-records.ts",
+          "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100045,9 +100089,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.diagnostic",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100127,10 +100177,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.runOnly",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100154,9 +100209,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.skip",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.skip",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100180,9 +100241,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.todo",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.todo",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100232,10 +100299,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.waitFor",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100259,9 +100331,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.assert",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.assert",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100339,10 +100417,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.filePath",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100366,12 +100449,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.fullName",
         "tests": [
-          "tests/fixtures/node-test/cases/ctx-hooks.ts",
-          "tests/fixtures/node-test/cases/ctx-plan.ts",
-          "tests/fixtures/node-test/cases/plan-wait.ts",
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100395,9 +100481,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.name",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100421,10 +100513,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.passed",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100475,10 +100572,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.attempt",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100529,10 +100631,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.workerId",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100556,7 +100663,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.signal",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-signal.ts",
@@ -100611,9 +100718,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.diagnostic",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100665,9 +100773,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.filePath",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100692,9 +100801,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.fullName",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100719,9 +100829,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.name",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100746,7 +100857,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.signal",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-signal.ts",
@@ -100773,9 +100884,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.passed",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100800,9 +100912,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.attempt",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -115441,6 +115554,7 @@
           "tests/corpus/compat-webcrypto-algorithms.mjs",
           "tests/corpus/compat-webcrypto-algorithms.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts",
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/jose-jwe-asymmetric/main.mjs",
           "tests/corpus/key-object-from-arguments.mjs",
           "tests/corpus/key-object-from-crypto-key.ts",
@@ -115455,6 +115569,7 @@
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/webcrypto-get-public-key.ts",
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/webcrypto-rsa-oaep.ts",
           "tests/corpus/webcrypto-sha3-digest.ts",
           "tests/corpus/webcrypto-x25519-key-agreement.ts",
@@ -117149,6 +117264,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -117658,6 +117774,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -117810,6 +117927,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -117933,6 +118051,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -118056,6 +118175,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -118324,9 +118444,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118350,9 +118471,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118403,9 +118525,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118429,9 +118552,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118482,9 +118606,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.length",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118508,9 +118633,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118561,9 +118687,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.algorithm",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118587,9 +118714,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.outputLength",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118613,9 +118741,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.customization",
         "tests": [
+          "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -118670,6 +118799,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -118821,6 +118951,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -118913,6 +119044,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",
@@ -119064,6 +119196,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.crypto.hash",
         "tests": [
+          "tests/corpus/crypto-argon2.ts",
           "tests/corpus/key-object-to-crypto-key.ts",
           "tests/corpus/key-object-from-crypto-key.ts",
           "tests/corpus/key-object-from-arguments.mjs",

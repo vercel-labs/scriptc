@@ -27,7 +27,8 @@ A port's `onmessage` property and `addEventListener` are unsupported.
 `BroadcastChannel` delivers each message to every other open channel with the same name, in any thread, as a `'message'` `MessageEvent` through `onmessage` and `addEventListener`; an open channel keeps the process alive until `close()` or `unref()`.
 A `messageerror` event is never dispatched.
 The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`.
-Messages clone primitives, plain object graphs, arrays, errors, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases.
+Messages clone primitives, plain object graphs, arrays, errors, Maps, Sets, Blobs, Files, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases.
+A primitive wrapper object (from `new String`, `new Number`, `new Boolean` or `Object(primitive)`) cannot cross a message yet: it throws a catchable error naming the limitation, where Node clones it; `structuredClone` copies one.
 Program class instances arrive as plain objects with their own data properties, without their prototype, methods, accessors, or private fields, as in Node.
 `markAsUntransferable` marks objects for the current thread, and a marked ArrayBuffer or MessagePort in a transfer list throws `DataCloneError`, as does the ArrayBuffer of a pooled Buffer; marked objects other than ArrayBuffers stay alive until their thread exits.
 `markAsUncloneable` marks a plain object, an error, or a class instance, and `structuredClone` and `postMessage` then throw `DataCloneError` for it, also where it is nested; as in Node, the mark has no effect on primitives, arrays, typed arrays, and ArrayBuffers.

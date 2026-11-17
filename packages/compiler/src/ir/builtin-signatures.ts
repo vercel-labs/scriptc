@@ -74,6 +74,7 @@ function buildLibFnSignatures() {
     "fetch.responseLight": { argTypes: [DYN], result: arrayOf(STRING) },
     "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "abort.controllerNew": { argTypes: [], result: DYN },
+    "abort.signalIs": { argTypes: [DYN], result: BOOL },
     /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
      * the Event constructors take the argument vector as one dyn array and
      * throw Node's validation errors; `event.is` is `v instanceof Event`
@@ -4221,6 +4222,8 @@ function buildLibFnSignatures() {
     "webcrypto.deriveBits": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.deriveKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.getPublicKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "crypto.argon2Sync": { argTypes: [DYN], result: DYN },
+    "crypto.argon2Cb": { argTypes: [DYN], result: VOID },
     "webcrypto.keyObjectToCryptoKey": { argTypes: [DYN], result: DYN },
     "webcrypto.keyObjectFrom": { argTypes: [DYN], result: DYN },
     "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
@@ -5605,6 +5608,7 @@ function buildLibFnSignatures() {
     "regex.new": { argTypes: [STRING, STRING], result: REGEX },
     "regex.resetLastIndex": { argTypes: [REGEX, F64], result: VOID },
     "regex.newChecked": { argTypes: [DYN, DYN], result: REGEX },
+    "regex.callChecked": { argTypes: [DYN, DYN], result: REGEX },
     "regex.replaceCallback": { argTypes: [STRING, REGEX, DYN, BOOL], result: STRING },
     // Reads of capture args[1] of an execSpans/matchGroups result:
     // `capture === args[2]`, Number(capture) and parseInt(capture,

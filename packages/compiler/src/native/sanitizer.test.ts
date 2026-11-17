@@ -108,6 +108,7 @@ const features = {
   cipher: false,
   ecdh: false,
   dh: false,
+  argon2: false,
   pki: false,
   ed25519: false,
   x509: false,

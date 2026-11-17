@@ -67,8 +67,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_dyn_register_class_to_string copies the type key and retains the
   // function in a thread-local table; no program code runs.
   "dyn.registerClassToString",
-  // scr_weak_ref_is compares the value's kind and handle tag.
+  // scr_weak_ref_is and scr_dyn_abort_signal_is compare the value's kind
+  // and handle tag.
   "weakRef.is",
+  "abort.signalIs",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
   // scr_dyn_function_prototype builds the one anonymous function answering

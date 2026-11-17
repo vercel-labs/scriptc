@@ -776,12 +776,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "a file that never spells `extends` declares no derived class",
   ),
   scan(
-    "frontend/lowering/cycle-initialization.ts#earlyHeritageReference",
-    1,
-    "closed-world",
-    "references to one class of an import cycle",
-  ),
-  scan(
     "frontend/lowering/cycle-initialization.ts#classLocalNames",
     1,
     "prefilter",
@@ -977,6 +971,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots named by createRequire calls",
+  ),
+  scan(
+    "frontend/lowering/cycle-initialization.ts#earlyHeritageReferences",
+    1,
+    "closed-world",
+    "the `extends` clauses that read a class of an import cycle before its declaration, each of which carries the class's initialization check at its own statement",
   ),
   scan(
     "frontend/program.ts#boundedDynamicImportRoots7",

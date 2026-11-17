@@ -702,6 +702,19 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  if (bi.member === "argon2Sync" || bi.member === "argon2") {
+    const async = bi.member === "argon2";
+    const { stmts, args: values } = dynCallArgs(lowerer, expr, async ? 3 : 2);
+    const call: IrExpr = {
+      kind: "libCall",
+      fn: async ? "crypto.argon2Cb" : "crypto.argon2Sync",
+      args: [{ kind: "dynArrLit", elems: values, type: DYN, loc }],
+      type: async ? VOID : DYN,
+      loc,
+    };
+    if (stmts.length === 0) return call;
+    return { kind: "seqExpr", stmts, result: call, type: call.type, loc };
+  }
   if (bi.member === "hash") {
     // A missing, surplus or non-string algorithm takes Node's checks at
     // run time, in its order: algorithm, input, then options.

@@ -937,8 +937,22 @@ export function lowerDgramMethodCall(
         "the supported forms are bind(), bind([options][, callback]) and bind(port[, address][, callback])",
       );
     }
-    const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
     if (args.length === 2) {
+      // An untyped JavaScript first argument is a port at run time, so the
+      // second argument decides: a string is Node's address (bind(port,
+      // address)), a function is the bind callback.
+      const firstIsDyn = lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "dyn";
+      const secondT = lowerer.mapTypeOf(lowerer.typeOf(args[1]!));
+      const secondIsFn =
+        ts.isArrowFunction(args[1]!) ||
+        ts.isFunctionExpression(args[1]!) ||
+        lowerer.checker.getCallSignatures(lowerer.typeOf(args[1]!)).length > 0;
+      if (firstIsDyn && !secondIsFn && secondT?.kind === "string") {
+        const port = lowerer.lowerExprExpecting(args[0]!, F64);
+        const host = lowerer.lowerExprExpecting(args[1]!, STRING);
+        return { kind: "libCall", fn: "dgram.bind", args: [receiver, port, host], type: VOID, loc };
+      }
+      const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
       const { cb } = lowerCallbackArg(
         lowerer,
         args[1]!,
@@ -955,7 +969,13 @@ export function lowerDgramMethodCall(
         loc,
       };
     }
-    return { kind: "libCall", fn: "dgram.bindOpts", args: [receiver, options], type: VOID, loc };
+    return {
+      kind: "libCall",
+      fn: "dgram.bindOpts",
+      args: [receiver, lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN)],
+      type: VOID,
+      loc,
+    };
   }
   if (name === "bind" || name === "connect") {
     requireStatementPosition(lowerer, call, `socket.${name}(...)`);

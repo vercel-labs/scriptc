@@ -1191,7 +1191,7 @@ void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *c
   }
   ScrDyn *address = NULL;
   if (!empty) (void)scr_dgram_opt_read(v, "address", 7, &address);
-  if (address != NULL && scr_exc_pending()) {
+  if (scr_exc_pending()) {
     scr_dyn_release(address);
     scr_dyn_release(owned);
     scr_closure_release(cb);
@@ -1206,7 +1206,7 @@ void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *c
   }
   ScrDyn *p = NULL;
   if (!empty) (void)scr_dgram_opt_read(v, "port", 4, &p);
-  if (p != NULL && scr_exc_pending()) {
+  if (scr_exc_pending()) {
     scr_dyn_release(address);
     scr_dyn_release(p);
     scr_dyn_release(owned);
@@ -1256,13 +1256,13 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
   }
   ScrDyn *p = NULL;
   if (!empty) (void)scr_dgram_opt_read(v, "port", 4, &p);
+  if (scr_exc_pending()) {
+    scr_dyn_release(p);
+    scr_dyn_release(owned);
+    return;
+  }
   double port = 0;
   if (p != NULL) {
-    if (scr_exc_pending()) {
-      scr_dyn_release(p);
-      scr_dyn_release(owned);
-      return;
-    }
     if (p->kind == SCR_DYN_NUM) {
       port = p->v.num;
     } else if (p->kind == SCR_DYN_STR) {
@@ -1293,7 +1293,7 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
   }
   ScrDyn *a = NULL;
   if (!empty) (void)scr_dgram_opt_read(v, "address", 7, &a);
-  if (a != NULL && scr_exc_pending()) {
+  if (scr_exc_pending()) {
     scr_dyn_release(a);
     scr_dyn_release(p);
     scr_dyn_release(owned);

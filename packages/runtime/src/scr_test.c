@@ -536,6 +536,62 @@ static void scr_test_await_timeout(ScrPromise *p, ScrTestCtx *t) {
   }
 }
 
+/* Node's suite { timeout }: a suite's timer bounds its hooks and the tests
+ * inside it — when it elapses the running child is cancelled with Node's
+ * "did not finish before its parent" message and the suite fails with its
+ * own timeout. The innermost suite's deadline is what a child races. */
+static SCR_TL double scr_test_deadline = INFINITY;
+static SCR_TL ScrTestCtx *scr_test_deadline_owner = NULL;
+
+/* Waits for a body or hook, bounded by the test's own { timeout } and by
+ * the enclosing suite's { timeout } deadline, whichever is nearer. When the
+ * suite deadline wins, the suite fails with its own "test timed out after
+ * <timeout>ms" and the running child is cancelled with Node's parent
+ * message; the body keeps running unobserved. */
+static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t) {
+  double suite_left =
+      scr_test_deadline_owner != NULL ? scr_test_deadline - scr_now_ms() : INFINITY;
+  double own_left = t != NULL && isfinite(t->timeout) ? t->timeout : INFINITY;
+  if (own_left <= suite_left) {
+    if (own_left == INFINITY) {
+      scr_await_void(p);
+    } else {
+      scr_test_await_timeout(p, t);
+    }
+    return;
+  }
+  /* The suite's deadline is the nearer (or already past). */
+  if (suite_left > 0) {
+    ScrPromise *timer = scr_promise_new();
+    double handle = scr_set_timeout_handle(scr_make_resolve(timer, 3 /* void */), suite_left);
+    ScrPromise *race = scr_promise_new();
+    scr_promise_race_join(race, p, scr_promise_adapt_copy);
+    scr_promise_race_join(race, timer, scr_promise_adapt_copy);
+    scr_await_void(race);
+    scr_clear_interval(handle);
+    scr_promise_release(race);
+    scr_promise_release(timer);
+  }
+  if (scr_exc_pending() || !scr_promise_is_pending(p)) return;
+  ScrTestCtx *owner = scr_test_deadline_owner;
+  if (owner != NULL && !owner->err) {
+    char num[32];
+    size_t n = scr_f64_to_str(owner->timeout, num);
+    char buf[80];
+    int len = snprintf(buf, sizeof buf, "test timed out after %.*sms", (int)n, num);
+    owner->timed_out = true;
+    owner->listed = true;
+    scr_throw_str(scr_str_new(buf, (size_t)len));
+    owner->err = scr_exc_take();
+  }
+  static const char msg[] = "test did not finish before its parent and was cancelled";
+  if (t != NULL) {
+    t->timed_out = true;
+    scr_test_abort_now(t);
+  }
+  scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+}
+
 /* A test that ended short of its t.plan count with { wait }: waits for the
  * remaining assertions or subtests, or for the wait window to elapse —
  * Node lets assertions running in timers finish before it judges the
@@ -671,8 +727,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
       ((void (*)(ScrClosure *, ScrTestCtx *, ScrClosure *))cb->fn)(
           cb, takes_ctx ? scr_testctx_retain(ctx) : NULL, scr_closure_retain(done));
       if (!scr_exc_pending()) {
-        if (timed && isfinite(timed->timeout)) scr_test_await_timeout(d->p, timed);
-        else scr_await_void(d->p);
+        scr_test_await_bounded(d->p, timed);
       }
     }
     scr_closure_release(done);
@@ -695,8 +750,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
             ? ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *)) cb->fn)(cb, scr_testctx_retain(ctx))
             : ((ScrPromise * (*)(ScrClosure *)) cb->fn)(cb);
     if (!scr_exc_pending() && p) {
-      if (timed && isfinite(timed->timeout)) scr_test_await_timeout(p, timed);
-      else scr_await_void(p);
+      scr_test_await_bounded(p, timed);
     }
     scr_promise_release(p);
   } else if (takes_ctx) {
@@ -1092,6 +1146,13 @@ static void scr_test_run_children(ScrTestCtx *t) {
       c->only_filtered = true; /* filtered: never run, never reported */
       continue;
     }
+    /* A suite { timeout } that elapsed cancels the children that have not
+     * run, with Node's parent message. */
+    if (scr_test_deadline_owner == t &&
+        (t->timed_out || scr_now_ms() >= scr_test_deadline)) {
+      scr_test_cancel_unrun(c);
+      continue;
+    }
     /* Subtests t.test already ran INLINE at their call site, or started on
      * their own fiber. */
     if (c->state != SCR_TS_PENDING || c->done) continue;
@@ -1145,6 +1206,13 @@ static void scr_test_run_node(ScrTestCtx *t) {
       t->listed = true; /* a failing suite lists in the failing section */
       scr_test_cancel_pending(t);
     } else if (!t->err) {
+      double saved_deadline = scr_test_deadline;
+      ScrTestCtx *saved_owner = scr_test_deadline_owner;
+      if (isfinite(t->timeout)) {
+        double end = scr_now_ms() + t->timeout;
+        if (end < scr_test_deadline) scr_test_deadline = end;
+        scr_test_deadline_owner = t;
+      }
       if (t->concurrency > 1) {
         scr_test_defer++;
         scr_test_run_children(t);
@@ -1152,6 +1220,11 @@ static void scr_test_run_node(ScrTestCtx *t) {
       } else {
         scr_test_run_children(t);
       }
+      /* The suite's after hooks are the cleanup a timed-out suite still
+       * runs, as Node runs them; they are no longer bounded by the elapsed
+       * deadline. */
+      scr_test_deadline = saved_deadline;
+      scr_test_deadline_owner = saved_owner;
       scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
       if (scr_exc_pending()) {
         t->err = scr_exc_take();
@@ -2341,8 +2414,8 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
 
 void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
                      ScrClosure *cb /*moves, may be NULL*/, ScrStr *at /*borrowed*/,
-                     double flags, double concurrency) {
-  if (!scr_test_options_ok(flags, 0, concurrency)) {
+                     double flags, double concurrency, double timeout) {
+  if (!scr_test_options_ok(flags, timeout, concurrency)) {
     scr_closure_release(cb);
     return;
   }
@@ -2353,7 +2426,7 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
     return;
   }
   ScrTestCtx *t = scr_test_node_new(name, (int)mode, msg, NULL, (int)flags, at, true);
-  scr_test_options_apply(t, flags, -1, 0, concurrency);
+  scr_test_options_apply(t, flags, -1, timeout, concurrency);
   ScrTestCtx *parent = scr_test_parent_get();
   if (!parent) {
     scr_testctx_release(t);

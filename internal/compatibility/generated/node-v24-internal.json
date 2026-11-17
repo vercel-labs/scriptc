@@ -58255,8 +58255,10 @@
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-server-client-error.ts",
+          "tests/corpus/http-server-informational-callbacks.ts",
           "tests/corpus/http-server-limit-values.ts",
           "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts",
           "tests/corpus/http-set-headers.mjs",
           "tests/corpus/http-set-headers.ts",
           "tests/corpus/http-write-backpressure.ts",
@@ -60870,10 +60872,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeContinue",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60896,10 +60900,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeEarlyHints",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60976,10 +60982,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeProcessing",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61367,10 +61375,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.message.destroy",
         "tests": [
-          "tests/corpus/2985-http-static-message-destroy.ts"
+          "tests/corpus/2976-http-static-incoming-state.ts",
+          "tests/corpus/2977-http-static-incoming-timeout.ts",
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61393,12 +61404,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.message.setTimeout",
         "tests": [
           "tests/corpus/2976-http-static-incoming-state.ts",
           "tests/corpus/2977-http-static-incoming-timeout.ts",
-          "tests/corpus/2987-http-static-timeout-errors.ts"
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61853,10 +61865,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'aborted'",
         "tests": [
-          "tests/corpus/2985-http-static-message-destroy.ts"
+          "tests/corpus/2976-http-static-incoming-state.ts",
+          "tests/corpus/2977-http-static-incoming-timeout.ts",
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"

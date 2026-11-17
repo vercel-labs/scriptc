@@ -158,6 +158,11 @@ void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*bor
 void scr_http_res_write_continue(ScrHttpRes *r);
 void scr_http_res_write_processing(ScrHttpRes *r);
 void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
+/* The callback forms: the callback fires once the message is written. */
+void scr_http_res_write_continue_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
+void scr_http_res_write_processing_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
+void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/,
+                                       ScrClosure *cb /*moves, nullable*/);
 /* writeHead with a CHECKED-DYNAMIC headers object (borrowed): OBJ
  * entries setHeader in insertion order (string/number values), then the
  * head goes out; undefined/null = the plain head; may throw. */

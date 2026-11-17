@@ -115,6 +115,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseResolve",
   // A promise boxed as a weak collection's key (scr_dyn_new_promise).
   "weakMap.promiseKey",
+  // sqlite.backup answers a promise minted by the dyn-async unit.
+  "sqlite.backup",
   // The generic Promise statics build and settle their capability's promise
   // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
   "promise.genericStatic",
@@ -191,6 +193,11 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+
+  // trace_events.Tracing handles (same unit: the checked-dynamic handle
+  // table and the registry).
+  "te.createTracing",
+  "te.getEnabledCategories",
   "blob.arrayBuffer",
   "blob.bytes",
   "blob.fileNew",
@@ -198,6 +205,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "blob.new",
   "blob.slice",
   "blob.text",
+  // buffer.resolveObjectURL rebuilds a Blob handle from a registration.
+  "buffer.resolveObjectURL",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "dc.chanUnbindStore",
@@ -314,6 +323,9 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.writableFromWeb",
+  "stream.getDefaultHwm",
+  "stream.setDefaultHwm",
   "child.stdioStream",
   "stream.chunkDone",
   "stream.objectMode",
@@ -395,6 +407,7 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.writableFromWeb",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -1897,6 +1910,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      "webstream.writableFromWeb",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
       // method value.
@@ -2059,6 +2073,8 @@ const RUNTIME_FEATURE_RULES = {
    * generatePrime; unknown encodings and argument values render through
    * the inspect unit. */
   dh: rule({ fns: [...DH_LIB_FNS] }),
+  /** Argon2: scr_argon2.c. */
+  argon2: rule({ fns: ["crypto.argon2Sync", "crypto.argon2Cb"] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -2159,7 +2175,16 @@ const RUNTIME_FEATURE_RULES = {
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
-  fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
+  fsWatchFile: rule({
+    fns: ["fs.watchFile", "fs.unwatchFile", "statWatcher.ref", "statWatcher.unref"],
+    types: ["statWatcher"],
+  }),
+  /** fsPromises.watch (scr_watch_async.c): the async iterable the
+   * `for await` lowering drains, over the fs.watch watcher unit. */
+  fsWatchEvents: rule({
+    fns: ["fsp.watch", "watchEvents.wait", "watchEvents.take", "watchEvents.close"],
+    types: ["watchEvents"],
+  }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -2192,6 +2217,7 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      "webstream.writableFromWeb",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",
@@ -2257,7 +2283,10 @@ const RUNTIME_FEATURE_RULES = {
   parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
   /** perf_hooks event-loop metrics (eventLoopUtilization,
    * monitorEventLoopDelay): scr_perf_loop.c. */
-  perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
+  perfLoop: rule({
+    fns: ["perf.idleTime", "worker.performance"],
+    prefixes: ["perf.loop", "perf.eld"],
+  }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */
   pki: rule({ scan: webCryptoAsymmetricScan, fns: [...PKI_LIB_FNS] }),
@@ -2533,8 +2562,13 @@ const RUNTIME_FEATURE_RULES = {
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
-   * scr_webcrypto.c. */
-  webcrypto: rule({ prefixes: ["webcrypto."] }),
+   * scr_webcrypto.c. A KeyObject's toCryptoKey on an untyped value
+   * dispatches through the KeyObject handle, whose conversion hook that
+   * unit installs, so naming the method selects the unit too. */
+  webcrypto: rule({
+    prefixes: ["webcrypto."],
+    expr: (node) => node.kind === "dynInvoke" && node.method === "toCryptoKey",
+  }),
   /** scr_x509.c: the X509Certificate fields beyond the validity window and
    * fingerprint, which stay in scr_lib.c. */
   x509: rule({
@@ -2702,6 +2736,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     ecdh: false,
     x509: false,
     dh: false,
+    argon2: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,
@@ -2714,6 +2749,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,
+    fsWatchEvents: false,
     genBind: false,
     http2: false,
     http: false,
@@ -3122,6 +3158,14 @@ export function moduleUsesFsWatch(mod: IrModule): boolean {
  * and keep their exact link line. */
 export function moduleUsesFsWatchFile(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "fsWatchFile").fsWatchFile;
+}
+
+/** True when the module contains an fsPromises.watch libCall or a
+ * watchEvents handle type — the link switch that pulls scr_watch_async.c
+ * (and, with it, scr_watch.c) into the binary and has the emitted main call
+ * scr_watch_events_install (the moduleUsesFsWatchFile precedent). */
+export function moduleUsesFsWatchEvents(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "fsWatchEvents").fsWatchEvents;
 }
 
 /** True when the module contains any test.* libCall or a testCtx handle

@@ -3928,6 +3928,21 @@ ScrPromise *scr_fsp_readdir(ScrStr *path) {
   return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
 }
 
+ScrPromise *scr_fsp_readdir_recursive(ScrStr *path) {
+  ScrArr *names = scr_fs_readdir_recursive_async(path);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_readdir_bytes(ScrStr *path) {
+  ScrArr *names = scr_fs_readdir_bytes(path);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_readdir_encoded(ScrStr *path, ScrStr *encoding) {
+  ScrArr *names = scr_fs_readdir_encoded(path, encoding);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
 ScrPromise *scr_fsp_rm(ScrStr *path) {
   scr_fs_rm(path);
   return scr_promise_settled_void();
@@ -4198,7 +4213,9 @@ static void scr_dir_deliver_op(ScrDirOp *op) {
 /* dir.close(callback): the callback is validated before anything else
  * (Node's validateFunction runs ahead of its closed check), a closed Dir
  * reports ERR_DIR_CLOSED on a next tick, and otherwise the handle closes
- * now and the callback follows on the loop. */
+ * now and the callback follows on the loop. A library link excludes the
+ * event loop, so scr_lib.c answers this surface instead (SC4005). */
+#ifndef SCR_LIB
 void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
   if (callback->kind != SCR_DYN_FUNC) {
     scr_dyn_arg_type_fail("callback", "of type function", callback);
@@ -4216,6 +4233,7 @@ void scr_dir_close_callback(ScrDir *d, ScrDyn *callback) {
   }
   scr_dir_push(op);
 }
+#endif
 
 /* dir.read() promise form: the emitter consumed the entry when the call
  * ran and passes the built Dirent | null union; a closed Dir (or a failed

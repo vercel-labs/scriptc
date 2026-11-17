@@ -157,6 +157,7 @@ import {
 import {
   ADOPTED_OPTIONS,
   type AdmittedOpinion,
+  isCheckedJsSourceFile,
   isJsSourceFileName,
   jsOpinion,
   jsTscCodeTriage,
@@ -1016,6 +1017,22 @@ function externalTypeFileClosure7(
   return new Map([...ownersByFile].map(([file, owners]) => [file, [...owners]] as const));
 }
 
+/** The runtime implementations of the project's own declarations: a
+ * declaration beside the JavaScript Node loads (`lib.d.ts` next to
+ * `lib.js`) describes that module, and the JavaScript is the code that
+ * compiles (resolve.ts's projectDtsRuntimeSibling). The checker resolves
+ * the import to the declaration, so the implementation joins the program
+ * as a root. */
+function declarationTwinRoots7(program: ts.Program): string[] {
+  const roots: string[] = [];
+  for (const sf of program.getSourceFiles()) {
+    if (!sf.isDeclarationFile) continue;
+    const sibling = projectDtsRuntimeSibling(sf.fileName);
+    if (sibling !== null) roots.push(sibling);
+  }
+  return roots;
+}
+
 /** The fallback declaration files of the Node modules the program's files
  * name (fallbackModulesNamedIn) that the program does not hold yet. Each
  * file is read as tsgo reads it; the TypeScript libraries and scriptc's own
@@ -1531,6 +1548,7 @@ function loadProgram7(
         ...(nodeTypes === null
           ? fallbackModuleRoots7(program, host)
           : nodeTypesSupplementRoots7(program, host)),
+        ...declarationTwinRoots7(program),
         ...entryPackageProgramRoots7(program, entryPath, packageRoots),
         ...createRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),
@@ -2134,15 +2152,16 @@ export function loadProgram(
     if (probe?.workspaceDir !== undefined)
       registerWorkspacePackage(probe.packageName, probe.workspaceDir);
   }
-  // Declaration-twin hiding is scoped to the entry's own package realm
-  // (see projectDtsRuntimeSibling) — set before the host exists so the
-  // program never sees an out-of-realm twin hidden.
+  // The project package realm (see projectDtsRuntimeSibling) is set before
+  // the host exists, so the twin roots below answer for this program's
+  // entry realm.
   setProjectRealm(entryPath);
-  // Two fs shadows compose: --npm-static's per-package hiding, and the
-  // always-on project declaration-TWIN hiding (a .d.ts beside runtime JS
-  // outside node_modules — the classic typed-JS-library entry — must not exist for
-  // the checker, so its resolution lands on the JS Node actually loads;
-  // resolve.ts answers the same sibling for scriptc's own edges).
+  // --npm-static's per-package hiding: an opted-in package's declaration
+  // entry points must not exist for the checker, so its resolution lands on
+  // the JavaScript Node actually loads. A PROJECT declaration twin (.d.ts
+  // beside runtime JS outside node_modules) is not hidden: TypeScript
+  // resolves the import to the declaration, and the JavaScript joins the
+  // program as the module's implementation (declarationTwinRoots7).
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
   setProgramDefines(opts?.define);
@@ -2176,8 +2195,7 @@ export function loadProgram(
           definedSource(services, path) ??
           undefined,
       ),
-    hideFile: (path: string) =>
-      (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
+    hideFile: (path: string) => npmShadow?.hideFile(path) ?? false,
   };
   const authoredShadow = {
     readFile: (path: string) => voidCasts(path, scriptcManifest(path)),
@@ -2447,7 +2465,7 @@ function jsOpinionOf7(
   if (syntacticOf(sf).some((s) => s.code === d.code && s.pos === pos && s.end === end)) return null;
   if (nodeFree) return opinion;
   const node = diagnosticNode7(sf, pos, end);
-  if (opinion.site !== undefined && !opinion.site(node, d, p)) return null;
+  if (opinion.site !== undefined && !opinion.site(node, d, p, projectCheckJs)) return null;
   if (opinion.view === "island" && isStrictCode(node)) return null;
   return opinion;
 }
@@ -7711,9 +7729,9 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
   //    closing edge's bindings are used only in deferred positions, so no
   //    read can execute before every member initialized);
   //  - the EXACT INITIALIZATION rule: an ES-module cluster whose early
-  //    reads are all let/const bindings with module storage — the
-  //    lowering checks each one (cycleEarlyBindings) and throws Node's
-  //    ReferenceError on a read before the declaration ran.
+  //    reads are all let/const bindings with module storage, or classes —
+  //    the lowering checks each one (cycleEarlyBindings) and throws
+  //    Node's ReferenceError on a read before the declaration ran.
   const cycleAdmissionReason = makeCycleAdmission(program, (sf) => {
     const all = edges.get(sf) ?? [];
     return all.some((e) => e.call !== undefined) ? all.filter((e) => e.call === undefined) : all;
@@ -9460,24 +9478,7 @@ export function isJsSourceFile(sf: ts.SourceFile): boolean {
   return isJsSourceFileName(sf.fileName);
 }
 
-/** True for a JavaScript file of the program that TypeScript type-checks:
- * one with a `// @ts-check` comment before its first statement, or any
- * file of a project whose tsconfig sets `checkJs` unless the file has a
- * `// @ts-nocheck` comment. Files under node_modules are never checked. */
-export function isCheckedJsSourceFile(sf: ts.SourceFile, projectCheckJs: boolean): boolean {
-  if (!isJsSourceFile(sf) || isNodeModulesPath(sf.fileName)) return false;
-  let checked = projectCheckJs;
-  const head = sf.text.slice(
-    0,
-    (sf.statements.nodes.length === 0 ? undefined : ts.tokenStartOfNode(sf.statements.nodes[0]!)) ??
-      sf.text.length,
-  );
-  for (const line of head.split("\n")) {
-    const directive = /^\s*\/\/\s*@ts-(no)?check\b/.exec(line);
-    if (directive) checked = directive[1] === undefined;
-  }
-  return checked;
-}
+export { isCheckedJsSourceFile };
 
 export function orderedImportsOf(
   program: ts.Program,

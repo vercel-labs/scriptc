@@ -157,7 +157,7 @@ static void stw3_fail(Stw3Ctx *c, ScrError *reason) {
     }
     scr_promise_release(p);
   }
-  if (c->drain_cl) {
+  if (c->drain_cl && c->writable) {
     scr_emitter_unadd_quiet((ScrEmitter *)c->writable, c->drain_name, c->drain_cl);
     c->drain_cl = NULL;
   }
@@ -234,6 +234,16 @@ static ScrDyn *stw3_start(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
 static ScrDyn *stw3_write(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   Stw3Ctx *c = stw3_of(cl);
   ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (!c->writable) {
+    /* Retired (the wrapped stream is gone): the web stream is closed or
+     * errored, so a write here only releases the call. */
+    ScrPromise *done = scr_promise_new();
+    scr_promise_fulfill_void(done);
+    ScrDyn *out = scr_dyn_new_promise(done);
+    scr_promise_release(done);
+    stw3_unref(c);
+    return out;
+  }
   bool needed = scr_stream_prop(c->writable, "writableNeedDrain") != 0;
   bool accepted = scr_stream_write_dyn(c->writable, chunk, NULL);
   ScrPromise *p = scr_promise_new();
@@ -287,7 +297,7 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)argc;
   Stw3Ctx *c = stw3_of(cl);
   ScrPromise *p = scr_promise_new();
-  if (c->closed || scr_stream_prop(c->writable, "writableEnded") != 0) {
+  if (!c->writable || c->closed || scr_stream_prop(c->writable, "writableEnded") != 0) {
     scr_promise_fulfill_void(p);
   } else {
     c->closed = scr_promise_retain(p);
@@ -307,7 +317,7 @@ static ScrDyn *stw3_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
       reason && reason->kind != SCR_DYN_UNDEF && reason->kind != SCR_DYN_NULL
           ? scr_error_from_dyn(reason)
           : NULL;
-  if (!scr_stream_prop(c->writable, "destroyed")) {
+  if (c->writable && !scr_stream_prop(c->writable, "destroyed")) {
     scr_stream_release(scr_stream_destroy(c->writable, err));
   }
   if (err) scr_error_release(err);

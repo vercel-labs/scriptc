@@ -10101,7 +10101,40 @@ function lowerHttpResMethodCall(
       }
       return { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
     };
+    /** Whether a writeInformation call's arguments are the shapes the static
+     * lowering reads: the status alone, or headers as an object literal of
+     * static keys and string values, or a record the env.pairs helper
+     * flattens. A JavaScript call site holding anything else — the callback
+     * form, a flat array, an array of entries, or a headers value whose
+     * shape only the run time knows — walks the runtime's own ladder over
+     * the checked-dynamic arguments, exactly as a call through an untyped
+     * value does. */
+    const informationArgsAreStatic = (): boolean => {
+      if (args.length === 0 || args.length > 2) return false;
+      if (args.length === 1) return lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "f64";
+      const headers = args[1]!;
+      if (ts.isObjectLiteralExpression(headers)) {
+        return headers.properties.nodes.every((prop) => {
+          if (!ts.isPropertyAssignment(prop)) return false;
+          if (staticHeaderKeyOf(lowerer, prop) === null) return false;
+          return lowerer.mapTypeOf(lowerer.typeOf(prop.initializer))?.kind === "string";
+        });
+      }
+      const t = lowerer.mapTypeOf(lowerer.typeOf(headers));
+      return t?.kind === "record" && lowerer.envToPairsHelper(t.shapeId, loc) !== null;
+    };
     if (name === "writeInformation") {
+      if (isJsSourceFile(ts.getSourceFileOfNode(call)) && !informationArgsAreStatic()) {
+        return {
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(receiver, DYN),
+          method: "writeInformation",
+          calleeName: ts.getTextOfNode(access),
+          args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        };
+      }
       if (args.length < 1 || args.length > 2) {
         lowerer.noLowering(
           `res.writeInformation with ${args.length} arguments`,

@@ -5814,9 +5814,13 @@ bool scr_http_req_complete(ScrHttpReq *r) {
 }
 
 /* The stream died with the response side open: 'aborted' fires NOW (the
- * teardown macrotask, Node's position), then the close rides the sweep. */
+ * teardown macrotask, Node's position), then the close rides the sweep.
+ * `aborted` may already be set: destroy() marks an incomplete message
+ * aborted so its signal and flag are right from that moment, and this is
+ * the event that reports the abort the destroy started. The listener list
+ * drops after the first fire, so a repeat call emits nothing. */
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
-  if (r->close_emitted || r->aborted) return;
+  if (r->close_emitted) return;
   r->aborted = true;
   scr_http_req_abort_signal(r);
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);

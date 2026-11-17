@@ -31,3 +31,13 @@ function checkClosure(): void {
   console.log(read());
 }
 checkClosure();
+
+// The declaration's own assertion waives the same check, so a read above it
+// still observes undefined rather than uninitialized storage.
+function checkDeclaredAssertion(): void {
+  console.log(fourth === undefined);
+  var fourth!: number;
+  fourth = 9;
+  console.log(fourth + 1);
+}
+checkDeclaredAssertion();

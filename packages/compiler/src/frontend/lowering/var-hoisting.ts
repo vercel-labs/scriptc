@@ -236,12 +236,18 @@ export function analyzeVarReads(
       // The declaration's own position: a reference before it is the
       // forward shape the lowering meets before the statement lowers.
       const firstPos = Math.min(...binding.names.map((n) => n.getStart()));
+      // `var x!: T` waives tsc's definite-assignment check of the binding's
+      // own-code reads, as a `!` on a read does: their position decides.
+      const asserted = binding.names.some((name) => {
+        const declaration = name.parent;
+        return ts.isVariableDeclaration(declaration) && declaration.exclamationToken !== undefined;
+      });
       const early =
         references.find(
           (ref) =>
             !binding.names.includes(ref) &&
             !isPlainWriteTarget(ref) &&
-            !analysis.settles(binding.scope, settle, ref),
+            !analysis.settles(binding.scope, settle, ref, true, !asserted),
         ) ??
         // No statement of the module stores it, and another module can read it.
         (settle.index === Infinity &&
@@ -738,10 +744,10 @@ class ScopeAnalysis {
 
   /** Whether `ref` (inside `scope`, or in another module) runs only after
    * the store `settle` describes. `read`: `ref` reads the binding itself,
-   * so tsc vouches for one in the scope's own code — except behind `!`,
-   * which waives that definite-assignment check, so the reference's own
-   * position decides. */
-  settles(scope: Scope, settle: Settle, ref: ts.Identifier, read = true): boolean {
+   * so tsc vouches for one in the scope's own code — except behind a `!`,
+   * on the read or on the declaration (`checked: false`), which waives that
+   * definite-assignment check, so the reference's own position decides. */
+  settles(scope: Scope, settle: Settle, ref: ts.Identifier, read = true, checked = true): boolean {
     if (ts.getSourceFileOfNode(ref) !== this.sf) return true;
     const statements = statementsOf(scope);
     let deferred: ts.Node | null = null;
@@ -759,7 +765,7 @@ class ScopeAnalysis {
       if (n.parent === container) top = n;
     }
     if (top === null) return false;
-    if (deferred === null && read && !this.js && !isNonNullAsserted(ref)) return true;
+    if (deferred === null && read && !this.js && checked && !isNonNullAsserted(ref)) return true;
     if (deferred !== null && ts.isFunctionDeclaration(deferred) && deferred.name !== undefined)
       return this.functionSettles(scope, settle, deferred);
     const index = statements.indexOf(top as ts.Statement);

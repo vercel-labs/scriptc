@@ -461,6 +461,14 @@ void scr_fs_mkdir(ScrStr *path);
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
+/* fs.readdirSync(path, { encoding: "buffer" }): the same names as Buffers. */
+ScrArr *scr_fs_readdir_bytes(ScrStr *path);
+/* fs.readdirSync(path, { encoding }): the same names decoded with that
+ * encoding (utf8 is scr_fs_readdir itself). */
+ScrArr *scr_fs_readdir_encoded(ScrStr *path, ScrStr *encoding);
+/* fs.promises.readdir(path, { recursive: true }) — the async walk's
+ * depth-first order, each entry's path relative to the base. */
+ScrArr *scr_fs_readdir_recursive_async(ScrStr *path);
 ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
@@ -748,6 +756,10 @@ ScrStats *scr_stats_zero(void);
  * binding's order, lazy Date accessors and the type tests on the
  * prototypes. Borrows s; +1. */
 ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint);
+/* fs.readdir's callback form: one Dirent value (+1) over borrowed name and
+ * parent strings and its UV_DIRENT kind; its prototype answers the is*()
+ * probes. */
+ScrDyn *scr_dirent_dyn(ScrStr *name, ScrStr *parent, double kind);
 /* A checked-dynamic Stats object back into the snapshot the typed members
  * read: +1, or NULL with the checked conversion's TypeError pending. The
  * `_opt` form answers NULL (no exception) for the dynamic undefined a
@@ -792,6 +804,11 @@ ScrPromise *scr_fsp_truncate(ScrStr *path, double length);
 ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_readdir(ScrStr *path);
+/* The same listing behind already-settled promises: the names decoded with
+ * the record's encoding, the names as Buffers, and the recursive walk. */
+ScrPromise *scr_fsp_readdir_encoded(ScrStr *path, ScrStr *encoding);
+ScrPromise *scr_fsp_readdir_bytes(ScrStr *path);
+ScrPromise *scr_fsp_readdir_recursive(ScrStr *path);
 ScrPromise *scr_fsp_rm(ScrStr *path);
 ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force);
 ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries,

@@ -8,10 +8,10 @@
 // own differential programs.
 import * as http from "node:http";
 
-// Agent: the socket hooks and the total-socket limit.
+// Agent: the socket hooks. maxTotalSockets is implemented
+// (http-agent-max-total-sockets).
 const agent = new http.Agent({ keepAlive: true });
 console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
-console.log(agent.maxTotalSockets);
 agent.destroy();
 
 // Server: the request and response members. `[Symbol.asyncDispose]` is

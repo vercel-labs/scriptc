@@ -877,6 +877,35 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     );
     return { name: "", type: e.type };
   }
+  if (
+    e.fn === "http.resWriteContinueCb" ||
+    e.fn === "http.resWriteProcessingCb" ||
+    e.fn === "http.resWriteEarlyHintsCb"
+  ) {
+    // The informational writers move the callback into the response's
+    // write-flush list; the caller must not release it after the call.
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[args.length - 1]!);
+    const entry =
+      e.fn === "http.resWriteContinueCb"
+        ? "scr_http_res_write_continue_cb"
+        : e.fn === "http.resWriteProcessingCb"
+          ? "scr_http_res_write_processing_cb"
+          : "scr_http_res_write_early_hints_cb";
+    if (e.fn === "http.resWriteEarlyHintsCb") {
+      host.declare(`declare void @${entry}(ptr, ptr, ptr)`);
+      B.line(
+        `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name})`,
+      );
+    } else {
+      host.declare(`declare void @${entry}(ptr, ptr)`);
+      B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
+    }
+    // The writers can throw (ERR_HTTP_HEADERS_SENT, invalid headers); the
+    // surrounding catch must see the pending exception.
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "http.resOnFinish" || e.fn === "http.resOnEndCallback") {
     const args = e.args.map((a) => host.emitExpr(a));
     host.toHeap(args[1]!);

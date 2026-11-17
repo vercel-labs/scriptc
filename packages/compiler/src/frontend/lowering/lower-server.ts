@@ -1837,7 +1837,7 @@ const NET_SERVER_EVENT_KIND: Readonly<Record<string, number>> = {
   close: 2,
   listening: 3,
   connection: 4,
-  secureConnection: 4,
+  secureConnection: 9,
   timeout: 5,
   drop: 6,
   newListener: 7,
@@ -3373,6 +3373,37 @@ function lowerNetSocketMethodCall(
       return { kind: "libCall", fn: "net.sockSetRef", args: callArgs, type: VOID, loc };
     }
     return receiverReturningCall(lowerer, "net.sockSetRef", callArgs, NETSOCKET_T, loc);
+  }
+  if (name === "getSession" && args.length === 0) {
+    // The session a resumption would use: a Buffer, or null while the
+    // handshake has none yet.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const value: IrExpr = {
+      kind: "libCall",
+      fn: "tls.sockDynMember",
+      args: [receiver, numLit(1, loc)],
+      type: DYN,
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    return declared === null || declared.kind === "dyn"
+      ? value
+      : lowerer.coerceInto(call, value, declared);
+  }
+  if (name === "disableRenegotiation" && args.length === 0) {
+    // Renegotiation is off by default here: the call is a no-op, as it is
+    // under TLS 1.3 in Node.
+    requireStatementPosition(lowerer, call, "socket.disableRenegotiation()");
+    // No effect at run time, but the receiver is still evaluated (its
+    // exceptions surface, as in Node) — the call itself answers void.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    return {
+      kind: "libCall",
+      fn: "tls.sockDisableRenegotiation",
+      args: [receiver],
+      type: VOID,
+      loc,
+    };
   }
   if (name === "write" || name === "end") {
     // write() answers Node's backpressure boolean; end() answers the
@@ -5150,6 +5181,22 @@ export function lowerServerProperty(
         ? value
         : lowerer.coerceInto(expr, value, declared);
     }
+    if (name === "servername") {
+      // The SNI name: the client's request on a server socket, the name
+      // this client offered otherwise; false without one.
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "tls.sockDynMember",
+        args: [receiver, numLit(0, loc)],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(expr, value, declared);
+    }
     const scalar: { fn: IrLibFn; type: IrType } | null =
       name === "bytesRead"
         ? { fn: "net.sockBytesRead", type: F64 }
@@ -5864,6 +5911,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
   let kaMsecs: IrExpr = numLit(-1, loc);
   let maxSockets: IrExpr = numLit(-1, loc);
   let maxFree: IrExpr = numLit(-1, loc);
+  let maxTotal: IrExpr = numLit(-1, loc);
+  let maxTotalSet = false;
   let timeout: IrExpr = numLit(-1, loc);
   let port: IrExpr = numLit(-1, loc);
   let scheduling: IrExpr = lowerer.coerceToExpected(strLit("lifo", loc), DYN);
@@ -5941,6 +5990,12 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
         case "maxFreeSockets":
           maxFree = lowerVal("f64");
           break;
+        case "maxTotalSockets":
+          // Node's cap across every name, not just this one; the runtime
+          // validates it the way the constructor does (>= 1)
+          maxTotal = lowerVal("f64");
+          maxTotalSet = true;
+          break;
         case "timeout":
           timeout = lowerVal("f64");
           break;
@@ -5966,8 +6021,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
             api,
             bi.module === "https" ? HTTPS_AGENT_DOCUMENTED_OPTIONS : AGENT_DOCUMENTED_OPTIONS,
             bi.module === "https"
-              ? "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options; pass TLS options such as ca and rejectUnauthorized on each https.request"
-              : "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options",
+              ? "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, maxTotalSockets, timeout, port, and scheduling are the supported options; pass TLS options such as ca and rejectUnauthorized on each https.request"
+              : "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, maxTotalSockets, timeout, port, and scheduling are the supported options",
           );
       }
     }
@@ -5981,6 +6036,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
       kaMsecs,
       maxSockets,
       maxFree,
+      boolLit(maxTotalSet, loc),
+      maxTotal,
       timeout,
       port,
       scheduling,
@@ -6482,6 +6539,7 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
 
   let port: IrExpr = numLit(-1, loc); // -1: the runtime reads options.port
   let host: IrExpr = { kind: "strLit", value: "", type: STRING, loc }; // "": options.host / localhost
+  let path: IrExpr | null = null; // connect(path[, options][, callback])
   let optsNode: ts.Expression | null = null;
   let i = 0;
   if (isObjectish(args[0]!)) {
@@ -6492,6 +6550,7 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
   } else {
     const p = lowerer.lowerExpr(args[0]!);
     if (p.type.kind === "f64") port = p;
+    else if (p.type.kind === "string") path = p;
     else if (p.type.kind === "dyn") port = { kind: "dynCheck", value: p, type: F64, loc };
     else
       lowerer.noLowering(`tls.connect with a '${lowerer.fmt(p.type)}' port`, args[0]!, FORMS_HINT);
@@ -6551,7 +6610,7 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
       );
     }
   } else {
-    if (port.kind === "numLit" && port.value === -1) {
+    if (port.kind === "numLit" && port.value === -1 && path === null) {
       lowerer.noLowering("tls.connect without a port or options", expr, FORMS_HINT);
     }
     // No options: Node's defaults (rejectUnauthorized: true) — the
@@ -6573,6 +6632,15 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
       [],
     );
     cb = r.cb;
+  }
+  if (path !== null) {
+    return {
+      kind: "libCall",
+      fn: "tls.connectPath",
+      args: [path, opts, cb ?? dynUndefinedExpr(loc)],
+      type: NETSOCKET_T,
+      loc,
+    };
   }
   return cb !== null
     ? { kind: "libCall", fn: "tls.connectCb", args: [port, host, opts, cb], type: NETSOCKET_T, loc }
@@ -6695,12 +6763,22 @@ function lowerTlsModuleCall(
     // an SNI callback answers with. The minimal honest form: exactly the
     // cert/key pair (PEM strings or Buffers — the createServer options
     // walk, reused); ca/ciphers/etc. fence by name there.
-    if (args.length !== 1) {
+    if (args.length > 1) {
       lowerer.noLowering(
         `createSecureContext with ${args.length} arguments`,
         expr,
-        "the supported form is createSecureContext({ cert, key })",
+        "the supported forms are createSecureContext() and createSecureContext({ cert, key })",
       );
+    }
+    if (args.length === 0) {
+      // Node's default: a context with no certificate of its own.
+      return {
+        kind: "libCall",
+        fn: "tls.createSecureContext",
+        args: [strLit("", loc), strLit("", loc)],
+        type: SECURECTX_T,
+        loc,
+      };
     }
     const opts = lowerTlsServerOptionsOrDyn(
       lowerer,
@@ -9724,8 +9802,32 @@ function lowerHttpResMethodCall(
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     if (name === "writeContinue" || name === "writeProcessing") {
-      if (args.length !== 0)
-        lowerer.noLowering(`res.${name} callback`, call, `${name}() supports no callback here`);
+      /* the callback form fires once the informational head is written;
+       * writeEarlyHints and writeInformation fall through below */
+      if (args.length > 1)
+        lowerer.noLowering(
+          `res.${name} with ${args.length} arguments`,
+          call,
+          `use ${name}([callback])`,
+        );
+      if (args.length === 1) {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[0]!,
+          `${name} callbacks`,
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        return {
+          kind: "libCall",
+          fn: name === "writeContinue" ? "http.resWriteContinueCb" : "http.resWriteProcessingCb",
+          args: [receiver, cb],
+          type: VOID,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
         fn: name === "writeContinue" ? "http.resWriteContinue" : "http.resWriteProcessing",
@@ -9800,14 +9902,32 @@ function lowerHttpResMethodCall(
         loc,
       };
     }
-    if (args.length !== 1)
+    if (args.length < 1 || args.length > 2)
       lowerer.noLowering(
         "res.writeEarlyHints arguments",
         call,
-        "pass one header object or Record<string, string> without a callback",
+        "use writeEarlyHints(headers[, callback])",
       );
     const node = args[0]!;
     const pairs = headerPairs(node, "writeEarlyHints");
+    if (args.length === 2) {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "writeEarlyHints callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http.resWriteEarlyHintsCb",
+        args: [receiver, pairs, cb],
+        type: VOID,
+        loc,
+      };
+    }
     return {
       kind: "libCall",
       fn: "http.resWriteEarlyHints",

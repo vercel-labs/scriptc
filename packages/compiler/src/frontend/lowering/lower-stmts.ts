@@ -1136,9 +1136,12 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             },
           });
           if (fence) out.push(fence);
-        } else if (deferFences) {
+        } else {
           // Inside a capture buffer the owner keeps the diagnostics, but
-          // the statement still must not vanish from a result it keeps.
+          // the statement still must not vanish from a result it keeps. A
+          // JavaScript source gets the same fence it makes outside a buffer;
+          // a TypeScript source gets it too, so a member lowered a second
+          // time for run-time use holds every statement of its body.
           const fence = lowerer.capturedRuntimeFence(sinkMark, stmt);
           if (fence) out.push(fence);
         }
@@ -14277,7 +14280,7 @@ export function lowerForOf(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
     lowerer.unsupported(
       "SC1070",
       stmt,
-      "'for await' over this value (supported: typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams)",
+      "'for await' over this value (supported: fsPromises.watch, typed async generators, represented class async iterators, process.stdin, and Node/Web readable streams)",
     );
   }
   if (awaitArray && !lowerer.ctx.isAsync) {

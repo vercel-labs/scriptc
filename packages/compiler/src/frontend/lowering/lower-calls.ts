@@ -1,4 +1,5 @@
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
+import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { mayReplacePrototype } from "./class-method-mutations.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
@@ -225,7 +226,7 @@ import {
   lowerPromisifiedCryptoCall,
 } from "./builtins/crypto.js";
 import { lowerErrorCaptureStackTraceCall, lowerErrorIsErrorCall } from "./builtins/errors.js";
-import { lowerPromisifiedDnsCall } from "./lower-dgram.js";
+import { lowerDgramDisposeCall, lowerPromisifiedDnsCall } from "./lower-dgram.js";
 import { lowerDisposableStackUseCall } from "./builtins/disposable-stack.js";
 import {
   lowerDirDisposeCall,
@@ -305,6 +306,7 @@ import {
   lowerStaticFieldRead,
   returnsOnlyThis,
   storedClassValueType,
+  lowerRegExpConstruction,
   type ClassInfo,
 } from "./lower-classes.js";
 import { checkRefusedMemberUse } from "./class-member-refusals.js";
@@ -592,11 +594,94 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // A void-typed call whose result a truthiness test reads (tsc-codes.ts
+  // TS1345): Node's test reads what the call answered, and the callee may
+  // answer any value, so the call runs through the checked-dynamic
+  // invocation and the test reads that value.
+  const voidValue = lowerVoidTruthinessCall(lowerer, expr);
+  if (voidValue !== null) return voidValue;
   // A call that asks an arguments object what it is (arguments-object.ts).
   return (
     lowerArgumentsObjectCall(lowerer, expr, locOf(expr), () => lowerOrdinaryCall(lowerer, expr)) ??
     lowerOrdinaryCall(lowerer, expr)
   );
+}
+
+/** Whether a `RegExp` pattern argument is statically a string, which no
+ * RegExp value can be at run time. An absent or undefined pattern is the
+ * empty one. */
+function staticallyStringPattern(lowerer: Lowerer, pattern: ts.Expression | undefined): boolean {
+  if (pattern === undefined) return true;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(pattern));
+  return (
+    type !== null && (type.kind === "string" || type.kind === "undefinedT" || type.kind === "void")
+  );
+}
+
+/** A void-typed call whose result a truthiness test reads (preflight
+ * admitted the test, tsc-codes.ts TS1345, because the callee is one the
+ * analysis cannot prove answers undefined). Node's ToBoolean reads the value
+ * the call answered, so the call goes through the checked-dynamic
+ * invocation: the receiver and the callee are read once, in source order,
+ * the arguments follow, and the runtime applies the callee's own `this` and
+ * returns its value — which the test then reads. Null for every other call,
+ * so a program that admitted no such site keeps its IR. */
+function lowerVoidTruthinessCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr | null {
+  if (expr.questionDotToken !== undefined) return null;
+  if (!lowerer.opinionAt(expr, 1345)) return null;
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (result?.kind !== "void") return null;
+  if (!voidTruthinessNeedsRuntimeValue(expr, lowerer.program)) return null;
+  const calleeNode = expr.expression;
+  if (calleeNode.questionDotToken !== undefined) return null;
+  const loc = locOf(expr);
+  const stmts: IrStmt[] = [];
+  const save = (value: IrExpr, name: string): IrExpr => {
+    const local = lowerer.declareHiddenLocal(name, DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, DYN, loc);
+  };
+  let callee: IrExpr;
+  let receiver: IrExpr | undefined;
+  if (ts.isPropertyAccessExpression(calleeNode) || ts.isElementAccessExpression(calleeNode)) {
+    // `o.f(...)`: Node reads the receiver once, then the member (which may
+    // run a getter), then evaluates the arguments with `this` = the
+    // receiver.
+    receiver = save(lowerer.lowerExprExpecting(calleeNode.expression, DYN), "%voidCalleeReceiver");
+    const key = ts.isPropertyAccessExpression(calleeNode)
+      ? lowerer.coerceInto(
+          calleeNode,
+          { kind: "strLit", value: calleeNode.name.text, type: STRING, loc },
+          DYN,
+        )
+      : lowerer.lowerExprExpecting(calleeNode.argumentExpression, DYN);
+    callee = save({ kind: "dynKeyGet", value: receiver, key, type: DYN, loc }, "%voidCallee");
+  } else if (ts.isIdentifier(calleeNode)) {
+    callee = save(
+      lowerer.coerceInto(calleeNode, lowerer.lowerExpr(calleeNode), DYN),
+      "%voidCallee",
+    );
+  } else {
+    return null;
+  }
+  const args: IrExpr[] = [];
+  for (const argument of expr.arguments.nodes) {
+    if (ts.isSpreadElement(argument)) return null;
+    args.push(lowerer.lowerExprExpecting(argument, DYN));
+  }
+  const call: IrExpr = {
+    kind: "dynCall",
+    callee,
+    ...(receiver !== undefined ? { receiver } : {}),
+    calleeName:
+      ts.isPropertyAccessExpression(calleeNode) || ts.isElementAccessExpression(calleeNode)
+        ? ts.getTextOfNode(calleeNode)
+        : calleeNode.text,
+    args,
+    type: DYN,
+    loc,
+  };
+  return stmts.length === 0 ? call : { kind: "seqExpr", stmts, result: call, type: DYN, loc };
 }
 
 function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
@@ -1385,6 +1470,42 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       };
     }
     if (name === "String") return lowerer.ensureString(arg, argNode);
+  }
+
+  // `RegExp(pattern, flags?)` without `new`: Node's RegExp function IS the
+  // constructor (ECMA-262 22.2.3.1), except that a RegExp pattern whose
+  // flags argument is undefined is answered as it stands — identity and
+  // lastIndex included. A pattern the compiler can see is a string never
+  // is one, so the plain construction is exact there; every other pattern
+  // (a RegExp value, a RegExp-typed slot, a checked-dynamic value) takes
+  // the runtime's call form, which decides at run time and so keeps the
+  // rule for a flags value that is only undefined when it runs.
+  if (
+    ts.isIdentifier(expr.expression) &&
+    expr.expression.text === "RegExp" &&
+    expr.questionDotToken === undefined &&
+    lowerer.isStdlibGlobal(expr.expression, "RegExp")
+  ) {
+    const args = expr.arguments.nodes;
+    if (
+      args.length <= 2 &&
+      !args.some(ts.isSpreadElement) &&
+      !staticallyStringPattern(lowerer, args[0])
+    ) {
+      const checked = [0, 1].map((index): IrExpr => {
+        const arg = args[index];
+        if (arg === undefined) return dynUndefinedExpr(loc);
+        return lowerer.coerceInto(arg, lowerer.lowerExpr(arg), DYN);
+      });
+      return {
+        kind: "libCall",
+        fn: "regex.callChecked",
+        args: checked,
+        type: { kind: "regex" },
+        loc,
+      };
+    }
+    return lowerRegExpConstruction(lowerer, expr, args, loc, "RegExp");
   }
 
   // Computed calls preserve their evaluated receiver just like dotted
@@ -2377,6 +2498,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (streamDispose) return streamDispose;
     const netServerDispose = lowerNetServerAsyncDisposeCall(lowerer, expr);
     if (netServerDispose) return netServerDispose;
+    const dgramDispose = lowerDgramDisposeCall(lowerer, expr);
+    if (dgramDispose) return dgramDispose;
     lowerer.fenceUnsupportedFetchConstructorMember(expr.expression);
     lowerer.fenceStaticResponseMember(expr.expression, "call");
     lowerer.fenceStaticHeadersMember(expr.expression, "call");
@@ -5988,6 +6111,9 @@ const DYN_STRING_PROTO_ONLY_NAMES = new Set([
  * is-not-a-function where the kind's prototype lacks the name, and
  * throws the 'not supported yet' Error on real-but-unimplemented pairs. */
 const DYN_DISPATCH_METHODS = new Set([
+  // KeyObject.prototype's conversion dispatches on the handle, which has no
+  // stored member value to read (scr_lib.c/scr_pki.c reach it).
+  "toCryptoKey",
   "toFixed",
   "toExponential",
   "segment",
@@ -7417,6 +7543,73 @@ export function lowerTaggedTemplate(lowerer: Lowerer, expr: ts.TaggedTemplateExp
       ...values.map((a) => lowerer.lowerExprExpecting(a, DYN)),
     ];
     const calleeName = v8CalleeText(expr.tag);
+    // `recv.tag\`...\`` runs with `recv` as `this`, like `recv.tag(...)`:
+    // the receiver evaluates first and the member is read off it. A tag
+    // that is not a property read is a value call with no receiver.
+    if (ts.isElementAccessExpression(expr.tag) && !expr.tag.questionDotToken) {
+      const receiverLocal = lowerer.declareHiddenLocal("%dynTagReceiver", DYN);
+      const receiver: IrExpr = { kind: "varRef", localId: receiverLocal.id, type: DYN, loc };
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: receiverLocal.id,
+            init: lowerer.lowerExprExpecting(expr.tag.expression, DYN),
+            loc,
+          },
+        ],
+        result: {
+          kind: "dynCall",
+          callee: {
+            kind: "dynKeyGet",
+            value: receiver,
+            key: lowerer.lowerExprExpecting(expr.tag.argumentExpression, DYN),
+            type: DYN,
+            loc,
+          },
+          receiver,
+          calleeName,
+          args,
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
+    if (ts.isPropertyAccessExpression(expr.tag) && !expr.tag.questionDotToken) {
+      const receiverLocal = lowerer.declareHiddenLocal("%dynTagReceiver", DYN);
+      const receiver: IrExpr = { kind: "varRef", localId: receiverLocal.id, type: DYN, loc };
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: receiverLocal.id,
+            init: lowerer.lowerExprExpecting(expr.tag.expression, DYN),
+            loc,
+          },
+        ],
+        result: {
+          kind: "dynCall",
+          callee: {
+            kind: "dynKeyGet",
+            value: receiver,
+            key: { kind: "strLit", value: expr.tag.name.text, type: STRING, loc },
+            type: DYN,
+            loc,
+          },
+          receiver,
+          calleeName,
+          args,
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
     return { kind: "dynCall", callee, calleeName, args, type: DYN, loc };
   }
   lowerer.unsupported(

@@ -15,6 +15,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",
+  // scr_test_ctx_log writes the ℹ line at once; printing cannot raise.
+  "test.ctxLog",
   // Console instance state that answers text: the timer labels are already
   // strings, the stores are the instance's own tables, and no program code
   // runs. (The counters and the table can throw, so they are not here.)
@@ -41,6 +43,18 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // flag; a closed watcher ignores them, and nothing user-visible runs.
   "watcher.ref",
   "watcher.unref",
+  // watchEvents.wait builds a promise or answers a settled one, and
+  // scr_watch_events_close closes an already-open watcher (a closed one
+  // returns at once). Neither runs program code. watchEvents.take and
+  // fsp.watch are deliberately absent: a queue over its bound raises
+  // ERR_FS_WATCH_QUEUE_OVERFLOW, and opening the path throws Node's fs
+  // error.
+  "watchEvents.wait",
+  "watchEvents.close",
+  // scr_stat_watcher_ref / scr_stat_watcher_unref move one registration's
+  // liveness flag; a registration fs.unwatchFile already removed is a no-op.
+  "statWatcher.ref",
+  "statWatcher.unref",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
   // scr_sqlite_is compares a handle's tag.
@@ -53,8 +67,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_dyn_register_class_to_string copies the type key and retains the
   // function in a thread-local table; no program code runs.
   "dyn.registerClassToString",
-  // scr_weak_ref_is compares the value's kind and handle tag.
+  // scr_weak_ref_is and scr_dyn_abort_signal_is compare the value's kind
+  // and handle tag.
   "weakRef.is",
+  "abort.signalIs",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
   // scr_dyn_function_prototype builds the one anonymous function answering
@@ -66,6 +82,24 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // publish runs every subscriber and catches its throw: like Node's
+  // process.nextTick(triggerUncaughtException), the exception is delivered
+  // on a later tick instead of leaving the call, so publish itself raises
+  // nothing.
+  "dc.publish",
+  // scr_dc_has_subscribers answers false for a name that is neither a string
+  // nor a symbol and compares its registry by name identity; no program code
+  // runs.
+  "dc.hasSubscribers",
+  // scr_dc_chan_name retains the interned name string.
+  "dc.chanName",
+  // The tracing handles' reads compare registry entries and dispatch the
+  // hasSubscribers conjunction.
+  "dc.tcChannel",
+  "dc.tcHasSubscribers",
+  "dc.chanHasSubscribers",
+  // scr_te_get_enabled_categories reads the registry's own strings.
+  "te.getEnabledCategories",
   // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its
   // counter; neither runs program code.
   "perf.loopExit",
@@ -109,6 +143,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http2.getPackedSettings0",
   // Copies the values a name has in a string pairs array.
   "http2.pairsValues",
+  // stream.getDefaultHighWaterMark reads the runtime's default for the mode:
+  // no allocation, no coercion and no program code.
+  "stream.getDefaultHwm",
   // The child stream's flowing state is set or read; held chunks go to the
   // listeners on a later tick, never inside the call.
   "stream.childPause",
@@ -155,6 +192,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // on first use; it takes no argument, and running out of memory ends the
   // process.
   "worker.shareEnv",
+  // scr_worker_performance answers the Worker's { eventLoopUtilization }
+  // object, made once per Worker; a handle of another class reads undefined,
+  // and running out of memory ends the process.
+  "worker.performance",
   // scr_emitter_symbol_name allocates the registry key of the symbol it is
   // given (scr_str_symbol_key); running out of memory ends the process.
   "emitter.symName",
@@ -241,6 +282,20 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_net_server_async_dispose allocates the promise, adds a close
   // listener and starts the close; a later close failure is a rejection.
   "net.serverAsyncDispose",
+  // scr_tls_sock_dyn_member reads the name the client asked for (the SNI
+  // name a server recorded) into a string, or false, and copies the
+  // established session into a Buffer, or null before there is one. It
+  // runs no program code.
+  "tls.sockDynMember",
+  // scr_tls_sock_disable_renegotiation does nothing: the provider keeps
+  // renegotiation off, which is what the call asks for.
+  "tls.sockDisableRenegotiation",
+  // scr_dgram_async_dispose allocates the promise and registers the close
+  // listener; the only failure is allocation, which aborts.
+  "dgram.asyncDispose",
+  // socket.type and `instanceof dgram.Socket`: pure reads, never throw.
+  "dgram.type",
+  "dgram.isSocket",
   // scr_util_transferable_abort_controller allocates a controller and its
   // signal state; running out of memory ends the process, and no argument
   // is read (surplus arguments are evaluated by the call site).

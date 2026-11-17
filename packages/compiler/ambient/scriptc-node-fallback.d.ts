@@ -959,7 +959,8 @@ interface KmacKeyGenParams extends Algorithm {
   length?: number;
 }
 interface KmacParams extends Algorithm {
-  algorithm: string;
+  /* Node's runtime reads the dictionary's name and ignores this member. */
+  algorithm?: string;
   outputLength: number;
   customization?: BufferSource;
 }
@@ -989,7 +990,7 @@ interface CryptoKeyPair {
  * encrypts and decrypts. */
 interface SubtleCrypto {
   decrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -1007,7 +1008,7 @@ interface SubtleCrypto {
   ): Promise<CryptoKey>;
   digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
   encrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -1026,26 +1027,41 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;
   generateKey(
-    algorithm: AesKeyGenParams | HmacKeyGenParams,
+    algorithm:
+      | AesKeyGenParams
+      | HmacKeyGenParams
+      | KmacKeyGenParams
+      | "ChaCha20-Poly1305"
+      | { name: "ChaCha20-Poly1305" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   importKey(
     format: "jwk",
     keyData: JsonWebKey,
-    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
+    algorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   importKey(
     format: Exclude<KeyFormat, "jwk">,
     keyData: BufferSource,
-    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
+    algorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   sign(
-    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    algorithm: AlgorithmIdentifier | EcdsaParams | KmacParams | RsaPssParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -1059,7 +1075,7 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   verify(
-    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    algorithm: AlgorithmIdentifier | EcdsaParams | KmacParams | RsaPssParams,
     key: CryptoKey,
     signature: BufferSource,
     data: BufferSource,
@@ -1375,10 +1391,11 @@ interface AbortSignal extends EventTarget {
   throwIfAborted(): void;
 }
 declare var AbortSignal: {
-  timeout(ms: number): AbortSignal;
+  readonly prototype: AbortSignal;
+  new (): AbortSignal;
   abort(reason?: unknown): AbortSignal;
   any(signals: readonly AbortSignal[]): AbortSignal;
-  readonly prototype: AbortSignal;
+  timeout(ms: number): AbortSignal;
 };
 
 interface QueuingStrategySize<T = unknown> {

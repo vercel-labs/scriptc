@@ -6,13 +6,17 @@ import { bindingNeverReassigned } from "./binding-analysis.js";
 import { implicitDefaultInstance } from "./generic-functions.js";
 import { type FnSig } from "./call-signatures.js";
 
-/** The JavaScript function declaration (or never-reassigned function
- * expression binding) `new` calls, when it is an ordinary constructor: not
- * a generator or async function. */
-function jsConstructorFunctionOf(
+/** The JavaScript function declaration (or function expression binding)
+ * `new` names, when it is an ordinary constructor: not a generator or async
+ * function. Whether the binding is reassigned is the caller's question. */
+function jsConstructorDeclarationOf(
   lowerer: Lowerer,
   expr: ts.NewExpression,
-): ts.FunctionDeclaration | ts.FunctionExpression | null {
+): {
+  declaration: ts.FunctionDeclaration | ts.FunctionExpression;
+  owner: ts.Node;
+  symbol: ts.Symbol;
+} | null {
   if (!ts.isIdentifier(expr.expression) || lowerer.peekLocal(expr.expression)) return null;
   // This probe also sees ordinary classes during global collection. Leave
   // their deferred diagnostics for the class declaration's lowering.
@@ -44,13 +48,26 @@ function jsConstructorFunctionOf(
   if (
     !owner ||
     !declaration?.body ||
-    !bindingNeverReassigned(lowerer.bindingScope(), symbol, owner) ||
     !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
     declaration.asteriskToken ||
     declaration.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
   )
     return null;
-  return declaration;
+  return { declaration, owner, symbol };
+}
+
+/** The never-reassigned JavaScript function declaration (or function
+ * expression binding) `new` calls: the constructor whose declaration is the
+ * value the binding holds. */
+function jsConstructorFunctionOf(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+): ts.FunctionDeclaration | ts.FunctionExpression | null {
+  const found = jsConstructorDeclarationOf(lowerer, expr);
+  if (found === null) return null;
+  return bindingNeverReassigned(lowerer.bindingScope(), found.symbol, found.owner)
+    ? found.declaration
+    : null;
 }
 
 /** An expression whose value replaces the receiver instead of answering it:
@@ -114,17 +131,22 @@ export function objectReturningConstructorRefusal(
   lowerer: Lowerer,
   expr: ts.NewExpression,
 ): string | null {
-  const declaration = jsConstructorFunctionOf(lowerer, expr);
-  if (!declaration?.body) return null;
-  const last = declaration.body.statements.nodes.at(-1);
+  const found = jsConstructorDeclarationOf(lowerer, expr);
+  if (!found) return null;
+  const last = found.declaration.body?.statements.nodes.at(-1);
   if (
     !last ||
     !ts.isReturnStatement(last) ||
     !last.expression ||
-    !returnsObjectValue(last.expression) ||
-    isObjectFactoryNew(lowerer, expr)
+    !returnsObjectValue(last.expression)
   )
     return null;
+  if (isObjectFactoryNew(lowerer, expr)) return null;
+  // A reassigned binding no longer holds the declaration's function: the
+  // assignment may replace it with any value, so the construction keeps the
+  // fence the checked path would otherwise take.
+  if (!bindingNeverReassigned(lowerer.bindingScope(), found.symbol, found.owner))
+    return "object-returning constructors whose binding is reassigned";
   return "object-returning constructors that observe this or return mixed primitive/object values";
 }
 

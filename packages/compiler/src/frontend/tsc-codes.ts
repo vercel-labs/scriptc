@@ -1,4 +1,5 @@
 import * as ts from "./ts7/adapter.js";
+import { isNodeModulesPath } from "./resolve.js";
 
 /** Compiler options adopted from the project during preflight. */
 export const ADOPTED_OPTIONS = [
@@ -109,8 +110,15 @@ export interface Opinion {
   readonly view: OpinionView;
   /** The row admits only the constructs this guard accepts at the
    * diagnostic's node. The program is the one the diagnostic came from, for
-   * a guard that asks the checker about the node's types. */
-  readonly site?: (node: ts.Node, diagnostic: ts.Diagnostic, program: ts.Program) => boolean;
+   * a guard that asks the checker about the node's types, and
+   * `projectCheckJs` says whether the project asked tsc to check JavaScript,
+   * for a guard that has to tell a checked file from an unchecked one. */
+  readonly site?: (
+    node: ts.Node,
+    diagnostic: ts.Diagnostic,
+    program: ts.Program,
+    projectCheckJs?: boolean,
+  ) => boolean;
   /** Keep the diagnostic in checked JavaScript: the project asked tsc for
    * this opinion. */
   readonly checkedJs?: "enforce";
@@ -155,10 +163,7 @@ const THROW = (why: string, corpus?: readonly string[]): Opinion => ({
 
 /** The row applies only where its guard holds; the code's TRIAGE_ROWS row
  * stays for every other site. */
-const at = (
-  site: (node: ts.Node, diagnostic: ts.Diagnostic, program: ts.Program) => boolean,
-  row: Opinion,
-): Opinion => ({ ...row, site });
+const at = (site: NonNullable<Opinion["site"]>, row: Opinion): Opinion => ({ ...row, site });
 
 /** A checked JavaScript file keeps this diagnostic. */
 const inCheckedJs = (row: Opinion): Opinion => ({ ...row, checkedJs: "enforce" });
@@ -218,6 +223,123 @@ const coercibleOperatorOperand = (
   return coercible && !bigintCompoundTarget(node, program);
 };
 
+/** The operand expressions an arithmetic, bitwise, comparison or compound
+ * assignment operator reads: both sides of a binary expression (TS2365), or
+ * the operand of `++`/`--` (TS2356). The diagnostic spans the operator
+ * expression itself. */
+export function operatorOperandNodes(node: ts.Node): readonly ts.Node[] {
+  if (ts.isBinaryExpression(node)) return [node.left, node.right];
+  if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) return [node.operand];
+  return [node];
+}
+
+/** Whether `decl` declares a JavaScript binding whose storage follows the
+ * values the program writes to it: a `let`/`var` of a JavaScript source. A
+ * `const` keeps the type its initializer gave it, and a catch binding's
+ * snapshot is read-only in the lowering, so neither admits a retyped
+ * operator or a hoisted read. */
+export function jsWritableBindingDeclaration(decl: ts.Node | undefined): boolean {
+  return (
+    decl !== undefined &&
+    ts.isVariableDeclaration(decl) &&
+    ts.isIdentifier(decl.name) &&
+    decl.parent !== undefined &&
+    ts.isVariableDeclarationList(decl.parent) &&
+    (decl.parent.flags & ts.NodeFlags.Const) === 0 &&
+    (decl.parent.parent === undefined || !ts.isCatchClause(decl.parent.parent)) &&
+    isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName)
+  );
+}
+
+/** The identifier an operand reads, when it names a JavaScript binding whose
+ * storage follows the values the program writes to it
+ * (jsWritableBindingDeclaration). */
+export function jsWritableBindingRead(node: ts.Node, program: ts.Program): ts.Identifier | null {
+  let expression: ts.Node = node;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (!ts.isIdentifier(expression)) return null;
+  const decl = program.getTypeChecker().getSymbolAtLocation(expression)?.valueDeclaration;
+  return jsWritableBindingDeclaration(decl) ? expression : null;
+}
+
+/** Whether an operand's type is one the ordinary lowering already converts:
+ * the operator's own numeric, string, BigInt or boolean form, or a value the
+ * checker cannot bound (`any`/`unknown`), which the checked-dynamic path
+ * takes as it is. A record, class instance or other object type is not —
+ * converting it needs ToPrimitive, which the lowering applies only to a
+ * checked-dynamic value. */
+const operatorConvertsType = (type: ts.Type): boolean =>
+  (type.flags & ts.TypeFlags.Union) !== 0
+    ? ts.constituentTypes(type).every(operatorConvertsType)
+    : (type.flags &
+        (ts.TypeFlags.Any |
+          ts.TypeFlags.Unknown |
+          ts.TypeFlags.NumberLike |
+          ts.TypeFlags.StringLike |
+          ts.TypeFlags.BigIntLike |
+          ts.TypeFlags.BooleanLike)) !==
+      0;
+
+/** Whether the operator's diagnostic comes from a JavaScript binding whose
+ * checker type is the shape one assignment stored, not the value the
+ * operator converts at run time: shipped JavaScript reuses a `var` for a
+ * property descriptor and then for a number (`var namePropDescriptor =
+ * Object.getOwnPropertyDescriptor(...); ...; 1 <= namePropDescriptor`), and
+ * both React bundles do that all through their stack-frame walks. Node
+ * converts whatever the binding holds — ToNumeric for `++`, ToPrimitive for
+ * a comparison — and the widening prepass (widenRetypedOperatorBindings)
+ * gives the binding checked-dynamic storage, so the ordinary arithmetic and
+ * comparison lowering applies that conversion. Every operand of the operator
+ * must be one such binding or one the lowering already converts; a static
+ * record operand keeps tsc's refusal, because its conversion has no native
+ * form. A checked JavaScript file keeps the diagnostic. */
+const jsRetypedOperatorOperand = (
+  node: ts.Node,
+  _d: ts.Diagnostic,
+  program: ts.Program,
+  projectCheckJs?: boolean,
+): boolean => {
+  // A compound assignment on a BigInt target keeps the triage's refusal, as
+  // it does for the conclusive-operand row: the lowering's BigInt arms take
+  // two BigInts, and a BigInt binding's storage is not one the program
+  // retyped.
+  if (bigintCompoundTarget(node, program)) return false;
+  const checker = program.getTypeChecker();
+  let retyped = false;
+  for (const operand of operatorOperandNodes(node)) {
+    const binding = jsWritableBindingRead(operand, program);
+    if (binding !== null) {
+      if (isCheckedJsSourceFile(ts.getSourceFileOfNode(binding), projectCheckJs ?? false))
+        return false;
+      retyped = true;
+      continue;
+    }
+    if (!operatorConvertsType(checker.getTypeAtLocation(operand))) return false;
+  }
+  return retyped;
+};
+
+/** Whether the read is of a `var` the program has not assigned yet.
+ * JavaScript hoists `var` and answers `undefined` for a read before the
+ * first assignment (`getTargetInstFunc && …` where the function is installed
+ * in a branch); the widening prepass (widenRetypedOperatorBindings) gives the
+ * binding checked-dynamic storage, so the read answers the `undefined` Node
+ * stored. A `let`/`const` read above its declaration is the temporal dead
+ * zone (TS2448), not this code, and keeps its refusal. */
+const jsHoistedVarRead = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  let expression: ts.Node = node;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (!ts.isIdentifier(expression)) return false;
+  const decl = program.getTypeChecker().getSymbolAtLocation(expression)?.valueDeclaration;
+  const list = decl?.parent;
+  return (
+    jsWritableBindingDeclaration(decl) &&
+    list !== undefined &&
+    ts.isVariableDeclarationList(list) &&
+    (list.flags & ts.NodeFlags.BlockScoped) === 0
+  );
+};
+
 /** Whether `node` sits in a compound assignment (`+=`, `-=`, ...) whose
  * target is a BigInt binding. */
 const bigintCompoundTarget = (node: ts.Node, program: ts.Program): boolean => {
@@ -249,6 +371,28 @@ const symbolStringOperator = (_node: ts.Node, d: ts.Diagnostic): boolean => {
  * through any other readonly index signature keeps tsc's refusal. */
 const stringWrapperReceiver = (_node: ts.Node, d: ts.Diagnostic): boolean =>
   ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'");
+
+/** TS2630 in a JavaScript source whose target is a function DECLARATION the
+ * program reassigns: the declaration lowers to a mutable binding holding the
+ * function as a checked-dynamic value (rebindable-functions.ts), which the
+ * assignment replaces as Node does. A named function expression's own inner
+ * binding is immutable, and its assignment keeps the diagnostic: strict code
+ * throws Node's TypeError there and sloppy code ignores the write. */
+const rebindableFunctionAssignment = (
+  node: ts.Node,
+  _d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
+  let target: ts.Node = node;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    target = target.left;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isIdentifier(target)) return false;
+  const symbol = program.getTypeChecker().getSymbolAtLocation(target);
+  const declaration = symbol?.valueDeclaration;
+  return declaration !== undefined && ts.isFunctionDeclaration(declaration);
+};
 
 /** The deprecated `Buffer(...)` call without `new`, which Node's Buffer
  * function accepts (containers/bytes.ts lowers it), `fs.ReadStream(...)` /
@@ -671,12 +815,51 @@ const undefinedAtRunTime = (node: ts.Node, program: ts.Program, depth = 0): bool
   return named.initializer === held && constInitializerOf(held);
 };
 
+/** A void-typed truthiness operand whose value Node reads at run time: a
+ * call the checker types `void` that the analysis cannot prove answers
+ * undefined. The lowering performs the call through the checked-dynamic
+ * invocation so the test reads the value Node's call answers
+ * (lower-calls.ts). */
+export function voidTruthinessNeedsRuntimeValue(node: ts.Node, program: ts.Program): boolean {
+  if (!ts.isCallExpression(node)) return false;
+  // The callee is a MEMBER of a plain object the program builds
+  // (`Internals.d.f()`), so the lowering can give that object
+  // checked-dynamic storage and read back the function the program stored
+  // there, value included. A callee that is a binding, a parameter, a class
+  // instance's method or a class value keeps the refusal: their storage
+  // cannot follow the value a `void` signature discards.
+  let callee: ts.Node = node.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  if (
+    (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) ||
+    callee.questionDotToken !== undefined
+  )
+    return false;
+  let root: ts.Node = callee.expression;
+  while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+    root = root.expression;
+  while (ts.isParenthesizedExpression(root)) root = root.expression;
+  if (!ts.isIdentifier(root)) return false;
+  const checker = program.getTypeChecker();
+  const rootType = checker.getNonNullableType(checker.getTypeAtLocation(root));
+  if ((rootType.flags & ts.TypeFlags.Object) === 0) return false;
+  const objectType = rootType as ts.ObjectType;
+  if ((objectType.objectFlags & ts.ObjectFlags.ClassOrInterface) !== 0) return false;
+  if (checker.getSignaturesOfType(rootType, ts.SignatureKind.Call).length > 0) return false;
+  if (checker.getSignaturesOfType(rootType, ts.SignatureKind.Construct).length > 0) return false;
+  return !undefinedAtRunTime(node, program);
+}
+
 /** TS1345 where Node's ToBoolean of the operand is known: the boolean of a
- * discarded negation is never read, and an operand that is always
- * `undefined` tests false. Any other void-typed operand keeps the triage
+ * discarded negation is never read, an operand that is always `undefined`
+ * tests false, and a call through a plain object's member reads the value
+ * its callee answers (voidTruthinessNeedsRuntimeValue). Any other void-typed
+ * operand keeps the triage
  * row, because the lowering has no runtime value for it. */
 const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean =>
-  discardedVoidNegation(node) || undefinedAtRunTime(node, program);
+  discardedVoidNegation(node) ||
+  undefinedAtRunTime(node, program) ||
+  voidTruthinessNeedsRuntimeValue(node, program);
 
 /* ---- family reasons ---- */
 
@@ -1452,13 +1635,67 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  // 2630, an assignment to a reassigned JavaScript function declaration:
+  // the declaration is a mutable binding that holds the function as a
+  // checked-dynamic value (rebindable-functions.ts), and the write replaces
+  // it as Node does. A named function expression's inner binding keeps the
+  // triage row (strict code throws there).
+  [
+    2630,
+    at(
+      rebindableFunctionAssignment,
+      WIDEN(
+        "a JavaScript function declaration's binding is mutable, and the declaration's value lives in checked-dynamic storage the write replaces",
+        ["tests/corpus/js-function-declaration-reassigned.js"],
+      ),
+    ),
+  ],
   [
     2365,
     at(
-      coercibleOperatorOperand,
+      (node, d, program, projectCheckJs) =>
+        coercibleOperatorOperand(node, d, program) ||
+        jsRetypedOperatorOperand(node, d, program, projectCheckJs),
       CHECKER(
-        "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
-        ["tests/corpus/js-primitive-wrappers.js", "tests/corpus/1614-js-fence-dodges.cjs"],
+        "an 'any', wrapper, BigInt or retyped JavaScript binding operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
+        [
+          "tests/corpus/js-primitive-wrappers.js",
+          "tests/corpus/1614-js-fence-dodges.cjs",
+          "tests/corpus/js-retyped-operator.js",
+        ],
+      ),
+    ),
+  ],
+  // TS2356 is the same conversion on an update expression: `x++` reads the
+  // binding and stores ToNumeric of what it held. A binding the program
+  // retyped takes checked-dynamic storage (widenRetypedOperatorBindings), so
+  // the dynamic increment conversion applies; every other non-numeric
+  // operand keeps the triage's refusal.
+  [
+    2356,
+    at(
+      jsRetypedOperatorOperand,
+      inCheckedJs(
+        WIDEN(
+          "an increment or decrement converts whatever the JavaScript binding holds with ToNumeric; the binding takes checked-dynamic storage",
+          ["tests/corpus/js-retyped-operator.js"],
+        ),
+      ),
+    ),
+  ],
+  // A `var` read before its first assignment is `undefined` in JavaScript:
+  // the declaration hoists without a value. The binding takes checked-dynamic
+  // storage (widenRetypedOperatorBindings), so the read answers what Node
+  // reads; the assignment later in the function stores its value as usual.
+  [
+    2454,
+    at(
+      jsHoistedVarRead,
+      inCheckedJs(
+        WIDEN(
+          "a 'var' is undefined before its first assignment; the binding takes checked-dynamic storage so the read answers undefined",
+          ["tests/corpus/js-var-read-before-assignment.js"],
+        ),
       ),
     ),
   ],
@@ -1523,23 +1760,29 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
-  // 1345, a truthiness test of a void-typed operand whose answer is known
-  // (`!register();`, `if (this["~findRoute"](event))` on an empty base
-  // method): a discarded negation's boolean is never read, and a call of a
-  // function whose own body never returns a value answers undefined, which
-  // tests false; the operand still evaluates once for its effects and any
-  // exception. A class method overridden to answer a value is dispatched by
-  // the class, which carries that value. Every other void-typed operand keeps
-  // the triage row below. A checked project keeps the diagnostic: it asked
-  // tsc to judge the test.
+  // 1345, a truthiness test of a void-typed operand: a discarded negation's
+  // boolean is never read, a call of a function whose own body never
+  // returns a value answers undefined, which tests false, and a call whose
+  // callee the analysis cannot prove answers undefined reads the value the
+  // call answered — the call runs through the checked-dynamic invocation
+  // and the test reads its result, as Node's does (lower-calls.ts). The
+  // operand still evaluates once for its effects and any exception. A class
+  // method overridden to answer a value is dispatched by the class, which
+  // carries that value. Every other void-typed operand keeps the triage row
+  // below. A checked project keeps the diagnostic: it asked tsc to judge the
+  // test.
   [
     1345,
     inCheckedJs(
       at(
         voidTruthinessKnown,
         CHECKER(
-          "a discarded negation's boolean is never read, and a call of a function whose body returns no value is undefined, which tests false; the lowering evaluates the operand once for its effects",
-          ["tests/corpus/discarded-void-negation.mjs", "tests/corpus/js-void-call-truthiness.js"],
+          "a discarded negation's boolean is never read, a call of a function whose body returns no value is undefined, and a call the analysis cannot prove answers a value is performed dynamically so the test reads that value; the operand evaluates once for its effects",
+          [
+            "tests/corpus/discarded-void-negation.mjs",
+            "tests/corpus/js-void-call-truthiness.js",
+            "tests/corpus/js-void-call-reassigned-function.js",
+          ],
         ),
       ),
     ),
@@ -2154,6 +2397,27 @@ export const JS_TSC_CODE_TRIAGE: ReadonlyMap<number, JsTscCodeTriage> = new Map(
 
 export function jsTscCodeTriage(code: number): JsTscCodeTriage | null {
   return JS_TSC_CODE_TRIAGE.get(code) ?? null;
+}
+
+/** True for a JavaScript file of the program that TypeScript type-checks:
+ * one with a `// @ts-check` comment before its first statement, or any
+ * file of a project whose tsconfig sets `checkJs` unless the file has a
+ * `// @ts-nocheck` comment. Files under node_modules are never checked, so a
+ * dependency's shipped JavaScript is unchecked whatever its own comments
+ * say. */
+export function isCheckedJsSourceFile(sf: ts.SourceFile, projectCheckJs: boolean): boolean {
+  if (!isJsSourceFileName(sf.fileName) || isNodeModulesPath(sf.fileName)) return false;
+  let checked = projectCheckJs;
+  const head = sf.text.slice(
+    0,
+    (sf.statements.nodes.length === 0 ? undefined : ts.tokenStartOfNode(sf.statements.nodes[0]!)) ??
+      sf.text.length,
+  );
+  for (const line of head.split("\n")) {
+    const directive = /^\s*\/\/\s*@ts-(no)?check\b/.exec(line);
+    if (directive) checked = directive[1] === undefined;
+  }
+  return checked;
 }
 
 /** True for JavaScript source file NAMES (.js/.mjs/.cjs/.jsx) — the files

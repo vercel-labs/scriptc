@@ -10380,6 +10380,64 @@ export class Lowerer {
     }
     for (const { owner, symbol } of returns)
       if (widened.has(symbol)) this.jsWidenedReturnDecls.add(owner);
+    if (this.jsWidenedReturnDecls.size === 0) return;
+    // A binding that stores a widened function's result holds the same value
+    // (`const stored = getKey()`): the checker inferred its type from the
+    // function's return, which follows the widened binding. Widening those
+    // targets can in turn flow through the assignment edges above, so the
+    // walk repeats until nothing else widens.
+    for (let changed = true; changed; ) {
+      changed = false;
+      const seeds: ts.Symbol[] = [];
+      for (const { sf } of parts) {
+        if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+        if (this.checkedJsFile(sf)) continue;
+        ts.walkPreorder(sf, (node) => {
+          if (!ts.isCallExpression(node)) return undefined;
+          let callee = ts.isIdentifier(node.expression)
+            ? this.checker.getSymbolAtLocation(node.expression)?.valueDeclaration
+            : undefined;
+          if (
+            callee !== undefined &&
+            ts.isVariableDeclaration(callee) &&
+            callee.initializer !== undefined &&
+            (ts.isArrowFunction(callee.initializer) ||
+              ts.isFunctionExpression(callee.initializer))
+          )
+            callee = callee.initializer;
+          if (
+            callee === undefined ||
+            !ts.isSignatureDeclaration(callee) ||
+            !this.jsWidenedReturnDecls.has(callee)
+          )
+            return undefined;
+          let parent: ts.Node | undefined = node.parent;
+          while (parent !== undefined && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+          let nameNode: ts.Node | undefined;
+          if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === node)
+            nameNode = parent.name;
+          else if (
+            parent !== undefined &&
+            ts.isBinaryExpression(parent) &&
+            parent.right === node &&
+            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          )
+            nameNode = parent.left;
+          if (nameNode === undefined || !ts.isIdentifier(nameNode)) return undefined;
+          const target = this.checker.getSymbolAtLocation(nameNode);
+          if (target && !widened.has(target)) seeds.push(target);
+          return undefined;
+        });
+      }
+      for (const target of seeds) {
+        if (widened.has(target)) continue;
+        widened.add(target);
+        this.runtimeOptionalBindingTypes.set(target, DYN);
+        this.jsWidenedBindings.add(target);
+        for (const next of bySource.get(target) ?? []) if (!widened.has(next)) seeds.push(next);
+        changed = true;
+      }
+    }
   }
 
   /** A JavaScript `let`/`var` binding assigned a value its declared type

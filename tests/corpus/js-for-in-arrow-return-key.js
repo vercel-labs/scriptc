@@ -13,6 +13,12 @@ for (key in { first: 1 }) {
 console.log("getKey", getKey(), typeof getKey());
 console.log("same", sameKey(), sameKey() === getKey());
 
+const stored = getKey();
+let later = 0;
+later = getKey();
+console.log("stored", stored, typeof stored);
+console.log("later", later, typeof later);
+
 function readAfter() {
   for (var name in { second: 1 }) {
     // a declared head binding is a string the checker already knows

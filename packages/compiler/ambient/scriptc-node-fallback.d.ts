@@ -959,7 +959,8 @@ interface KmacKeyGenParams extends Algorithm {
   length?: number;
 }
 interface KmacParams extends Algorithm {
-  algorithm: string;
+  /* Node's runtime reads the dictionary's name and ignores this member. */
+  algorithm?: string;
   outputLength: number;
   customization?: BufferSource;
 }
@@ -1029,6 +1030,7 @@ interface SubtleCrypto {
     algorithm:
       | AesKeyGenParams
       | HmacKeyGenParams
+      | KmacKeyGenParams
       | "ChaCha20-Poly1305"
       | { name: "ChaCha20-Poly1305" },
     extractable: boolean,
@@ -1037,19 +1039,29 @@ interface SubtleCrypto {
   importKey(
     format: "jwk",
     keyData: JsonWebKey,
-    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
+    algorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   importKey(
     format: Exclude<KeyFormat, "jwk">,
     keyData: BufferSource,
-    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
+    algorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   sign(
-    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    algorithm: AlgorithmIdentifier | EcdsaParams | KmacParams | RsaPssParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -1063,7 +1075,7 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   verify(
-    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    algorithm: AlgorithmIdentifier | EcdsaParams | KmacParams | RsaPssParams,
     key: CryptoKey,
     signature: BufferSource,
     data: BufferSource,

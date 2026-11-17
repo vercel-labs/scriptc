@@ -23,17 +23,18 @@
  */
 #include "scr_runtime.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct {
   double als_id;      /* the bound AsyncLocalStorage handle */
-  ScrDyn *transform;  /* owned FUNC, or NULL (identity — Node's default) */
+  ScrDyn *transform;  /* owned truthy transform value, or NULL (identity) */
 } ScrDcBinding;
 
 typedef struct {
-  ScrStr *name;   /* owned */
+  ScrDyn *name;   /* owned: the STR or SYMBOL name it was interned by */
   ScrDyn **subs;  /* owned entries */
   size_t nsubs, cap;
   /* bindStore entries: set semantics per store (a re-bind replaces the
@@ -83,7 +84,7 @@ static void scr_dc_teardown(void) {
   dc_ndeferred = dc_deferred_cap = 0;
   for (size_t i = 0; i < dc_nchannels; i++) {
     ScrDcChannel *ch = &dc_channels[i];
-    scr_str_release(ch->name);
+    scr_dyn_release(ch->name);
     for (size_t j = 0; j < ch->nsubs; j++) scr_dyn_release(ch->subs[j]);
     free(ch->subs);
     for (size_t j = 0; j < ch->nbinds; j++) scr_dyn_release(ch->binds[j].transform);
@@ -94,10 +95,19 @@ static void scr_dc_teardown(void) {
   dc_nchannels = dc_cap = 0;
 }
 
+/* Channel-name identity: strings by content, symbols by identity (a symbol
+ * IS its identity — Node's registry keys them that way too). */
+static bool dc_name_eq(const ScrDyn *a, const ScrDyn *b) {
+  if (a->kind != b->kind) return false;
+  if (a->kind == SCR_DYN_STR) return scr_str_eq(a->v.str, b->v.str);
+  if (a->kind == SCR_DYN_SYMBOL) return a->v.symbol.value == b->v.symbol.value;
+  return false;
+}
+
 /* Get-or-create by name; returns the channel's index. Borrows name. */
-static size_t dc_intern(ScrStr *name) {
+static size_t dc_intern(ScrDyn *name) {
   for (size_t i = 0; i < dc_nchannels; i++) {
-    if (scr_str_eq(dc_channels[i].name, name)) return i;
+    if (dc_name_eq(dc_channels[i].name, name)) return i;
   }
   if (dc_nchannels == dc_cap) {
     dc_cap = dc_cap ? dc_cap * 2 : 8;
@@ -112,7 +122,7 @@ static size_t dc_intern(ScrStr *name) {
     scr_atexit(scr_dc_teardown);
   }
   ScrDcChannel *ch = &dc_channels[dc_nchannels];
-  ch->name = scr_str_retain(name);
+  ch->name = scr_dyn_retain(name);
   ch->subs = NULL;
   ch->nsubs = ch->cap = 0;
   ch->binds = NULL;
@@ -131,17 +141,18 @@ static ScrDcChannel *dc_of(double handle) {
   return &dc_channels[i - 1];
 }
 
-/* Node's ERR_INVALID_ARG_TYPE for a non-function subscriber — the
- * "Received ..." tail covers the dyn kinds (determineSpecificType lite;
+/* Node's ERR_INVALID_ARG_TYPE: the argument's name, the expectation
+ * phrase (`of type function`, `one of type string or symbol`, ...) and the
+ * "Received ..." tail this unit can render (determineSpecificType lite;
  * scr_dyn_handle.c's full renderer is not linked here). */
-static void dc_throw_bad_fn_arg(const ScrDyn *cb, const char *arg_name) {
+static void dc_throw_arg_type(const char *expected, const char *arg_name, const ScrDyn *cb) {
   const char *received = "an instance of Object";
   char detail[64];
   if (cb == NULL) {
     received = "undefined";
-    char buf[160];
-    int n = snprintf(buf, sizeof buf, "The \"%s\" argument must be of type function. Received %s",
-                     arg_name, received);
+    char buf[192];
+    int n = snprintf(buf, sizeof buf, "The \"%s\" %s must be %s. Received %s", arg_name,
+                     strchr(arg_name, '.') ? "property" : "argument", expected, received);
     scr_throw_error_msg_code(SCR_ERR_TYPE, buf, (size_t)n, "ERR_INVALID_ARG_TYPE");
     return;
   }
@@ -169,18 +180,36 @@ static void dc_throw_bad_fn_arg(const ScrDyn *cb, const char *arg_name) {
              (int)(cb->v.str->len < 28 ? cb->v.str->len : 28), cb->v.str->data);
     received = detail;
     break;
+  case SCR_DYN_SYMBOL: {
+    ScrStr *text = cb->v.symbol.render(cb->v.symbol.value); /* "Symbol(desc)" */
+    if (text != NULL) {
+      snprintf(detail, sizeof detail, "type symbol (%.*s)", (int)text->len, text->data);
+      scr_str_release(text);
+      received = detail;
+    }
+    break;
+  }
 
   default: break;
   }
-  char buf[160];
-  int n = snprintf(buf, sizeof buf,
-                   "The \"%s\" argument must be of type function. Received %s",
-                   arg_name, received);
+  char buf[192];
+  int n = snprintf(buf, sizeof buf, "The \"%s\" %s must be %s. Received %s", arg_name,
+                   strchr(arg_name, '.') ? "property" : "argument", expected, received);
   scr_throw_error_msg_code(SCR_ERR_TYPE, buf, (size_t)n, "ERR_INVALID_ARG_TYPE");
 }
 
 static void dc_throw_bad_subscriber(const ScrDyn *cb) {
-  dc_throw_bad_fn_arg(cb, "subscription");
+  dc_throw_arg_type("of type function", "subscription", cb);
+}
+
+/* validateChannelName over a dyn value: the retained STR or SYMBOL name,
+ * or NULL with Node's ERR_INVALID_ARG_TYPE ("must be one of type string or
+ * symbol") pending. */
+static ScrDyn *dc_name_arg(ScrDyn *name, const char *arg_name) {
+  if (name != NULL && (name->kind == SCR_DYN_STR || name->kind == SCR_DYN_SYMBOL))
+    return scr_dyn_retain(name);
+  dc_throw_arg_type("one of type string or symbol", arg_name, name);
+  return NULL;
 }
 
 /* Subscriber identity: the underlying closure for FUNC pairs, node
@@ -215,7 +244,13 @@ static bool dc_sub_remove(ScrDcChannel *ch, const ScrDyn *cb) {
   return false;
 }
 
-double scr_dc_channel(ScrStr *name) { return (double)(dc_intern(name) + 1); }
+double scr_dc_channel(ScrDyn *name) {
+  ScrDyn *key = dc_name_arg(name, "channel");
+  if (key == NULL) return NAN;
+  double handle = (double)(dc_intern(key) + 1);
+  scr_dyn_release(key);
+  return handle;
+}
 
 void scr_dc_chan_subscribe(double handle, ScrDyn *cb) {
   if (cb->kind != SCR_DYN_FUNC) {
@@ -225,11 +260,10 @@ void scr_dc_chan_subscribe(double handle, ScrDyn *cb) {
   dc_sub_add(dc_of(handle), cb);
 }
 
+/* Node's Channel.unsubscribe answers false for a non-function (no check):
+ * the prototype member removes nothing and raises nothing. */
 bool scr_dc_chan_unsubscribe(double handle, ScrDyn *cb) {
-  if (cb->kind != SCR_DYN_FUNC) {
-    dc_throw_bad_subscriber(cb);
-    return false;
-  }
+  if (cb->kind != SCR_DYN_FUNC) return false;
   return dc_sub_remove(dc_of(handle), cb);
 }
 
@@ -241,31 +275,88 @@ static bool dc_chan_active(const ScrDcChannel *ch) { return ch->nsubs > 0 || ch-
 
 bool scr_dc_chan_has_subscribers(double handle) { return dc_chan_active(dc_of(handle)); }
 
-ScrStr *scr_dc_chan_name(double handle) { return scr_str_retain(dc_of(handle)->name); }
+ScrDyn *scr_dc_chan_name(double handle) { return scr_dyn_retain(dc_of(handle)->name); }
 
-void scr_dc_subscribe(ScrStr *name, ScrDyn *cb) {
-  scr_dc_chan_subscribe((double)(dc_intern(name) + 1), cb);
-}
-
-bool scr_dc_unsubscribe(ScrStr *name, ScrDyn *cb) {
-  /* Node's module-level unsubscribe of a never-created channel answers
-   * false without creating it; matching an existing list needs no
-   * creation either — probe without interning. */
+void scr_dc_subscribe(ScrDyn *name, ScrDyn *cb) {
+  /* Node validates the name first, then the subscriber. */
+  ScrDyn *key = dc_name_arg(name, "channel");
+  if (key == NULL) return;
   if (cb->kind != SCR_DYN_FUNC) {
     dc_throw_bad_subscriber(cb);
-    return false;
+    scr_dyn_release(key);
+    return;
   }
+  /* Intern FIRST: a channel created here may realloc the registry, and a
+   * subscript written as dc_channels[dc_intern(...)] may read the old
+   * array pointer before the call that frees it. */
+  size_t index = dc_intern(key);
+  dc_sub_add(&dc_channels[index], cb);
+  scr_dyn_release(key);
+}
+
+bool scr_dc_unsubscribe(ScrDyn *name, ScrDyn *cb) {
+  /* Node validates the name here as channel() does, but answers false for a
+   * subscriber that is not a function, and answers false for a never-created
+   * channel without creating it; matching an existing list needs no creation
+   * either — probe without interning. */
+  ScrDyn *key = dc_name_arg(name, "channel");
+  if (key == NULL) return false; /* the name's error is pending */
+  bool removed = false;
+  if (cb->kind == SCR_DYN_FUNC) {
+    for (size_t i = 0; i < dc_nchannels; i++) {
+      if (dc_name_eq(dc_channels[i].name, key)) {
+        removed = dc_sub_remove(&dc_channels[i], cb);
+        break;
+      }
+    }
+  }
+  scr_dyn_release(key);
+  return removed;
+}
+
+bool scr_dc_has_subscribers(ScrDyn *name) {
+  if (name == NULL || (name->kind != SCR_DYN_STR && name->kind != SCR_DYN_SYMBOL)) return false;
   for (size_t i = 0; i < dc_nchannels; i++) {
-    if (scr_str_eq(dc_channels[i].name, name)) return dc_sub_remove(&dc_channels[i], cb);
+    if (dc_name_eq(dc_channels[i].name, name)) return dc_chan_active(&dc_channels[i]);
   }
   return false;
 }
 
-bool scr_dc_has_subscribers(ScrStr *name) {
-  for (size_t i = 0; i < dc_nchannels; i++) {
-    if (scr_str_eq(dc_channels[i].name, name)) return dc_chan_active(&dc_channels[i]);
+/* V8's TypeError for ReflectApply on a value that is not callable — the
+ * traced call's check, verbatim (scr_ar_apply_type_error's shape). */
+static void dc_throw_apply(const ScrDyn *fn) {
+  const char *kind;
+  switch (fn->kind) {
+  case SCR_DYN_NULL: kind = "null"; break;
+  case SCR_DYN_UNDEF: kind = "a undefined"; break;
+  case SCR_DYN_NUM: kind = "a number"; break;
+  case SCR_DYN_STR: kind = "a string"; break;
+  case SCR_DYN_BOOL: kind = "a boolean"; break;
+  case SCR_DYN_SYMBOL: kind = "a symbol"; break;
+  case SCR_DYN_BIGINT: kind = "a bigint"; break;
+  default: kind = "an object"; break;
   }
-  return false;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Function.prototype.apply was called on ");
+  switch (fn->kind) {
+  case SCR_DYN_NULL: scr_jb_puts(&b, "null"); break;
+  case SCR_DYN_UNDEF: scr_jb_puts(&b, "undefined"); break;
+  case SCR_DYN_NUM: {
+    char buf[40];
+    size_t len = scr_f64_to_str(fn->v.num, buf);
+    scr_jb_write(&b, buf, len);
+    break;
+  }
+  case SCR_DYN_STR: scr_jb_put_str(&b, fn->v.str); break;
+  case SCR_DYN_BOOL: scr_jb_puts(&b, fn->v.b ? "true" : "false"); break;
+  case SCR_DYN_ARR: scr_jb_puts(&b, "[object Array]"); break;
+  default: scr_jb_puts(&b, "#<Object>"); break;
+  }
+  scr_jb_puts(&b, ", which is ");
+  scr_jb_puts(&b, kind);
+  scr_jb_puts(&b, " and not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
 }
 
 /* ── bindStore / runStores (the AsyncLocalStorage integration) ─────────
@@ -279,9 +370,9 @@ bool scr_dc_has_subscribers(ScrStr *name) {
 
 void scr_dc_chan_bind_store(double handle, double als_id, ScrDyn *transform) {
   ScrDcChannel *ch = dc_of(handle);
-  ScrDyn *t = (transform != NULL && transform->kind == SCR_DYN_FUNC)
-                  ? scr_dyn_retain(transform)
-                  : NULL;
+  /* Node keeps the transform value as given (a non-function one throws when
+   * runStores calls it); a falsy one is the identity. */
+  ScrDyn *t = (transform != NULL && scr_dyn_truthy(transform)) ? scr_dyn_retain(transform) : NULL;
   for (size_t i = 0; i < ch->nbinds; i++) {
     if (ch->binds[i].als_id == als_id) {
       scr_dyn_release(ch->binds[i].transform);
@@ -330,6 +421,15 @@ static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out
     ScrDyn *value;
     if (ch->binds[i].transform != NULL) {
       ScrDyn *args[1] = {data};
+      if (!scr_dyn_is_callable(ch->binds[i].transform)) {
+        /* Node calls the stored value, so a non-function answers V8's call
+         * TypeError for its own local name; the throw is deferred as a
+         * transform throw is. */
+        static const char message[] = "transform is not a function";
+        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        dc_defer_pending_throw();
+        continue;
+      }
       value = scr_dyn_call(ch->binds[i].transform, args, 1, "transform");
       if (value == NULL) {
         dc_defer_pending_throw();
@@ -361,9 +461,13 @@ ScrDyn *scr_dc_chan_run_stores(double handle, ScrDyn *data, ScrDyn *fn, ScrDyn *
   if (!scr_exc_pending()) {
     size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
     ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
-    scr_dyn_this_push_dyn(this_arg);
-    r = scr_dyn_call(fn, items, argc, "runStores");
-    scr_dyn_this_pop();
+    if (!scr_dyn_is_callable(fn)) {
+      dc_throw_apply(fn);
+    } else {
+      scr_dyn_this_push_dyn(this_arg);
+      r = scr_dyn_call(fn, items, argc, "runStores");
+      scr_dyn_this_pop();
+    }
   }
   dc_stores_restore(prevs, entered);
   return r;
@@ -423,39 +527,116 @@ static ScrDcTracing *dc_tc_of(double handle) {
   return &dc_tracings[i - 1];
 }
 
-double scr_dc_tracing_channel(ScrStr *name) {
+static bool dc_handle_valid(double h);
+
+/* Node's TraceChannel collection form: the five event members must be
+ * Channel instances. Our Channel values are handles, so a safe integer
+ * naming a registered channel is one; a missing member answers the object
+ * conversion TypeError Node's destructuring raises first. */
+static double dc_tracing_from_collection(ScrDyn *name) {
+  double h[5];
+  for (size_t i = 0; i < 5; i++) {
+    ScrDyn *v = scr_dyn_obj_get(name, dc_trace_events[i], strlen(dc_trace_events[i]));
+    if (v == NULL) {
+      if (scr_exc_pending()) return NAN; /* the read threw */
+      /* An absent member reads as undefined, which the collection check
+       * refuses (Node's check runs before any handle exists); returning
+       * an unset NaN here would hand the program an invalid handle. */
+      static const char message[] = "Cannot convert undefined or null to object";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NAN;
+    }
+    if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) {
+      static const char message[] = "Cannot convert undefined or null to object";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NAN;
+    }
+    if (v->kind != SCR_DYN_NUM || !dc_handle_valid(v->v.num)) {
+      char member[32];
+      snprintf(member, sizeof member, "nameOrChannels.%s", dc_trace_events[i]);
+      dc_throw_arg_type("an instance of Channel", member, v);
+      return NAN;
+    }
+    /* One read per member: the value is taken here, so a getter that
+     * changes the object between reads cannot substitute a handle. */
+    h[i] = v->v.num;
+  }
+  return scr_dc_tracing_channel_of(h[0], h[1], h[2], h[3], h[4]);
+}
+
+double scr_dc_tracing_channel(ScrDyn *name) {
+  if (name != NULL && name->kind == SCR_DYN_OBJ) return dc_tracing_from_collection(name);
+  /* Node's tracing names are strings only: a symbol is not a string or a
+   * collection, so it answers the nameOrChannels argument error. */
+  if (name == NULL || name->kind != SCR_DYN_STR) {
+    dc_throw_arg_type("of type string or an instance of TracingChannel or Object", "nameOrChannels",
+                      name);
+    return NAN;
+  }
+  ScrStr *text = scr_str_retain(name->v.str);
   size_t ch[5];
   for (size_t i = 0; i < 5; i++) {
     /* "tracing:<name>:<event>" */
     size_t evlen = strlen(dc_trace_events[i]);
-    size_t len = 8 + name->len + 1 + evlen;
+    size_t len = 8 + text->len + 1 + evlen;
     char *buf = malloc(len + 1);
     if (!buf) {
       fputs("scriptc: out of memory\n", stderr);
       abort();
     }
     memcpy(buf, "tracing:", 8);
-    memcpy(buf + 8, name->data, name->len);
-    buf[8 + name->len] = ':';
-    memcpy(buf + 8 + name->len + 1, dc_trace_events[i], evlen);
+    memcpy(buf + 8, text->data, text->len);
+    buf[8 + text->len] = ':';
+    memcpy(buf + 8 + text->len + 1, dc_trace_events[i], evlen);
     buf[len] = '\0';
     ScrStr *s = scr_str_new(buf, len);
     free(buf);
-    ch[i] = dc_intern(s);
+    ScrDyn *key = scr_dyn_new_str(s);
     scr_str_release(s);
+    ch[i] = dc_intern(key);
+    scr_dyn_release(key);
   }
+  scr_str_release(text);
   return dc_tracing_register(ch);
+}
+
+/* Whether `h` is one of this registry's channel handles (compiled code
+ * only holds minted ones, but a collection object can carry any number). */
+static bool dc_handle_valid(double h) {
+  size_t i = (size_t)h;
+  return h >= 1 && (double)i == h && i <= dc_nchannels;
+}
+
+/* Node's check on a TracingChannel collection member: each event must be a
+ * Channel. Compiled code holds handles minted by dc_intern, but a value
+ * asserted past the type reaches this constructor as a bare number, and a
+ * number that is no channel handle must not index the table (dc_of would
+ * end the process). */
+static void dc_throw_bad_tracing_member(const char *event, double handle) {
+  char received[48];
+  if (handle == handle)
+    snprintf(received, sizeof received, "type number (%g)", handle);
+  else
+    snprintf(received, sizeof received, "type number (NaN)");
+  char buf[192];
+  int n = snprintf(buf, sizeof buf,
+                   "The \"nameOrChannels.%s\" property must be an instance of Channel. Received %s",
+                   event, received);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, buf, (size_t)n, "ERR_INVALID_ARG_TYPE");
 }
 
 double scr_dc_tracing_channel_of(double start, double end, double async_start,
                                   double async_end, double error) {
+  const double members[5] = {start, end, async_start, async_end, error};
   size_t ch[5];
-  /* dc_of validates each handle (compiled code only holds minted ones). */
-  ch[DC_TC_START] = (size_t)(dc_of(start) - dc_channels);
-  ch[DC_TC_END] = (size_t)(dc_of(end) - dc_channels);
-  ch[DC_TC_ASYNC_START] = (size_t)(dc_of(async_start) - dc_channels);
-  ch[DC_TC_ASYNC_END] = (size_t)(dc_of(async_end) - dc_channels);
-  ch[DC_TC_ERROR] = (size_t)(dc_of(error) - dc_channels);
+  for (int i = 0; i < 5; i++) {
+    double handle = members[i];
+    if (!dc_handle_valid(handle)) {
+      dc_throw_bad_tracing_member(dc_trace_events[i], handle);
+      return 0;
+    }
+    ch[i] = (size_t)handle - 1;
+  }
   return dc_tracing_register(ch);
 }
 
@@ -477,8 +658,23 @@ bool scr_dc_tc_has_subscribers(double h) {
   return false;
 }
 
+/* Node's subscribe(subscribers) destructures the object first, so a
+ * null/undefined one raises the property read for its first member. */
+static bool dc_tc_handlers_object(const ScrDyn *handlers) {
+  if (handlers != NULL && handlers->kind != SCR_DYN_UNDEF && handlers->kind != SCR_DYN_NULL)
+    return true;
+  static const char undef_message[] = "Cannot read properties of undefined (reading 'start')";
+  static const char null_message[] = "Cannot read properties of null (reading 'start')";
+  if (handlers != NULL && handlers->kind == SCR_DYN_NULL)
+    scr_throw_error_msg(SCR_ERR_TYPE, null_message, sizeof null_message - 1);
+  else
+    scr_throw_error_msg(SCR_ERR_TYPE, undef_message, sizeof undef_message - 1);
+  return false;
+}
+
 void scr_dc_tc_subscribe(double h, ScrDyn *handlers) {
   ScrDcTracing *tc = dc_tc_of(h);
+  if (!dc_tc_handlers_object(handlers)) return;
   for (size_t i = 0; i < 5; i++) {
     ScrDyn *cb = scr_dyn_obj_get(handlers, dc_trace_events[i], strlen(dc_trace_events[i]));
     if (cb == NULL || !scr_dyn_truthy(cb)) continue; /* falsy slots skip, Node */
@@ -489,6 +685,7 @@ void scr_dc_tc_subscribe(double h, ScrDyn *handlers) {
 
 bool scr_dc_tc_unsubscribe(double h, ScrDyn *handlers) {
   ScrDcTracing *tc = dc_tc_of(h);
+  if (!dc_tc_handlers_object(handlers)) return false;
   bool done = true;
   for (size_t i = 0; i < 5; i++) {
     ScrDyn *cb = scr_dyn_obj_get(handlers, dc_trace_events[i], strlen(dc_trace_events[i]));
@@ -516,8 +713,13 @@ static void dc_tc_publish(ScrDcTracing *tc, int ev, ScrDyn *ctx) {
  * NULL with the exception pending. */
 static ScrDyn *dc_tc_apply(ScrDyn *fn, ScrDyn *this_arg, ScrDyn *const *items, size_t n,
                             const char *what) {
+  (void)what;
+  if (!scr_dyn_is_callable(fn)) {
+    dc_throw_apply(fn);
+    return NULL;
+  }
   scr_dyn_this_push_dyn(this_arg);
-  ScrDyn *r = scr_dyn_call(fn, items, n, what);
+  ScrDyn *r = scr_dyn_call(fn, items, n, "trace");
   scr_dyn_this_pop();
   return r;
 }
@@ -756,7 +958,7 @@ ScrDyn *scr_dc_tc_trace_callback(double h, ScrDyn *fn, double position, ScrDyn *
   size_t idx = (size_t)pos;
   ScrDyn *cb = (pos >= 0 && idx < argc) ? items[idx] : NULL;
   if (cb == NULL || cb->kind != SCR_DYN_FUNC) {
-    dc_throw_bad_fn_arg(cb, "callback");
+    dc_throw_arg_type("of type function", "callback", cb);
     return NULL;
   }
   /* Splice the wrapper in (a fresh argument vector; the dyn array is
@@ -825,7 +1027,7 @@ void scr_dc_publish(double handle, ScrDyn *message) {
     abort();
   }
   for (size_t i = 0; i < n; i++) snap[i] = scr_dyn_retain(ch->subs[i]);
-  ScrDyn *namev = scr_dyn_new_str(ch->name);
+  ScrDyn *namev = scr_dyn_retain(ch->name);
   for (size_t i = 0; i < n; i++) {
     ScrDyn *args[2] = {message, namev};
     ScrDyn *r = scr_dyn_call(snap[i], args, 2, "onMessage");

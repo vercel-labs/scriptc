@@ -25,9 +25,20 @@ typedef struct {
 struct ScrDgramSocket {
   size_t rc;
   int fd; /* -1 until bound/connected, -1 again once closed */
+  bool v6; /* udp6: every sockaddr this socket makes is sockaddr_in6 */
   bool reuse_addr;
+  bool reuse_port;
+  bool ipv6_only;
+  /* Constructor recv/send buffer sizes (createSocket options), applied
+   * when the descriptor starts receiving, as Node's startReceiving does;
+   * 0 means the option was absent. */
+  double init_recv_size;
+  double init_send_size;
   bool bound;
   bool connected;
+  /* connectSync made the association: Node's connect state is CONNECTED
+   * before the 'connect' emission, so disconnect() already works. */
+  bool connected_sync;
   bool closing;       /* close() called; 'close' fires at the next sweep */
   bool close_emitted; /* settled: off the registry, listeners dropped */
   bool unrefed;       /* waives loop liveness, Node's unref */

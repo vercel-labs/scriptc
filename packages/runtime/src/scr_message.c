@@ -529,6 +529,17 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     scr_message_push(encoder, id);
     return id;
   }
+  const ScrMessageWrapperOps *wrapper_ops =
+      atomic_load_explicit(&scr_message_wrapper_ops, memory_order_relaxed);
+  if (wrapper_ops && wrapper_ops->is_wrapper(value)) {
+    /* Its [[PrimitiveValue]] rides an internal slot the message format does
+     * not carry; encoding the object would send a silently empty one. */
+    static const char message[] =
+        "carrying a primitive wrapper object (new String/Number/Boolean or Object(primitive)) "
+        "through a message is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return SIZE_MAX;
+  }
   switch (value->kind) {
   case SCR_DYN_UNDEF: node->kind = SCR_MESSAGE_UNDEFINED; break;
   case SCR_DYN_NULL: node->kind = SCR_MESSAGE_NULL; break;

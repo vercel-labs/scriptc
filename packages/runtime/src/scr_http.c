@@ -666,6 +666,7 @@ static void scr_http_emit_push(int kind, void *h /*moves +1*/);
 static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n);
 static void scr_http_res_cork_flush(ScrHttpRes *r);
 static void scr_http_res_queue_wcb_handoff(ScrHttpRes *r);
+static void scr_http_res_drop_finish_box(ScrHttpRes *res);
 #define SCR_HTTP_EMIT_REQ_DRAIN_K 6
 
 static bool scr_http_req_holding(const ScrHttpReq *r) {
@@ -1115,6 +1116,7 @@ struct ScrHttpRes {
   bool writable_finished; /* set where Node emits 'finish' (writableFinished) */
   bool finish_queued;
   bool finish_wait; /* 'finish' waits on the socket's write completion */
+  ScrBox *finish_box; /* the waiter's owner-side box; cleared when the response settles */
   bool wcb_queued;
   bool wcb_handed; /* the callbacks wait on the socket's write completion */
   bool close_queued;
@@ -1139,6 +1141,8 @@ void scr_http_res_release(ScrHttpRes *r) {
     free(r->hvalues);
     free(r->hkinds);
     scr_http_trailers_clear(&r->trailers);
+    /* a waiter that outlived the response must not read it later */
+    scr_http_res_drop_finish_box(r);
     scr_str_release(r->status_msg);
     scr_net_ls_drop(&r->close_ls);
     scr_net_ls_drop(&r->timeout_ls);
@@ -2938,19 +2942,34 @@ static void scr_http_res_wcb_drained_nt(ScrClosure *cb) {
 
 /* A 'finish' held up by the socket's buffer re-queues when the buffer
  * empties: Node's 'finish' follows afterWrite, not a timer. */
+static void *scr_http_ptr_keep_v(void *p);
+static void scr_http_ptr_drop_v(void *p);
+
+/* The response settled before its finish waiter fired ('close'): the waiter
+ * is cleared, so the closure holds no response at all. */
+static void scr_http_res_drop_finish_box(ScrHttpRes *res) {
+  if (res->finish_box == NULL) return;
+  ScrBox *box = res->finish_box;
+  res->finish_box = NULL;
+  scr_box_set_ref(box, NULL);
+  scr_box_release(box);
+}
+
 static void scr_http_res_finish_flushed_nt(ScrClosure *cb) {
   ScrHttpRes *res = scr_box_get_ref(cb->caps[0]);
+  if (res == NULL) return; /* the response settled: nothing waits on it now */
   res->finish_wait = false;
+  scr_http_res_drop_finish_box(res);
   scr_http_queue_res_finish(res);
-  scr_http_res_release(res);
 }
 
 static void scr_http_res_arm_finish_flush(ScrHttpRes *res) {
   if (res->finish_wait) return;
   res->finish_wait = true;
   ScrClosure *cb = scr_closure_new((void *)&scr_http_res_finish_flushed_nt, 1);
-  cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
-  scr_box_set_ref(cb->caps[0], scr_http_res_retain(res));
+  cb->caps[0] = scr_box_new_obj(&scr_http_ptr_keep_v, &scr_http_ptr_drop_v, NULL);
+  scr_box_set_ref(cb->caps[0], res);
+  res->finish_box = scr_box_retain(cb->caps[0]);
   scr_net_sock_on_write_flush(res->sock, cb);
 }
 
@@ -2980,6 +2999,9 @@ static void scr_http_proto_sweep(void) {
         scr_net_ls_drop(&res->wcb_ls);
         res->wcb_handed = false; /* the socket's callbacks find empty lists */
         res->finish_wait = false;
+        /* a finish still waiting on the socket releases the response now:
+         * nothing of it can fire after 'close'. */
+        scr_http_res_drop_finish_box(res);
       }
       break;
     }

@@ -58213,8 +58213,6 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
           "tests/corpus/2672-http-request-response-callback.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts",
           "tests/corpus/2700-http-static-trailers.ts",
@@ -58233,11 +58231,8 @@
           "tests/corpus/2977-http-static-incoming-timeout.ts",
           "tests/corpus/2978-http-static-client-timeout.ts",
           "tests/corpus/2979-http-static-server-timeout.ts",
-          "tests/corpus/2980-http-static-server-timeout-default.ts",
           "tests/corpus/2981-http-static-events.ts",
           "tests/corpus/2982-http-static-close-all.ts",
-          "tests/corpus/2983-http-static-close-idle.ts",
-          "tests/corpus/2984-http-static-close-upgrade.ts",
           "tests/corpus/2985-http-static-message-destroy.ts",
           "tests/corpus/2986-http-static-client-socket-finish.ts",
           "tests/corpus/2987-http-static-timeout-errors.ts",
@@ -58255,18 +58250,14 @@
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-server-client-error.ts",
+          "tests/corpus/http-server-lifecycle-limits.ts",
           "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-server-listen-forms.ts",
           "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/http-set-headers.mjs",
           "tests/corpus/http-set-headers.ts",
           "tests/corpus/http-write-backpressure.ts",
-          "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-dispose-http.ts",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
           "tests/diagnostics/compat-absent-http-members.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/server/cases/http-trailers/main.ts",
@@ -59840,17 +59831,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "status": "supported",
+        "evidence": "compiler-feature:http.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59873,12 +59862,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.server.closeAllConnections",
         "tests": [
-          "tests/corpus/2982-http-static-close-all.ts",
-          "tests/corpus/2983-http-static-close-idle.ts",
-          "tests/corpus/2984-http-static-close-upgrade.ts"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59901,12 +59893,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.server.closeIdleConnections",
         "tests": [
-          "tests/corpus/2982-http-static-close-all.ts",
-          "tests/corpus/2983-http-static-close-idle.ts",
-          "tests/corpus/2984-http-static-close-upgrade.ts"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59929,17 +59924,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:http.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59962,11 +59955,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.server.setTimeout",
         "tests": [
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/2979-http-static-server-timeout.ts",
-          "tests/corpus/2980-http-static-server-timeout-default.ts"
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60043,10 +60040,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.listening",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
+          "tests/corpus/http-server-limit-values.ts",
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60125,12 +60127,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.maxRequestsPerSocket",
         "tests": [
-          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
           "tests/corpus/http-server-limit-values.ts",
-          "tests/corpus/http-max-requests-per-socket.ts"
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -60397,12 +60402,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'dropRequest'",
         "tests": [
-          "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-lifecycle-limits.ts",
+          "tests/corpus/http-server-listen-forms.ts",
           "tests/corpus/http-server-limit-values.ts",
-          "tests/corpus/http-max-requests-per-socket.ts"
+          "tests/corpus/http-max-requests-per-socket.ts",
+          "tests/corpus/2979-http-static-server-timeout.ts",
+          "tests/corpus/2982-http-static-close-all.ts"
         ]
       },
       "anchorSource": "exact"

@@ -29,7 +29,10 @@
   As in Node, a throwing root `before` fails each top-level test with its error, without running its body, and cancels the tests and suites inside each top-level suite.
   A throwing root `after` reports the entry file as a failed result, and the exit code is unchanged.
 - **Timeouts:** when a test's `{ timeout }` elapses, its running subtests are cancelled, as in Node.
-  Subtests do not take their parent's `timeout` as their own, where Node's do, and a suite's `{ timeout }` therefore bounds nothing here: Node applies it as a shared deadline for the suite's hooks and tests, and here it throws `SC2020`; the subtests of a timed-out test with `{ concurrency }` above 1 run to completion before the test reports.
+  A suite's `{ timeout }` is Node's shared deadline for its hooks and tests: a child still running when it elapses is cancelled with `test did not finish before its parent and was cancelled`, children that have not started are cancelled the same way, children still queued under `{ concurrency }` are cancelled without running, and the suite fails with `test timed out after <timeout>ms`.
+  The deadline belongs to the suite, so a suite running beside a timed one on its own fibers keeps its own.
+  A hook that outlives the deadline fails the suite with the same timeout error, though the test it was running for then reports the parent-cancellation message as a failure rather than as cancelled.
+  Subtests do not take their parent's `timeout` as their own, where Node's do; the subtests of a timed-out test with `{ concurrency }` above 1 run to completion before the test reports.
   A body that keeps running after its test finished and calls `t.test` again fails that subtest with Node's `test could not be started because its parent finished`, as Node does for a subtest a leftover task registers.
 - **Subtests:** `t.test(...)` starts its subtest at the call site on the runner fiber and returns the settled promise `await` consumes, so an awaited subtest behaves as in Node.
   An un-awaited subtest whose body awaits I/O or a timer holds the calling body until it settles, where Node resumes the calling body at its next statement once the subtest reaches its first `await`.

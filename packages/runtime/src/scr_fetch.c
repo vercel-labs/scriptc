@@ -729,6 +729,21 @@ ScrDyn *scr_abort_signal_signal(ScrDyn *controller) { return scr_test_abort_cont
 
 void scr_abort_signal_abort(ScrDyn *controller) { scr_test_abort_controller_abort(controller); }
 
+/* The request teardown's signal cleanup: an abort listener a request's
+ * signal collected usually captures the request (and often the response),
+ * and the request owns the signal, so the listener list is a reference cycle
+ * the runtime's counts cannot collect. Dropping the listeners when the
+ * request closes releases what they captured; the signal itself stays
+ * usable (addEventListener on it still works), as the box Node GCs would. */
+void scr_abort_signal_drop_listeners(ScrDyn *controller) {
+  if (controller == NULL || controller->kind != SCR_DYN_HANDLE ||
+      controller->v.handle.tag != SCR_DYNH_ABORT_CONTROLLER)
+    return;
+  SfSignal *s = controller->v.handle.ptr;
+  scr_et_core_drop(&s->core);
+  scr_et_core_init(&s->core, 0, "AbortSignal");
+}
+
 ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) {
   if (controller == NULL || controller->kind != SCR_DYN_HANDLE ||
       controller->v.handle.tag != SCR_DYNH_ABORT_CONTROLLER)

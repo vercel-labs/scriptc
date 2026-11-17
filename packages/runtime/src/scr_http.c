@@ -322,6 +322,7 @@ void scr_http_req_set_encoding(ScrHttpReq *r, ScrStr *enc /*borrowed*/) {
 extern ScrDyn *scr_abort_signal_controller_new(void) __attribute__((weak));
 extern ScrDyn *scr_abort_signal_signal(ScrDyn *controller) __attribute__((weak));
 extern void scr_abort_signal_abort(ScrDyn *controller) __attribute__((weak));
+extern void scr_abort_signal_drop_listeners(ScrDyn *controller) __attribute__((weak));
 
 static void scr_http_req_abort_signal(ScrHttpReq *r) {
   if (r != NULL && r->abort_controller != NULL && scr_abort_signal_abort != NULL)
@@ -2994,6 +2995,11 @@ static void scr_http_proto_sweep(void) {
         scr_net_ls_drop(&req->close_ls);
         scr_net_ls_drop(&req->timeout_ls);
         scr_net_ls_drop(&req->aborted_ls);
+        /* The signal's abort listeners captured the request (and usually the
+         * response); release them so the settled request is collectable once
+         * the program drops it. */
+        if (req->abort_controller != NULL && scr_abort_signal_drop_listeners != NULL)
+          scr_abort_signal_drop_listeners(req->abort_controller);
       }
       break;
     }

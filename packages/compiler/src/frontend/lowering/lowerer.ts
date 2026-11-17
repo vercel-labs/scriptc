@@ -1291,6 +1291,9 @@ export interface LowerOptions {
   unitStore?: UnitStore | null;
   /** The project's tsconfig sets `checkJs` (see isCheckedJsSourceFile). */
   projectCheckJs?: boolean;
+  /** LoadResult.dependencyJs: a JavaScript file the project's own tsc does
+   * not compile as project source. */
+  dependencyJs?: ((file: string) => boolean) | undefined;
   /** LoadResult.parameterPropertiesFirst. */
   parameterPropertiesFirst?: ReadonlySet<string> | undefined;
   /** Coverage: additionally lower the unreached remainder (bodies nothing
@@ -1498,6 +1501,8 @@ export interface LowererMode {
   /** LowerOptions.libraryCallbacks (see there). */
   libraryCallbacks?: boolean;
   projectCheckJs?: boolean;
+  /** LoadResult.dependencyJs. */
+  dependencyJs?: ((file: string) => boolean) | undefined;
   /** LoadResult.parameterPropertiesFirst. */
   parameterPropertiesFirst?: ReadonlySet<string> | undefined;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
@@ -1874,6 +1879,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
       define: options.define,
@@ -1910,6 +1916,7 @@ function lowerToIrWithIslands(
             facts,
             frontendServices: options.frontendServices,
             projectCheckJs: options.projectCheckJs ?? false,
+            dependencyJs: options.dependencyJs,
             parameterPropertiesFirst: options.parameterPropertiesFirst,
             targetPlatform,
             define: options.define,
@@ -2033,6 +2040,7 @@ function lowerToIrWithIslands(
         facts,
         frontendServices: options.frontendServices,
         projectCheckJs: options.projectCheckJs ?? false,
+        dependencyJs: options.dependencyJs,
         parameterPropertiesFirst: options.parameterPropertiesFirst,
         ...(general
           ? {
@@ -2121,6 +2129,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
       targetPlatform,
       define: options.define,
@@ -2206,6 +2215,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
@@ -2449,6 +2459,7 @@ function lowerToIrWithIslands(
       facts,
       frontendServices: options.frontendServices,
       projectCheckJs: options.projectCheckJs ?? false,
+      dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
@@ -3992,6 +4003,14 @@ export class Lowerer {
     const names = this.jsWidenedFields.get(classDecl);
     if (names) names.add(name);
     else this.jsWidenedFields.set(classDecl, new Set([name]));
+  }
+
+  /** A dependency's shipped JavaScript is compiled unchecked whatever the
+   * project's `checkJs` says, and preflight reports no diagnostics for it: a
+   * JSDoc annotation there is a hint, so its storage follows the values the
+   * program writes even when the slot is scalar or a collection. */
+  jsAnnotationIsAdvisory(sf: ts.SourceFile): boolean {
+    return this.dependencyJs?.(sf.fileName) === true;
   }
 
   jsFieldWidened(classDecl: ts.ClassLikeDeclaration | undefined, name: string): boolean {
@@ -6401,6 +6420,9 @@ export class Lowerer {
     "define",
     "startupCrash",
     "projectCheckJs",
+    // The load's dependency-JavaScript predicate (LoadResult.dependencyJs):
+    // fixed for the program, like projectCheckJs.
+    "dependencyJs",
     "parameterPropertiesFirst",
     "libraryCallbacks",
     "ffiBindingSymbols",
@@ -6891,6 +6913,9 @@ export class Lowerer {
   readonly startupCrash: StartupCrash | null;
   /** The project's tsconfig sets `checkJs`. */
   readonly projectCheckJs: boolean;
+  /** LoadResult.dependencyJs: a dependency's shipped JavaScript is compiled
+   * as unchecked JavaScript whatever the project's `checkJs` says. */
+  readonly dependencyJs: ((file: string) => boolean) | null;
   /** The files whose classes assign parameter properties before their
    * field initializers run (LoadResult.parameterPropertiesFirst). */
   readonly parameterPropertiesFirst: ReadonlySet<string> | null;
@@ -7556,6 +7581,7 @@ export class Lowerer {
     this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
     this.projectCheckJs = mode.projectCheckJs ?? false;
+    this.dependencyJs = mode.dependencyJs ?? null;
     this.parameterPropertiesFirst = mode.parameterPropertiesFirst ?? null;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
@@ -7859,7 +7885,12 @@ export class Lowerer {
   checkedJsFile(sf: ts.SourceFile): boolean {
     let checked = this.checkedJsFiles.get(sf);
     if (checked === undefined) {
-      checked = isCheckedJsSourceFile(sf, this.projectCheckJs);
+      // A dependency's shipped JavaScript is unchecked whatever the
+      // project's `checkJs` says; preflight drops its checker diagnostics
+      // for the same reason, so the two stances agree.
+      const projectCheckJs =
+        this.projectCheckJs && (this.dependencyJs === null || !this.dependencyJs(sf.fileName));
+      checked = isCheckedJsSourceFile(sf, projectCheckJs);
       this.checkedJsFiles.set(sf, checked);
     }
     return checked;
@@ -10198,7 +10229,11 @@ export class Lowerer {
           return undefined;
         const declared = this.checker.getTypeOfSymbol(field);
         if (!jsTypeIsTyped(declared)) return undefined;
-        if (!this.jsStorageHoldsForeignValues(this.mapTypeOf(declared))) return undefined;
+        if (
+          !this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)) &&
+          !this.jsAnnotationIsAdvisory(ts.getSourceFileOfNode(node))
+        )
+          return undefined;
         if (
           !this.jsParsedDataKeepsStorage(declared, node.right) &&
           !jsValueFits(this.checker, declared, this.checker.getTypeAtLocation(node.right))
@@ -10287,7 +10322,8 @@ export class Lowerer {
             const declared = this.checker.getTypeOfSymbol(symbol);
             if (
               jsTypeIsTyped(declared) &&
-              this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)) &&
+              (this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)) ||
+                this.jsAnnotationIsAdvisory(sf)) &&
               !this.jsParsedDataKeepsStorage(declared, node.initializer) &&
               !jsValueFits(this.checker, declared, this.checker.getTypeAtLocation(node.initializer))
             )
@@ -10318,7 +10354,11 @@ export class Lowerer {
         if (annotated ? checked : (decl.parent.flags & ts.NodeFlags.Const) !== 0) return undefined;
         const declared = this.checker.getTypeOfSymbol(symbol);
         if (!jsTypeIsTyped(declared)) return undefined;
-        if (annotated && !this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)))
+        if (
+          annotated &&
+          !this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)) &&
+          !this.jsAnnotationIsAdvisory(sf)
+        )
           return undefined;
         if (annotated && this.jsParsedDataKeepsStorage(declared, node.right)) return undefined;
         const assigned = this.checker.getTypeAtLocation(node.right);
@@ -24010,6 +24050,21 @@ export class Lowerer {
       if (imported?.module === "timers/promises" && imported.member === "scheduler") {
         return { module: "timers/promises", member: `scheduler.${access.name.text}` };
       }
+    }
+    // node:test's snapshot.setDefaultSnapshotSerializers and
+    // setResolveSnapshotPath: methods of the module's snapshot object.
+    if (
+      access.name.text === "setDefaultSnapshotSerializers" ||
+      access.name.text === "setResolveSnapshotPath"
+    ) {
+      const owner = access.expression;
+      const imported = ts.isIdentifier(owner)
+        ? this.builtinImportOf(owner)
+        : ts.isPropertyAccessExpression(owner)
+          ? this.builtinMemberOf(owner)
+          : null;
+      if (imported?.module === "test" && imported.member === "snapshot")
+        return { module: "test", member: `snapshot.${access.name.text}` };
     }
     // punycode.ucs2.decode / encode: methods of the module's ucs2 object,
     // dispatched as module members.

@@ -2634,6 +2634,9 @@ function buildLibFnSignatures() {
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
+    // mock.fn's and mock.method's { times }: Node's non-negative-integer
+    // validation, which throws ERR_OUT_OF_RANGE and answers the count.
+    "test.mockTimes": { argTypes: [F64], result: F64 },
     "test.mockTrack": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
     "test.mockRestoreAll": { argTypes: [], result: VOID },
     "test.mockReset": { argTypes: [], result: VOID },
@@ -2659,6 +2662,9 @@ function buildLibFnSignatures() {
     // the default JSON.stringify(value, null, 2)); a throw becomes Node's
     // "The provided serializers did not generate a string." ERR_INVALID_STATE.
     "test.snapshotSerialize": { argTypes: [DYN, DYN], result: DYN },
+    // snapshot.setDefaultSnapshotSerializers(serializers): the list is a
+    // checked-dynamic array of serializer functions.
+    "test.snapshotSetDefaultSerializers": { argTypes: [DYN], result: VOID },
     "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
     "test.mockTimersTick": { argTypes: [F64], result: VOID },
     "test.mockTimersRunAll": { argTypes: [], result: VOID },
@@ -2715,6 +2721,15 @@ function buildLibFnSignatures() {
     "net.serverMaxRequestsPerSocketGet": { argTypes: [NETSERVER_T], result: DYN },
     "net.serverMaxRequestsPerSocketSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "http.serverTimeoutOptionSet": { argTypes: [NETSERVER_T, F64, DYN], result: VOID },
+    /** headersTimeout's constructor default (min(60000, requestTimeout))
+     * and Node's headersTimeout <= requestTimeout check. MAY THROW. */
+    "http.serverHeadersTimeoutDefault": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    /** createServer({ connectionsCheckingInterval }): Node's validateInteger
+     * and the stored check interval. MAY THROW. */
+    "http.serverConnectionsCheckingInterval": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    /** createServer({ rejectNonStandardBodyWrites }): body writes on HEAD,
+     * 204 and 304 responses throw ERR_HTTP_BODY_NOT_ALLOWED. */
+    "http.serverRejectNonStandardBodyWrites": { argTypes: [NETSERVER_T, DYN], result: VOID },
     /** server.on("listening", cb) — the deferred listen-callback list. */
     "net.serverOnListening": {
       argTypes: [NETSERVER_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2946,6 +2961,12 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "http.resWriteHeadPairs": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: VOID },
+    /** writeHead(status, object): parallel names and dyn values, Node's
+     * fast and progressive paths. MAY THROW. */
+    "http.resWriteHeadObject": {
+      argTypes: [HTTPRES_T, F64, arrayOf(STRING), arrayOf(DYN)],
+      result: VOID,
+    },
     /** writeHead(status, headers) with a checked-dynamic headers value —
      * the runtime OBJ walk (string/number values; other values throw
      * Node's invalid-argument TypeError; may throw). */

@@ -160,6 +160,8 @@ double scr_net_server_idle_ms(ScrNetServer *s);
  * keepAliveTimeoutBuffer. Typed reads validate that no dynamic write left
  * a non-number in the ordinary JS property slot. */
 double scr_net_server_timeout_get(ScrNetServer *s, double field);
+/* As the HTTP timeout checker reads a field: a non-number reads 0. */
+double scr_net_server_timeout_raw(ScrNetServer *s, double field);
 void scr_net_server_timeout_set(ScrNetServer *s, double field, double value);
 void scr_net_server_set_timeout_plain(ScrNetServer *s, double ms);
 void scr_net_server_set_timeout_cb(ScrNetServer *s, double ms, ScrClosure *cb /*moves*/, ScrNetConnFn fn);

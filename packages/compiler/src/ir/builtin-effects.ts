@@ -59,11 +59,13 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "crypto.checkPrimeCb",
   "crypto.generatePrimeSync",
   "crypto.generatePrimeCb",
-  // node:test's { timeout } and { concurrency } range checks.
+  // node:test's { timeout } and { concurrency } range checks, and the
+  // mock { times } integer check.
   "test.register",
   // t.error builds Node's wrapper over the failure through the inspect
   // unit's rendering, which can raise.
   "test.ctxError",
+  "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
   "test.subEmpty",
@@ -74,6 +76,9 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // the throws of the timer callbacks tick and runAll run.
   "test.ctxSnapshot",
   "test.fileSnapshot",
+  // snapshot.setDefaultSnapshotSerializers validates its list (Node's
+  // ERR_INVALID_ARG_TYPE).
+  "test.snapshotSetDefaultSerializers",
   "test.snapshotSerialize",
   "test.mockTimersEnable",
   "test.mockTimersTick",
@@ -389,6 +394,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resWriteHeadObject",
   "http.resSetHeader",
   "http.resSetHeaderDyn",
   "http.resRemoveHeader",
@@ -412,6 +418,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resOnPrefinish",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
+  "http.serverHeadersTimeoutDefault",
+  "http.serverConnectionsCheckingInterval",
+  "http.serverRejectNonStandardBodyWrites",
   "net.sockSetEncoding",
   "net.sockSetEncodingDyn",
   // setKeepAlive's positional coercions and its object form run ToNumber

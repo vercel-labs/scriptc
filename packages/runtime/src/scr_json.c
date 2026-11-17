@@ -3181,8 +3181,9 @@ static void scr_builtin_object_prototype_cleanup(void) {
  * Calling one through the value is not supported yet, as for the other
  * interned constructors (scr_dyn_global_constructor). */
 static const char *const scr_error_ctor_names[] = {
-    "Error", "TypeError", "RangeError", "SyntaxError", NULL,
-    "ReferenceError", "EvalError", "URIError", "AggregateError",
+    "Error", "TypeError", "RangeError", "SyntaxError", "DOMException",
+    "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError",
+    "SuppressedError",
 };
 #define SCR_ERROR_CTORS (sizeof scr_error_ctor_names / sizeof scr_error_ctor_names[0])
 static SCR_TL ScrDyn *scr_error_ctor_values[SCR_ERROR_CTORS];
@@ -3217,7 +3218,10 @@ ScrDyn *scr_dyn_error_constructor(const char *name) {
       scr_atexit(scr_error_ctors_cleanup);
     }
     if (!scr_error_ctor_values[i]) {
-      uint32_t length = strcmp(name, "AggregateError") == 0 ? 2 : 1;
+      uint32_t length = strcmp(name, "AggregateError") == 0    ? 2
+                        : strcmp(name, "SuppressedError") == 0 ? 3
+                        : strcmp(name, "DOMException") == 0    ? 0
+                                                               : 1;
       scr_error_ctor_values[i] =
           scr_dyn_new_func(scr_closure_new((void *)scr_error_ctor_names[i], 0), scr_error_ctor_call, length,
                            "native:constructor", scr_error_ctor_names[i]);
@@ -19998,10 +20002,12 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
   }
   if (key_len == 11 && memcmp(key, "constructor", 11) == 0) {
     /* An error's constructor: the interned function value its global
-     * reads as (scr_dyn_error_constructor). */
+     * reads as (scr_dyn_error_constructor, which scr_dyn_global_constructor
+     * consults first, so `e.constructor === DOMException` is identity). */
     static const char *const names[] = {
-        "Error", "TypeError", "RangeError", "SyntaxError", NULL,
-        "ReferenceError", "EvalError", "URIError", "AggregateError",
+        "Error", "TypeError", "RangeError", "SyntaxError", "DOMException",
+        "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError",
+        "SuppressedError",
     };
     size_t hit = scr_errdyn_find(d, false);
     const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;

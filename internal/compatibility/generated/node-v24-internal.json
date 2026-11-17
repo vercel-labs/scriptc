@@ -34514,8 +34514,12 @@
           "tests/corpus/8167-encrypted-private-keys.cjs",
           "tests/corpus/8179-tls-reject-unauthorized-values.mjs",
           "tests/corpus/8210-require-computed-missing/main.ts",
+          "tests/corpus/8783-child-max-buffer-refused-arguments.ts",
+          "tests/corpus/8922-child-max-buffer-async.ts",
+          "tests/corpus/9872-child-stream-pause-max-buffer.ts",
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/compat-error-capture-stack-trace.mjs",
+          "tests/corpus/compat-error-class-surface.mjs",
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
@@ -34527,6 +34531,7 @@
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-http2-ping-settings.mjs",
+          "tests/corpus/compat-system-error-fields.mjs",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/console-error-codes.cjs",
           "tests/corpus/crypto-create-mac-errors.mjs",
@@ -34539,6 +34544,8 @@
           "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs",
+          "tests/corpus/net-bound-socket.ts",
           "tests/corpus/node-dns-resolve-errors.cjs",
           "tests/corpus/node-dns-resolver-class.ts",
           "tests/corpus/node24-crypto-kdf-errors.ts",
@@ -34571,10 +34578,11 @@
       "anchor": "class-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.Error",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -34592,11 +34600,12 @@
       "anchor": "errorcapturestacktracetargetobject-constructoropt",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.Error.captureStackTrace",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
-          "tests/corpus/compat-error-capture-stack-trace.mjs"
+          "tests/corpus/compat-error-capture-stack-trace.mjs",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -34614,10 +34623,11 @@
       "anchor": "class-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.stackTraceLimit",
         "tests": [
-          "tests/corpus/error-stack-limit.ts"
+          "tests/corpus/error-stack-limit.ts",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34635,11 +34645,12 @@
       "anchor": "class-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.cause",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
-          "tests/corpus/compat-error-capture-stack-trace.mjs"
+          "tests/corpus/compat-error-capture-stack-trace.mjs",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34657,11 +34668,12 @@
       "anchor": "class-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.code",
         "tests": [
           "tests/corpus/compat-error-properties.mjs",
-          "tests/corpus/compat-error-properties.ts"
+          "tests/corpus/compat-error-properties.ts",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34679,11 +34691,12 @@
       "anchor": "class-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.message",
         "tests": [
           "tests/corpus/compat-error-classes.cjs",
-          "tests/corpus/compat-error-capture-stack-trace.mjs"
+          "tests/corpus/compat-error-capture-stack-trace.mjs",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34701,11 +34714,12 @@
       "anchor": "class-error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.stack",
         "tests": [
           "tests/corpus/error-stack-frames.ts",
-          "tests/corpus/error-stack-limit.ts"
+          "tests/corpus/error-stack-limit.ts",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34727,7 +34741,8 @@
         "evidence": "compiler-feature:errors.AssertionError",
         "tests": [
           "tests/corpus/compat-error-properties.mjs",
-          "tests/corpus/compat-error-properties.ts"
+          "tests/corpus/compat-error-properties.ts",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -34748,7 +34763,8 @@
         "status": "partial",
         "evidence": "compiler-feature:errors.DOMException",
         "tests": [
-          "tests/corpus/compat-web-globals.ts"
+          "tests/corpus/compat-web-globals.ts",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -34766,10 +34782,11 @@
       "anchor": "class-rangeerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.RangeError",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -34787,10 +34804,11 @@
       "anchor": "class-referenceerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ReferenceError",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -34808,10 +34826,11 @@
       "anchor": "class-syntaxerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.SyntaxError",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -34829,11 +34848,12 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.SystemError",
         "tests": [
           "tests/corpus/compat-error-properties.mjs",
-          "tests/corpus/compat-error-properties.ts"
+          "tests/corpus/compat-error-properties.ts",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -34869,10 +34889,11 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.address",
         "tests": [
-          "tests/corpus/compat-error-properties.mjs"
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34890,12 +34911,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.code",
         "tests": [
           "tests/corpus/caught-system-error-fields.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
-          "tests/harness/project-config.test.ts"
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34913,12 +34935,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.dest",
         "tests": [
           "tests/corpus/caught-system-error-fields.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
-          "tests/harness/project-config.test.ts"
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34936,12 +34959,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.errno",
         "tests": [
           "tests/corpus/caught-system-error-fields.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
-          "tests/harness/project-config.test.ts"
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34959,10 +34983,11 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.info",
         "tests": [
-          "tests/corpus/compat-error-properties.mjs"
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -34980,11 +35005,12 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.message",
         "tests": [
           "tests/corpus/compat-error-properties.mjs",
-          "tests/corpus/compat-error-properties.ts"
+          "tests/corpus/compat-error-properties.ts",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -35002,12 +35028,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.path",
         "tests": [
           "tests/corpus/caught-system-error-fields.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
-          "tests/harness/project-config.test.ts"
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -35025,10 +35052,11 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.port",
         "tests": [
-          "tests/corpus/compat-error-properties.mjs"
+          "tests/corpus/compat-error-properties.mjs",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -35046,12 +35074,13 @@
       "anchor": "class-systemerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.syscall",
         "tests": [
           "tests/corpus/caught-system-error-fields.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
-          "tests/harness/project-config.test.ts"
+          "tests/harness/project-config.test.ts",
+          "tests/corpus/compat-system-error-fields.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -35069,10 +35098,11 @@
       "anchor": "class-typeerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.TypeError",
         "tests": [
-          "tests/corpus/compat-error-classes.cjs"
+          "tests/corpus/compat-error-classes.cjs",
+          "tests/corpus/compat-error-class-surface.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -35562,8 +35592,13 @@
       "anchor": "err_child_process_stdio_maxbuffer",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        "tests": [
+          "tests/corpus/8783-child-max-buffer-refused-arguments.ts",
+          "tests/corpus/8922-child-max-buffer-async.ts",
+          "tests/corpus/9872-child-stream-pause-max-buffer.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38442,7 +38477,7 @@
       "anchor": "err_internal_assertion",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INTERNAL_ASSERTION",
         "tests": [
           "tests/corpus/5450-fs-glob-validation.js"
@@ -38463,7 +38498,7 @@
       "anchor": "err_invalid_address",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_ADDRESS",
         "tests": [
           "tests/corpus/5659-net-blocklist-socketaddress.ts"
@@ -39488,7 +39523,7 @@
       "anchor": "err_module_not_found",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_MODULE_NOT_FOUND",
         "tests": [
           "tests/corpus/2858-import-meta-resolve/main.mjs"
@@ -40458,7 +40493,7 @@
       "anchor": "err_socket_bad_buffer_size",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_BUFFER_SIZE",
         "tests": [
           "tests/corpus/5656-dgram-option-states.ts"
@@ -40519,7 +40554,7 @@
       "anchor": "err_socket_buffer_size",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_BUFFER_SIZE",
         "tests": [
           "tests/corpus/5656-dgram-option-states.ts"
@@ -40597,7 +40632,7 @@
       "anchor": "err_socket_dgram_is_connected",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_DGRAM_IS_CONNECTED",
         "tests": [
           "tests/corpus/2597-dgram-send-ladders.cjs"
@@ -40618,7 +40653,7 @@
       "anchor": "err_socket_dgram_not_connected",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_DGRAM_NOT_CONNECTED",
         "tests": [
           "tests/corpus/5656-dgram-option-states.ts"
@@ -40639,7 +40674,7 @@
       "anchor": "err_socket_dgram_not_running",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_DGRAM_NOT_RUNNING",
         "tests": [
           "tests/corpus/5656-dgram-option-states.ts"
@@ -40660,8 +40695,12 @@
       "anchor": "err_socket_handle_adopted",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_SOCKET_HANDLE_ADOPTED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_HANDLE_ADOPTED",
+        "tests": [
+          "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-bound-socket-pipe.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41148,7 +41187,7 @@
       "anchor": "err_tls_cert_altname_invalid",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_TLS_CERT_ALTNAME_INVALID",
         "tests": [
           "tests/corpus/5562-https-verify-errors.ts"
@@ -41241,7 +41280,7 @@
       "anchor": "err_tls_invalid_protocol_version",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_TLS_INVALID_PROTOCOL_VERSION",
         "tests": [
           "tests/corpus/6722-tls-min-max-version.ts"
@@ -41280,7 +41319,7 @@
       "anchor": "err_tls_protocol_version_conflict",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_TLS_PROTOCOL_VERSION_CONFLICT",
         "tests": [
           "tests/corpus/6722-tls-min-max-version.ts"
@@ -41355,7 +41394,7 @@
       "anchor": "err_tls_required_server_name",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ERR_TLS_REQUIRED_SERVER_NAME",
         "tests": [
           "tests/corpus/7440-tls-server-add-context.ts"
@@ -41608,7 +41647,7 @@
       "anchor": "err_unknown_builtin_module",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNKNOWN_BUILTIN_MODULE",
         "tests": [
           "tests/corpus/8210-require-computed-missing/main.ts"
@@ -42314,7 +42353,7 @@
       "anchor": "err_worker_unsupported_operation",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_WORKER_UNSUPPORTED_OPERATION",
         "tests": [
           "tests/corpus/compat-errors-worker.mjs"
@@ -42441,7 +42480,7 @@
       "anchor": "module_not_found",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.MODULE_NOT_FOUND",
         "tests": [
           "tests/corpus/2195-require-missing-package/main.mjs"

@@ -1,6 +1,7 @@
 // connect() on an established socket re-runs the connect flow: 'connect'
-// fires again and the call's listener runs, with nothing else keeping the
-// loop busy.
+// fires again and the call's listener runs — also when the connect() is
+// issued from that deferred 'connect' listener itself, with nothing else
+// keeping the loop busy.
 import * as net from "node:net";
 
 const events: string[] = [];
@@ -15,9 +16,10 @@ await new Promise<void>((resolve) => {
     connects += 1;
     events.push(`connect ${connects}`);
     if (connects === 1) {
-      socket.connect(port, "127.0.0.1", () => events.push("second callback"));
-    } else {
-      resolve();
+      socket.connect(port, "127.0.0.1", () => {
+        events.push("second callback");
+        resolve();
+      });
     }
   });
 });

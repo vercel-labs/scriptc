@@ -9284,6 +9284,9 @@ static void scr_net_proto_sweep(void) {
  * anything to do. */
 static bool scr_net_sock_has_work(ScrNetSocket *s, bool due) {
   if (s->pending_err || (s->emit_close && !s->close_emitted)) return true;
+  /* a repeat connect's 'connect' is deferred work like any other: a
+   * connect() issued from its own listener requeues the current socket */
+  if (s->reconnect_ready) return true;
   /* recorded 'lookup'/'connectionAttempt' events wait for the sweep */
   if (s->lookup_evs != NULL || s->attempt_evs != NULL) return true;
   if (s->finish_pending && (!due || s->finish_ls.n > 0)) return true;

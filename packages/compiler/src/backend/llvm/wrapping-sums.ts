@@ -247,11 +247,22 @@ function exactProduct(left: IntegerRange, right: IntegerRange): boolean {
   return magnitude(left) * magnitude(right) < 2 ** 53;
 }
 
+/** The values an induction variable can hold: exact integers well inside the
+ * exact-number range, wide enough that a ±1 step and a sum of two stays a
+ * safe integer. A step of an exact integer is an exact integer however far
+ * it runs, so the integer-or-NaN fact holds for every step; consumers that
+ * need a bound check the value against the array length or emit two integer
+ * compares. */
+const INTEGER_INDUCTION_RANGE: IntegerRange = { min: -(2 ** 52), max: 2 ** 52 };
+
 /** The number locals of `fn` that only hold exact integers (never -0) or NaN, with the range of
  * those integers: locals declared once with an initializer, neither parameters nor captured or
- * boxed, whose initializer and every later write `integerOrNaNRange` covers. A local joins once
- * the values it is written depend only on locals that have joined, so `x = x + 1` keeps `x` out:
- * its values have no bound. Uses the function's `integerRanges` and `int32Elements`. */
+ * boxed, whose initializer and every later write `integerOrNaNRange` covers, or is a ± step of the
+ * local itself (`x++`, `x = x + 1`). The locals are tested together, so an induction variable and
+ * the temporary that copies it (`k = i + 1`) justify each other; a local that cannot be justified
+ * by the others is dropped. An induction variable keeps the wide exact-integer range, since a
+ * ± step of an exact integer is an exact integer however far it runs. Uses the function's
+ * `integerRanges` and `int32Elements`. */
 export function findIntegerOrNaNLocals(
   host: LlvmEmitterContext,
   fn: IrFunction,
@@ -279,9 +290,26 @@ export function findIntegerOrNaNLocals(
     if (list) list.push(value);
     else writes.set(id, [value]);
   };
+  /** Whether `value`, written to `id`, is a ± step: `id++`, `id--`, `id ± k`
+   * for an integer literal `k` in either order, or `id ± y` where `y` is a
+   * local already proven integer-or-NaN. A step of an exact integer (or NaN)
+   * is an exact integer (or NaN), however far it runs, so it needs no bound. */
+  const isInductionStep = (id: string, value: IrExpr): boolean => {
+    if (value.kind === "incDec") return value.localId === id;
+    if (value.kind !== "bin" || (value.op !== "+" && value.op !== "-")) return false;
+    for (const [self, other] of [
+      [value.left, value.right],
+      [value.right, value.left],
+    ] as const) {
+      if (self.kind !== "varRef" || self.localId !== id) continue;
+      if (other.kind === "numLit") return Number.isSafeInteger(other.value);
+      if (other.kind === "varRef") return found.has(other.localId);
+    }
+    return false;
+  };
   function walkExpr(e: IrExpr): boolean {
     if (e.kind === "assignExpr") write(e.localId, e.value);
-    else if (e.kind === "incDec") drop(e.localId);
+    else if (e.kind === "incDec") write(e.localId, e);
     return everyExprChild(e, walkExpr, walkStmt);
   }
   function walkStmt(s: IrStmt): boolean {
@@ -301,16 +329,28 @@ export function findIntegerOrNaNLocals(
   const previous = host.integerOrNaNLocals;
   host.integerOrNaNLocals = found;
   try {
-    let joined = true;
-    while (joined) {
-      joined = false;
-      for (const [id, values] of writes) {
-        if (found.has(id) || !declared.has(id)) continue;
+    // Greatest fixpoint: every declared local starts assumed to hold an
+    // exact integer (or NaN), and each pass drops the locals with a write
+    // that cannot be justified from the ones still assumed. An induction
+    // variable and the temporaries that copy its next value justify each
+    // other, which a least fixpoint cannot see.
+    for (const [id] of writes) if (declared.has(id)) found.set(id, INTEGER_INDUCTION_RANGE);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [id] of [...found]) {
+        const values = writes.get(id)!;
         let range: IntegerRange | null = null;
+        let stepped = false;
+        let covered = true;
         for (const value of values) {
+          if (isInductionStep(id, value)) {
+            stepped = true;
+            continue;
+          }
           const next = integerOrNaNRange(host, value);
           if (next === null) {
-            range = null;
+            covered = false;
             break;
           }
           range =
@@ -318,9 +358,19 @@ export function findIntegerOrNaNLocals(
               ? next
               : { min: Math.min(range.min, next.min), max: Math.max(range.max, next.max) };
         }
-        if (range === null) continue;
-        found.set(id, range);
-        joined = true;
+        // A local needs a bounded write to stay; an induction variable whose
+        // every other write is an integer-or-NaN value keeps the wide range.
+        if (!covered || range === null) {
+          found.delete(id);
+          changed = true;
+          continue;
+        }
+        const joined = stepped ? INTEGER_INDUCTION_RANGE : range;
+        const current = found.get(id)!;
+        if (joined.min !== current.min || joined.max !== current.max) {
+          found.set(id, joined);
+          changed = true;
+        }
       }
     }
   } finally {

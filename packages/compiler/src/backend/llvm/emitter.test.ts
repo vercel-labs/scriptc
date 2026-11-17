@@ -127,7 +127,7 @@ test("the shared indexed-read helpers carry an inline hint", () => {
   });
   const define = (name: string): string =>
     llvm.split("\n").find((line) => line.startsWith("define") && line.endsWith(`{ ; ${name}`))!;
-  expect(define("%arr.idxOr.0")).toMatch(/\) inlinehint #0 \{/);
+  expect(define("%arr.idxOr.0")).toMatch(/\) align 64 inlinehint #0 \{/);
   expect(define("plain")).not.toContain("inlinehint");
 });
 
@@ -179,10 +179,10 @@ test("bodies holding thousands of capture boxes compile unoptimized with boxes i
     const lines = llvm.split("\n").slice(start);
     return lines.slice(0, lines.indexOf("}")).join("\n");
   };
-  expect(body("wide")).toMatch(/\) noinline optnone #0 \{/);
+  expect(body("wide")).toMatch(/\) align 64 noinline optnone #0 \{/);
   expect(body("wide")).toMatch(/store volatile ptr %[st]\d+, ptr %sc_l_wide0\b/);
   expect(body("wide")).toMatch(/= load volatile ptr, ptr %sc_l_wide511\b/);
-  expect(body("env")).toMatch(/\) noinline optnone #0 \{/);
+  expect(body("env")).toMatch(/\) align 64 noinline optnone #0 \{/);
   expect(body("env")).toMatch(/store volatile ptr %t\d+, ptr %sc_l_env0 ; captured env0/);
   expect(body("narrow")).not.toContain("optnone");
   expect(body("narrow")).not.toContain("volatile");

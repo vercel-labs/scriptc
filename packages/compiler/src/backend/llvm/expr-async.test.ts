@@ -148,7 +148,7 @@ test("a typed slot's conversion adopts its source only while the node carries th
   // object or array goes on to the plain helper in a tail call; a plain one
   // is checked, and adopted only where the check left no error pending.
   const helper = helperBody(shared.llvm, adopting);
-  expect(helper).toMatch(/^define internal ptr @sc_dc_\w+\(ptr %d, ptr %path\) noinline /);
+  expect(helper).toMatch(/^define internal ptr @sc_dc_\w+\(ptr %d, ptr %path\) align 64 noinline /);
   const steps = [
     /icmp eq i32 %t\d+, 4$/m,
     /icmp eq i32 %t\d+, 5$/m,
@@ -191,7 +191,7 @@ test("a record's typed slot hands the type's own capsule out as the plain site d
   expect(flagged.body).not.toContain("scr_dyn_adopt_whole");
   expect(flagged.body.replace(`@${adopting}(`, `@${plain}(`)).toBe(copied.body);
   const helper = helperBody(flagged.llvm, adopting!);
-  expect(helper).toMatch(/^define internal ptr @sc_dc_\w+\(ptr %d, ptr %path\) noinline /);
+  expect(helper).toMatch(/^define internal ptr @sc_dc_\w+\(ptr %d, ptr %path\) align 64 noinline /);
   expect(helper).toContain(`tail call ptr @${plain}(ptr %d, ptr %path)`);
   expect(helper.match(/call void @scr_dyn_adopt_whole\(/g)).toHaveLength(1);
 });

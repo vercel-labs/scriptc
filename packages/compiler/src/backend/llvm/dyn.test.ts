@@ -206,7 +206,7 @@ test("a conversion to a class accepts a capsule of an ancestor that holds an ins
   // instance's own class decides, with the interval test `instanceof Sub`
   // makes (Sub and Tip are preorder 1, 2).
   expect(llvm).toContain(
-    "define internal zeroext i1 @sc_dh_Sub(ptr %d) noinline cold #0 { ; holds object:Sub\n",
+    "define internal zeroext i1 @sc_dh_Sub(ptr %d) align 64 noinline cold #0 { ; holds object:Sub\n",
   );
   const held = helperBlocks(llvm, "holds object:Sub");
   const keyed = /br i1 %t\d+, label %(dh\.is\d+), label %(dh\.key\d+)\n$/.exec(held.get("entry")!);

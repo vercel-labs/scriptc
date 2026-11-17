@@ -35,3 +35,32 @@ try {
 } catch (e) {
   console.log("plain", e instanceof assert.AssertionError, e.operator, e.generatedMessage);
 }
+// A replacement process.emitWarning that throws keeps its error: the
+// deprecation report is a call that can throw, not a silent one.
+const origEmitWarning = process.emitWarning;
+process.emitWarning = function () {
+  throw new Error("warn-threw");
+};
+try {
+  assert.fail(1, 2);
+} catch (e) {
+  console.log("warnReplace", e.name, e.message);
+}
+process.emitWarning = origEmitWarning;
+// An operator that is undefined at run time takes Node's default.
+const runtimeUndefinedOperator = undefined;
+try {
+  assert.fail(1, 2, "m", runtimeUndefinedOperator);
+} catch (e) {
+  console.log("opUndef", e.operator, e.message);
+}
+// An argument that cannot be recorded still evaluates.
+function side() {
+  console.log("side ran");
+  return function inner() {};
+}
+try {
+  assert.fail(side(), 2);
+} catch (e) {
+  console.log("side", JSON.stringify(e.message));
+}

@@ -154,7 +154,16 @@ function recordedValue(lowerer: Lowerer, value: IrExpr | null, loc: SrcLoc): IrE
   ) {
     return { kind: "dynFrom", value, type: DYN, loc };
   }
-  return dynUndefinedExpr(loc);
+  // The value has no checked-dynamic form, but its expression still runs:
+  // Node evaluates the argument, so its side effects and its thrown errors
+  // happen before the assertion.
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: dynUndefinedExpr(loc),
+    type: DYN,
+    loc,
+  };
 }
 
 /** `if (failing) assert.record(actual, expected, operator)`. */
@@ -1176,6 +1185,8 @@ function lowerAssertFailDeprecated(lowerer: Lowerer, expr: ts.CallExpression, lo
           "%assertFailMessage",
           loc,
         );
+  // Node reads `operator` and falls back to the default when the value is
+  // nullish at run time, not only when the argument is the undefined literal.
   const operatorNode = args[3];
   const operator: IrExpr =
     operatorNode !== undefined &&
@@ -1187,7 +1198,11 @@ function lowerAssertFailDeprecated(lowerer: Lowerer, expr: ts.CallExpression, lo
           "%assertFailOperator",
           loc,
         )
-      : lowerer.coerceToExpected(strLit(args.length === 2 ? "!=" : "fail", loc), DYN);
+      : dynUndefinedExpr(loc);
+  const defaultOperator = lowerer.coerceToExpected(
+    strLit(args.length === 2 ? "!=" : "fail", loc),
+    DYN,
+  );
   const stackStart = args[4];
   if (stackStart !== undefined) {
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(stackStart), loc });
@@ -1200,7 +1215,7 @@ function lowerAssertFailDeprecated(lowerer: Lowerer, expr: ts.CallExpression, lo
   const result: IrExpr = {
     kind: "libCall",
     fn: "assert.failDeprecated",
-    args: [actual, expected, message, operator, boolLit(messageNode !== undefined, loc)],
+    args: [actual, expected, message, operator, defaultOperator],
     type: VOID,
     loc,
   };

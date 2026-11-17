@@ -48,6 +48,31 @@ const derived = https.createServer({ cert, key, requestTimeout: 1500 }, () => {}
 fields("derived", derived);
 derived.close();
 
+// Literal order: an effectful TLS initializer runs before the HTTP option it
+// changes, so the later read sees the new value.
+let pendingTimeout = 0;
+function reloadCert() {
+  pendingTimeout = 8000;
+  return cert;
+}
+const ordered = https.createServer(
+  { cert: reloadCert(), key, requestTimeout: pendingTimeout },
+  () => {},
+);
+fields("order", ordered);
+ordered.close();
+
+// An effectful option value keeps literal order through the runtime walk.
+function nextBuffer() {
+  return 250;
+}
+const effectful = https.createServer(
+  { cert, key, keepAliveTimeoutBuffer: nextBuffer() },
+  () => {},
+);
+fields("effectful", effectful);
+effectful.close();
+
 // A literal whose TLS side rides the runtime walk (ca/requestCert) reads the
 // same HTTP-side members.
 const clientAuth = https.createServer(

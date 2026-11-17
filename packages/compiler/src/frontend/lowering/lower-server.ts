@@ -6495,14 +6495,14 @@ const TLS_VALIDATED_OPTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** The http.Server options https.createServer also reads (Node's
- * https.createServer options are http.createServer's plus the TLS ones).
- * keepAliveTimeoutBuffer is absent: the TLS runtime walk consumes it. */
+ * https.createServer options are http.createServer's plus the TLS ones). */
 const HTTPS_HTTP_OPTION_KEYS: ReadonlySet<string> = new Set([
   "requireHostHeader",
   "joinDuplicateHeaders",
   "requestTimeout",
   "headersTimeout",
   "keepAliveTimeout",
+  "keepAliveTimeoutBuffer",
   "connectionsCheckingInterval",
   "maxHeaderSize",
   "rejectNonStandardBodyWrites",
@@ -6525,21 +6525,19 @@ function httpsHttpOptionProps(
   return found;
 }
 
-/** The HTTP option values of an https.createServer literal evaluate as the
- * option helper's arguments, ahead of the TLS fields inside the constructed
- * server, rather than in literal position. Side-effect-free initializers
- * make that order unobservable; anything else would run earlier than Node
- * runs it, so those fence. */
-function checkHttpsHttpOptionValues(lowerer: Lowerer, node: ts.ObjectLiteralExpression): void {
-  for (const { key, prop } of httpsHttpOptionProps(node)) {
-    if (ts.isShorthandPropertyAssignment(prop)) continue;
-    if (ts.isPropertyAssignment(prop) && sideEffectFreeOptionValue(prop.initializer)) continue;
-    lowerer.noLowering(
-      `https.createServer with a ${key} value outside the literal`,
-      prop,
-      "bind the value to a const first so it reads in literal order",
-    );
-  }
+/** The static https lowering reads the HTTP option values as the option
+ * helper's arguments, ahead of the TLS fields inside the constructed
+ * server, so those reads leave literal position. Side-effect-free fields
+ * make the order unobservable; when a modeled HTTP option does work, or a
+ * TLS field does work while a modeled HTTP option is present (it could
+ * move a binding the option reads), the literal rides the runtime walk
+ * instead, which evaluates it once in source order. */
+function httpsLiteralOptionsNeedWalk(node: ts.ObjectLiteralExpression): boolean {
+  const httpProps = httpsHttpOptionProps(node);
+  if (httpProps.length === 0) return false;
+  const hasEffects = (prop: ts.ObjectLiteralElementLike): boolean =>
+    ts.isPropertyAssignment(prop) && !sideEffectFreeOptionValue(prop.initializer);
+  return httpProps.some(({ prop }) => hasEffects(prop)) || node.properties.nodes.some(hasEffects);
 }
 
 /** True when a literal options bag must ride the runtime walker: JS uses
@@ -6585,9 +6583,10 @@ function lowerTlsServerOptionsOrDyn(
   includeHttpTimeoutOptions = false,
   runtimeKeys: ReadonlySet<string> = new Set(),
   allowSni = false,
+  forceWalk = false,
 ): { cert: IrExpr; key: IrExpr; sni?: IrExpr; dyn?: undefined } | { dyn: IrExpr } {
   if (ts.isObjectLiteralExpression(node)) {
-    if (!tlsLiteralNeedsRuntimeWalk(node, includeHttpTimeoutOptions, runtimeKeys))
+    if (!forceWalk && !tlsLiteralNeedsRuntimeWalk(node, includeHttpTimeoutOptions, runtimeKeys))
       return lowerTlsServerOptions(lowerer, node, what, allowSni);
     const sniOption = node.properties.nodes.find(
       (p) =>
@@ -7336,12 +7335,12 @@ function lowerHttpsModuleCall(
     // decides its path — and wrap whatever server that path constructs. A
     // literal the TLS side sends through the runtime walk skips this: the
     // walk reads the same HTTP members from the record.
-    let httpOpts: HttpServerOptionPlan | null = null;
-    if (
+    const walkLiteral =
       ts.isObjectLiteralExpression(optionsNode) &&
-      !tlsLiteralNeedsRuntimeWalk(optionsNode, false, TLS_CLIENT_AUTH_OPTIONS)
-    ) {
-      checkHttpsHttpOptionValues(lowerer, optionsNode);
+      (tlsLiteralNeedsRuntimeWalk(optionsNode, false, TLS_CLIENT_AUTH_OPTIONS) ||
+        httpsLiteralOptionsNeedWalk(optionsNode));
+    let httpOpts: HttpServerOptionPlan | null = null;
+    if (ts.isObjectLiteralExpression(optionsNode) && !walkLiteral) {
       httpOpts = lowerHttpServerOptions(lowerer, optionsNode, "https.createServer", (key) =>
         TLS_SERVER_DOCUMENTED_OPTIONS.has(key),
       );
@@ -7354,6 +7353,8 @@ function lowerHttpsModuleCall(
       "https.createServer",
       false,
       TLS_CLIENT_AUTH_OPTIONS,
+      false,
+      walkLiteral,
     );
     if (args.length === 1) {
       // The handler-less form: 'request' listeners arrive later via

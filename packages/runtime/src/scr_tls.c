@@ -3058,7 +3058,18 @@ ScrNetServer *scr_tls_create_server_dyn(const ScrDyn *opts /*borrowed*/,
  * the literal createServer lowering, in Node's storeHTTPOptions order. The
  * shared TLS walker above deliberately owns only the TLS surface. */
 static void scr_https_apply_http_options(ScrNetServer *s, const ScrDyn *opts /*borrowed*/) {
-  if (opts == NULL || opts->kind != SCR_DYN_OBJ) return;
+  if (opts == NULL) return;
+  if (opts->kind == SCR_DYN_TYPED_REF) {
+    /* a compiled class instance or typed record: its fields, as a plain
+     * object, the same materialization the TLS walk above reads */
+    ScrDyn *plain = scr_dyn_typed_ref_materialize(opts);
+    if (plain != NULL) {
+      scr_https_apply_http_options(s, plain);
+      scr_dyn_release(plain);
+    }
+    return;
+  }
+  if (opts->kind != SCR_DYN_OBJ) return;
   const ScrDyn *v;
   const ScrDyn *headers = NULL;
   /* Each step stops at its first throwing validation, so the first bad

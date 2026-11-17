@@ -901,6 +901,9 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       host.declare(`declare void @${entry}(ptr, ptr)`);
       B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
     }
+    // The writers can throw (ERR_HTTP_HEADERS_SENT, invalid headers); the
+    // surrounding catch must see the pending exception.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "http.resOnFinish" || e.fn === "http.resOnEndCallback") {

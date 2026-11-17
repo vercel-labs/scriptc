@@ -34,6 +34,23 @@ const server = createServer((req, res) => {
   res.end("done");
 });
 
+const lateServer = createServer((_req, res) => {
+  res.sendDate = false;
+  res.writeHead(200, { "Content-Length": "2" });
+  let callbackRan = false;
+  try {
+    res.writeContinue(() => {
+      callbackRan = true;
+    });
+    console.log("late accepted");
+  } catch (error) {
+    const e = error as NodeJS.ErrnoException;
+    console.log("late error", e.code);
+  }
+  console.log("late callback", callbackRan);
+  res.end("ok");
+});
+
 function expectScenario(withContinue: boolean, next: () => void): void {
   const label = withContinue ? "with" : "without";
   const listener = createServer();
@@ -62,6 +79,17 @@ server.listen(0, () => {
     port,
     "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     "callbacks",
-    () => server.close(() => expectScenario(true, () => expectScenario(false, () => console.log("done")))),
+    () =>
+      server.close(() =>
+        lateServer.listen(0, "127.0.0.1", () => {
+          const lateAddress = lateServer.address();
+          const latePort = typeof lateAddress === "object" && lateAddress !== null ? lateAddress.port : 0;
+          readSocket(latePort, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", "late", () =>
+            lateServer.close(() =>
+              expectScenario(true, () => expectScenario(false, () => console.log("done"))),
+            ),
+          );
+        }),
+      ),
   );
 });

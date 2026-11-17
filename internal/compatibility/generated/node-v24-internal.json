@@ -46895,6 +46895,7 @@
           "tests/corpus/fs-exists-path-kinds.cjs",
           "tests/corpus/fs-filehandle-controls.ts",
           "tests/corpus/fs-filehandle-data-options.ts",
+          "tests/corpus/fs-filehandle-lines.ts",
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
@@ -47202,11 +47203,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.createReadStream",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47229,11 +47231,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.createWriteStream",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47464,11 +47467,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.readLines",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47790,10 +47794,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"

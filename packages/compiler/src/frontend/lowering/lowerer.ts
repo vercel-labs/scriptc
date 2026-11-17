@@ -9366,9 +9366,15 @@ export class Lowerer {
         ts.getSourceFileOfNode(nsImport),
         importDecl.moduleSpecifier,
       );
-      return dep !== null && isCjsJsFile(dep, this.program) && cjsNamespaceModule(this, dep)
-        ? dep
-        : null;
+      if (dep === null || !isCjsJsFile(dep, this.program) || !cjsNamespaceModule(this, dep))
+        return null;
+      // Node's ESM namespace keeps the values its exports had when the
+      // module finished evaluating. A member a function assigns later is
+      // not one of them (the namespace-import read refuses it by name), so
+      // such a module keeps the namespace path; a require() of the same
+      // module still reads the live table.
+      const { assignedLater } = this.cjsNamespaceOf(dep);
+      return assignedLater === "all" || assignedLater.size > 0 ? null : dep;
     }
     const decl = decls.find(ts.isImportClause) ?? decls[0];
     if (!decl) return null;

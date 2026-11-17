@@ -22,5 +22,11 @@ try {
 } catch (err) {
   console.log(err.message);
 }
+var receiver = "unset";
+console.log(task.run(function () {
+  "use strict";
+  receiver = this;
+  return this === undefined;
+}), receiver);
 var instance = new console.Console(process.stdout);
 console.log(typeof instance.createTask);

@@ -74,7 +74,12 @@ static ScrDyn *scr_console_task_run(ScrClosure *closure, ScrDyn *const *args, si
     scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
     return NULL;
   }
-  return scr_dyn_call(args[0], NULL, 0, "the console task's callback");
+  /* Node calls the callback as a plain call: `this` is undefined, not the
+   * task the method was read from. */
+  scr_dyn_this_push_dyn(scr_dyn_undefined());
+  ScrDyn *result = scr_dyn_call(args[0], NULL, 0, "the console task's callback");
+  scr_dyn_this_pop();
+  return result;
 }
 
 static ScrDyn *scr_console_create_task(ScrDyn *const *args, size_t argc) {

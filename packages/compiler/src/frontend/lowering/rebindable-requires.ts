@@ -70,3 +70,29 @@ export function reboundRequireBindingOf(
     ?.declarations.find(ts.isVariableDeclaration);
   return decl !== undefined && isRebindableRequireDecl(lowerer, decl) ? expr : null;
 }
+
+/** Whether `node` reads a value out of a require binding the file
+ * reassigns: the binding itself, a member read through it at any depth, or
+ * a call/new whose callee is one. The checker types those expressions from
+ * the module the declaration originally required, but the program's own
+ * storage answers the read, so their value is `any`. */
+export function readsReboundRequireValue(lowerer: Lowerer, node: ts.Node): boolean {
+  let current: ts.Node = node;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isPropertyAccessExpression(current) ||
+      ts.isElementAccessExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    if (ts.isCallExpression(current) || ts.isNewExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    break;
+  }
+  return ts.isIdentifier(current) && reboundRequireBindingOf(lowerer, current) !== null;
+}

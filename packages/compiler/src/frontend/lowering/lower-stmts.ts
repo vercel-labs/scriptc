@@ -17442,7 +17442,9 @@ function requireReboundValue(
     const whole = wholeExportValue(lowerer, dep, decl);
     if (whole !== null) return lowerer.coerceInto(decl, whole, DYN);
   }
-  const nsType = lowerer.mapTypeOf(lowerer.typeOf(name));
+  // The raw checker type: typeOf answers `any` for the binding's reads
+  // (rebindable-requires.ts), while the box needs the module's identity.
+  const nsType = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(name));
   if (nsType?.kind === "moduleNs") {
     const ns = {
       kind: "moduleNsRef" as const,

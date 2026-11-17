@@ -41,3 +41,15 @@ function label(name) {
 console.log(typeof pathModule.join, label("/a/b.txt"));
 pathModule = { join: function () { return "joined"; } };
 console.log(typeof pathModule.join, typeof pathModule.sep, pathModule.join());
+
+// A call through a reassigned binding answers the replacement's value: the
+// checker's type for the original module must not leak into declarations,
+// returns, or typeof of a member the box does not serve.
+var fsModule = require("node:fs");
+console.log(typeof fsModule.readFileSync);
+fsModule = { readFileSync: function (p) { return "read " + p; } };
+function readVia() {
+  return fsModule.readFileSync("/corpus");
+}
+var readHeld = fsModule.readFileSync("/held");
+console.log(readVia(), typeof readHeld, readHeld, typeof fsModule.statSync);

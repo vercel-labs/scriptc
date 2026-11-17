@@ -59,29 +59,58 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
   return withCycleBindingRead(lowerer, expr.expression, lowerTypeofAnswer(lowerer, expr, loc), loc);
 }
 
-function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
+function lowerTypeofAnswer(
+  lowerer: Lowerer,
+  expr: ts.TypeOfExpression,
+  loc: SrcLoc,
+  skipRebound = false,
+): IrExpr {
   // A `require()` binding the file REASSIGNS no longer holds the module
   // (rebindable-requires.ts): the program's own storage answers every
   // read of it and of its members, so typeof must read the value. The
   // static folds below describe the module the declaration originally
   // required, and the read has no effects to lose. A builtin module's
   // boxed value serves the members the lowering tables give a value form;
-  // an unserved one reads undefined there, so its answer stays with the
-  // static tables below.
-  {
+  // for an unserved member the box answers undefined, so the static
+  // answer applies exactly while the storage still holds the ORIGINAL
+  // module object and any replacement answers for itself.
+  if (!skipRebound) {
     let operand = expr.expression;
     while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
     const member = ts.isPropertyAccessExpression(operand) ? operand : null;
     const target = member === null ? operand : withoutParentheses(member.expression);
     const binding = reboundRequireBindingOf(lowerer, target);
     if (binding !== null) {
-      let answered = true;
-      if (member !== null && ts.isIdentifier(member.name)) {
-        const nsType = lowerer.mapTypeOf(lowerer.typeOf(binding));
-        if (nsType?.kind === "moduleNs" && nsType.moduleId.startsWith("builtin:"))
-          answered = builtinNamespaceBoxServes(lowerer, nsType.moduleId, member.name.text, loc);
-      }
-      if (answered) {
+      // The raw checker type: typeOf answers `any` for the binding's
+      // reads, while this needs the module the declaration required.
+      const nsType = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(binding));
+      const builtinNs = nsType?.kind === "moduleNs" && nsType.moduleId.startsWith("builtin:");
+      const unserved =
+        builtinNs &&
+        member !== null &&
+        ts.isIdentifier(member.name) &&
+        !builtinNamespaceBoxServes(lowerer, nsType.moduleId, member.name.text, loc);
+      if (unserved && nsType?.kind === "moduleNs" && member !== null) {
+        const box = lowerer.moduleNamespaceDyn({
+          kind: "moduleNsRef",
+          moduleId: nsType.moduleId,
+          type: nsType,
+          loc,
+        });
+        const stored = lowerer.lowerExpr(target);
+        if (box !== null && stored.type.kind === "dyn") {
+          const value = lowerer.lowerExpr(member);
+          if (value.type.kind === "dyn")
+            return {
+              kind: "ternary",
+              cond: { kind: "dynScalarEq", left: box, right: stored, type: BOOL, loc },
+              then: lowerTypeofAnswer(lowerer, expr, loc, true),
+              else_: { kind: "libCall", fn: "dyn.typeof", args: [value], type: STRING, loc },
+              type: STRING,
+              loc,
+            };
+        }
+      } else {
         const value = lowerer.lowerExpr(expr.expression);
         if (value.type.kind === "dyn")
           return { kind: "libCall", fn: "dyn.typeof", args: [value], type: STRING, loc };
@@ -264,7 +293,14 @@ function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: Src
       // `snapshot` of node:test as callable, and Node has an object there.
       const member = lowerer.builtinMemberOf(tested);
       const kind = member === null ? undefined : nodeModuleMemberKind(member.module, member.member);
-      const t = lowerer.typeOf(tested);
+      // A member read through a require binding the file reassigns types as
+      // unchecked `any` in lowering, but this fold describes the module the
+      // declaration required, so the checker's member type answers it.
+      const t =
+        ts.isIdentifier(tested.expression) &&
+        reboundRequireBindingOf(lowerer, tested.expression) !== null
+          ? lowerer.checker.getTypeAtLocation(tested)
+          : lowerer.typeOf(tested);
       if (
         kind !== undefined && kind !== null
           ? kind.kind === "function"

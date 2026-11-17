@@ -145,7 +145,11 @@ import {
 } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
-import { isRebindableRequireDecl, reboundRequireBindingOf } from "./rebindable-requires.js";
+import {
+  isRebindableRequireDecl,
+  readsReboundRequireValue,
+  reboundRequireBindingOf,
+} from "./rebindable-requires.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
@@ -16907,6 +16911,31 @@ export class Lowerer {
       if (inferred) return inferred;
     }
     if (this.anySymbols.size > 0 && this.readsAnySymbol(node)) return this.checker.getAnyType();
+    // A value read out of a require binding the file reassigns — the
+    // binding itself, a member read through it, or a call/new through one —
+    // holds whatever the program stored. The checker types it from the
+    // module the declaration originally required, which is not its type
+    // (rebindable-requires.ts).
+    if (
+      this.rebindableRequireDecls.size > 0 &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      readsReboundRequireValue(this, node)
+    )
+      return this.checker.getAnyType();
+    // A binding initialized from such a read (and every use of it) holds
+    // the read's value, not the type the checker inferred through the
+    // original module.
+    if (
+      this.rebindableRequireDecls.size > 0 &&
+      ts.isIdentifier(node) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node))
+    ) {
+      const decl = this.checker
+        .getSymbolAtLocation(node)
+        ?.declarations.find(ts.isVariableDeclaration);
+      if (decl?.initializer !== undefined && readsReboundRequireValue(this, decl.initializer))
+        return this.checker.getAnyType();
+    }
     // A checked-dynamic argument that another overload could take at run
     // time leaves the resolved overload's return a guess, and JS bindings
     // initialized with that result hold whatever it was.

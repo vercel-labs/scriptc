@@ -1269,6 +1269,26 @@ static ScrStr *scr_test_failure_message(const ScrTestCtx *t) {
        err->retain_fn == scr_dyn_retain_v)) {
     ScrDyn *value = scr_caught_to_dyn(err);
     ScrStr *msg = scr_insp_dyn(value, 0, 2);
+    if (scr_exc_pending()) {
+      /* The value's custom inspector threw. The render happens on the runner
+       * fiber, so the exception must not stay pending (it would fail the
+       * tests that follow); Node inspects again with the custom inspector
+       * off, which prints the value's own shape. */
+      scr_exc_clear();
+      /* Node's wrapper message renders a non-Error with the custom inspector
+       * off and every property on one line (inspectWithNoCustomRetry), so the
+       * fallback text keeps that layout. */
+      bool previous = scr_insp_custom_inspect(false);
+      scr_insp_layout(INFINITY, INFINITY, false, 100);
+      msg = scr_insp_dyn(value, 0, 2);
+      scr_insp_layout(80, 3, false, 100);
+      scr_insp_custom_inspect(previous);
+      if (scr_exc_pending()) {
+        scr_exc_clear();
+        scr_str_release(msg);
+        msg = NULL;
+      }
+    }
     scr_dyn_release(value);
     return msg;
   }

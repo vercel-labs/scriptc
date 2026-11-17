@@ -808,7 +808,10 @@ function isBindOptionsArgument(lowerer: Lowerer, node: ts.Expression): boolean {
   /* A JavaScript call's first argument is untyped: Node's normalizeArgs
    * decides at run time (an object is the options record, a number or a
    * port string is the port), so it takes the runtime lane. */
-  return t?.kind === "dyn" || (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0;
+  return (
+    t?.kind === "dyn" ||
+    (lowerer.typeOf(node).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+  );
 }
 
 /** Method calls on dgram.Socket receivers — one entry in lower-calls.ts's
@@ -941,7 +944,11 @@ export function lowerDgramMethodCall(
       // An untyped JavaScript first argument is a port at run time, so the
       // second argument decides: a string is Node's address (bind(port,
       // address)), a function is the bind callback.
-      const firstIsDyn = lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "dyn";
+      const firstType = lowerer.typeOf(args[0]!);
+      // `any`/`unknown` map to no IR type: they are untyped just the same.
+      const firstIsDyn =
+        lowerer.mapTypeOf(firstType)?.kind === "dyn" ||
+        (firstType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
       const secondT = lowerer.mapTypeOf(lowerer.typeOf(args[1]!));
       const secondIsFn =
         ts.isArrowFunction(args[1]!) ||

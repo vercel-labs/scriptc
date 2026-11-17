@@ -10696,8 +10696,21 @@ function lowerCjsConditionalWholeExportStatement(
   if (init !== null) body.push(init);
   for (const name of target.names) {
     const g = lowerer.cjsConditionalWholeExportSlotOf(sf, name) ?? undefined;
+    if (!g) return null;
+    if (!target.ownNames.includes(name)) {
+      // A member this arm's table does not export is absent from Node's new
+      // exports object: the slot takes undefined, even when an assignment
+      // that ran earlier in the module had filled it.
+      // A checked-dynamic slot holds its own undefined; a union slot holds
+      // the undefined arm (unassignedSlotInit answers only the latter).
+      const unset =
+        g.type.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.unassignedSlotInit(g.type, loc);
+      if (unset === null) return null;
+      body.push({ kind: "assign", localId: g.id, value: unset, loc });
+      continue;
+    }
     const value = cjsExportValueByName(lowerer, target.req.dep, name, expr);
-    if (!g || value === null) return null;
+    if (value === null) return null;
     body.push({
       kind: "assign",
       localId: g.id,
@@ -16493,6 +16506,12 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
     stdlibGlobalNameOf(lowerer, stmt.expression) === "globalThis"
       ? { kind: "libCall", fn: "global.forInObject", args: [], type: DYN, loc }
       : lowerer.lowerExpr(stmt.expression);
+  // An admitted TS2407 site: the checker typed the right side from the
+  // value the program last stored in it, not from what it holds (React's
+  // `for (propName in ((childrenLength = type.defaultProps), childrenLength))`
+  // is typed `number` and walks an object). Node enumerates whatever value
+  // arrives, which the checked-dynamic walk answers exactly.
+  if (lowerer.opinionAt(stmt.expression, 2407)) receiver = lowerer.coerceToExpected(receiver, DYN);
   if (receiver.type.kind === "object") {
     const info = lowerer.classes.get(receiver.type.className);
     let root = info;

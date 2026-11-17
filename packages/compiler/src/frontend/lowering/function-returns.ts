@@ -268,6 +268,19 @@ export function declaredReturnType(
   blame: ts.Node,
 ): IrType {
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && ts.isGetAccessorDeclaration(decl)) return DYN;
+  // A JavaScript function that returns a binding a for-in head writes a key
+  // into (analyzeJsForInKeyBindings) answers the key string Node stored;
+  // the checker typed the return from the binding's declaration, so
+  // converting the returned value back to it would throw. An async function
+  // resolves that value. (A generator's result channel keeps the checker's
+  // generator shape, which its consumers are typed against; the prepass
+  // does not record one.)
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && lowerer.jsWidenedReturnDecls.has(decl)) {
+    const isAsync =
+      decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) ===
+      true;
+    return isAsync ? { kind: "promise", inner: DYN } : DYN;
+  }
   // A JavaScript body that returns a call of a function declaration the
   // program reassigns answers whatever that binding held, so the checker's
   // inference from the declaration's own signature cannot settle the result.

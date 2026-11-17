@@ -320,6 +320,22 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   if (stage) return { type: stage, mode: "required" };
   if (isJsSourceFile(ts.getSourceFileOfNode(param)) && ts.isSetAccessorDeclaration(param.parent))
     return { type: DYN, mode: "required" };
+  // A JavaScript parameter among the bindings a for-in head writes keys into
+  // (or that stores one) takes checked-dynamic storage in its slot too
+  // (analyzeJsForInKeyBindings, analyzeJsWidenedBindings): the loop writes the
+  // key through the parameter, and a caller passes whatever Node passes.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !param.dotDotDotToken &&
+    ts.isIdentifier(param.name)
+  ) {
+    const symbol = lowerer.resolveValueSymbol(param.name);
+    const widened = symbol === null ? undefined : lowerer.runtimeOptionalBindingTypes.get(symbol);
+    if (widened?.kind === "dyn")
+      return param.initializer !== undefined
+        ? { type: DYN, mode: "omittable", bodyType: DYN }
+        : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
+  }
 
   // A member of a mismatched JavaScript override family (a JavaScript
   // method whose signature differs from its base's): the slot and every

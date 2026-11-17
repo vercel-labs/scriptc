@@ -2151,9 +2151,15 @@ void scr_clear_interval(double handle) {
 #endif
   ScrTimer *found = scr_timer_find(id);
   if (found) {
-    scr_async_fire_cancel(found->async_ids);
-    scr_closure_release(found->cb);
+    /* Take the entry out of the heap BEFORE the destroy hook runs. The hook
+     * is program code: queueing timers or immediates here reallocates or
+     * reorders this storage, so neither the entry pointer nor its heap index
+     * survives the call. Its owned fields move to locals first. */
+    ScrClosure *cb = found->cb;
+    ScrAsyncIds *async_ids = found->async_ids;
     scr_timer_remove_at((size_t)(found - scr_timers));
+    scr_async_fire_cancel(async_ids);
+    scr_closure_release(cb);
   }
 }
 
@@ -2229,15 +2235,20 @@ void scr_clear_immediate(double handle) {
 #endif
   ScrImmediate *im = scr_immediate_find((unsigned long)handle);
   if (im == NULL) return; /* already fired/cleared: no-op, like Node */
-  scr_async_fire_cancel(im->async_ids);
-  im->async_ids = NULL;
-  scr_closure_release(im->cb);
+  /* The slot is cleared before the destroy hook runs: the hook is program
+   * code, and queueing an immediate from it reallocates this array, so the
+   * entry pointer cannot survive the call. */
+  ScrClosure *cb = im->cb;
+  ScrAsyncIds *async_ids = im->async_ids;
   im->cb = NULL;
+  im->async_ids = NULL;
   if (scr_pending_immediates > 0) scr_pending_immediates--;
   if (im->reffed) {
     im->reffed = false;
     if (scr_reffed_immediates > 0) scr_reffed_immediates--;
   }
+  scr_async_fire_cancel(async_ids);
+  scr_closure_release(cb);
 }
 
 /* Immediate.unref()/ref()/hasRef(): the Timeout trio's exact story over

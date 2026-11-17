@@ -59,11 +59,13 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "crypto.checkPrimeCb",
   "crypto.generatePrimeSync",
   "crypto.generatePrimeCb",
-  // node:test's { timeout } and { concurrency } range checks.
+  // node:test's { timeout } and { concurrency } range checks, and the
+  // mock { times } integer check.
   "test.register",
   // t.error builds Node's wrapper over the failure through the inspect
   // unit's rendering, which can raise.
   "test.ctxError",
+  "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
   "test.subEmpty",
@@ -74,6 +76,11 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // the throws of the timer callbacks tick and runAll run.
   "test.ctxSnapshot",
   "test.fileSnapshot",
+  // snapshot.setDefaultSnapshotSerializers validates its list (Node's
+  // ERR_INVALID_ARG_TYPE).
+  "test.snapshotSetDefaultSerializers",
+  // The snapshot path resolver is program code and may throw.
+  "test.snapshotPath",
   "test.snapshotSerialize",
   "test.mockTimersEnable",
   "test.mockTimersTick",
@@ -396,11 +403,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resWriteHeadObject",
   "http.resSetHeader",
   "http.resSetHeaderDyn",
   "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",
+  "http.reqSignal",
   "http.clientProtocolCheck",
   "http.clientProtocolCheckAgent",
   "http.serverMaxHeaderSize",
@@ -409,6 +418,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
+  // writeInformation validates the status (ERR_OUT_OF_RANGE, and
+  // ERR_HTTP_INVALID_STATUS_CODE for 101), the state
+  // (ERR_HTTP_HEADERS_SENT) and every header name and value.
+  "http.resWriteInformation",
   "http.resWriteContinueCb",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",
@@ -419,6 +432,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resOnPrefinish",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
+  "http.serverHeadersTimeoutDefault",
+  "http.serverConnectionsCheckingInterval",
+  "http.serverRejectNonStandardBodyWrites",
   "net.sockSetEncoding",
   "net.sockSetEncodingDyn",
   // setKeepAlive's positional coercions and its object form run ToNumber
@@ -659,6 +675,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
@@ -695,6 +712,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "process.setTitleDyn",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
   "process.emitWarning",
+  // A listener the emit reaches may throw; the exception is the call's.
+  "process.emit",
+  "process.emitError",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
   // throw Node's ERR_INVALID_ARG_VALUE RangeError, catchably.
   "process.cpuPrevValidate",

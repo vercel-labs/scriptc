@@ -38,6 +38,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http.clientWritableNeedDrain",
   "http.resOnDrain",
   "http.clientOnDrain",
+  // scr_test_snapshot_set_resolve_path stores the resolver closure.
+  "test.snapshotSetResolvePath",
   "process.finalization",
   // scr_watcher_ref / scr_watcher_unref move one open watcher's loop-liveness
   // flag; a closed watcher ignores them, and nothing user-visible runs.
@@ -150,6 +152,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http2.getPackedSettings0",
   // Copies the values a name has in a string pairs array.
   "http2.pairsValues",
+  // Readable.toWeb builds the web stream over the readable's chunks; the
+  // read it starts runs later, on the promise's reaction.
+  "webstream.toWebReadable",
   // stream.getDefaultHighWaterMark reads the runtime's default for the mode:
   // no allocation, no coercion and no program code.
   "stream.getDefaultHwm",
@@ -186,6 +191,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Reads the fork channel registry and answers undefined, null or the
   // retained Control object; a plain process has no channel.
   "process.channel",
+  // The stream object a descriptor the program already holds names: a cache
+  // lookup and a retain, with no allocation, coercion or program code. The
+  // cursor methods use it to reach the same object process.stdio answers.
+  "process.stdioOf",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
   "readable.encodingName",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
@@ -297,6 +306,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_tls_sock_disable_renegotiation does nothing: the provider keeps
   // renegotiation off, which is what the call asks for.
   "tls.sockDisableRenegotiation",
+  // scr_net_server_is_tls and scr_tls_server_is_dyn read a handle's tag
+  // for `instanceof tls.Server`; no program code runs.
+  "tls.serverIs",
+  "tls.serverIsDyn",
   // scr_dgram_async_dispose allocates the promise and registers the close
   // listener; the only failure is allocation, which aborts.
   "dgram.asyncDispose",

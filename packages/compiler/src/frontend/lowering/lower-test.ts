@@ -65,7 +65,8 @@ function lowerMockTrackerMember(
   }
 }
 
-const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
+const TEST_FN_HINT =
+  "test bodies take (), (t: TestContext) or (t: TestContext, done) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
   "t.test, t.skip, t.todo, t.diagnostic, t.log, t.runOnly, t.plan, t.waitFor, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, t.filePath, t.attempt, t.passed, t.workerId, t.tags, and t.assert.* are the supported TestContext members";
 
@@ -112,6 +113,8 @@ interface TestOptions {
   timeout: IrExpr | null;
   /** The { concurrency } count (-1 for true, 1 for false), null without one. */
   concurrency: IrExpr | null;
+  /** The { signal } an AbortSignal value, null without one. */
+  signal: IrExpr | null;
   /** The non-literal option values, evaluated in source order before the
    * registration call reads them. */
   pre: IrStmt[];
@@ -128,6 +131,7 @@ const noOptions = (): TestOptions => ({
   plan: -1,
   timeout: null,
   concurrency: null,
+  signal: null,
   pre: [],
 });
 
@@ -184,8 +188,8 @@ function lowerTestOptions(
       `${what} with a non-literal options argument`,
       node,
       suite
-        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency? }"
-        : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout? }",
+        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency?, timeout?, signal? }"
+        : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout?, signal? }",
     );
   }
   const out = noOptions();
@@ -272,7 +276,17 @@ function lowerTestOptions(
           "concurrency takes the literal true/false or a number here",
         );
       }
-    } else if (name === "timeout" && !suite) {
+    } else if (name === "signal") {
+      /* The AbortSignal whose abort cancels the run; its reason is the
+       * failure, as in Node. */
+      const loc = locOf(init);
+      out.signal = optionValue(
+        lowerer,
+        out,
+        lowerer.coerceToExpected(lowerer.lowerExpr(init), DYN),
+        loc,
+      );
+    } else if (name === "timeout") {
       out.timeout = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), locOf(init));
     } else if (name === "expectFailure") {
       if (init.kind === ts.SyntaxKind.TrueKeyword) {
@@ -305,8 +319,8 @@ function lowerTestOptions(
         `${what} option '${name}'`,
         prop,
         suite
-          ? "skip, todo, only, and concurrency are the supported suite options"
-          : "skip, todo, only, concurrency, plan, and timeout are the supported options",
+          ? "skip, todo, only, concurrency, timeout and signal are the supported suite options"
+          : "skip, todo, only, concurrency, plan, timeout and signal are the supported options",
       );
     }
   }
@@ -334,18 +348,36 @@ function lowerBodyArg(
     lowerer.noLowering(`${what} whose body is not a function`, node, TEST_FN_HINT);
   }
   let flags = 0;
-  if (cb.type.params.length > (allowCtx ? 1 : 0)) {
+  const params = cb.type.params;
+  if (params.length > (allowCtx ? 2 : 0)) {
     lowerer.noLowering(
-      `${what} with ${cb.type.params.length} parameters`,
+      `${what} with ${params.length} parameters`,
       node,
       allowCtx ? TEST_FN_HINT : "hooks take no parameters",
     );
   }
-  if (cb.type.params.length === 1) {
-    if (cb.type.params[0]!.kind !== "testCtx") {
+  if (params.length >= 1) {
+    if (params[0]!.kind !== "testCtx") {
       lowerer.noLowering(`${what} whose parameter is not the TestContext`, node, TEST_FN_HINT);
     }
     flags |= 2;
+  }
+  if (params.length === 2) {
+    /* Node's callback form: the second parameter is the done callback, a
+     * function the runner settles the run with. */
+    const done = params[1]!;
+    if (
+      done.kind !== "func" ||
+      done.params.length > 1 ||
+      !(done.ret.kind === "void" || isUnitType(done.ret))
+    ) {
+      lowerer.noLowering(
+        `${what} whose second parameter is not the done callback`,
+        node,
+        TEST_FN_HINT,
+      );
+    }
+    flags |= 128;
   }
   const ret = cb.type.ret;
   if (ret.kind === "promise") {
@@ -513,14 +545,31 @@ function lowerRegistration(
         ? {
             kind: "libCall",
             fn: "test.subEmpty",
-            args: [sub, name, mode, msg, emptyFlags, at, ...planTimeout],
+            args: [
+              sub,
+              name,
+              mode,
+              msg,
+              emptyFlags,
+              at,
+              ...planTimeout,
+              opts.signal ?? dynUndefinedExpr(loc),
+            ],
             type: VOID,
             loc,
           }
         : {
             kind: "libCall",
             fn: "test.registerEmpty",
-            args: [name, mode, msg, emptyFlags, at, ...planTimeout],
+            args: [
+              name,
+              mode,
+              msg,
+              emptyFlags,
+              at,
+              ...planTimeout,
+              opts.signal ?? dynUndefinedExpr(loc),
+            ],
             type: VOID,
             loc,
           },
@@ -536,7 +585,17 @@ function lowerRegistration(
       {
         kind: "libCall",
         fn: "test.sub",
-        args: [sub, name, mode, msg, cb, flagsLit, at, ...planTimeout],
+        args: [
+          sub,
+          name,
+          mode,
+          msg,
+          cb,
+          flagsLit,
+          at,
+          ...planTimeout,
+          opts.signal ?? dynUndefinedExpr(loc),
+        ],
         type: promiseVoid,
         loc,
       },
@@ -548,7 +607,16 @@ function lowerRegistration(
     {
       kind: "libCall",
       fn: "test.register",
-      args: [name, mode, msg, cb, flagsLit, at, ...planTimeout],
+      args: [
+        name,
+        mode,
+        msg,
+        cb,
+        flagsLit,
+        at,
+        ...planTimeout,
+        opts.signal ?? dynUndefinedExpr(loc),
+      ],
       type: VOID,
       loc,
     },
@@ -616,7 +684,17 @@ function lowerSuite(
     {
       kind: "libCall",
       fn: "test.suite",
-      args: [name, mode, msg, cb, at, flags, opts.concurrency ?? numLit(0, loc)],
+      args: [
+        name,
+        mode,
+        msg,
+        cb,
+        at,
+        flags,
+        opts.concurrency ?? numLit(0, loc),
+        opts.timeout ?? numLit(0, loc),
+        opts.signal ?? dynUndefinedExpr(loc),
+      ],
       type: VOID,
       loc,
     },
@@ -709,6 +787,73 @@ export function lowerNodeTestModuleCall(
         "the programmatic runner has no lowering — run tests by executing the compiled binary",
       );
       break;
+    case "snapshot.setDefaultSnapshotSerializers": {
+      requireStatementPosition(lowerer, expr, "snapshot.setDefaultSnapshotSerializers(...)");
+      const first = expr.arguments.nodes[0];
+      if (
+        expr.arguments.nodes.length !== 1 ||
+        first === undefined ||
+        !ts.isArrayLiteralExpression(first)
+      ) {
+        lowerer.noLowering(
+          "snapshot.setDefaultSnapshotSerializers with these arguments",
+          expr,
+          "the supported form is snapshot.setDefaultSnapshotSerializers([(value) => ...])",
+        );
+      }
+      const list = first as ts.ArrayLiteralExpression;
+      const fns = list.elements.nodes.map((element) => {
+        if (ts.isSpreadElement(element))
+          lowerer.noLowering(
+            "snapshot.setDefaultSnapshotSerializers with a spread serializer",
+            element,
+            "list each serializer explicitly",
+          );
+        return lowerer.lowerExprExpecting(element, DYN);
+      });
+      return {
+        kind: "libCall",
+        fn: "test.snapshotSetDefaultSerializers",
+        args: [{ kind: "dynArrLit", elems: fns, type: DYN, loc }],
+        type: VOID,
+        loc,
+      };
+    }
+    case "snapshot.setResolveSnapshotPath": {
+      requireStatementPosition(lowerer, expr, "snapshot.setResolveSnapshotPath(...)");
+      const fn = expr.arguments.nodes[0];
+      if (
+        expr.arguments.nodes.length !== 1 ||
+        fn === undefined ||
+        lowerer.checker.getCallSignatures(lowerer.typeOf(fn)).length === 0
+      ) {
+        lowerer.noLowering(
+          "snapshot.setResolveSnapshotPath with these arguments",
+          expr,
+          "the supported form is snapshot.setResolveSnapshotPath((path: string) => string)",
+        );
+      }
+      const value = lowerer.lowerExpr(fn as ts.Expression);
+      if (
+        value.type.kind !== "func" ||
+        value.type.params.length !== 1 ||
+        value.type.params[0]!.kind !== "string" ||
+        value.type.ret.kind !== "string"
+      ) {
+        lowerer.noLowering(
+          "snapshot.setResolveSnapshotPath of this function type",
+          fn as ts.Expression,
+          "the resolver takes the test file's path string and returns the snapshot file's path string",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "test.snapshotSetResolvePath",
+        args: [value],
+        type: VOID,
+        loc,
+      };
+    }
     case "snapshot":
       lowerer.noLowering(
         "test.snapshot",
@@ -832,6 +977,19 @@ function lowerSnapshotAssert(
   if (call.arguments.nodes.length > (member === "snapshot" ? 2 : 3)) {
     lowerer.noLowering(`${what} with ${call.arguments.nodes.length} arguments`, call);
   }
+  /* Node resolves the snapshot file before it serializes the value: the
+   * resolver runs first, and its throw wins over anything the value's
+   * serializers would do. */
+  const resolvedPath =
+    member === "snapshot"
+      ? slot("%snapshotPath", STRING, {
+          kind: "libCall",
+          fn: "test.snapshotPath",
+          args: [strLit(lowerer.entry.fileName, loc)],
+          type: STRING,
+          loc,
+        })
+      : null;
   const text: IrExpr = {
     kind: "toString",
     operand: {
@@ -861,7 +1019,7 @@ function lowerSnapshotAssert(
       ? {
           kind: "libCall",
           fn: "test.ctxSnapshot",
-          args: [t, actual, strLit(`${lowerer.entry.fileName}.snapshot`, loc)],
+          args: [t, actual, resolvedPath!],
           type: STRING,
           loc,
         }
@@ -1320,11 +1478,13 @@ export function lowerTestMethodCall(
     }
     // The data payload rides the test:log event only, so the reporter prints
     // the message alone; it is still evaluated for its side effects, after
-    // the message, as the arguments evaluate in source order.
+    // the message, as the arguments evaluate in source order. It lowers as a
+    // discarded expression statement, so a bare `null`/`undefined` payload
+    // is a no-op instead of a bare unit literal the IR has no value for.
     const pre: IrStmt[] = [];
     const msgSlot = lowerer.declareHiddenLocal("%logMessage", STRING);
     pre.push({ kind: "varDecl", localId: msgSlot.id, init: msg, loc });
-    pre.push({ kind: "exprStmt", expr: lowerer.lowerExpr(data), loc });
+    pre.push(lowerer.lowerExprStatement(data));
     return {
       kind: "seqExpr",
       stmts: pre,

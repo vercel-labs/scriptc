@@ -23,9 +23,12 @@
  * t.diagnostic, and t.assert. mock/run/snapshot are DECLARED so real
  * suites typecheck but fence at their use sites (no lowering). */
 declare module "node:test" {
-  type TestFn = (t: TestContext) => void | Promise<void>;
+  /* Node's callback form: a test or hook that takes (context, done) finishes
+   * when it calls done. */
+  type DoneFn = (result?: unknown) => void;
+  type TestFn = (t: TestContext, done: DoneFn) => void | Promise<void>;
   type SuiteFn = (s: SuiteContext) => void;
-  type HookFn = (c: TestContext | SuiteContext) => void | Promise<void>;
+  type HookFn = (c: TestContext | SuiteContext, done: DoneFn) => void | Promise<void>;
   /* The describe/suite callback's context, and the before/after hook
    * context of a suite. */
   interface SuiteContext {
@@ -47,6 +50,9 @@ declare module "node:test" {
     only?: boolean;
     concurrency?: number | boolean;
     timeout?: number;
+    /* Aborts the run: the test (or the suite and the tests in it) is
+     * cancelled with the signal's reason. */
+    signal?: AbortSignal;
     plan?: number;
     /* The test passes only if it throws; a reason string behaves as true.
      * Node's matcher forms (RegExp, function, object, Error, { label, match })
@@ -194,9 +200,20 @@ declare module "node:test" {
   }[keyof T];
   interface MockTracker {
     fn<F extends Function = (...args: any[]) => undefined>(original?: F): Mock<F>;
+    /* The { times } option: the implementation serves that many calls and
+     * the next one runs the original. */
+    fn<F extends Function = (...args: any[]) => undefined>(
+      original: F | undefined,
+      options: MockFunctionOptions,
+    ): Mock<F>;
     fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
       original?: F,
       implementation?: Implementation,
+    ): Mock<F | Implementation>;
+    fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
+      original: F | undefined,
+      implementation: Implementation | undefined,
+      options: MockFunctionOptions,
     ): Mock<F | Implementation>;
     method<MockedObject extends object, MethodName extends FunctionPropertyNames<MockedObject>>(
       object: MockedObject,
@@ -240,7 +257,14 @@ declare module "node:test" {
    * `const { assert } = require('node:test')`), not TestContext.assert. */
   const assert: { register(name: string, fn: (...args: unknown[]) => unknown): void };
   function run(options?: unknown): unknown;
-  function snapshot(...args: unknown[]): unknown;
+  /* The module-level snapshot registry: setDefaultSnapshotSerializers
+   * covers the list every snapshot assertion without its own serializers
+   * uses, as Node's serializer chain does. setResolveSnapshotPath has no
+   * lowering yet. */
+  const snapshot: {
+    setDefaultSnapshotSerializers(serializers: ReadonlyArray<(value: any) => any>): void;
+    setResolveSnapshotPath(fn: (path: string) => string): void;
+  };
   export {
     test,
     it,

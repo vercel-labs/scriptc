@@ -143,3 +143,20 @@ named.subscribe({
 const returned = named.traceSync(() => 41 + 1, { step: 'one' });
 console.log('traceSync:', returned, '|', events.join(' '));
 setImmediate(() => console.log('immediates run'));
+
+// A collection with an absent member is refused before any handle exists:
+// the missing event reads as undefined, which the collection check refuses
+// (later reads must never see an invalid handle for it).
+const absentEvents = dc.channel('audit:absent');
+const partialChannels = {
+  start: absentEvents,
+  end: absentEvents,
+  asyncStart: absentEvents,
+  asyncEnd: absentEvents,
+};
+try {
+  dc.tracingChannel(partialChannels);
+  console.log('absent member accepted');
+} catch (error) {
+  console.log('absent member refused:', error.constructor.name, error.code, error.message);
+}

@@ -534,9 +534,18 @@ static bool dc_handle_valid(double h);
  * naming a registered channel is one; a missing member answers the object
  * conversion TypeError Node's destructuring raises first. */
 static double dc_tracing_from_collection(ScrDyn *name) {
+  double h[5];
   for (size_t i = 0; i < 5; i++) {
     ScrDyn *v = scr_dyn_obj_get(name, dc_trace_events[i], strlen(dc_trace_events[i]));
-    if (v == NULL) return NAN; /* the read threw */
+    if (v == NULL) {
+      if (scr_exc_pending()) return NAN; /* the read threw */
+      /* An absent member reads as undefined, which the collection check
+       * refuses (Node's check runs before any handle exists); returning
+       * an unset NaN here would hand the program an invalid handle. */
+      static const char message[] = "Cannot convert undefined or null to object";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NAN;
+    }
     if (v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_NULL) {
       static const char message[] = "Cannot convert undefined or null to object";
       scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -548,11 +557,8 @@ static double dc_tracing_from_collection(ScrDyn *name) {
       dc_throw_arg_type("an instance of Channel", member, v);
       return NAN;
     }
-  }
-  double h[5];
-  for (size_t i = 0; i < 5; i++) {
-    ScrDyn *v = scr_dyn_obj_get(name, dc_trace_events[i], strlen(dc_trace_events[i]));
-    if (v == NULL) return NAN;
+    /* One read per member: the value is taken here, so a getter that
+     * changes the object between reads cannot substitute a handle. */
     h[i] = v->v.num;
   }
   return scr_dc_tracing_channel_of(h[0], h[1], h[2], h[3], h[4]);

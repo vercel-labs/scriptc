@@ -1,5 +1,18 @@
 import type { Element } from "#jsx/jsx-runtime";
 
+// A project's own type names shadow the standard library's; the generated
+// constraints use names the file does not declare.
+type Parameters<T> = [T];
+type Partial<T> = { wrapped: T };
+type NonNullable<T> = T;
+type InstanceType<T> = T;
+export type ShadowedUtilities = [
+  Parameters<number>,
+  Partial<string>,
+  NonNullable<boolean>,
+  InstanceType<object>,
+];
+
 export function render(value: unknown): string {
   if (value === null || value === undefined || typeof value === "boolean") return "";
   if (typeof value === "string" || typeof value === "number") return String(value);
@@ -36,6 +49,40 @@ function Row(props: RowProps): Element {
 
 function Slot(props: { children: (index: number) => Element }): Element {
   return <div id="slot">{props.children(3)}</div>;
+}
+
+interface LeftEvent {
+  left: number;
+}
+interface RightEvent {
+  right: string;
+}
+type ChoiceProps =
+  | { kind: "left"; onPick?: (event: LeftEvent) => void }
+  | { kind: "right"; onPick?: (event: RightEvent) => void };
+
+function Choice(props: ChoiceProps): Element {
+  if (props.kind === "left") props.onPick?.({ left: 4 });
+  else props.onPick?.({ right: "R" });
+  return <span id={`choice-${props.kind}`} />;
+}
+
+interface First {
+  one: number;
+}
+interface Second {
+  two: string;
+}
+
+function Pair(props: { children: [(event: First) => void, (event: Second) => void] }): Element {
+  props.children[0]({ one: 1 });
+  props.children[1]({ two: "two" });
+  return <div id="pair" />;
+}
+
+function Many(props: { children: ((event: First) => void)[] }): Element {
+  for (const child of props.children) child({ one: 2 });
+  return <div id="many" />;
 }
 
 export function drive(): string[] {
@@ -85,6 +132,21 @@ export function drive(): string[] {
 
   const slot = <Slot>{(index) => <span id={`slot-${index}`}>{index * 2}</span>}</Slot>;
 
+  const left = <Choice kind="left" onPick={(event) => log.push(`left:${event.left}`)} />;
+  const right = <Choice kind="right" onPick={(event) => log.push(`right:${event.right}`)} />;
+  const pair = (
+    <Pair>
+      {(event) => log.push(`pair0:${event.one}`)}
+      {(event) => log.push(`pair1:${event.two}`)}
+    </Pair>
+  );
+  const many = (
+    <Many>
+      {(event) => log.push(`many0:${event.one}`)}
+      {(event) => log.push(`many1:${event.one + 1}`)}
+    </Many>
+  );
+
   const list = (
     <ul>
       {["ada", "lin"].map((name, index) => (
@@ -95,7 +157,22 @@ export function drive(): string[] {
     </ul>
   );
 
-  const elements = [button, destructured, focus, component, nested, spread, conditional, annotatedRow, slot, list];
+  const elements = [
+    button,
+    destructured,
+    focus,
+    component,
+    nested,
+    spread,
+    conditional,
+    annotatedRow,
+    slot,
+    list,
+    left,
+    right,
+    pair,
+    many,
+  ];
   const markup = elements.map(render);
   return [...markup, ...log];
 }

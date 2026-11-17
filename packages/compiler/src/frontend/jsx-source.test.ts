@@ -287,9 +287,10 @@ describe("lowerJsx keeps JSX slot contextual types", () => {
     expect(lowered).toContain(`config: (({ onOpen: (depth) => depth }) as Ctx)`);
   });
 
-  it("constrains a spread attribute's object with Partial of the attributes type", () => {
+  it("constrains a spread attribute's object with the slot's constraint", () => {
     const lowered = rewriteWithContext(`export const a = <button {...{ onClick: (e) => e }} />;\n`);
-    expect(lowered).toContain(`...(({ onClick: (e) => e }) as Partial<Ctx>)`);
+    // The constraint itself accounts for a spread's partial props.
+    expect(lowered).toContain(`...(({ onClick: (e) => e }) as Ctx)`);
     // A spread of a binding gets its type where it is declared: unchanged.
     const named = rewriteWithContext(
       `const p = { onClick: (e) => e }; export const a = <button {...p} />;\n`,
@@ -334,5 +335,33 @@ describe("lowerJsx keeps JSX slot contextual types", () => {
     expect(need(`<a b={{ c: { d: (x) => x } }} />;`)).toBe(true);
     expect(need(`<a b={(x = (y) => y) => x} />;`)).toBe(true);
     expect(need(`<a b={(x = 1) => x} />;`)).toBe(false);
+  });
+});
+
+describe("lowerJsx type helpers", () => {
+  it("declares the helpers it uses with names the file does not use", () => {
+    const source = `const __jsx_known = 1; const __jsx_props = 2; export const a = <button onClick={(e) => e} />;\n`;
+    const sf = parseSourceFile("/case.tsx", source, "tsx");
+    const plan = jsxEmitPlan({ jsx: "react-jsx" }, jsxPragmas(""));
+    const text = lowerJsx(sf, plan, (expression, helpers) =>
+      jsxSlotNeedsContext(expression)
+        ? `${helpers.known()}<${helpers.props()}<typeof X>>["a"]`
+        : undefined,
+    ).text;
+    expect(text).toContain(`type __jsx_known_1<T> = T extends null | undefined ? never : T;`);
+    expect(text).toContain(`type __jsx_props_1<T> =`);
+    expect(text).toContain(`__jsx_known_1<__jsx_props_1<typeof X>>["a"]`);
+    expect(text.split("\n").length).toBe(source.split("\n").length);
+  });
+
+  it("declares no helper a file's slots do not use", () => {
+    const source = `export const a = <button onClick={(e) => e} />;\n`;
+    const sf = parseSourceFile("/case.tsx", source, "tsx");
+    const plan = jsxEmitPlan({ jsx: "react-jsx" }, jsxPragmas(""));
+    const text = lowerJsx(sf, plan, (expression, helpers) =>
+      jsxSlotNeedsContext(expression) ? `${helpers.partial()}<Ctx>` : undefined,
+    ).text;
+    expect(text).toContain(`type __jsx_partial<T> = { [K in keyof T]?: T[K] };`);
+    expect(text).not.toContain("__jsx_props");
   });
 });

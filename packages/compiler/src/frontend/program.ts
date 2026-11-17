@@ -223,6 +223,7 @@ import {
   jsxSlotNeedsContext,
   lowerJsx,
   type JsxContextTypes,
+  type JsxTypeHelpers,
   type LoweredJsx,
 } from "./jsx-source.js";
 
@@ -1490,27 +1491,40 @@ function lowerProgramJsx7(
   return { sources, refusal: null };
 }
 
-/** The contextual type text of a JSX slot expression that the rewrite must
- * keep typing in a TypeScript file, or undefined. A TypeScript file's
- * implicit-any report stops the build; a JavaScript file admits it (the
- * JS_OPINIONS rows), so it keeps the lowering it had. For a component, the
- * slot type is read through the tag (`Parameters<typeof Button>[0]["onPick"]`),
- * which names a module-private prop type the site cannot spell; elsewhere it
- * is printed with fully qualified names
+/** The constraint the rewrite places on a JSX slot expression that needs
+ * one, or undefined. A TypeScript file's implicit-any report stops the
+ * build; a JavaScript file admits it (the JS_OPINIONS rows), so it keeps the
+ * lowering it had. A component's slot is read through the component's own
+ * props type, which names a module-private prop type the site cannot spell;
+ * elsewhere the slot's contextual type is printed with fully qualified names
  * (`import("react").MouseEventHandler<HTMLButtonElement>`) so the text reads
- * the same from the rewritten file. The checker is asked only for the sites
- * whose functions need it, and is built on the first such site. */
+ * the same from the rewritten file. A spread is constrained to the partial
+ * props type, since the element's other attributes supply the rest. The
+ * checker is asked only for the sites whose functions need it, and is built
+ * on the first such site. */
 function jsxContextTypes7(program: ts.Program): JsxContextTypes {
   let checker: ReturnType<ts.Program["getTypeChecker"]> | null = null;
   const cached = new WeakMap<ts.Expression, string | undefined>();
-  return (expression) => {
+  return (expression, helpers) => {
     if (!/\.[mc]?tsx$/i.test(expression.getSourceFile().fileName)) return undefined;
     if (cached.has(expression)) return cached.get(expression);
     let text: string | undefined;
     if (jsxSlotNeedsContext(expression)) {
       try {
         checker ??= program.getTypeChecker();
-        text = jsxElementSlotText7(checker, expression) ?? jsxContextTypeText7(checker, expression);
+        const slot = jsxSlot7(expression);
+        text = slot === null ? undefined : jsxElementSlotText7(checker, slot, helpers);
+        if (text === undefined) {
+          const contextual = jsxContextTypeText7(checker, expression);
+          // A spread supplies only the props its object has: the element's
+          // other attributes supply the rest.
+          text =
+            contextual === undefined
+              ? undefined
+              : slot !== null && slot.name === null
+                ? `${helpers.partial()}<${contextual}>`
+                : contextual;
+        }
       } catch {
         text = undefined;
       }
@@ -1520,55 +1534,154 @@ function jsxContextTypes7(program: ts.Program): JsxContextTypes {
   };
 }
 
-/** The slot's type read from the element: the props member the expression
- * fills, or the props type for a spread. Reading it through the tag keeps a
- * type whose name the site cannot see (a component's module-private prop
- * type) usable, because the indexed access resolves where the component is
- * declared. Undefined for an intrinsic tag, a tag that is not an entity name,
- * a `key` or `ref` (which come from JSX's intrinsic attributes rather than
- * the props type), and a generic component whose props the JSX site
- * instantiates (the printed contextual type has those arguments). */
+type JsxChecker = ReturnType<ts.Program["getTypeChecker"]>;
+
+/** The slot's constraint read from the element: the props member the
+ * expression fills, or the partial props type for a spread. Reading it
+ * through the tag keeps a type whose name the site cannot see (a component's
+ * module-private prop type) usable, because the indexed access resolves where
+ * the component is declared. A union props type is narrowed to the arm the
+ * element's discriminant selects, since indexing the union itself would lose
+ * it. Undefined for an intrinsic tag, a tag that is not an entity name, a
+ * `key` or `ref` (which JSX types itself), a union no single discriminant
+ * selects, and a generic component (whose instantiated props the printed
+ * contextual type names). */
 function jsxElementSlotText7(
-  checker: ReturnType<ts.Program["getTypeChecker"]>,
-  expression: ts.Expression,
+  checker: JsxChecker,
+  slot: JsxSlot7,
+  helpers: JsxTypeHelpers,
 ): string | undefined {
-  const slot = jsxSlot7(expression);
-  if (slot === null) return undefined;
-  const props = jsxElementPropsText7(checker, slot.opening);
-  if (props === undefined) return undefined;
-  if (slot.name === null) return `${props} & { ref?: any; key?: any }`;
-  return `${props}[${JSON.stringify(slot.name)}]`;
+  const element = jsxElementPropsTag7(checker, slot.opening);
+  if (element === undefined) return undefined;
+  const props = `${helpers.known()}<${helpers.props()}<typeof ${element.tagText}>>`;
+  // A spread provides only some props; the element's other attributes supply
+  // the rest, and which union arm they select is the printed contextual type.
+  if (slot.name === null)
+    return element.arm === undefined
+      ? `${helpers.partial()}<${props} & { ref?: any; key?: any }>`
+      : undefined;
+  const target =
+    element.arm === undefined ? props : `${helpers.arm()}<${props}, ${element.arm.text}>`;
+  if (slot.name === "children" && slot.index !== undefined) {
+    // One child of several is typed by one member of the children prop, and
+    // the element passes them as an array or a tuple in source order.
+    const children = jsxPropertyType7(
+      checker,
+      element.arm?.type ?? element.props,
+      "children",
+      slot.opening,
+    );
+    if (children === undefined || !(checker.isArrayType(children) || checker.isTupleType(children)))
+      return undefined;
+    return `${target}["children"][${slot.index}]`;
+  }
+  return `${target}[${JSON.stringify(slot.name)}]`;
 }
 
-/** The props type of a value-based element as a type expression over its
- * tag: `Parameters<typeof Button>[0]` for a function component and
- * `InstanceType<typeof Button>["props"]` for a class one. Undefined when the
- * tag's type does not name it exactly: an intrinsic tag, an arbitrary tag
- * expression, an overload set, or a generic component. */
-function jsxElementPropsText7(
-  checker: ReturnType<ts.Program["getTypeChecker"]>,
+/** A named property's type on `type`, or undefined. */
+function jsxPropertyType7(
+  checker: JsxChecker,
+  type: ts.Type,
+  name: string,
+  location: ts.Node,
+): ts.Type | undefined {
+  const symbol = checker.getPropertyOfType(type, name);
+  return symbol === undefined ? undefined : checker.getTypeOfSymbolAtLocation(symbol, location);
+}
+
+/** The tag of a value-based element whose props type the tag names exactly:
+ * a function component checked against one non-generic call signature, or a
+ * class component. A union props type carries the discriminant the element
+ * provides, so the selected arm names the callback the site checked. */
+function jsxElementPropsTag7(
+  checker: JsxChecker,
   opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
-): string | undefined {
+): { tagText: string; props: ts.Type; arm?: { type: ts.Type; text: string } } | undefined {
   const tagText = jsxValueTagText(opening.tagName);
   if (tagText === undefined) return undefined;
   const tagType = checker.getTypeAtLocation(opening.tagName);
   const construct = checker.getConstructSignatures(tagType);
-  // A generic component instantiates its props at the JSX site; naming the
-  // component's own type would name another instantiation.
-  if (construct.some((signature) => signature.getTypeParameters().length > 0)) return undefined;
-  if (construct.length > 0) return `NonNullable<InstanceType<typeof ${tagText}>["props"]>`;
+  const call = checker.getCallSignatures(tagType);
+  const classLike = construct.length > 0;
+  const signatures = classLike ? construct : call;
   // JSX checks a function component against one call signature; an overload
   // set would name a different one.
-  const call = checker.getCallSignatures(tagType);
-  if (call.length !== 1 || call[0]!.getTypeParameters().length > 0) return undefined;
-  return `NonNullable<Parameters<typeof ${tagText}>[0]>`;
+  if (!classLike && call.length !== 1) return undefined;
+  // A generic component instantiates its props at the JSX site; naming the
+  // component's own type would name another instantiation.
+  if (signatures.some((signature) => signature.getTypeParameters().length > 0)) return undefined;
+  const signature = signatures[0];
+  if (signature === undefined) return undefined;
+  const props = jsxSignaturePropsType7(checker, signature, opening, classLike);
+  if (props === undefined) return undefined;
+  if (!props.isUnionType()) return { tagText, props };
+  // Indexing the union would lose the arm the element's discriminant selects.
+  const arm = jsxDiscriminant7(checker, props, opening);
+  return arm === undefined ? undefined : { tagText, props, arm };
+}
+
+/** The type literal an element's literal attribute uses to select one arm of
+ * a union props type, or undefined when no single arm is selected. */
+function jsxDiscriminant7(
+  checker: JsxChecker,
+  props: ts.Type,
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+): { type: ts.Type; text: string } | undefined {
+  for (const property of opening.attributes.properties.nodes) {
+    if (!ts.isJsxAttribute(property) || !ts.isIdentifier(property.name)) continue;
+    const attribute = property.name.text;
+    if (attribute === undefined) continue;
+    const literal = jsxAttributeLiteral7(property.initializer);
+    if (literal === undefined) continue;
+    const name = /^[A-Za-z_$][\w$]*$/.test(attribute) ? attribute : JSON.stringify(attribute);
+    const matches = props.getTypes().filter((arm) => {
+      const member = checker.getPropertyOfType(arm, attribute);
+      if (member === undefined) return false;
+      const type = checker.getTypeOfSymbolAtLocation(member, opening);
+      return checker
+        .typeToString(type)
+        .split(" | ")
+        .some((part) => part === literal);
+    });
+    if (matches.length === 1) return { type: matches[0]!, text: `{ ${name}: ${literal} }` };
+  }
+  return undefined;
+}
+
+/** A JSX attribute value that is a literal type, as type text. */
+function jsxAttributeLiteral7(value: ts.JsxAttributeValue | undefined): string | undefined {
+  if (value === undefined) return "true";
+  if (ts.isStringLiteral(value)) return JSON.stringify(value.text);
+  if (!ts.isJsxExpression(value) || value.expression === undefined) return undefined;
+  const expression = value.expression;
+  if (ts.isStringLiteral(expression)) return JSON.stringify(expression.text);
+  if (ts.isNumericLiteral(expression)) return expression.text;
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return "true";
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return "false";
+  return undefined;
+}
+
+/** The props type a component signature declares: a class instance's `props`
+ * member, or a function component's first parameter. */
+function jsxSignaturePropsType7(
+  checker: JsxChecker,
+  signature: ReturnType<JsxChecker["getSignaturesOfType"]>[number],
+  location: ts.Node,
+  classLike: boolean,
+): ts.Type | undefined {
+  if (classLike) {
+    const instance = checker.getReturnTypeOfSignature(signature);
+    const props = checker.getPropertyOfType(instance, "props");
+    return props === undefined ? undefined : checker.getTypeOfSymbolAtLocation(props, location);
+  }
+  const parameter = signature.getParameters()[0];
+  return parameter === undefined
+    ? undefined
+    : checker.getTypeOfSymbolAtLocation(parameter, location);
 }
 
 /** The contextual type the as-written program gives the expression. */
-function jsxContextTypeText7(
-  checker: ReturnType<ts.Program["getTypeChecker"]>,
-  expression: ts.Expression,
-): string | undefined {
+function jsxContextTypeText7(checker: JsxChecker, expression: ts.Expression): string | undefined {
   const type = checker.getContextualType(expression);
   if (type === undefined) return undefined;
   const text = checker.typeToString(
@@ -1593,11 +1706,14 @@ function jsxContextTypeText7(
 /** The JSX slot an expression fills, and the element whose attributes type
  * gives it its type, or null when the expression is not in a slot a
  * component's props type answers (an intrinsic tag's attribute is answered
- * by JSX.IntrinsicElements; a fragment has no tag). */
+ * by JSX.IntrinsicElements; a fragment has no tag; a ref, a key and one of
+ * several children keep the contextual type the checker reported). */
 interface JsxSlot7 {
   opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement;
   /** The props member the expression fills; null for a spread of props. */
   name: string | null;
+  /** For one child of several: its position among the element's children. */
+  index?: number;
 }
 
 function jsxSlot7(expression: ts.Expression): JsxSlot7 | null {
@@ -1612,8 +1728,42 @@ function jsxSlot7(expression: ts.Expression): JsxSlot7 | null {
     if (name === undefined || name === "key" || name === "ref") return null;
     return jsxSlotOfAttributes(parent.parent, name);
   }
-  if (ts.isJsxElement(parent)) return { opening: parent.openingElement, name: "children" };
+  if (ts.isJsxElement(parent)) {
+    // A spread child shifts the positions the rest fill, and an element with
+    // one child passes that child itself rather than an array or a tuple.
+    const position = jsxChildPosition7(parent, holder);
+    if (position === undefined) return null;
+    return {
+      opening: parent.openingElement,
+      name: "children",
+      ...(position.count > 1 ? { index: position.index } : {}),
+    };
+  }
   return null;
+}
+
+/** The child's zero-based position among the element's value-emitting
+ * children, and how many there are; undefined when a spread child makes the
+ * positions the type does not fix. */
+function jsxChildPosition7(
+  node: ts.JsxElement,
+  child: ts.JsxChild,
+): { index: number; count: number } | undefined {
+  let count = 0;
+  let position: number | undefined;
+  for (const candidate of node.children.nodes) {
+    if (ts.isJsxExpression(candidate) && candidate.dotDotDotToken !== undefined) return undefined;
+    if (!jsxChildEmits7(candidate)) continue;
+    if (candidate === child) position = count;
+    count++;
+  }
+  return position === undefined ? undefined : { index: position, count };
+}
+
+function jsxChildEmits7(child: ts.JsxChild): boolean {
+  if (ts.isJsxText(child)) return !child.containsOnlyTriviaWhiteSpaces;
+  if (ts.isJsxExpression(child)) return child.expression !== undefined;
+  return true;
 }
 
 function jsxSlotOfAttributes(node: ts.Node | undefined, name: string | null): JsxSlot7 | null {

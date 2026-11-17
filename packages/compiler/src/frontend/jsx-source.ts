@@ -11,10 +11,12 @@
  * expressions inside them (attribute values, children, spreads) with their
  * own JSX rewritten. An expression whose functions the element's attribute
  * type gives a type keeps that contextual type: the copy is constrained
- * with the type the checker prints for the slot, so parameters written
- * without annotations stay typed in the props object literal the call
- * receives. It keeps every line break of a JSX expression, between the
- * arguments it emits, so a position keeps its line in the rewritten text. */
+ * with the type the checker answers for the slot (a component's read through
+ * its props type), so parameters written without annotations stay typed in
+ * the props object literal the call receives. The constraint may name type
+ * helpers, declared in the prologue under names the file does not use. It
+ * keeps every line break of a JSX expression, between the arguments it
+ * emits, so a position keeps its line in the rewritten text. */
 
 import * as ts from "./ts7/adapter.js";
 import { jsxOptionName } from "./ts7/enums.js";
@@ -212,10 +214,26 @@ export interface LoweredJsx {
   rewrittenPosition(pos: number, end: boolean): number;
 }
 
-/** The contextual type text of a JSX slot expression, as the program over
- * the text as written prints it, or undefined when the rewrite does not need
- * it. */
-export type JsxContextTypes = (expression: ts.Expression) => string | undefined;
+/** The constraint the rewrite must place on a JSX slot expression, or
+ * undefined when it needs none. */
+export type JsxContextTypes = (
+  expression: ts.Expression,
+  helpers: JsxTypeHelpers,
+) => string | undefined;
+
+/** Names for type helpers the rewrite declares in the file. The rewriter
+ * picks names no identifier in the file uses, so a local `Parameters`,
+ * `Partial`, `NonNullable` or `InstanceType` cannot capture them. */
+export interface JsxTypeHelpers {
+  /** A helper that answers a component's props type (function or class). */
+  props(): string;
+  /** A helper that removes `null` and `undefined`. */
+  known(): string;
+  /** A helper that makes every member of a type optional. */
+  partial(): string;
+  /** A helper that answers the arm of a union a discriminant selects. */
+  arm(): string;
+}
 
 /** The file's text with its JSX replaced by the calls TypeScript emits for
  * the plan, and for the automatic runtime the imports of the runtime
@@ -364,9 +382,10 @@ class JsxRewriter {
   }
 
   file(): LoweredJsx {
-    const insertAt = this.plan.runtime === "automatic" ? this.prologueEnd() : -1;
     this.copy(0, this.text.length);
-    if (insertAt >= 0) this.insertImports(insertAt);
+    const insertAt =
+      this.plan.runtime === "automatic" || this.helpersUsed.size > 0 ? this.prologueEnd() : -1;
+    if (insertAt >= 0) this.insertPrologue(insertAt);
     const segments = this.segments;
     const total = this.length;
     return {
@@ -409,6 +428,48 @@ class JsxRewriter {
   private readonly imports = new Map<string, Map<string, string>>();
   private names: Set<string> | null = null;
   private fileNameLocal: string | null = null;
+  /** The type helpers the constraints referenced, and their local names. */
+  private readonly helpersUsed = new Set<"props" | "known" | "partial" | "arm">();
+  private readonly helperNames = new Map<"props" | "known" | "partial" | "arm", string>();
+  private readonly helpers: JsxTypeHelpers = {
+    props: () => this.helperName("props"),
+    known: () => this.helperName("known"),
+    partial: () => this.helperName("partial"),
+    arm: () => this.helperName("arm"),
+  };
+
+  private helperName(kind: "props" | "known" | "partial" | "arm"): string {
+    this.helpersUsed.add(kind);
+    if (kind === "props") this.helpersUsed.add("known");
+    let name = this.helperNames.get(kind);
+    if (name === undefined) {
+      name = this.uniqueName(`__jsx_${kind}`);
+      this.helperNames.set(kind, name);
+    }
+    return name;
+  }
+
+  /** The declarations of the type helpers the constraints used, each on the
+   * prologue's line like the runtime imports. */
+  private helperDeclarations(): string {
+    if (this.helpersUsed.size === 0) return "";
+    const parts: string[] = [];
+    if (this.helpersUsed.has("props") || this.helpersUsed.has("known")) {
+      const known = this.helperName("known");
+      parts.push(`type ${known}<T> = T extends null | undefined ? never : T;`);
+    }
+    if (this.helpersUsed.has("props")) {
+      const known = this.helperName("known");
+      parts.push(
+        `type ${this.helperName("props")}<T> = T extends new (...args: any[]) => infer I ? (I extends { props: infer P } ? ${known}<P> : never) : T extends (props: infer P, ...rest: any[]) => any ? ${known}<P> : never;`,
+      );
+    }
+    if (this.helpersUsed.has("partial"))
+      parts.push(`type ${this.helperName("partial")}<T> = { [K in keyof T]?: T[K] };`);
+    if (this.helpersUsed.has("arm"))
+      parts.push(`type ${this.helperName("arm")}<T, K> = T extends K ? T : never;`);
+    return `${parts.join(" ")} `;
+  }
 
   /** The local name bound to `name` of `module`: `_name`, or `_name_1`,
    * `_name_2`, ... past an identifier the file already uses. */
@@ -457,12 +518,12 @@ class JsxRewriter {
     return first === undefined ? this.text.length : first.getStart(this.sf);
   }
 
-  /** Inserts the imports (or, in a CommonJS file, the requires) of the
-   * runtime functions the file's JSX used, and react-jsxdev's file name
-   * constant, at `at`: imports in the reverse order of their modules' first
-   * use, as TypeScript inserts each after the prologue. */
-  private insertImports(at: number): void {
-    if (this.imports.size === 0 && this.fileNameLocal === null) return;
+  /** Inserts the type helpers and the imports (or, in a CommonJS file, the
+   * requires) of the runtime functions the file's JSX used, and react-jsxdev's
+   * file name constant, at `at`: imports in the reverse order of their
+   * modules' first use, as TypeScript inserts each after the prologue. */
+  private insertPrologue(at: number): void {
+    const declarations = this.helperDeclarations();
     const esm = ts.isExternalModule(this.sf);
     const parts: string[] = [];
     for (const [module, names] of [...this.imports].reverse()) {
@@ -477,8 +538,8 @@ class JsxRewriter {
     }
     if (this.fileNameLocal !== null)
       parts.push(`const ${this.fileNameLocal} = ${JSON.stringify(this.sf.fileName)};`);
-    if (parts.length === 0) return;
-    const text = `${parts.join(" ")} `;
+    const text = `${declarations}${parts.join(" ")}${parts.length === 0 ? "" : " "}`;
+    if (text.length === 0) return;
     let index = 0;
     let rewritten = 0;
     for (; index < this.segments.length; index++) {
@@ -594,8 +655,8 @@ class JsxRewriter {
    * contextual type the slot gives it: the rewritten expression is a member
    * of a plain object literal, where that type no longer reaches it, so the
    * rewrite spells it out when the context types one of its functions. */
-  private constrainedExpression(node: ts.Expression, constraint: (type: string) => string): void {
-    const type = this.contextTypes?.(node);
+  private constrainedExpression(node: ts.Expression): void {
+    const type = this.contextTypes?.(node, this.helpers);
     if (type === undefined) {
       this.expression(node);
       return;
@@ -605,19 +666,13 @@ class JsxRewriter {
     this.emit("((");
     this.copy(start, node.end);
     this.sync(node.end);
-    this.emit(`) ${constraint(type)})`);
+    this.emit(`) as ${type})`);
   }
 
-  /** An attribute value or a child. */
+  /** An attribute value, a child, or a spread attribute's expression (the
+   * constraint itself accounts for a spread's partial props). */
   private slotExpression(node: ts.Expression): void {
-    this.constrainedExpression(node, (type) => `as ${type}`);
-  }
-
-  /** A spread attribute's expression. A spread supplies only the props its
-   * object has, so its constraint is `Partial` of the element's attributes
-   * type: the other props come from the element's remaining attributes. */
-  private spreadExpression(node: ts.Expression): void {
-    this.constrainedExpression(node, (type) => `as Partial<${type}>`);
+    this.constrainedExpression(node);
   }
 
   private element(node: JsxRoot): void {
@@ -806,7 +861,7 @@ class JsxRewriter {
         if (
           ts.isObjectLiteralExpression(value) &&
           !hasProtoProperty(value) &&
-          this.contextTypes?.(value) === undefined
+          this.contextTypes?.(value, this.helpers) === undefined
         ) {
           // TypeScript inlines the properties of a spread object literal.
           for (const property of value.properties.nodes) {
@@ -816,7 +871,7 @@ class JsxRewriter {
         } else {
           separate();
           this.emit("...");
-          this.spreadExpression(value);
+          this.slotExpression(value);
         }
       } else {
         separate();

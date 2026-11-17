@@ -186,11 +186,137 @@ test("a component's module-private callback type keeps the slot typed", () => {
     // The emitted constraint reads the props type through the tag, because
     // `PickEvent` is not visible from this file.
     const lowered = load.jsxSources?.get(entry);
-    expect(lowered!.text).toContain(`NonNullable<Parameters<typeof Row>[0]>["onPick"]`);
-    expect(lowered!.text).toContain(
-      `Partial<NonNullable<Parameters<typeof Row>[0]> & { ref?: any; key?: any }>`,
+    expect(lowered!.text).toMatch(/as __jsx_known<__jsx_props<typeof Row>>\["onPick"\]/);
+    expect(lowered!.text).toMatch(
+      /as __jsx_partial<__jsx_known<__jsx_props<typeof Row>> & \{ ref\?: any; key\?: any \}>/,
     );
-    expect(lowered!.text).toContain(`NonNullable<Parameters<typeof Slot>[0]>["children"]`);
+    expect(lowered!.text).toMatch(/as __jsx_known<__jsx_props<typeof Slot>>\["children"\]/);
+    // The helpers are declared in the file with names no identifier uses.
+    expect(lowered!.text).toContain("type __jsx_props<T> =");
+    expect(lowered!.text).toContain("type __jsx_known<T> =");
+    expect(lowered!.text).toContain("type __jsx_partial<T> =");
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+  }
+});
+
+test("a discriminated union of props types each arm's callback", () => {
+  const entry = project(
+    "app.tsx",
+    [
+      'import { Choice } from "./choice.js";',
+      "export const picked: string[] = [];",
+      'export const left = <Choice kind="left" onPick={(event) => picked.push(String(event.left))} />;',
+      'export const right = <Choice kind="right" onPick={(event) => picked.push(event.right)} />;',
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(dirname(entry), "choice.tsx"),
+    [
+      "interface LeftEvent { left: number }",
+      "interface RightEvent { right: string }",
+      "export type ChoiceProps =",
+      '  | { kind: "left"; onPick?: (event: LeftEvent) => void }',
+      '  | { kind: "right"; onPick?: (event: RightEvent) => void };',
+      "export function Choice(props: ChoiceProps) {",
+      "  return <button onClick={() => props.onPick?.({ left: 1 } as never)} />;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const load = loadProgram(entry);
+  try {
+    const lowered = load.jsxSources?.get(entry);
+    // The discriminant selects the arm; indexing the whole union would lose it.
+    expect(lowered!.text).toMatch(/__jsx_arm<.+typeof Choice>>, \{ kind: "left" \}>\["onPick"\]/);
+    expect(lowered!.text).toMatch(/__jsx_arm<.+typeof Choice>>, \{ kind: "right" \}>\["onPick"\]/);
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+  }
+});
+
+test("a local Parameters, Partial, NonNullable or InstanceType does not capture the helpers", () => {
+  const entry = project(
+    "app.tsx",
+    [
+      'import { Shadowed } from "./shadow.js";',
+      'type Parameters<T> = "shadow";',
+      'type Partial<T> = "shadow";',
+      'type NonNullable<T> = "shadow";',
+      'type InstanceType<T> = "shadow";',
+      "export const picked: string[] = [];",
+      "export const shadowed = <Shadowed onPick={(event) => picked.push(String(event.id))} />;",
+      "export type Used = [Parameters<never>, Partial<never>, NonNullable<never>, InstanceType<never>];",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(dirname(entry), "shadow.tsx"),
+    [
+      "interface Hidden { id: number }",
+      "export function Shadowed(props: { onPick?: (event: Hidden) => void }) {",
+      "  return <button onClick={() => props.onPick?.({ id: 1 })} />;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const load = loadProgram(entry);
+  try {
+    const lowered = load.jsxSources?.get(entry);
+    expect(lowered!.text).toMatch(/as __jsx_known<__jsx_props<typeof Shadowed>>\["onPick"\]/);
+    expect(lowered!.text).not.toContain("Parameters<typeof");
+    expect(lowered!.text).not.toContain("InstanceType<typeof");
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+  }
+});
+
+test("several children are each typed by their own member", () => {
+  const entry = project(
+    "app.tsx",
+    [
+      'import { Pair, Many } from "./pair.js";',
+      "export const picked: string[] = [];",
+      "export const pair = (",
+      "  <Pair>",
+      "    {(event) => picked.push(String(event.one))}",
+      "    {(event) => picked.push(event.two)}",
+      "  </Pair>",
+      ");",
+      "export const many = (",
+      "  <Many>",
+      "    {(event) => picked.push(String(event.one))}",
+      "    {(event) => picked.push(String(event.one + 1))}",
+      "  </Many>",
+      ");",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(dirname(entry), "pair.tsx"),
+    [
+      "interface First { one: number }",
+      "interface Second { two: string }",
+      "export function Pair(props: { children: [(event: First) => void, (event: Second) => void] }) {",
+      "  return <div />;",
+      "}",
+      "export function Many(props: { children: ((event: First) => void)[] }) {",
+      "  return <div />;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const load = loadProgram(entry);
+  try {
+    const lowered = load.jsxSources?.get(entry);
+    expect(lowered!.text).toMatch(/typeof Pair>>\["children"\]\[0\]/);
+    expect(lowered!.text).toMatch(/typeof Pair>>\["children"\]\[1\]/);
+    expect(lowered!.text).toMatch(/typeof Many>>\["children"\]\[0\]/);
+    expect(lowered!.text).toMatch(/typeof Many>>\["children"\]\[1\]/);
     expect(checkPreflight(load)).toEqual([]);
   } finally {
     load.dispose();

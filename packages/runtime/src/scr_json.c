@@ -88,13 +88,11 @@ const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
  * namespace. Thread-local like the boxes it answers for: a thread that
  * boxed no namespace has no branded value. */
 SCR_TL bool (*scr_module_namespace_dyn_is)(const ScrDyn *value) = NULL;
-#ifdef SCR_JS_OBJECT_MODEL
-/* Set by scr_dyn_invoke.c when the object model build links it, so a
- * DataView's `constructor` is the global's own interned value. A program that
- * only needs the object model (a .js program that never reads a global
- * constructor as a value) keeps this NULL and its named refusal. */
+/* Set by scr_dyn_invoke.c when a program links it, so a value's `constructor`
+ * is the global's own interned value (a DataView's, and a DOMException's —
+ * which must stay that value so `new` and a call without `new` behave as
+ * Node's global does). A program that never asks keeps this NULL. */
 ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
-#endif
 /* Set by scr_dyn_invoke.c when a program links it (every program that
  * creates a native Proxy does): the Object.prototype, Array.prototype and
  * Function.prototype members a program's computed key or a trap-less
@@ -3181,7 +3179,7 @@ static void scr_builtin_object_prototype_cleanup(void) {
  * Calling one through the value is not supported yet, as for the other
  * interned constructors (scr_dyn_global_constructor). */
 static const char *const scr_error_ctor_names[] = {
-    "Error", "TypeError", "RangeError", "SyntaxError", "DOMException",
+    "Error", "TypeError", "RangeError", "SyntaxError", NULL,
     "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError",
     "SuppressedError",
 };
@@ -3220,7 +3218,6 @@ ScrDyn *scr_dyn_error_constructor(const char *name) {
     if (!scr_error_ctor_values[i]) {
       uint32_t length = strcmp(name, "AggregateError") == 0    ? 2
                         : strcmp(name, "SuppressedError") == 0 ? 3
-                        : strcmp(name, "DOMException") == 0    ? 0
                                                                : 1;
       scr_error_ctor_values[i] =
           scr_dyn_new_func(scr_closure_new((void *)scr_error_ctor_names[i], 0), scr_error_ctor_call, length,
@@ -20001,16 +19998,25 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
     if (scr_ni_dyn_ops->error_get(d, key, key_len, &island)) return island;
   }
   if (key_len == 11 && memcmp(key, "constructor", 11) == 0) {
-    /* An error's constructor: the interned function value its global
-     * reads as (scr_dyn_error_constructor, which scr_dyn_global_constructor
-     * consults first, so `e.constructor === DOMException` is identity). */
+    size_t hit = scr_errdyn_find(d, false);
+    const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
+    /* A DOMException's constructor is the global's own value
+     * (scr_dyn_global_constructor), so `e.constructor === DOMException` is
+     * identity AND the global keeps the construct and call behavior Node
+     * gives it — the error table's interned functions refuse both. */
+    if (vt == &scr_error_vts[SCR_ERR_DOMEX] && scr_dyn_global_constructor_hook != NULL) {
+      ScrStr *domex_name = scr_str_new("DOMException", 12);
+      ScrDyn *ctor = scr_dyn_global_constructor_hook(domex_name);
+      scr_str_release(domex_name);
+      if (ctor != NULL) return ctor;
+    }
+    /* Every other error's constructor: the interned function value its
+     * global reads as (scr_dyn_error_constructor). */
     static const char *const names[] = {
-        "Error", "TypeError", "RangeError", "SyntaxError", "DOMException",
+        "Error", "TypeError", "RangeError", "SyntaxError", NULL,
         "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError",
         "SuppressedError",
     };
-    size_t hit = scr_errdyn_find(d, false);
-    const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
     for (size_t kind = 0; vt && kind < sizeof names / sizeof names[0]; kind++) {
       if (!names[kind]) continue;
       if (vt != &scr_error_vts[kind]) continue;

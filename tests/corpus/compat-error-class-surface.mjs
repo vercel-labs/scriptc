@@ -154,4 +154,19 @@ for (const name of ["AbortError", "NotSupportedError", "IndexSizeError", "Syntax
 }
 const domexDefault = new DOMException("plain");
 console.log("dom default", domexDefault.name, domexDefault.code);
+// A DOMException read as a value is the global constructor: constructing
+// through it builds the same class, and the instance's constructor is that
+// same value.
+const Ctor = DOMException;
+const made = new Ctor("message", "AbortError");
+console.log("stored", made.name, made instanceof DOMException, made.constructor === DOMException);
+// A call without `new` reaches the same global value and fails as Node's
+// class constructors do.
+const untypedCtor = /** @type {any} */ (DOMException);
+try {
+  untypedCtor("message");
+  console.log("call without new", "no throw");
+} catch (error) {
+  console.log("call without new", error.name, JSON.stringify(error.message));
+}
 console.log("dom constructor", new DOMException("x").constructor.name);

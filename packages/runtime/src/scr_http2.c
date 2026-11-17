@@ -2808,6 +2808,29 @@ static void scr_h2_fire_pairs_list(ScrNetLs *ls, ScrH2Stream *st, ScrArr *pairs 
   free(snap);
 }
 
+/* Fire a received informational block: (headers, :status number, flags) —
+ * Node's ClientHttp2Stream 'headers' record. */
+static void scr_h2_fire_headers_list(ScrNetLs *ls, ScrH2Stream *st, ScrArr *pairs /*borrowed*/,
+                                      double status, double flags) {
+  if (ls->n == 0) return;
+  ScrNetL *snap;
+  size_t n = scr_net_ls_snapshot(ls, &snap);
+  scr_dyn_this_push(st, SCR_DYNH_H2_STREAM);
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) {
+      if (snap[i].fn != NULL) {
+        ((ScrH2RespFn)snap[i].fn)(snap[i].cb, scr_arr_retain(pairs), status, flags);
+      } else {
+        ((void (*)(ScrClosure *, ScrArr *, double, double))snap[i].cb->fn)(
+            snap[i].cb, scr_arr_retain(pairs), status, flags);
+      }
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  free(snap);
+}
+
 static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t flags,
                                      ScrH2Headers *h) {
   bool end_stream = (flags & SCR_H2_FLAG_END_STREAM) != 0;
@@ -2929,12 +2952,16 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
   if (!st || st->destroyed) return;
   int block_status = scr_h2_headers_status(h);
   if (!st->got_response && block_status >= 100 && block_status < 200) {
-    /* an informational response: 'headers' (with :status), and 'continue'
-     * for a 100 — never END_STREAM, never the response. */
-    ScrArr *ipairs = scr_h2_headers_pairs(h, false, NULL);
-    scr_h2_fire_pairs_list(&st->headers_ls, st, ipairs, fl);
-    if (!scr_exc_pending() && block_status == 100) {
+    /* An informational response — never END_STREAM, never the response.
+     * Node's stream emits 'continue' for a 100 from the listener it adds
+     * before any program listener, so it runs first; the block's record
+     * carries :status as a number (the pairs leave it out). */
+    ScrArr *ipairs = scr_h2_headers_pairs(h, true, NULL);
+    if (block_status == 100 && !scr_exc_pending()) {
       scr_net_fire0_this(&st->continue_ls, st, SCR_DYNH_H2_STREAM);
+    }
+    if (!scr_exc_pending()) {
+      scr_h2_fire_headers_list(&st->headers_ls, st, ipairs, (double)block_status, fl);
     }
     scr_arr_release(ipairs);
     return;
@@ -4352,7 +4379,8 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
     } else if (strcmp(ev, "response") == 0) {
       scr_http2_stream_on_response(st, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_resp), (ScrH2RespFn)&scr_h2_dyn_fire_resp, once);
     } else if (strcmp(ev, "trailers") == 0 || strcmp(ev, "headers") == 0) {
-      ScrClosure *clo = scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_pairs);
+      void *fire = ev[0] == 't' ? (void *)&scr_h2_dyn_fire_pairs : (void *)&scr_h2_dyn_fire_resp;
+      ScrClosure *clo = scr_dyn_listener_closure_fn(args[1], fire);
       if (ev[0] == 't') {
         scr_http2_stream_on_trailers(st, clo, once);
       } else {

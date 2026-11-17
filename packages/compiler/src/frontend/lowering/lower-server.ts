@@ -4745,14 +4745,14 @@ function lowerH2StreamMethodCall(
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if (event === "trailers" || event === "headers") {
-      // (headers, flags) records — the informational block, the response
-      // trailers, or (client) the response headers.
+      // (headers, flags) for a trailer block; the informational 'headers'
+      // record carries :status as a number, so its ABI adds the status.
       const cb = h2HeadersCallbackAdapter(
         lowerer,
         args[1]!,
         `${event} listeners`,
         null,
-        false,
+        event === "headers",
         loc,
       );
       return {

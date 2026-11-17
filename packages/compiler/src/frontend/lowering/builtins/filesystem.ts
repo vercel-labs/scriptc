@@ -1210,6 +1210,34 @@ export function lowerDirDisposeCall(lowerer: Lowerer, call: ts.CallExpression): 
       };
 }
 
+/** `filehandle[Symbol.asyncDispose]()`: Node's FileHandle implements it as
+ * `await this.close()`, so it is the close promise. Null for other
+ * element-access calls. */
+export function lowerFileHandleDisposeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  if (lowerer.stdlibGlobalMember(key, "Symbol") !== "asyncDispose") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fileHandle") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("FileHandle[Symbol.asyncDispose] with arguments", call);
+  }
+  return {
+    kind: "libCall",
+    fn: "fileHandle.close",
+    args: [lowerer.lowerExprExpecting(access.expression, FILEHANDLE_T)],
+    type: { kind: "promise", inner: VOID },
+    loc: locOf(call),
+  };
+}
+
 /** The Stats type tests, each a read of the snapshot's mode. */
 export const STATS_TYPE_TESTS: Record<string, IrLibFn> = {
   isFile: "stats.isFile",

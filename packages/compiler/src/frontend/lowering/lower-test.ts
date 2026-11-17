@@ -65,7 +65,8 @@ function lowerMockTrackerMember(
   }
 }
 
-const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
+const TEST_FN_HINT =
+  "test bodies take (), (t: TestContext) or (t: TestContext, done) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
   "t.test, t.skip, t.todo, t.diagnostic, t.log, t.runOnly, t.plan, t.waitFor, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, t.filePath, t.attempt, t.passed, t.workerId, t.tags, and t.assert.* are the supported TestContext members";
 
@@ -334,18 +335,36 @@ function lowerBodyArg(
     lowerer.noLowering(`${what} whose body is not a function`, node, TEST_FN_HINT);
   }
   let flags = 0;
-  if (cb.type.params.length > (allowCtx ? 1 : 0)) {
+  const params = cb.type.params;
+  if (params.length > (allowCtx ? 2 : 0)) {
     lowerer.noLowering(
-      `${what} with ${cb.type.params.length} parameters`,
+      `${what} with ${params.length} parameters`,
       node,
       allowCtx ? TEST_FN_HINT : "hooks take no parameters",
     );
   }
-  if (cb.type.params.length === 1) {
-    if (cb.type.params[0]!.kind !== "testCtx") {
+  if (params.length >= 1) {
+    if (params[0]!.kind !== "testCtx") {
       lowerer.noLowering(`${what} whose parameter is not the TestContext`, node, TEST_FN_HINT);
     }
     flags |= 2;
+  }
+  if (params.length === 2) {
+    /* Node's callback form: the second parameter is the done callback, a
+     * function the runner settles the run with. */
+    const done = params[1]!;
+    if (
+      done.kind !== "func" ||
+      done.params.length > 1 ||
+      !(done.ret.kind === "void" || isUnitType(done.ret))
+    ) {
+      lowerer.noLowering(
+        `${what} whose second parameter is not the done callback`,
+        node,
+        TEST_FN_HINT,
+      );
+    }
+    flags |= 128;
   }
   const ret = cb.type.ret;
   if (ret.kind === "promise") {

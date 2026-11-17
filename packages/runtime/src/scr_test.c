@@ -80,6 +80,11 @@ enum {
   /* { expectFailure } (or the expectFailure method twin): the test passes
    * only if its own run threw. */
   SCR_TEST_F_EXPECT_FAILURE = 64,
+  /* Node's callback form: the function takes (context, done). The runner
+   * creates the promise the run waits on and passes a done closure that
+   * settles it; a body that also returns a promise fails with Node's
+   * message. */
+  SCR_TEST_F_DONE = 128,
 };
 /* hook kinds */
 enum { SCR_HOOK_BEFORE = 0, SCR_HOOK_AFTER = 1, SCR_HOOK_BEFORE_EACH = 2, SCR_HOOK_AFTER_EACH = 3 };
@@ -550,6 +555,95 @@ static void scr_test_await_plan(ScrTestCtx *t) {
   t->plan_met = NULL;
 }
 
+/* ── Node's callback form ──────────────────────────────────────────────
+ * A test or hook written `(c, done) => ...` finishes when it calls done: the
+ * runner owns a promise the run waits on, and done() fulfils it. A truthy
+ * result fails the run with that value (Node's done(error)), a second call
+ * fails it with Node's "callback invoked multiple times", and a body that
+ * also returns a promise fails with "passed a callback but also returned a
+ * Promise". The state is reference counted and rides the done closure as a
+ * captured value, so a timer that keeps the closure keeps it alive. */
+typedef struct ScrTestDone {
+  size_t rc;
+  ScrPromise *p; /* +1 */
+  int calls;
+} ScrTestDone;
+
+static ScrTestDone *scr_test_done_new(void) {
+  ScrTestDone *d = malloc(sizeof *d);
+  if (!d) scr_test_oom();
+  d->rc = 1;
+  d->p = scr_promise_new();
+  d->calls = 0;
+  return d;
+}
+
+static void scr_test_done_release(ScrTestDone *d) {
+  if (d == NULL) return;
+  if (--d->rc > 0) return;
+  scr_promise_release(d->p);
+  free(d);
+}
+
+static void *scr_test_done_retain_v(void *p) {
+  ((ScrTestDone *)p)->rc++;
+  return p;
+}
+
+static void scr_test_done_release_v(void *p) { scr_test_done_release(p); }
+
+/* The captured value's descriptor: a native state, so it carries no cycle
+ * header and the collector never visits it. */
+static const ScrClosureValues scr_test_done_values = {
+  1,
+  {{scr_test_done_release_v, NULL}},
+};
+
+/* done(result): falsy passes, a truthy result rejects with that value the
+ * way the body's own throw would (the failing section renders it as
+ * Node's does), and every call is counted for the caller to judge. The
+ * closure calling convention makes the thunk own its parameter. */
+/* Whether a checked-dynamic value is an Error-hierarchy instance (the mark
+ * every Error carries), so done(error) fails with the Error itself rather
+ * than with a value Node would inspect. */
+static bool scr_test_is_error_dyn(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_OBJ) return false;
+  const ScrDyn *mark = scr_dyn_obj_get(d, "%error", 6);
+  return mark && mark->kind == SCR_DYN_BOOL && mark->v.b;
+}
+
+static void scr_test_done_thunk(ScrClosure *self, ScrDyn *result) {
+  ScrTestDone *d = scr_closure_value_slots(self)[0];
+  d->calls++;
+  if (d->calls == 1 && scr_promise_is_pending(d->p)) {
+    if (result != NULL && scr_dyn_truthy(result)) {
+      if (scr_test_is_error_dyn(result)) {
+        ScrError *e = scr_error_from_dyn(result);
+        scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+      } else {
+        scr_throw_ref(scr_dyn_retain(result), scr_dyn_retain_v, scr_dyn_release_v,
+                      scr_dyn_trace_v);
+      }
+      scr_promise_reject_pending(d->p);
+      if (scr_exc_pending()) scr_exc_clear();
+    } else {
+      scr_promise_fulfill_void(d->p);
+    }
+  }
+  if (result != NULL) scr_dyn_release(result);
+}
+
+/* The done closure the body receives: a function value over the state,
+ * which the closure holds a reference of its own to (the runner keeps its
+ * reference until the run has finished). */
+static ScrClosure *scr_test_done_closure(ScrTestDone *d) {
+  size_t size = sizeof(ScrClosure) + sizeof(ScrClosureValues *) + sizeof(void *);
+  ScrClosure *c =
+      scr_closure_new_values((void *)&scr_test_done_thunk, 0, &scr_test_done_values, size);
+  scr_closure_value_slots(c)[0] = scr_test_done_retain_v(d);
+  return c;
+}
+
 /* Call one stored closure by its lowering-pinned shape; async shapes are
  * awaited (the runner is a fiber). `ctx` is passed +1 when the body takes
  * the TestContext, and `scope` is what getTestContext() answers while it
@@ -559,6 +653,42 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
                           ScrTestCtx *timed) {
   ScrAlsCtx *outer = scr_test_scope_enter(scope);
   bool takes_ctx = (flags & SCR_TEST_F_CTX) != 0;
+  if (flags & SCR_TEST_F_DONE) {
+    ScrTestDone *d = scr_test_done_new();
+    ScrClosure *done = scr_test_done_closure(d);
+    if (flags & SCR_TEST_F_ASYNC) {
+      /* Node refuses a callback-style body that also returns a promise: the
+       * run fails with its message, never waiting for either. */
+      ScrPromise *body = ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *,
+                                             ScrClosure *))cb->fn)(
+          cb, takes_ctx ? scr_testctx_retain(ctx) : NULL, scr_closure_retain(done));
+      if (!scr_exc_pending()) {
+        static const char msg[] = "passed a callback but also returned a Promise";
+        scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+      }
+      scr_promise_release(body);
+    } else {
+      ((void (*)(ScrClosure *, ScrTestCtx *, ScrClosure *))cb->fn)(
+          cb, takes_ctx ? scr_testctx_retain(ctx) : NULL, scr_closure_retain(done));
+      if (!scr_exc_pending()) {
+        if (timed && isfinite(timed->timeout)) scr_test_await_timeout(d->p, timed);
+        else scr_await_void(d->p);
+      }
+    }
+    scr_closure_release(done);
+    /* A second call while the run is in flight is Node's failure, and it
+     * wins over the first call's result ("done(error); done()" reports the
+     * second call). A call after the run finished is ignored, as Node
+     * ignores it, and a timed-out run keeps its timeout failure. */
+    if (d->calls > 1 && !(timed && timed->timed_out)) {
+      if (scr_exc_pending()) scr_exc_clear();
+      static const char msg[] = "callback invoked multiple times";
+      scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+    }
+    scr_test_done_release(d);
+    scr_test_scope_leave(outer);
+    return;
+  }
   if (flags & SCR_TEST_F_ASYNC) {
     ScrPromise *p =
         takes_ctx

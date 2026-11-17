@@ -1593,11 +1593,21 @@ static void *scr_sqlite_backup_job_retain(void *p) {
   return p;
 }
 
-/* The error text belongs to the destination handle, so the rejection is
- * built before the job's release closes it. */
-static void scr_sqlite_backup_reject(ScrSqliteBackupJob *job) {
-  int errcode = job->dest == NULL ? SQLITE_ERROR : sqlite3_errcode(job->dest);
-  const char *text = job->dest != NULL ? sqlite3_errmsg(job->dest) : sqlite3_errstr(errcode);
+/* Rejects the backup's promise. A step that fails names its own code, which
+ * is the error Node reports; a copy that never started (BUSY and LOCKED leave
+ * the destination without one) reports the destination handle's error. That
+ * text belongs to the handle, so it is copied before the job's release closes
+ * it. */
+static void scr_sqlite_backup_reject(ScrSqliteBackupJob *job, int code) {
+  int errcode;
+  const char *text;
+  if (code != SQLITE_OK) {
+    errcode = code;
+    text = sqlite3_errstr(code);
+  } else {
+    errcode = job->dest == NULL ? SQLITE_ERROR : sqlite3_extended_errcode(job->dest);
+    text = job->dest != NULL ? sqlite3_errmsg(job->dest) : sqlite3_errstr(errcode);
+  }
   ScrStr *message = scr_str_new(text, strlen(text));
   ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
   scr_str_release(message);
@@ -1666,7 +1676,7 @@ static void scr_sqlite_backup_step(ScrClosure *self) {
   int status = sqlite3_backup_step(job->copy, job->rate);
   if (!(status == SQLITE_OK || status == SQLITE_DONE || status == SQLITE_BUSY ||
         status == SQLITE_LOCKED)) {
-    scr_sqlite_backup_reject(job);
+    scr_sqlite_backup_reject(job, status);
     scr_sqlite_backup_job_release(job);
     return;
   }
@@ -1687,7 +1697,7 @@ static void scr_sqlite_backup_step(ScrClosure *self) {
   if (status != SQLITE_DONE) {
     /* A first step that could not start: Node rejects rather than retrying a
      * copy whose page count it never learned. */
-    scr_sqlite_backup_reject(job);
+    scr_sqlite_backup_reject(job, SQLITE_OK);
     scr_sqlite_backup_job_release(job);
     return;
   }

@@ -3,6 +3,7 @@ import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { withIgnoredArguments } from "./call-arguments.js";
+import { dynArgumentPack } from "../call-arguments.js";
 import { checkedTimerStyleCallback } from "../lower-timers.js";
 import { isTimerHandleTyped } from "./timers.js";
 import * as ts from "../../ts7/adapter.js";
@@ -48,6 +49,56 @@ import {
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
 import { isCheckerPanic } from "../../../diagnostics/diagnostic.js";
 import { refuseCallbackThis } from "../callback-arg.js";
+
+/** The process events whose listeners register as checked-dynamic callbacks
+ * and whose emit has no default handling of its own, so `process.emit` can
+ * dispatch them in the runtime (scr_process_emit_named). Keep this set and
+ * that function in step. */
+const DISPATCHED_PROCESS_EVENTS: ReadonlySet<string> = new Set([
+  "uncaughtException",
+  "uncaughtExceptionMonitor",
+]);
+
+/** The process events whose emit a checked-dynamic dispatch cannot reproduce
+ * yet: the typed listener closures (exit, beforeExit, signals, IPC), the
+ * warning family (Node's emit prints the default report as well), and the
+ * rejection families (their listeners take a promise). */
+const UNSUPPORTED_PROCESS_EVENTS: ReadonlySet<string> = new Set([
+  "warning",
+  "unhandledRejection",
+  "rejectionHandled",
+  "multipleResolves",
+  "exit",
+  "beforeExit",
+  "message",
+  "disconnect",
+]);
+
+/** A `process.emit('error', ...)` in value position: `stmts` build the
+ * argument vector, then `call` throws (it never returns), so the expression
+ * ends in an unreachable read behind a fence. */
+function emitThrows(lowerer: Lowerer, stmts: IrStmt[], call: IrExpr, loc: SrcLoc): IrExpr {
+  const slot = lowerer.declareHiddenLocal("%emitError", BOOL);
+  slot.mutable = true;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      ...stmts,
+      { kind: "exprStmt", expr: call, loc },
+      { kind: "varDecl", localId: slot.id, init: null, loc },
+      {
+        kind: "runtimeFence",
+        code: "SC9002",
+        message: "unreachable: process.emit('error') returned — please report this",
+        loc,
+      },
+    ],
+    result: varRef(slot.id, BOOL, loc),
+    diverges: true,
+    type: BOOL,
+    loc,
+  };
+}
 
 /** Whether the process has an IPC channel, Node's test for defining
  * process.send and process.disconnect: a channel this fork child opened
@@ -2555,6 +2606,81 @@ export function lowerProcessMethodCall(
       argsArr = lowerTracingArguments(lowerer, call.arguments.nodes, loc);
     }
     return { kind: "libCall", fn: "process.emitWarning", args: [argsArr], type: VOID, loc };
+  }
+  // process.emit(event, ...args): Node's EventEmitter emit on process. The
+  // runtime dispatches the exception families (whose listeners it registers
+  // as checked-dynamic callbacks) and answers whether any listener existed.
+  // 'error' throws instead: no 'error' listener can be registered here,
+  // so Node's unhandled-error contract applies (an Error payload throws
+  // itself, anything else ERR_UNHANDLED_ERROR). A custom event never has a
+  // listener either (`process.on` refuses every name outside the modelled
+  // families), so that emit is a plain false with its argument expressions
+  // still evaluated. Every other modelled family is refused by name: the
+  // typed listener closures (exit, beforeExit, signals, IPC), the warning
+  // family (Node's emit prints the default report as well), and the
+  // rejection families (their listeners take a promise).
+  if (member === "emit") {
+    // Island code's listeners live in Node's own `process`; the native
+    // registries are not the ones an emit would have to reach.
+    if (lowerer.nodeIslands !== null) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "process.emit in a program with Node islands (the listeners belong to Node's process)",
+      );
+    }
+    const eventArg = call.arguments.nodes[0];
+    // Node answers false for a missing event (`process.emit()`).
+    if (eventArg === undefined) return boolLit(false, loc);
+    const rest = call.arguments.nodes.slice(1);
+    if (!ts.isStringLiteralLike(eventArg)) {
+      lowerer.unsupported(
+        "SC1090",
+        eventArg,
+        "process.emit with a computed event name (write the event name as a string literal, so the lowering can dispatch it)",
+      );
+    }
+    const name = eventArg.text;
+    if (name === "error") {
+      // Node's EventEmitter throws when 'error' is emitted and no 'error'
+      // listener is registered, and `process.on("error", ...)` has no
+      // lowering here, so no listener can exist. The argument vector is
+      // built (its expressions still evaluate), then the runtime throws: an
+      // Error payload throws itself, anything else Node's
+      // ERR_UNHANDLED_ERROR.
+      const { stmts, pack } = dynArgumentPack(lowerer, rest, loc, { blame: call });
+      return emitThrows(
+        lowerer,
+        stmts,
+        { kind: "libCall", fn: "process.emitError", args: [pack()], type: VOID, loc },
+        loc,
+      );
+    }
+    if (DISPATCHED_PROCESS_EVENTS.has(name)) {
+      const eventValue = lowerer.coerceToExpected(lowerer.lowerExpr(eventArg), DYN);
+      // The argument vector is built into a fresh array in source order
+      // (dynArgumentPack): a spread contributes the values its iteration
+      // yields, and the listeners never see the caller's own array.
+      const { stmts, pack } = dynArgumentPack(lowerer, rest, loc, { blame: call });
+      const dispatch: IrExpr = {
+        kind: "libCall",
+        fn: "process.emit",
+        args: [eventValue, pack()],
+        type: BOOL,
+        loc,
+      };
+      return stmts.length === 0
+        ? dispatch
+        : { kind: "seqExpr", stmts, result: dispatch, type: BOOL, loc };
+    }
+    if (UNSUPPORTED_PROCESS_EVENTS.has(name) || name.startsWith("SIG")) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `process.emit('${name}') (not supported yet: this event's listeners or its default handling have no checked-dynamic dispatch)`,
+      );
+    }
+    return withIgnoredArguments(lowerer, [], rest, () => boolLit(false, loc));
   }
   if (member === "cwd") {
     // cwd ignores arguments, but a JS caller's extras still evaluate.

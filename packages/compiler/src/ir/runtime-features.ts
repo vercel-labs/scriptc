@@ -127,6 +127,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // process.finalization reports its ExperimentalWarnings through this
   // unit's deferred warning queue.
   "process.finalization",
+  "process.emit",
+  "process.emitError",
   "process.emitWarning",
   "process.emitWarningText",
   "process.offMultipleResolves",

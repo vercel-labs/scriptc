@@ -32,7 +32,7 @@ test("integer values compare and index as integers", async () => {
     if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
     const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
     const body = ll.match(
-      /define internal [^\n]+ @sc_bf_siftDown(?:\.i32)?\([^\n]*\) #0 \{([\s\S]*?)\n\}/,
+      /define internal [^\n]+ @sc_bf_siftDown(?:\.i32)?\([^\n]*\) align 64 #0 \{([\s\S]*?)\n\}/,
     )![1]!;
     // `child + 1`: the integer the speculated copy already adds.
     const sums = [...body.matchAll(/(%t\d+) = add nsw i64 %t\d+, 1\n/g)].map((m) => m[1]!);

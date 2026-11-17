@@ -59,7 +59,13 @@ export function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerR
   if (e.kind === "bin" && (e.op === "+" || e.op === "-" || e.op === "*")) {
     const left = integerOrNaNRange(host, e.left);
     const right = left && integerOrNaNRange(host, e.right);
-    return right ? integerArithmeticRange(e.op, left!, right) : null;
+    if (!right) return null;
+    // Integral operands give an integral result, but past the exact-integer
+    // range the double result rounds, so the sum has no exact range: an
+    // unbounded range says so. Analyses that need a magnitude (a wrapping
+    // 32-bit sum, an int32 compare, a product) re-derive the range with
+    // integerArithmeticRange or exactProduct and reject the unbounded one.
+    return integerArithmeticRange(e.op, left!, right) ?? UNBOUNDED_INTEGERS;
   }
   return null;
 }
@@ -219,7 +225,11 @@ export function emitNanArithmetic(
     return { integer: value.nanInteger, ordered: value.ordered };
   };
   if ((!li && l.nanInteger === undefined) || (!ri && r.nanInteger === undefined)) return undefined;
-  if (!integerOrNaNRange(host, e)) return undefined;
+  // The i64 arithmetic below is the result's integer only while the value
+  // stays within the exact-integer range; an unbounded operand range cannot
+  // promise that, so the expression takes the double path instead.
+  const range = integerOrNaNRange(host, e);
+  if (!range || !Number.isFinite(range.min) || !Number.isFinite(range.max)) return undefined;
   const left = operand(l, li);
   const right = left && operand(r, ri);
   if (!right) return undefined;
@@ -247,13 +257,20 @@ function exactProduct(left: IntegerRange, right: IntegerRange): boolean {
   return magnitude(left) * magnitude(right) < 2 ** 53;
 }
 
-/** The values an induction variable can hold: exact integers well inside the
- * exact-number range, wide enough that a ±1 step and a sum of two stays a
- * safe integer. A step of an exact integer is an exact integer however far
- * it runs, so the integer-or-NaN fact holds for every step; consumers that
- * need a bound check the value against the array length or emit two integer
- * compares. */
-const INTEGER_INDUCTION_RANGE: IntegerRange = { min: -(2 ** 52), max: 2 ** 52 };
+/** The values an induction variable can hold: every integer it can reach
+ * has no finite bound, so the range is unbounded. The fact it carries is
+ * that a value is an integral double, never -0, or NaN: a ± step of an
+ * exact integer is integral however far it runs, though it stops being
+ * exact on the byte once it passes 2^53. No consumer may therefore use this
+ * range as a proof of magnitude — a product here would round in the double
+ * where wrapping 32-bit arithmetic does not — so the analyses that need a
+ * bound (withinInt32, exactProduct, integerArithmeticRange) reject it and
+ * the value takes the double path. */
+const INTEGER_INDUCTION_RANGE: IntegerRange = { min: -Infinity, max: Infinity };
+
+/** An integral value whose magnitude is not bounded: an expression of two
+ * integral operands that the exact-range arithmetic cannot place. */
+const UNBOUNDED_INTEGERS: IntegerRange = { min: -Infinity, max: Infinity };
 
 /** The number locals of `fn` that only hold exact integers (never -0) or NaN, with the range of
  * those integers: locals declared once with an initializer, neither parameters nor captured or

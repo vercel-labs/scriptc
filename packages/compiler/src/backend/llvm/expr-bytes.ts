@@ -579,10 +579,13 @@ export function emitToUint32(
     B.line(`${out} = trunc i64 ${integer} to i32`);
     return out;
   }
-  if (expr && integerOrNaNRange(host, expr)) {
-    // An exact integer or NaN (an Int32[] or typed-array element read that
-    // may miss, `charCodeAt`): the integer's low 32 bits, or 0 for NaN. The
-    // conversion of NaN is poison, but the select then picks 0.
+  const range = expr ? integerOrNaNRange(host, expr) : null;
+  if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
+    // An exact integer or NaN within the exact-integer range (an Int32[] or
+    // typed-array element read that may miss, `charCodeAt`): the integer's
+    // low 32 bits, or 0 for NaN. A value whose range is unbounded may lie
+    // past the i64 conversion's domain, so it takes the ranged path below.
+    // The conversion of NaN is poison, but the select then picks 0.
     const integer = B.tmp();
     const low = B.tmp();
     const ordered = B.tmp();

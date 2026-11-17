@@ -646,14 +646,14 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       // a --target-cpu=x86-64-v3 build emits its helpers.
       const pairs = 4;
       const copies = (tier: "base" | "v3", group: number): string[] => [
-        `define internal void @h.${tier}(ptr %p) #${group} {`,
+        `define internal void @h.${tier}(ptr %p) align 64 #${group} {`,
         "  %v = load <2 x double>, ptr %p",
         "  %w = fmul <2 x double> %v, splat (double 3.0)",
         "  store <2 x double> %w, ptr %p",
         "  ret void",
         "}",
         ...Array.from({ length: pairs }, (_, index) => [
-          `define internal void @f${index}.${tier}(ptr %p) #${group} {`,
+          `define internal void @f${index}.${tier}(ptr %p) align 64 #${group} {`,
           "  %v = load <2 x double>, ptr %p",
           `  %w = fadd <2 x double> %v, splat (double ${index + 1}.0)`,
           "  store <2 x double> %w, ptr %p",
@@ -661,17 +661,17 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
           "  ret void",
           "}",
         ]).flat(),
-        `define internal void @g.${tier}(ptr %p) #${group} {`,
+        `define internal void @g.${tier}(ptr %p) align 64 #${group} {`,
         "  %v = load <4 x double>, ptr %p",
         "  %w = fadd <4 x double> %v, %v",
         "  store <4 x double> %w, ptr %p",
         "  ret void",
         "}",
-        `define internal double @s.${tier}(double %x) #${group} {`,
+        `define internal double @s.${tier}(double %x) align 64 #${group} {`,
         "  %y = fadd double %x, 1.0",
         "  ret double %y",
         "}",
-        `define internal void @t.${tier}(ptr %p) #${group} {`,
+        `define internal void @t.${tier}(ptr %p) align 64 #${group} {`,
         "  %v = load <2 x double>, ptr %p",
         "  %w = fadd <2 x double> %v, splat (double 5.0)",
         "  store <2 x double> %w, ptr %p",
@@ -691,7 +691,7 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
         ]);
       const source = [
         "@sink = global [4 x double] zeroinitializer",
-        "define internal void @k(ptr %p) #2 {",
+        "define internal void @k(ptr %p) align 64 #2 {",
         "  store double 0.0, ptr %p",
         "  ret void",
         "}",
@@ -771,12 +771,12 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       // body is optimized as colder code. f1 has no profile counts.
       const profiled = source
         .replace(
-          "define internal void @f0.v3(ptr %p) #1 {",
-          "define internal void @f0.v3(ptr %p) #1 !prof !90 {",
+          "define internal void @f0.v3(ptr %p) align 64 #1 {",
+          "define internal void @f0.v3(ptr %p) align 64 #1 !prof !90 {",
         )
         .replace(
-          "define internal void @f0.base(ptr %p) #0 {",
-          "define internal void @f0.base(ptr %p) #0 !prof !91 {",
+          "define internal void @f0.base(ptr %p) align 64 #0 {",
+          "define internal void @f0.base(ptr %p) align 64 #0 !prof !91 {",
         );
       const runs = await disassemble(
         await emit(

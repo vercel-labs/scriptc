@@ -191,7 +191,7 @@ export {};
 test("bodies that suspend only at their own awaits compile to stackless coroutines", async () => {
   const llvm = await emit(stacklessSource);
   const middle = definition(llvm, "sc_f_middle");
-  expect(middle).toMatch(/^define internal double @sc_f_middle\(double [^)]*\) #1 /);
+  expect(middle).toMatch(/^define internal double @sc_f_middle\(double [^)]*\) align 64 #1 /);
   // Each await prepares its continuation and suspends the coroutine, then
   // extracts the settled result; nothing parks the stack it runs on. A
   // stackless callee is awaited through its fiber record, without its

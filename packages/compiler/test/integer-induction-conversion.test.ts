@@ -27,7 +27,7 @@ console.log(weigh([1, 2, 3, 4]));
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     const body = (ll: string): string =>
       ll.match(
-        /define internal [^\n]+ @sc_(?:b)?f_weigh(?:\.i32)?\([^\n]*\) #0 \{([\s\S]*?)\n\}/,
+        /define internal [^\n]+ @sc_(?:b)?f_weigh(?:\.i32)?\([^\n]*\) align 64 #0 \{([\s\S]*?)\n\}/,
       )![1]!;
 
     const wide = body(emitLlvmModule(mod));
@@ -79,7 +79,7 @@ console.log(v[3], next([1, 2, 3, 4]));
     const body = (name: string): string =>
       ll.match(
         new RegExp(
-          `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+          `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{([\\s\\S]*?)\\n\\}`,
         ),
       )![1]!;
     // The divisor is at most 2^31 - 1 + 2^25 + 1: above int32, within uint32,

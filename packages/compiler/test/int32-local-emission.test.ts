@@ -104,7 +104,7 @@ suspended(["ab"]).then((t) => console.log(t));
 const body = (ll: string, name: string): string =>
   ll.match(
     new RegExp(
-      `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{ ;([\\s\\S]*?)\\n\\}`,
+      `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{ ;([\\s\\S]*?)\\n\\}`,
     ),
   )![1]!;
 

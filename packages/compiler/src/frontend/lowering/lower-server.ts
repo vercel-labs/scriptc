@@ -6637,26 +6637,75 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
     : { kind: "libCall", fn: "tls.connect", args: [port, host, opts], type: NETSOCKET_T, loc };
 }
 
-/** Module-function calls on tls import bindings: createServer(options[,
- * secureConnectionListener]) — the listener fires post-handshake with a
- * socket that behaves exactly like a net socket. Everything else the
- * module declares fences qualified (createSecureContext and connect
- * carry pointed hints from the fence-hint table). */
-function lowerTlsModuleCall(
+/** `new tls.Server(options[, secureConnectionListener])`: Node's Server
+ * constructor, the same lowering tls.createServer takes. */
+export function lowerTlsServerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  const callee = expr.expression;
+  const isTlsServer =
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "Server" &&
+      lowerer.builtinMemberOf(callee)?.module === "tls") ||
+    (ts.isIdentifier(callee) &&
+      lowerer.builtinImportOf(callee)?.module === "tls" &&
+      lowerer.builtinImportOf(callee)?.member === "Server");
+  if (!isTlsServer) return null;
+  const loc = locOf(expr);
+  const args = expr.arguments?.nodes ?? [];
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      "new tls.Server with a spread argument",
+      expr,
+      "the supported form is new tls.Server({ cert, key }, socket => ...)",
+    );
+  }
+  return lowerTlsCreateServer(lowerer, expr, args, loc);
+}
+
+/** `x instanceof tls.Server`: the server handle's TLS marker. Null when
+ * the right side is not tls.Server. */
+export function lowerTlsServerInstanceOf(
   lowerer: Lowerer,
-  expr: ts.CallExpression,
-  bi: { module: string; member: string },
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const callee = expr.right;
+  const isTlsServer =
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "Server" &&
+      lowerer.builtinMemberOf(callee)?.module === "tls") ||
+    (ts.isIdentifier(callee) &&
+      lowerer.builtinImportOf(callee)?.module === "tls" &&
+      lowerer.builtinImportOf(callee)?.member === "Server");
+  if (!isTlsServer) return null;
+  const value = lowerer.lowerExpr(expr.left);
+  if (value.type.kind === "netServer") {
+    return { kind: "libCall", fn: "tls.serverIs", args: [value], type: BOOL, loc };
+  }
+  // Every other value is no tls.Server; the operand still runs.
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: { kind: "boolLit", value: false, type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
+}
+
+/** tls.createServer(options[, secureConnectionListener]) and
+ * `new tls.Server(...)`: the same constructor either way. */
+function lowerTlsCreateServer(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  args: readonly ts.Expression[],
   loc: SrcLoc,
 ): IrExpr {
-  const args = expr.arguments.nodes;
-  if (bi.member === "createServer") {
-    if (args.length < 1 || args.length > 2) {
-      lowerer.noLowering(
-        `createServer with ${args.length} arguments`,
-        expr,
-        "the supported form is createServer({ cert, key }, socket => ...)",
-      );
-    }
+  if (args.length < 1 || args.length > 2) {
+    lowerer.noLowering(
+      `createServer with ${args.length} arguments`,
+      expr,
+      "the supported form is createServer({ cert, key }, socket => ...)",
+    );
+  }
     const opts = lowerTlsServerOptionsOrDyn(
       lowerer,
       args[0]!,
@@ -6722,6 +6771,22 @@ function lowerTlsModuleCall(
           type: NETSERVER_T,
           loc,
         };
+}
+
+/** Module-function calls on tls import bindings: createServer(options[,
+ * secureConnectionListener]) — the listener fires post-handshake with a
+ * socket that behaves exactly like a net socket. Everything else the
+ * module declares fences qualified (createSecureContext and connect
+ * carry pointed hints from the fence-hint table). */
+function lowerTlsModuleCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  bi: { module: string; member: string },
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  if (bi.member === "createServer") {
+    return lowerTlsCreateServer(lowerer, expr, args, loc);
   }
   if (bi.member === "connect") {
     return lowerTlsConnectCall(lowerer, expr, loc);

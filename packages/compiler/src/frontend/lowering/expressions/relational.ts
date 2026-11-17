@@ -40,7 +40,7 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
-import { lowerSocketInstanceOf } from "../lower-server.js";
+import { lowerSocketInstanceOf, lowerTlsServerInstanceOf } from "../lower-server.js";
 import { lowerDnsResolverInstanceOf } from "../lower-dgram.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
@@ -491,6 +491,9 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // resolver's own handle tag (scr_dns_resolve.c).
   const resolverTest = lowerDnsResolverInstanceOf(lowerer, expr, loc);
   if (resolverTest !== null) return resolverTest;
+  // `x instanceof tls.Server`: the server handle's TLS marker.
+  const tlsServerTest = lowerTlsServerInstanceOf(lowerer, expr, loc);
+  if (tlsServerTest !== null) return tlsServerTest;
   const rightClass = builtinClassRefOf(lowerer, expr.right);
   if (rightClass?.kind === "zlib") return lowerZlibInstanceOf(lowerer, expr, rightClass.mode, loc);
 

@@ -67916,6 +67916,7 @@
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/https-server-close-surface.mjs",
+          "tests/corpus/https-server-http-options.ts",
           "tests/corpus/https-server-inherited-surface.ts",
           "tests/corpus/https-server-max-headers-count.ts",
           "tests/corpus/net-server-dispose-http.ts"
@@ -68183,12 +68184,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:headersTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:https.headersTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/https-server-http-options.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -68211,7 +68210,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:https.maxHeadersCount",
         "tests": [
           "tests/corpus/https-server-max-headers-count.ts"
@@ -68237,12 +68236,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:requestTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:https.requestTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/https-server-http-options.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -68294,12 +68291,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:keepAliveTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:https.keepAliveTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/https-server-http-options.ts"
         ]
       },
       "anchorSource": "ancestor"

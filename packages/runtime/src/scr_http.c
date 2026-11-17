@@ -5491,6 +5491,59 @@ void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/) {
   scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
 }
 
+/* The createServer option checks Node's constructor runs as it reads each
+ * option, ahead of reading the next one; they leave Node's error pending
+ * without needing a server to apply the value to. */
+bool scr_http_server_max_header_size_check(double value) {
+  return scr_http_max_header_size_valid(value);
+}
+
+void scr_http_server_timeout_option_check(double field, const ScrDyn *value /*borrowed*/) {
+  static const char *const names[] = {
+    "timeout", "keepAliveTimeout", "headersTimeout", "requestTimeout",
+    "keepAliveTimeoutBuffer",
+  };
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  if (value->kind == SCR_DYN_UNDEF) return;
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail(names[i], "of type number", value);
+    return;
+  }
+  scr_net_server_timeout_option_check(field, value->v.num);
+}
+
+/* headersTimeout's relation to the request timeout: Node's default,
+ * min(60000, requestTimeout), never exceeds it, so only a given headers
+ * timeout can fail this check. The condition matches the setter's. */
+void scr_http_server_headers_timeout_check(const ScrDyn *request_timeout /*borrowed, nullable*/,
+                                           const ScrDyn *headers_timeout /*borrowed, nullable*/) {
+  double request = 300000;
+  if (request_timeout != NULL && request_timeout->kind == SCR_DYN_NUM)
+    request = request_timeout->v.num;
+  else if (request_timeout != NULL && request_timeout->kind != SCR_DYN_UNDEF)
+    return; /* the type error is pending */
+  if (headers_timeout == NULL || headers_timeout->kind == SCR_DYN_UNDEF) return;
+  if (headers_timeout->kind != SCR_DYN_NUM) return; /* the type error is pending */
+  double headers = headers_timeout->v.num;
+  if (request > 0 && headers > 0 && headers > request) {
+    char shown[48];
+    scr_num_received(headers, shown);
+    char msg[192];
+    int n = snprintf(msg, sizeof msg,
+                     "The value of \"headersTimeout\" is out of range. It must be <= requestTimeout. Received %s",
+                     shown);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  }
+}
+
+/* Node's validateBoolean for a createServer option; `name` carries the
+ * property name Node's message shows. */
+void scr_http_server_boolean_option_check(const char *name, const ScrDyn *value /*borrowed*/) {
+  if (value->kind == SCR_DYN_UNDEF) return;
+  if (value->kind != SCR_DYN_BOOL) scr_dyn_arg_type_fail(name, "of type boolean", value);
+}
+
 /* createServer({ maxHeaderSize }): the server's header size bound. */
 void scr_http_server_max_header_size(ScrNetServer *s, double value) {
   if (!scr_http_max_header_size_valid(value)) return;
@@ -5536,27 +5589,37 @@ void scr_http_server_headers_timeout_default(ScrNetServer *s,
 }
 
 /* createServer({ connectionsCheckingInterval }): Node's validateInteger
- * ladder; an explicit undefined is the absent option. */
-void scr_http_server_connections_checking_interval(ScrNetServer *s,
-                                                    const ScrDyn *value /*borrowed*/) {
-  if (value->kind == SCR_DYN_UNDEF) return;
+ * ladder; an explicit undefined is the absent option. False with the
+ * exception pending. */
+static bool scr_http_connections_checking_interval_valid(const ScrDyn *value /*borrowed*/) {
+  if (value->kind == SCR_DYN_UNDEF) return true;
   if (value->kind != SCR_DYN_NUM) {
     scr_dyn_arg_type_fail("connectionsCheckingInterval", "of type number", value);
-    return;
+    return false;
   }
   double interval = value->v.num;
   bool integer = isfinite(interval) && interval == floor(interval);
-  if (!(integer && interval >= 0 && interval <= 9007199254740991.0)) {
-    char shown[48];
-    scr_num_received(interval, shown);
-    char msg[224];
-    int n = snprintf(msg, sizeof msg,
-                     integer ? "The value of \"connectionsCheckingInterval\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s"
-                             : "The value of \"connectionsCheckingInterval\" is out of range. It must be an integer. Received %s",
-                     shown);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return;
-  }
+  if (integer && interval >= 0 && interval <= 9007199254740991.0) return true;
+  char shown[48];
+  scr_num_received(interval, shown);
+  char msg[224];
+  int n = snprintf(msg, sizeof msg,
+                   integer ? "The value of \"connectionsCheckingInterval\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s"
+                           : "The value of \"connectionsCheckingInterval\" is out of range. It must be an integer. Received %s",
+                   shown);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+void scr_http_server_connections_checking_interval_check(const ScrDyn *value /*borrowed*/) {
+  scr_http_connections_checking_interval_valid(value);
+}
+
+void scr_http_server_connections_checking_interval(ScrNetServer *s,
+                                                    const ScrDyn *value /*borrowed*/) {
+  if (!scr_http_connections_checking_interval_valid(value)) return;
+  if (value->kind == SCR_DYN_UNDEF) return;
+  double interval = value->v.num;
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
   if (ctx != NULL && ctx->proto == SCR_NET_PROTO_HTTP1) ctx->connections_checking_interval = interval;
 }

@@ -127,6 +127,7 @@ typedef struct {
   double timer;      /* the sampling interval's handle while enabled, else 0 */
   ScrClosure *tick;  /* owned: the sampling callback, identifies this histogram */
   bool enabled;
+  size_t rc; /* the handle box and, while enabled, the sampling timer */
 } ScrEld;
 
 static int scr_hdr_bucket_index(int64_t value) {
@@ -213,13 +214,54 @@ static void scr_eld_clear(ScrEld *h) {
 
 /* ── monitorEventLoopDelay ──────────────────────────────────────────── */
 
+static void scr_histo_install(void);
+
 static SCR_TL ScrEld **scr_elds;
 static SCR_TL size_t scr_elds_len;
 
-static ScrEld *scr_eld_of(double handle) {
-  if (!(handle >= 1) || handle > (double)scr_elds_len) return NULL;
-  return scr_elds[(size_t)handle - 1];
+/* A histogram value is a refcounted runtime object behind a checked-dynamic
+ * handle. The registry only finds the object a sampling tick belongs to;
+ * the handle box owns the object, and the timer owns one while enabled, so
+ * a dropped histogram is freed with its last reference instead of living
+ * in a table until exit. */
+static ScrEld *scr_eld_of(const ScrDyn *handle) {
+  if (handle == NULL || handle->kind != SCR_DYN_HANDLE ||
+      handle->v.handle.tag != SCR_DYNH_ELD_HISTOGRAM)
+    return NULL;
+  return handle->v.handle.ptr;
 }
+
+static void scr_eld_registry_remove(ScrEld *h) {
+  for (size_t i = 0; i < scr_elds_len; i++) {
+    if (scr_elds[i] != h) continue;
+    scr_elds[i] = scr_elds[--scr_elds_len];
+    return;
+  }
+}
+
+static void scr_eld_free(ScrEld *h) {
+  scr_eld_registry_remove(h);
+  scr_closure_release(h->tick);
+  free(h->counts);
+  free(h);
+}
+
+static void *scr_eld_retain_v(void *p) {
+  ((ScrEld *)p)->rc++;
+  return p;
+}
+
+static void scr_eld_release_v(void *p) {
+  ScrEld *h = p;
+  if (h == NULL || --h->rc > 0) return;
+  scr_eld_free(h);
+}
+
+static const ScrDynHandleOps scr_eld_ops = {
+    .cls = "IntervalHistogram",
+    .retain = scr_eld_retain_v,
+    .release = scr_eld_release_v,
+};
 
 static void scr_eld_tick(ScrClosure *self) {
   for (size_t i = 0; i < scr_elds_len; i++) {
@@ -236,11 +278,10 @@ static void scr_eld_tick(ScrClosure *self) {
  * JS object); release them when the script ends so their callbacks and
  * counts do not outlive it. */
 static void scr_eld_cleanup(void) {
-  for (size_t i = 0; i < scr_elds_len; i++) {
-    ScrEld *h = scr_elds[i];
-    scr_closure_release(h->tick);
-    free(h->counts);
-    free(h);
+  while (scr_elds_len > 0) {
+    ScrEld *h = scr_elds[scr_elds_len - 1];
+    if (h->enabled) scr_clear_interval(h->timer);
+    scr_eld_free(h);
   }
   free(scr_elds);
   scr_elds = NULL;
@@ -266,28 +307,40 @@ static bool scr_eld_resolution_ok(double resolution) {
   return false;
 }
 
-double scr_eld_new(double resolution) {
-  if (!scr_eld_resolution_ok(resolution)) return 0;
+ScrDyn *scr_eld_new(double resolution) {
+  if (!scr_eld_resolution_ok(resolution)) return NULL;
+  scr_histo_install();
   if (scr_elds_len == 0 && scr_elds == NULL) scr_atexit(scr_eld_cleanup);
   ScrEld *h = calloc(1, sizeof(ScrEld));
   ScrEld **grown = realloc(scr_elds, (scr_elds_len + 1) * sizeof(ScrEld *));
   if (h == NULL || grown == NULL) {
     free(h);
     if (grown != NULL) scr_elds = grown;
-    return 0;
+    static const char msg[] = "Memory allocation failed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                             "ERR_MEMORY_ALLOCATION_FAILED");
+    return NULL;
   }
   scr_elds = grown;
   h->min_value = INT64_MAX;
   h->resolution = resolution;
   h->tick = scr_closure_new((void *)scr_eld_tick, 0);
+  h->rc = 1;
   scr_elds[scr_elds_len++] = h;
-  return (double)scr_elds_len;
+  ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_ELD_HISTOGRAM);
+  if (box == NULL) {
+    scr_eld_free(h);
+    return NULL;
+  }
+  scr_eld_release_v(h); /* the box holds the one live reference */
+  return box;
 }
 
-bool scr_eld_enable(double handle) {
+bool scr_eld_enable(ScrDyn *handle) {
   ScrEld *h = scr_eld_of(handle);
   if (h == NULL || h->enabled) return false;
   h->enabled = true;
+  h->rc++; /* the sampling timer keeps the histogram alive */
   /* Node's ELDHistogram::OnStart arms the timer and nothing else: the
    * first tick's RecordDelta has no previous reading to difference
    * against, so it records nothing, and prev_ns survives a disable (a
@@ -298,16 +351,17 @@ bool scr_eld_enable(double handle) {
   return true;
 }
 
-bool scr_eld_disable(double handle) {
+bool scr_eld_disable(ScrDyn *handle) {
   ScrEld *h = scr_eld_of(handle);
   if (h == NULL || !h->enabled) return false;
   h->enabled = false;
   scr_clear_interval(h->timer);
   h->timer = 0;
+  scr_eld_release_v(h); /* drop the timer's reference */
   return true;
 }
 
-void scr_eld_reset(double handle) {
+void scr_eld_reset(ScrDyn *handle) {
   ScrEld *h = scr_eld_of(handle);
   if (h != NULL) scr_eld_clear(h);
 }
@@ -333,12 +387,12 @@ static int64_t scr_eld_percentile_i64(const ScrEld *h, double percentile) {
   return 0;
 }
 
-double scr_eld_percentile(double handle, double percentile) {
+double scr_eld_percentile(ScrDyn *handle, double percentile) {
   return (double)scr_eld_percentile_i64(scr_eld_of(handle), percentile);
 }
 
 /* which: 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
-double scr_eld_stat(double handle, double which) {
+double scr_eld_stat(ScrDyn *handle, double which) {
   ScrEld *h = scr_eld_of(handle);
   int w = (int)which;
   if (h == NULL) return w == 0 ? (double)INT64_MAX : w >= 2 && w <= 3 ? NAN : 0;
@@ -407,19 +461,50 @@ typedef struct {
   int64_t *view_value; /* owned */
   size_t view_len;
   size_t view_cap;
+  size_t rc; /* the checked-dynamic handle box */
 } ScrHisto;
 
-static SCR_TL ScrHisto **scr_histos;
-static SCR_TL size_t scr_histos_len;
-
-/* createHistogram handles are NEGATIVE (-1, -2, ...) so they can never be
- * mistaken for a monitorEventLoopDelay handle (the positive ELD table), even
- * when a value is read through a `Histogram`-typed upcast of an
- * IntervalHistogram. */
-static ScrHisto *scr_histo_of(double handle) {
-  if (!(handle <= -1) || -handle > (double)scr_histos_len) return NULL;
-  ScrHisto *h = scr_histos[(size_t)(-handle) - 1];
+/* A createHistogram value is a refcounted runtime object behind a
+ * checked-dynamic handle, like the event-loop histogram: its buckets are
+ * freed with the last reference, so a short-lived histogram does not stay
+ * in a thread table until exit. */
+static ScrHisto *scr_histo_of(const ScrDyn *handle) {
+  if (handle == NULL || handle->kind != SCR_DYN_HANDLE ||
+      handle->v.handle.tag != SCR_DYNH_HISTOGRAM)
+    return NULL;
+  ScrHisto *h = handle->v.handle.ptr;
   return h == NULL || h->disposed ? NULL : h;
+}
+
+static void scr_histo_free(ScrHisto *h);
+
+static void *scr_histo_retain_v(void *p) {
+  ((ScrHisto *)p)->rc++;
+  return p;
+}
+
+static void scr_histo_release_v(void *p) {
+  ScrHisto *h = p;
+  if (h == NULL || --h->rc > 0) return;
+  scr_histo_free(h);
+}
+
+static const ScrDynHandleOps scr_histo_ops = {
+    .cls = "RecordableHistogram",
+    .retain = scr_histo_retain_v,
+    .release = scr_histo_release_v,
+};
+
+/* The dyn handle table needs each tag's ops before the first box is made
+ * (scr_dyn_new_handle aborts otherwise). Both histogram classes install
+ * together on the first constructor call. */
+static SCR_TL bool scr_histo_ops_installed;
+
+static void scr_histo_install(void) {
+  if (scr_histo_ops_installed) return;
+  scr_histo_ops_installed = true;
+  scr_dyn_handle_install(SCR_DYNH_HISTOGRAM, &scr_histo_ops);
+  scr_dyn_handle_install(SCR_DYNH_ELD_HISTOGRAM, &scr_eld_ops);
 }
 
 static int scr_histo_log2_floor(int64_t value) {
@@ -580,16 +665,36 @@ static void scr_histo_record_corrected(ScrHisto *h, int64_t value, int64_t expec
 
 static void scr_histo_clear_view(ScrHisto *h) { h->view_len = 0; }
 
-static void scr_histo_push_view(ScrHisto *h, double key, int64_t value) {
+/* Grow the two view buffers together: both new arrays are allocated and
+ * filled before the old ones are released, so a failed allocation leaves
+ * the existing pointers (and their contents) intact and throws Node's
+ * allocation-failure error instead of leaving the histogram with a freed
+ * buffer. */
+static bool scr_histo_push_view(ScrHisto *h, double key, int64_t value) {
   if (h->view_len == h->view_cap) {
     size_t cap = h->view_cap ? h->view_cap * 2 : 16;
-    double *keys = realloc(h->view_key, cap * sizeof *keys);
-    int64_t *values = realloc(h->view_value, cap * sizeof *values);
+    if (cap > SIZE_MAX / sizeof(double) || cap > SIZE_MAX / sizeof(int64_t)) {
+      static const char msg[] = "Memory allocation failed";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                               "ERR_MEMORY_ALLOCATION_FAILED");
+      return false;
+    }
+    double *keys = malloc(cap * sizeof *keys);
+    int64_t *values = malloc(cap * sizeof *values);
     if (keys == NULL || values == NULL) {
       free(keys);
       free(values);
-      return;
+      static const char msg[] = "Memory allocation failed";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                               "ERR_MEMORY_ALLOCATION_FAILED");
+      return false;
     }
+    if (h->view_len > 0) {
+      memcpy(keys, h->view_key, h->view_len * sizeof *keys);
+      memcpy(values, h->view_value, h->view_len * sizeof *values);
+    }
+    free(h->view_key);
+    free(h->view_value);
     h->view_key = keys;
     h->view_value = values;
     h->view_cap = cap;
@@ -597,6 +702,7 @@ static void scr_histo_push_view(ScrHisto *h, double key, int64_t value) {
   h->view_key[h->view_len] = key;
   h->view_value[h->view_len] = value;
   h->view_len++;
+  return true;
 }
 
 static void scr_histo_free(ScrHisto *h) {
@@ -605,13 +711,6 @@ static void scr_histo_free(ScrHisto *h) {
   free(h->view_key);
   free(h->view_value);
   free(h);
-}
-
-static void scr_histo_cleanup(void) {
-  for (size_t i = 0; i < scr_histos_len; i++) scr_histo_free(scr_histos[i]);
-  free(scr_histos);
-  scr_histos = NULL;
-  scr_histos_len = 0;
 }
 
 /* Node's validateInteger(name, min, max): ERR_OUT_OF_RANGE with the range
@@ -684,7 +783,7 @@ static bool scr_histo_option_int(const ScrDyn *value, const char *name, int64_t 
  * options this lowering accepts). A typed options object lowers to a
  * typed-ref capsule, which is materialized once so its fields read like a
  * plain object's. */
-double scr_histo_new(ScrDyn *options) {
+ScrDyn *scr_histo_new(ScrDyn *options) {
   int64_t lowest = 1, highest = 9007199254740991LL;
   double figures = 3;
   ScrDyn *plain = NULL;
@@ -696,11 +795,11 @@ double scr_histo_new(ScrDyn *options) {
   if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_TYPED_REF) {
     static const char msg[] = "The \"options\" argument must be of type object";
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
-    return 0;
+    return NULL;
   }
   if (options->kind == SCR_DYN_TYPED_REF) {
     plain = scr_dyn_typed_ref_materialize(options);
-    if (scr_exc_pending()) return 0;
+    if (scr_exc_pending()) return NULL;
   }
   {
     const ScrDyn *opts = plain != NULL ? plain : options;
@@ -757,14 +856,14 @@ double scr_histo_new(ScrDyn *options) {
   ok = true;
 done:
   scr_dyn_release(plain);
-  if (!ok) return 0;
-create:
-  if (scr_histos_len == 0 && scr_histos == NULL) scr_atexit(scr_histo_cleanup);
+  if (!ok) return NULL;
+create:;
+  scr_histo_install();
   ScrHisto *h = calloc(1, sizeof *h);
   if (h == NULL) {
     static const char msg[] = "scriptc: out of memory";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
-    return 0;
+    return NULL;
   }
   if (!scr_histo_config(h, lowest, highest, (int)figures)) {
     scr_histo_free(h);
@@ -774,31 +873,28 @@ create:
                        "figures=%d",
                        (long long)lowest, (long long)highest, (int)figures);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
-    return 0;
+    return NULL;
   }
-  ScrHisto **grown = realloc(scr_histos, (scr_histos_len + 1) * sizeof *grown);
-  if (grown == NULL) {
+  h->rc = 1;
+  ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_HISTOGRAM);
+  if (box == NULL) {
     scr_histo_free(h);
-    static const char msg[] = "scriptc: out of memory";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
-    return 0;
+    return NULL;
   }
-  scr_histos = grown;
-  scr_histos[scr_histos_len] = h;
-  scr_histos_len++;
-  return -(double)scr_histos_len;
+  scr_histo_release_v(h); /* the box holds the one live reference */
+  return box;
 }
 
 /* record(val): Node validates a number as an integer >= 1; a bigint must
  * fit the histogram's int64 range (ERR_OUT_OF_RANGE otherwise). */
-void scr_histo_record_checked(double handle, double value) {
+void scr_histo_record_checked(ScrDyn *handle, double value) {
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL) return;
   if (!scr_histo_integer_ok(value, "val", 1, 9007199254740991.0)) return;
   scr_histo_record(h, (int64_t)value);
 }
 
-void scr_histo_record_big(double handle, ScrBigInt *value) {
+void scr_histo_record_big(ScrDyn *handle, ScrBigInt *value) {
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL || value == NULL) return;
   if (!scr_bigint_i64_fits(value) || scr_bigint_to_i64(value) < 1) {
@@ -810,7 +906,7 @@ void scr_histo_record_big(double handle, ScrBigInt *value) {
 }
 
 /* recordCorrected(val, expectedInterval): both integers >= 1. */
-void scr_histo_record_corrected_checked(double handle, double value, double expected) {
+void scr_histo_record_corrected_checked(ScrDyn *handle, double value, double expected) {
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL) return;
   if (!scr_histo_integer_ok(value, "val", 1, 9007199254740991.0)) return;
@@ -819,7 +915,7 @@ void scr_histo_record_corrected_checked(double handle, double value, double expe
 }
 
 /* recordDelta(): the nanoseconds since the previous call, recorded. */
-void scr_histo_record_delta(double handle) {
+void scr_histo_record_delta(ScrDyn *handle) {
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL) return;
   uint64_t now = scr_hrtime_ns();
@@ -833,8 +929,8 @@ void scr_histo_record_delta(double handle) {
   h->prev_ns = now;
 }
 
-void scr_histo_reset(double handle) {
-  if (handle >= 1) {
+void scr_histo_reset(ScrDyn *handle) {
+  if (scr_eld_of(handle) != NULL) {
     scr_eld_reset(handle);
     return;
   }
@@ -851,7 +947,7 @@ void scr_histo_reset(double handle) {
 
 /* add(other): every recorded value of `other` is recorded here; values this
  * histogram cannot hold are dropped (Node ignores hdr_add's dropped count). */
-void scr_histo_add(double handle, double other_handle) {
+void scr_histo_add(ScrDyn *handle, ScrDyn *other_handle) {
   ScrHisto *h = scr_histo_of(handle);
   ScrHisto *other = scr_histo_of(other_handle);
   if (h == NULL || other == NULL) {
@@ -872,7 +968,7 @@ void scr_histo_add(double handle, double other_handle) {
 
 /* subtract(other): counts clamp at zero; the internal counters are rebuilt
  * and exceeds drops to the difference, like Node's Histogram::Subtract. */
-void scr_histo_subtract(double handle, double other_handle) {
+void scr_histo_subtract(ScrDyn *handle, ScrDyn *other_handle) {
   ScrHisto *h = scr_histo_of(handle);
   ScrHisto *other = scr_histo_of(other_handle);
   if (h == NULL || other == NULL) {
@@ -913,8 +1009,9 @@ static double scr_histo_eld_selector(int which) {
   }
 }
 
-double scr_histo_stat(double handle, double which) {
-  if (handle >= 1) return scr_eld_stat(handle, scr_histo_eld_selector((int)which));
+double scr_histo_stat(ScrDyn *handle, double which) {
+  if (scr_eld_of(handle) != NULL)
+    return scr_eld_stat(handle, scr_histo_eld_selector((int)which));
   ScrHisto *h = scr_histo_of(handle);
   int w = (int)which;
   if (h == NULL) return w == 1 ? (double)INT64_MAX : (w == 3 || w == 4) ? NAN : 0;
@@ -953,8 +1050,8 @@ double scr_histo_stat(double handle, double which) {
   }
 }
 
-ScrBigInt *scr_histo_stat_big(double handle, double which) {
-  if (handle >= 1) {
+ScrBigInt *scr_histo_stat_big(ScrDyn *handle, double which) {
+  if (scr_eld_of(handle) != NULL) {
     ScrEld *eld = scr_eld_of(handle);
     /* This switch reads the createHistogram selector order (0 count,
      * 1 min, 2 max, 5 exceeds) directly from the event-loop histogram's
@@ -1005,8 +1102,8 @@ ScrBigInt *scr_histo_stat_big(double handle, double which) {
  * answers the same values as the value's own interface. The ELD counts use
  * the default Histogram bucket layout (lowest 1, three figures), so its
  * countAt/cdf run over the generic bucket math. */
-static ScrHisto *scr_histo_lookup(double handle, ScrHisto *tmp) {
-  if (handle >= 1) {
+static ScrHisto *scr_histo_lookup(ScrDyn *handle, ScrHisto *tmp) {
+  if (scr_eld_of(handle) != NULL) {
     ScrEld *eld = scr_eld_of(handle);
     if (eld == NULL) return NULL;
     *tmp = (ScrHisto){0};
@@ -1044,15 +1141,16 @@ static int64_t scr_histo_percentile_i64(const ScrHisto *h, double percentile) {
   return scr_histo_highest_equivalent(h, value);
 }
 
-double scr_histo_percentile(double handle, double percentile) {
-  if (handle >= 1) return scr_eld_percentile(handle, percentile);
+double scr_histo_percentile(ScrDyn *handle, double percentile) {
+  if (scr_eld_of(handle) != NULL) return scr_eld_percentile(handle, percentile);
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL) return 0;
   return (double)scr_histo_percentile_i64(h, percentile);
 }
 
-ScrBigInt *scr_histo_percentile_big(double handle, double percentile) {
-  if (handle >= 1) return scr_bigint_from_i64(scr_eld_percentile_i64(scr_eld_of(handle), percentile));
+ScrBigInt *scr_histo_percentile_big(ScrDyn *handle, double percentile) {
+  if (scr_eld_of(handle) != NULL)
+    return scr_bigint_from_i64(scr_eld_percentile_i64(scr_eld_of(handle), percentile));
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL) return scr_bigint_from_i64(0);
   return scr_bigint_from_i64(scr_histo_percentile_i64(h, percentile));
@@ -1067,7 +1165,7 @@ static bool scr_histo_to_i64(double value, int64_t *out) {
   return true;
 }
 
-double scr_histo_count_at(double handle, double value) {
+double scr_histo_count_at(ScrDyn *handle, double value) {
   ScrHisto tmp;
   ScrHisto *h = scr_histo_lookup(handle, &tmp);
   int64_t at = 0;
@@ -1080,7 +1178,7 @@ double scr_histo_count_at(double handle, double value) {
 
 /* Node's Histogram::Cdf: the first index whose highest equivalent value
  * reaches `value`, empty buckets included. */
-double scr_histo_cdf(double handle, double value) {
+double scr_histo_cdf(ScrDyn *handle, double value) {
   ScrHisto tmp;
   ScrHisto *h = scr_histo_lookup(handle, &tmp);
   int64_t at = 0;
@@ -1096,17 +1194,17 @@ double scr_histo_cdf(double handle, double value) {
   return 1.0;
 }
 
-double scr_histo_ccdf(double handle, double value) { return 1.0 - scr_histo_cdf(handle, value); }
+double scr_histo_ccdf(ScrDyn *handle, double value) { return 1.0 - scr_histo_cdf(handle, value); }
 
 /* hdr_iter_percentile's ticks: the percentile thresholds 0, 50, 75, ...,
  * each emitted once the running cumulative reaches it, and 100 for the
  * last recorded bucket (or for an empty histogram). */
-double scr_histo_percentiles_count(double handle) {
+double scr_histo_percentiles_count(ScrDyn *handle) {
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL) return 0;
   scr_histo_clear_view(h);
   if (h->total == 0) {
-    scr_histo_push_view(h, 100.0, 0);
+    if (!scr_histo_push_view(h, 100.0, 0)) return 0;
     return (double)h->view_len;
   }
   double to = 0.0;
@@ -1120,25 +1218,25 @@ double scr_histo_percentiles_count(double handle) {
     if (cumulative >= h->total) {
       /* The final bucket's next tick is the closing 100 entry, not another
        * threshold: the iterator's has_next is false after it. */
-      if (to <= current) scr_histo_push_view(h, to, last_value);
+      if (to <= current && !scr_histo_push_view(h, to, last_value)) return 0;
       break;
     }
     while (to < 100.0 && to <= current) {
-      scr_histo_push_view(h, to, last_value);
+      if (!scr_histo_push_view(h, to, last_value)) return 0;
       to += (100.0 - to) / 2.0;
     }
   }
-  scr_histo_push_view(h, 100.0, last_value);
+  if (!scr_histo_push_view(h, 100.0, last_value)) return 0;
   return (double)h->view_len;
 }
 
-double scr_histo_percentiles_key(double handle, double index) {
+double scr_histo_percentiles_key(ScrDyn *handle, double index) {
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL || index < 0 || (size_t)index >= h->view_len) return 0;
   return h->view_key[(size_t)index];
 }
 
-double scr_histo_percentiles_value(double handle, double index) {
+double scr_histo_percentiles_value(ScrDyn *handle, double index) {
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL || index < 0 || (size_t)index >= h->view_len) return 0;
   return (double)h->view_value[(size_t)index];
@@ -1146,11 +1244,17 @@ double scr_histo_percentiles_value(double handle, double index) {
 
 /* Symbol.dispose: Node's RecordableHistogram is not disposable, but the
  * runtime frees the counts early. */
-void scr_histo_dispose(double handle) {
-  if (!(handle <= -1) || -handle > (double)scr_histos_len) return;
-  ScrHisto *h = scr_histos[(size_t)(-handle) - 1];
+void scr_histo_dispose(ScrDyn *handle) {
+  ScrHisto *h = scr_histo_of(handle);
   if (h == NULL) return;
+  /* Node's RecordableHistogram is not disposable, but the runtime frees
+   * the buckets early; the handle box stays and releases nothing more. */
   h->disposed = true;
-  scr_histo_free(h);
-  scr_histos[(size_t)(-handle) - 1] = NULL;
+  free(h->counts);
+  h->counts = NULL;
+  h->counts_len = 0;
+  h->total = 0;
+  h->min_value = INT64_MAX;
+  h->max_value = 0;
+  scr_histo_clear_view(h);
 }

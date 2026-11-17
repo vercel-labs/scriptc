@@ -1235,7 +1235,7 @@ export function lowerHistogramProperty(
   return {
     kind: "libCall",
     fn: "perf.eldStat",
-    args: [lowerer.lowerExprExpecting(expr.expression, F64), numLit(which, loc)],
+    args: [lowerer.lowerExprExpecting(expr.expression, DYN), numLit(which, loc)],
     type: F64,
     loc,
   };
@@ -1251,7 +1251,7 @@ export function lowerHistogramMethodCall(
   if (access.questionDotToken || !isIntervalHistogram(lowerer, access.expression)) return null;
   const loc = locOf(expr);
   const name = access.name.text;
-  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, F64);
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, DYN);
   const args = expr.arguments.nodes;
   if ((name === "enable" || name === "disable" || name === "reset") && args.length === 0) {
     const fn =
@@ -1264,7 +1264,7 @@ export function lowerHistogramMethodCall(
   }
   if (name === "percentile" && args.length === 1 && !ts.isSpreadElement(args[0]!)) {
     // Node validates first: NaN, p <= 0 and p > 100 throw ERR_OUT_OF_RANGE.
-    const h = lowerer.declareHiddenLocal("%histogram", F64);
+    const h = lowerer.declareHiddenLocal("%histogram", DYN);
     const p = lowerer.declareHiddenLocal("%percentile", F64);
     const pRef = (): IrExpr => varRef(p.id, F64, loc);
     const cmp = (op: "!==" | "<=" | ">", left: IrExpr, right: IrExpr): IrExpr => ({
@@ -1323,7 +1323,7 @@ export function lowerHistogramMethodCall(
         else_: {
           kind: "libCall",
           fn: "perf.eldPercentile",
-          args: [varRef(h.id, F64, loc), pRef()],
+          args: [varRef(h.id, DYN, loc), pRef()],
           type: F64,
           loc,
         },
@@ -1387,7 +1387,7 @@ export function lowerMonitorEventLoopDelayCall(lowerer: Lowerer, expr: ts.CallEx
       );
     }
   }
-  return { kind: "libCall", fn: "perf.eldNew", args: [resolution], type: F64, loc };
+  return { kind: "libCall", fn: "perf.eldNew", args: [resolution], type: DYN, loc };
 }
 
 /** performance.eventLoopUtilization(u1?, u2?) — Node's
@@ -1529,7 +1529,7 @@ export function lowerCreateHistogramCall(lowerer: Lowerer, expr: ts.CallExpressi
   }
   const options =
     args.length === 0 ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(args[0]!, DYN);
-  return { kind: "libCall", fn: "perf.histoNew", args: [options], type: F64, loc };
+  return { kind: "libCall", fn: "perf.histoNew", args: [options], type: DYN, loc };
 }
 
 /** The numeric readings, as perf.histoStat selectors. */
@@ -1564,7 +1564,7 @@ function histoPercentileValue(
   if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
     lowerer.noLowering(`Histogram.${access.name.text} with this argument shape`, call);
   }
-  const h = lowerer.declareHiddenLocal("%histogram", F64);
+  const h = lowerer.declareHiddenLocal("%histogram", DYN);
   const p = lowerer.declareHiddenLocal("%percentile", F64);
   const pRef = (): IrExpr => varRef(p.id, F64, loc);
   const cmp = (op: "!==" | "<=" | ">", left: IrExpr, right: IrExpr): IrExpr => ({
@@ -1616,7 +1616,7 @@ function histoPercentileValue(
       {
         kind: "varDecl",
         localId: h.id,
-        init: lowerer.lowerExprExpecting(access.expression, F64),
+        init: lowerer.lowerExprExpecting(access.expression, DYN),
         loc,
       },
       {
@@ -1633,7 +1633,7 @@ function histoPercentileValue(
       else_: {
         kind: "libCall",
         fn,
-        args: [varRef(h.id, F64, loc), pRef()],
+        args: [varRef(h.id, DYN, loc), pRef()],
         type: resultType,
         loc,
       },
@@ -1661,7 +1661,7 @@ function histoPercentilesMap(
   if (!helper) {
     helper = keyedHelperName(lowerer, "%perf.histoPercentiles", key);
     lowerer.valueHelpers.set(key, helper);
-    const h = varRef("h.0", F64, loc);
+    const h = varRef("h.0", DYN, loc);
     const n = varRef("n.0", F64, loc);
     const i = varRef("i.0", F64, loc);
     const out = varRef("out.0", result, loc);
@@ -1674,10 +1674,10 @@ function histoPercentilesMap(
     });
     lowerer.liftedFns.push({
       name: helper,
-      params: [{ localId: "h.0", name: "h", type: F64 }],
+      params: [{ localId: "h.0", name: "h", type: DYN }],
       returnType: result,
       locals: [
-        { id: "h.0", name: "h", type: F64, mutable: false },
+        { id: "h.0", name: "h", type: DYN, mutable: false },
         { id: "n.0", name: "n", type: F64, mutable: false },
         { id: "out.0", name: "out", type: result, mutable: false },
         { id: "i.0", name: "i", type: F64, mutable: true },
@@ -1742,7 +1742,7 @@ export function lowerRecordableHistogramProperty(
     return null;
   const loc = locOf(expr);
   const name = expr.name.text;
-  const handle = (): IrExpr => lowerer.lowerExprExpecting(expr.expression, F64);
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(expr.expression, DYN);
   const stat = HISTO_STATS.get(name);
   if (stat !== undefined) {
     return {
@@ -1782,7 +1782,7 @@ export function lowerRecordableHistogramMethodCall(
     return null;
   const loc = locOf(call);
   const name = access.name.text;
-  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, F64);
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, DYN);
   const args = call.arguments.nodes;
   const noArgs = (): boolean => args.length === 0;
   if (name === "recordDelta" && noArgs()) {
@@ -1805,7 +1805,7 @@ export function lowerRecordableHistogramMethodCall(
     return {
       kind: "libCall",
       fn: "perf.histoRecord",
-      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
       type: VOID,
       loc,
     };
@@ -1833,7 +1833,7 @@ export function lowerRecordableHistogramMethodCall(
     return {
       kind: "libCall",
       fn: name === "add" ? "perf.histoAdd" : "perf.histoSubtract",
-      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
       type: VOID,
       loc,
     };
@@ -1853,7 +1853,7 @@ export function lowerRecordableHistogramMethodCall(
     return {
       kind: "libCall",
       fn: "perf.histoCountAt",
-      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
       type: F64,
       loc,
     };
@@ -1862,7 +1862,7 @@ export function lowerRecordableHistogramMethodCall(
     return {
       kind: "libCall",
       fn: name === "cdf" ? "perf.histoCdf" : "perf.histoCcdf",
-      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
       type: F64,
       loc,
     };

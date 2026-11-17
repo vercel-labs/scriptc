@@ -80343,6 +80343,7 @@
           "tests/corpus/5214-perf-entry-inspect.ts",
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/9995-histogram-upcast.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9999-histogram-core.ts",
@@ -82278,6 +82279,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -82307,7 +82309,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -82335,7 +82338,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -82409,7 +82413,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -82626,7 +82631,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -82775,6 +82781,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -82805,6 +82812,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -82835,6 +82843,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -82865,6 +82874,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -82987,6 +82997,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83017,6 +83028,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83047,6 +83059,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83077,6 +83090,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83107,6 +83121,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83137,6 +83152,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83213,6 +83229,7 @@
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83372,7 +83389,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83400,7 +83418,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83428,7 +83447,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83456,7 +83476,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83484,7 +83505,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83512,7 +83534,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"
@@ -83632,7 +83655,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9998-histogram-recordable.js",
-          "tests/corpus/9995-histogram-upcast.ts"
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
         ]
       },
       "anchorSource": "exact"

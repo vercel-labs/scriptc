@@ -37741,9 +37741,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
+        "verification": "test-backed"
       }
     },
     {

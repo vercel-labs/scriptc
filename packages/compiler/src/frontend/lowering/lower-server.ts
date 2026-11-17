@@ -4913,6 +4913,10 @@ export function lowerServerProperty(
         name === "httpVersionMajor" ? "http.reqHttpVersionMajor" : "http.reqHttpVersionMinor";
       return { kind: "libCall", fn, args: [receiver], type: F64, loc };
     }
+    if (name === "signal") {
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      return { kind: "libCall", fn: "http.reqSignal", args: [receiver], type: DYN, loc };
+    }
     if (name === "aborted" || name === "complete" || name === "destroyed") {
       // aborted: the connection (or the h2 stream) closed before the
       // response finished; complete: the whole message arrived.

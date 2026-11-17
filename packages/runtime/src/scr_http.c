@@ -248,6 +248,7 @@ struct ScrHttpReq {
   char version[2]; /* the parsed version's digits ("09", "10", "11", "20") */
   bool http2;    /* an h2 compat request (httpVersion "2.0") */
   bool aborted;  /* the connection or h2 stream died with the response unfinished */
+  ScrDyn *abort_controller; /* req.signal's controller, +1; NULL until read */
   bool close_queued;
   bool close_emitted; /* settled: err/close listeners dropped */
   bool join_dup; /* joinDuplicateHeaders: repeated names read joined ", " */
@@ -315,6 +316,36 @@ void scr_http_req_set_encoding(ScrHttpReq *r, ScrStr *enc /*borrowed*/) {
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_UNKNOWN_ENCODING");
 }
 
+/* IncomingMessage.signal's abort controller comes from the abort unit
+ * (scr_abort.c or fetch). Weak bindings keep a program that never reads
+ * req.signal from linking it. */
+extern ScrDyn *scr_abort_signal_controller_new(void) __attribute__((weak));
+extern ScrDyn *scr_abort_signal_signal(ScrDyn *controller) __attribute__((weak));
+extern void scr_abort_signal_abort(ScrDyn *controller) __attribute__((weak));
+extern void scr_abort_signal_drop_listeners(ScrDyn *controller) __attribute__((weak));
+
+static void scr_http_req_abort_signal(ScrHttpReq *r) {
+  if (r != NULL && r->abort_controller != NULL && scr_abort_signal_abort != NULL)
+    scr_abort_signal_abort(r->abort_controller);
+}
+
+/* req.signal (+1): one native AbortSignal per request, created on first
+ * read and aborted when the request is destroyed before it completes. */
+ScrDyn *scr_http_req_signal(ScrHttpReq *r) {
+  if (scr_abort_signal_controller_new == NULL || scr_abort_signal_signal == NULL) {
+    static const char msg[] = "IncomingMessage.signal is not supported by this runtime build";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    return NULL;
+  }
+  if (r->abort_controller == NULL) {
+    ScrDyn *controller = scr_abort_signal_controller_new();
+    if (controller == NULL) return NULL;
+    r->abort_controller = controller;
+    if (r->aborted || (r->destroyed && !r->received)) scr_abort_signal_abort(controller);
+  }
+  return scr_abort_signal_signal(r->abort_controller);
+}
+
 void scr_http_req_release(ScrHttpReq *r) {
   if (!r || r->rc == SIZE_MAX) return;
   if (--r->rc == 0) {
@@ -339,6 +370,7 @@ void scr_http_req_release(ScrHttpReq *r) {
     free(r->tvalues);
     scr_str_release(r->status_msg);
     if (r->headers_view != NULL) scr_dyn_release(r->headers_view);
+    if (r->abort_controller != NULL) scr_dyn_release(r->abort_controller);
     scr_net_ls_drop(&r->data_ls);
     scr_net_ls_drop(&r->end_ls);
     scr_net_ls_drop(&r->err_ls);
@@ -763,12 +795,25 @@ bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
 /* destroy(): tears the underlying connection down NOW; the teardown
  * events flow through the socket's native hooks like a peer close. */
 void scr_http_req_destroy(ScrHttpReq *r) {
+  /* Abort listeners run user code: hold the request across the abort and the
+   * teardown so a listener that destroys the connection cannot free it while
+   * this call still reads its fields. */
+  scr_http_req_retain(r);
   r->destroyed = true;
+  /* Node aborts the request's signal when an incomplete message is
+   * destroyed, before the socket teardown runs; the request reads as
+   * aborted from that moment. */
+  if (!r->received || !r->ended) {
+    r->aborted = true;
+    scr_http_req_abort_signal(r);
+  }
   if (r->h2_stream != NULL) {
     scr_http_h2_ops->destroy(r->h2_stream);
+    scr_http_req_release(r);
     return;
   }
   if (r->sock) scr_net_sock_destroy(r->sock);
+  scr_http_req_release(r);
 }
 
 void scr_http_req_on_error(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
@@ -3418,6 +3463,11 @@ static void scr_http_proto_sweep(void) {
         scr_net_ls_drop(&req->close_ls);
         scr_net_ls_drop(&req->timeout_ls);
         scr_net_ls_drop(&req->aborted_ls);
+        /* The signal's abort listeners captured the request (and usually the
+         * response); release them so the settled request is collectable once
+         * the program drops it. */
+        if (req->abort_controller != NULL && scr_abort_signal_drop_listeners != NULL)
+          scr_abort_signal_drop_listeners(req->abort_controller);
       }
       break;
     }
@@ -5256,6 +5306,8 @@ static void scr_http_conn_abort_request(ScrHttpConn *conn) {
   }
   scr_http_queue_req_aborted(req);
   scr_http_req_retain(req);
+  /* the signal's abort listeners are user code: run them under the retain */
+  scr_http_req_abort_signal(req);
   scr_net_fire0_this(&req->aborted_ls, req, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&req->aborted_ls);
   if (res != NULL) scr_http_res_release(res);
@@ -5703,6 +5755,7 @@ bool scr_http_req_complete(ScrHttpReq *r) {
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
   if (r->close_emitted || r->aborted) return;
   r->aborted = true;
+  scr_http_req_abort_signal(r);
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->aborted_ls);
 }
@@ -8865,6 +8918,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "aborted") == 0) return scr_dyn_new_bool(r->aborted);
   if (strcmp(key, "complete") == 0) return scr_dyn_new_bool(r->ended);
   if (strcmp(key, "destroyed") == 0) return scr_dyn_new_bool(scr_http_req_destroyed_flag(r));
+  if (strcmp(key, "signal") == 0) return scr_http_req_signal(r);
   if (strcmp(key, "readable") == 0) return scr_dyn_new_bool(scr_http_req_readable(r));
   if (strcmp(key, "readableEnded") == 0) return scr_dyn_new_bool(r->ended);
   if (strcmp(key, "closed") == 0) return scr_dyn_new_bool(r->close_emitted);

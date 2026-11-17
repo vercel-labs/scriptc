@@ -781,6 +781,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_req_signal",
+  "message": "IncomingMessage.signal is not supported by this runtime build",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_res_informational_h1",
   "message": "Http2ServerResponse.%s is not supported by the static runtime yet",
   "code": "SC2020"

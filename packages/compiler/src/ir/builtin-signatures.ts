@@ -2789,6 +2789,8 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "http.reqUrl": { argTypes: [HTTPREQ_T], result: STRING },
+    /** message.signal: the request's AbortSignal handle (checked-dynamic). */
+    "http.reqSignal": { argTypes: [HTTPREQ_T], result: DYN },
     "http.reqMethod": { argTypes: [HTTPREQ_T], result: STRING },
     "http.reqHeader": { argTypes: [HTTPREQ_T, STRING], result: VOID },
     "http.reqTrailer": { argTypes: [HTTPREQ_T, STRING], result: VOID },

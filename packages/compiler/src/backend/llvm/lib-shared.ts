@@ -2058,6 +2058,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.clientMaxHeadersCountGet": "scr_http_client_max_headers_count_get",
   "http.clientMaxHeadersCountSet": "scr_http_client_max_headers_count_set",
   "http.clientSignalCheck": "scr_http_client_signal_check",
+  "http.reqSignal": "scr_http_req_signal",
   "http.clientProtocolCheck": "scr_http_client_protocol_check",
   "http.clientProtocolCheckAgent": "scr_http_client_protocol_check_agent",
   "https.nextServername": "scr_https_set_next_servername",

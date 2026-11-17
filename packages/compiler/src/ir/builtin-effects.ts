@@ -402,6 +402,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",
+  "http.reqSignal",
   "http.clientProtocolCheck",
   "http.clientProtocolCheckAgent",
   "http.serverMaxHeaderSize",

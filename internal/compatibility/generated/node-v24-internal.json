@@ -58307,6 +58307,7 @@
           "tests/corpus/http-server-dynamic-shapes.mjs",
           "tests/corpus/http-server-events-audit.ts",
           "tests/corpus/http-server-incoming-message.ts",
+          "tests/corpus/http-server-incoming-signal.mjs",
           "tests/corpus/http-server-informational-callbacks.ts",
           "tests/corpus/http-server-lifecycle-limits.ts",
           "tests/corpus/http-server-limit-values.ts",
@@ -61822,10 +61823,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http.signal",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-incoming-signal.mjs"
         ]
       },
       "anchorSource": "ancestor"

@@ -323,6 +323,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.toWebReadable",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
@@ -407,6 +409,8 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.toWebReadable",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
@@ -1911,6 +1915,10 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      // Readable.toWeb links scr_webstreams.c, which invokes the source's
+      // sink members through scr_dyn_invoke.
+      "webstream.toWebReadable",
+      "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
@@ -2218,6 +2226,10 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      // Readable.toWeb links the web stream unit, which renders a
+      // non-iterable source (and a thrown member) through inspect.
+      "webstream.toWebReadable",
+      "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",

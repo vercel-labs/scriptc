@@ -1666,6 +1666,12 @@ function buildLibFnSignatures() {
     "util.setTraceSigInt": { argTypes: [DYN], result: VOID },
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    /** Readable.toWeb (scr_stream_to_web.c): the readable and the option
+     * flags (< 0: none); a web ReadableStream. */
+    "webstream.toWebReadable": { argTypes: [null, F64], result: DYN },
+    /** Readable.toWeb over a checked-dynamic value: a boxed native stream
+     * unwraps, anything else throws the not-supported Error. */
+    "webstream.toWebReadableDyn": { argTypes: [DYN, F64], result: DYN },
     /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
      * WritableStream and the option flags; a Writable. */
     "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },

@@ -143,6 +143,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http2.getPackedSettings0",
   // Copies the values a name has in a string pairs array.
   "http2.pairsValues",
+  // Readable.toWeb builds the web stream over the readable's chunks; the
+  // read it starts runs later, on the promise's reaction.
+  "webstream.toWebReadable",
   // stream.getDefaultHighWaterMark reads the runtime's default for the mode:
   // no allocation, no coercion and no program code.
   "stream.getDefaultHwm",

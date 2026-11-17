@@ -661,6 +661,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",

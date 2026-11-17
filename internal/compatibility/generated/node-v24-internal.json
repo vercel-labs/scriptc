@@ -71655,7 +71655,8 @@
           "tests/corpus/2858-import-meta-resolve/main.mjs",
           "tests/corpus/2860-require-resolve/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -71686,7 +71687,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71740,7 +71742,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71771,7 +71774,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71802,7 +71806,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71855,7 +71860,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71882,7 +71888,8 @@
         "evidence": "compiler-feature:modules.require.resolve",
         "tests": [
           "tests/corpus/2858-import-meta-resolve/main.mjs",
-          "tests/corpus/2860-require-resolve/main.cjs"
+          "tests/corpus/2860-require-resolve/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71909,7 +71916,8 @@
         "evidence": "compiler-feature:modules.require.resolve.paths",
         "tests": [
           "tests/corpus/2858-import-meta-resolve/main.mjs",
-          "tests/corpus/2860-require-resolve/main.cjs"
+          "tests/corpus/2860-require-resolve/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -71935,7 +71943,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.cache",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -71989,7 +71998,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72042,7 +72052,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72068,7 +72079,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.children",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72099,7 +72111,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72130,7 +72143,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72161,7 +72175,8 @@
           "tests/corpus/1629-require-main-filename.cjs",
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/2923-cjs-factory-export/main.cjs"
+          "tests/corpus/2923-cjs-factory-export/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72187,7 +72202,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.id",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72213,7 +72229,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.isPreloading",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72239,7 +72256,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.loaded",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72265,7 +72283,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.parent",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72291,7 +72310,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.path",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72317,7 +72337,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.paths",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72343,7 +72364,8 @@
         "status": "partial",
         "evidence": "compiler-feature:modules.Module",
         "tests": [
-          "tests/corpus/2880-cjs-module-graph/main.cjs"
+          "tests/corpus/2880-cjs-module-graph/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -97746,7 +97768,6 @@
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
-          "tests/diagnostics/compat-absent-test-snapshot.ts",
           "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
@@ -97775,6 +97796,7 @@
           "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/fixtures/node-test/cases/root-hooks.ts",
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
@@ -98586,10 +98608,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:test.snapshot.setResolveSnapshotPath",
         "tests": [
-          "tests/diagnostics/compat-absent-test-snapshot.ts"
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102619,6 +102642,7 @@
           "tests/corpus/8177-tls-empty-client-ca.ts",
           "tests/corpus/tls-connect-forms.ts",
           "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-server-class.ts",
           "tests/corpus/tls-server-members.ts",
           "tests/corpus/tls-socket-audit.ts",
           "tests/corpus/tls-socket-extras.ts",
@@ -102967,8 +102991,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.Server",
+        "tests": [
+          "tests/corpus/tls-server-class.ts",
+          "tests/corpus/tls-server-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105565,8 +105593,10 @@
           "tests/corpus/1448-stream-columns.ts",
           "tests/corpus/2992-stream-rows.ts",
           "tests/corpus/terminal-stream-properties.ts",
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
-          "tests/harness/terminal-geometry.test.ts"
+          "tests/harness/terminal-geometry.test.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -105734,8 +105764,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.clearLine",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105757,8 +105791,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.clearScreenDown",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105780,8 +105818,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.cursorTo",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105879,8 +105921,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.moveCursor",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -27,6 +27,7 @@ import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { returnsGuessedOverloadValue } from "./overload-choice.js";
+import { readsReboundRequireValue } from "./rebindable-requires.js";
 
 /** Keep the conservative completion rule shared by return construction
  * and inference. Nested control flow may still make completion unreachable. */
@@ -377,6 +378,21 @@ export function declaredReturnType(
     mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx) ?? mappedReturn;
   if (mappedReturn !== null)
     mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
+  // A JavaScript function whose body returns a value read out of a require
+  // binding the file reassigns (rebindable-requires.ts) has no static
+  // result: the program's storage answers the read.
+  if (
+    mappedReturn !== null &&
+    decl.asteriskToken === undefined &&
+    !decl.type &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !hasExplicitJsDocReturn(decl) &&
+    lowerer.rebindableRequireDecls.size > 0 &&
+    returnsReboundRequireValue(lowerer, decl)
+  )
+    mappedReturn = decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
     mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
@@ -953,6 +969,26 @@ export function widensReducedRecords(lowerer: Lowerer, narrow: IrType, wide: IrT
       );
     })
   );
+}
+
+/** Whether `decl`'s body returns a value read out of a require binding the
+ * file reassigns — directly, through a member read, or through a call
+ * (rebindable-requires.ts). Such a result has no static type: the program's
+ * storage answers the read. */
+function returnsReboundRequireValue(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
+  if (ts.isArrowFunction(decl) && !ts.isBlock(decl.body))
+    return readsReboundRequireValue(lowerer, decl.body);
+  let found = false;
+  const scan = (node: ts.Node): void => {
+    if (found || (node !== decl && ts.isFunctionLike(node))) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      if (readsReboundRequireValue(lowerer, node.expression)) found = true;
+      return;
+    }
+    ts.forEachChild(node, scan);
+  };
+  scan(decl);
+  return found;
 }
 
 /** Whether a JavaScript body returns a call of a function declaration the

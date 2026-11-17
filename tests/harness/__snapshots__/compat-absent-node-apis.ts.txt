@@ -60,7 +60,7 @@ compat-absent-node-apis.ts:35:12 - error SC0001: No overload matches this call.
      |            ^~~~~~~~~~~~~~~
   36 | process.execve("/bin/true", []);
 
-compat-absent-node-apis.ts:36:9 - error SC0001: Property 'execve' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 68 more ...; disconnect(): void; }'.
+compat-absent-node-apis.ts:36:9 - error SC0001: Property 'execve' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 69 more ...; disconnect(): void; }'.
 
   35 | process.on("workerMessage", () => {});
   36 | process.execve("/bin/true", []);

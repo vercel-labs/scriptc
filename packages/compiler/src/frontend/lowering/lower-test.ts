@@ -185,7 +185,7 @@ function lowerTestOptions(
       `${what} with a non-literal options argument`,
       node,
       suite
-        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency? }"
+        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency?, timeout? }"
         : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout? }",
     );
   }
@@ -273,7 +273,7 @@ function lowerTestOptions(
           "concurrency takes the literal true/false or a number here",
         );
       }
-    } else if (name === "timeout" && !suite) {
+    } else if (name === "timeout") {
       out.timeout = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), locOf(init));
     } else if (name === "expectFailure") {
       if (init.kind === ts.SyntaxKind.TrueKeyword) {
@@ -306,7 +306,7 @@ function lowerTestOptions(
         `${what} option '${name}'`,
         prop,
         suite
-          ? "skip, todo, only, and concurrency are the supported suite options"
+          ? "skip, todo, only, concurrency and timeout are the supported suite options"
           : "skip, todo, only, concurrency, plan, and timeout are the supported options",
       );
     }
@@ -635,7 +635,16 @@ function lowerSuite(
     {
       kind: "libCall",
       fn: "test.suite",
-      args: [name, mode, msg, cb, at, flags, opts.concurrency ?? numLit(0, loc)],
+      args: [
+        name,
+        mode,
+        msg,
+        cb,
+        at,
+        flags,
+        opts.concurrency ?? numLit(0, loc),
+        opts.timeout ?? numLit(0, loc),
+      ],
       type: VOID,
       loc,
     },
@@ -760,13 +769,41 @@ export function lowerNodeTestModuleCall(
         loc,
       };
     }
-    case "snapshot.setResolveSnapshotPath":
-      lowerer.noLowering(
-        "snapshot.setResolveSnapshotPath",
-        expr,
-        "snapshot.setDefaultSnapshotSerializers is the supported snapshot module function",
-      );
-      break;
+    case "snapshot.setResolveSnapshotPath": {
+      requireStatementPosition(lowerer, expr, "snapshot.setResolveSnapshotPath(...)");
+      const fn = expr.arguments.nodes[0];
+      if (
+        expr.arguments.nodes.length !== 1 ||
+        fn === undefined ||
+        lowerer.checker.getCallSignatures(lowerer.typeOf(fn)).length === 0
+      ) {
+        lowerer.noLowering(
+          "snapshot.setResolveSnapshotPath with these arguments",
+          expr,
+          "the supported form is snapshot.setResolveSnapshotPath((path: string) => string)",
+        );
+      }
+      const value = lowerer.lowerExpr(fn as ts.Expression);
+      if (
+        value.type.kind !== "func" ||
+        value.type.params.length !== 1 ||
+        value.type.params[0]!.kind !== "string" ||
+        value.type.ret.kind !== "string"
+      ) {
+        lowerer.noLowering(
+          "snapshot.setResolveSnapshotPath of this function type",
+          fn as ts.Expression,
+          "the resolver takes the test file's path string and returns the snapshot file's path string",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "test.snapshotSetResolvePath",
+        args: [value],
+        type: VOID,
+        loc,
+      };
+    }
     case "snapshot":
       lowerer.noLowering(
         "test.snapshot",
@@ -890,6 +927,19 @@ function lowerSnapshotAssert(
   if (call.arguments.nodes.length > (member === "snapshot" ? 2 : 3)) {
     lowerer.noLowering(`${what} with ${call.arguments.nodes.length} arguments`, call);
   }
+  /* Node resolves the snapshot file before it serializes the value: the
+   * resolver runs first, and its throw wins over anything the value's
+   * serializers would do. */
+  const resolvedPath =
+    member === "snapshot"
+      ? slot("%snapshotPath", STRING, {
+          kind: "libCall",
+          fn: "test.snapshotPath",
+          args: [strLit(lowerer.entry.fileName, loc)],
+          type: STRING,
+          loc,
+        })
+      : null;
   const text: IrExpr = {
     kind: "toString",
     operand: {
@@ -919,7 +969,7 @@ function lowerSnapshotAssert(
       ? {
           kind: "libCall",
           fn: "test.ctxSnapshot",
-          args: [t, actual, strLit(`${lowerer.entry.fileName}.snapshot`, loc)],
+          args: [t, actual, resolvedPath!],
           type: STRING,
           loc,
         }
@@ -1378,11 +1428,13 @@ export function lowerTestMethodCall(
     }
     // The data payload rides the test:log event only, so the reporter prints
     // the message alone; it is still evaluated for its side effects, after
-    // the message, as the arguments evaluate in source order.
+    // the message, as the arguments evaluate in source order. It lowers as a
+    // discarded expression statement, so a bare `null`/`undefined` payload
+    // is a no-op instead of a bare unit literal the IR has no value for.
     const pre: IrStmt[] = [];
     const msgSlot = lowerer.declareHiddenLocal("%logMessage", STRING);
     pre.push({ kind: "varDecl", localId: msgSlot.id, init: msg, loc });
-    pre.push({ kind: "exprStmt", expr: lowerer.lowerExpr(data), loc });
+    pre.push(lowerer.lowerExprStatement(data));
     return {
       kind: "seqExpr",
       stmts: pre,

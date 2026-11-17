@@ -502,7 +502,8 @@ __attribute__((noinline)) static int scr_exec_engine(ScrRegexInput *input, const
  * calls the executor once per match. */
 static int scr_simple_program(const ScrStr *source, uint8_t *prog, size_t cap, uint16_t *start,
                               uint16_t *steps, uint8_t *firsts, uint8_t *firstMask,
-                              uint8_t *secondMask, uint8_t *singleBit) {
+                              uint8_t *secondMask, uint8_t *thirdMask, uint8_t *singleBit,
+                              uint8_t *shortBit) {
   const uint8_t *p = (const uint8_t *)source->data;
   size_t n = source->len, at = 0, used = 0;
   int count = 0;
@@ -565,12 +566,23 @@ static int scr_simple_program(const ScrStr *source, uint8_t *prog, size_t cap, u
         for (int i = 0; i < 32; i++)
           for (int b = 0; b < 8; b++)
             if (s0[1 + i] & (uint8_t)(1u << b)) firstMask[i * 8 + b] |= bit;
+      if (steps[count] <= 2) *shortBit |= bit;
       if (steps[count] == 1) *singleBit |= bit;
-      else if (s1[0] == 0) secondMask[s1[1]] |= bit;
-      else
-        for (int i = 0; i < 32; i++)
-          for (int b = 0; b < 8; b++)
-            if (s1[1 + i] & (uint8_t)(1u << b)) secondMask[i * 8 + b] |= bit;
+      else {
+        if (s1[0] == 0) secondMask[s1[1]] |= bit;
+        else
+          for (int i = 0; i < 32; i++)
+            for (int b = 0; b < 8; b++)
+              if (s1[1 + i] & (uint8_t)(1u << b)) secondMask[i * 8 + b] |= bit;
+        if (steps[count] > 2) {
+          const uint8_t *s2 = s1 + (s1[0] == 0 ? 2 : 33);
+          if (s2[0] == 0) thirdMask[s2[1]] |= bit;
+          else
+            for (int i = 0; i < 32; i++)
+              for (int b = 0; b < 8; b++)
+                if (s2[1 + i] & (uint8_t)(1u << b)) thirdMask[i * 8 + b] |= bit;
+        }
+      }
     }
     count++;
     if (at < n) {
@@ -592,8 +604,9 @@ __attribute__((noinline)) static int scr_exec_alternation(ScrRegexInput *input,
                                                           const uint16_t *steps,
                                                           const uint8_t *firsts,
                                                           const uint8_t *firstMask,
-                                                          const uint8_t *secondMask, uint8_t singleBit,
-                                                          int count, int index) {
+                                                          const uint8_t *secondMask,
+                                                          const uint8_t *thirdMask, uint8_t singleBit,
+                                                          uint8_t shortBit, int count, int index) {
   const uint8_t *data = input->data;
   int limit = input->len;
   if (index < 0) index = 0;
@@ -605,7 +618,11 @@ __attribute__((noinline)) static int scr_exec_alternation(ScrRegexInput *input,
     if (!leads) continue;
     if (p + 1 >= limit) {
       if (!(leads & singleBit)) continue;
-    } else if (!((secondMask[data[p + 1]] | singleBit) & leads))
+    } else if (!(leads &= secondMask[data[p + 1]] | singleBit))
+      continue;
+    if (p + 2 >= limit) {
+      if (!(leads & shortBit)) continue;
+    } else if (!(leads & (thirdMask[data[p + 2]] | shortBit)))
       continue;
     for (int k = 0; k < count; k++) {
       const uint8_t *s = prog + start[k];
@@ -637,13 +654,13 @@ __attribute__((noinline)) static int scr_exec_alternation(ScrRegexInput *input,
 __attribute__((noinline)) static int scr_try_simple_scan(ScrRegexInput *input, const ScrRegex *re,
                                                          int index) {
   uint8_t prog[1024], firsts[32] = {0}, firstMask[256] = {0}, secondMask[256] = {0};
-  uint8_t singleBit = 0;
+  uint8_t thirdMask[256] = {0}, singleBit = 0, shortBit = 0;
   uint16_t start[8], steps[8];
   int count = scr_simple_program(re->source, prog, sizeof prog, start, steps, firsts, firstMask,
-                                 secondMask, &singleBit);
+                                 secondMask, thirdMask, &singleBit, &shortBit);
   if (count == 0) return -1;
-  return scr_exec_alternation(input, prog, start, steps, firsts, firstMask, secondMask, singleBit,
-                              count, index);
+  return scr_exec_alternation(input, prog, start, steps, firsts, firstMask, secondMask, thirdMask,
+                              singleBit, shortBit, count, index);
 }
 
 /* Build-time matchers trap on allocation failure themselves. */

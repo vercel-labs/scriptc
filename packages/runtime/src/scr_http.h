@@ -425,8 +425,12 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
  * ERR_INVALID_PROTOCOL rather than an implicit scheme switch, and a URL
  * carrying credentials fences (`api` names the caller in the message).
  * false = the exception is pending and no out-parameter was written. */
+/* `Basic <base64 of user:pass>` as an [name, value] pair, for a URL's or an
+ * options record's credentials. */
+void scr_http_pairs_add_basic_auth(ScrArr *pairs, ScrStr *auth /*borrowed*/);
 bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
-                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/);
+                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/,
+                         ScrStr **auth_out /*+1 or NULL*/);
 /* ── the http Agent (new http.Agent(opts) — option surface, getName, and
  * the maxSockets queue over one-dial-per-request connections; keep-alive
  * POOLING is not modeled: keepAlive: true fences at construction).

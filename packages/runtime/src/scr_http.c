@@ -9369,18 +9369,67 @@ static void scr_http_req_url_credentials_fail(const char *api) {
       "a URL's username and password are not sent; put the Authorization header in headers");
 }
 
+/* The base64 of `n` bytes: the auth option's Authorization value. */
+static ScrStr *scr_http_b64(const unsigned char *in, size_t n) {
+  static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  size_t out_len = ((n + 2) / 3) * 4;
+  char *out = malloc(out_len != 0 ? out_len : 1);
+  if (!out) scr_http_oom();
+  size_t o = 0;
+  for (size_t i = 0; i < n; i += 3) {
+    unsigned v = (unsigned)in[i] << 16;
+    if (i + 1 < n) v |= (unsigned)in[i + 1] << 8;
+    if (i + 2 < n) v |= (unsigned)in[i + 2];
+    out[o++] = table[(v >> 18) & 63];
+    out[o++] = table[(v >> 12) & 63];
+    out[o++] = i + 1 < n ? table[(v >> 6) & 63] : '=';
+    out[o++] = i + 2 < n ? table[v & 63] : '=';
+  }
+  ScrStr *result = scr_str_new(out, o);
+  free(out);
+  return result;
+}
+
+/* `Basic <base64 of the user:pass value>` as an [name, value] pair. */
+void scr_http_pairs_add_basic_auth(ScrArr *pairs, ScrStr *auth /*borrowed*/) {
+  ScrStr *b64 = scr_http_b64((const unsigned char *)auth->data, auth->len);
+  ScrHttpBuf value = {NULL, 0, 0};
+  scr_http_buf_str(&value, "Basic ");
+  scr_http_buf_append(&value, b64->data, b64->len);
+  scr_str_release(b64);
+  scr_arr_push_ref(pairs, scr_str_new("authorization", 13));
+  scr_arr_push_ref(pairs, scr_str_new(value.data, value.len));
+  free(value.data);
+}
+
 bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
-                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/) {
+                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/,
+                         ScrStr **auth_out /*+1 or NULL*/) {
   ScrUrl *u = scr_url_new(url);
+  if (auth_out != NULL) *auth_out = NULL;
   if (!u) return false; /* Invalid URL pending */
   /* A URL's username and password become Node's `auth` option, which sets
    * the Authorization header. This client sets none of the auth shapes, so
    * credentials in the URL are a fence rather than a request that quietly
    * leaves them off. */
-  if (u->userinfo->len > 0) {
-    scr_http_req_url_credentials_fail(api);
-    scr_url_release(u);
-    return false;
+  if (auth_out != NULL && u->userinfo->len > 0) {
+    /* "user:pass", each part percent-decoded (Node's urlToHttpOptions) */
+    ScrStr *user = scr_str_decode_uri_component(scr_url_username(u));
+    ScrStr *pass = user ? scr_str_decode_uri_component(scr_url_password(u)) : NULL;
+    if (pass) {
+      ScrHttpBuf auth_buf = {NULL, 0, 0};
+      scr_http_buf_append(&auth_buf, user->data, user->len);
+      scr_http_buf_str(&auth_buf, ":");
+      scr_http_buf_append(&auth_buf, pass->data, pass->len);
+      *auth_out = scr_str_new(auth_buf.data, auth_buf.len);
+      free(auth_buf.data);
+    }
+    scr_str_release(user);
+    scr_str_release(pass);
+    if (*auth_out == NULL) { /* the decode threw */
+      scr_url_release(u);
+      return false;
+    }
   }
   /* The scheme is checked against the MODULE the call came from, not read
    * off the URL: http.get('https://…') is Node's ERR_INVALID_PROTOCOL, not
@@ -9422,14 +9471,21 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
                                         ScrHttpRespFn fn) {
   ScrStr *host;
   ScrStr *path;
+  ScrStr *auth = NULL;
   double port;
-  if (!scr_http_url_parts(url, false, "http.request", &host, &port, &path)) {
+  if (!scr_http_url_parts(url, false, "http.request", &host, &port, &path, &auth)) {
     if (cb) scr_closure_release(cb);
-    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL / credentials pending */
+    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL / a decode threw */
   }
   ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0); /* request_impl reads the pairs array */
-  ScrHttpClientReq *c = scr_http_request_ex(host, port, path, method, 0, pairs, auto_end,
-                                             cb, fn, 80, NULL, NULL);
+  if (auth != NULL) {
+    scr_http_pairs_add_basic_auth(pairs, auth);
+    scr_str_release(auth);
+  }
+  /* the URL form goes through the global agent, as Node's does: its
+   * keep-alive reuses the connection across such requests */
+  ScrHttpClientReq *c = scr_http_request_agent_ex(host, port, path, method, 0, pairs, auto_end,
+                                                   NULL, cb, fn, 80, NULL, NULL, NULL);
   scr_arr_release(pairs);
   scr_str_release(host);
   scr_str_release(path);
@@ -9445,27 +9501,6 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
  * shapes. Documented options outside the implemented set throw the
  * runtime fence when they carry a value, rather than being ignored;
  * undocumented keys are ignored, as Node ignores them. */
-
-/* The base64 of `n` bytes: the auth option's Authorization value. */
-static ScrStr *scr_http_b64(const unsigned char *in, size_t n) {
-  static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  size_t out_len = ((n + 2) / 3) * 4;
-  char *out = malloc(out_len != 0 ? out_len : 1);
-  if (!out) scr_http_oom();
-  size_t o = 0;
-  for (size_t i = 0; i < n; i += 3) {
-    unsigned v = (unsigned)in[i] << 16;
-    if (i + 1 < n) v |= (unsigned)in[i + 1] << 8;
-    if (i + 2 < n) v |= (unsigned)in[i + 2];
-    out[o++] = table[(v >> 18) & 63];
-    out[o++] = table[(v >> 12) & 63];
-    out[o++] = i + 1 < n ? table[(v >> 6) & 63] : '=';
-    out[o++] = i + 2 < n ? table[v & 63] : '=';
-  }
-  ScrStr *result = scr_str_new(out, o);
-  free(out);
-  return result;
-}
 
 /* Whether the flat [name, value, ...] pairs already carry `name`. */
 static bool scr_http_pairs_have(ScrArr *pairs, const char *name) {
@@ -10000,11 +10035,9 @@ ScrDyn *scr_http_url_req_options(ScrStr *url /*borrowed*/, const ScrDyn *opts /*
                                  const char *api) {
   ScrUrl *u = scr_url_new(url);
   if (u == NULL) return NULL; /* Invalid URL pending */
-  if (u->userinfo->len > 0) {
-    scr_http_req_url_credentials_fail(api);
-    scr_url_release(u);
-    return NULL;
-  }
+  /* a URL's userinfo becomes the merge's `auth` (see scr_url_to_http_options),
+   * so an options record's own auth or Authorization header still wins */
+  (void)api;
   ScrDyn *merged = scr_url_to_http_options(u);
   scr_url_release(u);
   if (merged == NULL) return NULL; /* a URL component read threw */

@@ -14,7 +14,7 @@ test-option-fences.ts:15:26 - error SC2020: 'describe(...) option 'plan'' is par
      |                          ^~~~~~~
   16 | 
 
-  hint: skip, todo, only, concurrency and timeout are the supported suite options
+  hint: skip, todo, only, concurrency, timeout and signal are the supported suite options
 
 test-option-fences.ts:18:31 - error SC2020: 'test(...) with a non-literal plan value' is part of the standard library types but has no scriptc lowering yet
 

@@ -2599,7 +2599,7 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     // The suite body takes no parameters or its SuiteContext (flag 2).
-    "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64], result: VOID },
+    "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64], result: VOID },
     // The trailing string is the hook call's "file:line:col".
     "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
     "test.sub": {

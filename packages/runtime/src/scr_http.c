@@ -1858,7 +1858,7 @@ static bool scr_http_early_link_format(const ScrStr *link) {
  * present it is always the first field, followed by the other object
  * properties in insertion order. This static entry accepts string-valued
  * fields. */
-static void scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*borrowed*/,
+static bool scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*borrowed*/,
                                                 ScrArr *pairs /*borrowed*/);
 
 void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/,
@@ -1905,9 +1905,12 @@ void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/
     if (cb) scr_closure_release(cb);
     return;
   }
-  scr_http_res_write_early_hints_head(r, link, pairs);
-  if (cb) scr_http_res_on_write_flush(r, cb);
+  bool wrote = scr_http_res_write_early_hints_head(r, link, pairs);
   scr_str_release(link);
+  if (cb) {
+    if (wrote && !scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
+    else scr_closure_release(cb);
+  }
 }
 
 /* The typed entry: the same checks and the same head, no callback. */
@@ -1918,7 +1921,7 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
 /* The 103 head with its Link line and the remaining fields: `link` has
  * already been through validateLinkHeaderValue (a string, or an array of
  * them joined with ", "), and the pairs are the other headers. */
-static void scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*borrowed*/,
+static bool scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*borrowed*/,
                                                 ScrArr *pairs /*borrowed*/) {
   size_t count = (size_t)scr_arr_len(pairs);
   ScrHttpBuf b = {NULL, 0, 0};
@@ -1945,7 +1948,7 @@ static void scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*bo
       scr_str_release(value);
       scr_str_release(empty_label);
       free(b.data);
-      return;
+      return false; /* nothing was written: the callback must not be queued */
     }
     scr_http_buf_append(&b, name->data, name->len);
     scr_http_buf_str(&b, ": ");
@@ -1958,6 +1961,7 @@ static void scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*bo
   scr_http_buf_str(&b, "\r\n");
   if (r->sock) scr_net_sock_write_native(r->sock, b.data, b.len);
   free(b.data);
+  return true;
 }
 
 /* res.writeInformation(status[, headers]): Node's generic informational
@@ -8800,11 +8804,11 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
       scr_arr_release(rest);
       return NULL;
     }
-    scr_http_res_write_early_hints_head(r, link_value, rest);
+    bool wrote = scr_http_res_write_early_hints_head(r, link_value, rest);
     scr_str_release(link_value);
     scr_arr_release(rest);
     if (scr_exc_pending()) return NULL;
-    if (argc > 1 && args[1]->kind == SCR_DYN_FUNC)
+    if (wrote && argc > 1 && args[1]->kind == SCR_DYN_FUNC)
       scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[1]));
     return scr_dyn_retain(scr_dyn_undefined());
   }

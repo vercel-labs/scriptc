@@ -49,6 +49,30 @@ import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-conte
 import { isCheckerPanic } from "../../../diagnostics/diagnostic.js";
 import { refuseCallbackThis } from "../callback-arg.js";
 
+/** The process events whose listeners register as checked-dynamic callbacks
+ * and whose emit has no default handling of its own, so `process.emit` can
+ * dispatch them in the runtime (scr_process_emit_named). Keep this set and
+ * that function in step. */
+const DISPATCHED_PROCESS_EVENTS: ReadonlySet<string> = new Set([
+  "uncaughtException",
+  "uncaughtExceptionMonitor",
+]);
+
+/** The process events whose emit a checked-dynamic dispatch cannot reproduce
+ * yet: the typed listener closures (exit, beforeExit, signals, IPC), the
+ * warning family (Node's emit prints the default report as well), and the
+ * rejection families (their listeners take a promise). */
+const UNSUPPORTED_PROCESS_EVENTS: ReadonlySet<string> = new Set([
+  "warning",
+  "unhandledRejection",
+  "rejectionHandled",
+  "multipleResolves",
+  "exit",
+  "beforeExit",
+  "message",
+  "disconnect",
+]);
+
 /** Whether the process has an IPC channel, Node's test for defining
  * process.send and process.disconnect: a channel this fork child opened
  * (programs with fork targets only), or a non-empty NODE_CHANNEL_FD from a
@@ -2555,6 +2579,67 @@ export function lowerProcessMethodCall(
       argsArr = lowerTracingArguments(lowerer, call.arguments.nodes, loc);
     }
     return { kind: "libCall", fn: "process.emitWarning", args: [argsArr], type: VOID, loc };
+  }
+  // process.emit(event, ...args): Node's EventEmitter emit on process. The
+  // runtime dispatches the exception families (whose listeners it registers
+  // as checked-dynamic callbacks, and whose emit has no default handling of
+  // its own) and answers whether any listener existed. A custom event never
+  // has one: `process.on` refuses every name outside the modelled families,
+  // so that emit is a plain false with its argument expressions still
+  // evaluated. Every other modelled family is refused by name: the typed
+  // listener closures (exit, beforeExit, signals, IPC), the warning family
+  // (Node's emit prints the default report as well), and the rejection
+  // families (their listeners take a promise).
+  if (member === "emit") {
+    // Island code's listeners live in Node's own `process`; the native
+    // registries are not the ones an emit would have to reach.
+    if (lowerer.nodeIslands !== null) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "process.emit in a program with Node islands (the listeners belong to Node's process)",
+      );
+    }
+    const eventArg = call.arguments.nodes[0];
+    // Node answers false for a missing event (`process.emit()`).
+    if (eventArg === undefined) return boolLit(false, loc);
+    const rest = call.arguments.nodes.slice(1);
+    if (!ts.isStringLiteralLike(eventArg)) {
+      lowerer.unsupported(
+        "SC1090",
+        eventArg,
+        "process.emit with a computed event name (write the event name as a string literal, so the lowering can dispatch it)",
+      );
+    }
+    const name = eventArg.text;
+    if (DISPATCHED_PROCESS_EVENTS.has(name)) {
+      const eventValue = lowerer.coerceToExpected(lowerer.lowerExpr(eventArg), DYN);
+      // `process.emit(name, ...rest)` over one checked-dynamic array passes
+      // that array as the argument vector, as emitWarning's spread form does.
+      let argsArr: IrExpr;
+      if (rest.length === 1 && ts.isSpreadElement(rest[0]!)) {
+        const spread = lowerer.lowerExpr(rest[0]!.expression);
+        if (spread.type.kind !== "dyn") {
+          lowerer.noLowering(
+            "process.emit with a typed spread argument",
+            rest[0]!,
+            "spread an untyped (checked-dynamic) array, or write the arguments positionally",
+          );
+        }
+        argsArr = spread;
+      } else {
+        argsArr = lowerTracingArguments(lowerer, rest, loc);
+      }
+      return { kind: "libCall", fn: "process.emit", args: [eventValue, argsArr], type: BOOL, loc };
+    }
+    if (UNSUPPORTED_PROCESS_EVENTS.has(name) || name.startsWith("SIG")) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `process.emit('${name}') (not supported yet: this event's listeners or its default handling have no checked-dynamic dispatch)`,
+      );
+    }
+    return withIgnoredArguments(lowerer, [], rest, () => boolLit(false, loc));
   }
   if (member === "cwd") {
     // cwd ignores arguments, but a JS caller's extras still evaluate.

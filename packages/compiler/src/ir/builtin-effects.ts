@@ -698,6 +698,8 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "process.setTitleDyn",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
   "process.emitWarning",
+  // A listener the emit reaches may throw; the exception is the call's.
+  "process.emit",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
   // throw Node's ERR_INVALID_ARG_VALUE RangeError, catchably.
   "process.cpuPrevValidate",

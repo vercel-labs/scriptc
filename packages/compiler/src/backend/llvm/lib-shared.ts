@@ -2135,6 +2135,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // dispatches the listeners).
   "process.onWarning": "scr_process_on_warning",
   "process.offWarning": "scr_process_off_warning",
+  "process.emit": "scr_process_emit_named",
   "process.emitWarning": "scr_process_emit_warning",
   "process.emitWarningText": "scr_process_emit_warning_text",
   "process.deprecationFlag": "scr_process_deprecation_flag",

@@ -2127,7 +2127,43 @@ void scr_process_emit_warning(ScrDyn *args) {
   scr_dyn_release(options);
 }
 
+/* Whether `name` spells `lit` (a length-and-bytes compare; event names are
+ * ASCII). */
+static bool scr_emit_name_is(const ScrStr *name, const char *lit, size_t len) {
+  return name->len == len && memcmp(name->data, lit, len) == 0;
+}
 
+#define SCR_EMIT_IS(name, lit) scr_emit_name_is((name), (lit), sizeof(lit) - 1)
+
+/* process.emit(event, ...args): Node's EventEmitter emit on process for the
+ * exception families, whose listeners this unit registers as checked-dynamic
+ * callbacks. The compiler lowers only these two names here; a custom name
+ * becomes the literal false and every other family is refused (its listeners
+ * are typed closures, or its emit carries default handling of its own), so
+ * an unknown name cannot reach this entry. Answers whether any listener
+ * existed, Node's return value; a listener's throw stays pending for the
+ * call's check. */
+bool scr_process_emit_named(ScrDyn *event, ScrDyn *args) {
+#ifdef SCR_NODE_ISLANDS
+  /* Node's own `process` owns the listeners in an island program; the
+   * compiler refuses the call there rather than dispatch the wrong list. */
+  if (scr_pe_node) return false;
+#endif
+  if (event == NULL || event->kind != SCR_DYN_STR) return false;
+  size_t argc = args != NULL && args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  ScrDyn **items = args != NULL && args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
+  const ScrStr *name = event->v.str;
+  if (SCR_EMIT_IS(name, "uncaughtException") || SCR_EMIT_IS(name, "uncaughtExceptionMonitor")) {
+    size_t k = SCR_EMIT_IS(name, "uncaughtExceptionMonitor") ? 1 : 0;
+    if (scr_uncaught_n[k] == 0) return false;
+    SCR_PE_ENTER();
+    (void)scr_rej_fire(&scr_uncaught_ls[k], &scr_uncaught_n[k], items, argc);
+    scr_uncaught_sync_hook();
+    SCR_PE_LEAVE();
+    return true;
+  }
+  return false;
+}
 
 /* A caught-exception snapshot as a dyn value — identity-preserving for
  * dyn payloads (a dyn-thrown value is retained, not copied), the

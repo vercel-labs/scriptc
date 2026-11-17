@@ -2153,10 +2153,17 @@ const RUNTIME_FEATURE_RULES = {
       // A test's t.signal (scr_test.c): the abort unit supplies its
       // controller through scr_abort.c's helpers.
       "test.ctxSignal",
+      // IncomingMessage.signal (scr_http.c) uses the same helpers.
+      "http.reqSignal",
     ],
     // A program that reads the AbortController class as a value may build
     // one (dyn.globalConstructor), and the construction runs this unit.
     libCall: (node) => readsGlobalConstructor(node, "AbortController"),
+    // A checked-dynamic read of a `signal` member (IncomingMessage.signal in
+    // a JavaScript source) reaches the abort unit through the handle's dyn
+    // dispatch, where no libCall names it.
+    expr: (node) =>
+      node.kind === "dynKeyGet" && node.key.kind === "strLit" && node.key.value === "signal",
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),

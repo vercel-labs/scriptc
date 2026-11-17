@@ -58255,6 +58255,7 @@
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-server-client-error.ts",
+          "tests/corpus/http-server-incoming-signal.mjs",
           "tests/corpus/http-server-limit-values.ts",
           "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/http-set-headers.mjs",
@@ -61663,10 +61664,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http.signal",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-incoming-signal.mjs"
         ]
       },
       "anchorSource": "ancestor"

@@ -717,6 +717,18 @@ bool scr_dyn_abort_signal_is(const ScrDyn *value) {
  * resolve the runner's references. */
 ScrDyn *scr_test_abort_controller_new(void) { return scr_fetch_abort_controller_new(); }
 
+ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller);
+void scr_test_abort_controller_abort(ScrDyn *controller);
+
+/* The same native controller, reached by scr_http.c's IncomingMessage.signal
+ * through weak declarations: a program that never reads req.signal links
+ * neither the abort unit nor fetch. */
+ScrDyn *scr_abort_signal_controller_new(void) { return scr_fetch_abort_controller_new(); }
+
+ScrDyn *scr_abort_signal_signal(ScrDyn *controller) { return scr_test_abort_controller_signal(controller); }
+
+void scr_abort_signal_abort(ScrDyn *controller) { scr_test_abort_controller_abort(controller); }
+
 ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) {
   if (controller == NULL || controller->kind != SCR_DYN_HANDLE ||
       controller->v.handle.tag != SCR_DYNH_ABORT_CONTROLLER)

@@ -568,6 +568,7 @@ static void scr_tls_srv_release_v(void *p) { scr_tls_srv_release((ScrTlsSrv *)p)
 typedef struct {
   bool request;
   bool reject;
+  bool reject_seen; /* the record supplied rejectUnauthorized */
   ScrBytes *ca;
 } ScrTlsClientAuth;
 
@@ -2941,7 +2942,10 @@ static bool scr_tls_srv_opt_member(const ScrDynProp *e, const ScrDyn *v, bool de
     return true;
   }
   if (strcmp(e->key, "rejectUnauthorized") == 0) {
-    if (auth != NULL) auth->reject = scr_tls_dyn_not_false(v);
+    if (auth != NULL) {
+      auth->reject = scr_tls_dyn_not_false(v);
+      auth->reject_seen = true;
+    }
     return true; /* without client certificates it has no effect */
   }
   if (server_ok && (strcmp(e->key, "ALPNProtocols") == 0 || strcmp(e->key, "minVersion") == 0 ||
@@ -2979,7 +2983,8 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
   }
   *cert_out = NULL;
   *key_out = NULL;
-  if (auth != NULL) *auth = (ScrTlsClientAuth){.request = false, .reject = true, .ca = NULL};
+  if (auth != NULL)
+    *auth = (ScrTlsClientAuth){.request = false, .reject = true, .reject_seen = false, .ca = NULL};
   if (opts == NULL || opts->kind != SCR_DYN_OBJ) {
     scr_dyn_arg_type_fail("options", "of type object", opts ? opts : scr_dyn_undefined());
     return false;
@@ -3051,6 +3056,38 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
             "the https.createServer options record changed while its members were read";
         scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
         ok = false;
+      }
+    }
+  }
+  /* A documented TLS option inherited from the record's prototype is
+   * supported only for the certificate members read by name above; an
+   * unsupported one (an inherited `crl`, say) would otherwise be ignored.
+   * Refuse those instead. */
+  if (ok && opts->prototype != NULL) {
+    for (size_t k = 0; ok && SCR_TLS_SRV_FENCED_OPTIONS[k] != NULL; k++) {
+      const char *name = SCR_TLS_SRV_FENCED_OPTIONS[k];
+      size_t len = strlen(name);
+      if (scr_dyn_obj_index_of(opts, name, len) != SIZE_MAX) continue; /* own: classified above */
+      ScrDyn *v = scr_dyn_obj_read(opts, name, len);
+      if (v == NULL) { ok = false; break; } /* a getter threw */
+      if (v->kind != SCR_DYN_UNDEF) {
+        scr_tls_opt_fence(api, name,
+                          "cert and key (PEM strings or Buffers) are the honestly-implemented members of a runtime options record");
+        ok = false;
+      }
+      scr_dyn_release(v);
+    }
+    if (ok && scr_dyn_obj_index_of(opts, "SNICallback", 11) == SIZE_MAX) {
+      ScrDyn *v = scr_dyn_obj_read(opts, "SNICallback", 11);
+      if (v == NULL) {
+        ok = false;
+      } else {
+        if (v->kind != SCR_DYN_UNDEF) {
+          scr_tls_opt_fence(api, "SNICallback",
+                            "SNICallback lowers only on http2.createSecureServer({ allowHTTP1: true, ... }) with a literal options object");
+          ok = false;
+        }
+        scr_dyn_release(v);
       }
     }
   }
@@ -3571,9 +3608,10 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
     if (!scr_tls_versions_dyn(record, &min_version, &max_version)) return NULL;
     if (!scr_tls_srv_opts_walk_ex(record, api, &cert, &key, true, &auth)) return NULL;
     /* a standalone socket requires a certificate only for a truthy
-     * rejectUnauthorized; tls.Server's true default does not apply */
-    const ScrDyn *reject = scr_dyn_obj_get(record, "rejectUnauthorized", 18);
-    auth.reject = reject != NULL && scr_tls_dyn_truthy(reject);
+     * rejectUnauthorized; tls.Server's true default does not apply. The
+     * walk read the member through ordinary property access, so its value
+     * (accessors included) is the one to keep. */
+    if (!auth.reject_seen) auth.reject = false;
   } else if (!scr_tls_wrap_socket_opts_check(record, api)) {
     return NULL;
   }

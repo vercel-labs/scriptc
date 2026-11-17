@@ -9785,8 +9785,30 @@ function lowerHttpResMethodCall(
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     if (name !== "writeEarlyHints") {
-      if (args.length !== 0)
-        lowerer.noLowering(`res.${name} callback`, call, `${name}() supports no callback here`);
+      if (args.length > 1)
+        lowerer.noLowering(
+          `res.${name} with ${args.length} arguments`,
+          call,
+          `use ${name}([callback])`,
+        );
+      if (args.length === 1) {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[0]!,
+          `${name} callbacks`,
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        return {
+          kind: "libCall",
+          fn: name === "writeContinue" ? "http.resWriteContinueCb" : "http.resWriteProcessingCb",
+          args: [receiver, cb],
+          type: VOID,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
         fn: name === "writeContinue" ? "http.resWriteContinue" : "http.resWriteProcessing",
@@ -9795,11 +9817,11 @@ function lowerHttpResMethodCall(
         loc,
       };
     }
-    if (args.length !== 1)
+    if (args.length < 1 || args.length > 2)
       lowerer.noLowering(
         "res.writeEarlyHints arguments",
         call,
-        "pass one header object or Record<string, string> without a callback",
+        "use writeEarlyHints(headers[, callback])",
       );
     const node = args[0]!;
     let pairs: IrExpr;
@@ -9843,6 +9865,24 @@ function lowerHttpResMethodCall(
         );
       }
       pairs = { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+    }
+    if (args.length === 2) {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "writeEarlyHints callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http.resWriteEarlyHintsCb",
+        args: [receiver, pairs, cb],
+        type: VOID,
+        loc,
+      };
     }
     return {
       kind: "libCall",

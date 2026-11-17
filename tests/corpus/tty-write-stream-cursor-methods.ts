@@ -32,3 +32,17 @@ try {
 }
 process.stdout.clearLine?.(argB());
 console.log("optional arg skipped");
+/* The NaN checks belong to the method a terminal provides: on a pipe the
+ * call throws the missing-method TypeError (the argument itself is fine),
+ * and an optional call skips it without validating anything. */
+function argNaN(): number {
+  console.log("argNaN evaluated");
+  return NaN;
+}
+try {
+  process.stdout.cursorTo(argNaN());
+} catch (e) {
+  console.log("nan", e instanceof TypeError, (e as Error).message);
+}
+process.stdout.cursorTo?.(argNaN());
+console.log("optional nan skipped");

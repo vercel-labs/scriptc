@@ -365,18 +365,29 @@ function lowerProcStreamCursorCall(
     callback = hold("%cursorCallback", voidizedCallback(lowerer, c, loc));
   }
   const seqKind = noX && hasB && kind === 0 ? 4 : kind;
-  const seq = hold("%cursorSeq", {
-    kind: "libCall",
-    fn: "rl.seq",
-    args: [
-      numLit(seqKind, loc),
-      values[0] ?? numLit(0, loc),
-      values[1] ?? numLit(0, loc),
-      boolLit(hasB, loc),
-    ],
-    type: STRING,
+  /* The escape sequence is built only where the method exists: rl.seq
+   * applies Node's NaN checks and throws ERR_INVALID_ARG_VALUE, and a
+   * stream without the method never reaches them — its call answers the
+   * TypeError first, after the arguments above have been evaluated. */
+  const seqSlot = lowerer.declareHiddenLocal("%cursorSeq", STRING);
+  callStmts.push({
+    kind: "varDecl",
+    localId: seqSlot.id,
+    init: {
+      kind: "libCall",
+      fn: "rl.seq",
+      args: [
+        numLit(seqKind, loc),
+        values[0] ?? numLit(0, loc),
+        values[1] ?? numLit(0, loc),
+        boolLit(hasB, loc),
+      ],
+      type: STRING,
+      loc,
+    },
     loc,
   });
+  const seq: IrExpr = { kind: "varRef", localId: seqSlot.id, type: STRING, loc };
   /* Node's tty methods write through the stream (`stream.write(data,
    * callback)`, readline's cursorTo/moveCursor/...), so a replaced write
    * decides when — or whether — the completion callback runs. With a

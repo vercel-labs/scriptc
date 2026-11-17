@@ -15,6 +15,25 @@ process.stdout.moveCursor(0, 0, () => {
   process.stdout.write("ZERO CALLBACK\n");
 });
 process.stdout.clearLine(-1);
+/* A NaN coordinate is the method's own argument check, run on a terminal
+ * before anything is written; the completion callback never runs there. */
+function nanOutcome(name: string, f: () => void): void {
+  try {
+    f();
+    process.stdout.write(name + " pass\n");
+  } catch (e) {
+    process.stdout.write(
+      name + " " + String(e instanceof TypeError) + " " +
+        (e instanceof Error ? e.message : "not an Error") + "\n",
+    );
+  }
+}
+nanOutcome("NANX", () => process.stdout.cursorTo(NaN));
+nanOutcome("NANY", () => process.stdout.cursorTo(0, NaN));
+nanOutcome("NANCB", () =>
+  process.stdout.cursorTo(NaN, () => {
+    process.stdout.write("NAN CALLBACK\n");
+  }));
 /* A replaced write owns the completion: it receives the cursor method's
  * callback, and the callback fires only when the replacement calls it. */
 const origWrite = process.stdout.write;

@@ -97768,7 +97768,6 @@
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
-          "tests/diagnostics/compat-absent-test-snapshot.ts",
           "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
@@ -97797,6 +97796,7 @@
           "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/fixtures/node-test/cases/root-hooks.ts",
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
@@ -98608,10 +98608,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:test.snapshot.setResolveSnapshotPath",
         "tests": [
-          "tests/diagnostics/compat-absent-test-snapshot.ts"
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105592,8 +105593,10 @@
           "tests/corpus/1448-stream-columns.ts",
           "tests/corpus/2992-stream-rows.ts",
           "tests/corpus/terminal-stream-properties.ts",
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
-          "tests/harness/terminal-geometry.test.ts"
+          "tests/harness/terminal-geometry.test.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -105761,8 +105764,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.clearLine",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105784,8 +105791,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.clearScreenDown",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105807,8 +105818,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.cursorTo",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105906,8 +105921,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.moveCursor",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

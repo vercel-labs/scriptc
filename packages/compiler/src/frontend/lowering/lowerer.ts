@@ -554,6 +554,7 @@ import {
   usesCjsTopLevelThis,
 } from "./lower-node-module.js";
 import {
+  cjsRuntimeWholeExportValueWritesOf,
   accessorRequirerAssign,
   accessorRequirerSlot,
   type CjsConditionalAlias,
@@ -3895,6 +3896,11 @@ export class Lowerer {
    * (var-hoisting.ts): nothing can observe them unassigned, so their writes
    * may decide their type (jsVarWriteType). */
   readonly storedBeforeReadVars = new Set<ts.Symbol>();
+  /** Typed `var` bindings a reference lexically above the declaration names
+   * whose every read runs after the first store (var-hoisting.ts): the
+   * forward reference reads assigned storage, so its slot needs no
+   * undefined arm and lower-stmts may declare it empty. */
+  readonly forwardStoredVars = new Set<ts.Symbol>();
   /** Enums whose object some code uses as a value (enum-objects.ts), by
    * symbol and by their first and last declarations. Filled before the
    * globals are collected. */
@@ -3926,6 +3932,25 @@ export class Lowerer {
    * the same tables, so the slot a module's statements fill and its
    * importers read is keyed by module, never by symbol. */
   readonly cjsConditionalWholeExportGlobals = new Map<ts.SourceFile, Map<string, IrGlobal>>();
+  /** The one checked-dynamic slot holding `module.exports` for a module whose
+   * whole export a run-time write chooses (a UMD wrapper or a condition that
+   * replaces a single value, cjs-inline-require.ts). Importers and default
+   * imports read the slot, and each write stores the value Node stores. */
+  readonly cjsRuntimeWholeExportValueGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** The value a module whose whole export is chosen at run time held when
+   * it finished evaluating. Node builds an ESM default import from that
+   * value, so a replacement the module performs later (an exported function
+   * that assigns module.exports) does not change the binding. Required
+   * bindings read the live slot at their own position instead. */
+  readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** The require bindings whose module had a run-time export choice: they
+   * keep their own checked-dynamic storage (the value the require answered
+   * at that position), unlike alias-plumbing require bindings. */
+  readonly cjsRuntimeRequireBindings = new Set<ts.Symbol>();
+  /** Memoized `cjsRuntimeWholeExportValueWritesOf` per module: the detection
+   * is a pure function of the source, and registration and binding
+   * classification must agree whatever order modules are collected in. */
+  private readonly cjsRuntimeWholeExportModules = new Map<ts.SourceFile, boolean>();
   /** The selection global of each module whose whole export is chosen at run
    * time between static tables: every branch statement stores the index
    * (+ 1) of the table it selected. */
@@ -6201,6 +6226,7 @@ export class Lowerer {
       checkedTable("unstableSwitchBindings", () => this.unstableSwitchBindings.size),
       checkedTable("earlyReadVars", () => this.earlyReadVars.size),
       checkedTable("storedBeforeReadVars", () => this.storedBeforeReadVars.size),
+      checkedTable("forwardStoredVars", () => this.forwardStoredVars.size),
       checkedTable("enumObjects", () => this.enumObjects.size),
       checkedTable("enumObjectDecls", () => this.enumObjectDecls.size),
       checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
@@ -6562,6 +6588,13 @@ export class Lowerer {
     "cjsConditionalAliasSelectGlobals",
     "cjsConditionalWholeExportGlobals",
     "cjsConditionalWholeExportSelectGlobals",
+    "cjsRuntimeWholeExportValueGlobals",
+    // The run-time export-choice registrations are a pure function of the
+    // program's modules (registered before lowering begins), and the memo is
+    // a cache of that detection.
+    "cjsRuntimeExportSnapshotGlobals",
+    "cjsRuntimeRequireBindings",
+    "cjsRuntimeWholeExportModules",
     "cjsConditionalExportMirrors",
     "cjsInFileExportMemberGlobals",
     "cjsWholeExportSymbols",
@@ -7919,9 +7952,13 @@ export class Lowerer {
     if (checked === undefined) {
       // A dependency's shipped JavaScript is unchecked whatever the
       // project's `checkJs` says; preflight drops its checker diagnostics
-      // for the same reason, so the two stances agree.
+      // for the same reason, so the two stances agree. The predicate is
+      // read into a local first: calling it through `this` hands the
+      // Lowerer as the call's receiver, which makes the class a dynamic
+      // value in the compiler's own build (self-compile budget).
+      const dependencyJs = this.dependencyJs;
       const projectCheckJs =
-        this.projectCheckJs && (this.dependencyJs === null || !this.dependencyJs(sf.fileName));
+        this.projectCheckJs && (dependencyJs === null || !dependencyJs(sf.fileName));
       checked = isCheckedJsSourceFile(sf, projectCheckJs);
       this.checkedJsFiles.set(sf, checked);
     }
@@ -8976,7 +9013,7 @@ export class Lowerer {
   /** The source file a checker-resolved module-specifier node names. The
    * checker path is preferred; resolveImport is the canonical fallback for
    * every project-module spelling. */
-  private moduleSourceFileOf(from: ts.SourceFile, spec: ts.StringLiteral): ts.SourceFile | null {
+  moduleSourceFileOf(from: ts.SourceFile, spec: ts.StringLiteral): ts.SourceFile | null {
     const moduleSymbol = this.checker.getSymbolAtLocation(spec);
     for (const decl of moduleSymbol ? moduleSymbol.declarations : []) {
       if (ts.isSourceFile(decl))
@@ -9304,6 +9341,28 @@ export class Lowerer {
    * modules that re-export the same tables. */
   cjsConditionalWholeExportSlotOf(dep: ts.SourceFile, name: string): IrGlobal | null {
     return this.cjsConditionalWholeExportGlobals.get(dep)?.get(name) ?? null;
+  }
+
+  /** The checked-dynamic `module.exports` slot of a module whose whole
+   * export a run-time write chooses, or null for every other module. */
+  cjsRuntimeWholeExportValueSlotOf(dep: ts.SourceFile): IrGlobal | null {
+    return this.cjsRuntimeWholeExportValueGlobals.get(dep) ?? null;
+  }
+
+  /** Whether a module's whole export is chosen by run-time writes this build
+   * carries checked-dynamically (cjs-inline-require.ts). */
+  cjsRuntimeWholeExportModule(dep: ts.SourceFile): boolean {
+    const cached = this.cjsRuntimeWholeExportModules.get(dep);
+    if (cached !== undefined) return cached;
+    const found = cjsRuntimeWholeExportValueWritesOf(this, dep) !== null;
+    this.cjsRuntimeWholeExportModules.set(dep, found);
+    return found;
+  }
+
+  /** The value a slotted module held when it finished evaluating — what an
+   * ESM default import of it binds — or null for every other module. */
+  cjsRuntimeExportSnapshotOf(dep: ts.SourceFile): IrGlobal | null {
+    return this.cjsRuntimeExportSnapshotGlobals.get(dep) ?? null;
   }
 
   /** Whether a write of export global `globalId` also has to reach the slots
@@ -13937,6 +13996,10 @@ export class Lowerer {
     // An unannotated JavaScript `var` these reads never see unassigned may
     // take a type derived from its writes (jsVarWriteType).
     for (const symbol of varReads.storedBeforeRead) this.storedBeforeReadVars.add(symbol);
+    // A narrow `var` whose forward references all run after its first
+    // store: the read sees the assignment, so the predeclaration carries
+    // the declared type with an empty slot instead of fencing.
+    for (const symbol of varReads.forwardStored) this.forwardStoredVars.add(symbol);
     // Number the sites of every file. The first and the last pass visit
     // every site; the passes between visit only the sites whose facts
     // changed (SiteDependencies). When such a pass changes nothing, a full
@@ -22874,8 +22937,9 @@ export class Lowerer {
     // The `var` twin: a reference above the `var` statement (a direct read
     // tsc allowed because the type carries undefined, or a nested function
     // capturing the binding early). JS reads undefined there — never a TDZ
-    // error — so only undefined-armed types predeclare; the rest land on
-    // rejectUnresolvedSymbol's named fence.
+    // error — so only undefined-armed types predeclare, plus a narrow type
+    // whose reads all run after the store (the slot starts empty, never
+    // observed); the rest land on rejectUnresolvedSymbol's named fence.
     if (blame && predeclareForwardVar(this, symbol)) {
       return this.resolveKey(symbol, blame);
     }

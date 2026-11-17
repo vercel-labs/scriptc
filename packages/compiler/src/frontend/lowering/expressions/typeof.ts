@@ -1032,12 +1032,11 @@ export function lowerDynTypeofTest(
     if (b.text === "symbol") {
       return { kind: "boolLit", value: negated, type: BOOL, loc };
     }
-    lowerer.unsupported(
-      "SC1090",
-      b,
-      `'typeof' tests against "${b.text}" on 'unknown' values (only "string"/"number"/` +
-        `"boolean"/"undefined"/"object" narrow; use a checked cast — 'v as T' — to extract)`,
-    );
+    // A literal no `typeof` can answer ("unknown", "Object", …): not a kind
+    // test at all. The ordinary comparison below lowers the runtime `typeof`
+    // string against it (tsc narrows such a branch to never, so no read in it
+    // needs the kind test), and the operand still evaluates exactly once.
+    return null;
   }
   return null;
 }

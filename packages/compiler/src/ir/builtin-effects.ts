@@ -343,15 +343,22 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // %o's showHidden walk refuses the kinds whose hidden entries it cannot
   // render.
   "insp.dynHidden",
-  // diagnostics_channel: publish runs subscribers synchronously (a throw
-  // propagates — the documented divergence from triggerUncaughtException);
-  // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
-  // non-function subscribers.
-  // trace_events.createTracing validates its options object.
+  // diagnostics_channel: the subscribe/unsubscribe forms validate the name
+  // and the subscriber in the runtime (Node's ERR_INVALID_ARG_TYPE), and
+  // the bind-store/run-stores calls run program code.
+  // trace_events.createTracing validates its options object and its
+  // categories array.
   "te.createTracing",
-  "dc.publish",
   "dc.subscribe",
   "dc.unsubscribe",
+  // The name validators raise Node's ERR_INVALID_ARG_TYPE, and a symbol
+  // name fences with SC2020.
+  "dc.channel",
+  "dc.tracingChannel",
+  /** The collection form validates each event member (Node's
+   * "must be an instance of Channel"), so a value asserted past the type
+   * raises here rather than indexing the channel table with it. */
+  "dc.tracingChannelOf",
   "dc.chanSubscribe",
   "dc.chanUnsubscribe",
   "dc.tcSubscribe",

@@ -102619,6 +102619,7 @@
           "tests/corpus/8177-tls-empty-client-ca.ts",
           "tests/corpus/tls-connect-forms.ts",
           "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-server-class.ts",
           "tests/corpus/tls-server-members.ts",
           "tests/corpus/tls-socket-audit.ts",
           "tests/corpus/tls-socket-extras.ts",
@@ -102967,8 +102968,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.Server",
+        "tests": [
+          "tests/corpus/tls-server-class.ts",
+          "tests/corpus/tls-server-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -3312,6 +3312,10 @@ function buildLibFnSignatures() {
     /** tlsSocket.servername (string or false) and getSession() (a Buffer
      * or null) as dyn values, and disableRenegotiation's no-op. */
     "tls.sockDynMember": { argTypes: [NETSOCKET_T, F64], result: DYN },
+    /** `x instanceof tls.Server`: the server handle's TLS marker. */
+    "tls.serverIs": { argTypes: [NETSERVER_T], result: BOOL },
+    /** The same test over a checked-dynamic value (a union operand). */
+    "tls.serverIsDyn": { argTypes: [DYN], result: BOOL },
     /** disableRenegotiation(): a no-op call, so the receiver is still
      * evaluated (and its exceptions still surface). */
     "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },

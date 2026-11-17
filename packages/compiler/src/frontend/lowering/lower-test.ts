@@ -1378,11 +1378,13 @@ export function lowerTestMethodCall(
     }
     // The data payload rides the test:log event only, so the reporter prints
     // the message alone; it is still evaluated for its side effects, after
-    // the message, as the arguments evaluate in source order.
+    // the message, as the arguments evaluate in source order. It lowers as a
+    // discarded expression statement, so a bare `null`/`undefined` payload
+    // is a no-op instead of a bare unit literal the IR has no value for.
     const pre: IrStmt[] = [];
     const msgSlot = lowerer.declareHiddenLocal("%logMessage", STRING);
     pre.push({ kind: "varDecl", localId: msgSlot.id, init: msg, loc });
-    pre.push({ kind: "exprStmt", expr: lowerer.lowerExpr(data), loc });
+    pre.push(lowerer.lowerExprStatement(data));
     return {
       kind: "seqExpr",
       stmts: pre,

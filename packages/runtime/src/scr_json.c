@@ -24291,7 +24291,18 @@ static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind
   }
   int supported = scr_weak_key(value, ptr, kind);
   if (supported < 0) {
-    static const char message[] = "FinalizationRegistry targets of this native reference type have no weak lifetime lowering";
+    /* A TARGET whose reference kind has no weak lifetime lowering: the
+     * registry keeps no per-target entry (it counts unregister tokens only),
+     * and ECMAScript lets an implementation never collect a target or call
+     * its cleanup, so the registration is accepted and simply never
+     * collected. A TOKEN of such a kind still refuses: its count is the one
+     * thing the registry reads back. */
+    if (invalid) {
+      *ptr = NULL;
+      *kind = 0;
+      return true;
+    }
+    static const char message[] = "FinalizationRegistry unregister tokens of this native reference type have no weak lifetime lowering";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return false;
   }

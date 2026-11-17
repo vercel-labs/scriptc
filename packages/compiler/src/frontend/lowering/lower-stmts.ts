@@ -112,6 +112,7 @@ import {
   programReadsExitCode,
 } from "./builtins/process.js";
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
+import { isRebindableRequireDecl } from "./rebindable-requires.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { isTimeValueDateDeclaration } from "./date-values.js";
@@ -146,6 +147,7 @@ import {
   splitRequireEarlyReadOf,
   unresolvedRequireThrow,
   wholeExportSymbolOfModule,
+  wholeExportValue,
   wholeExportValueOfModuleBinding,
 } from "./cjs-inline-require.js";
 import {
@@ -2969,6 +2971,29 @@ function lowerVarDeclarator(
       if (island !== null) return [island];
       const init = lowerer.requireInitStmt(spec, decl);
       const out: IrStmt[] = init ? [init] : [];
+      // A require binding the file reassigns: the module's value is stored
+      // in the checked-dynamic global collectGlobals registered, and the
+      // assignment replaces it (rebindable-requires.ts).
+      if (ts.isIdentifier(decl.name) && isRebindableRequireDecl(lowerer, decl)) {
+        const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+        const global = symbol === undefined ? undefined : lowerer.globalsBySymbol.get(symbol);
+        const stored =
+          global === undefined ? null : requireReboundValue(lowerer, decl, decl.name, spec);
+        if (global === undefined || stored === null) {
+          lowerer.unsupported(
+            "SC1090",
+            decl,
+            `reassigning '${decl.name.text}', a require() binding whose module value has no static representation`,
+          );
+        }
+        out.push({
+          kind: "assign",
+          localId: global!.id,
+          value: stored!,
+          loc: locOf(decl),
+        });
+        return out;
+      }
       // Snapshot bindings and nested patterns evaluate in pattern order,
       // immediately after the required module has initialized.
       const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
@@ -10737,8 +10762,21 @@ function lowerCjsConditionalWholeExportStatement(
   if (init !== null) body.push(init);
   for (const name of target.names) {
     const g = lowerer.cjsConditionalWholeExportSlotOf(sf, name) ?? undefined;
+    if (!g) return null;
+    if (!target.ownNames.includes(name)) {
+      // A member this arm's table does not export is absent from Node's new
+      // exports object: the slot takes undefined, even when an assignment
+      // that ran earlier in the module had filled it.
+      // A checked-dynamic slot holds its own undefined; a union slot holds
+      // the undefined arm (unassignedSlotInit answers only the latter).
+      const unset =
+        g.type.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.unassignedSlotInit(g.type, loc);
+      if (unset === null) return null;
+      body.push({ kind: "assign", localId: g.id, value: unset, loc });
+      continue;
+    }
     const value = cjsExportValueByName(lowerer, target.req.dep, name, expr);
-    if (!g || value === null) return null;
+    if (value === null) return null;
     body.push({
       kind: "assign",
       localId: g.id,
@@ -16534,6 +16572,12 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
     stdlibGlobalNameOf(lowerer, stmt.expression) === "globalThis"
       ? { kind: "libCall", fn: "global.forInObject", args: [], type: DYN, loc }
       : lowerer.lowerExpr(stmt.expression);
+  // An admitted TS2407 site: the checker typed the right side from the
+  // value the program last stored in it, not from what it holds (React's
+  // `for (propName in ((childrenLength = type.defaultProps), childrenLength))`
+  // is typed `number` and walks an object). Node enumerates whatever value
+  // arrives, which the checked-dynamic walk answers exactly.
+  if (lowerer.opinionAt(stmt.expression, 2407)) receiver = lowerer.coerceToExpected(receiver, DYN);
   if (receiver.type.kind === "object") {
     const info = lowerer.classes.get(receiver.type.className);
     let root = info;
@@ -17438,4 +17482,104 @@ function refuseAssertionViewWrite(lowerer: Lowerer, decl: ts.VariableDeclaration
     decl,
     `writing '${write.text}' through '${decl.name.getText()}', a copy of the '${copy.source}' value the assertion views as '${copy.target}' (the write would land on the copy; write through the original binding, or declare the member on the value's type)`,
   );
+}
+
+/** The value `require(<spec>)` answers for a binding the file reassigns: its
+ * module's whole export when that value has a static representation, else the
+ * module's namespace object (a compiled or builtin module's exports), boxed
+ * for the checked-dynamic global that holds it. Null when neither exists. */
+function requireReboundValue(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  name: ts.Identifier,
+  spec: string,
+): IrExpr | null {
+  const sf = ts.getSourceFileOfNode(decl);
+  const inline =
+    decl.initializer === undefined ? null : inlineProgramRequireOf(lowerer, decl.initializer);
+  const dep =
+    inline?.dep ??
+    lowerer.facts.importedModule(sf, spec, "require") ??
+    lowerer.facts.npmStaticModule(sf, spec, "require");
+  if (dep !== null) {
+    const whole = wholeExportValue(lowerer, dep, decl);
+    if (whole !== null) return lowerer.coerceInto(decl, whole, DYN);
+  }
+  // The raw checker type: typeOf answers `any` for the binding's reads
+  // (rebindable-requires.ts), while the box needs the module's identity.
+  const nsType = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(name));
+  if (nsType?.kind === "moduleNs") {
+    const ns = {
+      kind: "moduleNsRef" as const,
+      moduleId: nsType.moduleId,
+      type: nsType,
+      loc: locOf(decl),
+    };
+    const boxed = lowerer.moduleNamespaceDyn(ns);
+    if (boxed !== null) return boxed;
+  }
+  // A module whose exports are one object literal (`module.exports = { … }`)
+  // has no first-class exports object in the lowering, so a checked-dynamic
+  // object built from its export table answers every member read as the
+  // exports object does. A member with no export global (an alias-backed or
+  // computed key) has no value form, and the declaration keeps the refusal
+  // instead of dropping it.
+  if (dep !== null) {
+    const literal = exportsObjectLiteralOf(dep);
+    if (literal !== null) {
+      const loc = locOf(decl);
+      const rawTag = lowerer.fileTag.get(dep) ?? "";
+      const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
+      const prefix = `%g.${tag}%export.`;
+      const globals = new Map<string, { id: string; type: IrType }>();
+      for (const g of lowerer.globalsList)
+        if (g.id.startsWith(prefix)) globals.set(g.id.slice(prefix.length), g);
+      const fields: { key: IrExpr; value: IrExpr }[] = [];
+      for (const prop of literal.properties.nodes) {
+        const name =
+          prop.name === undefined
+            ? null
+            : ts.isIdentifier(prop.name)
+              ? prop.name.text
+              : ts.isStringLiteralLike(prop.name)
+                ? prop.name.text
+                : null;
+        const global = name === null ? undefined : globals.get(name);
+        if (name === null || global === undefined) return null;
+        fields.push({
+          key: { kind: "strLit", value: name, type: STRING, loc },
+          value: lowerer.coerceInto(
+            decl,
+            { kind: "varRef", localId: global.id, type: global.type, loc },
+            DYN,
+          ),
+        });
+      }
+      // One object per module is Node's identity and mutations; building
+      // it per binding miscompiles, so keep the named refusal until a
+      // module-owned exports slot exists.
+      if (fields.length > 0) return null;
+    }
+  }
+  return null;
+}
+
+/** The object literal `dep` replaces its exports with
+ * (`module.exports = { … }`), or null. */
+export function exportsObjectLiteralOf(dep: ts.SourceFile): ts.ObjectLiteralExpression | null {
+  for (const stmt of dep.statements.nodes) {
+    if (!ts.isExpressionStatement(stmt)) continue;
+    const value = stmt.expression;
+    if (
+      ts.isBinaryExpression(value) &&
+      value.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(value.left) &&
+      ts.isIdentifier(value.left.expression) &&
+      value.left.expression.text === "module" &&
+      value.left.name.text === "exports" &&
+      ts.isObjectLiteralExpression(value.right)
+    )
+      return value.right;
+  }
+  return null;
 }

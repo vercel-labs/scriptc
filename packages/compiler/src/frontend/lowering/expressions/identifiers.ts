@@ -38,6 +38,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { builtinImportBindingByName } from "../builtins/module-bindings.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
@@ -1433,6 +1434,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // name when the program created one (`globalThis.X = class X {}`, in this
   // module or another), as in Node, and the ReferenceError otherwise.
   if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    // A named import of a builtin whose export the checker resolves to a
+    // declared TYPE (an ambient interface) leaves the read with no value
+    // symbol, but it is still that module's member: keep the member's own
+    // refusal (node-value-reads.ts) instead of compiling a global read of
+    // the name, which would answer a ReferenceError at run time.
+    const importedMember = builtinImportBindingByName(
+      lowerer,
+      ts.getSourceFileOfNode(expr),
+      expr.text,
+    );
+    if (importedMember !== null)
+      return unloweredModuleMemberValue(lowerer, importedMember, expr, loc, true);
     if (NODE_GLOBALS_WITHOUT_NATIVE.has(expr.text)) lowerer.hostGlobalFence(expr.text, expr);
     return {
       kind: "libCall",

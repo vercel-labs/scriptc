@@ -97591,12 +97591,15 @@
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
           "tests/diagnostics/compat-absent-node-values.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/fixtures/node-test/cases/ctx-signal.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
           "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
           "tests/fixtures/node-test/cases/get-test-context.ts",
@@ -98597,7 +98600,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.callCount",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98625,7 +98628,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.mockImplementation",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98653,7 +98656,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.mockImplementationOnce",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98681,7 +98684,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.resetCalls",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98709,7 +98712,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.ctx.restore",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -98737,7 +98740,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.calls",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
@@ -99147,15 +99150,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.reset",
         "tests": [
           "tests/fixtures/node-test/cases/mock-method.ts",
-          "tests/corpus/5810-mock-method-records.ts",
+          "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
-          "tests/corpus/class-instance-method-value-this.ts",
-          "tests/corpus/object-literal-method-this.ts",
-          "tests/corpus/prototype-method-value-this.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99179,15 +99179,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.restoreAll",
         "tests": [
           "tests/fixtures/node-test/cases/mock-method.ts",
-          "tests/corpus/5810-mock-method-records.ts",
+          "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
-          "tests/corpus/class-instance-method-value-this.ts",
-          "tests/corpus/object-literal-method-this.ts",
-          "tests/corpus/prototype-method-value-this.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100053,9 +100050,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.diagnostic",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100130,10 +100133,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.runOnly",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100157,9 +100165,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.skip",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.skip",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100183,9 +100197,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.todo",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.todo",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100235,10 +100255,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.waitFor",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100262,9 +100287,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:context.assert",
+        "status": "supported",
+        "evidence": "compiler-feature:test.context.assert",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100342,10 +100373,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.filePath",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100369,11 +100405,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.fullName",
         "tests": [
-          "tests/fixtures/node-test/cases/ctx-hooks.ts",
-          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100397,9 +100437,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.name",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100423,10 +100469,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.passed",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100477,10 +100528,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.attempt",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100531,10 +100587,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.workerId",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100558,7 +100619,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.signal",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-signal.ts",
@@ -100608,9 +100669,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.diagnostic",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100658,9 +100720,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.filePath",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100685,9 +100748,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.fullName",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100712,9 +100776,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.name",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100739,7 +100804,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.signal",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-signal.ts",
@@ -100766,9 +100831,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.passed",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -100793,9 +100859,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.attempt",
         "tests": [
+          "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/harness/node-test.test.ts"
         ]

@@ -932,6 +932,33 @@ const BOUNDED_BYTES_METHODS: ReadonlySet<string> = new Set([
   "length",
   "subarray",
   "sortNumeric",
+  // Byte and element moves that read and write storage and never call back
+  // into scriptc code: a typed array's slice, fill, copy, search and
+  // conversion of numbers. The comparator sort (sortCompare) and the
+  // dynamic source (setFromDyn) can run scriptc code and stay unbounded.
+  "buffer",
+  "byteLength",
+  "byteOffset",
+  "slice",
+  "toReversed",
+  "with",
+  "copyWithin",
+  "fill",
+  "fillNum",
+  "fillElem",
+  "fillStr",
+  "indexOf",
+  "indexOfElem",
+  "indexOfNum",
+  "lastIndexOf",
+  "lastIndexOfElem",
+  "lastIndexOfNum",
+  "includes",
+  "includesElem",
+  "includesNum",
+  "equals",
+  "compareBuf",
+  "toArray",
 ]);
 
 /** Array methods that can call back into scriptc code (a comparator, or
@@ -971,6 +998,16 @@ export function boundedNode(rec: IrExpr | IrStmt): boolean {
       // callback or conversion.
       if (rec.fn.startsWith("string.") || rec.fn.startsWith("num."))
         return rec.args.every(primitiveArgument);
+      // A process write without a callback runs no scriptc code: the runtime
+      // writes to the descriptor. The *Cb entries take a completion callback
+      // and stay unbounded.
+      if (
+        rec.fn === "process.stdoutWriteBytes" ||
+        rec.fn === "process.stderrWriteBytes" ||
+        rec.fn === "process.stdoutWrite" ||
+        rec.fn === "process.stderrWrite"
+      )
+        return true;
       return rec.fn.startsWith("math.");
     case "intrinsic":
       // A module binding read before its declaration ran only throws.

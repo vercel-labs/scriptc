@@ -577,6 +577,34 @@ test("stack checks cover every recursive cycle, including recursion through reen
   expect(computeMayThrow(mod).fns.size).toBe(0);
 });
 
+test("a member that writes to stdout or slices bytes does not re-enter", () => {
+  const slice: IrExpr = {
+    kind: "bytesIntrinsic",
+    method: "slice",
+    receiver: read,
+    args: [value, value],
+    type: { kind: "bytes", elem: "u8" },
+    loc,
+  };
+  const write = (fnName: string): IrExpr => ({
+    kind: "libCall",
+    fn: fnName,
+    args: [slice],
+    type: BOOL,
+    loc,
+  });
+  const member = (method: string, fnName: string): IrModule => ({
+    ...moduleWith(fn(`%W.${method}`, [exprStmt(write(fnName))]), fn("caller", [])),
+    // Only the member list matters to the stack-check graph.
+    classes: [{ name: "W", methods: [method] }] as IrModule["classes"],
+  });
+  // Neither a typed-array slice nor a callback-free process write runs
+  // scriptc code, so the member closes no cycle and checks no stack; the
+  // completion-callback write can re-enter and stays checked.
+  expect([...computeMayThrow(member("put", "process.stdoutWriteBytes"), { stackChecks: true }).stackChecks!]).toEqual([]);
+  expect([...computeMayThrow(member("putCb", "process.stdoutWriteBytesCb"), { stackChecks: true }).stackChecks!]).toEqual(["%W.putCb"]);
+});
+
 test("synchronous functions on a checked cycle skip the worker entry poll", () => {
   const asyncSelf: IrFunction = { ...fn("asyncSelf", [call("asyncSelf")], []), async: true };
   const mod: IrModule = {

@@ -1990,6 +1990,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.resHasHeader": "scr_http_res_has_header_named",
   "http.resRemoveHeader": "scr_http_res_remove_header",
   "http.resWriteHeadPairs": "scr_http_res_write_head_pairs",
+  "http.resWriteHeadObject": "scr_http_res_write_head_object",
   "http.resWriteHeadDyn": "scr_http_res_write_head_dyn",
   "http.serverJoinDupHeaders": "scr_http_server_join_duplicate_headers",
   "http.serverAllowMissingHostHeader": "scr_http_server_allow_missing_host_header",

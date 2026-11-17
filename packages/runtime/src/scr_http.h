@@ -299,6 +299,10 @@ void scr_http_req_on_close(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_destroy(ScrHttpRes *r);
 void scr_http_res_on_close(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed*/);
+/* writeHead(status, object): parallel names and dyn values (string, number
+ * or string array), with Node's fast and progressive paths. */
+void scr_http_res_write_head_object(ScrHttpRes *r, double status, ScrArr *names /*borrowed*/,
+                                    ScrArr *values /*borrowed*/);
 
 /* node:http, the CLIENT slice (http.request/http.get over the net client
  * machinery — one dialed connection per request, no agent pooling; the

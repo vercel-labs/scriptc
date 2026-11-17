@@ -10136,13 +10136,12 @@ function lowerHttpResMethodCall(
       const pairs: IrExpr = { kind: "call", callee: helper, args: [v], type: arrayOf(STRING), loc };
       return headResult("http.resWriteHeadPairs", [receiver, status, pairs]);
     }
-    // One name/value pair per line: an array value expands to one line
-    // per element (Node's writeHead object form); the pairs runtime
-    // appends the repeats after the first occurrence.
-    const pairs: IrExpr[] = [];
-    const pair = (key: string, value: IrExpr): void => {
-      pairs.push({ kind: "strLit", value: key, type: STRING, loc }, value);
-    };
+    // The object form keeps each property's value whole (a string, number
+    // or string array): the runtime applies Node's fast path (keys as
+    // written, arrays one line per element) or, once headers exist, its
+    // progressive path (remove every listed key, then setHeader in order).
+    const names: IrExpr[] = [];
+    const values: IrExpr[] = [];
     for (const prop of headersNode.properties.nodes) {
       const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
       if (!ts.isPropertyAssignment(prop) || key === null) {
@@ -10152,31 +10151,30 @@ function lowerHttpResMethodCall(
           "each header must be a `name: value` entry whose key is a literal (or a string-literal-typed const: [PORTLESS_HEADER])",
         );
       }
-      let value = lowerer.lowerExpr(prop.initializer);
-      if (value.type.kind === "f64") {
-        // Node formats number values via String(n) — the same ToString.
-        value = { kind: "toString", operand: value, type: STRING, loc };
+      const raw = lowerer.lowerExpr(prop.initializer);
+      const scalar = raw.type.kind === "string" || raw.type.kind === "f64";
+      const stringArray = raw.type.kind === "array" && raw.type.elem.kind === "string";
+      if (!scalar && !stringArray) {
+        lowerer.noLowering(
+          `writeHead header values of type '${lowerer.fmt(raw.type)}'`,
+          prop.initializer,
+          "header values are strings, numbers, or string arrays here",
+        );
       }
-      if (value.type.kind === "string") {
-        pair(key, value);
-        continue;
+      const value = lowerer.coerceToExpected(raw, DYN);
+      if (value.type.kind !== "dyn") {
+        lowerer.noLowering(
+          `writeHead header values of type '${lowerer.fmt(raw.type)}'`,
+          prop.initializer,
+          "header values are strings, numbers, or string arrays here",
+        );
       }
-      if (
-        value.type.kind === "array" &&
-        value.type.elem.kind === "string" &&
-        value.kind === "arrayLit"
-      ) {
-        for (const element of value.elems) pair(key, element);
-        continue;
-      }
-      lowerer.noLowering(
-        `writeHead header values of type '${lowerer.fmt(value.type)}'`,
-        prop.initializer,
-        "header values are strings, numbers, or literal string arrays here",
-      );
+      names.push({ kind: "strLit", value: key, type: STRING, loc });
+      values.push(value);
     }
-    const pairsArr: IrExpr = { kind: "arrayLit", elems: pairs, type: arrayOf(STRING), loc };
-    return headResult("http.resWriteHeadPairs", [receiver, status, pairsArr]);
+    const namesArr: IrExpr = { kind: "arrayLit", elems: names, type: arrayOf(STRING), loc };
+    const valuesArr: IrExpr = { kind: "arrayLit", elems: values, type: arrayOf(DYN), loc };
+    return headResult("http.resWriteHeadObject", [receiver, status, namesArr, valuesArr]);
   }
   if (name === "write" || name === "end") {
     // write() answers Node's boolean (the buffer is below its high-water

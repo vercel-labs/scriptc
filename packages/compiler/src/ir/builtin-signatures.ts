@@ -2907,6 +2907,12 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "http.resWriteHeadPairs": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: VOID },
+    /** writeHead(status, object): parallel names and dyn values, Node's
+     * fast and progressive paths. MAY THROW. */
+    "http.resWriteHeadObject": {
+      argTypes: [HTTPRES_T, F64, arrayOf(STRING), arrayOf(DYN)],
+      result: VOID,
+    },
     /** writeHead(status, headers) with a checked-dynamic headers value —
      * the runtime OBJ walk (string/number values; other values throw
      * Node's invalid-argument TypeError; may throw). */

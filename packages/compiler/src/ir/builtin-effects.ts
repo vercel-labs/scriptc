@@ -386,6 +386,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resWriteHeadObject",
   "http.resSetHeader",
   "http.resSetHeaderDyn",
   "http.resRemoveHeader",

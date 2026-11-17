@@ -49,6 +49,22 @@ const server = createServer((req, res) => {
     res.end();
     return;
   }
+  if (path === "/writehead-case-fast") {
+    res.writeHead(203, { "X-A": "1", "x-a": "2", "Content-Length": "2" });
+    res.end("ok");
+    return;
+  }
+  if (path === "/writehead-case-progressive") {
+    res.setHeader("X-A", "0");
+    res.writeHead(203, { "X-A": "1", "x-a": "2", "Content-Length": "2" });
+    res.end("ok");
+    return;
+  }
+  if (path === "/writehead-array-value") {
+    res.writeHead(203, { "X-A": ["1", "2"], "Content-Length": "2" });
+    res.end("ok");
+    return;
+  }
   if (path === "/writehead-object") {
     res.writeHead(203, { "X-A": "1", "X-B": ["2", "3"] });
     res.end();
@@ -95,6 +111,9 @@ server.listen(0, () => {
   const paths = [
     "/set",
     "/writehead-array",
+    "/writehead-case-fast",
+    "/writehead-case-progressive",
+    "/writehead-array-value",
     "/writehead-object",
     "/writehead-odds",
     "/date",

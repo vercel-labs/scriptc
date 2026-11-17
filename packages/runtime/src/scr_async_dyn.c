@@ -450,6 +450,9 @@ static SCR_TL size_t scr_ar_live_count = 0;
  * (type, captured store context) with it. */
 size_t scr_ar_live_resources(void) { return scr_ar_live_count; }
 
+static void *scr_ar_retain(void *h);
+static void scr_ar_release(void *h);
+
 /* Release what a resource still owns without freeing it: the audit at exit
  * wants every string and context released, and a box released by a later
  * atexit handler still owns the (now empty) struct. */
@@ -465,8 +468,19 @@ static void scr_ar_release_payload(ScrAsyncResource *r) {
 }
 
 static void scr_ar_teardown(void) {
-  for (ScrAsyncResource *r = scr_ar_live; r != NULL; r = r->next) scr_ar_release_payload(r);
+  /* Releasing a resource's captured store can release the resource itself — a
+   * store that holds its own resource — which unlinks and frees that entry
+   * from inside the release. Hold every entry for the walk, so each release
+   * below is the only thing that can free its node, then drop it. */
+  for (ScrAsyncResource *r = scr_ar_live; r != NULL; r = r->next) scr_ar_retain(r);
+  for (ScrAsyncResource *r = scr_ar_live; r != NULL;) {
+    ScrAsyncResource *next = r->next;
+    scr_ar_release_payload(r);
+    scr_ar_release(r);
+    r = next;
+  }
 }
+
 
 static void *scr_ar_retain(void *h) {
   ScrAsyncResource *r = h;

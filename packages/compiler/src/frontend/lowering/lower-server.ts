@@ -5642,11 +5642,18 @@ interface HttpServerOptionValue {
  * Node's validateInteger ladder and the headersTimeout default/ordering
  * check. Other documented keys fence by name; undocumented keys drop like
  * Node drops them. */
+type HttpServerOptionPlan = {
+  joinDup: boolean;
+  allowMissingHost: boolean;
+  values: HttpServerOptionValue[];
+};
+
 function lowerHttpServerOptions(
   lowerer: Lowerer,
   node: ts.Expression,
   what: string,
-): { joinDup: boolean; allowMissingHost: boolean; values: HttpServerOptionValue[] } {
+  skipKey?: (key: string) => boolean,
+): HttpServerOptionPlan {
   if (!ts.isObjectLiteralExpression(node)) {
     lowerer.noLowering(
       `${what} with a non-literal options argument`,
@@ -5695,6 +5702,9 @@ function lowerHttpServerOptions(
       );
     }
     const key = (prop.name as ts.Identifier | ts.StringLiteral).text;
+    // https.createServer's bag also carries the TLS keys, which the TLS
+    // lowering reads or fences; leave them to it.
+    if (skipKey !== undefined && skipKey(key)) continue;
     if (key === "requireHostHeader") {
       if (initializer !== null && initializer.kind === ts.SyntaxKind.FalseKeyword) {
         allowMissingHost = true;
@@ -5788,48 +5798,15 @@ function lowerHttpServerOptions(
   return { joinDup, allowMissingHost, values };
 }
 
-/** The shared createServer([options][, handler]) shapes behind
- * http.createServer, http.Server, and `new http.Server`: no arguments
- * (the on("request") route), a lone handler, a lone options object, and
- * (options, handler). Modeled option values wrap the construction in an
- * interned option-setting helper. */
-function lowerHttpCreateServerForms(
+/** Wrap a freshly created HTTP or HTTPS server with the modeled
+ * createServer option setters (Node's constructor order), or answer it
+ * unchanged when no modeled option was supplied. */
+function applyHttpServerOptions(
   lowerer: Lowerer,
-  expr: ts.CallExpression | ts.NewExpression,
-  what: string,
+  opts: HttpServerOptionPlan,
+  server: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
-  if (args.length > 2) {
-    lowerer.noLowering(
-      `${what} with ${args.length} arguments`,
-      expr,
-      `the supported forms are ${what}([options][, (req, res) => ...])`,
-    );
-  }
-  let optsNode: ts.Expression | null = null;
-  let handlerNode: ts.Expression | null = null;
-  if (args.length === 2) {
-    optsNode = args[0]!;
-    handlerNode = args[1]!;
-  } else if (args.length === 1) {
-    if (ts.isObjectLiteralExpression(args[0]!)) optsNode = args[0]!;
-    else handlerNode = args[0]!;
-  }
-  const opts =
-    optsNode !== null
-      ? lowerHttpServerOptions(lowerer, optsNode, what)
-      : { joinDup: false, allowMissingHost: false, values: [] as HttpServerOptionValue[] };
-  const server: IrExpr =
-    handlerNode !== null
-      ? {
-          kind: "libCall",
-          fn: "http.createServer",
-          args: [lowerRequestHandlerArg(lowerer, handlerNode)],
-          type: NETSERVER_T,
-          loc,
-        }
-      : { kind: "libCall", fn: "http.createServerEmpty", args: [], type: NETSERVER_T, loc };
   if (!opts.joinDup && !opts.allowMissingHost && opts.values.length === 0) return server;
   // The option-setting composition: an interned helper takes the option
   // values first, in options-literal order (Node evaluates the literal
@@ -5924,6 +5901,51 @@ function lowerHttpCreateServerForms(
     type: NETSERVER_T,
     loc,
   };
+}
+
+/** The shared createServer([options][, handler]) shapes behind
+ * http.createServer, http.Server, and `new http.Server`: no arguments
+ * (the on("request") route), a lone handler, a lone options object, and
+ * (options, handler). Modeled option values wrap the construction in an
+ * interned option-setting helper. */
+function lowerHttpCreateServerForms(
+  lowerer: Lowerer,
+  expr: ts.CallExpression | ts.NewExpression,
+  what: string,
+  loc: SrcLoc,
+): IrExpr {
+  const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
+  if (args.length > 2) {
+    lowerer.noLowering(
+      `${what} with ${args.length} arguments`,
+      expr,
+      `the supported forms are ${what}([options][, (req, res) => ...])`,
+    );
+  }
+  let optsNode: ts.Expression | null = null;
+  let handlerNode: ts.Expression | null = null;
+  if (args.length === 2) {
+    optsNode = args[0]!;
+    handlerNode = args[1]!;
+  } else if (args.length === 1) {
+    if (ts.isObjectLiteralExpression(args[0]!)) optsNode = args[0]!;
+    else handlerNode = args[0]!;
+  }
+  const opts =
+    optsNode !== null
+      ? lowerHttpServerOptions(lowerer, optsNode, what)
+      : { joinDup: false, allowMissingHost: false, values: [] as HttpServerOptionValue[] };
+  const server: IrExpr =
+    handlerNode !== null
+      ? {
+          kind: "libCall",
+          fn: "http.createServer",
+          args: [lowerRequestHandlerArg(lowerer, handlerNode)],
+          type: NETSERVER_T,
+          loc,
+        }
+      : { kind: "libCall", fn: "http.createServerEmpty", args: [], type: NETSERVER_T, loc };
+  return applyHttpServerOptions(lowerer, opts, server, loc);
 }
 
 /** `new http.Server([options][, handler])` — the constructor spelling of
@@ -6472,10 +6494,58 @@ const TLS_VALIDATED_OPTIONS: ReadonlySet<string> = new Set([
   "ticketKeys",
 ]);
 
+/** The http.Server options https.createServer also reads (Node's
+ * https.createServer options are http.createServer's plus the TLS ones).
+ * keepAliveTimeoutBuffer is absent: the TLS runtime walk consumes it. */
+const HTTPS_HTTP_OPTION_KEYS: ReadonlySet<string> = new Set([
+  "requireHostHeader",
+  "joinDuplicateHeaders",
+  "requestTimeout",
+  "headersTimeout",
+  "keepAliveTimeout",
+  "connectionsCheckingInterval",
+  "maxHeaderSize",
+  "rejectNonStandardBodyWrites",
+]);
+
+/** The HTTP option keys of an https.createServer options literal. */
+function httpsHttpOptionProps(
+  node: ts.ObjectLiteralExpression,
+): { key: string; prop: ts.ObjectLiteralElementLike }[] {
+  const found: { key: string; prop: ts.ObjectLiteralElementLike }[] = [];
+  for (const prop of node.properties.nodes) {
+    if (
+      (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
+      (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
+      HTTPS_HTTP_OPTION_KEYS.has(prop.name.text)
+    ) {
+      found.push({ key: prop.name.text, prop });
+    }
+  }
+  return found;
+}
+
+/** The HTTP option values of an https.createServer literal evaluate as the
+ * option helper's arguments, ahead of the TLS fields inside the constructed
+ * server, rather than in literal position. Side-effect-free initializers
+ * make that order unobservable; anything else would run earlier than Node
+ * runs it, so those fence. */
+function checkHttpsHttpOptionValues(lowerer: Lowerer, node: ts.ObjectLiteralExpression): void {
+  for (const { key, prop } of httpsHttpOptionProps(node)) {
+    if (ts.isShorthandPropertyAssignment(prop)) continue;
+    if (ts.isPropertyAssignment(prop) && sideEffectFreeOptionValue(prop.initializer)) continue;
+    lowerer.noLowering(
+      `https.createServer with a ${key} value outside the literal`,
+      prop,
+      "bind the value to a const first so it reads in literal order",
+    );
+  }
+}
+
 /** True when a literal options bag must ride the runtime walker: JS uses
- * it for the typed TLS validation ladders, HTTPS uses it for
- * keepAliveTimeoutBuffer so the HTTP option is consumed without losing
- * the literal's evaluation order, and `runtimeKeys` names options only the
+ * it for the typed TLS validation ladders, tls.createServer uses it for
+ * keepAliveTimeoutBuffer so the HTTP option is consumed without losing the
+ * literal's evaluation order, and `runtimeKeys` names options only the
  * runtime walk implements (tls.createServer's ALPNProtocols). */
 function tlsLiteralNeedsRuntimeWalk(
   node: ts.ObjectLiteralExpression,
@@ -7260,11 +7330,29 @@ function lowerHttpsModuleCall(
         "the supported form is createServer({ cert, key }, (req, res) => ...)",
       );
     }
+    const optionsNode = args[0]!;
+    // https.createServer's options bag is http.createServer's plus the TLS
+    // keys, so parse the modeled HTTP side here — before the TLS lowering
+    // decides its path — and wrap whatever server that path constructs. A
+    // literal the TLS side sends through the runtime walk skips this: the
+    // walk reads the same HTTP members from the record.
+    let httpOpts: HttpServerOptionPlan | null = null;
+    if (
+      ts.isObjectLiteralExpression(optionsNode) &&
+      !tlsLiteralNeedsRuntimeWalk(optionsNode, false, TLS_CLIENT_AUTH_OPTIONS)
+    ) {
+      checkHttpsHttpOptionValues(lowerer, optionsNode);
+      httpOpts = lowerHttpServerOptions(lowerer, optionsNode, "https.createServer", (key) =>
+        TLS_SERVER_DOCUMENTED_OPTIONS.has(key),
+      );
+    }
+    const withHttpOptions = (server: IrExpr): IrExpr =>
+      httpOpts !== null ? applyHttpServerOptions(lowerer, httpOpts, server, loc) : server;
     const opts = lowerTlsServerOptionsOrDyn(
       lowerer,
-      args[0]!,
+      optionsNode,
       "https.createServer",
-      true,
+      false,
       TLS_CLIENT_AUTH_OPTIONS,
     );
     if (args.length === 1) {
@@ -7273,13 +7361,13 @@ function lowerHttpsModuleCall(
       // NULL-handler shape, here for the runtime-options record only
       // (the literal path keeps its historical two-argument surface).
       if (opts.dyn !== undefined) {
-        return {
+        return withHttpOptions({
           kind: "libCall",
           fn: "https.createServerDyn",
           args: [opts.dyn],
           type: NETSERVER_T,
           loc,
-        };
+        });
       }
       lowerer.noLowering(
         "createServer with 1 arguments",
@@ -7288,21 +7376,23 @@ function lowerHttpsModuleCall(
       );
     }
     const cb = lowerRequestHandlerArg(lowerer, args[1]!);
-    return opts.dyn !== undefined
-      ? {
-          kind: "libCall",
-          fn: "https.createServerDynCb",
-          args: [opts.dyn, cb],
-          type: NETSERVER_T,
-          loc,
-        }
-      : {
-          kind: "libCall",
-          fn: "https.createServer",
-          args: [opts.cert, opts.key, cb],
-          type: NETSERVER_T,
-          loc,
-        };
+    return withHttpOptions(
+      opts.dyn !== undefined
+        ? {
+            kind: "libCall",
+            fn: "https.createServerDynCb",
+            args: [opts.dyn, cb],
+            type: NETSERVER_T,
+            loc,
+          }
+        : {
+            kind: "libCall",
+            fn: "https.createServer",
+            args: [opts.cert, opts.key, cb],
+            type: NETSERVER_T,
+            loc,
+          },
+    );
   }
   if (bi.member === "request" || bi.member === "get") {
     return lowerHttpClientCall(lowerer, expr, bi.member, loc, true);

@@ -3053,30 +3053,80 @@ ScrNetServer *scr_tls_create_server_dyn(const ScrDyn *opts /*borrowed*/,
   return s;
 }
 
+/* HTTPS ServerOptions extends http.ServerOptions: the record's HTTP-side
+ * members go through the same setters (and the same validation ladders) as
+ * the literal createServer lowering, in Node's storeHTTPOptions order. The
+ * shared TLS walker above deliberately owns only the TLS surface. */
+static void scr_https_apply_http_options(ScrNetServer *s, const ScrDyn *opts /*borrowed*/) {
+  if (opts == NULL || opts->kind != SCR_DYN_OBJ) return;
+  const ScrDyn *v;
+  const ScrDyn *headers = NULL;
+  /* Each step stops at its first throwing validation, so the first bad
+   * option in Node's order is the one the call reports. */
+  if ((v = scr_dyn_obj_get(opts, "maxHeaderSize", sizeof "maxHeaderSize" - 1)) != NULL &&
+      v->kind != SCR_DYN_UNDEF) {
+    if (v->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("maxHeaderSize", "of type number", v);
+      return;
+    }
+    scr_http_server_max_header_size(s, v->v.num);
+    if (scr_exc_pending()) return;
+  }
+  /* requestTimeout, then headersTimeout (the default derives from the
+   * request timeout), then their range relation. */
+  v = scr_dyn_obj_get(opts, "requestTimeout", sizeof "requestTimeout" - 1);
+  if (v != NULL) {
+    scr_net_server_timeout_option_set(s, 3, v);
+    if (scr_exc_pending()) return;
+  }
+  headers = scr_dyn_obj_get(opts, "headersTimeout", sizeof "headersTimeout" - 1);
+  if (headers != NULL) {
+    scr_net_server_timeout_option_set(s, 2, headers);
+    if (scr_exc_pending()) return;
+    if (headers->kind == SCR_DYN_UNDEF) headers = NULL;
+  }
+  scr_http_server_headers_timeout_default(s, headers);
+  if (scr_exc_pending()) return;
+  v = scr_dyn_obj_get(opts, "keepAliveTimeout", sizeof "keepAliveTimeout" - 1);
+  if (v != NULL) {
+    scr_net_server_timeout_option_set(s, 1, v);
+    if (scr_exc_pending()) return;
+  }
+  v = scr_dyn_obj_get(opts, "keepAliveTimeoutBuffer", sizeof "keepAliveTimeoutBuffer" - 1);
+  if (v != NULL) {
+    scr_net_server_timeout_option_set(s, 4, v);
+    if (scr_exc_pending()) return;
+  }
+  v = scr_dyn_obj_get(opts, "connectionsCheckingInterval",
+                      sizeof "connectionsCheckingInterval" - 1);
+  if (v != NULL) {
+    scr_http_server_connections_checking_interval(s, v);
+    if (scr_exc_pending()) return;
+  }
+  v = scr_dyn_obj_get(opts, "joinDuplicateHeaders", sizeof "joinDuplicateHeaders" - 1);
+  if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+    if (v->kind != SCR_DYN_BOOL) {
+      scr_dyn_arg_type_fail("options.joinDuplicateHeaders", "of type boolean", v);
+      return;
+    }
+    if (v->v.b) scr_http_server_join_duplicate_headers(s);
+  }
+  v = scr_dyn_obj_get(opts, "requireHostHeader", sizeof "requireHostHeader" - 1);
+  if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+    if (v->kind != SCR_DYN_BOOL) {
+      scr_dyn_arg_type_fail("options.requireHostHeader", "of type boolean", v);
+      return;
+    }
+    if (!v->v.b) scr_http_server_allow_missing_host_header(s);
+  }
+  v = scr_dyn_obj_get(opts, "rejectNonStandardBodyWrites",
+                      sizeof "rejectNonStandardBodyWrites" - 1);
+  if (v != NULL) scr_http_server_reject_non_standard_body_writes(s, v);
+}
+
 ScrNetServer *scr_https_create_server_dyn(const ScrDyn *opts /*borrowed*/,
                                            ScrClosure *handler /*moves, nullable*/,
                                            ScrHttpReqFn fn) {
-  /* HTTPS ServerOptions extends http.ServerOptions. Consume the one HTTP
-   * constructor field this runtime models before the shared TLS walker;
-   * that walker deliberately owns only the TLS-side option surface. */
-  bool has_timeout_buffer = false;
-  double timeout_buffer = 0;
-  if (opts != NULL && opts->kind == SCR_DYN_OBJ) {
-    const ScrDyn *v = scr_dyn_obj_get(opts, "keepAliveTimeoutBuffer", 22);
-    if (v != NULL && v->kind != SCR_DYN_UNDEF) {
-      if (v->kind != SCR_DYN_NUM) {
-        scr_dyn_arg_type_fail("keepAliveTimeoutBuffer", "of type number", v);
-        scr_closure_release(handler);
-        return NULL;
-      }
-      timeout_buffer = v->v.num;
-      if (!scr_net_server_timeout_option_check(4, timeout_buffer)) {
-        scr_closure_release(handler);
-        return NULL;
-      }
-      has_timeout_buffer = true;
-    }
-  }
   ScrBytes *cert, *key;
   ScrTlsClientAuth auth;
   if (!scr_tls_srv_opts_walk_ex(opts, "https.createServer", &cert, &key, false, &auth)) {
@@ -3086,7 +3136,7 @@ ScrNetServer *scr_https_create_server_dyn(const ScrDyn *opts /*borrowed*/,
   ScrNetServer *s = scr_https_create_server_auth((const char *)cert->data, cert->len,
                                                   (const char *)key->data, key->len, handler, fn, &auth);
   scr_bytes_release(auth.ca);
-  if (has_timeout_buffer) scr_net_server_timeout_set(s, 4, timeout_buffer);
+  scr_https_apply_http_options(s, opts);
   scr_bytes_release(cert);
   scr_bytes_release(key);
   return s;

@@ -9446,10 +9446,46 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
  * runtime fence when they carry a value, rather than being ignored;
  * undocumented keys are ignored, as Node ignores them. */
 
+/* The base64 of `n` bytes: the auth option's Authorization value. */
+static ScrStr *scr_http_b64(const unsigned char *in, size_t n) {
+  static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  size_t out_len = ((n + 2) / 3) * 4;
+  char *out = malloc(out_len != 0 ? out_len : 1);
+  if (!out) scr_http_oom();
+  size_t o = 0;
+  for (size_t i = 0; i < n; i += 3) {
+    unsigned v = (unsigned)in[i] << 16;
+    if (i + 1 < n) v |= (unsigned)in[i + 1] << 8;
+    if (i + 2 < n) v |= (unsigned)in[i + 2];
+    out[o++] = table[(v >> 18) & 63];
+    out[o++] = table[(v >> 12) & 63];
+    out[o++] = i + 1 < n ? table[(v >> 6) & 63] : '=';
+    out[o++] = i + 2 < n ? table[v & 63] : '=';
+  }
+  ScrStr *result = scr_str_new(out, o);
+  free(out);
+  return result;
+}
+
+/* Whether the flat [name, value, ...] pairs already carry `name`. */
+static bool scr_http_pairs_have(ScrArr *pairs, const char *name) {
+  size_t want = strlen(name);
+  size_t count = (size_t)scr_arr_len(pairs);
+  for (size_t i = 0; i + 1 < count; i += 2) {
+    ScrStr *key = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
+    bool same = key->len == want;
+    for (size_t j = 0; same && j < want; j++)
+      if (tolower((unsigned char)key->data[j]) != name[j]) same = false;
+    scr_str_release(key);
+    if (same) return true;
+  }
+  return false;
+}
+
 /* The documented options this walk does not implement. A truthy value
  * fences; setHost and setDefaultHeaders fence only when false. */
 static const char *const SCR_HTTP_REQ_FENCED_OPTIONS[] = {
-  "auth", "createConnection", "family", "hints", "httpValidation", "insecureHTTPParser",
+  "createConnection", "family", "hints", "httpValidation", "insecureHTTPParser",
   "joinDuplicateHeaders", "localAddress", "localPort", "lookup", "uniqueHeaders", NULL,
 };
 
@@ -9820,6 +9856,60 @@ bool scr_http_req_opts_read(const ScrDyn *opts, bool secure, const char *api, Sc
     return false;
   }
   if (o->headers == NULL) o->headers = scr_arr_new(SCR_ELEM_STR, 0);
+  /* auth: "Basic " + base64 of the value, appended over an absent
+   * Authorization header (Node's setHeader after the caller's headers). A
+   * falsy value leaves the header unset. */
+  const ScrDyn *auth = OPT("auth");
+  if (auth != NULL && auth->kind != SCR_DYN_UNDEF && auth->kind != SCR_DYN_NULL &&
+      !(auth->kind == SCR_DYN_STR && auth->v.str->len == 0)) {
+    const unsigned char *bytes = NULL;
+    unsigned char *bytes_owned = NULL;
+    size_t n = 0;
+    if (auth->kind == SCR_DYN_STR) {
+      bytes = (const unsigned char *)auth->v.str->data;
+      n = auth->v.str->len;
+    } else if (auth->kind == SCR_DYN_BYTES) {
+      ScrBytes *view = auth->v.bytes;
+      SCR_BYTES_SNAPSHOT(view);
+      n = view->len * scr_bytes_elem_size(view->elem);
+      if (n != 0) {
+        bytes_owned = malloc(n);
+        if (!bytes_owned) scr_http_oom();
+        memcpy(bytes_owned, view->data, n);
+      }
+      bytes = bytes_owned;
+    } else {
+      /* Node converts the option with Buffer.from, whose error names the
+       * "first" argument without quoting it */
+      char detail[256];
+      const char *received = scr_dyn_specific_type(auth, detail, sizeof detail);
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received ");
+      scr_jb_puts(&b, received);
+      ScrStr *msg = scr_jb_finish(&b);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_TYPE");
+      scr_str_release(msg);
+      scr_http_req_opts_free(o);
+      return false;
+    }
+    if (!scr_http_pairs_have(o->headers, "authorization")) {
+      ScrStr *b64 = scr_http_b64(bytes, n);
+      ScrStr *value = scr_str_new(NULL, 0);
+      /* "Basic " + the base64 */
+      char *joined = malloc(6 + b64->len);
+      if (!joined) scr_http_oom();
+      memcpy(joined, "Basic ", 6);
+      memcpy(joined + 6, b64->data, b64->len);
+      scr_str_release(value);
+      value = scr_str_new(joined, 6 + b64->len);
+      free(joined);
+      scr_str_release(b64);
+      scr_arr_push_ref(o->headers, scr_str_new("authorization", 13));
+      scr_arr_push_ref(o->headers, value);
+    }
+    free(bytes_owned);
+  }
   const ScrDyn *signal = OPT("signal");
   if (signal != NULL) o->signal = scr_dyn_retain((ScrDyn *)signal);
   /* the connection: a Unix socket (net validates the path) or host:port */

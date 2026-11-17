@@ -7850,6 +7850,10 @@ function runtimeRequestOptions(
         (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
         (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
         (prop.name.text === "socketPath" ||
+          // auth turns into an Authorization header at request construction
+          // (string, Buffer or Uint8Array, over an absent header): the
+          // runtime walk implements it with Node's order and checks
+          prop.name.text === "auth" ||
           // a client certificate: the runtime request walk reads cert and key
           (secureish && (prop.name.text === "cert" || prop.name.text === "key")) ||
           // a scalar option whose value is not the walk's type (an untyped

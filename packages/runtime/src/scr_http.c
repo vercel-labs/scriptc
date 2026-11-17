@@ -7065,10 +7065,9 @@ void scr_http_client_abort(ScrHttpClientReq *c) {
 bool scr_http_client_aborted(ScrHttpClientReq *c) { return c->aborted; }
 
 bool scr_http_client_destroyed(ScrHttpClientReq *c) {
-  /* Node's ClientRequest reads destroyed true once its exchange is over, not
-   * only after an explicit destroy(); a CONNECT or upgrade handover leaves
-   * the request alive with the listener's socket. */
-  return c->destroyed || c->close_emitted || (c->response_done && !c->handed_over);
+  /* Node marks the request destroyed as the socket is handed back to the
+   * agent (responseKeepAlive) — the pooled state — and when it closes. */
+  return c->destroyed || c->close_emitted || c->sock_pooled;
 }
 
 void scr_http_client_on_response(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpRespFn fn, bool once) {

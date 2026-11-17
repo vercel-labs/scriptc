@@ -9374,9 +9374,20 @@ function lowerHttpClientMethodCall(
   }
   if (name === "destroy" && args.length === 1) {
     // destroy(err): err is the request's 'error' (an Error value here).
+    // destroy(undefined) and destroy(null) are destroy(), as in Node.
     requireStatementPosition(lowerer, call, "request.destroy(err)");
     const receiver = lowerer.lowerExpr(access.expression);
-    const err = lowerer.lowerExpr(args[0]!);
+    const arg = args[0]!;
+    if (arg.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(arg) && arg.text === "undefined")) {
+      return {
+        kind: "libCall",
+        fn: "http.clientDestroy",
+        args: [receiver],
+        type: VOID,
+        loc,
+      };
+    }
+    const err = lowerer.lowerExpr(arg);
     if (err.type.kind !== "object") {
       lowerer.noLowering(
         `destroy with a '${lowerer.fmt(err.type)}' argument`,

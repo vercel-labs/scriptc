@@ -55594,6 +55594,7 @@
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/9917-structured-clone-errors.ts",
+          "tests/corpus/9996-resource-timing.ts",
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
@@ -56650,8 +56651,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.PerformanceResourceTiming",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80379,6 +80383,7 @@
           "tests/corpus/5214-perf-entry-inspect.ts",
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/corpus/9996-resource-timing.ts",
           "tests/corpus/compat-js-value-reads-require.cjs",
           "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/net-paused-socket-exit.cjs",
@@ -81541,8 +81546,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceResourceTiming",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -81564,8 +81572,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceResourceTiming.toJSON",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -81587,8 +81598,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.workerStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81610,8 +81624,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.redirectStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81633,8 +81650,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.redirectEnd",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81656,8 +81676,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.fetchStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81679,8 +81702,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.domainLookupStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81702,8 +81728,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.domainLookupEnd",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81725,8 +81754,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.connectStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81748,8 +81780,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.connectEnd",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81771,8 +81806,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.secureConnectionStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81794,8 +81832,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.requestStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81817,8 +81858,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.finalResponseHeadersStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81840,8 +81884,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.firstInterimResponseStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81863,8 +81910,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.responseStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81886,8 +81936,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.responseEnd",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81909,8 +81962,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.transferSize",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81932,8 +81988,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.encodedBodySize",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81955,8 +82014,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.decodedBodySize",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81978,8 +82040,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.renderBlockingStatus",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82001,8 +82066,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.contentType",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82024,8 +82092,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.contentEncoding",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83789,8 +83860,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.performance.clearResourceTimings",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83961,8 +84035,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.performance.markResourceTiming",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84042,8 +84119,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.performance.setResourceTimingBufferSize",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts"
+        ]
       },
       "anchorSource": "exact"
     },

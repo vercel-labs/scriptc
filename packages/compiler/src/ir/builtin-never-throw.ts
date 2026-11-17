@@ -78,6 +78,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // The resource-timing field accessors read a view entry's own numbers and
+  // strings; no program code runs.
+  "perf.entryResourceNum",
+  "perf.entryResourceStr",
   // scr_te_get_enabled_categories reads the registry's own strings.
   "te.getEnabledCategories",
   // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its

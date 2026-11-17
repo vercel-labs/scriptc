@@ -2,7 +2,13 @@ import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
-import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import {
+  isPerfEntryType,
+  perfEntryJson,
+  perfResourceJson,
+  perfValueIsResourceTiming,
+} from "./performance.js";
+import { dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import { withoutParentheses } from "../../outer-expressions.js";
@@ -13,6 +19,7 @@ import {
   isJsonStringifyRuntimeScalarType,
   BOOL,
   DYN,
+  F64,
   type IrType,
   classDynViewSupported,
   isClassOwnEnumerableFieldName,
@@ -114,6 +121,19 @@ export function lowerJsonMethodCall(
             : lowerer.narrowedArmHelper(value.type.unionId, narrowed, loc);
         if (helper) value = { kind: "call", callee: helper, args: [value], type: narrowed, loc };
       }
+    }
+    // A performance entry serializes through its toJSON: the entry record
+    // also carries the fields of the other entry classes (a resource
+    // entry's timing fields), and JSON.stringify must not show those. The
+    // record built here is toJSON's plain object, which the walkers below
+    // serialize like any other record. An array of entries serializes each
+    // element the same way.
+    if (value.type.kind === "record" && isPerfEntryType(lowerer, value.type)) {
+      value = perfValueIsResourceTiming(lowerer, argNode)
+        ? perfResourceJson(lowerer, value, value.type, loc)
+        : perfEntryJson(lowerer, value, value.type, loc);
+    } else if (value.type.kind === "array" && isPerfEntryType(lowerer, value.type.elem)) {
+      value = perfEntryJsonArray(lowerer, value, value.type, loc);
     }
     const replacer = call.arguments.nodes[1];
     if (replacer && !jsonNullishArgument(lowerer, replacer)) {
@@ -779,4 +799,92 @@ export function jsonMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): 
     };
   }
   return null;
+}
+
+/** JSON.stringify of an array of performance entries: each element
+ * serializes through toJSON (the base entry object), so the extra fields
+ * the shared entry record carries never reach the output. */
+function perfEntryJsonArray(
+  lowerer: Lowerer,
+  value: IrExpr,
+  arrayT: IrType & { kind: "array" },
+  loc: SrcLoc,
+): IrExpr {
+  const entryT = arrayT.elem;
+  if (entryT.kind !== "record") return value;
+  const elem = entryT as IrType & { kind: "record" };
+  const json = perfEntryJson(lowerer, varRef("e.0", elem, loc), elem, loc);
+  const jsonT = json.type;
+  const outT: IrType = { kind: "array", elem: jsonT };
+  const key = `perfEntryJsonArray:${jsonT.kind === "record" ? jsonT.shapeId : "?"}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%perfEntryJsonArray", key);
+    lowerer.valueHelpers.set(key, helper);
+    const a = varRef("a.0", arrayT, loc);
+    const n = varRef("n.0", F64, loc);
+    const i = varRef("i.0", F64, loc);
+    const out = varRef("out.0", outT, loc);
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "a.0", name: "a", type: arrayT }],
+      returnType: outT,
+      locals: [
+        { id: "a.0", name: "a", type: arrayT, mutable: false },
+        { id: "n.0", name: "n", type: F64, mutable: false },
+        { id: "out.0", name: "out", type: outT, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+        { id: "e.0", name: "e", type: elem, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "n.0",
+          init: { kind: "arrIntrinsic", method: "length", receiver: a, args: [], type: F64, loc },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: "out.0",
+          init: { kind: "arrayLit", elems: [], type: outT, loc },
+          loc,
+        },
+        {
+          kind: "for",
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+          cond: { kind: "bin", op: "<", left: i, right: n, type: BOOL, loc },
+          update: {
+            kind: "assign",
+            localId: "i.0",
+            value: { kind: "bin", op: "+", left: i, right: numLit(1, loc), type: F64, loc },
+            loc,
+          },
+          body: [
+            {
+              kind: "varDecl",
+              localId: "e.0",
+              init: { kind: "arrayGet", arr: a, index: i, type: elem, loc },
+              loc,
+            },
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "arrIntrinsic",
+                method: "push",
+                receiver: out,
+                args: [perfEntryJson(lowerer, varRef("e.0", elem, loc), elem, loc)],
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        { kind: "return", value: out, loc },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [value], type: outT, loc };
 }

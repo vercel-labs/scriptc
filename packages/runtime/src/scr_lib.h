@@ -287,6 +287,18 @@ ScrStr *scr_perf_entry_type(double i);
 double scr_perf_entry_start(double i);
 double scr_perf_entry_duration(double i);
 ScrDyn *scr_perf_entry_detail(double i);
+/* performance.markResourceTiming(timingInfo, ...): the PerformanceResourceTiming
+ * entry for fetch's timing info (MAY THROW), buffered and observed like a
+ * mark and readable through the accessors at index 0. clearResourceTimings
+ * and setResourceTimingBufferSize read their call's dyn argument vector.
+ * An entry's resource fields answer through resource_num/resource_str with
+ * the selector order performance.ts defines (0/"" for marks and
+ * measures). */
+double scr_perf_resource_mark(ScrDyn *args);
+void scr_perf_resource_clear(ScrDyn *args);
+void scr_perf_resource_buffer_size(ScrDyn *args);
+double scr_perf_entry_resource_num(double i, double which);
+ScrStr *scr_perf_entry_resource_str(double i, double which);
 /* The entry objects themselves: entry_keep stores the program's object
  * for the last mark or measure (borrowed, retained), entry_ref answers
  * entry i's stored object (+1), so the getters return the same objects

@@ -2378,11 +2378,6 @@ static SCR_TL ScrError *scr_stream_cb_error = NULL;
  * (ScrFsRenameFn: (cb, err-or-NULL) — NULL is Node's null). */
 static void *scr_stream_ecb_retain(void *p) { return p; }
 static void scr_stream_ecb_release(void *p) { (void)p; }
-static void scr_stream_ecb_trace(void *p, ScrTraceVisit visit, void *ctx) {
-  (void)p;
-  (void)visit;
-  (void)ctx;
-}
 static void scr_stream_ecb_fire(ScrClosure *wrapper) {
   ScrClosure *user = (ScrClosure *)scr_box_get_ref(wrapper->caps[0]);
   ScrFsRenameFn fn = (ScrFsRenameFn)scr_box_get_ref(wrapper->caps[1]);
@@ -2393,7 +2388,9 @@ ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
   ScrClosure *w = scr_closure_new((void *)scr_stream_ecb_fire, 2);
   w->caps[0] = scr_box_new_obj(scr_closure_retain_v, scr_closure_release_v, scr_closure_trace_v);
   scr_box_set_ref(w->caps[0], cb);
-  w->caps[1] = scr_box_new_obj(scr_stream_ecb_retain, scr_stream_ecb_release, scr_stream_ecb_trace);
+  /* The adapter is a raw function pointer, not a collectable object: a
+   * NULL trace keeps the collector from visiting it as one. */
+  w->caps[1] = scr_box_new_obj(scr_stream_ecb_retain, scr_stream_ecb_release, NULL);
   scr_box_set_ref(w->caps[1], (void *)fn);
   return w;
 }

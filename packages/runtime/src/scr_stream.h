@@ -203,6 +203,10 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
  * a Writable over the web stream's writer, +1, or NULL with
  * ERR_INVALID_ARG_TYPE pending for a value that is not a WritableStream. */
 ScrStream *scr_stream_writable_from_web(struct ScrDyn *web, double flags);
+/* Duplex.fromWeb(pair[, options]) (scr_stream_duplex_from_web.c): a Duplex
+ * over the pair's web readable and writable, +1, or NULL with
+ * ERR_INVALID_ARG_TYPE pending. */
+ScrStream *scr_stream_duplex_from_web(struct ScrDyn *pair, double flags);
 
 /* stream.setDefaultHighWaterMark(objectMode, value) and
  * stream.getDefaultHighWaterMark(objectMode): what a stream created without

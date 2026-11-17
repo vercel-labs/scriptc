@@ -317,6 +317,7 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.writableFromWeb",
+  "webstream.duplexFromWeb",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -402,6 +403,7 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.writableFromWeb",
+  "webstream.duplexFromWeb",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -1905,6 +1907,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.instanceOf",
       "webstream.install",
       "webstream.writableFromWeb",
+      "webstream.duplexFromWeb",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
       // method value.
@@ -2207,6 +2210,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.class",
       "webstream.from",
       "webstream.writableFromWeb",
+      "webstream.duplexFromWeb",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",

@@ -2446,10 +2446,9 @@ function lowerWritableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
   };
 }
 
-/** Duplex.fromWeb(pair[, options]): the readable and writable sides wrapped
- * by the two adapters and joined by duplexify (pipeline.js's
- * newStreamDuplexFromReadableWritablePair). The options have no lowering
- * yet. */
+/** Duplex.fromWeb(pair[, options]): the adapter that owns the pair's reader
+ * and writer directly (adapters.js's newStreamDuplexFromReadableWritablePair).
+ * The options have no lowering yet. */
 function lowerDuplexFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
   if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
@@ -2484,42 +2483,11 @@ function lowerDuplexFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
     }
   }
   const duplexType: IrType = { kind: "object", className: "%Duplex" };
-  const pair = lowerer.lowerExprExpecting(args[0]!, DYN);
-  const pairLocal = lowerer.declareHiddenLocal("%fromWebPair", DYN);
-  const pairRef = varRef(pairLocal.id, DYN, loc);
-  const member = (name: string): IrExpr => ({
-    kind: "dynKeyGet",
-    value: pairRef,
-    key: { kind: "strLit", value: name, type: STRING, loc },
-    type: DYN,
-    loc,
-  });
-  const readable: IrExpr = {
-    kind: "libCall",
-    fn: "fetch.readableFromWeb",
-    args: [member("readable"), boolLit(false, loc), numLit(-1, loc), strLit("", loc)],
-    type: { kind: "object", className: "%Readable" },
-    loc,
-  };
-  const writable: IrExpr = {
-    kind: "libCall",
-    fn: "webstream.writableFromWeb",
-    /* flags bit 0: the web pair's member — destroying it aborts the writer
-     * (Node's web-pair adapter) instead of closing it. */
-    args: [member("writable"), numLit(1, loc)],
-    type: { kind: "object", className: "%Writable" },
-    loc,
-  };
+  /* Node's web-pair adapter owns the reader and the writer directly. */
   return {
-    kind: "seqExpr",
-    stmts: [{ kind: "varDecl", localId: pairLocal.id, init: pair, loc }],
-    result: {
-      kind: "libCall",
-      fn: "stream.duplexifyPairHalf",
-      args: [readable, writable, boolLit(false, loc)],
-      type: duplexType,
-      loc,
-    },
+    kind: "libCall",
+    fn: "webstream.duplexFromWeb",
+    args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
     type: duplexType,
     loc,
   };

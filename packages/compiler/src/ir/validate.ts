@@ -4668,6 +4668,17 @@ function validateFunction(
         );
       return true;
     }
+    if (e.fn === "webstream.duplexFromWeb") {
+      // Duplex.fromWeb: (pair, flags) → a Duplex.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (pair, flags) and return a Duplex`, e.loc);
+      return true;
+    }
     if (e.fn === "webstream.writableFromWeb") {
       // Writable.fromWeb: (writableStream, flags) → a Writable.
       if (

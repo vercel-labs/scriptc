@@ -2,5 +2,51 @@
  "order": [
   "<repo>/tests/corpus/5981-runtime-class-values.ts"
  ],
- "diags": []
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Type 'typeof Duplex' is not assignable to type 'typeof Readable'.\n  Types of property 'fromWeb' are incompatible.\n    Type '(pair: { readable: ReadableStream<Uint8Array<ArrayBufferLike>>; writable: WritableStream<Uint8Array<ArrayBufferLike>>; }, options?: ... | undefined) => Duplex' is not assignable to type '(readableStream: ReadableStream<unknown>, options?: { encoding?: string | undefined; highWaterMark?: number | undefined; objectMode?: boolean | undefined; signal?: AbortSignal | undefined; } | undefined) => Readable'.\n      Types of parameters 'pair' and 'readableStream' are incompatible.\n        Type 'ReadableStream<unknown>' is missing the following properties from type '{ readable: ReadableStream<Uint8Array<ArrayBufferLike>>; writable: WritableStream<Uint8Array<ArrayBufferLike>>; }': readable, writable",
+   "loc": {
+    "file": "<repo>/tests/corpus/5981-runtime-class-values.ts",
+    "start": 1050,
+    "end": 1056
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Type 'typeof Transform' is not assignable to type 'typeof Readable'.\n  Types of property 'fromWeb' are incompatible.\n    Type '(pair: { readable: ReadableStream<Uint8Array<ArrayBufferLike>>; writable: WritableStream<Uint8Array<ArrayBufferLike>>; }, options?: ... | undefined) => Duplex' is not assignable to type '(readableStream: ReadableStream<unknown>, options?: { encoding?: string | undefined; highWaterMark?: number | undefined; objectMode?: boolean | undefined; signal?: AbortSignal | undefined; } | undefined) => Readable'.\n      Types of parameters 'pair' and 'readableStream' are incompatible.\n        Type 'ReadableStream<unknown>' is missing the following properties from type '{ readable: ReadableStream<Uint8Array<ArrayBufferLike>>; writable: WritableStream<Uint8Array<ArrayBufferLike>>; }': readable, writable",
+   "loc": {
+    "file": "<repo>/tests/corpus/5981-runtime-class-values.ts",
+    "start": 1058,
+    "end": 1067
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Type 'typeof PassThrough' is not assignable to type 'typeof Readable'.\n  Types of property 'fromWeb' are incompatible.\n    Type '(pair: { readable: ReadableStream<Uint8Array<ArrayBufferLike>>; writable: WritableStream<Uint8Array<ArrayBufferLike>>; }, options?: ... | undefined) => Duplex' is not assignable to type '(readableStream: ReadableStream<unknown>, options?: { encoding?: string | undefined; highWaterMark?: number | undefined; objectMode?: boolean | undefined; signal?: AbortSignal | undefined; } | undefined) => Readable'.\n      Types of parameters 'pair' and 'readableStream' are incompatible.\n        Type 'ReadableStream<unknown>' is missing the following properties from type '{ readable: ReadableStream<Uint8Array<ArrayBufferLike>>; writable: WritableStream<Uint8Array<ArrayBufferLike>>; }': readable, writable",
+   "loc": {
+    "file": "<repo>/tests/corpus/5981-runtime-class-values.ts",
+    "start": 1069,
+    "end": 1080
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Type 'typeof Transform' is not assignable to type 'typeof Readable'.\n  Types of property 'fromWeb' are incompatible.\n    Type '(pair: { readable: ReadableStream<Uint8Array<ArrayBufferLike>>; writable: WritableStream<Uint8Array<ArrayBufferLike>>; }, options?: ... | undefined) => Duplex' is not assignable to type '(readableStream: ReadableStream<unknown>, options?: { encoding?: string | undefined; highWaterMark?: number | undefined; objectMode?: boolean | undefined; signal?: AbortSignal | undefined; } | undefined) => Readable'.\n      Types of parameters 'pair' and 'readableStream' are incompatible.\n        Type 'ReadableStream<unknown>' is missing the following properties from type '{ readable: ReadableStream<Uint8Array<ArrayBufferLike>>; writable: WritableStream<Uint8Array<ArrayBufferLike>>; }': readable, writable",
+   "loc": {
+    "file": "<repo>/tests/corpus/5981-runtime-class-values.ts",
+    "start": 3196,
+    "end": 3202
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "This comparison appears to be unintentional because the types 'typeof Readable' and 'typeof Duplex' have no overlap.",
+   "loc": {
+    "file": "<repo>/tests/corpus/5981-runtime-class-values.ts",
+    "start": 3710,
+    "end": 3730
+   }
+  }
+ ]
 }

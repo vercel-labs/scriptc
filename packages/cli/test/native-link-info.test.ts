@@ -72,7 +72,7 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
         minimum_os: "14.0",
       },
       program: { object, entry_symbol: "main" },
-      runtime_abi: { version: 50, marker: "scr_runtime_abi_v51" },
+      runtime_abi: { version: 51, marker: "scr_runtime_abi_v51" },
       runtime_pack: {
         kind: "precompiled",
         package: "@scriptc/runtime-darwin-arm64",

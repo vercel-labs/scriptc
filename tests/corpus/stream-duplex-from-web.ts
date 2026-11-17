@@ -108,6 +108,35 @@ async function main(): Promise<void> {
   if (settleWrite !== null) (settleWrite as () => void)();
   await tick();
   log.push(`late completion ${late.destroyed}`);
+
+  // destroy(err) while a sink write is still pending: the write callback is
+  // not called at destroy time. When the sink settles, cb runs with success
+  // and then the destroy's error reaches the stream (Node's web-pair
+  // adapter aborts the writer, which waits for the in-flight write).
+  let settlePending: (() => void) | null = null;
+  const pending = Duplex.fromWeb({
+    readable: new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.close();
+      },
+    }),
+    writable: new WritableStream<Uint8Array>({
+      write(): Promise<void> {
+        return new Promise<void>((resolve) => {
+          settlePending = resolve;
+        });
+      },
+    }),
+  });
+  pending.on("error", (error: Error) => log.push(`pending error ${error.message}`));
+  pending.write(Buffer.from("x"), (error) => {
+    log.push(`pending cb ${error ? error.message : "ok"}`);
+  });
+  await tick();
+  pending.destroy(new Error("halt"));
+  if (settlePending !== null) (settlePending as () => void)();
+  await tick();
+  log.push(`pending destroyed ${pending.destroyed}`);
 }
 
 main().then(() => {

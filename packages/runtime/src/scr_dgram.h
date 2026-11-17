@@ -33,11 +33,13 @@ ScrDgramSocket *scr_dgram_create(bool v6, bool reuse_addr, bool ipv6_only, bool 
 ScrStr *scr_dgram_type_str(ScrDgramSocket *s);
 /* createSocket(type | options[, listener]) over the checked-dynamic
  * argument: Node's Socket constructor, with the options it cannot honor
- * yet (signal, lookup, the block lists) refused explicitly. The listener
- * (nullable, moves) becomes on('message'). NULL with the exception
- * pending. */
+ * yet (lookup, bind's fd) refused explicitly. The listener (nullable,
+ * moves) becomes on('message'); `add_abort` is events.addAbortListener
+ * (the event-target unit's hook) for the options' signal. NULL with the
+ * exception pending. */
 ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb /*moves, nullable*/,
-                                     ScrDgramMsgFn fn);
+                                     ScrDgramMsgFn fn,
+                                     ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *));
 /* bind(options[, callback]) and bindSync(options) over the untyped options
  * object (Node's { port, address, exclusive, fd }). */
 void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *cb /*moves, nullable*/);

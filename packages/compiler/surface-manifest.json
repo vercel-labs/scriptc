@@ -1393,6 +1393,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.mkdtempDisposable",
+      "kind": "node-builtin",
+      "name": "fs.mkdtempDisposableSync / fsPromises.mkdtempDisposable",
+      "status": "static",
+      "note": "the created temp directory plus its path, remove() and disposal hooks; the path is a string, so only the utf8 encoding is accepted"
+    },
+    {
       "id": "node-builtin.fs.mkdtempSync",
       "kind": "node-builtin",
       "name": "fs.mkdtempSync",

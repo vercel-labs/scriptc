@@ -2044,6 +2044,10 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
       walkTypeFields(node.value, walker, skipType);
       return;
     }
+    case "mkdtempResult": {
+      walker.string(node.kind);
+      return;
+    }
     case "moduleNs": {
       walker.string(node.kind);
       walker.string(node.moduleId);
@@ -3430,6 +3434,7 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "httpRes" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "jsval" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "map" }>, "kind" | "key" | "value">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "mkdtempResult" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "moduleNs" }>, "kind" | "moduleId">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "netServer" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "netSocket" }>, "kind">>,

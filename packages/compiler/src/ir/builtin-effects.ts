@@ -1687,6 +1687,15 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // watchEvents.take raises ERR_FS_WATCH_QUEUE_OVERFLOW when the queue
   // overflowed under overflow: "error".
   "watchEvents.take",
+  // The disposable temp directory: creating it validates the options and
+  // can fail in mkdtemp, and its removal raises rm's errors (the promise
+  // form turns them into a rejection, the sync form throws them).
+  "fsp.mkdtempDisposable",
+  "fs.mkdtempDisposableSync",
+  "mkdtempResult.remove",
+  "mkdtempResult.removeSync",
+  "mkdtempResult.asyncDispose",
+  "mkdtempResult.dispose",
   "crypto.x509Fingerprint",
   "crypto.x509FingerprintStr",
   "crypto.x509ValidFrom",

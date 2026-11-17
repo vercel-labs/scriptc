@@ -18,6 +18,7 @@ import {
   F64,
   FILEHANDLE_T,
   FSWATCHER_T,
+  MKDTEMPRESULT_T,
   WATCHEVENTS_T,
   STATWATCHER_T,
   HTTP2SESSION_T,
@@ -4748,6 +4749,26 @@ function buildLibFnSignatures() {
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    /** fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync: the temp
+     * directory plus its removal and disposal hooks (scr_lib.c). The
+     * options record crosses as one dyn value for the runtime's Node-order
+     * encoding check. */
+    "fsp.mkdtempDisposable": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: MKDTEMPRESULT_T },
+    },
+    "fs.mkdtempDisposableSync": { argTypes: [STRING], result: MKDTEMPRESULT_T },
+    "mkdtempResult.path": { argTypes: [MKDTEMPRESULT_T], result: STRING },
+    "mkdtempResult.remove": {
+      argTypes: [MKDTEMPRESULT_T],
+      result: { kind: "promise", inner: VOID },
+    },
+    "mkdtempResult.removeSync": { argTypes: [MKDTEMPRESULT_T], result: VOID },
+    "mkdtempResult.asyncDispose": {
+      argTypes: [MKDTEMPRESULT_T],
+      result: { kind: "promise", inner: VOID },
+    },
+    "mkdtempResult.dispose": { argTypes: [MKDTEMPRESULT_T], result: VOID },
     /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
     "fsp.readFileEncoded": {
       argTypes: [STRING, STRING],

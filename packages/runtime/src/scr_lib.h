@@ -490,6 +490,20 @@ void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_r
 bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay);
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix);
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error path */
+/* fsPromises.mkdtempDisposable(prefix[, options]) and
+ * fs.mkdtempDisposableSync(prefix[, options]): the created directory plus
+ * `path`, `remove()` and the disposal hook the object carries. The promise
+ * form settles a rejection for a failed mkdtemp; the sync form throws. */
+typedef struct ScrMkdtempResult ScrMkdtempResult;
+ScrMkdtempResult *scr_mkdtemp_result_retain(ScrMkdtempResult *r);
+void scr_mkdtemp_result_release(ScrMkdtempResult *r);
+void *scr_mkdtemp_result_retain_v(void *p);
+void scr_mkdtemp_result_release_v(void *p);
+ScrMkdtempResult *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix); /* +1 */
+ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix);           /* +1 */
+ScrStr *scr_mkdtemp_result_path(ScrMkdtempResult *r);             /* +1 */
+ScrPromise *scr_mkdtemp_result_remove(ScrMkdtempResult *r);       /* +1 */
+void scr_mkdtemp_result_remove_sync(ScrMkdtempResult *r);
 void scr_fs_access(ScrStr *path, double mode);
 ScrStr *scr_fs_read_fd(double fd);
 

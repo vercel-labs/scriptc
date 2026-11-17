@@ -24,6 +24,7 @@ import {
   DYN,
   F64,
   FILEHANDLE_T,
+  MKDTEMPRESULT_T,
   FSWATCHER_T,
   STATWATCHER_T,
   type IrExpr,
@@ -1236,6 +1237,134 @@ export function lowerFileHandleDisposeCall(
     type: { kind: "promise", inner: VOID },
     loc: locOf(call),
   };
+}
+
+/** `fsPromises.mkdtempDisposable(prefix[, options])` and
+ * `fs.mkdtempDisposableSync(prefix[, options])`: the created directory plus
+ * its removal and disposal hooks. The options name an encoding for the path
+ * the call answers; the path is a string here, so utf8 (the default) is the
+ * accepted encoding and every other one fences by name. */
+export function lowerMkdtempDisposableCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  promiseForm: boolean,
+  loc: SrcLoc,
+): IrExpr | null {
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 1 || nodes.length > 2 || nodes.some(ts.isSpreadElement)) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(nodes[0]!))?.kind !== "string") return null;
+  const prefix = lowerer.lowerExprExpecting(nodes[0]!, STRING);
+  if (nodes.length === 2) {
+    const options = withoutParenthesesAssertionsNonNull(nodes[1]!);
+    let text: string | null = null;
+    if (ts.isStringLiteralLike(options)) {
+      text = options.text;
+    } else if (ts.isObjectLiteralExpression(options)) {
+      for (const prop of options.properties.nodes) {
+        if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
+          lowerer.noLowering(
+            "mkdtempDisposable options with computed keys or spreads",
+            prop,
+            'the options record is { encoding: "utf8" }',
+          );
+        }
+        if (!ts.isIdentifier(prop.name) || prop.name.text !== "encoding") {
+          lowerer.noLowering(
+            "mkdtempDisposable with this option",
+            prop,
+            'the options record is { encoding: "utf8" }',
+          );
+        }
+        const value = ts.isPropertyAssignment(prop) ? prop.initializer : prop.name;
+        const literal = withoutParenthesesAssertionsNonNull(value);
+        text = ts.isStringLiteralLike(literal) ? literal.text : null;
+      }
+    } else {
+      lowerer.noLowering(
+        "mkdtempDisposable with a runtime options value",
+        nodes[1]!,
+        'the options are a literal: "utf8" or { encoding: "utf8" }',
+      );
+    }
+    if (text !== "utf8" && text !== "utf-8") {
+      lowerer.noLowering(
+        "mkdtempDisposable with this encoding",
+        nodes[1]!,
+        'the created path is a string: encoding: "utf8" is the accepted value',
+      );
+    }
+  }
+  return {
+    kind: "libCall",
+    fn: promiseForm ? "fsp.mkdtempDisposable" : "fs.mkdtempDisposableSync",
+    args: [prefix],
+    type: promiseForm ? { kind: "promise", inner: MKDTEMPRESULT_T } : MKDTEMPRESULT_T,
+    loc,
+  };
+}
+
+/** Calls on the object mkdtempDisposable answers: `remove()` — the sync
+ * form's void removal, the promise form's promise. */
+export function lowerMkdtempResultMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.Expression,
+): IrExpr | null {
+  if (!ts.isPropertyAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "mkdtempResult") return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  if (access.name.text !== "remove") {
+    lowerer.noLowering(
+      `DisposableTempDir.${access.name.text}`,
+      call,
+      "path and remove() are the supported members",
+      lowerer.checker.getSymbolAtLocation(access.name),
+    );
+  }
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("DisposableTempDir.remove with arguments", call);
+  }
+  const receiver = lowerer.lowerExprExpecting(access.expression, MKDTEMPRESULT_T);
+  const loc = locOf(call);
+  const answer = lowerer.mapTypeOf(lowerer.typeOf(call));
+  return answer?.kind === "promise"
+    ? { kind: "libCall", fn: "mkdtempResult.remove", args: [receiver], type: answer, loc }
+    : { kind: "libCall", fn: "mkdtempResult.removeSync", args: [receiver], type: VOID, loc };
+}
+
+/** `result[Symbol.dispose]()` (the sync form) and
+ * `result[Symbol.asyncDispose]()` (the promise form). Null for other
+ * element-access calls. */
+export function lowerMkdtempResultDisposeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  const member = lowerer.stdlibGlobalMember(key, "Symbol");
+  if (member !== "dispose" && member !== "asyncDispose") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "mkdtempResult") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering(`DisposableTempDir[Symbol.${member}] with arguments`, call);
+  }
+  const receiver = lowerer.lowerExprExpecting(access.expression, MKDTEMPRESULT_T);
+  const loc = locOf(call);
+  return member === "dispose"
+    ? { kind: "libCall", fn: "mkdtempResult.dispose", args: [receiver], type: VOID, loc }
+    : {
+        kind: "libCall",
+        fn: "mkdtempResult.asyncDispose",
+        args: [receiver],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
 }
 
 /** The Stats type tests, each a read of the snapshot's mode. */

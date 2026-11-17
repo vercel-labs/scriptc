@@ -2931,6 +2931,21 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["fs.unwatchFile"],
       note: "removes one listener, or every listener, from a resolved path's poller",
     },
+    {
+      id: "node-builtin.fs.mkdtempDisposable",
+      kind: "node-builtin",
+      name: "fs.mkdtempDisposableSync / fsPromises.mkdtempDisposable",
+      fns: [
+        "fsp.mkdtempDisposable",
+        "fs.mkdtempDisposableSync",
+        "mkdtempResult.path",
+        "mkdtempResult.remove",
+        "mkdtempResult.removeSync",
+        "mkdtempResult.asyncDispose",
+        "mkdtempResult.dispose",
+      ],
+      note: "the created temp directory plus its path, remove() and disposal hooks; the path is a string, so only the utf8 encoding is accepted",
+    },
     // ── the Date slice (lowerDateCall/lowerNew): statics, construction,
     // stored read-only values, calendar getters, and ISO formatting.
     {

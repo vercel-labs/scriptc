@@ -52,6 +52,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // ERR_FS_WATCH_QUEUE_OVERFLOW, and opening the path throws Node's fs
   // error.
   "watchEvents.wait",
+  // DisposableTempDir.path hands the created path's reference on; nothing
+  // runs.
+  "mkdtempResult.path",
   "watchEvents.close",
   // scr_stat_watcher_ref / scr_stat_watcher_unref move one registration's
   // liveness flag; a registration fs.unwatchFile already removed is a no-op.

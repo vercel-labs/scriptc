@@ -1481,6 +1481,8 @@ void scr_perf_observer_observe(ScrDyn *observer, ScrDyn *args) {
         source = &scr_perf_marks;
       else if (type->v.str->len == 7 && memcmp(type->v.str->data, "measure", 7) == 0)
         source = &scr_perf_measures;
+      else if (type->v.str->len == 8 && memcmp(type->v.str->data, "resource", 8) == 0)
+        source = &scr_perf_resources;
       if (source) {
         size_t first = o->buffer.len;
         for (size_t i = 0; i < source->len; i++)

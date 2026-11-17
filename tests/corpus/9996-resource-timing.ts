@@ -3,7 +3,11 @@
 // toJSON), buffers it in the resource timeline, and the getEntries family
 // returns it beside marks and measures in startTime order. The class is
 // also a global, and instanceof tells it apart from the other entries.
-import { performance, PerformanceResourceTiming } from "node:perf_hooks";
+import {
+  performance,
+  PerformanceEntry,
+  PerformanceResourceTiming,
+} from "node:perf_hooks";
 
 const timingInfo = {
   startTime: 10,
@@ -76,6 +80,12 @@ const listed = performance.getEntriesByType("resource") as PerformanceResourceTi
 console.log("by type", listed.length, listed[0] === undefined ? "-" : listed[0].connectEnd);
 const all = performance.getEntries();
 console.log("all", all.map((each) => `${each.entryType}:${each.name}`).join(","));
+// An entry keeps its runtime class through a PerformanceEntry-typed value
+// and through an entry array: serializing either runs the resource toJSON
+// (timing fields, no detail).
+const asEntry: PerformanceEntry = listed[0]!;
+console.log("entry json", JSON.stringify(asEntry));
+console.log("array json", JSON.stringify(performance.getEntriesByType("resource")));
 
 // A cached resource transfers nothing; a local one 300 bytes.
 const cached = performance.markResourceTiming(

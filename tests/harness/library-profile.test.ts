@@ -595,6 +595,7 @@ describe("library profile fences", () => {
       "node-builtin.perf_hooks.performance.eventLoopUtilization",
       "node-builtin.perf_hooks.performance.getEntries",
       "node-builtin.perf_hooks.performance.mark",
+      "node-builtin.perf_hooks.performance.markResourceTiming",
       "node-builtin.perf_hooks.performance.measure",
       "node-builtin.perf_hooks.performance.now",
     ]);

@@ -5093,6 +5093,9 @@ function buildLibFnSignatures() {
      * never throws. */
     "process.stdoutWrite": { argTypes: [STRING], result: BOOL },
     "process.stdio": { argTypes: [F64], result: DYN },
+    /** The same stream object for a procStream VALUE (the cursor methods'
+     * receiver): its scalar representation IS the descriptor. */
+    "process.stdioOf": { argTypes: [PROCSTREAM_T], result: DYN },
     /** The same stream object, reached by the typed write-slot lowering
      * (the write method as a value, its replacement, a patched program's
      * typed writes): identical at run time. */

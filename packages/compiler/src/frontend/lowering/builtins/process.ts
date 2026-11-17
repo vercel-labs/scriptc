@@ -325,10 +325,13 @@ function lowerProcStreamCursorCall(
   // Everything below runs only when the stream really is a terminal: Node
   // skips an optional call (and its arguments) on a pipe, and a plain one
   // throws.
+  /* A plain call evaluates its arguments before the call is attempted;
+   * only an optional call skips them when the method is absent. */
   const callStmts: IrStmt[] = [];
+  const argStmts = optional ? callStmts : prelude;
   const hold = (label: string, value: IrExpr): IrExpr => {
     const slot = lowerer.declareHiddenLocal(label, value.type);
-    callStmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    argStmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
     return { kind: "varRef", localId: slot.id, type: value.type, loc };
   };
   let noX = false;
@@ -374,36 +377,46 @@ function lowerProcStreamCursorCall(
     type: STRING,
     loc,
   });
-  const write: IrExpr = {
-    kind: "libCall",
-    fn: "procStream.write",
-    args: [stream, seq],
-    type: BOOL,
-    loc,
-  };
-  /* The write runs first; the callback is scheduled only after it (Node
-   * passes it to the write, so a write that throws never runs it). The
-   * sequence is branch-local: a ternary's other arm must not schedule the
-   * callback the taken arm did. */
-  const withCallback = (body: IrExpr): IrExpr => {
-    if (!callback) return body;
-    const slot = lowerer.declareHiddenLocal("%cursorWritten", BOOL);
-    return {
-      kind: "seqExpr",
-      stmts: [
-        { kind: "varDecl", localId: slot.id, init: body, loc },
+  /* Node's tty methods write through the stream (`stream.write(data,
+   * callback)`, readline's cursorTo/moveCursor/...), so a replaced write
+   * decides when — or whether — the completion callback runs. With a
+   * callback the write goes through the stream object's own write method;
+   * without one the direct descriptor write keeps its path. */
+  const write: IrExpr = callback
+    ? lowerer.coerceInto(
+        call,
         {
-          kind: "exprStmt",
-          expr: { kind: "libCall", fn: "process.nextTick", args: [callback], type: VOID, loc },
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(
+            { kind: "libCall", fn: "process.stdioOf", args: [stream], type: DYN, loc },
+            DYN,
+          ),
+          method: "write",
+          calleeName: name,
+          args: [lowerer.coerceToExpected(seq, DYN), lowerer.coerceToExpected(callback, DYN)],
+          type: DYN,
           loc,
         },
-      ],
-      result: { kind: "varRef", localId: slot.id, type: BOOL, loc },
-      type: BOOL,
-      loc,
-    };
-  };
-  const skip: IrExpr = withCallback(boolLit(true, loc));
+        BOOL,
+      )
+    : { kind: "libCall", fn: "procStream.write", args: [stream, seq], type: BOOL, loc };
+  /* The branch that writes nothing (a zero-delta moveCursor, a cursorTo
+   * without a column) still runs Node's next-tick callback. */
+  const skip: IrExpr = callback
+    ? {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "process.nextTick", args: [callback], type: VOID, loc },
+            loc,
+          },
+        ],
+        result: boolLit(true, loc),
+        type: BOOL,
+        loc,
+      }
+    : boolLit(true, loc);
   let callBody: IrExpr;
   if (noX && !hasB) {
     callBody = skip;
@@ -411,13 +424,13 @@ function lowerProcStreamCursorCall(
     callBody = {
       kind: "ternary",
       cond: { kind: "libCall", fn: "rl.moves", args: [values[0]!, values[1]!], type: BOOL, loc },
-      then: withCallback(write),
-      else_: callback ? skip : boolLit(true, loc),
+      then: write,
+      else_: skip,
       type: BOOL,
       loc,
     };
   } else {
-    callBody = withCallback(write);
+    callBody = write;
   }
   const body: IrExpr = { kind: "seqExpr", stmts: callStmts, result: callBody, type: BOOL, loc };
   if (terminal === null) {

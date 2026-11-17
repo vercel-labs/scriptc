@@ -182,6 +182,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Reads the fork channel registry and answers undefined, null or the
   // retained Control object; a plain process has no channel.
   "process.channel",
+  // The stream object a descriptor the program already holds names: a cache
+  // lookup and a retain, with no allocation, coercion or program code. The
+  // cursor methods use it to reach the same object process.stdio answers.
+  "process.stdioOf",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
   "readable.encodingName",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a

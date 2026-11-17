@@ -17,3 +17,18 @@ outcome("clearScreen", () => process.stdout.clearScreenDown());
 outcome("cursorWithCallback", () => process.stdout.cursorTo(1, () => {}));
 console.log("optional calls", process.stdout.clearLine?.(0) === undefined,
   process.stdout.cursorTo?.(1, () => {}) === undefined);
+function argA(): number {
+  console.log("argA evaluated");
+  return 0;
+}
+function argB(): number {
+  console.log("argB evaluated");
+  return 0;
+}
+try {
+  process.stdout.clearLine(argA());
+} catch (e) {
+  console.log("plain", e instanceof TypeError, (e as Error).message);
+}
+process.stdout.clearLine?.(argB());
+console.log("optional arg skipped");

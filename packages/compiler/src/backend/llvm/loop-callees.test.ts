@@ -72,13 +72,20 @@ test("a chain of small bodies inlines as one, up to the depth limit", () => {
   const base = fn("base", [run(call("put")), ret(ref("x"))]);
   const caller = fn("caller", [loop([run(call("base"))]), ret(num(0))]);
   expect(callees([leaf, put, base, caller])).toEqual(["base"]);
-  expect(bodyCalls([leaf, put, base, caller])).toEqual([["base", ["put"]]]);
+  expect(bodyCalls([leaf, put, base, caller])).toEqual([
+    ["base", ["put"]],
+    ["put", ["leaf"]],
+  ]);
   // A chain of four bodies reaches the leaf; a fifth link is past
   // MAX_INLINE_DEPTH.
   const deeper = fn("deeper", [ret(call("base"))]);
   const loop3 = fn("caller", [loop([run(call("deeper"))]), ret(num(0))]);
   expect(callees([leaf, put, base, deeper, loop3])).toEqual(["deeper"]);
-  expect(bodyCalls([leaf, put, base, deeper, loop3])).toEqual([["deeper", ["base"]]]);
+  expect(bodyCalls([leaf, put, base, deeper, loop3])).toEqual([
+    ["deeper", ["base"]],
+    ["base", ["put"]],
+    ["put", ["leaf"]],
+  ]);
   const deepest = fn("deepest", [ret(call("deeper"))]);
   const beyond = fn("caller", [loop([run(call("deepest"))]), ret(num(0))]);
   expect(callees([leaf, put, base, deeper, deepest, beyond])).toEqual([]);

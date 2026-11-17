@@ -78,10 +78,11 @@ interface Shape {
  * A callee need not be a leaf: a small wrapper whose every call is a direct
  * call of another such body qualifies too — a writer whose `base` appends a
  * byte through `put` — as long as the chain bottoms out in leaves and runs
- * no deeper than MAX_INLINE_DEPTH. The calls inside an inlined callee's
- * body ride along with it, so they are marked inside the body: the loop then
- * holds the whole chain and keeps no per-element call. A function joins only
- * once everything it calls has, so a recursive one never does. */
+ * no deeper than MAX_INLINE_DEPTH. The calls inside an inlined callee's body
+ * ride along with it, and so does every call of a body those calls reach, so
+ * each is marked where its own body is emitted: the loop then holds the whole
+ * chain and keeps no per-element call. A function joins only once everything
+ * it calls has, so a recursive one never does. */
 export function findLoopCallees(mod: IrModule): LoopInlining {
   if (mod.lib !== undefined) return NOTHING_INLINED;
   const shapes = new Map<string, Shape>();
@@ -174,10 +175,20 @@ export function findLoopCallees(mod: IrModule): LoopInlining {
   const callees = new Set<string>();
   for (const [name, site] of sites)
     if (site.inLoops && site.count >= 1 && site.count <= MAX_CALL_SITES) callees.add(name);
-  // The calls inside an inlined callee's body go into the loop with it, so
-  // the bodies it calls are marked there too.
+  // Every body an inlined callee reaches through other inlined bodies goes
+  // into the loop with it, so each of their calls is marked where that body
+  // is emitted: the whole chain inlines, not just the outer wrapper's calls.
+  const inlined = new Set<string>(callees);
+  const pending = [...callees];
+  while (pending.length > 0) {
+    for (const callee of shapes.get(pending.pop()!)!.calls) {
+      if (!bodies.has(callee) || inlined.has(callee)) continue;
+      inlined.add(callee);
+      pending.push(callee);
+    }
+  }
   const bodyCalls = new Map<string, ReadonlySet<string>>();
-  for (const name of callees) {
+  for (const name of inlined) {
     const called = new Set<string>();
     for (const callee of shapes.get(name)!.calls) if (bodies.has(callee)) called.add(callee);
     if (called.size > 0) bodyCalls.set(name, called);

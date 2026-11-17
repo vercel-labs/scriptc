@@ -88,6 +88,13 @@ await attempt("verify-only key signs", async () => {
 await attempt("alg mismatch", async () =>
   crypto.subtle.sign({ name: "KMAC256", outputLength: 8 }, key, Buffer.alloc(1)),
 );
+await attempt("customization 513", () =>
+  crypto.subtle.sign(
+    { name: "KMAC128", outputLength: 32, customization: Buffer.alloc(513, 1) },
+    key,
+    Buffer.alloc(1),
+  ),
+);
 await attempt("bad jwk alg", () =>
   crypto.subtle.importKey(
     "jwk",

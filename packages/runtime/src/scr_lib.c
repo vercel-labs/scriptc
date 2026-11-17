@@ -12379,6 +12379,21 @@ static void scr_crypto_mac_output_length(void) {
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
+/* OpenSSL's KMAC accepts a customization of at most 512 bytes and answers
+ * EVP_R_INVALID_CUSTOM_LENGTH beyond it. */
+static void scr_crypto_mac_custom_length(void) {
+  static const char message[] = "error:1C80006F:Provider routines::invalid custom length";
+  static const char code[] = "ERR_OSSL_INVALID_CUSTOM_LENGTH";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("Provider routines", 17)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("invalid custom length", 21)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* OpenSSL's KMAC key length lies between 4 and 512 bytes; outside it the
  * provider answers EVP_R_INVALID_KEY_LENGTH, which Node rethrows as its
  * empty-error message with the reason properties. */
@@ -12741,12 +12756,6 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
       scr_bytes_release(bytes);
       return NULL;
     }
-    size_t keylen = (size_t)scr_bytes_byte_len(bytes);
-    if (keylen < 4 || keylen > 512) {
-      scr_crypto_mac_key_length();
-      scr_bytes_release(bytes);
-      return NULL;
-    }
     ScrBytes *custom = NULL;
     if (has_customization) {
       const ScrDyn *option = scr_crypto_option(options, "customization");
@@ -12755,6 +12764,21 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
         scr_bytes_release(bytes);
         return NULL;
       }
+      /* The provider sets the customization before the key, so a too-long
+       * customization reports first. */
+      if (scr_bytes_byte_len(custom) > 512) {
+        scr_bytes_release(custom);
+        scr_bytes_release(bytes);
+        scr_crypto_mac_custom_length();
+        return NULL;
+      }
+    }
+    size_t keylen = (size_t)scr_bytes_byte_len(bytes);
+    if (keylen < 4 || keylen > 512) {
+      scr_bytes_release(custom);
+      scr_crypto_mac_key_length();
+      scr_bytes_release(bytes);
+      return NULL;
     }
     ScrCryptoHash *mac = calloc(1, sizeof *mac);
     if (!mac) scr_trap("scriptc: out of memory\n");

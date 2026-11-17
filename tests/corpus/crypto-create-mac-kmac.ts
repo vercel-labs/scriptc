@@ -39,6 +39,12 @@ function attempt(label: string, run: () => unknown): void {
   }
 }
 
+const longest = createMac("KMAC128", key, { customization: Buffer.alloc(512, 1), outputLength: 4 });
+longest.update("abc");
+console.log("custom512", longest.final("hex"));
+attempt("custom513", () =>
+  createMac("KMAC128", key, { customization: Buffer.alloc(513, 1) }),
+);
 attempt("short key", () => createMac("KMAC128", createSecretKey(Buffer.alloc(3))));
 attempt("long key", () => createMac("KMAC128", createSecretKey(Buffer.alloc(513))));
 attempt("digest option", () => createMac("KMAC128", key, { digest: "sha256" }));

@@ -1770,6 +1770,11 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, ScrBytes **mac_o
         scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
         goto done;
       }
+      /* OpenSSL's KMAC accepts a customization of at most 512 bytes. */
+      if (algorithm.customization && scr_bytes_byte_len(algorithm.customization) > 512) {
+        scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
+        goto done;
+      }
       ScrBytes *mac = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
       ScrKeccakCtx ctx;
       /* KMAC encodes the key's declared bit length, which a WebCrypto key

@@ -7159,20 +7159,15 @@ static ScrMkdtempResult *scr_mkdtemp_result_new(ScrStr *created /* +1 moves in *
   if (!r) scr_trap("scriptc: out of memory\n");
   r->rc = 1;
   r->path = created;
-  if (created->len > 0 && created->data[0] == '/') {
-    r->full = scr_str_retain(created);
-  } else {
-    ScrStr *cwd = scr_process_cwd(); /* +1 */
-    size_t n = cwd->len + 1 + created->len;
-    char *joined = malloc(n);
-    if (!joined) scr_trap("scriptc: out of memory\n");
-    memcpy(joined, cwd->data, cwd->len);
-    joined[cwd->len] = '/';
-    memcpy(joined + cwd->len + 1, created->data, created->len);
-    r->full = scr_str_new(joined, n);
-    free(joined);
-    scr_str_release(cwd);
-  }
+  /* Node resolves the created path against the cwd at creation, and
+   * path.resolve already supplies the cwd as its final argument: one part is
+   * the whole answer, resolved by the platform's own rules (a drive-
+   * qualified or UNC path is absolute on Windows, which a leading-'/'
+   * test would miss). */
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 1);
+  scr_arr_push_ref(parts, scr_str_retain(created));
+  r->full = scr_path_resolve(parts);
+  scr_arr_release(parts);
   return r;
 }
 

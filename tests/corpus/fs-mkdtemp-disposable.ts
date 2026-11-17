@@ -49,4 +49,23 @@ try {
   console.log("second sync remove", (err as { code: string }).code);
 }
 
+// 4. The objects are disposable declarations: `using` runs the sync form's
+// Symbol.dispose at scope exit and `await using` the promise form's
+// Symbol.asyncDispose, which is removal under both names.
+let usingPath = "";
+{
+  using scoped = fs.mkdtempDisposableSync(join(base, "using-"));
+  usingPath = scoped.path;
+  console.log("using exists", exists(scoped.path));
+}
+console.log("using removed", exists(usingPath));
+
+let awaitUsingPath = "";
+{
+  await using scoped = await fs.promises.mkdtempDisposable(join(base, "await-using-"));
+  awaitUsingPath = scoped.path;
+  console.log("await using exists", exists(scoped.path));
+}
+console.log("await using removed", exists(awaitUsingPath));
+
 fs.rmSync(base, { recursive: true, force: true });

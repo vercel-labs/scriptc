@@ -10157,6 +10157,9 @@ function lowerHttpResMethodCall(
     // call in an interned composing helper.
     let cbArg: IrExpr | null = null;
     let dataNode: ts.Expression | undefined = args[0];
+    /* Arguments this surface reads and drops are still evaluated, like
+     * Node's call does: their side effects and throws happen. */
+    const skippedEffects: ts.Expression[] = [];
     if (name === "write" && args.length >= 2) {
       // write(data[, "utf8" | "utf-8"][, callback]): the encoding names the
       // bytes this surface already writes, so it is read and dropped; an
@@ -10176,6 +10179,7 @@ function lowerHttpResMethodCall(
             "write(data), write(data, 'utf8'), write(data, 'utf8', callback) or write(data, callback)",
           );
         }
+        if (!sideEffectFreeOptionValue(second)) skippedEffects.push(second);
         if (args.length === 3) cbIndex = 2;
       } else if (
         secondMapped !== null &&
@@ -10183,6 +10187,7 @@ function lowerHttpResMethodCall(
           secondMapped.kind === "void" ||
           secondMapped.kind === "nullT")
       ) {
+        if (!sideEffectFreeOptionValue(second)) skippedEffects.push(second);
         if (args.length === 3) cbIndex = 2;
       } else {
         if (args.length === 3) {
@@ -10210,6 +10215,9 @@ function lowerHttpResMethodCall(
           [],
         );
         cbArg = cb;
+      } else if (cbIndex !== null) {
+        const cbNode = args[cbIndex]!;
+        if (!sideEffectFreeOptionValue(cbNode)) skippedEffects.push(cbNode);
       }
     } else if (name === "end" && args.length === 2) {
       const { cb } = lowerCallbackArg(
@@ -10318,7 +10326,29 @@ function lowerHttpResMethodCall(
         return withCb("http.resOnEndCallback", "http.resEnd", [receiver], cbArg, resultType);
       return { kind: "libCall", fn: "http.resEnd", args: [receiver], type: resultType, loc };
     }
-    const data = lowerer.lowerExpr(dataNode);
+    let loweredData: IrExpr | null = null;
+    if (skippedEffects.length > 0) {
+      /* Node evaluates data, then the encoding and callback expressions
+       * before the call: keep that order through a hidden local. */
+      const value = lowerer.lowerExpr(dataNode);
+      const saved = lowerer.declareHiddenLocal("%writeData", value.type);
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: saved.id, init: value, loc: locOf(dataNode) },
+        ...skippedEffects.map((arg): IrStmt => ({
+          kind: "exprStmt",
+          expr: lowerer.lowerExpr(arg),
+          loc: locOf(arg),
+        })),
+      ];
+      loweredData = {
+        kind: "seqExpr",
+        stmts,
+        result: varRef(saved.id, value.type, loc),
+        type: value.type,
+        loc: locOf(dataNode),
+      };
+    }
+    const data = loweredData ?? lowerer.lowerExpr(dataNode);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "http.resWrite" : "http.resEndStr";
       if (cbArg !== null)

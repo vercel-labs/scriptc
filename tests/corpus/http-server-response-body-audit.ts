@@ -114,8 +114,44 @@ function phaseEncodings(next: () => void): void {
   });
 }
 
+function phaseStream(next: () => void): void {
+  // A producer that writes each chunk from the previous write's callback:
+  // every callback runs after its chunk was flushed, never on the writing
+  // stack, and the chain yields to the loop between chunks.
+  const chunk = "x".repeat(16 * 1024);
+  const chunks = 64;
+  const server = createServer((_req, res) => {
+    res.sendDate = false;
+    let remaining = chunks;
+    let sync = true;
+    const pump = (): void => {
+      if (remaining === 0) {
+        res.end();
+        return;
+      }
+      remaining--;
+      res.write(chunk, () => {
+        console.log("write cb", sync ? "sync" : "async");
+        pump();
+      });
+    };
+    pump();
+    sync = false;
+  });
+  server.listen(0, "127.0.0.1", () => {
+    get(portOf(server), "/", (body) => {
+      console.log("stream body", body.length);
+      server.close(next);
+    });
+  });
+}
+
 phaseWrites(() =>
   phaseCork(() =>
-    phaseFlush(() => phaseTrailers(() => phaseEncodings(() => console.log("done")))),
+    phaseFlush(() =>
+      phaseTrailers(() =>
+        phaseEncodings(() => phaseStream(() => console.log("done"))),
+      ),
+    ),
   ),
 );

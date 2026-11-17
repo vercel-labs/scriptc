@@ -75,6 +75,9 @@ declare module "http" {
     readonly complete: boolean;
     readonly aborted: boolean;
     readonly destroyed: boolean;
+    /* IncomingMessage.signal: one AbortSignal per request, aborted when the
+     * request is destroyed before it completes. */
+    readonly signal: AbortSignal;
     readonly statusCode: number | undefined;
     readonly statusMessage: string | undefined;
     readonly socket: Socket;

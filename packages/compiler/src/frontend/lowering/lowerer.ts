@@ -10286,6 +10286,20 @@ export class Lowerer {
         const global = this.globalsBySymbol.get(symbol);
         if (global) global.type = DYN;
       };
+      // Bindings a void-truthiness test reads. A later assignment of another
+      // void-typed member call into one of them must keep the call's value
+      // too; collect the bindings before the walk so an assignment written
+      // before the test (or in a function the test reaches) is covered.
+      const truthinessBindings = new Set<ts.Symbol>();
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isIdentifier(node) && this.opinionAt(node, 1345)) {
+          if (voidTruthinessHeldCall(node, this.program) !== null) {
+            const symbol = this.resolveValueSymbol(node);
+            if (symbol !== null) truthinessBindings.add(symbol);
+          }
+        }
+        return undefined;
+      });
       ts.walkPreorder(sf, (node) => {
         if (
           ts.isParameter(node) &&
@@ -10327,6 +10341,30 @@ export class Lowerer {
             const binding = this.resolveValueSymbol(node);
             if (binding !== null) widenBinding(binding);
             const calleeBinding = this.voidTruthinessCalleeBinding(held);
+            if (calleeBinding !== null) widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
+        // A later assignment of another void-typed member call into a binding
+        // the truthiness test reads (`v = Other.d.f()`): Node's assignment
+        // stores the value the call answered, so the call lowers through the
+        // checked-dynamic invocation and the callee's own storage widens to
+        // keep that value.
+        if (
+          truthinessBindings.size > 0 &&
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left) &&
+          ts.isCallExpression(node.right)
+        ) {
+          const symbol = this.resolveValueSymbol(node.left);
+          if (
+            symbol !== null &&
+            truthinessBindings.has(symbol) &&
+            voidTruthinessNeedsRuntimeValue(node.right, this.program)
+          ) {
+            this.voidTruthinessValueCalls.add(node.right);
+            const calleeBinding = this.voidTruthinessCalleeBinding(node.right);
             if (calleeBinding !== null) widenBinding(calleeBinding);
             return undefined;
           }

@@ -2154,7 +2154,12 @@ void scr_http_res_write_information_dyn(ScrHttpRes *r, const ScrDyn *status /*bo
       snprintf(line, sizeof line, "HTTP/1.1 %d %s\r\n", (int)code, scr_http_reason((int)code));
   scr_http_buf_append(&b, line, (size_t)line_len);
   ScrDyn *headers_plain = NULL;
-  if (headers != NULL && headers->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(headers)) {
+  /* A headers value that crossed in from a typed module arrives as a typed
+   * reference (a Record<string, string> imported by a JavaScript file, for
+   * one): materialize it into the plain dyn array or object the shape
+   * ladder below reads. Materializing only arrays left a record reference
+   * to fail the Object check below with a TypeError Node never throws. */
+  if (headers != NULL && headers->kind == SCR_DYN_TYPED_REF) {
     headers_plain = scr_dyn_typed_ref_materialize(headers);
     if (headers_plain == NULL) {
       free(b.data);
@@ -5814,9 +5819,13 @@ bool scr_http_req_complete(ScrHttpReq *r) {
 }
 
 /* The stream died with the response side open: 'aborted' fires NOW (the
- * teardown macrotask, Node's position), then the close rides the sweep. */
+ * teardown macrotask, Node's position), then the close rides the sweep.
+ * `aborted` may already be set: destroy() marks an incomplete message
+ * aborted so its signal and flag are right from that moment, and this is
+ * the event that reports the abort the destroy started. The listener list
+ * drops after the first fire, so a repeat call emits nothing. */
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
-  if (r->close_emitted || r->aborted) return;
+  if (r->close_emitted) return;
   r->aborted = true;
   scr_http_req_abort_signal(r);
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);

@@ -1504,7 +1504,7 @@ function lowerProgramJsx7(
  * on the first such site. */
 function jsxContextTypes7(program: ts.Program): JsxContextTypes {
   let checker: ReturnType<ts.Program["getTypeChecker"]> | null = null;
-  const cached = new WeakMap<ts.Expression, string | undefined>();
+  const cached = new Map<ts.Expression, string | undefined>();
   return (expression, helpers) => {
     if (!/\.[mc]?tsx$/i.test(expression.getSourceFile().fileName)) return undefined;
     if (cached.has(expression)) return cached.get(expression);

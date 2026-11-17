@@ -752,6 +752,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "where the program requires or imports one module whose export object is an accessor",
   ),
   scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsRuntimeWholeExportValueWritesOf",
+    1,
+    "prefilter",
+    "a module whose whole export is chosen at run time has to spell `module.exports`; every write it finds is decided from its target's symbol and its value's type",
+  ),
+  scan(
     "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
     1,
     "prefilter",

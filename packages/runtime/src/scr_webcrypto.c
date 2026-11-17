@@ -2594,6 +2594,42 @@ static bool scr_wc_argon2_number(const ScrDyn *dict, const char *member, double 
   return ok;
 }
 
+/* An Argon2Params BufferSource member. A view on a SharedArrayBuffer is
+ * rejected with Node's TypeError instead of being read non-atomically. */
+static bool scr_wc_argon2_buffer(const ScrDyn *dict, const char *member, bool required,
+                                 ScrBytes **out) {
+  ScrDyn *value = scr_wc_member(dict, member);
+  bool ok = true;
+  if (value->kind == SCR_DYN_UNDEF) {
+    if (required) {
+      scr_wc_missing_member("Argon2Params", member);
+      ok = false;
+    }
+  } else if (value->kind == SCR_DYN_BYTES && value->v.bytes->backing &&
+             value->v.bytes->backing->shared) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE",
+                      "%s: %s in passed algorithm is a view on a SharedArrayBuffer, which is not "
+                      "allowed.",
+                      scr_wc_normalize_prefix, member);
+    ok = false;
+  } else {
+    ScrDyn *plain = scr_wc_plain(value);
+    if (!plain) ok = false;
+    else if (plain->kind == SCR_DYN_BYTES || scr_array_buffer_is(plain)) {
+      *out = scr_bytes_buffer_source(plain);
+    } else {
+      scr_wc_type_error("ERR_INVALID_ARG_TYPE",
+                        "%s: %s in passed algorithm is not instance of ArrayBuffer, Buffer, "
+                        "TypedArray, or DataView.",
+                        scr_wc_normalize_prefix, member);
+      ok = false;
+    }
+    if (plain) scr_dyn_release(plain);
+  }
+  scr_dyn_release(value);
+  return ok;
+}
+
 /* normalizeAlgorithm(algorithm, 'deriveBits') for Argon2d/i/id: the
  * required nonce, memory, passes and parallelism, the optional secretValue
  * and associatedData, and version, whose only valid value is 19. */
@@ -2607,12 +2643,9 @@ static bool scr_wc_normalize_argon2(ScrDyn *identifier, ScrWcKdfParams *params) 
   }
   ScrDyn *dict = scr_wc_plain(identifier);
   if (!dict) return false;
-  bool ok = scr_wc_member_buffer(dict, "Argon2Params", "nonce", true, &params->nonce);
-  if (ok)
-    ok = scr_wc_member_buffer(dict, "Argon2Params", "secretValue", false, &params->secret_value);
-  if (ok)
-    ok = scr_wc_member_buffer(dict, "Argon2Params", "associatedData", false,
-                              &params->associated_data);
+  bool ok = scr_wc_argon2_buffer(dict, "nonce", true, &params->nonce);
+  if (ok) ok = scr_wc_argon2_buffer(dict, "secretValue", false, &params->secret_value);
+  if (ok) ok = scr_wc_argon2_buffer(dict, "associatedData", false, &params->associated_data);
   if (ok) ok = scr_wc_argon2_number(dict, "memory", &params->memory);
   if (ok) ok = scr_wc_argon2_number(dict, "passes", &params->passes);
   if (ok) ok = scr_wc_argon2_number(dict, "parallelism", &params->parallelism);
@@ -2620,9 +2653,10 @@ static bool scr_wc_normalize_argon2(ScrDyn *identifier, ScrWcKdfParams *params) 
     ScrDyn *version = scr_wc_member(dict, "version");
     if (version->kind != SCR_DYN_UNDEF) {
       double v;
-      if (!scr_dyn_number_coerce_js(version, &v)) ok = false;
+      if (!scr_wc_enforce_range(scr_wc_normalize_prefix, "version in passed algorithm", version,
+                                255.0, &v))
+        ok = false;
       else {
-        v = trunc(v);
         if (v != 19) {
           char message[64];
           snprintf(message, sizeof message, "%.0f is not a valid Argon2 version", v);

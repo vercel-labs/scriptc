@@ -9275,6 +9275,30 @@ export class Lowerer {
   private localModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
     const sym = this.checker.getSymbolAtLocation(expr);
     const decls = sym ? sym.declarations : [];
+    // `import * as ns from "./m"`: a namespace binding of a program module
+    // whose exports are a static table reads its members exactly like a
+    // `const ns = require("./m")` binding. tsc-ts resolves such a member to
+    // the module's export symbol itself; tsgo synthesizes a property symbol
+    // of its own, so the module decides the member (this and
+    // cjsLocalModuleBindingOf). A namespace import of a single-value module
+    // carries no members and keeps its own path.
+    const nsImport = decls.find(ts.isNamespaceImport);
+    if (nsImport !== undefined) {
+      const importDecl = nsImport.parent?.parent;
+      if (
+        importDecl === undefined ||
+        !ts.isImportDeclaration(importDecl) ||
+        !ts.isStringLiteral(importDecl.moduleSpecifier)
+      )
+        return null;
+      const dep = this.moduleSourceFileOf(
+        ts.getSourceFileOfNode(nsImport),
+        importDecl.moduleSpecifier,
+      );
+      return dep !== null && isCjsJsFile(dep, this.program) && cjsNamespaceModule(this, dep)
+        ? dep
+        : null;
+    }
     const decl = decls.find(ts.isImportClause) ?? decls[0];
     if (!decl) return null;
     if (ts.isImportClause(decl)) return this.cjsDefaultImportDepOf(decl);

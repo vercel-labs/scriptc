@@ -10698,7 +10698,10 @@ function lowerCjsConditionalWholeExportStatement(
       // A member this arm's table does not export is absent from Node's new
       // exports object: the slot takes undefined, even when an assignment
       // that ran earlier in the module had filled it.
-      const unset = lowerer.unassignedSlotInit(g.type, loc);
+      // A checked-dynamic slot holds its own undefined; a union slot holds
+      // the undefined arm (unassignedSlotInit answers only the latter).
+      const unset =
+        g.type.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.unassignedSlotInit(g.type, loc);
       if (unset === null) return null;
       body.push({ kind: "assign", localId: g.id, value: unset, loc });
       continue;

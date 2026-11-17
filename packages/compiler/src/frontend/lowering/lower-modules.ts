@@ -1898,7 +1898,10 @@ function registerCjsConditionalWholeExportGlobals(
       // in Node: the slot admits undefined too, so a read before the arm that
       // has the member does not see garbage.
       const missingSomewhere = targets.some((target) => !target.ownNames.includes(name));
-      if (missingSomewhere) t = lowerer.withUndefinedArm(t);
+      // The same widening as the runtime-optional case: it leaves a
+      // checked-dynamic slot dynamic (a union cannot hold a dyn arm) and
+      // handles unions, unit types and generators.
+      if (missingSomewhere) t = cjsMaybeAbsentExportType(lowerer, t);
       // Modules that re-export the same tables share the checker's
       // synthesized member symbols, so each module's slot is keyed by the
       // module (and its statements and importers look it up that way). The

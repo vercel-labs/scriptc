@@ -9895,8 +9895,11 @@ bool scr_http_req_opts_read(const ScrDyn *opts, bool secure, const char *api, Sc
    * Authorization header (Node's setHeader after the caller's headers). A
    * falsy value leaves the header unset. */
   const ScrDyn *auth = OPT("auth");
-  if (auth != NULL && auth->kind != SCR_DYN_UNDEF && auth->kind != SCR_DYN_NULL &&
-      !(auth->kind == SCR_DYN_STR && auth->v.str->len == 0)) {
+  /* Node: `options.auth && !this.getHeader('Authorization')` — a falsy value
+   * is ignored without conversion, and an Authorization header the caller
+   * set means the option is never read */
+  if (auth != NULL && scr_http_req_truthy(auth) &&
+      !scr_http_pairs_have(o->headers, "authorization")) {
     const unsigned char *bytes = NULL;
     unsigned char *bytes_owned = NULL;
     size_t n = 0;

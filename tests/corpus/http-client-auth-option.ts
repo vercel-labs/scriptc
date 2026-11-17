@@ -48,6 +48,11 @@ server.listen(0, "127.0.0.1", async () => {
   await get({ port, auth: obj }, "object");
   const bool: any = true;
   await get({ port, auth: bool }, "bool");
+  const zero: any = 0;
+  await get({ port, auth: zero }, "zero");
+  const no: any = false;
+  await get({ port, auth: no }, "false");
+  await get({ port, auth: num, headers: { authorization: "Custom y" } }, "explicit-beats-bad");
   console.log("connections", connections);
   server.close(() => console.log("closed"));
 });

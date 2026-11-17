@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/nested-require-jsx-runtime/jsx-runtime.cjs",
+  "<repo>/tests/corpus/nested-require-jsx-runtime/react.cjs",
+  "<repo>/tests/corpus/nested-require-jsx-runtime/main.cjs"
+ ],
+ "diags": []
+}

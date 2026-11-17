@@ -3043,6 +3043,18 @@ function lowerVarDeclarator(
         ? [lowerer.punycodeRequireWarning(decl)]
         : [];
     }
+    // A nested require of a compiled program module: the dependency's
+    // guarded %init evaluates here, so the module runs on its first
+    // require and answers its cache afterwards, as in Node. The binding is
+    // alias plumbing like its top-level form — its reads resolve through
+    // the dependency's export globals.
+    const dep =
+      lowerer.facts.importedModule(ts.getSourceFileOfNode(decl), spec, "require") ??
+      lowerer.facts.npmStaticModule(ts.getSourceFileOfNode(decl), spec, "require");
+    if (dep !== null) {
+      const init = lowerer.requireInitStmt(spec, decl);
+      if (init !== null) return [init];
+    }
     lowerer.unsupported(
       "SC1090",
       decl,

@@ -44,6 +44,7 @@ import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
   cjsAbsentMemberValue,
   cjsDestructuredModuleBindingOf,
+  cjsExportsObjectValue,
   cjsModuleLacksExport,
   cjsNestedExportReplacementOf,
   splitRequireBindingOfIdent,
@@ -955,6 +956,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
       );
     }
+    // A table module's require binding used as a value IS its exports
+    // object: the runtime's per-module view over the module's export
+    // globals (null only for a module that is not such a table).
+    const exportsObject = dep === null ? null : cjsExportsObjectValue(lowerer, dep, expr);
+    if (exportsObject !== null) return exportsObject;
     lowerer.unsupported(
       "SC1090",
       expr,

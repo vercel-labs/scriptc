@@ -2905,6 +2905,173 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
   });
 }
 
+/** The statements a require() declaration evaluates where it sits: the
+ * dependency's guarded initializer, then the destructured bindings it
+ * snapshots (a nested declaration included — Node reads each pattern
+ * element from the exports object once, so a binding never tracks a later
+ * export write or re-runs a getter). */
+function lowerRequireDeclaration(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  spec: string,
+  isLet: boolean,
+  /** A NESTED declaration binds locals: every pattern element is read from
+   * the exports object once, where the declaration sits, so a binding never
+   * tracks a later export write or re-runs a getter (Node's destructuring
+   * reads each property at the pattern). The top-level form relies on the
+   * export globals, snapshotting only the entries it detects as live. */
+  snapshotAll = false,
+): IrStmt[] {
+  const init = lowerer.requireInitStmt(spec, decl);
+  const out: IrStmt[] = init ? [init] : [];
+  // A require binding the file reassigns: the module's value is stored in
+  // the checked-dynamic global collectGlobals registered, and the
+  // assignment replaces it (rebindable-requires.ts).
+  if (ts.isIdentifier(decl.name) && isRebindableRequireDecl(lowerer, decl)) {
+    const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+    const global = symbol === undefined ? undefined : lowerer.globalsBySymbol.get(symbol);
+    const stored =
+      global === undefined ? null : requireReboundValue(lowerer, decl, decl.name, spec);
+    if (global === undefined || stored === null) {
+      lowerer.unsupported(
+        "SC1090",
+        decl,
+        `reassigning '${decl.name.text}', a require() binding whose module value has no static representation`,
+      );
+    }
+    out.push({
+      kind: "assign",
+      localId: global!.id,
+      value: stored!,
+      loc: locOf(decl),
+    });
+    return out;
+  }
+  // Snapshot bindings and nested patterns evaluate in pattern order,
+  // immediately after the required module has initialized.
+  const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
+  const nested = new Set(requireNestedPatternsOf(decl));
+  if (ts.isObjectBindingPattern(decl.name)) {
+    for (const element of decl.name.elements.nodes) {
+      const binding = snapshots?.bindings.get(element);
+      if (binding !== undefined) {
+        out.push(lowerCjsBindingSnapshot(lowerer, snapshots!.dep, binding.name, binding.key));
+      } else if (nested.has(element)) {
+        // The export is read once: a getter export runs once, however
+        // many names the nested pattern binds.
+        const key = element.propertyName as ts.Identifier;
+        const value = lowerer.lowerExpr(key);
+        let source = (): IrExpr => lowerer.lowerExpr(key);
+        if (!isSafeToRepeat(value)) {
+          const loc = locOf(element);
+          const saved = lowerer.declareHiddenLocal("%requireNested", value.type);
+          out.push({ kind: "varDecl", localId: saved.id, init: value, loc });
+          source = () => varRef(saved.id, value.type, loc);
+        }
+        lowerer.lowerBindingPattern(
+          element.name as ts.ObjectBindingPattern,
+          source,
+          value.type,
+          isLet,
+          out,
+        );
+      } else if (
+        snapshotAll &&
+        ts.isIdentifier(element.name) &&
+        element.dotDotDotToken === undefined
+      ) {
+        const keyNode = element.propertyName ?? element.name;
+        if (!(ts.isIdentifier(keyNode) || ts.isStringLiteralLike(keyNode))) {
+          lowerer.unsupported(
+            "SC1090",
+            element,
+            "require() destructuring with a runtime or effectful computed key",
+          );
+        }
+        const patternDep =
+          decl.initializer === undefined ? null : lowerer.cjsModuleRefDepOf(decl.initializer);
+        const value =
+          patternDep === null
+            ? null
+            : cjsExportValueByName(lowerer, patternDep, keyNode.text, element);
+        if (value === null) {
+          lowerer.unsupported(
+            "SC1090",
+            element,
+            `destructuring the export '${keyNode.text}' of a CommonJS module binding (it has no static value)`,
+          );
+        }
+        lowerer.bindPatternTarget(element.name, value, isLet, out);
+      } else if (
+        ts.isComputedPropertyName(element.propertyName) &&
+        lowerer.foldedStringKeyOf(element.propertyName.expression) === null &&
+        decl.initializer !== undefined &&
+        lowerer.cjsModuleRefDepOf(decl.initializer) !== null
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          element.propertyName,
+          "require() destructuring with a runtime or effectful computed key",
+        );
+      }
+    }
+  }
+  // `const { a, ...rest } = require("./m")`: Node copies the module's
+  // remaining own enumerable exports into a fresh object at the
+  // require, in the exports object's own key order. The table's
+  // statically known members are exactly those properties, each read
+  // from its export global into a dynamic object (the binding's own
+  // checker type is `any`, so this is its represented form).
+  for (const element of requireRestElementsOf(decl)) {
+    const dep = lowerer.cjsRequireRestTableOf(decl);
+    const names = dep === null ? null : cjsTableExportNamesInOrder(lowerer, dep);
+    if (dep === null || names === null) {
+      lowerer.unsupported(
+        "SC1090",
+        element,
+        `the exports object of '${spec}' as a value (its exports do not form a static table)`,
+      );
+    }
+    const consumed = new Set<string>();
+    for (const sib of (element.parent as ts.ObjectBindingPattern).elements.nodes) {
+      if (sib === element || sib.dotDotDotToken !== undefined || sib.name === undefined) continue;
+      const keyNode = sib.propertyName ?? sib.name;
+      if (!(ts.isIdentifier(keyNode) || ts.isStringLiteralLike(keyNode))) {
+        lowerer.unsupported(
+          "SC1090",
+          element,
+          "rest bindings beside computed keys (the copied set is a runtime fact)",
+        );
+      }
+      consumed.add(keyNode.text);
+    }
+    const loc = locOf(element);
+    const fields: { key: IrExpr; value: IrExpr }[] = [];
+    for (const name of names) {
+      if (consumed.has(name)) continue;
+      const value = cjsExportValueByName(lowerer, dep, name, element);
+      if (value === null) {
+        lowerer.unsupported(
+          "SC1090",
+          element,
+          `the exports object of '${spec}' as a value (its export '${name}' has no static value)`,
+        );
+      }
+      fields.push({
+        key: strLit(name, loc),
+        value: lowerer.coerceToExpected(value, DYN),
+      });
+    }
+    lowerer.bindPatternTarget(
+      element.name!,
+      { kind: "dynObjLit", fields, type: DYN, loc },
+      isLet,
+      out,
+    );
+  }
+  return out;
+}
+
 function lowerVarDeclarator(
   lowerer: Lowerer,
   stmt: ts.VariableStatement,
@@ -3004,127 +3171,7 @@ function lowerVarDeclarator(
       // island module loads here, at the statement (lower-node-island.ts).
       const island = lowerIslandRequireAtStatement(lowerer, decl);
       if (island !== null) return [island];
-      const init = lowerer.requireInitStmt(spec, decl);
-      const out: IrStmt[] = init ? [init] : [];
-      // A require binding the file reassigns: the module's value is stored
-      // in the checked-dynamic global collectGlobals registered, and the
-      // assignment replaces it (rebindable-requires.ts).
-      if (ts.isIdentifier(decl.name) && isRebindableRequireDecl(lowerer, decl)) {
-        const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
-        const global = symbol === undefined ? undefined : lowerer.globalsBySymbol.get(symbol);
-        const stored =
-          global === undefined ? null : requireReboundValue(lowerer, decl, decl.name, spec);
-        if (global === undefined || stored === null) {
-          lowerer.unsupported(
-            "SC1090",
-            decl,
-            `reassigning '${decl.name.text}', a require() binding whose module value has no static representation`,
-          );
-        }
-        out.push({
-          kind: "assign",
-          localId: global!.id,
-          value: stored!,
-          loc: locOf(decl),
-        });
-        return out;
-      }
-      // Snapshot bindings and nested patterns evaluate in pattern order,
-      // immediately after the required module has initialized.
-      const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
-      const nested = new Set(requireNestedPatternsOf(decl));
-      if (ts.isObjectBindingPattern(decl.name)) {
-        for (const element of decl.name.elements.nodes) {
-          const binding = snapshots?.bindings.get(element);
-          if (binding !== undefined) {
-            out.push(lowerCjsBindingSnapshot(lowerer, snapshots!.dep, binding.name, binding.key));
-          } else if (nested.has(element)) {
-            // The export is read once: a getter export runs once, however
-            // many names the nested pattern binds.
-            const key = element.propertyName as ts.Identifier;
-            const value = lowerer.lowerExpr(key);
-            let source = (): IrExpr => lowerer.lowerExpr(key);
-            if (!isSafeToRepeat(value)) {
-              const loc = locOf(element);
-              const saved = lowerer.declareHiddenLocal("%requireNested", value.type);
-              out.push({ kind: "varDecl", localId: saved.id, init: value, loc });
-              source = () => varRef(saved.id, value.type, loc);
-            }
-            lowerer.lowerBindingPattern(
-              element.name as ts.ObjectBindingPattern,
-              source,
-              value.type,
-              isLet,
-              out,
-            );
-          } else if (
-            ts.isComputedPropertyName(element.propertyName) &&
-            lowerer.foldedStringKeyOf(element.propertyName.expression) === null &&
-            lowerer.cjsModuleRefDepOf(decl.initializer) !== null
-          ) {
-            lowerer.unsupported(
-              "SC1090",
-              element.propertyName,
-              "require() destructuring with a runtime or effectful computed key",
-            );
-          }
-        }
-      }
-      // `const { a, ...rest } = require("./m")`: Node copies the module's
-      // remaining own enumerable exports into a fresh object at the
-      // require, in the exports object's own key order. The table's
-      // statically known members are exactly those properties, each read
-      // from its export global into a dynamic object (the binding's own
-      // checker type is `any`, so this is its represented form).
-      for (const element of requireRestElementsOf(decl)) {
-        const dep = lowerer.cjsRequireRestTableOf(decl);
-        const names = dep === null ? null : cjsTableExportNamesInOrder(lowerer, dep);
-        if (dep === null || names === null) {
-          lowerer.unsupported(
-            "SC1090",
-            element,
-            `the exports object of '${spec}' as a value (its exports do not form a static table)`,
-          );
-        }
-        const consumed = new Set<string>();
-        for (const sib of (element.parent as ts.ObjectBindingPattern).elements.nodes) {
-          if (sib === element || sib.dotDotDotToken !== undefined || sib.name === undefined)
-            continue;
-          const keyNode = sib.propertyName ?? sib.name;
-          if (!(ts.isIdentifier(keyNode) || ts.isStringLiteralLike(keyNode))) {
-            lowerer.unsupported(
-              "SC1090",
-              element,
-              "rest bindings beside computed keys (the copied set is a runtime fact)",
-            );
-          }
-          consumed.add(keyNode.text);
-        }
-        const loc = locOf(element);
-        const fields: { key: IrExpr; value: IrExpr }[] = [];
-        for (const name of names) {
-          if (consumed.has(name)) continue;
-          const value = cjsExportValueByName(lowerer, dep, name, element);
-          if (value === null) {
-            lowerer.unsupported(
-              "SC1090",
-              element,
-              `the exports object of '${spec}' as a value (its export '${name}' has no static value)`,
-            );
-          }
-          fields.push({
-            key: strLit(name, loc),
-            value: lowerer.coerceToExpected(value, DYN),
-          });
-        }
-        lowerer.bindPatternTarget(
-          element.name!,
-          { kind: "dynObjLit", fields, type: DYN, loc },
-          isLet,
-          out,
-        );
-      }
-      return out;
+      return lowerRequireDeclaration(lowerer, decl, spec, isLet);
     }
     // A nested BUILTIN require (`get inFreeBSDJail() { const { execSync }
     // = require('child_process'); ... }` — test/common's lazy-getter
@@ -3143,6 +3190,18 @@ function lowerVarDeclarator(
       return canonicalBuiltinModule(spec) === "punycode"
         ? [lowerer.punycodeRequireWarning(decl)]
         : [];
+    }
+    // A nested require of a compiled program module: the dependency's
+    // guarded %init evaluates here, so the module runs on its first
+    // require and answers its cache afterwards, as in Node. The binding is
+    // alias plumbing like its top-level form — its reads resolve through
+    // the dependency's export globals.
+    const dep =
+      lowerer.facts.importedModule(ts.getSourceFileOfNode(decl), spec, "require") ??
+      lowerer.facts.npmStaticModule(ts.getSourceFileOfNode(decl), spec, "require");
+    if (dep !== null) {
+      const init = lowerer.requireInitStmt(spec, decl);
+      if (init !== null) return lowerRequireDeclaration(lowerer, decl, spec, isLet, true);
     }
     lowerer.unsupported(
       "SC1090",

@@ -6568,6 +6568,7 @@ export class Lowerer {
     "jsWidenedBindings",
     "jsWidenedFields",
     "jsWidenedReturnDecls",
+    "voidTruthinessValueCalls",
     // Preflight's admitted opinions are a program fact computed before any
     // unit lowers.
     "admittedOpinions",

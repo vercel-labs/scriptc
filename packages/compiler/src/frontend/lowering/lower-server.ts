@@ -6748,7 +6748,10 @@ export function lowerTlsServerInstanceOf(
       loc,
     };
   }
-  // Every other value is no tls.Server; the operand still runs.
+  // Every other value is no tls.Server; the operand still runs. A bare
+  // null/undefined literal is a pure no-op with no IR value of its own, so it
+  // drops instead of tripping the validator's bare-unitLit rule.
+  if (value.kind === "unitLit") return { kind: "boolLit", value: false, type: BOOL, loc };
   return {
     kind: "seqExpr",
     stmts: [{ kind: "exprStmt", expr: value, loc }],

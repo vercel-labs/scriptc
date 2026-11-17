@@ -444,12 +444,14 @@ declare module "stream" {
      * a stream (duplexify.js). */
     static from(body: unknown): Duplex;
     /* A Duplex over a web stream pair: the readable side reads `readable`
-     * and the writable side writes `writable`. The options have no lowering
-     * yet. */
-    static fromWeb(
-      pair: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array> },
-      options?: {},
-    ): Duplex;
+     * and the writable side writes `writable` (Node's web-pair adapter). The
+     * pair is `unknown`, like `from`'s body: a pair-shaped parameter here
+     * would make typeof Duplex incompatible with typeof Readable, and
+     * constructor registries typed `(typeof Readable)[]` (Transform,
+     * PassThrough) must keep type checking. The lowering validates the
+     * argument and the runtime validates the pair. The options have no
+     * lowering yet. */
+    static fromWeb(pair: unknown, options?: {}): Duplex;
     constructor(opts: ObjectDuplexOptions);
     constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);

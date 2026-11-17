@@ -137,6 +137,22 @@ async function main(): Promise<void> {
   if (settlePending !== null) (settlePending as () => void)();
   await tick();
   log.push(`pending destroyed ${pending.destroyed}`);
+
+  // A web readable that errors before the Duplex reads it still reaches the
+  // Duplex: Node's adapter watches reader.closed, not just the next read().
+  const erroring = Duplex.fromWeb({
+    readable: new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.error(new Error("readable fail"));
+      },
+    }),
+    writable: new WritableStream<Uint8Array>({
+      write(): void {},
+    }),
+  });
+  erroring.on("error", (error: Error) => log.push(`readable error ${error.message}`));
+  await tick();
+  log.push(`readable destroyed ${erroring.destroyed} errored ${erroring.errored?.message ?? "-"}`);
 }
 
 main().then(() => {

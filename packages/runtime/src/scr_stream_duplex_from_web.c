@@ -306,6 +306,37 @@ static void sdfw_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   sdfw_unref(c);
 }
 
+/* One web side's `closed` promise: rejecting it fails the Duplex. */
+typedef struct {
+  SdfwCtx *ctx;    /* +1 */
+  ScrDyn *promise; /* +1 */
+} SdfwWatch;
+
+static void sdfw_watch(ScrDyn *closed /*moves*/, SdfwCtx *c,
+                       void (*entry)(ScrFiber *, void *)) {
+  SdfwWatch *w = malloc(sizeof *w);
+  if (!w) abort();
+  w->ctx = sdfw_ref(c);
+  w->promise = closed;
+  scr_promise_release(scr_async_spawn_after(closed->v.promise, entry, w));
+}
+
+static void sdfw_watch_done(SdfwWatch *w) {
+  scr_dyn_release(w->promise);
+  sdfw_unref(w->ctx);
+}
+
+/* Watch a side handle's `closed` promise, when it has one. */
+static void sdfw_watch_closed(ScrDyn *handle, SdfwCtx *c,
+                              void (*entry)(ScrFiber *, void *)) {
+  ScrDyn *closed = scr_dyn_obj_read(handle, "closed", 6);
+  if (closed && closed->kind == SCR_DYN_PROMISE) {
+    sdfw_watch(closed, c, entry); /* the +1 moves to the watch */
+  } else if (closed) {
+    scr_dyn_release(closed);
+  }
+}
+
 /* writer.closed: a close before end() is Node's premature close; a rejection
  * destroys the Duplex with its reason. */
 static void sdfw_closed_settle(SdfwCtx *c, ScrDyn *reason) {
@@ -329,20 +360,39 @@ static void sdfw_closed_settle(SdfwCtx *c, ScrDyn *reason) {
 
 static void sdfw_closed_entry(ScrFiber *fiber, void *arg) {
   (void)fiber;
-  SdfwAwait a = *(SdfwAwait *)arg;
+  SdfwWatch w = *(SdfwWatch *)arg;
   free(arg);
-  ScrDyn *value = scr_await_ref(a.promise->v.promise);
+  ScrDyn *value = scr_await_ref(w.promise->v.promise);
   ScrDyn *reason = NULL;
   if (scr_exc_pending()) {
     ScrCaught *caught = scr_exc_take();
     reason = scr_caught_to_dyn(caught);
     scr_caught_release(caught);
   }
-  sdfw_closed_settle(a.ctx, reason);
+  sdfw_closed_settle(w.ctx, reason);
   if (reason) scr_dyn_release(reason);
   if (value) scr_dyn_release(value);
-  scr_dyn_release(a.promise);
-  sdfw_unref(a.ctx);
+  sdfw_watch_done(&w);
+}
+
+/* reader.closed: a rejected reader (the web readable errored) fails the
+ * Duplex even when nothing has read it yet. A clean close is left to read(),
+ * which pushes null. */
+static void sdfw_reader_closed_entry(ScrFiber *fiber, void *arg) {
+  (void)fiber;
+  SdfwWatch w = *(SdfwWatch *)arg;
+  free(arg);
+  ScrDyn *value = scr_await_ref(w.promise->v.promise);
+  if (scr_exc_pending()) {
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *reason = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    w.ctx->reader_closed = true;
+    sdfw_destroy_with(w.ctx, reason);
+    if (reason) scr_dyn_release(reason);
+  }
+  if (value) scr_dyn_release(value);
+  sdfw_watch_done(&w);
 }
 
 /* Duplex.fromWeb({ readable, writable }): the Duplex (+1), or NULL with
@@ -409,17 +459,8 @@ ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
   c->live_next = sdfw_live;
   if (sdfw_live) sdfw_live->live_prev = c;
   sdfw_live = c;
-  ScrDyn *closed = scr_dyn_obj_read(writer, "closed", 6);
-  if (closed && closed->kind == SCR_DYN_PROMISE) {
-    SdfwAwait *a = malloc(sizeof *a);
-    if (!a) abort();
-    a->ctx = sdfw_ref(c);
-    a->promise = closed;
-    a->which = 2;
-    scr_promise_release(scr_async_spawn_after(closed->v.promise, &sdfw_closed_entry, a));
-  } else if (closed) {
-    scr_dyn_release(closed);
-  }
+  sdfw_watch_closed(writer, c, &sdfw_closed_entry);
+  sdfw_watch_closed(reader, c, &sdfw_reader_closed_entry);
   sdfw_unref(c);
   return d;
 }

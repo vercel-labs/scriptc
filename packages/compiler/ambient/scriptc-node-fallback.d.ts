@@ -1367,6 +1367,25 @@ declare var EventTarget: {
   readonly prototype: EventTarget;
 };
 
+/* Node's BroadcastChannel global is the worker_threads class itself.
+ * Declaring the class in the module keeps the module's lowering (the type
+ * check resolves the class inside node:worker_threads) answering the global
+ * form, and constructing one takes the same native path as the import.
+ * MessageChannel and MessagePort stay the global interfaces above: their
+ * event-side members still refuse, so their rows remain unimplemented. */
+declare module "node:worker_threads" {
+  class BroadcastChannel extends EventTarget {
+    constructor(name: string);
+    readonly name: string;
+    postMessage(message: unknown): void;
+    close(): void;
+    ref(): void;
+    unref(): void;
+    onmessage: ((event: MessageEvent) => void) | null;
+    onmessageerror: ((event: MessageEvent) => void) | null;
+  }
+}
+declare var BroadcastChannel: typeof import("node:worker_threads").BroadcastChannel;
 interface MessagePort extends EventTarget {
   postMessage(value: unknown, transferOrOptions?: unknown): void;
   start(): void;
@@ -1377,13 +1396,13 @@ interface MessagePort extends EventTarget {
   onmessageerror: ((event: MessageEvent) => void) | null;
   onclose: ((event: Event) => void) | null;
 }
-declare var MessagePort: {
-  readonly prototype: MessagePort;
-};
 interface MessageChannel {
   readonly port1: MessagePort;
   readonly port2: MessagePort;
 }
+declare var MessagePort: {
+  readonly prototype: MessagePort;
+};
 declare var MessageChannel: {
   new (): MessageChannel;
   readonly prototype: MessageChannel;

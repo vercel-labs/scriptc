@@ -41,7 +41,6 @@ import { stdlibGlobalNameOf } from "./surfaces.js";
  * same reason.
  */
 export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
-  "BroadcastChannel",
   "CloseEvent",
   "CompressionStream",
   "DecompressionStream",

@@ -7887,9 +7887,13 @@ export class Lowerer {
     if (checked === undefined) {
       // A dependency's shipped JavaScript is unchecked whatever the
       // project's `checkJs` says; preflight drops its checker diagnostics
-      // for the same reason, so the two stances agree.
+      // for the same reason, so the two stances agree. The predicate is
+      // read into a local first: calling it through `this` hands the
+      // Lowerer as the call's receiver, which makes the class a dynamic
+      // value in the compiler's own build (self-compile budget).
+      const dependencyJs = this.dependencyJs;
       const projectCheckJs =
-        this.projectCheckJs && (this.dependencyJs === null || !this.dependencyJs(sf.fileName));
+        this.projectCheckJs && (dependencyJs === null || !dependencyJs(sf.fileName));
       checked = isCheckedJsSourceFile(sf, projectCheckJs);
       this.checkedJsFiles.set(sf, checked);
     }

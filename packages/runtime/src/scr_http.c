@@ -5808,7 +5808,12 @@ struct ScrHttpClientReq {
   /* The writes made before the request's 'socket' event (Node's outputData):
    * their lengths stay in the message's buffer answer until the socket is
    * assigned, and each keeps its own chunk on the wire because the message
-   * does not autocork yet. */
+   * does not autocork yet. cork_buf holds their bytes in order and
+   * pre_sizes holds one length per write, so the flush can frame each one
+   * separately (`req.write("a"); req.write("b")` before the socket is two
+   * chunks on the wire in Node, not one). */
+  size_t *pre_sizes;
+  size_t pre_count, pre_cap;
   /* the head a corked write committed, sent first at the flush */
   char *held_head;
   size_t held_head_len, held_head_cap;
@@ -5896,6 +5901,7 @@ void scr_http_client_release(ScrHttpClientReq *c) {
     free(c->hvalues);
     scr_http_trailers_clear(&c->trailers);
     free(c->cork_buf);
+    free(c->pre_sizes);
     free(c->held_head);
     if (c->res) scr_http_req_release(c->res);
     if (c->sock) scr_net_sock_release(c->sock);
@@ -6374,6 +6380,13 @@ static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, siz
       c->hold_head = false;
       if (scr_exc_pending()) return;
     }
+    if (c->pre_count == c->pre_cap) {
+      c->pre_cap = c->pre_cap == 0 ? 4 : c->pre_cap * 2;
+      size_t *grown = realloc(c->pre_sizes, c->pre_cap * sizeof *grown);
+      if (grown == NULL) scr_http_oom();
+      c->pre_sizes = grown;
+    }
+    c->pre_sizes[c->pre_count++] = len;
     scr_http_cork_buffer(&c->cork_buf, &c->cork_len, &c->cork_cap, data, len);
     return;
   }
@@ -6451,12 +6464,29 @@ static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
   if (c->cork_len == 0 && c->held_head == NULL) return;
   char *held = c->cork_buf;
   size_t held_len = c->cork_len;
+  size_t *sizes = c->pre_sizes;
+  size_t count = c->pre_count;
   c->cork_buf = NULL;
   c->cork_len = c->cork_cap = 0;
+  c->pre_sizes = NULL;
+  c->pre_count = c->pre_cap = 0;
   bool was_pre = c->pre_flushing;
   c->pre_flushing = true;
-  scr_http_client_write_raw(c, held, held_len);
+  if (count > 0) {
+    /* Node's outputData: every write made before the socket was assigned
+     * goes out as its own chunk. Only a user cork() coalesces them (those
+     * writes never reach this list). */
+    size_t at = 0;
+    for (size_t i = 0; i < count && !scr_exc_pending(); i++) {
+      scr_http_client_write_raw(c, held + at, sizes[i]);
+      at += sizes[i];
+    }
+    if (at < held_len && !scr_exc_pending()) scr_http_client_write_raw(c, held + at, held_len - at);
+  } else {
+    scr_http_client_write_raw(c, held, held_len);
+  }
   c->pre_flushing = was_pre;
+  free(sizes);
   free(held);
   scr_http_client_maybe_drain(c);
 }
@@ -6476,7 +6506,18 @@ double scr_http_client_writable_length(ScrHttpClientReq *c) {
   double buffered = 0;
   if (c->cork_len != 0) {
     buffered = (double)c->cork_len;
-    if (c->chunked) buffered += (double)(scr_http_hex_digits(c->cork_len) + 4);
+    if (c->chunked) {
+      /* Node counts each buffered entry's framing: a write made before the
+       * socket is one outputData entry with its own chunk header, while the
+       * writes a cork() coalesced are one. */
+      size_t framed = 0;
+      for (size_t i = 0; i < c->pre_count; i++) {
+        framed += c->pre_sizes[i];
+        buffered += (double)(scr_http_hex_digits(c->pre_sizes[i]) + 4);
+      }
+      if (framed < c->cork_len)
+        buffered += (double)(scr_http_hex_digits(c->cork_len - framed) + 4);
+    }
     if (c->held_head_len > 0) buffered += (double)c->held_head_len;
   }
   if (c->sock != NULL) buffered += scr_net_sock_writable_length(c->sock);

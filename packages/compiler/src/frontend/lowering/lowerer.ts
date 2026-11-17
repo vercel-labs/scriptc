@@ -75,6 +75,7 @@ import {
   jsStoresWrittenValue,
   jsWritableBindingDeclaration,
   operatorOperandNodes,
+  voidTruthinessNeedsRuntimeValue,
 } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -148,6 +149,7 @@ import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { lowerAbortSignalNew } from "./builtins/abort-signal.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
   lowerWebAssemblyCall,
@@ -10248,6 +10250,22 @@ export class Lowerer {
           if (setterParam) this.jsWidenedBindings.add(setterParam);
           return undefined;
         }
+        // A void-typed truthiness test preflight admitted because its callee
+        // may answer a value (tsc-codes.ts TS1345): the function the program
+        // stores in the callee's member keeps its own return value only in
+        // checked-dynamic storage, so the binding the callee is read from
+        // widens (lower-calls.ts performs the call dynamically).
+        if (
+          ts.isCallExpression(node) &&
+          this.opinionAt(node, 1345) &&
+          voidTruthinessNeedsRuntimeValue(node, this.program)
+        ) {
+          const calleeBinding = this.voidTruthinessCalleeBinding(node);
+          if (calleeBinding !== null && !this.runtimeOptionalBindingTypes.has(calleeBinding)) {
+            widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
         // An annotated binding whose initializer the checker cannot show
         // fits the annotation (`/** @type {Base|undefined} */ const b = v;`
         // with `v` an `any`) holds the value it is given.
@@ -10359,6 +10377,19 @@ export class Lowerer {
         return undefined;
       });
     }
+  }
+
+  /** The binding a void-typed truthiness test's callee is read from
+   * (`Internals.d.f()` reads through `Internals`), or null when the callee
+   * is reached any other way. */
+  private voidTruthinessCalleeBinding(expr: ts.CallExpression): ts.Symbol | null {
+    let callee: ts.Node = expr.expression;
+    while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+    let root: ts.Node = callee;
+    while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+      root = root.expression;
+    while (ts.isParenthesizedExpression(root)) root = root.expression;
+    return ts.isIdentifier(root) ? this.resolveValueSymbol(root) : null;
   }
 
   /** The bindings that take the pairs or values of an open spread value's
@@ -23543,6 +23574,7 @@ export class Lowerer {
       lowerInternTableNew(this, expr) ??
       lowerThreadSlotsNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
+      lowerAbortSignalNew(this, expr) ??
       lowerDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??

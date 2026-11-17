@@ -80,6 +80,22 @@ declare module "crypto" {
     key: JsonWebKey;
     format: "jwk";
   }
+  export interface Argon2Parameters {
+    message: string | ArrayBuffer | ArrayBufferView;
+    nonce: string | ArrayBuffer | ArrayBufferView;
+    parallelism: number;
+    tagLength: number;
+    memory: number;
+    passes: number;
+    secret?: string | ArrayBuffer | ArrayBufferView;
+    associatedData?: string | ArrayBuffer | ArrayBufferView;
+  }
+  export function argon2Sync(algorithm: string, parameters: Argon2Parameters): Buffer;
+  export function argon2(
+    algorithm: string,
+    parameters: Argon2Parameters,
+    callback: (error: Error | null, result?: Buffer) => void,
+  ): void;
   export function createPrivateKey(
     key: PrivateKeyInput | string | Buffer | JsonWebKeyInput,
   ): KeyObject;

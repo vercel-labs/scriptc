@@ -50,8 +50,55 @@ function probe(withCert: boolean, done: () => void): void {
   setTimeout(() => connection.destroy(), 150);
 }
 
+// A standalone socket treats a falsy rejectUnauthorized as "allow" (null, 0
+// and the empty string included), unlike tls.Server's true default.
+let falsyValue: unknown = null;
+const falsyServer = net.createServer((raw) => {
+  const socket = new tls.TLSSocket(raw, {
+    isServer: true,
+    cert,
+    key,
+    ca,
+    requestCert: true,
+    get rejectUnauthorized() {
+      return falsyValue;
+    },
+  });
+  socket.on("secure", () => {
+    console.log("falsy reject secure", socket.authorized);
+    socket.destroy();
+  });
+  socket.on("error", () => {
+    console.log("falsy reject failed");
+    socket.destroy();
+  });
+  socket.on("data", () => {});
+});
+
+function probeFalsy(value: unknown, done: () => void): void {
+  falsyValue = value;
+  const connection = tls.connect({ host: "localhost", port: falsyPort, ca });
+  connection.on("error", () => {});
+  connection.on("close", () => setTimeout(done, 20));
+  setTimeout(() => connection.destroy(), 150);
+}
+
 let port = 0;
+let falsyPort = 0;
 server.listen(0, () => {
   port = (server.address() as net.AddressInfo).port;
-  probe(true, () => probe(false, () => server.close(() => console.log("closed"))));
+  falsyServer.listen(0, () => {
+    falsyPort = (falsyServer.address() as net.AddressInfo).port;
+    probe(true, () =>
+      probe(false, () =>
+        probeFalsy(null, () =>
+          probeFalsy(0, () =>
+            probeFalsy("", () =>
+              falsyServer.close(() => server.close(() => console.log("closed"))),
+            ),
+          ),
+        ),
+      ),
+    );
+  });
 });

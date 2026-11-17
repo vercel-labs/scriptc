@@ -568,7 +568,8 @@ static void scr_tls_srv_release_v(void *p) { scr_tls_srv_release((ScrTlsSrv *)p)
 typedef struct {
   bool request;
   bool reject;
-  bool reject_seen; /* the record supplied rejectUnauthorized */
+  bool reject_seen;   /* the record supplied rejectUnauthorized */
+  bool reject_truthy; /* its JS truthiness: a standalone socket's rule */
   ScrBytes *ca;
 } ScrTlsClientAuth;
 
@@ -2945,6 +2946,7 @@ static bool scr_tls_srv_opt_member(const ScrDynProp *e, const ScrDyn *v, bool de
     if (auth != NULL) {
       auth->reject = scr_tls_dyn_not_false(v);
       auth->reject_seen = true;
+      auth->reject_truthy = scr_tls_dyn_truthy(v);
     }
     return true; /* without client certificates it has no effect */
   }
@@ -2984,7 +2986,8 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
   *cert_out = NULL;
   *key_out = NULL;
   if (auth != NULL)
-    *auth = (ScrTlsClientAuth){.request = false, .reject = true, .reject_seen = false, .ca = NULL};
+    *auth = (ScrTlsClientAuth){.request = false, .reject = true, .reject_seen = false,
+                               .reject_truthy = false, .ca = NULL};
   if (opts == NULL || opts->kind != SCR_DYN_OBJ) {
     scr_dyn_arg_type_fail("options", "of type object", opts ? opts : scr_dyn_undefined());
     return false;
@@ -3608,10 +3611,10 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
     if (!scr_tls_versions_dyn(record, &min_version, &max_version)) return NULL;
     if (!scr_tls_srv_opts_walk_ex(record, api, &cert, &key, true, &auth)) return NULL;
     /* a standalone socket requires a certificate only for a truthy
-     * rejectUnauthorized; tls.Server's true default does not apply. The
-     * walk read the member through ordinary property access, so its value
-     * (accessors included) is the one to keep. */
-    if (!auth.reject_seen) auth.reject = false;
+     * rejectUnauthorized (null, 0, '' and false all allow); tls.Server's
+     * true default does not apply. The walk read the member through
+     * ordinary property access, accessors included. */
+    auth.reject = auth.reject_seen && auth.reject_truthy;
   } else if (!scr_tls_wrap_socket_opts_check(record, api)) {
     return NULL;
   }

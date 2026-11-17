@@ -319,6 +319,22 @@ static void stw3_close_closed(ScrClosure *cl) {
   stw3_job_release(j);
 }
 
+/* Node's writer rejects a close on a stream that is already closed or
+ * errored with its invalid-state TypeError. */
+static void stw3_reject_invalid_state(Stw3Job *j, const char *text, size_t length) {
+  ScrStr *message = scr_str_new(text, length);
+  ScrError *err = scr_error_new(SCR_ERR_TYPE, message);
+  scr_str_release(message);
+  if (err) {
+    scr_error_set_code(err, "ERR_INVALID_STATE");
+    scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+    scr_promise_reject_pending(j->p);
+  } else {
+    scr_promise_fulfill_void(j->p);
+  }
+  if (scr_exc_pending()) scr_exc_clear();
+}
+
 /* sink.close() */
 static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
@@ -328,34 +344,21 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   /* A writable that already finished (or was destroyed) has no terminal event
    * left to wait for: settle now, or the close would never complete. */
   if (scr_stream_prop(c->writable, "writableFinished") != 0) {
-    /* Node's adapter has already errored the stream by the time it is closed:
-     * a close over a finished writable rejects with its invalid-state error. */
     static const char invalid_state[] = "Invalid state: Failure to close WritableStream";
-    ScrStr *message = scr_str_new(invalid_state, sizeof invalid_state - 1);
-    ScrError *err = scr_error_new(SCR_ERR_TYPE, message);
-    scr_str_release(message);
-    if (err) {
-      scr_dyn_throw(scr_dyn_from_error(err));
-      scr_promise_reject_pending(j->p);
-      scr_error_release(err);
-    } else {
-      scr_promise_fulfill_void(j->p);
-    }
+    stw3_reject_invalid_state(j, invalid_state, sizeof invalid_state - 1);
     ScrDyn *settled = scr_dyn_new_promise(j->p);
     stw3_job_release(j);
     stw3_unref(c);
     return settled;
   }
-  if (scr_stream_prop(c->writable, "destroyed") != 0) {
-    /* A writable that is already gone has no terminal event left: the close
-     * settles with the stream's error (or resolves when it has none). */
-    ScrError *already = scr_stream_errored(c->writable);
-    if (already) {
-      scr_throw_obj(already, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
-      scr_promise_reject_pending(j->p);
-    } else {
-      scr_promise_fulfill_void(j->p);
-    }
+  ScrError *terminal = scr_stream_errored(c->writable); /* +1 or NULL */
+  if (terminal || scr_stream_prop(c->writable, "destroyed") != 0) {
+    /* The web stream is already errored once the wrapped writable is (an
+     * error, or the AbortError a destroy gives it): Node's writer rejects the
+     * close before the sink runs. */
+    if (terminal) scr_error_release(terminal);
+    static const char invalid_state[] = "Invalid state: WritableStream is closed";
+    stw3_reject_invalid_state(j, invalid_state, sizeof invalid_state - 1);
     ScrDyn *settled = scr_dyn_new_promise(j->p);
     stw3_job_release(j);
     stw3_unref(c);

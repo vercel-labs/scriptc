@@ -110,6 +110,43 @@ async function main(): Promise<void> {
   );
   log.push(`backpressured errored ${slowFailing.errored?.message}`);
 
+  // Closing after the writable's accepted write failed rejects with the
+  // invalid state the errored web stream has, even when autoDestroy: false
+  // leaves the writable undestroyed.
+  const noDestroy = new Writable({
+    autoDestroy: false,
+    write(chunk, encoding, done): void {
+      setTimeout(() => done(new Error("no destroy fail")), 5);
+    },
+  });
+  const noDestroyWeb = Writable.toWeb(noDestroy);
+  const noDestroyWriter = noDestroyWeb.getWriter();
+  await noDestroyWriter.write(encoder.encode("x")).then(
+    () => log.push("no-autodestroy failed write resolved"),
+    (error: Error) => log.push(`no-autodestroy failed write rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await noDestroyWriter.close().then(
+    () => log.push("no-autodestroy failed close resolved"),
+    (error: Error & { code?: string }) =>
+      log.push(`no-autodestroy failed close rejected ${error.name} ${error.code}`),
+  );
+
+  // A close already waiting when the write fails keeps the write's error.
+  const pendingCloseFail = new Writable({
+    autoDestroy: false,
+    write(chunk, encoding, done): void {
+      setTimeout(() => done(new Error("pending close fail")), 5);
+    },
+  });
+  const pendingCloseFailWeb = Writable.toWeb(pendingCloseFail);
+  const pendingCloseFailWriter = pendingCloseFailWeb.getWriter();
+  await pendingCloseFailWriter.write(encoder.encode("x"));
+  await pendingCloseFailWriter.close().then(
+    () => log.push("pending close resolved"),
+    (error: Error) => log.push(`pending close rejected ${error.message}`),
+  );
+
   // A backpressured write that succeeds resolves the writer's write at the
   // writable's 'drain'.
   const slowOk = new Writable({
@@ -213,7 +250,8 @@ async function main(): Promise<void> {
   const finishedWeb = Writable.toWeb(finishedWritable);
   await finishedWeb.getWriter().close().then(
     () => log.push("finished close resolved"),
-    (error: Error) => log.push(`finished close rejected ${error.message}`),
+    (error: Error & { code?: string }) =>
+      log.push(`finished close rejected ${error.name} ${error.code} ${error.message}`),
   );
 }
 

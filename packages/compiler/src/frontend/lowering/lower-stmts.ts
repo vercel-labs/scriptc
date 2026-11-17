@@ -1136,9 +1136,12 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
             },
           });
           if (fence) out.push(fence);
-        } else if (deferFences) {
+        } else {
           // Inside a capture buffer the owner keeps the diagnostics, but
-          // the statement still must not vanish from a result it keeps.
+          // the statement still must not vanish from a result it keeps. A
+          // JavaScript source gets the same fence it makes outside a buffer;
+          // a TypeScript source gets it too, so a member lowered a second
+          // time for run-time use holds every statement of its body.
           const fence = lowerer.capturedRuntimeFence(sinkMark, stmt);
           if (fence) out.push(fence);
         }

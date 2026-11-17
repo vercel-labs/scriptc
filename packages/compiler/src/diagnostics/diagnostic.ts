@@ -1246,13 +1246,14 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // declaration carry an initialization check (Node's TDZ ReferenceError).
   // SC1016 remains for the shapes without an exact representation —
   // CommonJS members, top-level await, default-export expressions,
-  // namespace imports or re-exports of cycle members, and var or class
-  // bindings reachable before their declaration ran. The message names
-  // the offending construct.
+  // namespace imports or re-exports of cycle members, and var bindings
+  // reachable before their declaration ran. Classes carry an
+  // initialization check like the let/const bindings they behave as. The
+  // message names the offending construct.
   SC1016: {
     feature: "circular imports",
     milestone: "later",
-    hint: "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge",
+    hint: "ES-module cycles of let/const/function/class bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var) or break the named edge",
   },
   // Class DECLARATIONS shipped; SC1020's remaining use is class expressions.
   SC1020: { feature: "class expressions", milestone: "later" },

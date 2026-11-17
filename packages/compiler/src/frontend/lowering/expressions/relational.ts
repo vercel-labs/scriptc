@@ -41,6 +41,7 @@ import {
 } from "../../../ir/ir.js";
 import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
 import { lowerSocketInstanceOf, lowerTlsServerInstanceOf } from "../lower-server.js";
+import { lowerDgramSocketInstanceOf } from "../lower-dgram.js";
 import { lowerDnsResolverInstanceOf } from "../lower-dgram.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
@@ -487,6 +488,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
   if (sockTest !== null) return sockTest;
+  // `x instanceof dgram.Socket`: the native socket handle (an always-true
+  // answer for a statically-typed socket, the handle tag for an untyped
+  // value).
+  const dgramTest = lowerDgramSocketInstanceOf(lowerer, expr, loc);
+  if (dgramTest !== null) return dgramTest;
   // `x instanceof dns.Resolver` / `dns.promises.Resolver`: the stub
   // resolver's own handle tag (scr_dns_resolve.c).
   const resolverTest = lowerDnsResolverInstanceOf(lowerer, expr, loc);

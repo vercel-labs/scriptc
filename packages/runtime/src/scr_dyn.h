@@ -1205,6 +1205,7 @@ ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed);
 bool scr_dyn_native_map_is(const ScrDyn *value);
 void scr_regex_reset_last_index(ScrRegex *re, double index);
 ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags);
+ScrRegex *scr_regex_call_checked(const ScrDyn *pattern, const ScrDyn *flags);
 ScrDyn *scr_dyn_native_url(ScrUrl *value);
 bool scr_dyn_native_url_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
@@ -1852,6 +1853,10 @@ bool scr_js_wrapper_instance_of(ScrDyn *value, double kind);
 ScrStr *scr_js_wrapper_object_tag(ScrDyn *value);
 bool scr_js_wrapper_type_is(ScrDyn *value, ScrStr *probe);
 ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
+/* structuredClone's clone of a wrapper (scr_json.c's hook): +1 the same kind
+ * over the same primitive, or NULL when `value` is not a wrapper. Installed
+ * by the wrapper unit, so a program without one keeps the refusal. */
+extern SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);

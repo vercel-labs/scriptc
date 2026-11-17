@@ -343,8 +343,12 @@ const HEAP_LIMITS = new Set([
   "codeRangeSizeMb",
 ]);
 
-/** resourceLimits' V8 heap fields, when an options literal spells them
- * with numbers (Node ignores other values; the runtime refuses the rest). */
+/** resourceLimits' V8 heap fields, when an options literal spells them with
+ * numbers. A compiled program has one heap for every thread, so a heap limit
+ * cannot be enforced: requesting one is refused here, and the runtime
+ * refuses the same request when the options object is not a literal. A
+ * limit the program does not ask for stays unset, and `worker.resourceLimits`
+ * reports it as Node does (-1). */
 function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined): void {
   if (!options || !ts.isObjectLiteralExpression(options)) return;
   for (const option of options.properties.nodes) {
@@ -360,7 +364,7 @@ function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined):
       lowerer.noLowering(
         `Worker resourceLimits.${name}`,
         limit,
-        "worker threads have no separate V8 heap; resourceLimits supports stackSizeMb",
+        "worker threads share the process heap, so a heap limit cannot be enforced; resourceLimits supports stackSizeMb",
       );
     }
   }

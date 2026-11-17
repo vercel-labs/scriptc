@@ -800,6 +800,10 @@ struct ScrH2Session {
   size_t nstreams, streams_cap;
   int32_t next_stream_id;      /* client request ids: 1, 3, 5, ... */
   int32_t last_recv_stream_id; /* the GOAWAY last-stream answer */
+  /* The highest peer-initiated stream this side created: a HEADERS block
+   * on a lower id is a closed stream's late frame, dropped rather than
+   * opening a stream again. */
+  int32_t max_created_stream_id;
   /* flow control + peer settings */
   int64_t send_window;
   uint32_t peer_max_frame;
@@ -2811,7 +2815,26 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
   if (!s->client) {
     if (stream_id % 2 == 0) return; /* server streams are client-initiated (odd) */
     ScrH2Stream *st = scr_h2_find_stream(s, stream_id);
+    if (st == NULL && stream_id <= s->max_created_stream_id) {
+      /* a closed stream's late HEADERS: its id is already spent, so the
+       * block opens nothing (frames on closed streams are dropped, as
+       * nghttp2 drops them) */
+      return;
+    }
     if (st != NULL) {
+      if (!end_stream) {
+        /* RFC 9113: a stream's trailers are its FINAL HEADERS block, so a
+         * non-terminal one is a protocol error. Rejecting it also keeps a
+         * peer from appending header fields to one request without bound:
+         * every accepted block would land in the request's trailer
+         * storage, and nothing else limits how many arrive. */
+        scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+        st->rst_code = 1;
+        st->destroyed = true;
+        scr_h2_stream_begin_close(st);
+        scr_h2_stream_settle(st);
+        return;
+      }
       /* a second HEADERS block on an open server stream: the request's
        * trailers. They land in the compat request's trailer fields, fire
        * the stream's 'trailers' event, and END_STREAM ends the request. */
@@ -2840,6 +2863,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
       return;
     }
     st = scr_h2_stream_new(s, stream_id);
+    s->max_created_stream_id = stream_id;
     if (end_stream) {
       st->end_recv = true;
       st->state = SCR_H2_S_CLOSED_REMOTE;
@@ -2916,6 +2940,16 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
     return;
   }
   if (st->got_response) {
+    if (!end_stream) {
+      /* the response's trailers are final (RFC 9113): a non-terminal
+       * block is a protocol error, as on the server side. */
+      scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+      st->rst_code = 1;
+      st->destroyed = true;
+      scr_h2_stream_begin_close(st);
+      scr_h2_stream_settle(st);
+      return;
+    }
     /* trailers after the response: a block with no fields is Node's
      * auto-sent empty one and reports nothing. */
     ScrArr *tpairs = scr_h2_headers_pairs(h, false, NULL);

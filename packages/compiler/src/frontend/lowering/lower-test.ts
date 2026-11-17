@@ -918,6 +918,19 @@ function lowerSnapshotAssert(
   if (call.arguments.nodes.length > (member === "snapshot" ? 2 : 3)) {
     lowerer.noLowering(`${what} with ${call.arguments.nodes.length} arguments`, call);
   }
+  /* Node resolves the snapshot file before it serializes the value: the
+   * resolver runs first, and its throw wins over anything the value's
+   * serializers would do. */
+  const resolvedPath =
+    member === "snapshot"
+      ? slot("%snapshotPath", STRING, {
+          kind: "libCall",
+          fn: "test.snapshotPath",
+          args: [strLit(lowerer.entry.fileName, loc)],
+          type: STRING,
+          loc,
+        })
+      : null;
   const text: IrExpr = {
     kind: "toString",
     operand: {
@@ -947,17 +960,7 @@ function lowerSnapshotAssert(
       ? {
           kind: "libCall",
           fn: "test.ctxSnapshot",
-          args: [
-            t,
-            actual,
-            {
-              kind: "libCall",
-              fn: "test.snapshotPath",
-              args: [strLit(lowerer.entry.fileName, loc)],
-              type: STRING,
-              loc,
-            },
-          ],
+          args: [t, actual, resolvedPath!],
           type: STRING,
           loc,
         }

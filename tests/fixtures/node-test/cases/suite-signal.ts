@@ -41,6 +41,12 @@ describe("suite aborted while running", { signal: suiteAbort.signal }, () => {
 });
 setTimeout(() => suiteAbort.abort(new Error("suite stop")), 10);
 
+const syncAbort = new AbortController();
+test("sync body aborts its signal", { signal: syncAbort.signal }, (t) => {
+  t.diagnostic("sync body ran");
+  syncAbort.abort(new Error("sync stop"));
+});
+
 test("report", () => {
   assert.deepStrictEqual(ran, []);
 });

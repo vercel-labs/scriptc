@@ -296,11 +296,13 @@ void scr_testctx_release(ScrTestCtx *t) {
   scr_promise_release(t->done);
   scr_promise_release(t->slot);
   scr_dyn_release(t->abort_controller);
+  /* The watch points at the signal: unlink it before the node's last
+   * reference to the signal can free it. */
+  scr_test_watch_free(t);
   scr_dyn_release(t->signal_dyn);
   scr_str_release(t->fail_msg);
   scr_promise_release(t->plan_met);
   scr_promise_release(t->abort_promise);
-  scr_test_watch_free(t);
   for (size_t i = 0; i < t->ndiags; i++) scr_str_release(t->diags[i]);
   free(t->diags);
   for (size_t i = 0; i < t->nchildren; i++) scr_testctx_release(t->children[i]);
@@ -634,6 +636,35 @@ static bool scr_test_stopped(const ScrTestCtx *node) {
   return false;
 }
 
+/* A signal in the run's chain that aborted cancels it: the running test
+ * reports the signal's reason, an ancestor suite reports it for the subtree
+ * and the child is cancelled with Node's parent message. Returns true when
+ * a signal fired (and threw). */
+static bool scr_test_signal_wake(ScrTestCtx *run, ScrTestCtx *t) {
+  for (ScrTestCtx *n = run; n != NULL; n = n->parent) {
+    SfSignal *ns = scr_test_signal_of(n);
+    if (ns == NULL || !ns->aborted) continue;
+    if (n == t) {
+      t->aborted = true;
+      scr_test_throw_reason(ns);
+      return true;
+    }
+    scr_test_abort_failure(n, ns);
+    ScrTestCtx *cancelled = (run != NULL && !run->is_suite) ? run : NULL;
+    if (cancelled != NULL) {
+      cancelled->timed_out = true;
+      scr_test_abort_now(cancelled);
+    }
+    for (ScrTestCtx *m = run; m != NULL && m != n; m = m->parent) {
+      if (m != cancelled && m->is_suite) m->cancelled_parent = true;
+    }
+    static const char msg[] = "test did not finish before its parent and was cancelled";
+    scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+    return true;
+  }
+  return false;
+}
+
 /* Waits for a body or hook, bounded by the test's own { timeout } and by
  * the enclosing suite's { timeout } deadline, whichever is nearer. When the
  * suite deadline wins, the suite fails with its own "test timed out after
@@ -683,30 +714,7 @@ static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *sco
   if (timer != NULL) scr_promise_release(timer);
   if (scr_exc_pending()) return;
 
-  /* An abort wins over a timer: the running test's own signal cancels it
-   * with the signal's reason, an ancestor suite's cancels the child with
-   * Node's parent message. */
-  for (ScrTestCtx *n = run; n != NULL; n = n->parent) {
-    SfSignal *ns = scr_test_signal_of(n);
-    if (ns == NULL || !ns->aborted) continue;
-    if (n == t) {
-      t->aborted = true;
-      scr_test_throw_reason(ns);
-      return;
-    }
-    scr_test_abort_failure(n, ns);
-    ScrTestCtx *cancelled = (run != NULL && !run->is_suite) ? run : NULL;
-    if (cancelled != NULL) {
-      cancelled->timed_out = true;
-      scr_test_abort_now(cancelled);
-    }
-    for (ScrTestCtx *m = run; m != NULL && m != n; m = m->parent) {
-      if (m != cancelled && m->is_suite) m->cancelled_parent = true;
-    }
-    static const char msg[] = "test did not finish before its parent and was cancelled";
-    scr_throw_str(scr_str_new(msg, sizeof msg - 1));
-    return;
-  }
+  if (scr_test_signal_wake(run, t)) return;
   if (!scr_promise_is_pending(p)) return;
   if (timer == NULL) return;
 
@@ -908,8 +916,10 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
     scr_promise_release(p);
   } else if (takes_ctx) {
     ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(ctx));
+    if (!scr_exc_pending()) scr_test_signal_wake(timed != NULL ? timed : ctx, timed);
   } else {
     ((void (*)(ScrClosure *))cb->fn)(cb);
+    if (!scr_exc_pending()) scr_test_signal_wake(timed != NULL ? timed : ctx, timed);
   }
   scr_test_scope_leave(outer);
 }

@@ -1007,6 +1007,35 @@ static const ScrDyn *scr_dgram_options_view(const ScrDyn *v, ScrDyn **owned) {
   return v;
 }
 
+/* An options member read the way Node reads a property: a getter runs.
+ * True with the value (+1 in *out) when the member is present and not
+ * undefined; false when it is absent or its getter threw (exception
+ * pending). */
+static bool scr_dgram_opt_read(const ScrDyn *obj, const char *name, size_t len, ScrDyn **out) {
+  if (obj == NULL || obj->kind != SCR_DYN_OBJ) return false;
+  ScrDyn *v = scr_dyn_obj_read(obj, name, len);
+  if (v == NULL) return false;
+  if (v->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(v);
+    return false;
+  }
+  *out = v;
+  return true;
+}
+
+/* A receiveBlockList/sendBlockList member: the value check and the refusal
+ * for the option families with no native behavior yet. */
+static void scr_dgram_block_list_fail(const char *name, const ScrDyn *m) {
+  char prop[64];
+  snprintf(prop, sizeof prop, "options.%s", name);
+  if (!(m->kind == SCR_DYN_HANDLE && m->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST)) {
+    scr_dyn_prop_type_fail(prop, "an net.BlockList", m);
+  } else {
+    static const char msg[] = "a receiveBlockList or sendBlockList is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  }
+}
+
 /* createSocket(type | options[, listener]) — Node's Socket constructor.
  * The listener (nullable, moves) registers as on('message'). NULL with the
  * exception pending (ERR_SOCKET_BAD_TYPE, ERR_OUT_OF_RANGE, the
@@ -1023,71 +1052,83 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
   bool v6 = false, reuse = false, ipv6_only = false, reuse_port = false;
   double recv = 0, send = 0;
   if (v->kind == SCR_DYN_OBJ) {
-    const ScrDyn *member = NULL;
-    if (scr_dgram_opt_present(v, "reuseAddr", 9, &member)) reuse = scr_dgram_dyn_truthy(member);
-    if (scr_dgram_opt_present(v, "ipv6Only", 8, &member)) ipv6_only = scr_dgram_dyn_truthy(member);
-    if (scr_dgram_opt_present(v, "reusePort", 9, &member)) reuse_port = scr_dgram_dyn_truthy(member);
-    if (scr_dgram_opt_present(v, "recvBufferSize", 14, &member) && scr_dgram_dyn_truthy(member)) {
-      if (!scr_dgram_uint32_option(member, "options.recvBufferSize")) {
-        scr_dyn_release(owned);
-        scr_closure_release(cb);
-        return NULL;
-      }
-      if (member->kind == SCR_DYN_NUM) recv = member->v.num;
+    ScrDyn *m = NULL;
+    bool ok = true;
+    if (scr_dgram_opt_read(v, "reuseAddr", 9, &m)) {
+      reuse = scr_dgram_dyn_truthy(m);
+      scr_dyn_release(m);
     }
-    if (scr_dgram_opt_present(v, "sendBufferSize", 14, &member) && scr_dgram_dyn_truthy(member)) {
-      if (!scr_dgram_uint32_option(member, "options.sendBufferSize")) {
-        scr_dyn_release(owned);
-        scr_closure_release(cb);
-        return NULL;
-      }
-      if (member->kind == SCR_DYN_NUM) send = member->v.num;
+    if (ok && scr_exc_pending()) ok = false;
+    if (ok && scr_dgram_opt_read(v, "ipv6Only", 8, &m)) {
+      ipv6_only = scr_dgram_dyn_truthy(m);
+      scr_dyn_release(m);
     }
-    if (scr_dgram_opt_present(v, "signal", 6, &member)) {
+    if (ok && scr_exc_pending()) ok = false;
+    if (ok && scr_dgram_opt_read(v, "reusePort", 9, &m)) {
+      reuse_port = scr_dgram_dyn_truthy(m);
+      scr_dyn_release(m);
+    }
+    if (ok && scr_exc_pending()) ok = false;
+    if (ok && scr_dgram_opt_read(v, "recvBufferSize", 14, &m)) {
+      if (scr_dgram_dyn_truthy(m)) {
+        if (!scr_dgram_uint32_option(m, "options.recvBufferSize")) ok = false;
+        else if (m->kind == SCR_DYN_NUM) recv = m->v.num;
+      }
+      scr_dyn_release(m);
+    }
+    if (ok && scr_exc_pending()) ok = false;
+    if (ok && scr_dgram_opt_read(v, "sendBufferSize", 14, &m)) {
+      if (scr_dgram_dyn_truthy(m)) {
+        if (!scr_dgram_uint32_option(m, "options.sendBufferSize")) ok = false;
+        else if (m->kind == SCR_DYN_NUM) send = m->v.num;
+      }
+      scr_dyn_release(m);
+    }
+    if (ok && scr_exc_pending()) ok = false;
+    if (ok && scr_dgram_opt_read(v, "signal", 6, &m)) {
       /* Node's validateAbortSignal is the loose `'aborted' in signal` test;
        * a native AbortSignal handle carries the tag. */
-      bool signal = (member->kind == SCR_DYN_HANDLE &&
-                     member->v.handle.tag == SCR_DYNH_ABORT_SIGNAL) ||
-                    (member->kind == SCR_DYN_OBJ && scr_dyn_obj_get(member, "aborted", 7) != NULL);
+      bool signal = (m->kind == SCR_DYN_HANDLE &&
+                     m->v.handle.tag == SCR_DYNH_ABORT_SIGNAL) ||
+                    (m->kind == SCR_DYN_OBJ && scr_dyn_obj_get(m, "aborted", 7) != NULL);
       if (!signal) {
-        scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", member);
+        scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", m);
       } else {
         static const char msg[] = "abort-driven close is not supported yet";
         scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
       }
-      scr_dyn_release(owned);
-      scr_closure_release(cb);
-      return NULL;
+      scr_dyn_release(m);
+      ok = false;
     }
-    if (scr_dgram_opt_present(v, "lookup", 6, &member)) {
-      if (member->kind != SCR_DYN_FUNC) {
-        scr_dyn_arg_type_fail("lookup", "of type function", member);
+    if (ok && scr_dgram_opt_read(v, "lookup", 6, &m)) {
+      if (m->kind != SCR_DYN_FUNC) {
+        scr_dyn_arg_type_fail("lookup", "of type function", m);
       } else {
         static const char msg[] = "a custom lookup function is not supported yet";
         scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
       }
+      scr_dyn_release(m);
+      ok = false;
+    }
+    if (ok && scr_dgram_opt_read(v, "receiveBlockList", 16, &m)) {
+      scr_dgram_block_list_fail("receiveBlockList", m);
+      scr_dyn_release(m);
+      ok = false;
+    }
+    if (ok && scr_dgram_opt_read(v, "sendBlockList", 13, &m)) {
+      scr_dgram_block_list_fail("sendBlockList", m);
+      scr_dyn_release(m);
+      ok = false;
+    }
+    ScrDyn *type_member = NULL;
+    if (ok && scr_dgram_opt_read(v, "type", 4, &type_member)) type = type_member;
+    if (ok && scr_exc_pending()) ok = false;
+    if (!ok) {
+      scr_dyn_release(type_member);
       scr_dyn_release(owned);
       scr_closure_release(cb);
       return NULL;
     }
-    if (scr_dgram_opt_present(v, "receiveBlockList", 16, &member) ||
-        scr_dgram_opt_present(v, "sendBlockList", 13, &member)) {
-      bool recv_list = scr_dyn_obj_get(v, "receiveBlockList", 16) != NULL;
-      const char *name = recv_list ? "receiveBlockList" : "sendBlockList";
-      char prop[64];
-      snprintf(prop, sizeof prop, "options.%s", name);
-      if (!(member->kind == SCR_DYN_HANDLE &&
-            member->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST)) {
-        scr_dyn_prop_type_fail(prop, "an net.BlockList", member);
-      } else {
-        static const char msg[] = "a receiveBlockList or sendBlockList is not supported yet";
-        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
-      }
-      scr_dyn_release(owned);
-      scr_closure_release(cb);
-      return NULL;
-    }
-    type = scr_dyn_obj_get(v, "type", 4);
   }
   if (type == NULL || type->kind != SCR_DYN_STR ||
       !((type->v.str->len == 4 && memcmp(type->v.str->data, "udp4", 4) == 0) ||
@@ -1099,6 +1140,7 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
     return NULL;
   }
   v6 = type->v.str->data[3] == '6';
+  if (type != v) scr_dyn_release((ScrDyn *)type);
   ScrDgramSocket *s = scr_dgram_create(v6, reuse, ipv6_only, reuse_port, recv, send);
   scr_dyn_release(owned);
   if (cb) scr_dgram_on_message(s, cb, fn, false);
@@ -1117,31 +1159,61 @@ void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *c
   }
   /* bind(undefined) is bind() (Node's absent port: the wildcard). */
   const bool empty = v->kind == SCR_DYN_UNDEF;
+  if (!empty && (v->kind == SCR_DYN_NUM || v->kind == SCR_DYN_STR)) {
+    /* Node's normalizeArgs: a number, or a string that reads as a port, is
+     * the port (validatePort's ladder runs in scr_dgram_bind). */
+    double port = v->kind == SCR_DYN_NUM ? v->v.num : scr_string_to_number(v->v.str);
+    ScrStr *host = scr_str_new("", 0);
+    scr_dgram_bind(s, port, host, cb);
+    scr_str_release(host);
+    scr_dyn_release(owned);
+    return;
+  }
   if (!empty && v->kind != SCR_DYN_OBJ) {
     scr_dyn_arg_type_fail("options", "of type object", v);
     scr_dyn_release(owned);
     scr_closure_release(cb);
     return;
   }
-  const ScrDyn *member = NULL;
-  if (!empty && scr_dgram_opt_present(v, "fd", 2, &member)) {
+  ScrDyn *member = NULL;
+  if (!empty && scr_dgram_opt_read(v, "fd", 2, &member)) {
     static const char msg[] = "opening an existing descriptor is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    scr_dyn_release(member);
     scr_dyn_release(owned);
     scr_closure_release(cb);
     return;
   }
-  const ScrDyn *address = empty ? NULL : scr_dyn_obj_get(v, "address", 7);
-  if (address != NULL && address->kind != SCR_DYN_UNDEF && address->kind != SCR_DYN_NULL) {
-    if (address->kind != SCR_DYN_STR) {
-      scr_dyn_arg_type_fail("hostname", "of type string", address);
-      scr_dyn_release(owned);
-      scr_closure_release(cb);
-      return;
-    }
+  if (!empty && scr_exc_pending()) {
+    scr_dyn_release(owned);
+    scr_closure_release(cb);
+    return;
+  }
+  ScrDyn *address = NULL;
+  if (!empty) (void)scr_dgram_opt_read(v, "address", 7, &address);
+  if (address != NULL && scr_exc_pending()) {
+    scr_dyn_release(address);
+    scr_dyn_release(owned);
+    scr_closure_release(cb);
+    return;
+  }
+  if (address != NULL && address->kind != SCR_DYN_STR && address->kind != SCR_DYN_NULL) {
+    scr_dyn_arg_type_fail("hostname", "of type string", address);
+    scr_dyn_release(address);
+    scr_dyn_release(owned);
+    scr_closure_release(cb);
+    return;
+  }
+  ScrDyn *p = NULL;
+  if (!empty) (void)scr_dgram_opt_read(v, "port", 4, &p);
+  if (p != NULL && scr_exc_pending()) {
+    scr_dyn_release(address);
+    scr_dyn_release(p);
+    scr_dyn_release(owned);
+    scr_closure_release(cb);
+    return;
   }
   double port = 0;
-  const ScrDyn *p = empty ? NULL : scr_dyn_obj_get(v, "port", 4);
   if (p != NULL) {
     if (p->kind == SCR_DYN_NUM) port = p->v.num;
     else if (p->kind == SCR_DYN_STR) {
@@ -1152,9 +1224,10 @@ void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *c
                                                                  : scr_str_new("", 0);
   scr_dgram_bind(s, port, host, cb);
   scr_str_release(host);
+  scr_dyn_release(address);
+  scr_dyn_release(p);
   scr_dyn_release(owned);
 }
-
 /* bindSync(options) — Node's synchronous bind over an untyped options
  * object: validateObject, its already-bound check, validatePort and the
  * numeric-address rule. */
@@ -1169,16 +1242,27 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
     scr_dyn_release(owned);
     return;
   }
-  const ScrDyn *member = NULL;
-  if (!empty && scr_dgram_opt_present(v, "fd", 2, &member)) {
+  ScrDyn *member = NULL;
+  if (!empty && scr_dgram_opt_read(v, "fd", 2, &member)) {
     static const char msg[] = "opening an existing descriptor is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    scr_dyn_release(member);
     scr_dyn_release(owned);
     return;
   }
-  const ScrDyn *p = empty ? NULL : scr_dyn_obj_get(v, "port", 4);
+  if (!empty && scr_exc_pending()) {
+    scr_dyn_release(owned);
+    return;
+  }
+  ScrDyn *p = NULL;
+  if (!empty) (void)scr_dgram_opt_read(v, "port", 4, &p);
   double port = 0;
-  if (p != NULL && p->kind != SCR_DYN_UNDEF) {
+  if (p != NULL) {
+    if (scr_exc_pending()) {
+      scr_dyn_release(p);
+      scr_dyn_release(owned);
+      return;
+    }
     if (p->kind == SCR_DYN_NUM) {
       port = p->v.num;
     } else if (p->kind == SCR_DYN_STR) {
@@ -1192,6 +1276,7 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
       if (!numeric) {
         scr_dgram_throw_received(SCR_ERR_RANGE, "ERR_SOCKET_BAD_PORT",
                                  "options.port should be >= 0 and < 65536. Received ", p, ".");
+        scr_dyn_release(p);
         scr_dyn_release(owned);
         return;
       }
@@ -1201,12 +1286,20 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
        * specific-type tail. */
       scr_dgram_throw_received(SCR_ERR_RANGE, "ERR_SOCKET_BAD_PORT",
                                "options.port should be >= 0 and < 65536. Received ", p, ".");
+      scr_dyn_release(p);
       scr_dyn_release(owned);
       return;
     }
   }
-  const ScrDyn *a = empty ? NULL : scr_dyn_obj_get(v, "address", 7);
-  bool has_host = a != NULL && a->kind != SCR_DYN_UNDEF && a->kind != SCR_DYN_NULL;
+  ScrDyn *a = NULL;
+  if (!empty) (void)scr_dgram_opt_read(v, "address", 7, &a);
+  if (a != NULL && scr_exc_pending()) {
+    scr_dyn_release(a);
+    scr_dyn_release(p);
+    scr_dyn_release(owned);
+    return;
+  }
+  bool has_host = a != NULL && a->kind != SCR_DYN_NULL;
   ScrStr *host = has_host && a->kind == SCR_DYN_STR ? scr_str_retain(a->v.str) : scr_str_new("", 0);
   if (has_host && a->kind != SCR_DYN_STR) {
     scr_dyn_arg_type_fail("options.address", "of type string", a);
@@ -1214,9 +1307,10 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
     scr_dgram_bind_sync(s, port, host, has_host);
   }
   scr_str_release(host);
+  scr_dyn_release(a);
+  scr_dyn_release(p);
   scr_dyn_release(owned);
 }
-
 static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, double port,
                                 ScrStr *host) {
   if (s->closing || s->close_emitted) {

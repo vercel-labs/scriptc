@@ -803,7 +803,12 @@ function untypedJsListener(lowerer: Lowerer, node: ts.Expression): boolean {
 /** True when a bind argument is Node's options record rather than a port. */
 function isBindOptionsArgument(lowerer: Lowerer, node: ts.Expression): boolean {
   if (ts.isObjectLiteralExpression(node)) return true;
-  return lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "record";
+  const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (t?.kind === "record") return true;
+  /* A JavaScript call's first argument is untyped: Node's normalizeArgs
+   * decides at run time (an object is the options record, a number or a
+   * port string is the port), so it takes the runtime lane. */
+  return t?.kind === "dyn" || (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0;
 }
 
 /** Method calls on dgram.Socket receivers — one entry in lower-calls.ts's
@@ -903,7 +908,10 @@ export function lowerDgramMethodCall(
       loc,
     };
   }
-  if (name === "bind" && (args.length === 0 || isBindOptionsArgument(lowerer, args[0]!))) {
+  if (
+    name === "bind" &&
+    (args.length === 0 || (args.length <= 2 && isBindOptionsArgument(lowerer, args[0]!)))
+  ) {
     // bind() and bind(options[, callback]): the options record crosses as
     // a checked-dynamic value, so a literal, a typed variable and an
     // untyped JavaScript value all take Node's normalization.

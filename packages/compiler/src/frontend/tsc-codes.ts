@@ -423,6 +423,35 @@ const symbolStringOperator = (_node: ts.Node, d: ts.Diagnostic): boolean => {
 const stringWrapperReceiver = (_node: ts.Node, d: ts.Diagnostic): boolean =>
   ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'");
 
+/** TS2632, an assignment tsgo reports because it models the target as an
+ * import: a JavaScript `var`/`let` a CommonJS file initialized from a
+ * `require()` call is an ordinary mutable binding, and the assignment
+ * replaces the module's value (rebindable-requires.ts gives it
+ * checked-dynamic storage). A real ES import binding and a `const` require
+ * binding are immutable in Node too, and keep the diagnostic. */
+const reboundRequireBinding = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  let target: ts.Node = node;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    target = target.left;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isIdentifier(target)) return false;
+  // tsgo gives a `var` holding require()'s result the ALIAS symbol of an
+  // import: its declaration is the variable, but it carries no
+  // valueDeclaration.
+  const symbol = program.getTypeChecker().getSymbolAtLocation(target);
+  const declaration = symbol?.declarations.find((d) => ts.isVariableDeclaration(d));
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration)) return false;
+  const list = declaration.parent;
+  if (list === undefined || !ts.isVariableDeclarationList(list)) return false;
+  if ((list.flags & ts.NodeFlags.Const) !== 0) return false;
+  if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) return false;
+  const init = declaration.initializer;
+  if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) return false;
+  if (init.expression.text !== "require" || init.arguments.nodes.length !== 1) return false;
+  return ts.isStringLiteralLike(init.arguments.nodes[0]!);
+};
+
 /** TS2630 in a JavaScript source whose target is a function DECLARATION the
  * program reassigns: the declaration lowers to a mutable binding holding the
  * function as a checked-dynamic value (rebindable-functions.ts), which the
@@ -928,16 +957,39 @@ export function voidTruthinessNeedsRuntimeValue(node: ts.Node, program: ts.Progr
   return !undefinedAtRunTime(node, program);
 }
 
+/** The call a void-typed truthiness operand held in a VARIABLE was
+ * initialized from (`var v = Internals.d.f(); if (v)`, `return v || w`):
+ * the same member call voidTruthinessNeedsRuntimeValue admits when it is
+ * tested directly. Node's binding holds the value the call answered, so the
+ * lowering stores that value checked-dynamically and the test reads it; a
+ * later write to the binding writes the new value, as Node's assignment
+ * does. Null for every other operand and every call the analysis can prove
+ * answers undefined. */
+export function voidTruthinessHeldCall(
+  node: ts.Node,
+  program: ts.Program,
+): ts.CallExpression | null {
+  if (!ts.isIdentifier(node)) return null;
+  const decl = program.getTypeChecker().getSymbolAtLocation(node)?.valueDeclaration;
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return null;
+  let call: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(call)) call = call.expression;
+  return ts.isCallExpression(call) && voidTruthinessNeedsRuntimeValue(call, program) ? call : null;
+}
+
 /** TS1345 where Node's ToBoolean of the operand is known: the boolean of a
  * discarded negation is never read, an operand that is always `undefined`
- * tests false, and a call through a plain object's member reads the value
- * its callee answers (voidTruthinessNeedsRuntimeValue). Any other void-typed
- * operand keeps the triage
+ * tests false, a call through a plain object's member reads the value
+ * its callee answers (voidTruthinessNeedsRuntimeValue), and a variable that
+ * held such a call reads the value it stored (voidTruthinessHeldCall). Any
+ * other void-typed operand keeps the triage
  * row, because the lowering has no runtime value for it. */
 const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean =>
   discardedVoidNegation(node) ||
   undefinedAtRunTime(node, program) ||
-  voidTruthinessNeedsRuntimeValue(node, program);
+  voidTruthinessNeedsRuntimeValue(node, program) ||
+  voidTruthinessHeldCall(node, program) !== null;
 
 /* ---- family reasons ---- */
 
@@ -1802,6 +1854,16 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
           "a 'var' is undefined before its first assignment; the binding takes checked-dynamic storage so the read answers undefined",
           ["tests/corpus/js-var-read-before-assignment.js"],
         ),
+      ),
+    ),
+  ],
+  [
+    2632,
+    at(
+      reboundRequireBinding,
+      WIDEN(
+        "a CommonJS 'var' holding require()'s result is an ordinary mutable binding; it takes checked-dynamic storage the write replaces",
+        ["tests/corpus/cjs-reassigned-require-binding/main.cjs"],
       ),
     ),
   ],

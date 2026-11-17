@@ -75,6 +75,7 @@ import {
   jsStoresWrittenValue,
   jsWritableBindingDeclaration,
   operatorOperandNodes,
+  voidTruthinessHeldCall,
   voidTruthinessNeedsRuntimeValue,
 } from "../tsc-codes.js";
 import {
@@ -147,6 +148,11 @@ import {
 } from "./builtins/process.js";
 import { isSettledIteratorValueRead } from "./lower-generators.js";
 import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
+import {
+  isRebindableRequireDecl,
+  readsReboundRequireValue,
+  reboundRequireBindingOf,
+} from "./rebindable-requires.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
@@ -3434,6 +3440,11 @@ export class Lowerer {
   /** JavaScript function declarations their own module reassigns
    * (rebindable-functions.ts). */
   readonly rebindableFunctions = new Set<ts.FunctionDeclaration>();
+  /** Top-level JavaScript `var`/`let` declarations initialized from a
+   * `require()` call whose binding an assignment in the same file writes
+   * (rebindable-requires.ts): the binding owns a checked-dynamic module
+   * global instead of aliasing the import. */
+  readonly rebindableRequireDecls = new Set<ts.VariableDeclaration>();
   /** TRAP bindings: declarations whose initializer provably throws before
    * producing a value (its chain roots at an ambient-undefined name —
    * ambientUndefVarRootOf). Module init unwinds at the declaration, so no
@@ -3814,6 +3825,12 @@ export class Lowerer {
    * census (builtin-member-writes.ts): each reads its members at build
    * time. */
   readonly builtinFeatureTests = new Set<ts.Expression>();
+  /** The void-typed calls whose value a variable held for a truthiness
+   * test (`var v = Internals.d.f(); if (v)`, tsc-codes.ts TS1345): the
+   * binding stores the call's checked-dynamic result, so the lowering
+   * performs this call through the checked-dynamic invocation even though
+   * the operand itself is the binding. */
+  readonly voidTruthinessValueCalls = new Set<ts.CallExpression>();
   /** Per file, the `const` names that may denote a built-in object, for
    * the syntactic test in front of the write detection
    * (builtin-member-writes.ts): a function of the file alone. */
@@ -6140,6 +6157,7 @@ export class Lowerer {
       checkedTable("neverReassignedCache", () => this.neverReassignedCache.size),
       checkedTable("jsBindingWritesByOwner", () => this.jsBindingWritesByOwner.size),
       checkedTable("rebindableFunctions", () => this.rebindableFunctions.size),
+      checkedTable("rebindableRequireDecls", () => this.rebindableRequireDecls.size),
       checkedTable("trapBindings", () => this.trapBindings.size),
       checkedTable("deadBindings", () => this.deadBindings.size),
       // A write to a built-in member, and a feature test decided from the
@@ -8572,6 +8590,20 @@ export class Lowerer {
       this.flushDeferred(wholeSlot);
       return wholeSlot;
     }
+    // A require binding the file reassigns owns a checked-dynamic global
+    // (rebindable-requires.ts). tsgo hands each reference its own alias
+    // symbol, so the declaration's registration is found by declaration and
+    // the reference resolves to the same storage.
+    {
+      const rebound = symbol.declarations.find(
+        (d) => ts.isVariableDeclaration(d) && isRebindableRequireDecl(this, d),
+      );
+      const global = rebound === undefined ? undefined : this.globalsByDeclNode.get(rebound);
+      if (global !== undefined) {
+        this.globalsBySymbol.set(symbol, global);
+        return symbol;
+      }
+    }
     const importAlias = symbol;
     if (symbol.flags & ts.SymbolFlags.Alias) {
       // SNAPSHOT aliases own storage keyed by the PRE-alias symbol
@@ -9341,14 +9373,24 @@ export class Lowerer {
         ts.getSourceFileOfNode(nsImport),
         importDecl.moduleSpecifier,
       );
-      return dep !== null && isCjsJsFile(dep, this.program) && cjsNamespaceModule(this, dep)
-        ? dep
-        : null;
+      if (dep === null || !isCjsJsFile(dep, this.program) || !cjsNamespaceModule(this, dep))
+        return null;
+      // Node's ESM namespace keeps the values its exports had when the
+      // module finished evaluating. A member a function assigns later is
+      // not one of them (the namespace-import read refuses it by name), so
+      // such a module keeps the namespace path; a require() of the same
+      // module still reads the live table.
+      const { assignedLater } = this.cjsNamespaceOf(dep);
+      return assignedLater === "all" || assignedLater.size > 0 ? null : dep;
     }
     const decl = decls.find(ts.isImportClause) ?? decls[0];
     if (!decl) return null;
     if (ts.isImportClause(decl)) return this.cjsDefaultImportDepOf(decl);
     if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
+    // A require binding the file reassigns owns checked-dynamic storage
+    // (rebindable-requires.ts): its reads read that storage, never the
+    // required module's static exports.
+    if (isRebindableRequireDecl(this, decl)) return null;
     if (decl.initializer === undefined) return splitRequireBindingOf(this, decl)?.dep ?? null;
     {
       const interop = tscInteropModuleOf(this, expr);
@@ -10560,6 +10602,20 @@ export class Lowerer {
         const global = this.globalsBySymbol.get(symbol);
         if (global) global.type = DYN;
       };
+      // Bindings a void-truthiness test reads. A later assignment of another
+      // void-typed member call into one of them must keep the call's value
+      // too; collect the bindings before the walk so an assignment written
+      // before the test (or in a function the test reaches) is covered.
+      const truthinessBindings = new Set<ts.Symbol>();
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isIdentifier(node) && this.opinionAt(node, 1345)) {
+          if (voidTruthinessHeldCall(node, this.program) !== null) {
+            const symbol = this.resolveValueSymbol(node);
+            if (symbol !== null) truthinessBindings.add(symbol);
+          }
+        }
+        return undefined;
+      });
       ts.walkPreorder(sf, (node) => {
         if (
           ts.isParameter(node) &&
@@ -10621,6 +10677,47 @@ export class Lowerer {
           const calleeBinding = this.voidTruthinessCalleeBinding(node);
           if (calleeBinding !== null && !this.runtimeOptionalBindingTypes.has(calleeBinding)) {
             widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
+        // The same test over a variable that held the call's result
+        // (`var v = Internals.d.f(); if (v)`): Node reads the value the
+        // call answered, so the binding stores that checked-dynamic value
+        // and the call lowers through the checked-dynamic invocation. The
+        // callee's root binding widens too, so the member read follows the
+        // function the program stored there.
+        if (ts.isIdentifier(node) && this.opinionAt(node, 1345)) {
+          const held = voidTruthinessHeldCall(node, this.program);
+          if (held !== null) {
+            this.voidTruthinessValueCalls.add(held);
+            const binding = this.resolveValueSymbol(node);
+            if (binding !== null) widenBinding(binding);
+            const calleeBinding = this.voidTruthinessCalleeBinding(held);
+            if (calleeBinding !== null) widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
+        // A later assignment of another void-typed member call into a binding
+        // the truthiness test reads (`v = Other.d.f()`): Node's assignment
+        // stores the value the call answered, so the call lowers through the
+        // checked-dynamic invocation and the callee's own storage widens to
+        // keep that value.
+        if (
+          truthinessBindings.size > 0 &&
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left) &&
+          ts.isCallExpression(node.right)
+        ) {
+          const symbol = this.resolveValueSymbol(node.left);
+          if (
+            symbol !== null &&
+            truthinessBindings.has(symbol) &&
+            voidTruthinessNeedsRuntimeValue(node.right, this.program)
+          ) {
+            this.voidTruthinessValueCalls.add(node.right);
+            const calleeBinding = this.voidTruthinessCalleeBinding(node.right);
+            if (calleeBinding !== null) widenBinding(calleeBinding);
             return undefined;
           }
         }
@@ -17305,6 +17402,31 @@ export class Lowerer {
       if (inferred) return inferred;
     }
     if (this.anySymbols.size > 0 && this.readsAnySymbol(node)) return this.checker.getAnyType();
+    // A value read out of a require binding the file reassigns — the
+    // binding itself, a member read through it, or a call/new through one —
+    // holds whatever the program stored. The checker types it from the
+    // module the declaration originally required, which is not its type
+    // (rebindable-requires.ts).
+    if (
+      this.rebindableRequireDecls.size > 0 &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      readsReboundRequireValue(this, node)
+    )
+      return this.checker.getAnyType();
+    // A binding initialized from such a read (and every use of it) holds
+    // the read's value, not the type the checker inferred through the
+    // original module.
+    if (
+      this.rebindableRequireDecls.size > 0 &&
+      ts.isIdentifier(node) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node))
+    ) {
+      const decl = this.checker
+        .getSymbolAtLocation(node)
+        ?.declarations.find(ts.isVariableDeclaration);
+      if (decl?.initializer !== undefined && readsReboundRequireValue(this, decl.initializer))
+        return this.checker.getAnyType();
+    }
     // A checked-dynamic argument that another overload could take at run
     // time leaves the resolved overload's return a guess, and JS bindings
     // initialized with that result hold whatever it was.
@@ -24090,6 +24212,15 @@ export class Lowerer {
    * member access that IS a module in its own right (`fs.promises` — the
    * same object as node:fs/promises, Node's rule). Null otherwise. */
   builtinNamespaceModuleOf(expr: ts.Expression): string | null {
+    // A require binding the file reassigns owns checked-dynamic storage
+    // (rebindable-requires.ts): its member reads and calls read that storage,
+    // never the builtin's static surface.
+    if (ts.isIdentifier(expr)) {
+      const decl = this.checker
+        .getSymbolAtLocation(expr)
+        ?.declarations.find(ts.isVariableDeclaration);
+      if (decl !== undefined && isRebindableRequireDecl(this, decl)) return null;
+    }
     // A function declaration is never a module namespace. Answering that
     // from the symbol skips the type mapping below (every direct call asks).
     if (ts.isIdentifier(expr)) {
@@ -24361,6 +24492,9 @@ export class Lowerer {
    * { module, member } shape builtinImportOf gives named imports, so both
    * import forms key the same lowering tables. Null for everything else. */
   builtinMemberOf(access: ts.PropertyAccessExpression): { module: string; member: string } | null {
+    // A member read through a require binding the file reassigns reads that
+    // binding's storage, not the builtin's static surface.
+    if (reboundRequireBindingOf(this, access.expression) !== null) return null;
     // A guarded step keeps its chain lowering, except one the chain lowering
     // has already found to be a plain access (a namespace is never nullish).
     if (access.questionDotToken && !this.chainHandled.has(access)) return null;

@@ -305,19 +305,37 @@ export function checkedJsDocumentedParameter(
 function jsParameterSlotIsClass(lowerer: Lowerer, param: ts.ParameterDeclaration): boolean {
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(param.name));
   if (mapped === null) return false;
-  const arms = mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
+  const arms =
+    mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
   return arms.some((arm) => arm.kind === "object");
 }
 
+/** The JSDoc block immediately above `node`, when only whitespace sits
+ * between it and the node's first token: the declaration's OWN documentation.
+ * A member's `parent.pos` reaches back to the start of its class, so a slice
+ * from there would read the tags of every earlier member. */
+function ownJsDocBlock(node: ts.Node): string | null {
+  const before = ts.getSourceFileOfNode(node).text.slice(0, ts.tokenStartOfNode(node));
+  const open = before.lastIndexOf("/**");
+  if (open < 0) return null;
+  const close = before.indexOf("*/", open + 3);
+  return close >= 0 && before.slice(close + 2).trim() === "" ? before.slice(open, close + 2) : null;
+}
+
 /** A JSDoc `@return`/`@returns` on a JavaScript function or method: the
- * declaration's leading documentation names the result. */
+ * declaration's OWN documentation names the result. The tags read are the
+ * declaration's leading trivia — the span hasExplicitJsDocReturn reads, so
+ * the two answers agree. A member's `parent.pos` reaches back to the start
+ * of its class (a top-level declaration's to the start of its file), and a
+ * slice from there would read every earlier declaration's tags. */
 export function documentedJsReturn(node: ts.SignatureDeclaration): boolean {
-  const parent = node.parent;
-  if (parent === undefined) return false;
-  const text = ts
-    .getSourceFileOfNode(node)
-    .text.slice(parent.pos, ts.tokenStartOfNode(node));
-  return /@returns?\b/.test(text);
+  return ts.sourceTextRangeMatches(
+    ts.getSourceFileOfNode(node),
+    node.pos,
+    ts.tokenStartOfNode(node),
+    /@returns?\b/,
+    ts.LEADING_SPAN,
+  );
 }
 
 /** Whether a return slot's mapped type names a class (or a promise of one):
@@ -328,9 +346,79 @@ export function returnedSlotIsClass(lowerer: Lowerer, ret: IrType): boolean {
   return arms.some((arm) => arm.kind === "object");
 }
 
-/** Whether every value a function returns is one of its own parameters whose
- * slot is checked-dynamic, and it returns one at least once. Returns inside
- * nested functions are not this function's. */
+/** Whether the value an expression holds is one a checked-dynamic parameter
+ * handed in: the parameter itself, a `const` copy of it, a property read off
+ * such a value, or a conditional/coalesce of such values. A `new` expression
+ * and a call's result are values of their own (the callee builds them). */
+function holdsCheckedDynamicValue(
+  lowerer: Lowerer,
+  expression: ts.Expression,
+  parameters: ReadonlyMap<ts.Symbol, ts.ParameterDeclaration>,
+  isDynamic: (parameter: ts.ParameterDeclaration) => boolean,
+  seen: Set<ts.Symbol>,
+): boolean {
+  let node = expression;
+  while (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node)
+  )
+    node = node.expression;
+  if (ts.isIdentifier(node)) {
+    const symbol = lowerer.resolveValueSymbol(node);
+    if (symbol === null || seen.has(symbol)) return false;
+    const parameter = parameters.get(symbol);
+    if (parameter !== undefined) return isDynamic(parameter);
+    const declarations = symbol.declarations;
+    if (declarations.length !== 1) return false;
+    const declaration = declarations[0]!;
+    if (
+      !ts.isVariableDeclaration(declaration) ||
+      !ts.isIdentifier(declaration.name) ||
+      declaration.type !== undefined ||
+      declaration.initializer === undefined
+    )
+      return false;
+    const list = declaration.parent;
+    if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0)
+      return false;
+    seen.add(symbol);
+    const derived = holdsCheckedDynamicValue(
+      lowerer,
+      declaration.initializer,
+      parameters,
+      isDynamic,
+      seen,
+    );
+    seen.delete(symbol);
+    return derived;
+  }
+  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+    return holdsCheckedDynamicValue(lowerer, node.expression, parameters, isDynamic, seen);
+  if (ts.isConditionalExpression(node))
+    return (
+      holdsCheckedDynamicValue(lowerer, node.whenTrue, parameters, isDynamic, seen) ||
+      holdsCheckedDynamicValue(lowerer, node.whenFalse, parameters, isDynamic, seen)
+    );
+  if (
+    ts.isBinaryExpression(node) &&
+    (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+  )
+    return (
+      holdsCheckedDynamicValue(lowerer, node.left, parameters, isDynamic, seen) ||
+      holdsCheckedDynamicValue(lowerer, node.right, parameters, isDynamic, seen)
+    );
+  return false;
+}
+
+/** Whether a function returns, at least once, a value one of its own
+ * parameters with a checked-dynamic slot handed in (directly, through a
+ * constant copy, or as a property read off one): the result is whatever the
+ * caller passed, which a documented class result does not promise. Returns
+ * inside nested functions are not this function's. */
 export function returnsCheckedDynamicParameter(
   lowerer: Lowerer,
   node: ts.SignatureDeclaration,
@@ -342,20 +430,26 @@ export function returnsCheckedDynamicParameter(
     if (symbol !== null) parameters.set(symbol, parameter);
   }
   if (parameters.size === 0) return false;
-  let sawReturn = false;
+  // The slot shape costs a type mapping per parameter, so each one is asked
+  // for only when a returned value names it.
+  const dynamicParameters = new Map<ts.ParameterDeclaration, boolean>();
+  const isDynamic = (parameter: ts.ParameterDeclaration): boolean => {
+    const known = dynamicParameters.get(parameter);
+    if (known !== undefined) return known;
+    const dynamic = paramShape(lowerer, parameter).type.kind === "dyn";
+    dynamicParameters.set(parameter, dynamic);
+    return dynamic;
+  };
   let dynamic = false;
+  const record = (expression: ts.Expression): void => {
+    if (!dynamic && holdsCheckedDynamicValue(lowerer, expression, parameters, isDynamic, new Set()))
+      dynamic = true;
+  };
   const visit = (child: ts.Node): void => {
+    if (dynamic) return;
     if (ts.isFunctionLike(child) && child !== node) return;
     if (ts.isReturnStatement(child)) {
-      if (child.expression === undefined) return;
-      let expression: ts.Node = child.expression;
-      while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-      if (!ts.isIdentifier(expression)) return;
-      const symbol = lowerer.resolveValueSymbol(expression);
-      const parameter = symbol === null ? undefined : parameters.get(symbol);
-      if (parameter === undefined) return;
-      sawReturn = true;
-      if (paramShape(lowerer, parameter).type.kind === "dyn") dynamic = true;
+      if (child.expression !== undefined) record(child.expression);
       return;
     }
     ts.forEachChild(child, (next) => {
@@ -364,7 +458,9 @@ export function returnsCheckedDynamicParameter(
     });
   };
   visit(node);
-  return sawReturn && dynamic;
+  // A concise arrow body is the return expression itself.
+  if (!dynamic && ts.isArrowFunction(node) && !ts.isBlock(node.body)) record(node.body);
+  return dynamic;
 }
 
 /** One parameter's ParamShape — the shared signature-shaped collection
@@ -443,7 +539,9 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   if (
     isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     !param.dotDotDotToken &&
-    (documentedParameter(param) || param.initializer !== undefined) &&
+    (param.type !== undefined ||
+      (param.parent !== undefined && /@(?:param|type)\b/.test(ownJsDocBlock(param.parent) ?? "")) ||
+      param.initializer !== undefined) &&
     !checkedJsDocumentedParameter(lowerer, param) &&
     jsParameterSlotIsClass(lowerer, param)
   ) {

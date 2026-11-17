@@ -23,9 +23,12 @@
  * t.diagnostic, and t.assert. mock/run/snapshot are DECLARED so real
  * suites typecheck but fence at their use sites (no lowering). */
 declare module "node:test" {
-  type TestFn = (t: TestContext) => void | Promise<void>;
+  /* Node's callback form: a test or hook that takes (context, done) finishes
+   * when it calls done. */
+  type DoneFn = (result?: unknown) => void;
+  type TestFn = (t: TestContext, done: DoneFn) => void | Promise<void>;
   type SuiteFn = (s: SuiteContext) => void;
-  type HookFn = (c: TestContext | SuiteContext) => void | Promise<void>;
+  type HookFn = (c: TestContext | SuiteContext, done: DoneFn) => void | Promise<void>;
   /* The describe/suite callback's context, and the before/after hook
    * context of a suite. */
   interface SuiteContext {

@@ -6551,6 +6551,12 @@ export class Lowerer {
     "cjsConditionalWholeExportGlobals",
     "cjsConditionalWholeExportSelectGlobals",
     "cjsRuntimeWholeExportValueGlobals",
+    // The run-time export-choice registrations are a pure function of the
+    // program's modules (registered before lowering begins), and the memo is
+    // a cache of that detection.
+    "cjsRuntimeExportSnapshotGlobals",
+    "cjsRuntimeRequireBindings",
+    "cjsRuntimeWholeExportModules",
     "cjsConditionalExportMirrors",
     "cjsInFileExportMemberGlobals",
     "cjsWholeExportSymbols",

@@ -576,6 +576,23 @@ export function accessorRequirerAssign(
   ];
 }
 
+/** The `module.exports = <literal>` assignment a top-level `exports =
+ * module.exports = <literal>` reset carries: the fresh-exports reset the
+ * statement lowering treats as a no-op, not a run-time replacement. */
+function freshExportsResetAssignmentOf(stmt: ts.Statement): ts.Expression | null {
+  if (!ts.isExpressionStatement(stmt)) return null;
+  const outer = stmt.expression;
+  if (!ts.isBinaryExpression(outer) || outer.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+    return null;
+  if (!ts.isIdentifier(outer.left) || outer.left.text !== "exports") return null;
+  const inner = outer.right;
+  return ts.isBinaryExpression(inner) &&
+    inner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    isModuleExportsAccess(inner.left)
+    ? inner
+    : null;
+}
+
 /** The kept (last, not discarded) top-level `module.exports = <value>` of a
  * CommonJS module whose whole export is a single value, or null when its
  * exports are a table: member exports only, or a literal / const-literal /
@@ -703,7 +720,7 @@ function cjsRuntimeWholeExportValueRhs(
 export function cjsNestedExportReplacementOf(sf: ts.SourceFile): ts.BinaryExpression | null {
   let found: ts.BinaryExpression | null = null;
   for (const stmt of sf.statements.nodes) {
-    const top = cjsExportAssignmentOf(stmt)?.expr ?? null;
+    const top = cjsExportAssignmentOf(stmt)?.expr ?? freshExportsResetAssignmentOf(stmt);
     ts.walkPreorder(stmt, (node) => {
       if (
         node !== top &&
@@ -1256,6 +1273,12 @@ export function wholeExportValueOfModuleBinding(
   depth = 0,
 ): IrExpr | null {
   if (depth > 32) return null;
+  // A require binding of a run-time export choice keeps its own storage (the
+  // value its require read), so a read — also from a separately declared
+  // function — goes through the binding, never the dependency's live export.
+  const bindingSymbol = lowerer.checker.getSymbolAtLocation(expr);
+  if (bindingSymbol !== undefined && lowerer.cjsRuntimeRequireBindings.has(bindingSymbol))
+    return null;
   if (splitRequireBindingOfIdent(lowerer, expr) !== null) return null;
   const dep = lowerer.cjsModuleBindingDepOf(expr);
   // An ESM default import of a module whose whole export is chosen at run

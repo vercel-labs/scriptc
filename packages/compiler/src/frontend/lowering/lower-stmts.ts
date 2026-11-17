@@ -2928,6 +2928,7 @@ function lowerVarDeclarator(
       if (symbol !== null) {
         lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
         lowerer.jsWidenedBindings.add(symbol);
+        lowerer.cjsRuntimeRequireBindings.add(symbol);
       }
       const lowered = lowerer.lowerVarDecl(decl, isLet);
       return lowered ? [lowered] : [];

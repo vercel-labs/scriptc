@@ -2939,10 +2939,21 @@ export function collectGlobals(
         )
       )
     ) {
-      if (ts.isVariableStatement(stmt))
-        for (const decl of stmt.declarationList.declarations.nodes)
-          registerRequireDeclBindings(lowerer, sf, stmt.declarationList, decl, tag);
-      continue;
+      if (ts.isVariableStatement(stmt)) {
+        // A binding of a module whose whole export is chosen at run time
+        // owns storage (the value its require read), so it registers through
+        // the ordinary path below instead of the alias plumbing.
+        const ownsStorage = stmt.declarationList.declarations.nodes.some((decl) => {
+          if (decl.initializer === undefined || !ts.isIdentifier(decl.name)) return false;
+          const req = inlineProgramRequireOf(lowerer, decl.initializer);
+          return req !== null && lowerer.cjsRuntimeWholeExportModule(req.dep);
+        });
+        if (!ownsStorage) {
+          for (const decl of stmt.declarationList.declarations.nodes)
+            registerRequireDeclBindings(lowerer, sf, stmt.declarationList, decl, tag);
+          continue;
+        }
+      } else continue;
     }
     // `declare const __VERSION__: string` — AMBIENT: no storage exists
     // (a bundler define in the real pipeline; nothing defines it here,

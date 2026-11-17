@@ -42,6 +42,8 @@ struct Stw3Job {
   ScrStr *finish_name;
   ScrClosure *error_cl;
   ScrStr *error_name;
+  ScrClosure *close_cl;
+  ScrStr *close_name;
 };
 
 static Stw3Job *stw3_job_new(Stw3Ctx *c) {
@@ -59,6 +61,7 @@ static void stw3_job_release(Stw3Job *j) {
   scr_promise_release(j->p);
   if (j->finish_name) scr_str_release(j->finish_name);
   if (j->error_name) scr_str_release(j->error_name);
+  if (j->close_name) scr_str_release(j->close_name);
   free(j);
 }
 
@@ -94,10 +97,10 @@ static void stw3_settle(Stw3Job *j) {
  * instead of rejecting this promise. */
 static void stw3_write_done(ScrClosure *cl) {
   Stw3Job *j = stw3_job_of(cl);
-  /* A failed native write rejects the web write: the stream errors and the
-   * transfer settles instead of waiting on a stream that will never accept
-   * more. */
-  stw3_settle(j);
+  /* Node's adapter resolves the writer's promise when the wrapped write
+   * completes; a failure reaches the stream through its lifecycle. */
+  scr_promise_fulfill_void(j->p);
+  if (scr_exc_pending()) scr_exc_clear();
   stw3_job_release(j);
 }
 
@@ -129,22 +132,29 @@ static ScrDyn *stw3_write(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
 /* The close settles at the writable's 'finish' (or its 'error'), Node's
  * writable-side eos: a writable with autoDestroy: false never emits 'close',
  * so waiting for it would leave the writer's close pending forever. */
-/* Remove the listener of the pair that did not fire. */
-static void stw3_close_unregister(Stw3Job *j, bool finishing) {
-  ScrClosure *drop = finishing ? j->error_cl : j->finish_cl;
-  ScrStr *drop_name = finishing ? j->error_name : j->finish_name;
-  if (drop) scr_emitter_unadd_quiet((ScrEmitter *)j->ctx->writable, drop_name, drop);
+/* Remove the listeners that did not fire (which is 1 finish, 2 error,
+ * 3 close). */
+static void stw3_close_unregister(Stw3Job *j, int fired) {
+  ScrClosure *alls[3] = {j->finish_cl, j->error_cl, j->close_cl};
+  ScrStr *names[3] = {j->finish_name, j->error_name, j->close_name};
+  for (int i = 0; i < 3; i++) {
+    if (i + 1 == fired || !alls[i]) continue;
+    scr_emitter_unadd_quiet((ScrEmitter *)j->ctx->writable, names[i], alls[i]);
+  }
   if (j->finish_name) scr_str_release(j->finish_name);
   if (j->error_name) scr_str_release(j->error_name);
+  if (j->close_name) scr_str_release(j->close_name);
   j->finish_cl = NULL;
   j->finish_name = NULL;
   j->error_cl = NULL;
   j->error_name = NULL;
+  j->close_cl = NULL;
+  j->close_name = NULL;
 }
 
 static void stw3_close_finish(ScrClosure *cl) {
   Stw3Job *j = stw3_job_of(cl);
-  stw3_close_unregister(j, true);
+  stw3_close_unregister(j, 1);
   scr_promise_fulfill_void(j->p);
   if (scr_exc_pending()) scr_exc_clear();
   stw3_job_release(j);
@@ -152,10 +162,26 @@ static void stw3_close_finish(ScrClosure *cl) {
 
 static void stw3_close_error(ScrClosure *cl, ScrError *err) {
   Stw3Job *j = stw3_job_of(cl);
-  stw3_close_unregister(j, false);
+  stw3_close_unregister(j, 2);
   if (err) {
     scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
+    scr_promise_reject_pending(j->p);
+  } else {
+    scr_promise_fulfill_void(j->p);
+  }
+  if (scr_exc_pending()) scr_exc_clear();
+  stw3_job_release(j);
+}
+
+/* The writable's 'close': destroyed without a terminal 'finish' (a destroy
+ * during the close) settles the pending close. */
+static void stw3_close_closed(ScrClosure *cl) {
+  Stw3Job *j = stw3_job_of(cl);
+  stw3_close_unregister(j, 3);
+  ScrError *err = scr_stream_errored(j->ctx->writable);
+  if (err) {
+    scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
     scr_promise_reject_pending(j->p);
   } else {
     scr_promise_fulfill_void(j->p);
@@ -172,31 +198,6 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   Stw3Job *j = stw3_job_new(c);
   /* A writable that already finished (or was destroyed) has no terminal event
    * left to wait for: settle now, or the close would never complete. */
-  if (scr_stream_prop(c->writable, "destroyed") != 0) {
-    /* A writable that is already gone has no terminal event left: a close
-     * rejects with the stream's error, or Node's invalid-state error. */
-    ScrError *already = scr_stream_errored(c->writable);
-    if (already) {
-      scr_throw_obj(already, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
-      scr_promise_reject_pending(j->p);
-    } else {
-      static const char invalid_state[] = "Invalid state: Failure to close WritableStream";
-      ScrStr *message = scr_str_new(invalid_state, sizeof invalid_state - 1);
-      ScrError *err = scr_error_new(SCR_ERR_TYPE, message);
-      scr_str_release(message);
-      if (err) {
-        scr_dyn_throw(scr_dyn_from_error(err));
-        scr_promise_reject_pending(j->p);
-        scr_error_release(err);
-      } else {
-        scr_promise_fulfill_void(j->p);
-      }
-    }
-    ScrDyn *settled = scr_dyn_new_promise(j->p);
-    stw3_job_release(j);
-    stw3_unref(c);
-    return settled;
-  }
   if (scr_stream_prop(c->writable, "writableFinished") != 0) {
     /* Node's adapter has already errored the stream by the time it is closed:
      * a close over a finished writable rejects with its invalid-state error. */
@@ -216,6 +217,21 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
     stw3_unref(c);
     return settled;
   }
+  if (scr_stream_prop(c->writable, "destroyed") != 0) {
+    /* A writable that is already gone has no terminal event left: the close
+     * settles with the stream's error (or resolves when it has none). */
+    ScrError *already = scr_stream_errored(c->writable);
+    if (already) {
+      scr_throw_obj(already, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+      scr_promise_reject_pending(j->p);
+    } else {
+      scr_promise_fulfill_void(j->p);
+    }
+    ScrDyn *settled = scr_dyn_new_promise(j->p);
+    stw3_job_release(j);
+    stw3_unref(c);
+    return settled;
+  }
   ScrClosure *finish_cl = stw3_job_closure((void *)&stw3_close_finish, j);
   ScrStr *finish_name = scr_str_new("finish", 6);
   scr_emitter_release(scr_emitter_on((ScrEmitter *)c->writable, finish_name, finish_cl,
@@ -224,10 +240,16 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   ScrStr *error_name = scr_str_new("error", 5);
   scr_emitter_release(scr_emitter_on((ScrEmitter *)c->writable, error_name, error_cl,
                                      scr_ee_inv_fixed1, true, false));
+  ScrClosure *close_cl = stw3_job_closure((void *)&stw3_close_closed, j);
+  ScrStr *close_name = scr_str_new("close", 5);
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)c->writable, close_name, close_cl,
+                                     scr_ee_inv_fixed0, true, false));
   j->finish_cl = finish_cl;
   j->finish_name = finish_name;
   j->error_cl = error_cl;
   j->error_name = error_name;
+  j->close_cl = close_cl;
+  j->close_name = close_name;
   scr_stream_release(scr_stream_end(c->writable, NULL, NULL, NULL));
   ScrDyn *out = scr_dyn_new_promise(j->p);
   stw3_job_release(j);

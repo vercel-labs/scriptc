@@ -67,6 +67,41 @@ async function main(): Promise<void> {
   );
   log.push(`no-autodestroy finished ${lasting.writableFinished} destroyed ${lasting.destroyed}`);
 
+  // A failed native write resolves the writer's promise, as Node's adapter
+  // does; the failure reaches the stream's lifecycle.
+  const failing = new Writable({
+    write(chunk, encoding, done): void {
+      done(new Error("sink fail"));
+    },
+  });
+  const failingWeb = Writable.toWeb(failing);
+  await failingWeb.getWriter().write(encoder.encode("x")).then(
+    () => log.push("failed write resolved"),
+    (error: Error) => log.push(`failed write rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+  // Destroying the writable while the writer's close is pending settles the
+  // close instead of leaving it waiting for an event that never comes.
+  const slowFinal = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+    final(done): void {
+      setTimeout(done, 20);
+    },
+  });
+  const slowWeb = Writable.toWeb(slowFinal);
+  const slowWriter = slowWeb.getWriter();
+  await slowWriter.write(encoder.encode("y"));
+  const pendingClose = slowWriter.close().then(
+    () => log.push("close after destroy resolved"),
+    (error: Error) => log.push(`close after destroy rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  slowFinal.destroy();
+  await pendingClose;
+
   // Closing over a writable that already finished settles: there is no
   // terminal event left to wait for.
   const finishedWritable = new Writable({

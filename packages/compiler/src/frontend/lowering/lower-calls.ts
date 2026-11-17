@@ -12935,6 +12935,72 @@ function memberChainRoot(e: ts.Expression): ts.Identifier | null {
   return ts.isIdentifier(root) ? root : null;
 }
 
+/** The property names a member chain reads off its root identifier, in
+ * source order (`lib.nested.make` reads `nested`), or null when the chain
+ * uses a computed or optional access. */
+function memberChainSegments(e: ts.Expression): string[] | null {
+  const segments: string[] = [];
+  let node: ts.Expression = e;
+  for (;;) {
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (ts.isPropertyAccessExpression(node)) {
+      if (node.questionDotToken) return null;
+      segments.unshift(node.name.text);
+      node = node.expression;
+      continue;
+    }
+    return ts.isIdentifier(node) ? segments : null;
+  }
+}
+
+/** Calls the member `segments` reaches from `first` (a module binding's first
+ * export) dynamically: each member read once, in source order, the final one
+ * applied with the member's own receiver, then the arguments. */
+function lowerDynMemberChainCall(
+  lowerer: Lowerer,
+  first: IrExpr,
+  segments: readonly string[],
+  access: ts.PropertyAccessExpression,
+  loc: SrcLoc,
+  args: () => IrExpr[],
+): IrExpr | null {
+  if (segments.length === 0) return null;
+  if (first.type.kind !== "dyn" && !lowerer.dynConvertible(first.type)) return null;
+  const boxed = first.type.kind === "dyn" ? first : lowerer.coerceToExpected(first, DYN);
+  if (boxed.type.kind !== "dyn") return null;
+  const stmts: IrStmt[] = [];
+  const hold = (value: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal("%genericMember", DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, DYN, loc);
+  };
+  const read = (value: IrExpr, key: string): IrExpr => ({
+    kind: "dynKeyGet",
+    value,
+    key: { kind: "strLit", value: key, type: STRING, loc },
+    type: DYN,
+    loc,
+  });
+  let parent = hold(boxed);
+  for (let i = 0; i < segments.length - 1; i++) parent = hold(read(parent, segments[i]!));
+  const callee = hold(read(parent, segments[segments.length - 1]!));
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "dynCall",
+      callee,
+      receiver: parent,
+      calleeName: v8CalleeText(access),
+      args: args(),
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
 /** A call of a SIGNATURE-ONLY generic member: a generic declaration with no
  * body to monomorphize. JavaScript erases the type arguments and calls the
  * function object the member holds, so the call crosses the checked-dynamic
@@ -12969,20 +13035,38 @@ function lowerSignatureOnlyGenericMemberCall(
   const args = (): IrExpr[] =>
     call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
   const root = memberChainRoot(access.expression);
-  const dep = root === null ? null : lowerer.cjsModuleBindingDepOf(root);
-  if (dep !== null) {
-    if (!cjsExportCallIgnoresThis(lowerer, dep, name)) return null;
-    const member = cjsExportValueByName(lowerer, dep, name, access);
-    const callee = member === null ? null : lowerer.coerceToExpected(member, DYN);
-    if (callee !== null && callee.type.kind === "dyn")
-      return {
-        kind: "dynCall",
-        callee,
-        calleeName: v8CalleeText(access),
-        args: args(),
-        type: DYN,
-        loc,
-      };
+  const chain = memberChainSegments(access.expression);
+  const dep = root === null || chain === null ? null : lowerer.cjsModuleBindingDepOf(root);
+  if (dep !== null && chain !== null) {
+    if (chain.length === 0) {
+      if (!cjsExportCallIgnoresThis(lowerer, dep, name)) return null;
+      const member = cjsExportValueByName(lowerer, dep, name, access);
+      const callee = member === null ? null : lowerer.coerceToExpected(member, DYN);
+      if (callee !== null && callee.type.kind === "dyn")
+        return {
+          kind: "dynCall",
+          callee,
+          calleeName: v8CalleeText(access),
+          args: args(),
+          type: DYN,
+          loc,
+        };
+    } else {
+      // A nested member (`lib.nested.make`): the root export is `lib.nested`,
+      // and `make` is that object's member — never the root module's `make`.
+      const first = cjsExportValueByName(lowerer, dep, chain[0]!, access);
+      if (first !== null) {
+        const chained = lowerDynMemberChainCall(
+          lowerer,
+          first,
+          [...chain.slice(1), name],
+          access,
+          loc,
+          args,
+        );
+        if (chained !== null) return chained;
+      }
+    }
   }
   const receiver = tryLowerExpression(lowerer, access.expression);
   if (receiver === null) return null;

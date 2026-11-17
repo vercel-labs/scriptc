@@ -127,6 +127,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // process.finalization reports its ExperimentalWarnings through this
   // unit's deferred warning queue.
   "process.finalization",
+  "process.emit",
+  "process.emitError",
   "process.emitWarning",
   "process.emitWarningText",
   "process.offMultipleResolves",
@@ -323,6 +325,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.toWebReadable",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
   "stream.getDefaultHwm",
@@ -408,6 +412,8 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.toWebReadable",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
   "readable.fromAsyncGen",
@@ -878,6 +884,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.prependExit",
   "process.prependSignal",
   "process.stdio",
+  "process.stdioOf",
   "process.stdinIsRaw",
   "process.stdioSlot",
   "process.stdioWriteDyn",
@@ -1913,6 +1920,10 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      // Readable.toWeb links scr_webstreams.c, which invokes the source's
+      // sink members through scr_dyn_invoke.
+      "webstream.toWebReadable",
+      "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
       // scr_event_target.c's events.on reads the receiver's pause() and
@@ -2157,10 +2168,19 @@ const RUNTIME_FEATURE_RULES = {
       // A test's t.signal (scr_test.c): the abort unit supplies its
       // controller through scr_abort.c's helpers.
       "test.ctxSignal",
+      // IncomingMessage.signal (scr_http.c) uses the same helpers.
+      "http.reqSignal",
     ],
     // A program that reads the AbortController class as a value may build
     // one (dyn.globalConstructor), and the construction runs this unit.
     libCall: (node) => readsGlobalConstructor(node, "AbortController"),
+    // A checked-dynamic read of a `signal` member (IncomingMessage.signal in
+    // a JavaScript source) reaches the abort unit through the handle's dyn
+    // dispatch, where no libCall names it.
+    // A runtime key can name signal, so every dynamic member read selects
+    // the unit the handle's dispatch needs.
+    expr: (node) =>
+      node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
@@ -2221,6 +2241,10 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      // Readable.toWeb links the web stream unit, which renders a
+      // non-iterable source (and a thrown member) through inspect.
+      "webstream.toWebReadable",
+      "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
@@ -2412,7 +2436,10 @@ const RUNTIME_FEATURE_RULES = {
    * SCR_NODE_ISLAND_STDIO build of scr_node_island.c, which make the
    * island's two output streams read and write the program's write slots;
    * every other program with islands keeps its island units unchanged. */
-  stdioObject: rule({ fns: ["process.stdio", "process.stdioSlot"], types: ["procStream"] }),
+  stdioObject: rule({
+    fns: ["process.stdio", "process.stdioOf", "process.stdioSlot"],
+    types: ["procStream"],
+  }),
   /** The program holds a process stream as a value and names getColorDepth
    * or hasColors: links scr_tty_colors.c (Node's color rules over an
    * environment object) and the SCR_TTY_COLORS build of scr_events.c, whose

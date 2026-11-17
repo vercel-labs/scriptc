@@ -4668,6 +4668,18 @@ function validateFunction(
         );
       return true;
     }
+    if (e.fn === "webstream.toWebReadable") {
+      // Readable.toWeb: (readable, flags) → a web ReadableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (readable, flags) and return a web stream`, e.loc);
+      return true;
+    }
+
     if (e.fn === "webstream.writableFromWeb") {
       // Writable.fromWeb: (writableStream, flags) → a Writable.
       if (
@@ -4679,6 +4691,17 @@ function validateFunction(
         err(`libCall ${e.fn} must take (writableStream, flags) and return a Writable`, e.loc);
       return true;
     }
+    if (e.fn === "webstream.toWebReadableDyn") {
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
+      return true;
+    }
+
     if (e.fn === "webstream.writableToWeb") {
       // Writable.toWeb: (writable, flags) → a web WritableStream.
       if (

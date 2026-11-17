@@ -101,6 +101,11 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_file_snapshot", a);
     case "test.snapshotSetDefaultSerializers":
       return finishRuntimeCall(host, e, "scr_test_snapshot_set_default_serializers", a);
+    case "test.snapshotSetResolvePath":
+      host.toHeap(args[0]!);
+      return finishRuntimeCall(host, e, "scr_test_snapshot_set_resolve_path", a);
+    case "test.snapshotPath":
+      return finishRuntimeCall(host, e, "scr_test_snapshot_path", a);
     case "test.snapshotSerialize":
       return finishRuntimeCall(host, e, "scr_test_snapshot_serialize", a);
     case "test.mockTimersEnable":

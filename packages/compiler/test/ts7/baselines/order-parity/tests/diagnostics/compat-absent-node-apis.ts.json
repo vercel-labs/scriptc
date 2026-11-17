@@ -5,33 +5,6 @@
  "diags": [
   {
    "code": "SC0001",
-   "message": "Merge conflict marker encountered.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 431,
-    "end": 438
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Merge conflict marker encountered.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 758,
-    "end": 765
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Merge conflict marker encountered.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 767,
-    "end": 774
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Module '\"node:async_hooks\"' has no exported member 'AsyncResource'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
@@ -77,22 +50,11 @@
   },
   {
    "code": "SC0001",
-   "message": "Property 'toWeb' does not exist on type 'typeof Readable'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 570,
-    "end": 575
-   },
-   "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
-  },
-  {
-   "code": "SC0001",
    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"worker\"' is not assignable to parameter of type '\"uncaughtException\" | \"uncaughtExceptionMonitor\"'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 1443,
-    "end": 1451
+    "start": 1038,
+    "end": 1046
    }
   },
   {
@@ -100,17 +62,17 @@
    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"workerMessage\"' is not assignable to parameter of type '\"uncaughtException\" | \"uncaughtExceptionMonitor\"'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 1475,
-    "end": 1490
+    "start": 1070,
+    "end": 1085
    }
   },
   {
    "code": "SC0001",
-   "message": "Property 'execve' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 68 more ...; disconnect(): void; }'.",
+   "message": "Property 'execve' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 69 more ...; disconnect(): void; }'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 1511,
-    "end": 1517
+    "start": 1106,
+    "end": 1112
    },
    "typeWorld": true,
    "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'execve' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"

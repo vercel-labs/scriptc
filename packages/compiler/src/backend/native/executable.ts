@@ -565,6 +565,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.islandChild === true, "scr_node_island_child.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
+  // Readable.toWeb pulls a Node readable's chunks into a web stream.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web.c",
+  ),
   // Writable.fromWeb wraps a web WritableStream's writer.
   unit(
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,

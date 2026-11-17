@@ -205,6 +205,26 @@ static void stw3_stream_error(ScrClosure *cl, ScrError *err) {
 static ScrDyn *stw3_write(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   Stw3Ctx *c = scr_box_get_ref(cl->caps[0]);
   Stw3Job *j = stw3_job_new(c);
+  /* Node's stream is already errored when the wrapped writable is: a later
+   * write rejects with the stored error without reaching the writable. A
+   * writable destroyed without one gave the stream an AbortError instead. */
+  ScrError *terminal = scr_stream_errored(c->writable); /* +1 or NULL */
+  if (terminal || scr_stream_prop(c->writable, "destroyed") != 0) {
+    if (terminal) {
+      stw3_settle(j, terminal);
+    } else {
+      ScrError *aborted = scr_error_abort(NULL); /* +1 */
+      if (aborted) {
+        stw3_settle(j, aborted);
+      } else {
+        scr_promise_fulfill_void(j->p);
+      }
+    }
+    ScrDyn *settled = scr_dyn_new_promise(j->p);
+    stw3_job_release(j);
+    stw3_unref(c);
+    return settled;
+  }
   ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
   ScrClosure *done = stw3_job_closure((void *)&stw3_write_done, j);
   bool accepted = scr_stream_write_dyn(c->writable, chunk, done); /* done moves */

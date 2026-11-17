@@ -144,6 +144,42 @@ async function main(): Promise<void> {
   await haltedWrite;
   await new Promise<void>((resolve) => setTimeout(resolve, 10));
 
+  // Once an accepted write has failed, the stream is errored: a later write
+  // rejects with the same error without reaching the writable.
+  const failedTwice = new Writable({
+    write(chunk, encoding, done): void {
+      setTimeout(() => done(new Error("twice fail")), 5);
+    },
+  });
+  const failedTwiceWeb = Writable.toWeb(failedTwice);
+  const failedTwiceWriter = failedTwiceWeb.getWriter();
+  await failedTwiceWriter.write(encoder.encode("x")).then(
+    () => log.push("twice first write resolved"),
+    (error: Error) => log.push(`twice first write rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await failedTwiceWriter.write(encoder.encode("y")).then(
+    () => log.push("twice second write resolved"),
+    (error: Error) => log.push(`twice second write rejected ${error.message}`),
+  );
+
+  // A writable destroyed without an error gave the stream an AbortError: a
+  // later write rejects with it.
+  const gone = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const goneWeb = Writable.toWeb(gone);
+  const goneWriter = goneWeb.getWriter();
+  gone.destroy();
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  await goneWriter.write(encoder.encode("z")).then(
+    () => log.push("destroyed writable write resolved"),
+    (error: Error & { code?: string }) =>
+      log.push(`destroyed writable write rejected ${error.name} ${error.code}`),
+  );
+
   // Destroying the writable while the writer's close is pending settles the
   // close instead of leaving it waiting for an event that never comes.
   const slowFinal = new Writable({

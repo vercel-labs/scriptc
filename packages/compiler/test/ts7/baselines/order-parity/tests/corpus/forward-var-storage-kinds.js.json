@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/forward-var-storage-kinds.js"
+ ],
+ "diags": []
+}

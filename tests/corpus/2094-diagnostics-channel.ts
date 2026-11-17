@@ -55,3 +55,16 @@ tri.subscribe(first);
 tri.subscribe(second);
 tri.publish("round1");
 tri.publish("round2");
+
+// A collection member that is not a Channel is refused by the constructor:
+// the event members must be Channel values, and a number asserted past the
+// type is validated like any other non-Channel value.
+const ev = channel("corpus:events");
+const notAChannel = 0 as unknown as dc.Channel;
+try {
+  dc.tracingChannel({ start: ev, end: ev, asyncStart: ev, asyncEnd: ev, error: notAChannel });
+  console.log("collection accepted");
+} catch (error) {
+  const typed = error as Error & { code?: string };
+  console.log("collection refused:", typed.code, "|", typed.message);
+}

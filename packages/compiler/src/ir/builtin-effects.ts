@@ -358,6 +358,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // name fences with SC2020.
   "dc.channel",
   "dc.tracingChannel",
+  /** The collection form validates each event member (Node's
+   * "must be an instance of Channel"), so a value asserted past the type
+   * raises here rather than indexing the channel table with it. */
+  "dc.tracingChannelOf",
   "dc.chanSubscribe",
   "dc.chanUnsubscribe",
   "dc.tcSubscribe",

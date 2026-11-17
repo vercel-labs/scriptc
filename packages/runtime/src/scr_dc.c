@@ -527,12 +527,7 @@ static ScrDcTracing *dc_tc_of(double handle) {
   return &dc_tracings[i - 1];
 }
 
-/* Whether `h` is one of this registry's channel handles (compiled code
- * only holds minted ones, but a collection object can carry any number). */
-static bool dc_handle_valid(double h) {
-  size_t i = (size_t)h;
-  return h >= 1 && (double)i == h && i <= dc_nchannels;
-}
+static bool dc_handle_valid(double h);
 
 /* Node's TraceChannel collection form: the five event members must be
  * Channel instances. Our Channel values are handles, so a safe integer
@@ -599,15 +594,43 @@ double scr_dc_tracing_channel(ScrDyn *name) {
   return dc_tracing_register(ch);
 }
 
+/* Whether `h` is one of this registry's channel handles (compiled code
+ * only holds minted ones, but a collection object can carry any number). */
+static bool dc_handle_valid(double h) {
+  size_t i = (size_t)h;
+  return h >= 1 && (double)i == h && i <= dc_nchannels;
+}
+
+/* Node's check on a TracingChannel collection member: each event must be a
+ * Channel. Compiled code holds handles minted by dc_intern, but a value
+ * asserted past the type reaches this constructor as a bare number, and a
+ * number that is no channel handle must not index the table (dc_of would
+ * end the process). */
+static void dc_throw_bad_tracing_member(const char *event, double handle) {
+  char received[48];
+  if (handle == handle)
+    snprintf(received, sizeof received, "type number (%g)", handle);
+  else
+    snprintf(received, sizeof received, "type number (NaN)");
+  char buf[192];
+  int n = snprintf(buf, sizeof buf,
+                   "The \"nameOrChannels.%s\" property must be an instance of Channel. Received %s",
+                   event, received);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, buf, (size_t)n, "ERR_INVALID_ARG_TYPE");
+}
+
 double scr_dc_tracing_channel_of(double start, double end, double async_start,
                                   double async_end, double error) {
+  const double members[5] = {start, end, async_start, async_end, error};
   size_t ch[5];
-  /* dc_of validates each handle (compiled code only holds minted ones). */
-  ch[DC_TC_START] = (size_t)(dc_of(start) - dc_channels);
-  ch[DC_TC_END] = (size_t)(dc_of(end) - dc_channels);
-  ch[DC_TC_ASYNC_START] = (size_t)(dc_of(async_start) - dc_channels);
-  ch[DC_TC_ASYNC_END] = (size_t)(dc_of(async_end) - dc_channels);
-  ch[DC_TC_ERROR] = (size_t)(dc_of(error) - dc_channels);
+  for (int i = 0; i < 5; i++) {
+    double handle = members[i];
+    if (!dc_handle_valid(handle)) {
+      dc_throw_bad_tracing_member(dc_trace_events[i], handle);
+      return 0;
+    }
+    ch[i] = (size_t)handle - 1;
+  }
   return dc_tracing_register(ch);
 }
 

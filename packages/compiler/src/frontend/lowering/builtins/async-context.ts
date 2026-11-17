@@ -667,6 +667,17 @@ export function lowerDiagnosticsChannelCall(
             "the supported collection form assigns each of start/end/asyncStart/asyncEnd/error a Channel value inline",
           );
         }
+        // Each member is one of the five event channels, and a Channel is
+        // the only value Node accepts: a number (or a missing member's
+        // undefined) would otherwise be read as a channel handle and index
+        // the table with a value that never was one.
+        if (!isBuiltinClassInstance(lowerer, p.initializer, "Channel")) {
+          lowerer.noLowering(
+            "tracingChannel with a non-Channel collection member",
+            p.initializer,
+            "assign each event a Channel from diagnostics_channel.channel() or another Channel value",
+          );
+        }
         byEvent.set(p.name.text, lowerer.lowerExprExpecting(p.initializer, F64));
       }
       if (byEvent.size !== 5) {

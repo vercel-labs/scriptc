@@ -13,11 +13,15 @@
  *     value (`module.exports = fn` / `= class {}` / `= make()` / `= 42` /
  *     `= require("./y")`) answers that value.
  *
- * A table module's exports object as a value has no static
- * representation; it keeps a named refusal (a first-class CommonJS module
- * object is the two-tier design's S9 stage). */
+ * A table module's exports object as a value is the runtime's per-module
+ * view over the module's export globals: one object per module (so
+ * Node's cache identity holds), live reads, and a read-only surface where
+ * Node's exports object accepts writes. */
+import { resolve } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import { tsgoPath } from "../dts-paths.js";
+import { moduleNamespaceDynValue } from "./module-namespace-elements.js";
 import {
   canonicalBuiltinModule,
   cjsExportAssignmentOf,
@@ -1332,6 +1336,15 @@ export function lowerInlineRequireValue(lowerer: Lowerer, call: ts.CallExpressio
   if (req === null) return null;
   const value = wholeExportValue(lowerer, req.dep, call, 0);
   if (value === null) {
+    // A table module's require answers its exports object in a NESTED
+    // position (a function body, an IIFE included): the runtime's
+    // per-module view over the export globals, one object per module, so
+    // Node's cache identity holds. A top-level inline require keeps its
+    // fence, as it had.
+    const exportsObject = nestedRequirePosition(call)
+      ? cjsExportsObjectValue(lowerer, req.dep, call)
+      : null;
+    if (exportsObject !== null) return withRequireInit(lowerer, req, exportsObject);
     lowerer.unsupported(
       "SC1090",
       call,
@@ -1341,6 +1354,49 @@ export function lowerInlineRequireValue(lowerer: Lowerer, call: ts.CallExpressio
     );
   }
   return withRequireInit(lowerer, req, value);
+}
+
+/** Whether `call` sits inside a function body or parameter list (an IIFE
+ * included): a require there evaluates when the function runs, so its value
+ * is the module's exports object. */
+function nestedRequirePosition(call: ts.Node): boolean {
+  for (
+    let parent: ts.Node | undefined = call.parent;
+    parent !== undefined && !ts.isSourceFile(parent);
+    parent = parent.parent
+  ) {
+    if (ts.isFunctionLike(parent)) return true;
+  }
+  return false;
+}
+
+/** A compiled CommonJS module's exports object as a checked-dynamic value:
+ * the runtime's per-module view over the module's export globals, which
+ * every require of that module answers (the same object an `import * as`
+ * answers). Null for a module whose exports are not a static table. The
+ * view is read-only and its keys are sorted, where Node's object is
+ * writable in insertion order; reads answer the live exports. */
+export function cjsExportsObjectValue(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  blame: ts.Node,
+): IrExpr | null {
+  // Node hands out the SAME exports object for a module and for every module
+  // that forwards it (`module.exports = require("./base")`), so the view is
+  // the terminal table's — one runtime object per module, identity included.
+  const target = cjsNamespaceTargetOf(lowerer, dep);
+  if (target === null) return null;
+  const loc = locOf(blame);
+  const type: IrType & { kind: "moduleNs" } = {
+    kind: "moduleNs",
+    moduleId: `file:${tsgoPath(resolve(target.fileName))}`,
+  };
+  return moduleNamespaceDynValue(lowerer, {
+    kind: "moduleNsRef",
+    moduleId: type.moduleId,
+    type,
+    loc,
+  });
 }
 
 /** Lowers `inner` (a member read or member call whose receiver is the

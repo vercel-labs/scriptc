@@ -1350,8 +1350,14 @@ static bool scr_dgram_adopt_fd(ScrDgramSocket *s, int fd) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_FD_TYPE");
     return false;
   }
-  int flags = fcntl(fd, F_GETFL, 0);
-  if (flags >= 0) (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  /* The poller owns the loop's read watch (and, on Windows, the winsock
+   * startup this descriptor's socket needs): the adopted socket arms its
+   * watcher through it like a created one. */
+  if (!scr_dgram_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  scr_dgram_nonblock(fd);
   s->fd = fd;
   s->bound = true;
   s->emit_listening = true;
@@ -1406,8 +1412,11 @@ void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *c
         scr_dgram_throw("Socket is already bound");
         return;
       }
+      /* The callback is Node's once('listening'): it runs when the adopted
+       * socket starts listening, or not at all when the descriptor is
+       * refused. */
+      if (cb) scr_dgram_ls_add(&s->listening_ls, cb, NULL, true);
       scr_dyn_release(owned);
-      scr_closure_release(cb);
       scr_dgram_adopt_fd(s, fd);
       return;
     }

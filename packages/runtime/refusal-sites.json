@@ -145,6 +145,18 @@
  },
  {
   "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_readdir",
+  "message": "fs.readdir with withFileTypes and a non-utf8 encoding has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_readdir",
+  "message": "fs.readdir with recursive and a non-utf8 encoding has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
   "function": "scr_fs_cb_invoke",
   "message": "fs.glob stored as a value has no native lowering; call fs.glob directly",
   "code": "SC2020"
@@ -153,12 +165,6 @@
   "file": "scr_bytes_io.c",
   "function": "scr_fs_cb_invoke",
   "message": "fs.copyFile clone flags have no native lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_bytes_io.c",
-  "function": "scr_fs_cb_invoke",
-  "message": "Recursive readdir and Dirent results have no native lowering",
   "code": "SC2020"
  },
  {
@@ -337,8 +343,32 @@
  },
  {
   "file": "scr_dgram.c",
-  "function": "scr_dgram_membership",
-  "message": "dgram.Socket.%s before bind() is not supported yet",
+  "function": "scr_dgram_block_list_fail",
+  "message": "a receiveBlockList or sendBlockList is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_create_chk",
+  "message": "abort-driven close is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_create_chk",
+  "message": "a custom lookup function is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_bind_opts",
+  "message": "opening an existing descriptor is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_bind_sync_chk",
+  "message": "opening an existing descriptor is not supported yet",
   "code": "SC2020"
  },
  {
@@ -1465,6 +1495,12 @@
  },
  {
   "file": "scr_message.c",
+  "function": "scr_message_value",
+  "message": "carrying a primitive wrapper object (new String/Number/Boolean or Object(primitive)) through a message is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_message.c",
   "function": "scr_message_encode_transfer",
   "message": "Transfer lists with values other than MessagePorts are not supported yet",
   "code": "SC2020"
@@ -2023,32 +2059,14 @@
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_view_get",
-  "message": "worker.resourceLimits is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
   "function": "scr_broadcast_invoke",
   "message": "This BroadcastChannel method is not supported yet",
   "code": "SC2020"
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_resource_limits",
-  "message": "resourceLimits in a worker is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
   "function": "scr_worker_arguments",
   "message": "Worker argv strings containing null bytes are not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
-  "function": "scr_worker_stack_size",
-  "message": "Worker resourceLimits heap limits are not supported yet",
   "code": "SC2020"
  },
  {

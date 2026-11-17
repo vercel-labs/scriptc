@@ -7729,9 +7729,9 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
   //    closing edge's bindings are used only in deferred positions, so no
   //    read can execute before every member initialized);
   //  - the EXACT INITIALIZATION rule: an ES-module cluster whose early
-  //    reads are all let/const bindings with module storage — the
-  //    lowering checks each one (cycleEarlyBindings) and throws Node's
-  //    ReferenceError on a read before the declaration ran.
+  //    reads are all let/const bindings with module storage, or classes —
+  //    the lowering checks each one (cycleEarlyBindings) and throws
+  //    Node's ReferenceError on a read before the declaration ran.
   const cycleAdmissionReason = makeCycleAdmission(program, (sf) => {
     const all = edges.get(sf) ?? [];
     return all.some((e) => e.call !== undefined) ? all.filter((e) => e.call === undefined) : all;

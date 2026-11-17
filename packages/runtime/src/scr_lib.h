@@ -785,6 +785,10 @@ ScrStats *scr_stats_zero(void);
  * binding's order, lazy Date accessors and the type tests on the
  * prototypes. Borrows s; +1. */
 ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint);
+/* fs.readdir's callback form: one Dirent value (+1) over borrowed name and
+ * parent strings and its UV_DIRENT kind; its prototype answers the is*()
+ * probes. */
+ScrDyn *scr_dirent_dyn(ScrStr *name, ScrStr *parent, double kind);
 /* A checked-dynamic Stats object back into the snapshot the typed members
  * read: +1, or NULL with the checked conversion's TypeError pending. The
  * `_opt` form answers NULL (no exception) for the dynamic undefined a

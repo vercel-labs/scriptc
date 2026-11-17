@@ -203,6 +203,7 @@ export interface EarlyExecutableNativeFeatures {
   tls: boolean;
   cipher: boolean;
   ecdh: boolean;
+  argon2: boolean;
   dh: boolean;
   pki: boolean;
   ed25519: boolean;

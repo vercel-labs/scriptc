@@ -94,6 +94,7 @@ import { lowerParallelCall } from "./parallel-loops.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
+  heritageChecksFor,
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
@@ -5795,6 +5796,10 @@ export class Lowerer {
   /** Initialization flags of classes reachable before their statement ran,
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
+  /** Class declarations whose `extends` clause reads a flagged cycle class:
+   * the flag is checked where that class statement runs
+   * (cycle-initialization.ts). */
+  readonly heritageClassChecks = new Map<ts.ClassLikeDeclaration, CycleInitFlag[]>();
   /** Initialization flags of import-cycle bindings that have no module
    * storage and are only ever called (cycle-initialization.ts). */
   readonly calledBindingInitFlags: CycleInitFlag[] = [];
@@ -6288,6 +6293,7 @@ export class Lowerer {
       checkedTable("closureDynLets", () => this.closureDynLets.size),
       checkedTable("cycleInitFlags", () => this.cycleInitFlags.size),
       checkedTable("classInitFlags", () => this.classInitFlags.size),
+      checkedTable("heritageClassChecks", () => this.heritageClassChecks.size),
       checkedTable("calledBindingInitFlags", () => this.calledBindingInitFlags.length),
       checkedTable("cycleInitDeclarations", () => this.cycleInitDeclarations.size),
       checkedTable("uninitializedLexicalGlobals", () => this.uninitializedLexicalGlobals.size),
@@ -21553,6 +21559,12 @@ export class Lowerer {
 
   lowerStaticFieldInits(info: ClassInfo): IrStmt[] {
     return lowerStaticFieldInits(this, info);
+  }
+
+  /** The initialization checks a class statement carries for the cycle
+   * classes its `extends` clause reads. */
+  heritageChecksFor(decl: ts.ClassLikeDeclaration, loc: SrcLoc): IrStmt[] {
+    return heritageChecksFor(this, decl, loc);
   }
 
   /** Method-like members with their collected method-map names. Body

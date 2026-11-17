@@ -9,9 +9,12 @@
  *
  * The rewrite copies every byte outside JSX expressions, and copies the
  * expressions inside them (attribute values, children, spreads) with their
- * own JSX rewritten. It keeps every line break of a JSX expression, between
- * the arguments it emits, so a position keeps its line in the rewritten
- * text. */
+ * own JSX rewritten. An expression whose functions the element's attribute
+ * type gives a type keeps that contextual type: the copy is constrained
+ * with the type the checker prints for the slot, so parameters written
+ * without annotations stay typed in the props object literal the call
+ * receives. It keeps every line break of a JSX expression, between the
+ * arguments it emits, so a position keeps its line in the rewritten text. */
 
 import * as ts from "./ts7/adapter.js";
 import { jsxOptionName } from "./ts7/enums.js";
@@ -209,11 +212,129 @@ export interface LoweredJsx {
   rewrittenPosition(pos: number, end: boolean): number;
 }
 
+/** The contextual type text of a JSX slot expression, as the program over
+ * the text as written prints it, or undefined when the rewrite does not need
+ * it. */
+export type JsxContextTypes = (expression: ts.Expression) => string | undefined;
+
 /** The file's text with its JSX replaced by the calls TypeScript emits for
  * the plan, and for the automatic runtime the imports of the runtime
  * functions those calls use. */
-export function lowerJsx(sf: ts.SourceFile, plan: JsxEmitPlan): LoweredJsx {
-  return new JsxRewriter(sf, plan).file();
+export function lowerJsx(
+  sf: ts.SourceFile,
+  plan: JsxEmitPlan,
+  contextTypes?: JsxContextTypes,
+): LoweredJsx {
+  return new JsxRewriter(sf, plan, contextTypes).file();
+}
+
+/** True when a JSX attribute value or child expression holds a function
+ * whose parameters (or `this`) the element's attribute type gives a type:
+ * the rewritten expression sits in a plain object literal, where the JSX
+ * contextual type no longer reaches it, so the rewrite spells that type
+ * back out for the expression. The walk follows the positions where
+ * TypeScript propagates a contextual type into an expression (an object or
+ * array literal's members and elements, a conditional or `??`/`||`/`&&`
+ * arm, an `await` operand, and a function's own body when its contextual
+ * return type reaches it). A call's arguments, a construct's members and a
+ * `satisfies`/`as` expression get their types from what they name, not from
+ * the slot, so their subtrees are not visited. */
+export function jsxSlotNeedsContext(node: ts.Node): boolean {
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node))
+    return (
+      functionNeedsContextualTyping(node) ||
+      (node.type === undefined && returnedExpressions(node).some(jsxSlotNeedsContext))
+    );
+  if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node))
+    return jsxSlotNeedsContext(node.expression);
+  if (ts.isConditionalExpression(node))
+    return jsxSlotNeedsContext(node.whenTrue) || jsxSlotNeedsContext(node.whenFalse);
+  if (ts.isBinaryExpression(node)) {
+    const operator = node.operatorToken.kind;
+    return operator === ts.SyntaxKind.QuestionQuestionToken ||
+      operator === ts.SyntaxKind.BarBarToken ||
+      operator === ts.SyntaxKind.AmpersandAmpersandToken
+      ? jsxSlotNeedsContext(node.left) || jsxSlotNeedsContext(node.right)
+      : false;
+  }
+  if (ts.isAwaitExpression(node)) return jsxSlotNeedsContext(node.expression);
+  if (ts.isArrayLiteralExpression(node))
+    return node.elements.nodes.some((element) => jsxSlotNeedsContext(element));
+  if (ts.isObjectLiteralExpression(node))
+    return node.properties.nodes.some((property) => {
+      if (ts.isPropertyAssignment(property)) return jsxSlotNeedsContext(property.initializer);
+      if (ts.isSpreadAssignment(property)) return jsxSlotNeedsContext(property.expression);
+      if (ts.isMethodDeclaration(property)) return functionNeedsContextualTyping(property);
+      return false;
+    });
+  return false;
+}
+
+/** True when a function's parameters (or, for a function that binds its own
+ * `this`, its `this`) are unannotated and need the contextual type to avoid
+ * an implicit any. A parameter default types the parameter itself. */
+function functionNeedsContextualTyping(
+  node: ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration,
+): boolean {
+  let bindsThis = ts.isArrowFunction(node);
+  for (const parameter of node.parameters.nodes) {
+    if (ts.isIdentifier(parameter.name) && parameter.name.text === "this") {
+      bindsThis = true;
+      if (parameter.type === undefined) return true;
+      continue;
+    }
+    if (parameter.type === undefined) {
+      // A default types the parameter, but the default itself is contextually
+      // typed by the parameter's type at the JSX site.
+      if (parameter.initializer === undefined) return true;
+      if (jsxSlotNeedsContext(parameter.initializer)) return true;
+    }
+  }
+  return !bindsThis && bodyUsesThis(node);
+}
+
+/** True when a function that binds its own `this` reads `this`, so the
+ * function needs the contextual `this` type it had at the JSX site. */
+function bodyUsesThis(
+  node: ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration,
+): boolean {
+  const body = node.body;
+  if (body === undefined) return false;
+  let found = false;
+  const visit = (child: ts.Node): void => {
+    if (found) return;
+    if (ts.isThisExpression(child)) {
+      found = true;
+      return;
+    }
+    // A nested function binds its own `this`; a class body is not read here.
+    if (child !== body && ts.isFunctionLike(child)) return;
+    if (child !== body && ts.isClassLikeDeclaration(child)) return;
+    ts.forEachChild(child, visit);
+  };
+  visit(body);
+  return found;
+}
+
+/** The expressions a function body can return, without entering a nested
+ * function or class that returns on its own. */
+function returnedExpressions(
+  node: ts.ArrowFunction | ts.FunctionExpression | ts.MethodDeclaration,
+): ts.Expression[] {
+  const body = node.body;
+  if (body === undefined) return [];
+  if (!ts.isBlock(body)) return [body as ts.Expression];
+  const found: ts.Expression[] = [];
+  const visit = (child: ts.Node): void => {
+    if (ts.isReturnStatement(child)) {
+      if (child.expression !== undefined) found.push(child.expression);
+      return;
+    }
+    if (child !== body && ts.isFunctionLike(child)) return;
+    ts.forEachChild(child, visit);
+  };
+  visit(body);
+  return found;
 }
 
 /** A run of rewritten text: `copied` text starts at `original`; emitted
@@ -237,6 +358,7 @@ class JsxRewriter {
   constructor(
     private readonly sf: ts.SourceFile,
     private readonly plan: JsxEmitPlan,
+    private readonly contextTypes: JsxContextTypes | undefined,
   ) {
     this.text = sf.text;
   }
@@ -468,6 +590,36 @@ class JsxRewriter {
     this.copy(start, node.end);
   }
 
+  /** Copies an expression that occupies a JSX slot, constrained to the
+   * contextual type the slot gives it: the rewritten expression is a member
+   * of a plain object literal, where that type no longer reaches it, so the
+   * rewrite spells it out when the context types one of its functions. */
+  private constrainedExpression(node: ts.Expression, constraint: (type: string) => string): void {
+    const type = this.contextTypes?.(node);
+    if (type === undefined) {
+      this.expression(node);
+      return;
+    }
+    const start = node.getStart(this.sf);
+    this.sync(start);
+    this.emit("((");
+    this.copy(start, node.end);
+    this.sync(node.end);
+    this.emit(`) ${constraint(type)})`);
+  }
+
+  /** An attribute value or a child. */
+  private slotExpression(node: ts.Expression): void {
+    this.constrainedExpression(node, (type) => `as ${type}`);
+  }
+
+  /** A spread attribute's expression. A spread supplies only the props its
+   * object has, so its constraint is `Partial` of the element's attributes
+   * type: the other props come from the element's remaining attributes. */
+  private spreadExpression(node: ts.Expression): void {
+    this.constrainedExpression(node, (type) => `as Partial<${type}>`);
+  }
+
   private element(node: JsxRoot): void {
     const plan = this.plan;
     if (plan.runtime === "classic") {
@@ -511,7 +663,7 @@ class JsxRewriter {
         if (child.expression === undefined) continue;
         this.emit(", ");
         if (child.dotDotDotToken !== undefined) this.emit("...");
-        this.expression(child.expression);
+        this.slotExpression(child.expression);
       } else if (isJsxExpressionRoot(child)) {
         this.emit(", ");
         this.sync(child.getStart(this.sf));
@@ -606,7 +758,7 @@ class JsxRewriter {
       this.emit(JSON.stringify(jsxTextValue(child.text)!));
     } else if (ts.isJsxExpression(child)) {
       if (child.dotDotDotToken !== undefined) this.emit("...");
-      this.expression(child.expression!);
+      this.slotExpression(child.expression!);
     } else {
       this.sync(child.getStart(this.sf));
       this.element(child as JsxRoot);
@@ -651,7 +803,11 @@ class JsxRewriter {
     for (const attribute of properties) {
       if (ts.isJsxSpreadAttribute(attribute)) {
         const value = attribute.expression;
-        if (ts.isObjectLiteralExpression(value) && !hasProtoProperty(value)) {
+        if (
+          ts.isObjectLiteralExpression(value) &&
+          !hasProtoProperty(value) &&
+          this.contextTypes?.(value) === undefined
+        ) {
           // TypeScript inlines the properties of a spread object literal.
           for (const property of value.properties.nodes) {
             separate();
@@ -660,7 +816,7 @@ class JsxRewriter {
         } else {
           separate();
           this.emit("...");
-          this.expression(value);
+          this.spreadExpression(value);
         }
       } else {
         separate();
@@ -685,7 +841,7 @@ class JsxRewriter {
       this.emit(JSON.stringify(decodeEntities(value.text)));
     } else if (ts.isJsxExpression(value)) {
       if (value.expression === undefined) this.emit("true");
-      else this.expression(value.expression);
+      else this.slotExpression(value.expression);
     } else {
       this.sync(value.getStart(this.sf));
       this.element(value as JsxRoot);

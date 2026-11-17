@@ -219,7 +219,9 @@ import {
   jsxEmitName,
   jsxEmitPlan,
   jsxPragmas,
+  jsxSlotNeedsContext,
   lowerJsx,
+  type JsxContextTypes,
   type LoweredJsx,
 } from "./jsx-source.js";
 
@@ -1456,6 +1458,7 @@ function lowerProgramJsx7(
   const sources = new Map<string, LoweredJsx>();
   const mode = jsxEmitName(options.jsx as string | number | undefined);
   if (mode === undefined) return { sources, refusal: null };
+  const contextTypes = jsxContextTypes7(program);
   for (const sf of program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile || /\.[mc]?ts$/.test(sf.fileName) || !containsJsx(sf)) continue;
     const at = firstJsx(sf)!;
@@ -1481,9 +1484,56 @@ function lowerProgramJsx7(
       },
       jsxPragmas(sf.text),
     );
-    sources.set(sf.fileName, lowerJsx(sf, plan));
+    sources.set(sf.fileName, lowerJsx(sf, plan, contextTypes));
   }
   return { sources, refusal: null };
+}
+
+/** The contextual type text of a JSX slot expression that the rewrite must
+ * keep typing in a TypeScript file, or undefined. A TypeScript file's
+ * implicit-any report stops the build; a JavaScript file admits it (the
+ * JS_OPINIONS rows), so it keeps the lowering it had. The type is printed
+ * with fully qualified names
+ * (`import("react").MouseEventHandler<HTMLButtonElement>`) so the text reads
+ * the same from the rewritten file. The checker is asked only for the sites
+ * whose functions need it, and is built on the first such site. */
+function jsxContextTypes7(program: ts.Program): JsxContextTypes {
+  let checker: ReturnType<ts.Program["getTypeChecker"]> | null = null;
+  const printed = new WeakMap<ts.Expression, string | undefined>();
+  return (expression) => {
+    if (!/\.[mc]?tsx$/i.test(expression.getSourceFile().fileName)) return undefined;
+    const cached = printed.get(expression);
+    if (cached !== undefined || printed.has(expression)) return cached;
+    let text: string | undefined;
+    if (jsxSlotNeedsContext(expression)) {
+      try {
+        checker ??= program.getTypeChecker();
+        const type = checker.getContextualType(expression);
+        if (type !== undefined)
+          text = checker.typeToString(
+            type,
+            expression,
+            ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseFullyQualifiedType,
+          );
+      } catch {
+        text = undefined;
+      }
+      // A type without a call signature gives the functions no parameter
+      // type, and printer comments (`/*unresolved*/`) do not parse.
+      if (
+        text === undefined ||
+        text === "" ||
+        text === "any" ||
+        text === "unknown" ||
+        text === "never" ||
+        text === "error" ||
+        text.includes("/*")
+      )
+        text = undefined;
+    }
+    printed.set(expression, text);
+    return text;
+  };
 }
 
 function loadProgram7(

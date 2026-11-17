@@ -1,6 +1,14 @@
 import ts5 from "typescript5";
 import { afterAll, describe, expect, it } from "vitest";
-import { jsxEmitPlan, decodeEntities, jsxPragmas, jsxTextValue, lowerJsx } from "./jsx-source.js";
+import {
+  jsxEmitPlan,
+  decodeEntities,
+  jsxPragmas,
+  jsxSlotNeedsContext,
+  jsxTextValue,
+  lowerJsx,
+} from "./jsx-source.js";
+import * as ts from "./ts7/adapter.js";
 import { closeSourceParser, parseSourceFile } from "./ts7/source-parser-node.js";
 
 afterAll(() => closeSourceParser());
@@ -240,5 +248,91 @@ describe("jsxPragmas", () => {
         "#!/usr/bin/env node\n/** @jsx h\n * @jsx g */\n// @jsxFrag F\n/* @jsxImportSource a */ /* @jsxImportSource b */\nconst x = 1; /** @jsx late */",
       ),
     ).toEqual({ jsx: "h", jsxImportSource: "b" });
+  });
+});
+
+/** Rewrites with a contextual type for every slot whose functions need one:
+ * the stub stands in for the program's checker (jsxContextTypes7). */
+function rewriteWithContext(source: string, development = false): string {
+  const sf = parseSourceFile("/case.tsx", source, "tsx");
+  const plan = jsxEmitPlan({ jsx: development ? "react-jsxdev" : "react-jsx" }, jsxPragmas(source));
+  return lowerJsx(sf, plan, (expression) => (jsxSlotNeedsContext(expression) ? "Ctx" : undefined))
+    .text;
+}
+
+describe("lowerJsx keeps JSX slot contextual types", () => {
+  it("constrains an attribute callback with the slot's type", () => {
+    const lowered = rewriteWithContext(`export const a = <button onClick={(e) => e} />;\n`);
+    expect(lowered).toContain(`onClick: (((e) => e) as Ctx)`);
+  });
+
+  it("constrains the slot with the classic runtime too", () => {
+    const sf = parseSourceFile("/case.tsx", `const a = <button onClick={(e) => e} />;\n`, "tsx");
+    const plan = jsxEmitPlan({ jsx: "react", jsxFactory: "h" }, jsxPragmas(""));
+    const text = lowerJsx(sf, plan, (expression) =>
+      jsxSlotNeedsContext(expression) ? "Ctx" : undefined,
+    ).text;
+    expect(text).toContain(`onClick: (((e) => e) as Ctx)`);
+  });
+
+  it("constrains a child callback with the children type", () => {
+    const lowered = rewriteWithContext(`export const a = <Slot>{(index) => index}</Slot>;\n`);
+    expect(lowered).toContain(`children: (((index) => index) as Ctx)`);
+  });
+
+  it("constrains an object literal's members, not the attribute as reported", () => {
+    const lowered = rewriteWithContext(
+      `export const a = <Row config={{ onOpen: (depth) => depth }} />;\n`,
+    );
+    expect(lowered).toContain(`config: (({ onOpen: (depth) => depth }) as Ctx)`);
+  });
+
+  it("constrains a spread attribute's object with Partial of the attributes type", () => {
+    const lowered = rewriteWithContext(`export const a = <button {...{ onClick: (e) => e }} />;\n`);
+    expect(lowered).toContain(`...(({ onClick: (e) => e }) as Partial<Ctx>)`);
+    // A spread of a binding gets its type where it is declared: unchanged.
+    const named = rewriteWithContext(
+      `const p = { onClick: (e) => e }; export const a = <button {...p} />;\n`,
+    );
+    expect(named).not.toContain("Ctx");
+  });
+
+  it("leaves annotated functions and self-typed positions alone", () => {
+    const annotated = rewriteWithContext(
+      `export const a = <button onClick={(e: number) => e} />;\n`,
+    );
+    expect(annotated).not.toContain("Ctx");
+    const mapped = rewriteWithContext(`export const a = <div>{[1].map((n) => n)}</div>;\n`);
+    expect(mapped).not.toContain("Ctx");
+  });
+
+  it("keeps every source line", () => {
+    const source = `export const a = (\n  <button\n    onClick={(e) => e}\n  />\n);\n`;
+    const lowered = rewriteWithContext(source);
+    expect(lowered.split("\n").length).toBe(source.split("\n").length);
+  });
+
+  it("finds the functions that need a contextual type", () => {
+    const need = (source: string): boolean => {
+      const sf = parseSourceFile("/case.tsx", source, "tsx");
+      let found = false;
+      const visit = (node: ts.Node): void => {
+        if (ts.isJsxExpression(node) && node.expression !== undefined)
+          found ||= jsxSlotNeedsContext(node.expression);
+        ts.forEachChild(node, visit);
+      };
+      visit(sf);
+      return found;
+    };
+    expect(need(`<a b={(x) => x} />;`)).toBe(true);
+    expect(need(`<a b={({ x }) => x} />;`)).toBe(true);
+    expect(need(`<a b={function (x) { return this; }} />;`)).toBe(true);
+    expect(need(`<a b={((x) => x) as (x: number) => number} />;`)).toBe(false);
+    expect(need(`<a b={(x: number) => x} />;`)).toBe(false);
+    expect(need(`<a b={[1].map((x) => x)} />;`)).toBe(false);
+    expect(need(`<a b={flag ? (x) => x : undefined} />;`)).toBe(true);
+    expect(need(`<a b={{ c: { d: (x) => x } }} />;`)).toBe(true);
+    expect(need(`<a b={(x = (y) => y) => x} />;`)).toBe(true);
+    expect(need(`<a b={(x = 1) => x} />;`)).toBe(false);
   });
 });

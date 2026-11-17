@@ -6078,7 +6078,8 @@ struct ScrHttpClientReq {
                                * unset): the response parser's header-line budget,
                                * captured when the socket is assigned */
   bool reused;                /* req.reusedSocket: the socket came from an agent's free list */
-  bool sock_pooled;           /* the socket went back to the agent after the response */
+  bool sock_pooled;
+  bool handed_over; /* a CONNECT or upgrade response took the socket */           /* the socket went back to the agent after the response */
   ScrStr *pool_key;           /* https: TLS options a pooled socket must match (+1), or NULL */
   ScrClosure *abort_listener; /* its closure (borrowed); caps[0] points back here */
   struct ScrHttpAgentEnt *agent_ent; /* its entry in the agent's list while listed */
@@ -7073,7 +7074,9 @@ void scr_http_client_abort(ScrHttpClientReq *c) {
 bool scr_http_client_aborted(ScrHttpClientReq *c) { return c->aborted; }
 
 bool scr_http_client_destroyed(ScrHttpClientReq *c) {
-  return c->destroyed || c->close_emitted;
+  /* Node marks the request destroyed as the socket is handed back to the
+   * agent (responseKeepAlive) — the pooled state — and when it closes. */
+  return c->destroyed || c->close_emitted || c->sock_pooled;
 }
 
 void scr_http_client_on_response(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpRespFn fn, bool once) {
@@ -7339,6 +7342,7 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
    * same path as 'connect'. */
   if (connect || (status == 101 && scr_http_client_response_upgrades(res))) {
     ScrNetLs *handover = connect ? &c->connect_ls : &c->upgrade_ls;
+    c->handed_over = true;
     conn->client_resp_started = true;
     c->response_started = true;
     c->response_done = true; /* the exchange settled: no timeout/hang-up paths */
@@ -9958,7 +9962,9 @@ static ScrDyn *scr_http_dynh_client_get(void *h, const char *key, size_t key_len
     return scr_dyn_new_handle(c->sock, SCR_DYNH_NET_SOCKET);
   }
   if (strcmp(key, "destroyed") == 0) return scr_dyn_new_bool(scr_http_client_destroyed(c));
-  if (strcmp(key, "writableEnded") == 0) return scr_dyn_new_bool(c->ended);
+  /* writableEnded, and its deprecated alias `finished` */
+  if (strcmp(key, "writableEnded") == 0 || strcmp(key, "finished") == 0)
+    return scr_dyn_new_bool(c->ended);
   if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_http_client_writable_length(c));
   if (strcmp(key, "writableNeedDrain") == 0)
     return scr_dyn_new_bool(scr_http_client_writable_need_drain(c));

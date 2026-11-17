@@ -97,6 +97,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
+  // crypto.argon2 and crypto.argon2Sync.
+  ["scr_argon2.c", "argon2"],
   // The worker unit's SHARE_ENV symbol reaches the symbol unit
   // (scr_worker_events.c), which assembles symbol equality messages here.
   ["scr_assert.c", any("assert", "regex", "symbol", "workers")],

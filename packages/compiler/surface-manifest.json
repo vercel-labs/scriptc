@@ -58,7 +58,7 @@
       "name": "circular imports",
       "status": "unsupported",
       "code": "SC1016",
-      "note": "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge"
+      "note": "ES-module cycles of let/const/function/class bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var) or break the named edge"
     },
     {
       "id": "diagnostic.sc1020",
@@ -1717,7 +1717,7 @@
       "kind": "node-builtin",
       "name": "fs.watchFile",
       "status": "static",
-      "note": "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused"
+      "note": "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused"
     },
     {
       "id": "node-builtin.fs.writeFileSync",
@@ -3059,6 +3059,25 @@
       "name": "tls.setDefaultCACertificates",
       "status": "static",
       "note": "replaces the default set and the client trust anchors for the rest of the process"
+    },
+    {
+      "id": "node-builtin.trace_events",
+      "kind": "node-builtin",
+      "name": "trace_events",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.trace_events.createTracing",
+      "kind": "node-builtin",
+      "name": "trace_events.createTracing",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.trace_events.getEnabledCategories",
+      "kind": "node-builtin",
+      "name": "trace_events.getEnabledCategories",
+      "status": "static"
     },
     {
       "id": "node-builtin.tty",

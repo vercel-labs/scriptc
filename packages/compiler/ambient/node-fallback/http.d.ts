@@ -242,6 +242,9 @@ declare module "http" {
     }): string;
     maxSockets: number;
     maxFreeSockets: number;
+    /* Node's cap across every name: requests queue once the agent's live
+     * and idle sockets reach it (Infinity by default). */
+    maxTotalSockets: number;
     keepAliveMsecs: number;
     readonly keepAlive: boolean;
     readonly protocol: string;

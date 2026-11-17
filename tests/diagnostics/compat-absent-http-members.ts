@@ -3,14 +3,14 @@
 // program for marking the rows a verified absence instead of an
 // unverified registry gap. Implemented members leave this program:
 // net.Server's `[Symbol.asyncDispose]`, OutgoingMessage's setHeaders,
-// writableLength and 'drain', and OutgoingMessage.pipe() have their own
-// differential programs.
+// writableLength and 'drain', OutgoingMessage.pipe(), and
+// ServerResponse.writeInformation have their own differential programs.
 import * as http from "node:http";
 
-// Agent: the socket hooks and the total-socket limit.
+// Agent: the socket hooks. maxTotalSockets is implemented
+// (http-agent-max-total-sockets).
 const agent = new http.Agent({ keepAlive: true });
 console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
-console.log(agent.maxTotalSockets);
 agent.destroy();
 
 // Server: the request and response members. `[Symbol.asyncDispose]` is
@@ -18,8 +18,6 @@ agent.destroy();
 const server = http.createServer((request, response) => {
   // IncomingMessage: the abort signal.
   console.log(request.signal.aborted);
-  // OutgoingMessage: an arbitrary 1xx response.
-  response.writeInformation(103, { link: "</a.css>; rel=preload" });
   response.end();
 });
 

@@ -21,9 +21,11 @@
  * - watchFile on a path that already has a poller ADDS the listener and
  *   ignores its options; the first call's interval and persistent stand.
  * - unwatchFile(path, listener) removes the LAST listener registered with
- *   that closure (pointer identity, Node's rule); unwatchFile(path)
- *   removes every listener. The last removal stops the poller (its timer
- *   clears), which is what lets the process exit.
+ *   that closure (pointer identity, Node's rule), and gives the handle's
+ *   ref count one back only if such a listener was there; a listener the
+ *   path never registered removes nothing. unwatchFile(path) removes every
+ *   listener and clears the count. The last removal stops the poller (its
+ *   timer clears), which is what lets the process exit.
  * - An emit works on a snapshot of the listeners with retained closures,
  *   so a listener may unwatch itself or others mid-emit — the corpus's
  *   own shape.
@@ -53,7 +55,14 @@ struct ScrWatchFiler {
   size_t rc;
   ScrStr *path;     /* the resolved path (+1): the registry key and the stat target */
   double interval;  /* the first call's interval, reused for every poll */
-  bool persistent;
+  /* Node's StatWatcher ref bookkeeping (lib/internal/fs/watchers.js): one
+   * handle per path, whose loop liveness is `handle_reffed`. Each watchFile
+   * call raises refs and ref_max by one, unwatchFile lowers them, and
+   * ref()/unref() only move the handle once refs reaches 0 or ref_max. */
+  long refs;
+  long ref_max;
+  bool handle_reffed;
+  ScrStatWatcher *watcher; /* the handle every call on this path answers (+1) */
   int state;        /* libuv's busy_polling: 0 before the first poll, 1 after
                      * a success, -errno after a failure */
   int node_status;  /* Node's kOldStatus: -1 until a change is reported */
@@ -114,9 +123,21 @@ static ScrWatchFiler *scr_watch_file_find(ScrStr *resolved) {
 
 /* Arms the next poll: the first one at 0 (libuv stats on a later loop
  * turn, never synchronously), then one per interval. */
+static bool scr_watch_file_live(const ScrWatchFiler *p) { return p->handle_reffed; }
+
+/* A timer the handle is armed with keeps the loop alive only while some
+ * registration on the poller is reffed. */
 static void scr_watch_file_arm(ScrWatchFiler *p, double ms) {
   p->timer = scr_set_timeout_handle(scr_closure_retain(p->pollCb), ms);
-  if (!p->persistent) scr_timer_unref(p->timer);
+  if (!scr_watch_file_live(p)) scr_timer_unref(p->timer);
+}
+
+/* A ref()/unref() (or a registration going away) moves the armed timer
+ * without re-arming it. */
+static void scr_watch_file_apply_liveness(ScrWatchFiler *p) {
+  if (p->timer == 0) return;
+  if (scr_watch_file_live(p)) scr_timer_ref(p->timer);
+  else scr_timer_unref(p->timer);
 }
 
 /* libuv's poll comparison: ctime, mtime and birthtime (the *_ms doubles
@@ -213,6 +234,11 @@ static void scr_watch_file_add(ScrWatchFiler *p, ScrClosure *cb /*moves*/, ScrWa
  * poll frame's own reference keeps `p` alive. */
 static void scr_watch_file_stop(ScrWatchFiler *p) {
   scr_watch_file_retain(p); /* the frame's reference */
+  if (p->watcher != NULL) {
+    ScrStatWatcher *watcher = p->watcher;
+    p->watcher = NULL;
+    scr_stat_watcher_release(watcher);
+  }
   if (p->timer != 0) {
     scr_clear_interval(p->timer);
     p->timer = 0;
@@ -245,28 +271,91 @@ static bool scr_watch_file_interval_ok(double interval) {
   return false;
 }
 
+/* ── fs.StatWatcher (what fs.watchFile returns) ───────────────────────
+ * One handle per watchFile call, over the registration the call added to
+ * the poller: ref()/unref() move that registration's loop liveness (the
+ * poller's timer stays reffed while any of its registrations is), and
+ * unlike Node's StatWatcher there is no close() — fs.unwatchFile is the
+ * removal API, after which the handle's methods are no-ops. Node returns
+ * the watcher from ref()/unref(); the bundle's handles answer void, like
+ * dgram's. */
+struct ScrStatWatcher {
+  size_t rc;
+  ScrWatchFiler *poller; /* +1 */
+};
+
+ScrStatWatcher *scr_stat_watcher_retain(ScrStatWatcher *w) {
+  if (w->rc != SIZE_MAX) w->rc++;
+  return w;
+}
+
+void *scr_stat_watcher_retain_v(void *p) { return scr_stat_watcher_retain((ScrStatWatcher *)p); }
+
+void scr_stat_watcher_release(ScrStatWatcher *w) {
+  if (!w || w->rc == SIZE_MAX) return;
+  if (--w->rc == 0) {
+    scr_watch_file_release(w->poller);
+    free(w);
+  }
+}
+
+void scr_stat_watcher_release_v(void *p) { scr_stat_watcher_release((ScrStatWatcher *)p); }
+
+void scr_stat_watcher_ref(ScrStatWatcher *w) {
+  ScrWatchFiler *p = w->poller;
+  /* ref(): a full count cannot ref again (the comment Node keeps on the
+   * same branch); only the crossing out of zero moves the handle. */
+  if (p->refs == p->ref_max) return;
+  if (p->refs++ == 0) {
+    p->handle_reffed = true;
+    scr_watch_file_apply_liveness(p);
+  }
+}
+
+void scr_stat_watcher_unref(ScrStatWatcher *w) {
+  ScrWatchFiler *p = w->poller;
+  if (p->refs == 0) return;
+  if (--p->refs == 0) {
+    p->handle_reffed = false;
+    scr_watch_file_apply_liveness(p);
+  }
+}
+
+static ScrStatWatcher *scr_stat_watcher_new(ScrWatchFiler *p) {
+  ScrStatWatcher *w = malloc(sizeof *w);
+  if (!w) scr_watch_file_oom();
+  w->rc = 1;
+  w->poller = scr_watch_file_retain(p);
+  return w;
+}
+
 /* fs.watchFile(path, interval, persistent, listener) — the listener MOVES
  * in. A path holding a null byte throws Node's ERR_INVALID_ARG_VALUE. A
  * second call on the same resolved path adds the listener to the existing
  * poller and ignores its options (Node's rule); a new poller first checks
  * `interval` as a uint32, and registers nothing when that throws. */
-void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
-                       ScrWatchFileFn fn) {
+ScrStatWatcher *scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
+                                  ScrWatchFileFn fn) {
   if (!scr_fs_path_ok(path, "path")) {
     scr_closure_release(cb);
-    return; /* exception pending */
+    return NULL; /* exception pending */
   }
   ScrStr *resolved = scr_watch_file_resolve(path);
   ScrWatchFiler *existing = scr_watch_file_find(resolved);
   if (existing != NULL) {
     scr_str_release(resolved);
+    /* Node keys one StatWatcher per resolved path: a second call adds its
+     * listener and answers the same handle, so the path's `persistent` (and
+     * every ref()/unref()) is that one watcher's. */
     scr_watch_file_add(existing, cb, fn);
-    return;
+    existing->refs++;
+    existing->ref_max++;
+    return scr_stat_watcher_retain(existing->watcher);
   }
   if (!scr_watch_file_interval_ok(interval)) {
     scr_str_release(resolved);
     scr_closure_release(cb);
-    return; /* exception pending */
+    return NULL; /* exception pending */
   }
   ScrWatchFiler *p = malloc(sizeof *p);
   if (!p) {
@@ -277,7 +366,11 @@ void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosur
   p->rc = 1;
   p->path = resolved;
   p->interval = interval;
-  p->persistent = persistent;
+  p->refs = 1;
+  p->ref_max = 1;
+  p->handle_reffed = persistent;
+  if (!persistent) p->refs = 0; /* start()'s `if (!persistent) this.unref()` */
+  p->watcher = NULL;
   p->state = 0;
   p->node_status = -1;
   p->last = NULL;
@@ -297,6 +390,8 @@ void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosur
   scr_watch_file_arm(p, 0);
   /* The creating reference moved into the box (scr_box_set_ref moves, it
    * does not retain): the box and the registry are the two owners. */
+  p->watcher = scr_stat_watcher_new(p); /* the poller's own reference */
+  return scr_stat_watcher_retain(p->watcher);
 }
 
 /* fs.unwatchFile(path[, listener]) — `cb` is borrowed (pointer identity);
@@ -310,20 +405,34 @@ void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb) {
   scr_str_release(resolved);
   if (p == NULL) return;
   if (cb != NULL) {
-    /* The LAST listener registered with this closure goes (Node's rule). */
+    /* The LAST listener registered with this closure goes (Node's rule),
+     * and the StatWatcher gives up one ref with it — but only when that
+     * listener was there: Node's unwatchFile compares the listener count
+     * around removeListener and cleans a ref only if it dropped, so
+     * unwatchFile with a listener nobody registered is a no-op. */
+    bool removed = false;
     for (size_t i = p->n; i-- > 0;) {
       if (p->ls[i].cb == cb) {
         scr_closure_release(p->ls[i].cb);
         memmove(&p->ls[i], &p->ls[i + 1], (p->n - i - 1) * sizeof *p->ls);
         p->n--;
+        removed = true;
         break;
       }
+    }
+    if (removed) {
+      if (p->ref_max > 0) p->ref_max--;
+      if (p->refs > 0 && --p->refs == 0) p->handle_reffed = false;
     }
   } else {
     for (size_t i = 0; i < p->n; i++) scr_closure_release(p->ls[i].cb);
     p->n = 0;
+    p->ref_max = 0;
+    p->refs = 0;
+    p->handle_reffed = false;
   }
   if (p->n == 0) scr_watch_file_stop(p);
+  else scr_watch_file_apply_liveness(p);
 }
 
 /* ── the runtime-provided listener adapters ───────────────────────────

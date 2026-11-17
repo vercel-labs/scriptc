@@ -2592,11 +2592,15 @@ export function collectGlobals(
       if (symbol.flags & ts.SymbolFlags.Alias) {
         const target = lowerer.checker.getAliasedSymbol(symbol);
         const vd = target.valueDeclaration;
+        // A non-const variable, or a function declaration the program
+        // reassigns (rebindable-functions.ts), can change after the export
+        // statement: Node's default binding keeps the value it had there.
         const mutableVar =
           vd !== undefined &&
-          ts.isVariableDeclaration(vd) &&
           !ts.getSourceFileOfNode(vd).isDeclarationFile &&
-          (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0;
+          ((ts.isVariableDeclaration(vd) &&
+            (ts.getCombinedNodeFlags(vd) & ts.NodeFlags.Const) === 0) ||
+            isRebindableFunction(lowerer, vd));
         // Immutable targets: alias plumbing — importers resolve to the
         // target's storage (the alias-resolved read IS the snapshot when
         // nothing can reassign). Mutable targets fall through to the
@@ -4578,6 +4582,7 @@ export function lowerFileInit(
     // binding sees its assigned value.
     const runsStatics = (c: ClassInfo): boolean =>
       lowerer.classInitFlags.has(c.def.name) ||
+      (c.decl != null && lowerer.heritageClassChecks.has(c.decl)) ||
       c.callableBase !== undefined ||
       c.def.baseValueGlobal !== undefined ||
       c.runtimeStatics !== undefined ||

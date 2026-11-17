@@ -498,6 +498,24 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // worker.performance: the Worker's event-loop utilization object. It is a
+  // runtime call rather than a plain handle read so a program that reads it
+  // links the loop metrics and marks the loop's start, which is what the
+  // object reports.
+  if (
+    !expr.questionDotToken &&
+    expr.name.text === "performance" &&
+    isWorkerThreadsClass(lowerer, expr.expression, "Worker")
+  ) {
+    lowerer.usesWorkers = true;
+    return {
+      kind: "libCall",
+      fn: "worker.performance",
+      args: [lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN)],
+      type: DYN,
+      loc,
+    };
+  }
   // worker.stdout and worker.stderr are Readables Node always answers, with
   // or without the Worker's stdout/stderr option. The streams unit is entered
   // before the read, so the stream the runtime creates on first read exists.
@@ -692,6 +710,20 @@ export function lowerPropertyAccessExpr(
     const member =
       lowerBufferPrototypeMember(lowerer, expr) ?? lowerBufferPrototypeObject(lowerer, expr);
     if (member) return member;
+  }
+  // socket.type: "udp4" or "udp6", the socket's own family.
+  if (
+    !expr.questionDotToken &&
+    expr.name.text === "type" &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "dgramSocket"
+  ) {
+    return {
+      kind: "libCall",
+      fn: "dgram.type",
+      args: [lowerer.lowerExpr(expr.expression)],
+      type: STRING,
+      loc,
+    };
   }
   // A dgram socket's method read as a value in JavaScript (`emit:
   // socket.emit.bind(socket)`): the socket crosses as its checked-dynamic

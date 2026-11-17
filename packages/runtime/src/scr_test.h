@@ -17,7 +17,8 @@
  * ScrStr arguments are BORROWED; closures MOVE. `mode`: 0 run, 1 skip,
  * 2 todo. `flags`: 1 = async body, 2 = body takes the TestContext,
  * 4 = { only: true }, 8 = a { timeout } is given, 16 = a { concurrency } is
- * given. `at` is "file:line:col" of the registration call (the
+ * given, 32 = { only: false } (filtered out, as Node filters in-process).
+ * `at` is "file:line:col" of the registration call (the
  * failing-section "test at" line), "" when unknown. `plan` is the { plan }
  * count, -1 without one; `timeout` is the { timeout } in ms, read with flag
  * 8; `concurrency` is the { concurrency } count, -1 for `true`, read with
@@ -44,14 +45,26 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name, double mode, ScrStr *msg, 
 void scr_test_ctx_skip(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
+/* t.log(message[, data]): the ℹ line prints at once, at the test's depth;
+ * the data payload rides the test:log event only. */
+void scr_test_ctx_log(ScrTestCtx *t, ScrStr *msg);
 /* t.signal: the test's AbortSignal handle (+1), made on the first read and
  * aborted when the test times out, is cancelled, or finishes; undefined
  * when the abort unit is absent (it links only for a program reading one).
  * t.error: Node's ERR_TEST_FAILURE wrapper over the failure (+1), or null. */
 ScrDyn *scr_test_ctx_signal(ScrTestCtx *t);
 ScrDyn *scr_test_ctx_error(ScrTestCtx *t);
+/* snapshot.setDefaultSnapshotSerializers(serializers): the list every later
+ * snapshot assertion without its own serializers runs through. */
+void scr_test_snapshot_set_default_serializers(ScrDyn *serializers);
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
-void scr_test_ctx_plan(ScrTestCtx *t, double count);
+/* t.plan(count[, { wait }]): `has_wait` says whether the options object
+ * carried the property; a shortfall then waits that many ms for the
+ * assertions still running before it fails. */
+void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait);
+/* mock.fn's and mock.method's { times }: Node's non-negative-integer check,
+ * which throws ERR_OUT_OF_RANGE; answers the count. */
+double scr_test_mock_times_checked(double times);
 /* t.runOnly(shouldRunOnlyTests): subtests registered under `t` from now on
  * are dropped unless marked { only }. */
 void scr_test_ctx_run_only(ScrTestCtx *t, bool value);

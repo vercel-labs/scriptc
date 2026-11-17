@@ -2421,6 +2421,14 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // literal of five Channels) is special-cased in lowerBuiltinModuleCall.
       tracingChannel: { fn: "dc.tracingChannel", params: [STRING], result: F64 },
     },
+    // node:trace_events — createTracing answers a native Tracing handle
+    // (type-mapper.ts maps Tracing to the checked-dynamic value, so member
+    // reads and enable()/disable() ride the dyn tree); the options object
+    // crosses as a dyn value (special-cased in lowerBuiltinModuleCall).
+    trace_events: {
+      createTracing: { fn: "te.createTracing", params: [DYN], result: DYN },
+      getEnabledCategories: { fn: "te.getEnabledCategories", params: [], result: DYN },
+    },
   };
 }
 
@@ -2659,8 +2667,15 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
-    // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
-    readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
+    // The { withFileTypes: true } Dirent form, the { recursive: true } walk,
+    // and the { encoding: "buffer" } name form.
+    readdirSync: [
+      "fs.readdirTypesSync",
+      "fs.readdirTypesRecursiveSync",
+      "fs.readdirRecursiveSync",
+      "fs.readdirBytesSync",
+      "fs.readdirEncodedSync",
+    ],
     // The { throwIfNoEntry } probe form and the run-time option ladder
     // (bigint and throwIfNoEntry read off a value only the runtime knows).
     statSync: ["fs.statProbeSync", "fs.statSyncDyn"],
@@ -2698,8 +2713,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fsp.writeFileData",
       "fsp.writeFileDataFlags",
     ],
-    // The { withFileTypes: true } Dirent form.
-    readdir: ["fsp.readdirTypes"],
+    // The { withFileTypes: true } Dirent form and the { encoding: "buffer" } names.
+    readdir: [
+      "fsp.readdirTypes",
+      "fsp.readdirTypesRecursive",
+      "fsp.readdirRecursive",
+      "fsp.readdirBytes",
+      "fsp.readdirEncoded",
+    ],
     glob: ["fsp.globTypes"],
     // The bytes-data form and the checked-data-argument form.
     appendFile: ["fsp.appendFileBytes", "fsp.appendFileData"],
@@ -2828,6 +2849,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "worker.parentPort",
         "worker.resourceLimits",
         "worker.threadName",
+        "worker.performance",
       ],
       note: "current-thread metadata and the worker's parent message port",
     },
@@ -2899,8 +2921,8 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.fs.watchFile",
       kind: "node-builtin",
       name: "fs.watchFile",
-      fns: ["fs.watchFile"],
-      note: "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused",
+      fns: ["fs.watchFile", "statWatcher.ref", "statWatcher.unref"],
+      note: "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused",
     },
     {
       id: "node-builtin.fs.unwatchFile",

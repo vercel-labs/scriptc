@@ -2998,84 +2998,67 @@ static bool scr_sqlite_db_deserialize(ScrSqliteDb *db, ScrDyn *const *args, size
     scr_sqlite_invalid_arg_type("The \"buffer\" argument must be a Uint8Array.");
     return false;
   }
-  size_t byte_length = input->v.bytes->len;
-  if (byte_length == 0) {
+  if (input->v.bytes->len == 0) {
     scr_dyn_release(input);
     scr_sqlite_invalid_arg_value("The \"buffer\" argument must not be empty.");
     return false;
   }
   ScrDyn *options = scr_dyn_retain((ScrDyn *)scr_sqlite_arg(args, argc, 1));
+  ScrStr *held = NULL;
   const char *db_name = "main";
+  bool ok = true;
   if (options->kind != SCR_DYN_UNDEF) {
     if (!scr_sqlite_object_like(options)) {
-      scr_dyn_release(options);
-      scr_dyn_release(input);
       scr_sqlite_invalid_arg_type("The \"options\" argument must be an object.");
-      return false;
+      ok = false;
+      goto done;
     }
     ScrDyn *name = scr_sqlite_get(options, "dbName");
     if (name == NULL) {
-      scr_dyn_release(options);
-      scr_dyn_release(input);
-      return false;
+      ok = false;
+      goto done;
     }
     if (name->kind != SCR_DYN_UNDEF) {
       if (name->kind != SCR_DYN_STR) {
         scr_dyn_release(name);
-        scr_dyn_release(options);
-        scr_dyn_release(input);
         scr_sqlite_invalid_arg_type("The \"options.dbName\" argument must be a string.");
-        return false;
+        ok = false;
+        goto done;
       }
       /* The SQLite call borrows the name; hold it through the call. */
-      ScrStr *held = scr_str_retain(name->v.str);
-      scr_dyn_release(name);
+      held = scr_str_retain(name->v.str);
       db_name = held->data;
-      /* Deserializes below, then releases `held`. */
-      unsigned char *buf = sqlite3_malloc64(byte_length);
-      if (buf == NULL) {
-        scr_str_release(held);
-        scr_dyn_release(options);
-        scr_dyn_release(input);
-        scr_throw_error_msg_code(SCR_ERR_ERROR, "Memory allocation failed", 22,
-                                 "ERR_MEMORY_ALLOCATION_FAILED");
-        return false;
-      }
-      memcpy(buf, input->v.bytes->data, byte_length);
-      scr_sqlite_db_close_statements(db);
-      int r = sqlite3_deserialize(db->conn, db_name, buf, (sqlite3_int64)byte_length,
-                                  (sqlite3_int64)byte_length,
-                                  SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
-      bool ok = true;
-      if (r != SQLITE_OK) {
-        scr_sqlite_throw_db_error(db);
-        ok = false;
-      }
-      scr_str_release(held);
-      scr_dyn_release(options);
-      scr_dyn_release(input);
-      return ok;
     }
     scr_dyn_release(name);
   }
+  /* Reading the options ran their getters, and one can detach or resize the
+   * buffer: what is copied is the view's state now, not the length measured
+   * before. A view the getter detached has no bytes left, which is the empty
+   * buffer error Node answers for one that arrives detached. */
+  size_t byte_length = scr_bytes_view_usable(input->v.bytes) ? input->v.bytes->len : 0;
+  if (byte_length == 0) {
+    scr_sqlite_invalid_arg_value("The \"buffer\" argument must not be empty.");
+    ok = false;
+    goto done;
+  }
   unsigned char *buf = sqlite3_malloc64(byte_length);
   if (buf == NULL) {
-    scr_dyn_release(options);
-    scr_dyn_release(input);
     scr_throw_error_msg_code(SCR_ERR_ERROR, "Memory allocation failed", 22,
                              "ERR_MEMORY_ALLOCATION_FAILED");
-    return false;
+    ok = false;
+    goto done;
   }
   memcpy(buf, input->v.bytes->data, byte_length);
   scr_sqlite_db_close_statements(db);
   int r = sqlite3_deserialize(db->conn, db_name, buf, (sqlite3_int64)byte_length,
                               (sqlite3_int64)byte_length,
                               SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
-  bool ok = true;
   if (r != SQLITE_OK) {
     scr_sqlite_throw_db_error(db);
     ok = false;
   }
+done:
+  scr_str_release(held);
   scr_dyn_release(options);
   scr_dyn_release(input);
   return ok;

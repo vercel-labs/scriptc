@@ -7,3 +7,14 @@ function loadReact() {
 }
 console.log(loadReact() === loadReact(), loadReact() === loadReact());
 console.log(require("./react.cjs").version, typeof loadReact());
+function loadForward() {
+  return require("./forward.cjs");
+}
+console.log(loadForward() === loadReact(), loadForward().version);
+function take() {
+  var { value, table } = require("./state.cjs");
+  require("./state.cjs").set("second");
+  return value + ":" + table.counted;
+}
+console.log(take());
+console.log(take());

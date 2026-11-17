@@ -1218,11 +1218,15 @@ export function cjsExportsObjectValue(
   dep: ts.SourceFile,
   blame: ts.Node,
 ): IrExpr | null {
-  if (!cjsNamespaceModule(lowerer, dep)) return null;
+  // Node hands out the SAME exports object for a module and for every module
+  // that forwards it (`module.exports = require("./base")`), so the view is
+  // the terminal table's — one runtime object per module, identity included.
+  const target = cjsNamespaceTargetOf(lowerer, dep);
+  if (target === null) return null;
   const loc = locOf(blame);
   const type: IrType & { kind: "moduleNs" } = {
     kind: "moduleNs",
-    moduleId: `file:${tsgoPath(resolve(dep.fileName))}`,
+    moduleId: `file:${tsgoPath(resolve(target.fileName))}`,
   };
   return moduleNamespaceDynValue(lowerer, {
     kind: "moduleNsRef",

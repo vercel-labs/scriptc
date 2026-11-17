@@ -956,10 +956,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
       );
     }
-    // A table module's require binding used as a value IS its exports
-    // object: the runtime's per-module view over the module's export
-    // globals (null only for a module that is not such a table).
-    const exportsObject = dep === null ? null : cjsExportsObjectValue(lowerer, dep, expr);
+    // A NESTED declaration's require binding used as a value IS its
+    // exports object: the runtime's per-module view over the module's
+    // export globals. The top-level spelling keeps its fence (a value the
+    // module can mutate after evaluation is not modeled for it), and a
+    // namespace import keeps its own member fences.
+    const bindingDecl = lowerer.checker
+      .getSymbolAtLocation(expr)
+      ?.declarations.find(ts.isVariableDeclaration);
+    const bindingStmt = bindingDecl?.parent?.parent;
+    const nestedBinding = bindingStmt !== undefined && !ts.isSourceFile(bindingStmt.parent);
+    const exportsObject =
+      nestedBinding && dep !== null ? cjsExportsObjectValue(lowerer, dep, expr) : null;
     if (exportsObject !== null) return exportsObject;
     lowerer.unsupported(
       "SC1090",

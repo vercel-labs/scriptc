@@ -1173,18 +1173,38 @@ export function lowerInlineRequireValue(lowerer: Lowerer, call: ts.CallExpressio
   if (req === null) return null;
   const value = wholeExportValue(lowerer, req.dep, call, 0);
   if (value === null) {
-    // A table module's require answers its exports object: the runtime's
-    // per-module read-only view over the export globals (one object per
-    // module, so Node's cache identity holds).
-    const exportsObject = cjsExportsObjectValue(lowerer, req.dep, call);
+    // A table module's require answers its exports object in a NESTED
+    // position (a function body, an IIFE included): the runtime's
+    // per-module view over the export globals, one object per module, so
+    // Node's cache identity holds. A top-level inline require keeps its
+    // fence, as it had.
+    const exportsObject = nestedRequirePosition(call)
+      ? cjsExportsObjectValue(lowerer, req.dep, call)
+      : null;
     if (exportsObject !== null) return withRequireInit(lowerer, req, exportsObject);
     lowerer.unsupported(
       "SC1090",
       call,
-      `the whole export of '${req.spec}' as a value (its 'module.exports =' value has no static representation)`,
+      cjsNamespaceModule(lowerer, req.dep)
+        ? `the exports object of '${req.spec}' as a value (its exports compile to a static table: read require(${JSON.stringify(req.spec)}).member directly, or bind const m = require(${JSON.stringify(req.spec)}) at the module's top level)`
+        : `the whole export of '${req.spec}' as a value (its 'module.exports =' value has no static representation)`,
     );
   }
   return withRequireInit(lowerer, req, value);
+}
+
+/** Whether `call` sits inside a function body or parameter list (an IIFE
+ * included): a require there evaluates when the function runs, so its value
+ * is the module's exports object. */
+function nestedRequirePosition(call: ts.Node): boolean {
+  for (
+    let parent: ts.Node | undefined = call.parent;
+    parent !== undefined && !ts.isSourceFile(parent);
+    parent = parent.parent
+  ) {
+    if (ts.isFunctionLike(parent)) return true;
+  }
+  return false;
 }
 
 /** A compiled CommonJS module's exports object as a checked-dynamic value:

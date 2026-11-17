@@ -3882,8 +3882,15 @@ function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
     }
     const parent = outer.parent;
     if (parent !== undefined && ts.isExpressionStatement(parent)) return;
-    if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === outer)
-      return;
+    // A TOP-LEVEL declaration initializing from require() has its own
+    // statement edge (requiresOf7 above). A nested one evaluates the
+    // module where the declaration sits — lazy when it is in a deferred
+    // position — so it is an inline edge here.
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === outer) {
+      const list = parent.parent;
+      const stmt = list?.parent;
+      if (stmt !== undefined && ts.isSourceFile(stmt.parent)) return;
+    }
     out.push(n);
   });
   return out;

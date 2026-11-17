@@ -32,11 +32,15 @@ function forward() {
   return getKey();
 }
 
+const forwardArrow = () => getKey();
+const forwardParens = () => (getKey());
 const parensResult = (getKey());
 function forwardLocal() {
   return stored;
 }
 
+console.log("forward-arrow", forwardArrow(), typeof forwardArrow());
+console.log("forward-parens", forwardParens(), typeof forwardParens());
 console.log("parens-result", parensResult, typeof parensResult);
 console.log("forward-local", forwardLocal(), typeof forwardLocal());
 console.log("method", fromMethod, typeof fromMethod);

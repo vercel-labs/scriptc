@@ -10431,6 +10431,20 @@ export class Lowerer {
         return parent.left;
       return undefined;
     };
+    // A function forwards a widened value either directly (`return stored`)
+    // or by returning a widened-return call (`return getKey()`), and a
+    // concise arrow answers its body expression the same way.
+    const forwardsWidened = (expression: ts.Expression): boolean => {
+      let value = expression;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      if (ts.isCallExpression(value)) {
+        const callee = widenedReturnCallee(value.expression);
+        return callee !== undefined && this.jsWidenedReturnDecls.has(callee);
+      }
+      if (!ts.isIdentifier(value)) return false;
+      const symbol = this.checker.getSymbolAtLocation(value);
+      return symbol !== undefined && widened.has(symbol);
+    };
     for (let changed = true; changed;) {
       changed = false;
       const seeds: ts.Symbol[] = [];
@@ -10447,23 +10461,19 @@ export class Lowerer {
             if (target && !widened.has(target)) seeds.push(target);
             return undefined;
           }
+          if (
+            ts.isArrowFunction(node) &&
+            !ts.isBlock(node.body) &&
+            node.asteriskToken === undefined
+          ) {
+            if (forwardsWidened(node.body) && !this.jsWidenedReturnDecls.has(node)) {
+              this.jsWidenedReturnDecls.add(node);
+              changed = true;
+            }
+            return undefined;
+          }
           if (ts.isReturnStatement(node) && node.expression !== undefined) {
-            let expression = node.expression;
-            while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-            // A return forwards a widened value either directly (`return
-            // stored`, or `return getKey()` once the callee's return is
-            // recorded) — both make the enclosing function answer the key.
-            const forwarded = ts.isCallExpression(expression)
-              ? (() => {
-                  const callee = widenedReturnCallee(expression.expression);
-                  return callee !== undefined && this.jsWidenedReturnDecls.has(callee);
-                })()
-              : ts.isIdentifier(expression) &&
-                (() => {
-                  const symbol = this.checker.getSymbolAtLocation(expression);
-                  return symbol !== undefined && widened.has(symbol);
-                })();
-            if (!forwarded) return undefined;
+            if (!forwardsWidened(node.expression)) return undefined;
             let owner = node.parent;
             while (owner !== undefined && !ts.isFunctionLike(owner)) owner = owner.parent;
             if (

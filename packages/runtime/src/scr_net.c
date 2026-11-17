@@ -5280,6 +5280,9 @@ static bool scr_net_sock_connect_ready(ScrNetSocket *s /*nullable*/, ScrClosure 
     if (cb) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
     s->reconnect_ready = true;
     scr_net_sock_register(s);
+    /* the 'connect' re-emission is deferred work like every other socket
+     * event: without a slot the loop has nothing to wake it */
+    scr_net_work_add(s);
     return false;
   }
   return true;

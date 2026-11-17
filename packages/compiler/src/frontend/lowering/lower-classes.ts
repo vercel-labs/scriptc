@@ -239,6 +239,8 @@ import {
   isNodeUndefinedGlobalRoot,
 } from "./lower-namespaces.js";
 import { refusingFunctionNameOf } from "./builtin-function-fences.js";
+import { isGlobalMember } from "./global-values.js";
+import { isConstructibleGlobalClass } from "./node-value-reads.js";
 import { hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
 import {
@@ -1068,6 +1070,10 @@ export interface ClassInfo {
     type: IrType;
     /** Indexed sources can be absent despite the declared static type. */
     runtimeOptional?: true;
+    /** The field's JSDoc annotation does not describe every value the
+     * program writes to it (analyzeJsWidenedFields), so a read answers the
+     * stored value as it is. */
+    widened?: true;
     initializer: ts.Expression;
     globalId: string;
     readonly: boolean;
@@ -3245,7 +3251,13 @@ export function collectClassShapeInner(
             !lowerer.enumObjects.has(initializerSymbol)
           )
             continue;
-          const type = lowerer.irTypeOf(member.name);
+          let type = lowerer.irTypeOf(member.name);
+          // A JSDoc-typed static field the program writes values outside
+          // the annotation to holds them (analyzeJsWidenedFields), like an
+          // instance field of the same class.
+          const widened =
+            ts.isIdentifier(member.name) && lowerer.jsFieldWidened(decl, member.name.text);
+          if (widened) type = DYN;
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (
             type.kind === "dyn" &&
@@ -3263,6 +3275,7 @@ export function collectClassShapeInner(
           staticFields.push({
             name: member.name.text,
             type,
+            ...(widened ? { widened: true as const } : {}),
             initializer: member.initializer,
             globalId: `%g.s.${lowerer.classNamer(decl)}.${member.name.text}`,
             readonly: modifiers.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword),
@@ -3825,6 +3838,11 @@ export function collectClassShapeInner(
           type = inheritedJsFieldType(lowerer, decl, member.name.text, type);
           if (base?.fields.get(member.name.text)?.kind === "dyn") type = DYN;
           if (base && !fields.has(member.name.text) && lowerer.dynConvertible(type)) type = DYN;
+          // A JSDoc-typed field the program writes values outside the
+          // annotation to holds them (analyzeJsWidenedFields), exactly like
+          // an unannotated one.
+          if (ts.isIdentifier(member.name) && lowerer.jsFieldWidened(decl, member.name.text))
+            type = DYN;
         }
         if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
         // Bundled JS declares fields without annotations before assigning
@@ -5318,6 +5336,11 @@ export function collectClassShapeInner(
               }
             }
             type = inheritedJsFieldType(lowerer, decl, name, type);
+            // A JSDoc-typed field the program writes values outside the
+            // annotation to holds them (analyzeJsWidenedFields). The scan
+            // keys fields by their name, so ask for the property symbol the
+            // same way.
+            if (lowerer.jsFieldWidened(decl, name)) type = DYN;
             // super() can invoke a subclass setter or method before its
             // constructor assignments run. These slots start undefined.
             if (base && lowerer.dynConvertible(type) && !sealedPrefix?.created.has(name))
@@ -6642,6 +6665,10 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: locOf(d) });
       temps.push({ localId: local.id, funcType: shape.funcType, replaces: shape.replaces });
     }
+    // 1b. The heritage is read after every decorator factory evaluated and
+    // before the class exists: a cycle class read there throws its
+    // ReferenceError at this point, exactly where Node throws it.
+    stmts.push(...lowerer.heritageChecksFor(info.decl, loc));
     // 2. Applications, reverse order, over the accumulating class value.
     let current: IrExpr = classValueRef(lowerer, info, info.decl);
     for (let i = temps.length - 1; i >= 0; i--) {
@@ -7330,7 +7357,12 @@ export function lowerClassStaticRead(
       type: found.field.type,
       loc,
     };
-    return found.field.runtimeOptional || !ts.isPropertyAccessExpression(site)
+    // A widened field holds the value the program wrote, which the
+    // annotation does not describe; narrowing to the annotation would
+    // convert it back.
+    return found.field.runtimeOptional ||
+      found.field.widened ||
+      !ts.isPropertyAccessExpression(site)
       ? value
       : lowerer.maybeNarrow(value, site);
   }
@@ -12611,6 +12643,118 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
  * alias) resolves to the stdlib class symbol the named import binds, so the
  * construction takes the same lowering. A binding that holds the class
  * (`const U = url.URL`) follows its initializer to the same symbol. */
+/** `new RegExp(pattern, flags?)` and, with `what` naming the bare call form,
+ * `RegExp(pattern, flags?)`: Node runs the same constructor, so both lower to
+ * the same runtime construction (scr_regex.c's libregexp engine). The pattern
+ * compiles EAGERLY, so bad input throws Node's catchable SyntaxError at
+ * construction. Checked arguments retain native regexes and perform runtime
+ * coercion. */
+export function lowerRegExpConstruction(
+  lowerer: Lowerer,
+  at: ts.Node,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+  what: string,
+): IrExpr {
+  if (args.length > 2) {
+    lowerer.noLowering(`${what} with ${args.length} arguments`, at);
+  }
+  if (args.some(ts.isSpreadElement)) lowerer.noLowering(`${what} with spread arguments`, at);
+  return regExpFromValues(
+    lowerer,
+    args.map((arg) => lowerer.lowerExpr(arg)),
+    args,
+    loc,
+  );
+}
+
+/** The construction Node's RegExp builtin performs over already-lowered
+ * pattern/flags values, in that order. `nodes` names the source each value
+ * came from (a synthesized value leaves its slot undefined). */
+function regExpFromValues(
+  lowerer: Lowerer,
+  values: readonly (IrExpr | undefined)[],
+  nodes: readonly (ts.Expression | undefined)[],
+  loc: SrcLoc,
+): IrExpr {
+  // The statically spelled form below needs a string or undefined in
+  // each slot. Every other value — a `dyn` or `regex` argument, and
+  // any primitive or object the static form cannot spell, such as a
+  // boolean, number or null flags argument — reaches the runtime's
+  // JavaScript ToString, exactly the coercion the spec's RegExp
+  // builtin performs, so an invalid flags string throws Node's
+  // SyntaxError at construction instead of refusing the build.
+  const stringSlot = (value: IrExpr): boolean =>
+    value.type.kind === "string" ||
+    value.type.kind === "undefinedT" ||
+    (value.type.kind === "union" &&
+      (lowerer.unions
+        .get(value.type.unionId)
+        ?.arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT") ??
+        false));
+  if (
+    values.some(
+      (value) =>
+        value !== undefined &&
+        (value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value)),
+    )
+  ) {
+    const checked = [0, 1].map((index): IrExpr => {
+      const value = values[index];
+      const node = nodes[index];
+      if (value === undefined) return dynUndefinedExpr(loc);
+      return node === undefined
+        ? lowerer.coerceToExpected(value, DYN)
+        : lowerer.coerceInto(node, value, DYN);
+    });
+    return {
+      kind: "libCall",
+      fn: "regex.newChecked",
+      args: checked,
+      type: { kind: "regex" },
+      loc,
+    };
+  }
+  // Every slot reaches here as a string or a nullish cover of one: the
+  // checked path above took every other value.
+  const strArg = (index: number): IrExpr => {
+    const v = values[index];
+    const node = nodes[index];
+    const at = node === undefined ? loc : locOf(node);
+    if (v === undefined) return { kind: "strLit", value: "", type: STRING, loc };
+    const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+    if (v.type.kind === "undefinedT") {
+      if (v.kind === "unitLit") return empty;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: lowerer.coerceToExpected(v, DYN), loc: at }],
+        result: empty,
+        type: STRING,
+        loc,
+      };
+    }
+    if (v.type.kind === "union") {
+      return { kind: "nullish", left: v, right: empty, type: STRING, loc: at };
+    }
+    return v;
+  };
+  const pattern = strArg(0);
+  const flags = strArg(1);
+  // Node accepts the 'd' flag the engine does not have; a literal
+  // flags string refuses here like the literal regex form.
+  const flagNode = nodes[1];
+  if (flags.kind === "strLit" && flagNode !== undefined && flags.value.includes("d")) {
+    lowerer.unsupported("SC1120", flagNode, "the regex 'd' flag (match indices)");
+  }
+  return {
+    kind: "libCall",
+    fn: "regex.new",
+    args: [pattern, flags],
+    type: { kind: "regex" },
+    loc,
+  };
+}
+
 function stdlibUrlClassOf(
   lowerer: Lowerer,
   callee: ts.Expression,
@@ -12697,6 +12841,19 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const urlClass = stdlibUrlClassOf(lowerer, expr.expression);
     if (urlClass === "URL") return lowerUrlNew(lowerer, expr);
     if (urlClass === "URLSearchParams") return lowerSearchParamsNew(lowerer, expr, loc);
+  }
+  // `new util.TextEncoder()` / `new util.TextDecoder()`: the util module's
+  // members are the global classes of the same name in Node
+  // (global-values.ts GLOBAL_MEMBERS), so they take the global
+  // construction's lowering.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const member = lowerer.builtinMemberOf(expr.expression);
+    if (
+      member !== null &&
+      isGlobalMember(member) &&
+      (member.member === "TextEncoder" || member.member === "TextDecoder")
+    )
+      return lowerTextCodecNew(lowerer, expr, member.member);
   }
   const wrapper = lowerWrapperNew(lowerer, expr);
   if (wrapper) return wrapper;
@@ -13297,81 +13454,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // so bad input throws Node's catchable SyntaxError at construction.
     // Checked arguments retain native regexes and perform runtime coercion.
     if (symbol && ts.symbolName(symbol) === "RegExp" && lowerer.isStdlibSymbol(symbol)) {
-      const args = expr.arguments?.nodes ?? [];
-      if (args.length > 2) {
-        lowerer.noLowering(`new RegExp with ${args.length} arguments`, expr);
-      }
-      if (args.some(ts.isSpreadElement))
-        lowerer.noLowering("new RegExp with spread arguments", expr);
-      const values = args.map((arg) => lowerer.lowerExpr(arg));
-      // The statically spelled form below needs a string or undefined in
-      // each slot. Every other value — a `dyn` or `regex` argument, and
-      // any primitive or object the static form cannot spell, such as a
-      // boolean, number or null flags argument — reaches the runtime's
-      // JavaScript ToString, exactly the coercion the spec's RegExp
-      // builtin performs, so an invalid flags string throws Node's
-      // SyntaxError at construction instead of refusing the build.
-      const stringSlot = (value: IrExpr): boolean =>
-        value.type.kind === "string" ||
-        value.type.kind === "undefinedT" ||
-        (value.type.kind === "union" &&
-          (lowerer.unions
-            .get(value.type.unionId)
-            ?.arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT") ??
-            false));
-      if (
-        values.some(
-          (value) => value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value),
-        )
-      ) {
-        const checked = [0, 1].map((index): IrExpr =>
-          values[index]
-            ? lowerer.coerceInto(args[index]!, values[index]!, DYN)
-            : dynUndefinedExpr(loc),
-        );
-        return {
-          kind: "libCall",
-          fn: "regex.newChecked",
-          args: checked,
-          type: { kind: "regex" },
-          loc,
-        };
-      }
-      // Every slot reaches here as a string or a nullish cover of one: the
-      // checked path above took every other value.
-      const strArg = (a: ts.Expression | undefined): IrExpr => {
-        if (!a) return { kind: "strLit", value: "", type: STRING, loc };
-        const v = values[args.indexOf(a)]!;
-        const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
-        if (v.type.kind === "undefinedT") {
-          if (v.kind === "unitLit") return empty;
-          return {
-            kind: "seqExpr",
-            stmts: [{ kind: "exprStmt", expr: lowerer.coerceToExpected(v, DYN), loc: locOf(a) }],
-            result: empty,
-            type: STRING,
-            loc,
-          };
-        }
-        if (v.type.kind === "union") {
-          return { kind: "nullish", left: v, right: empty, type: STRING, loc: locOf(a) };
-        }
-        return v;
-      };
-      const pattern = strArg(args[0]);
-      const flags = strArg(args[1]);
-      // Node accepts the 'd' flag the engine does not have; a literal
-      // flags string refuses here like the literal regex form.
-      if (flags.kind === "strLit" && args[1] !== undefined && flags.value.includes("d")) {
-        lowerer.unsupported("SC1120", args[1], "the regex 'd' flag (match indices)");
-      }
-      return {
-        kind: "libCall",
-        fn: "regex.new",
-        args: [pattern, flags],
-        type: { kind: "regex" },
-        loc,
-      };
+      return lowerRegExpConstruction(lowerer, expr, expr.arguments?.nodes ?? [], loc, "new RegExp");
     }
     if (symbol && ts.symbolName(symbol) === "URL" && lowerer.isStdlibSymbol(symbol)) {
       return lowerUrlNew(lowerer, expr);
@@ -14050,7 +14133,16 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       symbol != null &&
       BIGINT_BYTES_NAMES.has(ts.symbolName(symbol)) &&
       isJsSourceFile(ts.getSourceFileOfNode(expr));
-    if (!bigintBytesCtor && lowerer.isStdlibSymbol(symbol ?? undefined)) {
+    // A global class whose value constructs in a JavaScript source
+    // (MessageChannel; node-value-reads.ts) is not fenced here: the callee
+    // reads as that constructor and the checked-dynamic construction below
+    // runs it.
+    const constructibleGlobal =
+      ts.isIdentifier(identifier) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      isConstructibleGlobalClass(identifier.text) &&
+      lowerer.isStdlibGlobal(identifier, identifier.text);
+    if (!bigintBytesCtor && !constructibleGlobal && lowerer.isStdlibSymbol(symbol ?? undefined)) {
       const ctorHints: Record<string, string | undefined> = {
         RegExp: "use a regex literal (/pattern/flags) — constructed regexes have no lowering",
         String:

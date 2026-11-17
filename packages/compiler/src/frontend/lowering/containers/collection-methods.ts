@@ -1353,7 +1353,7 @@ export function lowerSetSeedNew(
   );
   let source =
     !scalar && (declared?.kind === "array" || declared?.kind === "record")
-      ? lowerer.lowerCollectionKey(node, declared)
+      ? lowerer.lowerCollectionKey(node, declared, { seed: true })
       : lowerer.lowerExpr(node);
   if (declared?.kind === "string" && setT.elem.kind === "string" && source.type.kind === "dyn") {
     source = lowerer.coerceInto(node, source, STRING);

@@ -94,6 +94,19 @@ typedef struct ScrScandir ScrScandir;
 ScrScandir *scr_fs_scandir(ScrStr *path); /* or throws (NULL) */
 size_t scr_fs_scandir_count(const ScrScandir *s); /* NULL -> 0 */
 ScrStr *scr_fs_scandir_name(const ScrScandir *s, size_t i); /* +1 */
+/* The entry name's raw bytes — the `encoding: 'buffer'` form, which Node
+ * answers untouched (malformed names included). +1. */
+ScrBytes *scr_fs_scandir_bytes(const ScrScandir *s, size_t i);
+/* The recursive Dirent walk (`readdir(path, { recursive: true,
+ * withFileTypes: true })`): the same snapshot over every entry below the
+ * path, each name a basename and each parent the directory holding it
+ * (relative to the path; the path itself for the top level). */
+ScrScandir *scr_fs_scandir_recursive(ScrStr *path);
+/* fs/promises' recursive forms: Node's async walk keeps a stack, so the
+ * order differs from the synchronous one once a directory has several
+ * subdirectories; `follow_links` is false for the withFileTypes form. */
+ScrScandir *scr_fs_scandir_recursive_async(ScrStr *path, bool follow_links);
+ScrStr *scr_fs_scandir_parent(const ScrScandir *s, size_t i); /* +1 */
 double scr_fs_scandir_type(const ScrScandir *s, size_t i);
 void scr_fs_scandir_free(ScrScandir *s); /* NULL-tolerant */
 

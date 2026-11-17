@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, expect, test, vi } from "vitest";
@@ -7,10 +7,12 @@ import * as ts from "../ts7/adapter.js";
 import { closeSourceParser, parseSourceFile } from "../ts7/source-parser-node.js";
 import { Lowerer } from "./lowerer.js";
 import {
+  cjsModuleLacksExport,
   cjsNamespaceTargetOf,
   cjsRequireSnapshotBindingsOf,
   cjsTableExportNamesOf,
 } from "./cjs-inline-require.js";
+import { compile, deserializeModule } from "../../index.js";
 import { cjsExportCallIgnoresThis } from "./cjs-exports-object.js";
 import { cjsAccessorSnapshotStores } from "./lower-exprs.js";
 
@@ -221,4 +223,105 @@ test("a member that repeats a re-exported key keeps its first position", () => {
 test("an unresolved re-export has no statically known keys", () => {
   const outer = parse("x.cjs", `module.exports = require("./missing.cjs");\n`);
   expect(cjsTableExportNamesOf(outer, 0, reExports())).toBeNull();
+});
+
+test("a member no export statement carries is absent; inherited names are not", () => {
+  withProgram(
+    {
+      "main.cjs": 'var t = require("./table.cjs");\nconsole.log(t.present, t.absent);\n',
+      "table.cjs": "exports.present = 42;\n",
+    },
+    (lowerer) => {
+      const table = lowerer.program
+        .getSourceFiles()
+        .find((sf) => sf.fileName.endsWith("table.cjs"));
+      expect(table).toBeDefined();
+      expect(cjsModuleLacksExport(lowerer, table!, "present")).toBe(false);
+      expect(cjsModuleLacksExport(lowerer, table!, "absent")).toBe(true);
+      expect(cjsModuleLacksExport(lowerer, table!, "default")).toBe(false);
+      expect(cjsModuleLacksExport(lowerer, table!, "toString")).toBe(false);
+    },
+  );
+});
+
+test("a void-init export whose real values ignore 'this' may be called through the exports object", () => {
+  withProgram(
+    {
+      "main.cjs": `exports.now = void 0;
+if (typeof performance === "object") {
+  exports.now = function () { return 1; };
+} else {
+  exports.now = function () { return 2; };
+}
+exports.later = function () { return exports.now(); };
+`,
+    },
+    (lowerer) => {
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "now")).toBe(true);
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "later")).toBe(true);
+    },
+  );
+});
+
+test("an export statement a path can skip holds undefined from module entry", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-cjs-absent-"));
+  try {
+    writeFileSync(
+      join(dir, "cond.cjs"),
+      "exports.always = 'yes';\nif (false) exports.sometimes = 1;\n",
+    );
+    writeFileSync(
+      join(dir, "main.mjs"),
+      'import { always, sometimes } from "./cond.cjs";\nconsole.log(always, sometimes === undefined);\n',
+    );
+    const outPath = join(dir, "main.ir.json");
+    const result = await compile(join(dir, "main.mjs"), {
+      outDir: dir,
+      outPath,
+      outputKind: "ir",
+    });
+    expect(result.ok).toBe(true);
+    const mod = deserializeModule(readFileSync(outPath, "utf8"));
+    const globals = mod.globals ?? [];
+    const byName = (name: string) => globals.find((g) => g.name === name);
+    expect(byName("always")?.type.kind).toBe("string");
+    const sometimes = byName("sometimes");
+    expect(sometimes?.type.kind).toBe("union");
+    const entryInit = mod.functions.some(
+      (fn) =>
+        JSON.stringify(fn.body).includes(`"localId":"${sometimes!.id}"`) &&
+        JSON.stringify(fn.body).includes('"unit":"undefined"'),
+    );
+    expect(entryInit).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a void-init export still fails the proof when a real value reads 'this'", () => {
+  withProgram(
+    {
+      "main.cjs": `exports.now = void 0;
+exports.now = function () { return this.base; };
+exports.later = function () { return exports.now(); };
+`,
+    },
+    (lowerer) => {
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "now")).toBe(false);
+    },
+  );
+});
+
+test("a chained export assignment is proved by the value it stores", () => {
+  withProgram(
+    {
+      "main.cjs": `exports.a = exports.b = function () { return 1; };
+exports.run = function () { return exports.a() + exports.b(); };
+`,
+    },
+    (lowerer) => {
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "a")).toBe(true);
+      expect(cjsExportCallIgnoresThis(lowerer, lowerer.entry, "b")).toBe(true);
+    },
+  );
 });

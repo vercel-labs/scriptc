@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/webcrypto-x25519-key-agreement.ts"
+ ],
+ "diags": []
+}

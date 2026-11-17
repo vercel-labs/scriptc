@@ -2051,6 +2051,48 @@ ScrDyn *scr_url_lookup_object_url(const ScrStr *id) {
   return NULL;
 }
 
+/* buffer.resolveObjectURL's registration lookup: Node parses the id as a
+ * URL and reads the registration out of the pathname, which must be exactly
+ * "nodedata:<uuid>" (one colon). The registered Blob (+1), or NULL when the
+ * id names nothing. The Blob unit's resolveObjectURL rebuilds a fresh handle
+ * from it (scr_blob.c), so this core unit references no optional unit. */
+ScrDyn *scr_url_resolve_object_url(const ScrStr *id) {
+  ScrUrl *u = url_try_parse((ScrStr *)id, NULL);
+  if (!u) return NULL;
+  const ScrStr *path = u->path;
+  size_t first = SIZE_MAX;
+  for (size_t i = 0; i < path->len; i++) {
+    if (path->data[i] == ':') {
+      first = i;
+      break;
+    }
+  }
+  const size_t base_len = sizeof "nodedata" - 1;
+  if (first != base_len || memcmp(path->data, "nodedata", base_len) != 0) {
+    scr_url_release(u);
+    return NULL;
+  }
+  for (size_t i = first + 1; i < path->len; i++) {
+    if (path->data[i] == ':') {
+      scr_url_release(u);
+      return NULL;
+    }
+  }
+  const char *key = path->data + first + 1;
+  size_t key_len = path->len - first - 1;
+  size_t prefix = sizeof "blob:nodedata:" - 1;
+  ScrDyn *found = NULL;
+  for (const ScrUrlObjectUrl *entry = scr_url_object_urls; entry; entry = entry->next) {
+    if (entry->id->len - prefix == key_len &&
+        memcmp(entry->id->data + prefix, key, key_len) == 0) {
+      found = scr_dyn_retain(entry->blob);
+      break;
+    }
+  }
+  scr_url_release(u);
+  return found;
+}
+
 /* URL.revokeObjectURL(id) past the coercion. Node parses the string as a
  * URL and does nothing when that fails, then reads the registration's id
  * out of the pathname: everything after its FIRST colon and before a

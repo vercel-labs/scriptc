@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/jsdoc-indexed-member-array-literal.mjs"
+ ],
+ "diags": []
+}

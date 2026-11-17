@@ -390,6 +390,10 @@ typedef enum {
   SCR_MESSAGE_PORT,
   /* A native handle cloned through its unit's ScrDynHandleTransfer. */
   SCR_MESSAGE_HANDLE,
+  /* A Map: entries as decimal-keyed children, key then value per entry. */
+  SCR_MESSAGE_MAP,
+  /* A Set: one child per entry, in insertion order. */
+  SCR_MESSAGE_SET,
 } ScrMessageKind;
 
 /* Readers for compiled 'message' listeners (ScrDynMessageListener), which

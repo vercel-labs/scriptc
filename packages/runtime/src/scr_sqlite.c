@@ -1370,35 +1370,41 @@ static ScrDyn *scr_sqlite_tag_invoke(void *h, ScrDyn *self, const char *method,
   ScrSqliteStmt *stmt = scr_sqlite_tag_statement(store, sql);
   scr_str_release(sql);
   if (stmt == NULL) return NULL;
-  if (!scr_sqlite_tag_bind(stmt, args, argc)) return NULL;
-
-  if (strcmp(method, "run") == 0) return scr_sqlite_stmt_run_result(stmt);
-  if (strcmp(method, "all") == 0) return scr_sqlite_stmt_all_result(stmt);
-  if (strcmp(method, "get") == 0) {
+  /* The cache's reference is not enough for the call: a user function the
+   * statement runs can clear() the store, and the statement being executed
+   * must stay alive until it finishes. */
+  scr_sqlite_stmt_retain(stmt);
+  ScrDyn *out = NULL;
+  if (!scr_sqlite_tag_bind(stmt, args, argc)) {
+    /* The bind's own exception is pending. */
+  } else if (strcmp(method, "run") == 0) {
+    out = scr_sqlite_stmt_run_result(stmt);
+  } else if (strcmp(method, "all") == 0) {
+    out = scr_sqlite_stmt_all_result(stmt);
+  } else if (strcmp(method, "get") == 0) {
     int r = sqlite3_step(stmt->stmt);
-    ScrDyn *out;
     if (r == SQLITE_DONE || (r == SQLITE_ROW && sqlite3_column_count(stmt->stmt) == 0)) {
       out = scr_dyn_retain(scr_dyn_undefined());
+      sqlite3_reset(stmt->stmt);
     } else if (r != SQLITE_ROW) {
       sqlite3_reset(stmt->stmt);
       scr_sqlite_throw_db_error(stmt->db);
-      return NULL;
     } else {
       out = scr_sqlite_row(stmt, stmt->return_arrays);
+      sqlite3_reset(stmt->stmt);
     }
-    sqlite3_reset(stmt->stmt);
-    return out;
-  }
-  if (strcmp(method, "iterate") == 0) {
+  } else if (strcmp(method, "iterate") == 0) {
     ScrSqliteIter *it = calloc(1, sizeof *it);
     if (it == NULL) scr_sqlite_oom();
     it->rc = 1;
     it->stmt = scr_sqlite_stmt_retain(stmt);
     it->generation = stmt->generation;
-    return scr_sqlite_iter_new(it);
+    out = scr_sqlite_iter_new(it);
+  } else {
+    scr_sqlite_not_a_function(what);
   }
-  scr_sqlite_not_a_function(what);
-  return NULL;
+  scr_sqlite_stmt_release(stmt);
+  return out;
 }
 
 static ScrDyn *scr_sqlite_tag_get(void *h, const char *key, size_t len) {
@@ -2992,84 +2998,67 @@ static bool scr_sqlite_db_deserialize(ScrSqliteDb *db, ScrDyn *const *args, size
     scr_sqlite_invalid_arg_type("The \"buffer\" argument must be a Uint8Array.");
     return false;
   }
-  size_t byte_length = input->v.bytes->len;
-  if (byte_length == 0) {
+  if (input->v.bytes->len == 0) {
     scr_dyn_release(input);
     scr_sqlite_invalid_arg_value("The \"buffer\" argument must not be empty.");
     return false;
   }
   ScrDyn *options = scr_dyn_retain((ScrDyn *)scr_sqlite_arg(args, argc, 1));
+  ScrStr *held = NULL;
   const char *db_name = "main";
+  bool ok = true;
   if (options->kind != SCR_DYN_UNDEF) {
     if (!scr_sqlite_object_like(options)) {
-      scr_dyn_release(options);
-      scr_dyn_release(input);
       scr_sqlite_invalid_arg_type("The \"options\" argument must be an object.");
-      return false;
+      ok = false;
+      goto done;
     }
     ScrDyn *name = scr_sqlite_get(options, "dbName");
     if (name == NULL) {
-      scr_dyn_release(options);
-      scr_dyn_release(input);
-      return false;
+      ok = false;
+      goto done;
     }
     if (name->kind != SCR_DYN_UNDEF) {
       if (name->kind != SCR_DYN_STR) {
         scr_dyn_release(name);
-        scr_dyn_release(options);
-        scr_dyn_release(input);
         scr_sqlite_invalid_arg_type("The \"options.dbName\" argument must be a string.");
-        return false;
+        ok = false;
+        goto done;
       }
       /* The SQLite call borrows the name; hold it through the call. */
-      ScrStr *held = scr_str_retain(name->v.str);
-      scr_dyn_release(name);
+      held = scr_str_retain(name->v.str);
       db_name = held->data;
-      /* Deserializes below, then releases `held`. */
-      unsigned char *buf = sqlite3_malloc64(byte_length);
-      if (buf == NULL) {
-        scr_str_release(held);
-        scr_dyn_release(options);
-        scr_dyn_release(input);
-        scr_throw_error_msg_code(SCR_ERR_ERROR, "Memory allocation failed", 22,
-                                 "ERR_MEMORY_ALLOCATION_FAILED");
-        return false;
-      }
-      memcpy(buf, input->v.bytes->data, byte_length);
-      scr_sqlite_db_close_statements(db);
-      int r = sqlite3_deserialize(db->conn, db_name, buf, (sqlite3_int64)byte_length,
-                                  (sqlite3_int64)byte_length,
-                                  SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
-      bool ok = true;
-      if (r != SQLITE_OK) {
-        scr_sqlite_throw_db_error(db);
-        ok = false;
-      }
-      scr_str_release(held);
-      scr_dyn_release(options);
-      scr_dyn_release(input);
-      return ok;
     }
     scr_dyn_release(name);
   }
+  /* Reading the options ran their getters, and one can detach or resize the
+   * buffer: what is copied is the view's state now, not the length measured
+   * before. A view the getter detached has no bytes left, which is the empty
+   * buffer error Node answers for one that arrives detached. */
+  size_t byte_length = scr_bytes_view_usable(input->v.bytes) ? input->v.bytes->len : 0;
+  if (byte_length == 0) {
+    scr_sqlite_invalid_arg_value("The \"buffer\" argument must not be empty.");
+    ok = false;
+    goto done;
+  }
   unsigned char *buf = sqlite3_malloc64(byte_length);
   if (buf == NULL) {
-    scr_dyn_release(options);
-    scr_dyn_release(input);
     scr_throw_error_msg_code(SCR_ERR_ERROR, "Memory allocation failed", 22,
                              "ERR_MEMORY_ALLOCATION_FAILED");
-    return false;
+    ok = false;
+    goto done;
   }
   memcpy(buf, input->v.bytes->data, byte_length);
   scr_sqlite_db_close_statements(db);
   int r = sqlite3_deserialize(db->conn, db_name, buf, (sqlite3_int64)byte_length,
                               (sqlite3_int64)byte_length,
                               SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
-  bool ok = true;
   if (r != SQLITE_OK) {
     scr_sqlite_throw_db_error(db);
     ok = false;
   }
+done:
+  scr_str_release(held);
   scr_dyn_release(options);
   scr_dyn_release(input);
   return ok;

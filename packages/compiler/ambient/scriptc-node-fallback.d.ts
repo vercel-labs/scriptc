@@ -1379,10 +1379,11 @@ interface AbortSignal extends EventTarget {
   throwIfAborted(): void;
 }
 declare var AbortSignal: {
-  timeout(ms: number): AbortSignal;
+  readonly prototype: AbortSignal;
+  new (): AbortSignal;
   abort(reason?: unknown): AbortSignal;
   any(signals: readonly AbortSignal[]): AbortSignal;
-  readonly prototype: AbortSignal;
+  timeout(ms: number): AbortSignal;
 };
 
 interface QueuingStrategySize<T = unknown> {

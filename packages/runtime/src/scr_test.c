@@ -1284,9 +1284,12 @@ static ScrStr *scr_test_failure_message(const ScrTestCtx *t) {
       scr_insp_layout(80, 3, false, 100);
       scr_insp_custom_inspect(previous);
       if (scr_exc_pending()) {
+        /* Even the plain retry failed: cache an inert message, so the
+         * settled failure never looks unrendered (exit reporting must not
+         * try again). */
         scr_exc_clear();
         scr_str_release(msg);
-        msg = NULL;
+        msg = scr_str_new("", 0);
       }
     }
     scr_dyn_release(value);
@@ -1315,12 +1318,12 @@ static void scr_test_print_failure(ScrTestCtx *t) {
     else fputs("SKIP", scr_test_out());
   }
   fputc('\n', scr_test_out());
-  if (t->err) {
-    /* The message was rendered when the result settled: the summary prints at
-     * exit, after the program's own values are released, and rendering then
-     * could run a custom inspector over freed state. */
-    ScrStr *msg = t->fail_msg ? scr_str_retain(t->fail_msg) : scr_test_failure_message(t);
-    if (msg) {
+  if (t->err && t->fail_msg) {
+    /* The message was rendered when the result settled, while the program's
+     * values were alive; this print runs at exit, after the epilogue released
+     * them, so it must never render (which could run a custom inspector). */
+    ScrStr *msg = scr_str_retain(t->fail_msg);
+    if (msg && msg->len > 0) {
       const char *p = msg->data;
       const char *end = msg->data + msg->len;
       while (p <= end) {
@@ -2003,19 +2006,24 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
   double after_start = scr_now_ms();
   ScrTestHook *after_failed = scr_test_run_hooks_of(root, SCR_HOOK_AFTER, root);
   if (scr_exc_pending()) {
+    /* Copy the failing hook's location before rendering: the render can run
+     * a custom inspector, and an inspector that registers another after hook
+     * moves the root's growable hook array, leaving the pointer dangling. */
+    ScrStr *failed_at = after_failed && after_failed->at ? scr_str_retain(after_failed->at) : NULL;
     root->err = scr_exc_take();
     root->fail_msg = scr_test_failure_message(root);
     root->dur_ms = scr_now_ms() - after_start;
     root->state = SCR_TS_FAIL;
-    if (after_failed && after_failed->at) {
-      root->at = scr_str_retain(after_failed->at);
+    if (failed_at) {
+      root->at = scr_str_retain(failed_at);
       /* The name is the file: the location without its ":line:col". */
-      size_t end = root->at->len;
+      size_t end = failed_at->len;
       for (int colons = 0; end > 0 && colons < 2; end--) {
-        if (root->at->data[end - 1] == ':') colons++;
+        if (failed_at->data[end - 1] == ':') colons++;
       }
       scr_str_release(root->name);
-      root->name = scr_str_new(root->at->data, end);
+      root->name = scr_str_new(failed_at->data, end);
+      scr_str_release(failed_at);
     }
     fputs("\xE2\x9C\x96 ", scr_test_out());
     scr_test_print_str(root->name);

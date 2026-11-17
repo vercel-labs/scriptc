@@ -78,7 +78,6 @@ import {
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
   cjsRequireSnapshotBindingsOf,
-  cjsRuntimeWholeExportValueWritesOf,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   nestedCjsExportAssignmentsOf,

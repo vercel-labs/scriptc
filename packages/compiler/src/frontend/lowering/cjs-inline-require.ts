@@ -1258,11 +1258,19 @@ export function wholeExportValueOfModuleBinding(
   if (depth > 32) return null;
   if (splitRequireBindingOfIdent(lowerer, expr) !== null) return null;
   const dep = lowerer.cjsModuleBindingDepOf(expr);
-  // A DEFAULT import of a module whose whole export is chosen at run time
-  // was bound to the value that module held when it finished evaluating.
-  // Node keeps that value even after an exported function replaces
-  // module.exports, so the module's snapshot owns the read.
-  const snapshot = dep === null ? null : lowerer.cjsRuntimeExportSnapshotOf(dep);
+  // An ESM default import of a module whose whole export is chosen at run
+  // time was bound to the value that module held when it finished
+  // evaluating. Node keeps that value even after an exported function
+  // replaces module.exports, so the module's snapshot owns that read. A
+  // require binding is not an import: it holds the value its own require
+  // answered (created after a replacement, it sees the replacement).
+  const symbol = lowerer.checker.getSymbolAtLocation(expr);
+  const importBinding =
+    symbol !== undefined &&
+    symbol.declarations.some(
+      (d) => ts.isImportClause(d) || ts.isNamespaceImport(d) || ts.isImportSpecifier(d),
+    );
+  const snapshot = dep !== null && importBinding ? lowerer.cjsRuntimeExportSnapshotOf(dep) : null;
   if (snapshot !== null)
     return { kind: "varRef", localId: snapshot.id, type: DYN, loc: locOf(expr) };
   if (dep === null || cjsNamespaceModule(lowerer, dep)) return null;

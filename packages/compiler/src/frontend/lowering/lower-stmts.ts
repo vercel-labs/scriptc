@@ -2917,6 +2917,22 @@ function lowerVarDeclarator(
     }
     if (isDeadTscHelperDecl(lowerer, stmt)) return [];
   }
+  // A require binding of a module whose whole export is chosen at run time
+  // keeps its own storage: Node's require answered a value at this position,
+  // and a replacement the module performs later does not change the binding
+  // (a require created after the replacement answers the replacement).
+  if (decl.initializer !== undefined && ts.isIdentifier(decl.name)) {
+    const req = inlineProgramRequireOf(lowerer, decl.initializer);
+    if (req !== null && lowerer.cjsRuntimeWholeExportModule(req.dep)) {
+      const symbol = lowerer.resolveValueSymbol(decl.name);
+      if (symbol !== null) {
+        lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+        lowerer.jsWidenedBindings.add(symbol);
+      }
+      const lowered = lowerer.lowerVarDecl(decl, isLet);
+      return lowered ? [lowered] : [];
+    }
+  }
   // CommonJS require declarations (JS files): at the module's top
   // level the BINDINGS are alias plumbing (no storage;
   // resolveValueSymbol routes the reads), but the require itself is

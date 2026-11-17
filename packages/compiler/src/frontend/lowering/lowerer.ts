@@ -10393,7 +10393,8 @@ export class Lowerer {
       let callee = expression;
       while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
       let declared: ts.Node | undefined;
-      if (ts.isIdentifier(callee)) declared = this.checker.getSymbolAtLocation(callee)?.valueDeclaration;
+      if (ts.isIdentifier(callee))
+        declared = this.checker.getSymbolAtLocation(callee)?.valueDeclaration;
       else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name))
         declared = this.checker.getSymbolAtLocation(callee.name)?.valueDeclaration;
       if (
@@ -10410,20 +10411,27 @@ export class Lowerer {
         : undefined;
     };
     const storeTargetOf = (call: ts.CallExpression): ts.Node | undefined => {
+      // The call may sit inside parentheses: `const stored = (getKey())`. The
+      // declaration names the outermost parenthesized wrapper as its
+      // initializer, so compare against the child the walk climbed from.
+      let child: ts.Node = call;
       let parent: ts.Node | undefined = call.parent;
-      while (parent !== undefined && ts.isParenthesizedExpression(parent)) parent = parent.parent;
-      if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === call)
+      while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+        child = parent;
+        parent = parent.parent;
+      }
+      if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === child)
         return parent.name;
       if (
         parent !== undefined &&
         ts.isBinaryExpression(parent) &&
-        parent.right === call &&
+        parent.right === child &&
         parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
       )
         return parent.left;
       return undefined;
     };
-    for (let changed = true; changed; ) {
+    for (let changed = true; changed;) {
       changed = false;
       const seeds: ts.Symbol[] = [];
       for (const { sf } of parts) {
@@ -10442,9 +10450,20 @@ export class Lowerer {
           if (ts.isReturnStatement(node) && node.expression !== undefined) {
             let expression = node.expression;
             while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
-            if (!ts.isCallExpression(expression)) return undefined;
-            const callee = widenedReturnCallee(expression.expression);
-            if (callee === undefined || !this.jsWidenedReturnDecls.has(callee)) return undefined;
+            // A return forwards a widened value either directly (`return
+            // stored`, or `return getKey()` once the callee's return is
+            // recorded) — both make the enclosing function answer the key.
+            const forwarded = ts.isCallExpression(expression)
+              ? (() => {
+                  const callee = widenedReturnCallee(expression.expression);
+                  return callee !== undefined && this.jsWidenedReturnDecls.has(callee);
+                })()
+              : ts.isIdentifier(expression) &&
+                (() => {
+                  const symbol = this.checker.getSymbolAtLocation(expression);
+                  return symbol !== undefined && widened.has(symbol);
+                })();
+            if (!forwarded) return undefined;
             let owner = node.parent;
             while (owner !== undefined && !ts.isFunctionLike(owner)) owner = owner.parent;
             if (

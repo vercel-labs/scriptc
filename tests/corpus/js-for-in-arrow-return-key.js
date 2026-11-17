@@ -32,6 +32,13 @@ function forward() {
   return getKey();
 }
 
+const parensResult = (getKey());
+function forwardLocal() {
+  return stored;
+}
+
+console.log("parens-result", parensResult, typeof parensResult);
+console.log("forward-local", forwardLocal(), typeof forwardLocal());
 console.log("method", fromMethod, typeof fromMethod);
 console.log("parens", parenthesized, typeof parenthesized);
 console.log("forward", forward(), typeof forward());

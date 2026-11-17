@@ -1,4 +1,5 @@
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
+import { writeFileSync } from "node:fs";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -72,6 +73,9 @@ import {
   isJsSourceFileName,
   jsFieldDeclaringClass,
   jsStoresWrittenValue,
+  jsWritableBindingDeclaration,
+  operatorOperandNodes,
+  voidTruthinessNeedsRuntimeValue,
 } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -90,6 +94,7 @@ import { lowerParallelCall } from "./parallel-loops.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
+  heritageChecksFor,
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
@@ -145,6 +150,7 @@ import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { lowerAbortSignalNew } from "./builtins/abort-signal.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
   lowerWebAssemblyCall,
@@ -154,8 +160,8 @@ import {
 import { discoverWasmModules, type WasmModuleReport } from "../../wasm/discover.js";
 import { encodeBase64 } from "../../wasm/base64.js";
 import { resolveRequireRuntime } from "../runtime-resolve.js";
-import { isInstalledPackagePath } from "../resolve.js";
-import { lowerKeyObjectCall } from "./builtins/key-object.js";
+import { isInstalledPackagePath, projectDtsRuntimeSibling } from "../resolve.js";
+import { lowerKeyObjectCall, lowerKeyObjectFromCall } from "./builtins/key-object.js";
 import { lowerX509Call, refuseX509DynValues } from "./builtins/x509.js";
 import { lowerCertificateCall } from "./builtins/certificate.js";
 import type { BuiltinMemberWrite } from "./builtin-member-writes.js";
@@ -166,7 +172,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
-import { lowerSqliteNew } from "./builtins/sqlite.js";
+import { lowerSqliteCall, lowerSqliteNew } from "./builtins/sqlite.js";
 import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
@@ -1062,6 +1068,11 @@ interface KeptOperand {
   slotNotes: ProbedSlotNotes | null;
 }
 
+/** The checker codes whose admitted sites give a JavaScript binding
+ * checked-dynamic storage (widenRetypedOperatorBindings): an operator over a
+ * binding the program retyped, and a `var` read before its assignment. */
+const RETYPED_OPERATOR_CODES: ReadonlySet<number> = new Set([2356, 2365, 2454]);
+
 /** Operands that cost less to lower than to keep (Lowerer.keptOperands). */
 function isCheapOperand(node: ts.Expression): boolean {
   return (
@@ -1217,6 +1228,11 @@ export interface LowerResult {
    * statements in the module) — off the build, on the coverage report. */
   runtimeFences: ScrDiagnostic[];
   stats: LowerStats;
+  /** With unit reuse: the emitted-function names this build lowered rather
+   * than applied. Absent when it applied every record or used no unit store.
+   * A per-unit consumer keys its cache by this set instead of hashing every
+   * function's IR. */
+  changedUnits?: readonly string[];
   /** --provenance-sources only: per-file statement attribution (the
    * coverage report aggregates it per provenance package). */
   statsByFile?: Map<string, { total: number; failed: number }>;
@@ -5781,6 +5797,10 @@ export class Lowerer {
   /** Initialization flags of classes reachable before their statement ran,
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
+  /** Class declarations whose `extends` clause reads a flagged cycle class:
+   * the flag is checked where that class statement runs
+   * (cycle-initialization.ts). */
+  readonly heritageClassChecks = new Map<ts.ClassLikeDeclaration, CycleInitFlag[]>();
   /** Initialization flags of import-cycle bindings that have no module
    * storage and are only ever called (cycle-initialization.ts). */
   readonly calledBindingInitFlags: CycleInitFlag[] = [];
@@ -6274,6 +6294,7 @@ export class Lowerer {
       checkedTable("closureDynLets", () => this.closureDynLets.size),
       checkedTable("cycleInitFlags", () => this.cycleInitFlags.size),
       checkedTable("classInitFlags", () => this.classInitFlags.size),
+      checkedTable("heritageClassChecks", () => this.heritageClassChecks.size),
       checkedTable("calledBindingInitFlags", () => this.calledBindingInitFlags.length),
       checkedTable("cycleInitDeclarations", () => this.cycleInitDeclarations.size),
       checkedTable("uninitializedLexicalGlobals", () => this.uninitializedLexicalGlobals.size),
@@ -6421,6 +6442,11 @@ export class Lowerer {
     "computedEnvironmentWrite",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",
+    // Cache made when first needed: the implementation symbol a declaration
+    // in a project twin (a `.d.ts` beside the JavaScript it describes) binds
+    // to, by symbol and by the import alias it was read through.
+    "declarationTwinSymbols",
+    "declarationTwinRouted",
     "socketEncodingReachable",
     "thenablesMayBeDefined",
     "unixListenReachable",
@@ -7610,6 +7636,7 @@ export class Lowerer {
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
       runtimeClassValue: (type) => runtimeClassValueOfType(this, type),
+      classTwinDeclaration: (decl) => this.declarationTwinClassDeclarationOf(decl),
       localClassValue: (type) =>
         this.instanceResultClass !== null && this.instanceResultClass.declared === type.id
           ? (noteScopeSensitiveMapping(), this.instanceResultClass.value)
@@ -8087,14 +8114,21 @@ export class Lowerer {
     if (!sym) return null;
     if (sym.flags & ts.SymbolFlags.Alias) sym = this.checker.getAliasedSymbol(sym);
     for (const decl of sym.declarations) {
+      // A project declaration's namespace is its runtime implementation's:
+      // the checker resolves the import to the declaration beside the
+      // JavaScript Node loads (resolve.ts's projectDtsRuntimeSibling).
+      const source = ts.isSourceFile(decl)
+        ? decl.isDeclarationFile
+          ? this.declarationTwinFileOf(decl.fileName)
+          : decl
+        : null;
       if (
-        ts.isSourceFile(decl) &&
-        !decl.isDeclarationFile &&
-        !decl.fileName.endsWith(".cts") &&
-        !isCjsJsFile(decl, this.program) &&
-        this.moduleOrder.includes(decl)
+        source !== null &&
+        !source.fileName.endsWith(".cts") &&
+        !isCjsJsFile(source, this.program) &&
+        this.moduleOrder.includes(source)
       ) {
-        return `file:${this.pathOf(decl)}`;
+        return `file:${this.pathOf(source)}`;
       }
       if (ts.isModuleDeclaration(decl) && ts.isStringLiteral(decl.name)) {
         const builtin = canonicalBuiltinModule(decl.name.text);
@@ -8501,6 +8535,7 @@ export class Lowerer {
       this.flushDeferred(wholeSlot);
       return wholeSlot;
     }
+    const importAlias = symbol;
     if (symbol.flags & ts.SymbolFlags.Alias) {
       // SNAPSHOT aliases own storage keyed by the PRE-alias symbol
       // (`import x = N.y` of a mutable target — collectGlobals): the
@@ -8569,8 +8604,193 @@ export class Lowerer {
     // the target's value symbol explicitly.
     const splitAlias = splitWholeExportAliasTargetOf(this, symbol);
     if (splitAlias) symbol = splitAlias;
+    // A project declaration's runtime implementation owns the storage and
+    // the bodies (resolve.ts's projectDtsRuntimeSibling): the checker
+    // resolved the import to the declaration beside the JavaScript Node
+    // loads, so a reference re-binds to the implementation's export of the
+    // same name. The checker's type at the site still comes from the
+    // declaration.
+    const twin =
+      this.declarationTwinExportSymbolOf(symbol, importAlias) ??
+      this.declarationTwinMemberSymbolOf(ident, symbol);
+    if (twin) symbol = twin;
     this.flushDeferred(symbol);
     return symbol;
+  }
+
+  /** The implementation's export symbol for a symbol the checker declares
+   * in a project declaration: `lib.d.ts` beside `lib.js` describes that
+   * module, and the lowering compiles the JavaScript. A declaration bridge
+   * (`export * from "../types"`) re-exports a declaration another module
+   * implements, so the import the reference came through answers too. Null
+   * when no compiled module implements the symbol. */
+  declarationTwinExportSymbolOf(symbol: ts.Symbol, alias: ts.Symbol | null): ts.Symbol | null {
+    const direct = this.declarationTwinDirectSymbolOf(symbol);
+    if (direct !== null || alias === null) return direct;
+    const cached = this.declarationTwinRouted.get(alias);
+    if (cached !== undefined) return cached;
+    const routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
+    this.declarationTwinRouted.set(alias, routed);
+    return routed;
+  }
+
+  private declarationTwinSymbols = new Map<ts.Symbol, ts.Symbol | null>();
+
+  private declarationTwinRouted = new Map<ts.Symbol, ts.Symbol | null>();
+
+  /** The declaration's OWN runtime sibling (`lib.d.ts` → `lib.js`), when
+   * every declaration of the symbol sits in such a declaration. */
+  private declarationTwinDirectSymbolOf(symbol: ts.Symbol): ts.Symbol | null {
+    const cached = this.declarationTwinSymbols.get(symbol);
+    if (cached !== undefined) return cached;
+    const answer = this.declarationTwinDirectSymbolUncached(symbol);
+    this.declarationTwinSymbols.set(symbol, answer);
+    return answer;
+  }
+
+  private declarationTwinDirectSymbolUncached(symbol: ts.Symbol): ts.Symbol | null {
+    const declarations = symbol.declarations;
+    if (declarations.length === 0) return null;
+    let implementation: ts.SourceFile | null = null;
+    for (const decl of declarations) {
+      const file = ts.getSourceFileOfNode(decl);
+      if (!file.isDeclarationFile) return null;
+      const twin = this.declarationTwinFileOf(file.fileName);
+      if (twin === null) return null;
+      if (implementation !== null && implementation !== twin) return null;
+      implementation = twin;
+    }
+    if (implementation === null) return null;
+    return this.moduleExportSymbolOf(implementation, ts.symbolName(symbol), symbol);
+  }
+
+  /** A member read through a module namespace (`m.Card` of
+   * `import * as m from "./deps/d1-props.js"`): the checker resolves the
+   * member to the declaration the module's declaration names, so the
+   * reference re-binds to the implementation's export of the same name. */
+  private declarationTwinMemberSymbolOf(ident: ts.Identifier, symbol: ts.Symbol): ts.Symbol | null {
+    const parent = ident.parent;
+    if (parent === undefined || !ts.isPropertyAccessExpression(parent) || parent.name !== ident)
+      return null;
+    const declarations = symbol.declarations;
+    if (declarations.length === 0) return null;
+    if (!declarations.some((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)) return null;
+    const receiver = parent.expression;
+    if (!ts.isIdentifier(receiver)) return null;
+    const namespaceImport = this.checker
+      .getSymbolAtLocation(receiver)
+      ?.declarations.find(ts.isNamespaceImport);
+    if (namespaceImport === undefined) return null;
+    const stmt = namespaceImport.parent?.parent;
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) return null;
+    const dep = this.facts.importedModule(
+      ts.getSourceFileOfNode(namespaceImport),
+      stmt.moduleSpecifier.text,
+    );
+    if (dep === null || dep.isDeclarationFile) return null;
+    return this.moduleExportSymbolOf(dep, ident.text, symbol);
+  }
+
+  /** The compiled module an import of `symbol` names, and that module's
+   * export under the name the import asked for. */
+  private declarationTwinRoutedSymbolOf(symbol: ts.Symbol, alias: ts.Symbol): ts.Symbol | null {
+    const declarations = symbol.declarations;
+    if (declarations.length === 0) return null;
+    if (!declarations.some((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)) return null;
+    const imported = alias.declarations.find(
+      (decl) => ts.isImportSpecifier(decl) || ts.isImportClause(decl),
+    );
+    if (imported === undefined) return null;
+    const stmt = ts.isImportClause(imported) ? imported.parent : imported.parent?.parent?.parent;
+    if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) return null;
+    const dep = this.facts.importedModule(
+      ts.getSourceFileOfNode(imported),
+      stmt.moduleSpecifier.text,
+    );
+    if (dep === null || dep.isDeclarationFile) return null;
+    const name = ts.isImportClause(imported)
+      ? "default"
+      : (imported.propertyName ?? imported.name).text;
+    return this.moduleExportSymbolOf(dep, name, symbol);
+  }
+
+  private moduleExportSymbolOf(
+    module: ts.SourceFile,
+    name: string,
+    symbol: ts.Symbol,
+  ): ts.Symbol | null {
+    const moduleSymbol = this.checker.getSymbolAtLocation(module);
+    if (moduleSymbol === undefined) return null;
+    // The RESOLVED export table: a star re-export (`export * from
+    // "./impl.js"`) contributes to it, while the module symbol's own exports
+    // hold only its declarations.
+    let exported = this.checker
+      .getExportsOfModule(moduleSymbol)
+      .find((resolved) => ts.symbolName(resolved) === name);
+    if (exported === undefined) {
+      exported = moduleSymbol.getExports().get(ts.escapedSymbolName(name));
+    }
+    if (exported === undefined) {
+      // A CommonJS module whose whole export is a table (`module.exports =
+      // { f }`): the named import is the table's property, re-resolved to
+      // the local declaration the property references.
+      exported = this.cjsTableExportSymbolOf(moduleSymbol, name) ?? undefined;
+    }
+    if (exported === undefined || exported === symbol) return null;
+    // The implementation may RE-EXPORT the name (`export { greet } from
+    // "./impl.js"`) of a module that also re-exports it: an alias owns no
+    // storage, so the reference binds to the declaration the chain ends at.
+    for (let hop = 0; hop < 16 && exported !== undefined; hop++) {
+      if ((exported.flags & ts.SymbolFlags.Alias) === 0) break;
+      const target = this.checker.getAliasedSymbol(exported);
+      if (target === undefined || target === exported) break;
+      exported = target;
+    }
+    return exported !== undefined && exported !== symbol ? exported : null;
+  }
+
+  /** The property symbol a CommonJS module's whole export table
+   * (`module.exports = { f }`) holds under `name`, re-resolved to the local
+   * declaration it references. Null when the module has no table export or
+   * the table has no such property. */
+  private cjsTableExportSymbolOf(moduleSymbol: ts.Symbol, name: string): ts.Symbol | null {
+    const exportEquals = moduleSymbol.getExports().get(ts.escapedSymbolName("export="));
+    if (exportEquals === undefined) return null;
+    const target =
+      (exportEquals.flags & ts.SymbolFlags.Alias) !== 0
+        ? this.checker.getAliasedSymbol(exportEquals)
+        : exportEquals;
+    if (target === undefined) return null;
+    let type: ts.Type;
+    try {
+      type = this.checker.getTypeOfSymbol(target);
+    } catch {
+      return null;
+    }
+    const property = this.checker.getPropertyOfType(type, name);
+    if (property === undefined) return null;
+    return this.cjsExportValueSymbol(property) ?? property;
+  }
+
+  /** The implementation's class declaration for a class declared in a
+   * project declaration with a runtime sibling (`lib.d.ts` beside
+   * `lib.js`). Null for every other class. */
+  declarationTwinClassDeclarationOf(decl: ts.ClassLikeDeclaration): ts.ClassLikeDeclaration | null {
+    const symbol = decl.name
+      ? this.checker.getSymbolAtLocation(decl.name)
+      : this.checker.getSymbolAtLocation(decl);
+    if (symbol === undefined) return null;
+    const value = this.declarationTwinExportSymbolOf(symbol, null)?.valueDeclaration;
+    return value && (ts.isClassDeclaration(value) || ts.isClassExpression(value)) ? value : null;
+  }
+
+  /** The program file implementing a project declaration (`lib.d.ts` →
+   * `lib.js`), or null when the declaration has no runtime sibling in the
+   * program. */
+  declarationTwinFileOf(path: string): ts.SourceFile | null {
+    const sibling = projectDtsRuntimeSibling(tsgoPath(path));
+    if (sibling === null) return null;
+    return this.program.getSourceFile(tsgoPath(sibling)) ?? null;
   }
 
   /** The first immediate alias hop that owns module storage (an export
@@ -8683,7 +8903,8 @@ export class Lowerer {
   private moduleSourceFileOf(from: ts.SourceFile, spec: ts.StringLiteral): ts.SourceFile | null {
     const moduleSymbol = this.checker.getSymbolAtLocation(spec);
     for (const decl of moduleSymbol ? moduleSymbol.declarations : []) {
-      if (ts.isSourceFile(decl)) return decl;
+      if (ts.isSourceFile(decl))
+        return decl.isDeclarationFile ? (this.declarationTwinFileOf(decl.fileName) ?? decl) : decl;
     }
     return this.facts.importedModule(from, spec.text);
   }
@@ -10036,6 +10257,22 @@ export class Lowerer {
           if (setterParam) this.jsWidenedBindings.add(setterParam);
           return undefined;
         }
+        // A void-typed truthiness test preflight admitted because its callee
+        // may answer a value (tsc-codes.ts TS1345): the function the program
+        // stores in the callee's member keeps its own return value only in
+        // checked-dynamic storage, so the binding the callee is read from
+        // widens (lower-calls.ts performs the call dynamically).
+        if (
+          ts.isCallExpression(node) &&
+          this.opinionAt(node, 1345) &&
+          voidTruthinessNeedsRuntimeValue(node, this.program)
+        ) {
+          const calleeBinding = this.voidTruthinessCalleeBinding(node);
+          if (calleeBinding !== null && !this.runtimeOptionalBindingTypes.has(calleeBinding)) {
+            widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
         // An annotated binding whose initializer the checker cannot show
         // fits the annotation (`/** @type {Base|undefined} */ const b = v;`
         // with `v` an `any`) holds the value it is given.
@@ -10096,6 +10333,70 @@ export class Lowerer {
         return undefined;
       });
     }
+  }
+
+  /** The JavaScript bindings whose operators preflight admitted: the operands
+   * of an arithmetic, comparison or update expression whose checker type is
+   * the shape one assignment stored while the program writes others
+   * (tsc-codes.ts, jsRetypedOperatorOperand), and the `var` an expression
+   * reads before its first assignment (jsHoistedVarRead). Shipped JavaScript
+   * reuses one `var` across shapes, so the operator converts whatever the
+   * binding holds — ToNumeric for `++`, ToPrimitive for a comparison — and a
+   * hoisted read answers `undefined`. Each such binding takes checked-dynamic
+   * storage, so the ordinary arithmetic and comparison lowering applies that
+   * conversion and no read checks the stored value back into the inferred
+   * type. A checked JavaScript file keeps its diagnostics, so no site is
+   * admitted there. */
+  widenRetypedOperatorBindings(parts: FileParts[]): void {
+    // A program whose preflight admitted none of these sites splits no file
+    // and widens no binding: the scan costs one pass over the admitted list.
+    if (!this.admittedOpinions.some((site) => RETYPED_OPERATOR_CODES.has(site.code))) return;
+    const widen = (symbol: ts.Symbol): void => {
+      this.runtimeOptionalBindingTypes.set(symbol, DYN);
+      this.jsWidenedBindings.add(symbol);
+      const global = this.globalsBySymbol.get(symbol);
+      if (global) global.type = DYN;
+    };
+    const widenOperand = (operand: ts.Node): void => {
+      let expression: ts.Node = operand;
+      while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+      if (!ts.isIdentifier(expression)) return;
+      const symbol = this.resolveValueSymbol(expression);
+      if (symbol === null || !jsWritableBindingDeclaration(symbol.valueDeclaration)) return;
+      widen(symbol);
+    };
+    for (const { sf } of parts) {
+      if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+      if (this.checkedJsFile(sf)) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isIdentifier(node) && this.opinionAtNode(node, 2454)) {
+          widenOperand(node);
+          return undefined;
+        }
+        if (
+          (ts.isBinaryExpression(node) ||
+            ts.isPrefixUnaryExpression(node) ||
+            ts.isPostfixUnaryExpression(node)) &&
+          (this.opinionAtNode(node, 2365) || this.opinionAtNode(node, 2356))
+        ) {
+          for (const operand of operatorOperandNodes(node)) widenOperand(operand);
+        }
+        return undefined;
+      });
+    }
+  }
+
+  /** The binding a void-typed truthiness test's callee is read from
+   * (`Internals.d.f()` reads through `Internals`), or null when the callee
+   * is reached any other way. */
+  private voidTruthinessCalleeBinding(expr: ts.CallExpression): ts.Symbol | null {
+    let callee: ts.Node = expr.expression;
+    while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+    let root: ts.Node = callee;
+    while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+      root = root.expression;
+    while (ts.isParenthesizedExpression(root)) root = root.expression;
+    return ts.isIdentifier(root) ? this.resolveValueSymbol(root) : null;
   }
 
   /** The bindings that take the pairs or values of an open spread value's
@@ -13698,6 +13999,7 @@ export class Lowerer {
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
       this.analyzeJsWidenedBindings(parts);
+      this.widenRetypedOperatorBindings(parts);
       this.analyzeOpenEnumerations(parts);
     });
     // Decorated classes analyze AFTER the whole collection pass: a
@@ -14452,6 +14754,7 @@ export class Lowerer {
         this.analyzeDateJsonResults(parts);
         this.analyzeGuardedRecordReadGlobals(parts);
         this.analyzeJsWidenedBindings(parts);
+        this.widenRetypedOperatorBindings(parts);
         this.analyzeOpenEnumerations(parts);
       });
       // Decorated classes analyze post-collection here too: the %init seeds
@@ -15021,6 +15324,7 @@ export class Lowerer {
             note: (name, record, applied, files) => {
               const file = fileOfUnit(name);
               if (file !== null) reuse.note(name, file, record, applied, files);
+              else reuse.noteUnfiled(name, applied);
             },
           };
     const recordLines: string[] = [];
@@ -15054,8 +15358,10 @@ export class Lowerer {
           try {
             const fn = lowerUnitBody(name);
             if (fn) loweredUnits.set(name, fn);
+            reuse?.noteUnfiled(name, false);
             relieveHeapPressure();
           } catch (e) {
+            reuse?.noteUnfiled(name, false);
             if (!(e instanceof PoisonError)) throw e;
           }
         }
@@ -15225,11 +15531,19 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
+    const changedUnits = reuse === null ? undefined : reuse.changedUnits();
+    const changedDump = process.env["SCRIPTC_UNIT_CHANGED_DUMP"];
+    if (changedUnits !== undefined && changedDump !== undefined && changedDump !== "")
+      writeFileSync(changedDump, JSON.stringify(changedUnits));
+    const finished = withStructureSharing(() =>
+      this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
+    );
     return {
       reachable,
-      result: withStructureSharing(() =>
-        this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
-      ),
+      result:
+        changedUnits === undefined || changedUnits.length === 0
+          ? finished
+          : { ...finished, changedUnits },
     };
   }
 
@@ -21248,6 +21562,12 @@ export class Lowerer {
     return lowerStaticFieldInits(this, info);
   }
 
+  /** The initialization checks a class statement carries for the cycle
+   * classes its `extends` clause reads. */
+  heritageChecksFor(decl: ts.ClassLikeDeclaration, loc: SrcLoc): IrStmt[] {
+    return heritageChecksFor(this, decl, loc);
+  }
+
   /** Method-like members with their collected method-map names. Body
    * lowering omits abstract declarations; ABI analysis must include them
    * because an abstract-typed call selects the same virtual slot. An array,
@@ -23022,6 +23342,7 @@ export class Lowerer {
       lowerStaticResponseCall(this, expr) ??
       lowerStaticBlobCall(this, expr) ??
       lowerWebCryptoCall(this, expr) ??
+      lowerKeyObjectFromCall(this, expr) ??
       lowerKeyObjectCall(this, expr) ??
       lowerX509Call(this, expr) ??
       lowerCertificateCall(this, expr) ??
@@ -23029,6 +23350,7 @@ export class Lowerer {
       lowerDiffieHellmanCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??
       lowerMimeCall(this, expr) ??
+      lowerSqliteCall(this, expr) ??
       lowerFetchElementMethodCall(this, expr) ??
       lowerDynamicImportCall(this, expr) ??
       lowerCall(this, expr)
@@ -23265,6 +23587,7 @@ export class Lowerer {
       lowerInternTableNew(this, expr) ??
       lowerThreadSlotsNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
+      lowerAbortSignalNew(this, expr) ??
       lowerDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??

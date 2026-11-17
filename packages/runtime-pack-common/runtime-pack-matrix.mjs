@@ -97,6 +97,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
+  // crypto.argon2 and crypto.argon2Sync.
+  ["scr_argon2.c", "argon2"],
   // The worker unit's SHARE_ENV symbol reaches the symbol unit
   // (scr_worker_events.c), which assembles symbol equality messages here.
   ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
@@ -312,8 +314,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
   // TextEncoder and TextDecoder records boxed as untyped values.
   ["scr_text_codec_dyn.c", "textCodecDyn"],
-  ["scr_watch.c", "watch"],
+  ["scr_watch.c", any("watch", "watchEvents")],
   ["scr_watch_file.c", "watchFile"],
+  ["scr_watch_async.c", "watchEvents"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
@@ -354,6 +357,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // its file symbol in the executable, so no other program gets it.
   ["scr_node_island_child.c", "islandChild"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // Writable.fromWeb wraps a web WritableStream's writer.
+  ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws

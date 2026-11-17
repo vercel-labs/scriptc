@@ -36,6 +36,10 @@ declare module "node:test" {
     readonly passed: boolean;
     readonly signal: AbortSignal;
     diagnostic(message: string): void;
+    log(message: string, data?: unknown): void;
+  }
+  interface TestContextPlanOptions {
+    wait?: number | undefined;
   }
   interface TestOptions {
     skip?: boolean | string;
@@ -44,6 +48,10 @@ declare module "node:test" {
     concurrency?: number | boolean;
     timeout?: number;
     plan?: number;
+    /* The test passes only if it throws; a reason string behaves as true.
+     * Node's matcher forms (RegExp, function, object, Error, { label, match })
+     * are not lowered. */
+    expectFailure?: boolean | string;
   }
   interface TestContext {
     readonly name: string;
@@ -67,7 +75,8 @@ declare module "node:test" {
     skip(message?: string): void;
     todo(message?: string): void;
     diagnostic(message: string): void;
-    plan(count: number): void;
+    log(message: string, data?: unknown): void;
+    plan(count: number, options?: TestContextPlanOptions): void;
     runOnly(shouldRunOnlyTests: boolean): void;
     waitFor<T>(condition: () => T, options?: TestContextWaitForOptions): Promise<Awaited<T>>;
     after(fn: HookFn): void;
@@ -114,6 +123,10 @@ declare module "node:test" {
     function todo(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
     function todo(options?: TestOptions, fn?: TestFn): Promise<void>;
     function todo(fn?: TestFn): Promise<void>;
+    function expectFailure(name?: string, fn?: TestFn): Promise<void>;
+    function expectFailure(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function expectFailure(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function expectFailure(fn?: TestFn): Promise<void>;
     function only(name?: string, fn?: TestFn): Promise<void>;
     function only(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
     function only(options?: TestOptions, fn?: TestFn): Promise<void>;
@@ -137,12 +150,20 @@ declare module "node:test" {
     function only(name?: string, options?: TestOptions, fn?: SuiteFn): void;
     function only(options?: TestOptions, fn?: SuiteFn): void;
     function only(fn?: SuiteFn): void;
+    function expectFailure(name?: string, fn?: SuiteFn): void;
+    function expectFailure(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function expectFailure(options?: TestOptions, fn?: SuiteFn): void;
+    function expectFailure(fn?: SuiteFn): void;
   }
   const suite: typeof describe;
   function before(fn: HookFn): void;
   function after(fn: HookFn): void;
   function beforeEach(fn: HookFn): void;
   function afterEach(fn: HookFn): void;
+  function expectFailure(name?: string, fn?: TestFn): Promise<void>;
+  function expectFailure(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+  function expectFailure(options?: TestOptions, fn?: TestFn): Promise<void>;
+  function expectFailure(fn?: TestFn): Promise<void>;
   /* The mock function surface: mock.fn, mock.method and their t.mock
    * twins, the tracker's restoreAll and reset, and the calls log and the
    * implementation controls on fn.mock. */
@@ -229,6 +250,7 @@ declare module "node:test" {
     after,
     beforeEach,
     afterEach,
+    expectFailure,
     mock,
     assert,
     getTestContext,

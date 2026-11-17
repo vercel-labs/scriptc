@@ -243,8 +243,33 @@ static void clearing_the_newest_immediate_does_not_walk_the_cleared_ones(void) {
   puts("clearing the newest immediate does not walk the cleared ones");
 }
 
+/* Dropping entries leaves tombstones that keep occupying buckets while the
+ * live count stays low, and ordinary churn can reach a table with every
+ * bucket taken (a direct-awaited promise is not registered, so an absent key
+ * is ordinary). An absent key must answer, and an insert must still land,
+ * instead of a probe wrapping forever on the event-loop thread. */
+static void promise_table_survives_tombstone_churn(void) {
+  scr_async_proms_cap = 64;
+  scr_async_proms = calloc(scr_async_proms_cap, sizeof *scr_async_proms);
+  assert(scr_async_proms != NULL);
+  for (size_t i = 0; i < scr_async_proms_cap; i++) scr_async_proms[i].key = SCR_PROM_TOMBSTONE;
+  scr_async_proms_len = 0;
+  scr_async_proms_used = scr_async_proms_cap;
+  ScrPromise missing;
+  assert(scr_async_prom_find(&missing) == NULL);
+  ScrPromise fresh;
+  scr_async_prom_insert(&fresh, 7, 0);
+  assert(scr_async_prom_find(&fresh) != NULL);
+  scr_async_prom_teardown();
+  printf("promise table survives tombstone churn\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
+  if (argc > 1 && strcmp(argv[1], "promises") == 0) {
+    promise_table_survives_tombstone_churn();
+    return 0;
+  }
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
     due_timers_run_by_deadline_before_immediates();
     return 0;

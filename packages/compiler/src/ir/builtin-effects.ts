@@ -1,15 +1,6 @@
 import type { IrLibFn } from "./builtin-signatures.js";
 
-/** The may-throw seed: libCall members that can raise. Every fs.* member
- * except existsSync (which, like Node's, swallows path errors and returns
- * false) throws a catchable error on failure; fs.existsSyncValue is here
- * because reporting DEP0187 for an invalid argument type runs
- * process.emitWarning, whose replacement may throw. json.parse throws a
- * catchable SyntaxError-shaped string on malformed input. Backends' may-throw
- * analyses must treat a function containing one of these as throwing, exactly
- * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
- * nodes, which throw on validation failure / promise rejection). */
-export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // The copied error of a synchronous call into Node (@scriptc/node).
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
@@ -77,6 +68,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "test.sub",
   "test.subEmpty",
   "test.suite",
+  // t.plan's second-plan failure and { wait } range check.
+  "test.ctxPlan",
   // mock.timers: Node's ERR_INVALID_STATE and ERR_INVALID_ARG_VALUE, and
   // the throws of the timer callbacks tick and runAll run.
   "test.ctxSnapshot",
@@ -315,6 +308,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "icu.numberFormatNew",
   "icu.numberFormatFormat",
   "icu.numberFormatFormatDyn",
+];
+
+const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "icu.dateTimeFormatFormatDyn",
   "icu.numToLocaleString",
   "icu.dateTimeFormatNew",
@@ -356,9 +352,22 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // async_hooks.createHook validates its callbacks (ERR_ASYNC_CALLBACK).
   "ah.createHook",
   "ah.createHookParts",
-  "dc.publish",
+  // diagnostics_channel: the subscribe/unsubscribe forms validate the name
+  // and the subscriber in the runtime (Node's ERR_INVALID_ARG_TYPE), and
+  // the bind-store/run-stores calls run program code.
+  // trace_events.createTracing validates its options object and its
+  // categories array.
+  "te.createTracing",
   "dc.subscribe",
   "dc.unsubscribe",
+  // The name validators raise Node's ERR_INVALID_ARG_TYPE, and a symbol
+  // name fences with SC2020.
+  "dc.channel",
+  "dc.tracingChannel",
+  /** The collection form validates each event member (Node's
+   * "must be an instance of Channel"), so a value asserted past the type
+   * raises here rather than indexing the channel table with it. */
+  "dc.tracingChannelOf",
   "dc.chanSubscribe",
   "dc.chanUnsubscribe",
   "dc.tcSubscribe",
@@ -400,6 +409,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
+  "http.resWriteContinueCb",
+  "http.resWriteProcessingCb",
+  "http.resWriteEarlyHintsCb",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
@@ -436,6 +448,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.createSecureServerDynCb",
   "tls.connect",
   "tls.connectCb",
+  // tls.connect(path...) dials and validates like the other forms.
+  "tls.connectPath",
   "tls.wrapSocket",
   "tls.wrapSocketCtx",
   // addContext's ERR_TLS_REQUIRED_SERVER_NAME and the context's errors,
@@ -641,7 +655,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
+];
+
+const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
+  "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -902,8 +920,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "mime.typeNew",
   "mime.typeParse",
   // node:sqlite opens (or validates) a connection; every option it reads
-  // can refuse the call.
+  // can refuse the call, as can sqlite.backup's arguments.
   "sqlite.dbNew",
+  "sqlite.backup",
   "util.callbackify",
   "util.promisifyDyn",
   // The typed promisify's custom protocol: a truthy non-function throws
@@ -981,6 +1000,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.classTestPrototype",
+];
+
+const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [
   "dyn.setPrototype",
   // ES2025 Set compositions run the set-like protocol: reading and calling
   // `size`/`has`/`keys` can throw, and so can a user `has` or iterator.
@@ -1013,6 +1035,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "regex.new",
   "regex.resetLastIndex",
   "regex.newChecked",
+  "regex.callChecked",
   "regex.replaceCallback",
   "dyn.keySet",
   "dyn.fnOwnSet",
@@ -1147,6 +1170,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readdirSync",
   "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
+  "fs.readdirTypesRecursiveSync",
+  "fsp.readdirTypesRecursive",
+  "fs.readdirBytesSync",
+  "fs.readdirEncodedSync",
+  "fsp.readdirBytes",
+  "fsp.readdirRecursive",
+  "fsp.readdirEncoded",
   "fs.globSync",
   "fs.globTypesSync",
   "fs.callbackGlob",
@@ -1283,6 +1313,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
+];
+
+const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "buffer.poolFromDynRange",
   "buffer.copyBytesFrom",
   // The checked-dynamic compare/equals validators: Node's argument
@@ -1445,6 +1478,19 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.
+  // createSocket's constructor ladder (ERR_SOCKET_BAD_TYPE, validateUint32,
+  // the options' type checks, and the SC2020s for options with no native
+  // behavior yet), the options-object bind forms, the synchronous pair,
+  // the source-specific joins and remoteAddress()'s state errors.
+  "dgram.createSocket",
+  "dgram.createSocketCb",
+  "dgram.bindOpts",
+  "dgram.bindOptsCb",
+  "dgram.bindSync",
+  "dgram.connectSync",
+  "dgram.addSourceMembership",
+  "dgram.dropSourceMembership",
+  "dgram.remoteAddress",
   "dgram.bind",
   "dgram.bindCb",
   "dgram.connect",
@@ -1495,6 +1541,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.throwsNone",
   "assert.throwsMismatch",
   "assert.throwsRegex",
+  "assert.throwsAmbiguous",
   "assert.shapeEnd",
   "assert.unwantedRejection",
   "assert.unwantedError",
@@ -1584,6 +1631,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.mkdirObjSync",
   "fs.mkdirObjStrSync",
   "fs.mkdirDynSync",
+];
+
+const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "fs.mkdirDynVoidSync",
   "fs.mkdirModeValueSync",
   "fs.mkdirModeStrValueSync",
@@ -1618,6 +1668,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "watcher.off",
   "fs.watchFile",
   "fs.unwatchFile",
+  // fsPromises.watch opens the path now and throws Node's fs error
+  // (ENOENT, EACCES, a null byte) from scr_watch_events_new.
+  "fsp.watch",
+  // watchEvents.take raises ERR_FS_WATCH_QUEUE_OVERFLOW when the queue
+  // overflowed under overflow: "error".
+  "watchEvents.take",
   "crypto.x509Fingerprint",
   "crypto.x509FingerprintStr",
   "crypto.x509ValidFrom",
@@ -1628,9 +1684,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createPublicKey",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
+  // Argon2 reads its parameters object (whose members convert strings and
+  // BufferSources) and may run program code through those conversions.
+  "crypto.argon2Sync",
+  "crypto.argon2Cb",
   // getPublicKey converts its keyUsages sequence (whose strings' conversions
   // run program code) and reads the key's members through the handle.
   "webcrypto.getPublicKey",
+  // The KeyObject conversions normalize their algorithm (reading its members)
+  // and convert the keyUsages sequence.
+  "webcrypto.keyObjectToCryptoKey",
+  "webcrypto.keyObjectFrom",
   "crypto.signOneshot",
   "crypto.signOneshotCb",
   "crypto.signOneshotMaybe",
@@ -1663,6 +1727,32 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // ReadableStream.from's iterability and iterator-method errors, which
   // Node raises from the call itself.
   "webstream.from",
+];
+
+/** The may-throw seed: libCall members that can raise. Every fs.* member
+ * except existsSync (which, like Node's, swallows path errors and returns
+ * false) throws a catchable error on failure; fs.existsSyncValue is here
+ * because reporting DEP0187 for an invalid argument type runs
+ * process.emitWarning, whose replacement may throw. json.parse throws a
+ * catchable SyntaxError-shaped string on malformed input. Backends' may-throw
+ * analyses must treat a function containing one of these as throwing, exactly
+ * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
+ * nodes, which throw on validation failure / promise rejection).
+ *
+ * The names come in parts so each part is checked against the closed set of
+ * builtin names on its own. A list this long is compared member by member
+ * against every name in a single check, which costs the checker its whole
+ * comparison budget, and then each new builtin entry risks a spurious
+ * "Excessive complexity comparing types" error. Every part is checked as
+ * fully as the whole list was, and the set holds the same names in the same
+ * order. */
+export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  ...MAY_THROW_LIB_FNS_PART_1,
+  ...MAY_THROW_LIB_FNS_PART_2,
+  ...MAY_THROW_LIB_FNS_PART_3,
+  ...MAY_THROW_LIB_FNS_PART_4,
+  ...MAY_THROW_LIB_FNS_PART_5,
+  ...MAY_THROW_LIB_FNS_PART_6,
 ]);
 
 /** libCall members that always throw. Their result type is the replaced

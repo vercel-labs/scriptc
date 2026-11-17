@@ -1847,11 +1847,10 @@ export function lowerRecordKeyRead(
     declared = DYN;
   // A key whose literal type names only declared fields of one type, on a
   // record whose other fields have other types, reads the field it names.
-  // A called access (`r[key]()`) keeps the refusal.
-  const named =
-    !declared && litKey === null && !isCalledAccess(expr)
-      ? sameTypedFieldKeys(lowerer, shape, keyNode)
-      : null;
+  // A called access (`r[key]()`) reads it too: the call carries the holder
+  // as its receiver where the member can hold a function that reads it
+  // (member-call-receivers.ts), exactly like the dot spelling.
+  const named = !declared && litKey === null ? sameTypedFieldKeys(lowerer, shape, keyNode) : null;
   if (named) {
     const stmts: IrStmt[] = [];
     const settle = (value: IrExpr, name: string, force = false): IrExpr => {

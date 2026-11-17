@@ -199,6 +199,11 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
     ScrClosure *flush_fb, ScrStreamPlainInv flush_fb_inv,
     ScrClosure *destroy_fb, ScrStreamErrInv destroy_fb_inv);
 
+/* Writable.fromWeb(writableStream[, options]) (scr_stream_from_web_writable.c):
+ * a Writable over the web stream's writer, +1, or NULL with
+ * ERR_INVALID_ARG_TYPE pending for a value that is not a WritableStream. */
+ScrStream *scr_stream_writable_from_web(struct ScrDyn *web, double flags);
+
 /* stream.setDefaultHighWaterMark(objectMode, value) and
  * stream.getDefaultHighWaterMark(objectMode): what a stream created without
  * a highWaterMark takes (64 KiB bytes on every platform except win32's

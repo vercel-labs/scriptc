@@ -1231,6 +1231,10 @@ export function formatIrType(
         return append("Hmac");
       case "fsWatcher":
         return append("FSWatcher");
+      case "watchEvents":
+        return append("FSWatchEvents");
+      case "statWatcher":
+        return append("StatWatcher");
       case "childStream":
         return append("Readable");
       case "childWriter":
@@ -1815,6 +1819,12 @@ export interface TypeMapperCtx {
   /** Live class protocols retain identity and receiver dispatch rather than
    * copying an instance into an unrelated record layout. */
   classImplementedProtocol?: (type: ts.Type) => boolean;
+  /** The implementation's class declaration for a class the checker declares
+   * in a project declaration that has a runtime sibling (`lib.d.ts` beside
+   * `lib.js`): the lowering compiles that JavaScript class, so its instance
+   * and static types name the compiled class rather than a structural
+   * copy. */
+  classTwinDeclaration?: (decl: ts.ClassLikeDeclaration) => ts.ClassLikeDeclaration | null;
   /** MIXIN instance INTERSECTIONS (`Tagged.C & Derived` — values built
    * through a mixin result): resolved by chain structure to the unique
    * pinned instantiation they describe; null when ambiguous or when no
@@ -3250,6 +3260,13 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return BOOL;
   }
   if (ctx.foreignType !== undefined && ctx.foreignType(type)) return FOREIGN;
+  // A class the checker declares in a project declaration beside its
+  // runtime implementation (lib.d.ts beside lib.js): the value is the
+  // compiled JavaScript class, so its instance type names that class.
+  {
+    const twinClass = mapTwinClassInstance(type, ctx);
+    if (twinClass !== null) return twinClass;
+  }
   const localValue = ctx.localClassValue?.(type);
   if (localValue) {
     contextResolutions++;
@@ -3616,6 +3633,31 @@ const CHILD_WRITER_MEMBERS: ReadonlySet<string> = new Set([
   "off",
   "removeListener",
 ]);
+
+/** The compiled class a project declaration's class type names (`lib.d.ts`
+ * beside `lib.js`): the implementation class the lowering compiles, as the
+ * class value for its static side or its instance object type. Null for
+ * every other type. */
+function mapTwinClassInstance(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  if (ctx.classTwinDeclaration === undefined) return null;
+  const symbol = type.getSymbol();
+  const decl = symbol ? symbol.valueDeclaration : undefined;
+  if (
+    decl === undefined ||
+    !(ts.isClassDeclaration(decl) || ts.isClassExpression(decl)) ||
+    !ts.getSourceFileOfNode(decl).isDeclarationFile
+  )
+    return null;
+  const implementation = ctx.classTwinDeclaration(decl);
+  if (implementation === null) return null;
+  const file = ts.getSourceFileOfNode(implementation);
+  if (!ctx.isProgramFile(file)) return null;
+  // The STATIC side (`typeof Point`) has construct signatures and is the
+  // class value; the instance side is the class's object type.
+  return ctx.checker.getConstructSignatures(type).length > 0
+    ? { kind: "classval", className: ctx.classNamer(implementation) }
+    : { kind: "object", className: ctx.classNamer(implementation) };
+}
 
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
@@ -4672,6 +4714,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return F64;
   }
+  // trace_events.Tracing: a native handle the runtime builds for
+  // createTracing, so the value is checked-dynamic and its member reads and
+  // enable()/disable() calls ride the dyn tree.
+  if (
+    psym !== undefined &&
+    psymName === "Tracing" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "trace_events"),
+    )
+  ) {
+    return DYN;
+  }
   // diagnostics_channel.TracingChannel: the same f64-handle story over the
   // runtime's tracing registry (five event channels per entry).
   if (
@@ -4932,7 +4989,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (psym !== undefined && psymName === "StatementSyncIterator") ||
       (psym !== undefined && psymName === "Session") ||
       (psym !== undefined && psymName === "SQLTagStore") ||
-      (psym !== undefined && psymName === "DatabaseSyncLimits")) &&
+      (psym !== undefined && psymName === "DatabaseSyncLimits") ||
+      // sqlite.backup's progress record, read through the callback's
+      // checked-dynamic parameter.
+      (psym !== undefined && psymName === "BackupProgressInfo")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
@@ -5541,6 +5601,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "fsWatcher" };
+  }
+  // fs.StatWatcher: the fs.watchFile handle (scr_watch_file.c), declared
+  // beside FSWatcher in the same ambient module.
+  if (
+    psym !== undefined &&
+    psymName === "StatWatcher" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  ) {
+    return { kind: "statWatcher" };
   }
   // The piped child-output stream, under BOTH spellings @types/node uses
   // for it: stream.Readable (ChildProcess.stdout's declared type — the

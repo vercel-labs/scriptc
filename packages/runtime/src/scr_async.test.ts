@@ -54,6 +54,12 @@ test("fiber stacks commit on demand and preserve large frames across suspension"
 // With every deadline already passed, the order is the timer heap's and the
 // loop's, not the clock's: tests/corpus/timers-cross-kind-clears.ts once
 // showed the first of these only when its own script ran fast enough.
+test("the promise resource table survives tombstone churn", async () => {
+  const result = await execFileAsync(bin, ["promises"]);
+  expect(result.stdout).toBe("promise table survives tombstone churn\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("due timers run by deadline, then by creation, before the turn's immediates", async () => {
   const result = await execFileAsync(bin, ["timers"]);
   expect(result.stdout).toBe(

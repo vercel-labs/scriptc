@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-handshake-events.ts"
+ ],
+ "diags": []
+}

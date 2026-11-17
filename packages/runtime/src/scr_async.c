@@ -1034,6 +1034,11 @@ typedef struct {
 #define SCR_PROM_TOMBSTONE ((ScrPromise *)(uintptr_t)1)
 static SCR_TL ScrAsyncPromEntry *scr_async_proms = NULL;
 static SCR_TL size_t scr_async_proms_cap = 0, scr_async_proms_len = 0;
+/* The slots an insert has to walk past: live entries plus tombstones. The
+ * resize test uses this, not the live count: dropping entries leaves
+ * tombstones that still occupy buckets, and a table can fill with them
+ * while few entries are live. */
+static SCR_TL size_t scr_async_proms_used = 0;
 
 static size_t scr_async_prom_home_cap(const ScrPromise *p, size_t cap) {
   uint64_t h = (uint64_t)(uintptr_t)p * UINT64_C(0x9E3779B97F4A7C15);
@@ -1047,20 +1052,27 @@ static size_t scr_async_prom_home(const ScrPromise *p) {
 static void scr_async_prom_teardown(void) {
   free(scr_async_proms);
   scr_async_proms = NULL;
-  scr_async_proms_cap = scr_async_proms_len = 0;
+  scr_async_proms_cap = scr_async_proms_len = scr_async_proms_used = 0;
 }
 
 static ScrAsyncPromEntry *scr_async_prom_find(const ScrPromise *p) {
   if (scr_async_proms_cap == 0) return NULL;
-  for (size_t i = scr_async_prom_home(p);; i = (i + 1) & (scr_async_proms_cap - 1)) {
-    ScrAsyncPromEntry *e = &scr_async_proms[i];
+  size_t at = scr_async_prom_home(p);
+  /* Bounded by the capacity: a table of live entries and tombstones can
+   * have no empty bucket left, and an absent key is ordinary (a directly
+   * awaited promise is not registered), so an unbounded probe would wrap
+   * forever on the event-loop thread. */
+  for (size_t probes = 0; probes < scr_async_proms_cap; probes++) {
+    ScrAsyncPromEntry *e = &scr_async_proms[at];
     if (e->key == p) return e;
     if (e->key == NULL) return NULL;
+    at = (at + 1) & (scr_async_proms_cap - 1);
   }
+  return NULL;
 }
 
 static void scr_async_prom_insert(ScrPromise *p, double id, double trigger) {
-  if ((scr_async_proms_len + 1) * 4 >= scr_async_proms_cap * 3) {
+  if ((scr_async_proms_used + 1) * 4 >= scr_async_proms_cap * 3) {
     size_t cap = scr_async_proms_cap ? scr_async_proms_cap * 2 : 64;
     ScrAsyncPromEntry *grown = calloc(cap, sizeof *grown);
     if (!grown) scr_oom();
@@ -1076,11 +1088,16 @@ static void scr_async_prom_insert(ScrPromise *p, double id, double trigger) {
     free(scr_async_proms);
     scr_async_proms = grown;
     scr_async_proms_cap = cap;
+    /* The rehash dropped every tombstone: only live entries were moved. */
+    scr_async_proms_used = scr_async_proms_len;
     if (scr_async_proms_len == 0 && scr_async_proms_cap != 0) scr_atexit(scr_async_prom_teardown);
   }
   size_t at = scr_async_prom_home(p);
   while (scr_async_proms[at].key != NULL && scr_async_proms[at].key != SCR_PROM_TOMBSTONE)
     at = (at + 1) & (scr_async_proms_cap - 1);
+  /* A tombstone is a reusable slot; a never-used one adds to the walked
+   * slots. */
+  if (scr_async_proms[at].key == NULL) scr_async_proms_used++;
   scr_async_proms[at].key = p;
   scr_async_proms[at].id = id;
   scr_async_proms[at].trigger = trigger;
@@ -4209,6 +4226,21 @@ ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDy
 
 ScrPromise *scr_fsp_readdir(ScrStr *path) {
   ScrArr *names = scr_fs_readdir(path);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_readdir_recursive(ScrStr *path) {
+  ScrArr *names = scr_fs_readdir_recursive_async(path);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_readdir_bytes(ScrStr *path) {
+  ScrArr *names = scr_fs_readdir_bytes(path);
+  return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
+}
+
+ScrPromise *scr_fsp_readdir_encoded(ScrStr *path, ScrStr *encoding) {
+  ScrArr *names = scr_fs_readdir_encoded(path, encoding);
   return scr_promise_settled_ref(names, &scr_arr_retain_v, &scr_arr_release_v, NULL);
 }
 

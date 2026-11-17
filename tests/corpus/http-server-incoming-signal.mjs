@@ -7,6 +7,11 @@ import { connect } from "node:net";
 const server = createServer((req, res) => {
   const signal = req.signal;
   console.log("start", req.url, signal === req.signal, signal.aborted, signal.reason === undefined);
+  // An abort listener that tears the request down re-enters destroy: the
+  // request must stay alive until the outer call returns.
+  signal.addEventListener("abort", () => {
+    req.destroy();
+  });
   signal.addEventListener("abort", () => {
     const reason = signal.reason;
     console.log("abort event", req.url, signal.aborted, reason?.name, reason?.message, req.aborted);

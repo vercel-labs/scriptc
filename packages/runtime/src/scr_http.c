@@ -794,6 +794,10 @@ bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
 /* destroy(): tears the underlying connection down NOW; the teardown
  * events flow through the socket's native hooks like a peer close. */
 void scr_http_req_destroy(ScrHttpReq *r) {
+  /* Abort listeners run user code: hold the request across the abort and the
+   * teardown so a listener that destroys the connection cannot free it while
+   * this call still reads its fields. */
+  scr_http_req_retain(r);
   r->destroyed = true;
   /* Node aborts the request's signal when an incomplete message is
    * destroyed, before the socket teardown runs; the request reads as
@@ -804,9 +808,11 @@ void scr_http_req_destroy(ScrHttpReq *r) {
   }
   if (r->h2_stream != NULL) {
     scr_http_h2_ops->destroy(r->h2_stream);
+    scr_http_req_release(r);
     return;
   }
   if (r->sock) scr_net_sock_destroy(r->sock);
+  scr_http_req_release(r);
 }
 
 void scr_http_req_on_error(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
@@ -4690,7 +4696,6 @@ static void scr_http_conn_abort_request(ScrHttpConn *conn) {
   if (req == NULL || req->end_consumed || req->close_emitted || req->destroyed) return;
   req->destroyed = true;
   req->aborted = true;
-  scr_http_req_abort_signal(req);
   /* the later events queue first: an 'aborted' listener can end the
    * response, which detaches it from the connection and queues the
    * request's 'close'; that response never sends its body */
@@ -4701,6 +4706,8 @@ static void scr_http_conn_abort_request(ScrHttpConn *conn) {
   }
   scr_http_queue_req_aborted(req);
   scr_http_req_retain(req);
+  /* the signal's abort listeners are user code: run them under the retain */
+  scr_http_req_abort_signal(req);
   scr_net_fire0_this(&req->aborted_ls, req, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&req->aborted_ls);
   if (res != NULL) scr_http_res_release(res);

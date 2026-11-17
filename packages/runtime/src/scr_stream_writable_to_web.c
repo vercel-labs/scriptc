@@ -1,10 +1,11 @@
 /* Writable.toWeb (Node's newWritableStreamFromStreamWritable in
  * lib/internal/webstreams/adapters.js): a web WritableStream over a native
- * Writable. The sink's write() completes when the native write's callback
- * fires (and rejects with the stream's error), close() ends the writable and
- * settles at its finish, and abort() destroys it with the reason. The sink is
- * a plain object of C-authored functions, so the web unit builds the
- * WritableStream through its own class constructor. */
+ * Writable. The sink's write() fulfils as soon as the native write accepts
+ * the chunk, waits for 'drain' when it is backpressured, and rejects with the
+ * stream's error when the writable fails while that write is outstanding.
+ * close() ends the writable and settles at its finish, and abort() destroys
+ * it with the reason. The sink is a plain object of C-authored functions, so
+ * the web unit builds the WritableStream through its own class constructor. */
 #include "scr_runtime.h"
 #include "scr_stream.h"
 
@@ -37,13 +38,16 @@ struct Stw3Job {
   ScrPromise *p;  /* +1 */
   /* close() registers a 'finish' and an 'error' listener; whichever fires
    * unregisters the other, so neither keeps the job (and through it the
-   * writable's listener table) alive. */
+   * writable's listener table) alive. A backpressured write registers 'drain'
+   * and 'error' the same way. A job runs one of the two. */
   ScrClosure *finish_cl;
   ScrStr *finish_name;
   ScrClosure *error_cl;
   ScrStr *error_name;
   ScrClosure *close_cl;
   ScrStr *close_name;
+  ScrClosure *drain_cl;
+  ScrStr *drain_name;
 };
 
 static Stw3Job *stw3_job_new(Stw3Ctx *c) {
@@ -62,6 +66,7 @@ static void stw3_job_release(Stw3Job *j) {
   if (j->finish_name) scr_str_release(j->finish_name);
   if (j->error_name) scr_str_release(j->error_name);
   if (j->close_name) scr_str_release(j->close_name);
+  if (j->drain_name) scr_str_release(j->drain_name);
   free(j);
 }
 
@@ -77,31 +82,114 @@ static ScrClosure *stw3_job_closure(void *fn, Stw3Job *j) {
 
 static Stw3Job *stw3_job_of(ScrClosure *cl) { return scr_box_get_ref(cl->caps[0]); /* +1 */ }
 
-/* Reject p with the stream's current error, or fulfil it. */
-static void stw3_settle(Stw3Job *j) {
-  ScrError *err = scr_stream_errored(j->ctx->writable); /* +1 or NULL */
-  if (err) {
-    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+/* Reject p with err (moves its +1), or with the writable's error when `err`
+ * is NULL, or fulfil it when the writable has none. */
+static void stw3_settle(Stw3Job *j, ScrError *err) {
+  ScrError *reason = err ? err : scr_stream_errored(j->ctx->writable); /* +1 */
+  if (reason) {
+    scr_throw_obj(scr_error_retain(reason), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
     scr_promise_reject_pending(j->p);
-    scr_error_release(err);
+    scr_error_release(reason);
   } else {
     scr_promise_fulfill_void(j->p);
   }
   if (scr_exc_pending()) scr_exc_clear();
 }
 
-/* The native write's completion callback (the zero-argument ABI). Node's
- * adapter resolves the writer's promise when the wrapped write completes; a
- * failed write reaches the web stream through the lifecycle 'error' listener
- * instead of rejecting this promise. */
+/* The native write's completion callback (the zero-argument ABI). The sink
+ * has already settled (Node's adapter resolves an accepted write at once and
+ * a backpressured one at 'drain' or its error); the callback only releases
+ * the wait it held. */
 static void stw3_write_done(ScrClosure *cl) {
   Stw3Job *j = stw3_job_of(cl);
-  /* Node's adapter resolves the writer's promise when the wrapped write
-   * completes; a failure reaches the stream through its lifecycle. */
+  if (scr_exc_pending()) scr_exc_clear();
+  stw3_job_release(j);
+}
+
+/* Remove the write wait's listeners that did not fire (1 drain, 2 error,
+ * 3 close). */
+static void stw3_write_unregister(Stw3Job *j, int fired) {
+  ScrClosure *alls[3] = {j->drain_cl, j->error_cl, j->close_cl};
+  ScrStr *names[3] = {j->drain_name, j->error_name, j->close_name};
+  for (int i = 0; i < 3; i++) {
+    if (i + 1 == fired || !alls[i]) continue;
+    scr_emitter_unadd_quiet((ScrEmitter *)j->ctx->writable, names[i], alls[i]);
+  }
+  if (j->drain_name) scr_str_release(j->drain_name);
+  if (j->error_name) scr_str_release(j->error_name);
+  if (j->close_name) scr_str_release(j->close_name);
+  j->drain_cl = NULL;
+  j->drain_name = NULL;
+  j->error_cl = NULL;
+  j->error_name = NULL;
+  j->close_cl = NULL;
+  j->close_name = NULL;
+}
+
+/* 'drain': the backpressured write can proceed, as Node's onDrain resolves
+ * its backpressure promise. */
+static void stw3_write_drain(ScrClosure *cl) {
+  Stw3Job *j = stw3_job_of(cl);
+  stw3_write_unregister(j, 1);
   scr_promise_fulfill_void(j->p);
   if (scr_exc_pending()) scr_exc_clear();
   stw3_job_release(j);
+}
+
+/* 'error' while a write waits for 'drain': Node's eos cleanup rejects the
+ * backpressure promise with the writable's error, so the writer's write()
+ * rejects with the stream's error. */
+static void stw3_write_error(ScrClosure *cl, ScrError *err) {
+  Stw3Job *j = stw3_job_of(cl);
+  stw3_write_unregister(j, 2);
+  stw3_settle(j, err ? scr_error_retain(err) : NULL);
+  stw3_job_release(j);
+}
+
+/* 'close' without an 'error' while a write waits for 'drain': Node's eos
+ * cleanup errors the stream with an AbortError, which rejects the pending
+ * write. */
+static void stw3_write_closed(ScrClosure *cl) {
+  Stw3Job *j = stw3_job_of(cl);
+  stw3_write_unregister(j, 3);
+  ScrError *errored = scr_stream_errored(j->ctx->writable); /* +1 or NULL */
+  if (errored) {
+    stw3_settle(j, errored);
+  } else {
+    ScrError *aborted = scr_error_abort(NULL); /* +1 */
+    if (aborted) {
+      scr_throw_obj(aborted, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+      scr_promise_reject_pending(j->p);
+      if (scr_exc_pending()) scr_exc_clear();
+    } else {
+      scr_promise_fulfill_void(j->p);
+    }
+  }
+  stw3_job_release(j);
+}
+
+/* Wait for 'drain', the writable's error, or its close, the promise Node's
+ * adapter returns for a write the native writable backpressured. */
+static void stw3_write_wait(Stw3Job *j) {
+  ScrClosure *drain_cl = stw3_job_closure((void *)&stw3_write_drain, j);
+  ScrStr *drain_name = scr_str_new("drain", 5);
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)j->ctx->writable, drain_name, drain_cl,
+                                     scr_ee_inv_fixed0, true, false));
+  ScrClosure *error_cl = stw3_job_closure((void *)&stw3_write_error, j);
+  ScrStr *error_name = scr_str_new("error", 5);
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)j->ctx->writable, error_name, error_cl,
+                                     scr_ee_inv_fixed1, true, false));
+  ScrClosure *close_cl = stw3_job_closure((void *)&stw3_write_closed, j);
+  ScrStr *close_name = scr_str_new("close", 5);
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)j->ctx->writable, close_name, close_cl,
+                                     scr_ee_inv_fixed0, true, false));
+  j->drain_cl = drain_cl;
+  j->drain_name = drain_name;
+  j->error_cl = error_cl;
+  j->error_name = error_name;
+  j->close_cl = close_cl;
+  j->close_name = close_name;
 }
 
 /* The wrapped writable's lifecycle 'error' (a failed write, an abort, a
@@ -119,10 +207,31 @@ static ScrDyn *stw3_write(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   Stw3Job *j = stw3_job_new(c);
   ScrDyn *chunk = argc > 0 ? args[0] : scr_dyn_undefined();
   ScrClosure *done = stw3_job_closure((void *)&stw3_write_done, j);
-  scr_stream_write_dyn(c->writable, chunk, done); /* done moves */
+  bool accepted = scr_stream_write_dyn(c->writable, chunk, done); /* done moves */
   /* A chunk the writable refuses synchronously leaves its error pending:
    * the write's promise carries it, as the sink's throw would. */
-  if (scr_exc_pending()) scr_promise_reject_pending(j->p);
+  if (scr_exc_pending()) {
+    scr_promise_reject_pending(j->p);
+  } else if (!accepted) {
+    /* Node's adapter: a write the native writable backpressured answers a
+     * promise that settles at 'drain' or rejects with the stream's error —
+     * unless the writable is already draining (the write returned false but
+     * needs no drain), which resolves at once. */
+    if (scr_stream_prop(c->writable, "writableNeedDrain") == 0) {
+      scr_promise_fulfill_void(j->p);
+    } else {
+      ScrError *errored = scr_stream_errored(c->writable); /* +1 or NULL */
+      if (errored) {
+        stw3_settle(j, errored);
+      } else {
+        stw3_write_wait(j);
+      }
+    }
+  } else {
+    /* The writable accepted the chunk without backpressure: Node's sink
+     * write has already resolved, whatever the write later does. */
+    scr_promise_fulfill_void(j->p);
+  }
   ScrDyn *out = scr_dyn_new_promise(j->p);
   stw3_job_release(j);
   stw3_unref(c);

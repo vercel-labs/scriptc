@@ -2242,6 +2242,7 @@ export function lowerStreamStaticCall(
     }
   }
   if (member === "fromWeb" && cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
+  if (member === "fromWeb" && cls === "%Writable") return lowerWritableFromWeb(lowerer, call, loc);
   if (member === "toWeb" && cls === "%Writable") return lowerWritableToWeb(lowerer, call, loc);
   // Readable.isDisturbed is stream.isDisturbed, which every stream class
   // inherits from the module's legacy Stream.
@@ -2397,6 +2398,50 @@ function lowerReadableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
     fn: "stream.addAbortSignal",
     args: [built, signal],
     type: readable,
+    loc,
+  };
+}
+
+/** Writable.fromWeb(writableStream): a Writable over the web stream's writer
+ * (scr_stream_from_web_writable.c). The options have no lowering yet. */
+function lowerWritableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
+    lowerer.noLowering(
+      `Writable.fromWeb with ${args.length} arguments`,
+      call,
+      "the supported form is Writable.fromWeb(writableStream)",
+    );
+  }
+  const options = args[1];
+  if (options !== undefined) {
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "Writable.fromWeb options that are not an object literal",
+        options,
+        "pass no options, or an empty object literal",
+      );
+    }
+    for (const option of options.properties.nodes) {
+      const key =
+        (ts.isPropertyAssignment(option) || ts.isShorthandPropertyAssignment(option)) &&
+        ts.isIdentifier(option.name)
+          ? option.name.text
+          : null;
+      lowerer.noLowering(
+        key === null
+          ? "Writable.fromWeb options with this member"
+          : `the Writable.fromWeb option '${key}'`,
+        option,
+        "the supported form is Writable.fromWeb(writableStream)",
+      );
+    }
+  }
+  return {
+    kind: "libCall",
+    fn: "webstream.writableFromWeb",
+    args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
+    type: { kind: "object", className: "%Writable" },
     loc,
   };
 }

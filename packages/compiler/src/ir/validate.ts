@@ -4668,6 +4668,17 @@ function validateFunction(
         );
       return true;
     }
+    if (e.fn === "webstream.writableFromWeb") {
+      // Writable.fromWeb: (writableStream, flags) → a Writable.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (writableStream, flags) and return a Writable`, e.loc);
+      return true;
+    }
     if (e.fn === "webstream.writableToWeb") {
       // Writable.toWeb: (writable, flags) → a web WritableStream.
       if (
@@ -5342,7 +5353,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "dgram.address") {
+    if (e.fn === "dgram.address" || e.fn === "dgram.remoteAddress" || e.fn === "dgram.bindSync") {
       // Result is the {address, family, port} record.
       const shape = e.type.kind === "record" ? records.get(e.type.shapeId) : undefined;
       const ok =
@@ -5355,13 +5366,15 @@ function validateFunction(
         shape.fields[2]!.name === "port" &&
         shape.fields[2]!.type.kind === "f64";
       if (!ok) {
-        err(`libCall dgram.address must return the {address, family, port} record`, e.loc);
+        err(`libCall ${e.fn} must return the {address, family, port} record`, e.loc);
       }
       return true;
     }
     if (
       e.fn === "fs.readdirTypesSync" ||
+      e.fn === "fs.readdirTypesRecursiveSync" ||
       e.fn === "fsp.readdirTypes" ||
+      e.fn === "fsp.readdirTypesRecursive" ||
       e.fn === "fs.globTypesSync" ||
       e.fn === "fsp.globTypes"
     ) {
@@ -5369,12 +5382,8 @@ function validateFunction(
       // name: string, parentPath: string} rows (canonical field
       // order; the structure lowerFsReaddirTypesCall pinned). The glob
       // forms answer the array itself.
-      const result =
-        e.fn === "fsp.readdirTypes"
-          ? e.type.kind === "promise"
-            ? e.type.inner
-            : undefined
-          : e.type;
+      const promiseForm = e.fn === "fsp.readdirTypes" || e.fn === "fsp.readdirTypesRecursive";
+      const result = promiseForm ? (e.type.kind === "promise" ? e.type.inner : undefined) : e.type;
       const shape =
         result?.kind === "array" && result.elem.kind === "record"
           ? records.get(result.elem.shapeId)
@@ -5382,7 +5391,7 @@ function validateFunction(
       const ok = shape !== undefined && isDirentShape(shape);
       if (!ok) {
         err(
-          `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          `libCall ${e.fn} must return ${promiseForm ? "a promise of " : ""}the Dirent record array`,
           e.loc,
         );
       }
@@ -5416,6 +5425,12 @@ function validateFunction(
           e.loc,
         );
       }
+      return true;
+    }
+    if (e.fn === "watchEvents.take") {
+      // Result: the dynamic `{ eventType, filename }` record the iterator
+      // queued (the loop checks it into the binding's record type).
+      if (e.type.kind !== "dyn") err(`libCall ${e.fn} must return a dynamic record`, e.loc);
       return true;
     }
     if (e.fn === "os.networkInterfaces") {

@@ -355,9 +355,14 @@ declare module "stream" {
     constructor(opts: ObjectWritableOptions);
     constructor(opts: StringWritableOptions);
     constructor(opts?: WritableOptions);
+    /* A Writable over a web WritableStream's writer: a write completes when
+     * the writer's write() settles, end() closes the writer and destroy()
+     * aborts it. The options have no lowering yet. */
+    static fromWeb(writableStream: WritableStream<Uint8Array>, options?: {}): Writable;
     /* A web WritableStream over this writable: a writer's write() completes
-     * when the native write's callback fires, close() ends the writable and
-     * abort() destroys it. */
+     * when the writable accepts the chunk (at its 'drain' when the write was
+     * backpressured) and rejects with the stream's error when that write
+     * fails; close() ends the writable and abort() destroys it. */
     static toWeb(writable: Writable): WritableStream<Uint8Array>;
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;

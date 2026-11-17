@@ -81,6 +81,69 @@ async function main(): Promise<void> {
   );
   await new Promise<void>((resolve) => setTimeout(resolve, 10));
 
+  // The same failed write resolves when the callback fails synchronously.
+  const syncFailing = new Writable({
+    write(chunk, encoding, done): void {
+      done(new Error("sync sink fail"));
+    },
+  });
+  const syncFailingWeb = Writable.toWeb(syncFailing);
+  await syncFailingWeb.getWriter().write(encoder.encode("x")).then(
+    () => log.push("sync failed write resolved"),
+    (error: Error) => log.push(`sync failed write rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+  // A write the writable backpressured (its chunk is queued past the high
+  // water mark) rejects the writer's write with the stream's error when the
+  // write then fails, as Node's adapter's drain-or-error promise does.
+  const slowFailing = new Writable({
+    highWaterMark: 1,
+    write(chunk, encoding, done): void {
+      setTimeout(() => done(new Error("slow sink fail")), 5);
+    },
+  });
+  const slowFailingWeb = Writable.toWeb(slowFailing);
+  await slowFailingWeb.getWriter().write(encoder.encode("xy")).then(
+    () => log.push("backpressured failed write resolved"),
+    (error: Error) => log.push(`backpressured failed write rejected ${error.message}`),
+  );
+  log.push(`backpressured errored ${slowFailing.errored?.message}`);
+
+  // A backpressured write that succeeds resolves the writer's write at the
+  // writable's 'drain'.
+  const slowOk = new Writable({
+    highWaterMark: 1,
+    write(chunk, encoding, done): void {
+      setTimeout(done, 5);
+    },
+  });
+  const slowOkWeb = Writable.toWeb(slowOk);
+  const slowOkWriter = slowOkWeb.getWriter();
+  await slowOkWriter.write(encoder.encode("xy")).then(
+    () => log.push("backpressured write resolved"),
+    (error: Error) => log.push(`backpressured write rejected ${error.message}`),
+  );
+  await slowOkWriter.close();
+
+  // Destroying the writable while its backpressured write pends rejects the
+  // writer's write with Node's AbortError.
+  const halted = new Writable({
+    highWaterMark: 1,
+    write(chunk, encoding, done): void {
+      setTimeout(done, 50);
+    },
+  });
+  const haltedWeb = Writable.toWeb(halted);
+  const haltedWrite = haltedWeb.getWriter().write(encoder.encode("xy")).then(
+    () => log.push("destroyed write resolved"),
+    (error: Error & { code?: string }) =>
+      log.push(`destroyed write rejected ${error.name} ${error.message} ${error.code}`),
+  );
+  setTimeout(() => halted.destroy(), 5);
+  await haltedWrite;
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
   // Destroying the writable while the writer's close is pending settles the
   // close instead of leaving it waiting for an event that never comes.
   const slowFinal = new Writable({

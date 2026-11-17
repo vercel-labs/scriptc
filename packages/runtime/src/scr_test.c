@@ -916,10 +916,13 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
     scr_promise_release(p);
   } else if (takes_ctx) {
     ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(ctx));
-    if (!scr_exc_pending()) scr_test_signal_wake(timed != NULL ? timed : ctx, timed);
+    /* Only a body observes its own abort: a hook runs after the test was
+     * already cancelled, and the signal stays aborted, so re-throwing there
+     * would skip the remaining cleanup hooks. */
+    if (timed != NULL && !scr_exc_pending()) scr_test_signal_wake(timed, timed);
   } else {
     ((void (*)(ScrClosure *))cb->fn)(cb);
-    if (!scr_exc_pending()) scr_test_signal_wake(timed != NULL ? timed : ctx, timed);
+    if (timed != NULL && !scr_exc_pending()) scr_test_signal_wake(timed, timed);
   }
   scr_test_scope_leave(outer);
 }
@@ -1375,6 +1378,9 @@ static void scr_test_run_node(ScrTestCtx *t) {
     scr_test_abort_failure(t, sig);
     t->dur_ms = scr_now_ms() - start;
     t->state = SCR_TS_CANCELLED;
+    /* A cancelled suite is a failing result in Node, even though suites are
+     * not counted: the file exits nonzero for it. A todo suite never does. */
+    if (t->is_suite && t->mode != SCR_TEST_TODO) scr_test_suite_hook_failed = true;
     scr_test_abort_now(t);
     scr_test_report_result(t);
     return;

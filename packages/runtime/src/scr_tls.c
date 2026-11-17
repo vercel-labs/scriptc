@@ -2768,48 +2768,83 @@ static const char *const SCR_TLS_SRV_FENCED_OPTIONS[] = {
  * Node's typed errors always come first (the invalid-input probes isolate
  * one bad option per call, so the fixed order below matches each).
  * false = exception pending. */
+/* An option value as Node's ordinary property read sees it (+1 for a
+ * present, defined value; NULL when absent or undefined). False when an
+ * accessor threw: the exception is pending. */
+static bool scr_tls_opt_read(const ScrDyn *opts, const char *key, size_t key_len, ScrDyn **out) {
+  *out = NULL;
+  ScrDyn *v = scr_dyn_obj_read(opts, key, key_len);
+  if (v == NULL) return !scr_exc_pending();
+  if (v->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(v);
+    return true;
+  }
+  *out = v;
+  return true;
+}
+
 static bool scr_tls_opts_validate(const ScrDyn *opts) {
   if (opts == NULL || opts->kind != SCR_DYN_OBJ) return true;
   static const char *const STR_OPTS[] = { "ciphers", "passphrase", "ecdhCurve", "sessionIdContext", NULL };
   for (size_t i = 0; STR_OPTS[i] != NULL; i++) {
-    const ScrDyn *v = scr_dyn_obj_get(opts, STR_OPTS[i], strlen(STR_OPTS[i]));
-    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_STR) {
+    ScrDyn *v = NULL;
+    if (!scr_tls_opt_read(opts, STR_OPTS[i], strlen(STR_OPTS[i]), &v)) return false;
+    if (v != NULL && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_STR) {
       char name[48];
       snprintf(name, sizeof name, "options.%s", STR_OPTS[i]);
       scr_dyn_prop_type_fail(name, "of type string", v);
+      scr_dyn_release(v);
       return false;
     }
+    scr_dyn_release(v);
   }
   static const char *const ENGINE_OPTS[] = { "clientCertEngine", "privateKeyEngine", "privateKeyIdentifier", NULL };
   for (size_t i = 0; ENGINE_OPTS[i] != NULL; i++) {
-    const ScrDyn *v = scr_dyn_obj_get(opts, ENGINE_OPTS[i], strlen(ENGINE_OPTS[i]));
-    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_STR) {
+    ScrDyn *v = NULL;
+    if (!scr_tls_opt_read(opts, ENGINE_OPTS[i], strlen(ENGINE_OPTS[i]), &v)) return false;
+    if (v != NULL && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_STR) {
       char name[48];
       snprintf(name, sizeof name, "options.%s", ENGINE_OPTS[i]);
       scr_dyn_prop_type_fail(name, "of type string or one of null or undefined", v);
+      scr_dyn_release(v);
       return false;
     }
+    scr_dyn_release(v);
   }
   /* Node's toV: null and undefined select the default bound. */
   int version;
-  if (!scr_tls_version_dyn(scr_dyn_obj_get(opts, "minVersion", 10), "minimum", 12, &version) ||
-      !scr_tls_version_dyn(scr_dyn_obj_get(opts, "maxVersion", 10), "maximum", 13, &version))
+  ScrDyn *vmin = NULL, *vmax = NULL;
+  if (!scr_tls_opt_read(opts, "minVersion", 10, &vmin) ||
+      !scr_tls_opt_read(opts, "maxVersion", 10, &vmax)) {
+    scr_dyn_release(vmin);
+    scr_dyn_release(vmax);
     return false;
+  }
+  bool versions_ok = scr_tls_version_dyn(vmin, "minimum", 12, &version) &&
+                     scr_tls_version_dyn(vmax, "maximum", 13, &version);
+  scr_dyn_release(vmin);
+  scr_dyn_release(vmax);
+  if (!versions_ok) return false;
   static const char *const NUM_OPTS[] = { "handshakeTimeout", "keepAliveInitialDelay", NULL };
   for (size_t i = 0; NUM_OPTS[i] != NULL; i++) {
-    const ScrDyn *v = scr_dyn_obj_get(opts, NUM_OPTS[i], strlen(NUM_OPTS[i]));
-    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_NUM) {
+    ScrDyn *v = NULL;
+    if (!scr_tls_opt_read(opts, NUM_OPTS[i], strlen(NUM_OPTS[i]), &v)) return false;
+    if (v != NULL && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_NUM) {
       char name[48];
       snprintf(name, sizeof name, "options.%s", NUM_OPTS[i]);
       scr_dyn_prop_type_fail(name, "of type number", v);
+      scr_dyn_release(v);
       return false;
     }
+    scr_dyn_release(v);
   }
   {
-    const ScrDyn *v = scr_dyn_obj_get(opts, "sessionTimeout", 14);
-    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
+    ScrDyn *v = NULL;
+    if (!scr_tls_opt_read(opts, "sessionTimeout", 14, &v)) return false;
+    if (v != NULL && v->kind != SCR_DYN_NULL) {
       if (v->kind != SCR_DYN_NUM) {
         scr_dyn_prop_type_fail("options.sessionTimeout", "of type number", v);
+        scr_dyn_release(v);
         return false;
       }
       double n = v->v.num;
@@ -2819,6 +2854,7 @@ static bool scr_tls_opts_validate(const ScrDyn *opts) {
         int len = snprintf(msg, sizeof msg,
                            "The value of \"options.sessionTimeout\" is out of range. It must be an integer. Received %s", recv);
         scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+        scr_dyn_release(v);
         return false;
       }
       if (n < 0 || n > 2147483647.0) {
@@ -2826,15 +2862,19 @@ static bool scr_tls_opts_validate(const ScrDyn *opts) {
         int len = snprintf(msg, sizeof msg,
                            "The value of \"options.sessionTimeout\" is out of range. It must be >= 0 && <= 2147483647. Received %s", recv);
         scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+        scr_dyn_release(v);
         return false;
       }
     }
+    scr_dyn_release(v);
   }
   {
-    const ScrDyn *v = scr_dyn_obj_get(opts, "ticketKeys", 10);
-    if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
+    ScrDyn *v = NULL;
+    if (!scr_tls_opt_read(opts, "ticketKeys", 10, &v)) return false;
+    if (v != NULL && v->kind != SCR_DYN_NULL) {
       if (v->kind != SCR_DYN_BYTES) {
         scr_dyn_prop_type_fail("options.ticketKeys", "an instance of Buffer, TypedArray, or DataView", v);
+        scr_dyn_release(v);
         return false;
       }
       double bytelen = scr_bytes_byte_len(v->v.bytes);
@@ -2843,9 +2883,11 @@ static bool scr_tls_opts_validate(const ScrDyn *opts) {
         int len = snprintf(msg, sizeof msg,
                            "The property 'options.ticketKeys' must be exactly 48 bytes. Received %.0f", bytelen);
         scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+        scr_dyn_release(v);
         return false;
       }
     }
+    scr_dyn_release(v);
   }
   return true;
 }
@@ -2856,6 +2898,71 @@ static bool scr_tls_opts_validate(const ScrDyn *opts) {
  * the same walk (scr_http2.c always links alongside this unit). */
 /* `server_ok`: tls.createServer reads ALPNProtocols, minVersion and
  * maxVersion itself; the walk's other callers keep their fences. */
+/* One walked TLS server option (`v` is Node's property read, owned by the
+ * caller, or NULL when the member's value is not read; `defined` is false
+ * for a member that reads as absent). False when the member is refused (the
+ * caller stops the walk). */
+static bool scr_tls_srv_opt_member(const ScrDynProp *e, const ScrDyn *v, bool defined,
+                                   const char *api, bool server_ok, ScrBytes **cert_out,
+                                   ScrBytes **key_out, ScrTlsClientAuth *auth) {
+  if (!defined) return true; /* absent, like Node */
+  if (strcmp(e->key, "cert") == 0 || strcmp(e->key, "key") == 0) {
+    char what[96];
+    snprintf(what, sizeof what, "a %s '%s' option", api, e->key);
+    ScrBytes *b = scr_tls_pem_dyn(v, what, false);
+    if (b == NULL) return false;
+    ScrBytes **slot = e->key[0] == 'c' ? cert_out : key_out;
+    scr_bytes_release(*slot);
+    *slot = b;
+    return true;
+  }
+  if (strcmp(e->key, "ca") == 0) {
+    /* the server's `ca` verifies client certificates and completes the
+     * server's own chain (scr_tls_srv_client_auth); a walk without client
+     * certificates drops it */
+    if (auth != NULL) {
+      char what[96];
+      snprintf(what, sizeof what, "a %s 'ca' option", api);
+      scr_bytes_release(auth->ca);
+      if (!scr_tls_ca_dyn(v, what, &auth->ca)) return false;
+    }
+    return true;
+  }
+  if (strcmp(e->key, "requestCert") == 0) {
+    if (auth != NULL) {
+      auth->request = scr_tls_dyn_truthy(v);
+      return true;
+    }
+    if (scr_tls_dyn_truthy(v)) {
+      scr_tls_opt_fence(api, "requestCert",
+                        "requestCert lowers on tls.createServer, https.createServer and new tls.TLSSocket");
+      return false;
+    }
+    return true;
+  }
+  if (strcmp(e->key, "rejectUnauthorized") == 0) {
+    if (auth != NULL) auth->reject = scr_tls_dyn_not_false(v);
+    return true; /* without client certificates it has no effect */
+  }
+  if (server_ok && (strcmp(e->key, "ALPNProtocols") == 0 || strcmp(e->key, "minVersion") == 0 ||
+                    strcmp(e->key, "maxVersion") == 0))
+    return true;
+  if (strcmp(e->key, "SNICallback") == 0) {
+    scr_tls_opt_fence(api, "SNICallback",
+                      "SNICallback lowers only on http2.createSecureServer({ allowHTTP1: true, ... }) with a literal options object");
+    return false;
+  }
+  for (size_t k = 0; SCR_TLS_SRV_FENCED_OPTIONS[k] != NULL; k++) {
+    if (strcmp(e->key, SCR_TLS_SRV_FENCED_OPTIONS[k]) == 0) {
+      scr_tls_opt_fence(api, e->key,
+                        "cert and key (PEM strings or Buffers) are the honestly-implemented members of a runtime options record");
+      return false;
+    }
+  }
+  /* anything else: an undocumented key, dropped like Node drops it */
+  return true;
+}
+
 static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrBytes **cert_out,
                                      ScrBytes **key_out, bool server_ok, ScrTlsClientAuth *auth) {
   if (opts != NULL && opts->kind == SCR_DYN_TYPED_REF) {
@@ -2881,64 +2988,24 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
   bool ok = true;
   for (size_t i = 0; ok && i < scr_dyn_obj_count(opts); i++) {
     ScrDynProp e = scr_dyn_obj_prop_at(opts, i);
-    const ScrDyn *v = e.value;
-    if (v->kind == SCR_DYN_UNDEF) continue; /* an undefined member reads as absent, like Node */
-    if (strcmp(e.key, "cert") == 0 || strcmp(e.key, "key") == 0) {
-      char what[96];
-      snprintf(what, sizeof what, "a %s '%s' option", api, e.key);
-      ScrBytes *b = scr_tls_pem_dyn(v, what, false);
-      if (b == NULL) { ok = false; break; }
-      ScrBytes **slot = e.key[0] == 'c' ? cert_out : key_out;
-      scr_bytes_release(*slot);
-      *slot = b;
-      continue;
-    }
-    if (strcmp(e.key, "ca") == 0) {
-      /* the server's `ca` verifies client certificates and completes the
-       * server's own chain (scr_tls_srv_client_auth); a walk without
-       * client certificates drops it */
-      if (auth != NULL) {
-        char what[96];
-        snprintf(what, sizeof what, "a %s 'ca' option", api);
-        scr_bytes_release(auth->ca);
-        if (!scr_tls_ca_dyn(v, what, &auth->ca)) ok = false;
-      }
-      continue;
-    }
-    if (strcmp(e.key, "requestCert") == 0) {
-      if (auth != NULL) {
-        auth->request = scr_tls_dyn_truthy(v);
-        continue;
-      }
-      if (scr_tls_dyn_truthy(v)) {
-        scr_tls_opt_fence(api, "requestCert",
-                          "requestCert lowers on tls.createServer, https.createServer and new tls.TLSSocket");
-        ok = false;
-      }
-      continue;
-    }
-    if (strcmp(e.key, "rejectUnauthorized") == 0) {
-      if (auth != NULL) auth->reject = scr_tls_dyn_not_false(v);
-      continue; /* without client certificates it has no effect */
-    }
-    if (server_ok && (strcmp(e.key, "ALPNProtocols") == 0 || strcmp(e.key, "minVersion") == 0 ||
-                      strcmp(e.key, "maxVersion") == 0))
-      continue;
-    if (strcmp(e.key, "SNICallback") == 0) {
-      scr_tls_opt_fence(api, "SNICallback",
-                        "SNICallback lowers only on http2.createSecureServer({ allowHTTP1: true, ... }) with a literal options object");
+    /* The members the walk reads take their value through ordinary property
+     * access, so an accessor's getter runs once and its value is the one
+     * Node's constructor sees. Other keys are only classified (fenced or
+     * dropped) and their values are never read, like Node's own options
+     * reads. */
+    bool reads_value = strcmp(e.key, "cert") == 0 || strcmp(e.key, "key") == 0 ||
+                       strcmp(e.key, "ca") == 0 || strcmp(e.key, "requestCert") == 0 ||
+                       strcmp(e.key, "rejectUnauthorized") == 0;
+    ScrDyn *owned = reads_value ? scr_dyn_obj_read(opts, e.key, e.key_len) : NULL;
+    if (reads_value && owned == NULL) { ok = false; break; } /* a getter threw */
+    /* An unread member still counts as present for the fence: an accessor
+     * may answer anything, while a data property explicitly set to undefined
+     * reads as absent, like Node. */
+    bool defined = reads_value ? owned->kind != SCR_DYN_UNDEF
+                               : (e.accessor || e.value->kind != SCR_DYN_UNDEF);
+    if (!scr_tls_srv_opt_member(&e, owned, defined, api, server_ok, cert_out, key_out, auth))
       ok = false;
-      continue;
-    }
-    for (size_t k = 0; SCR_TLS_SRV_FENCED_OPTIONS[k] != NULL; k++) {
-      if (strcmp(e.key, SCR_TLS_SRV_FENCED_OPTIONS[k]) == 0) {
-        scr_tls_opt_fence(api, e.key,
-                          "cert and key (PEM strings or Buffers) are the honestly-implemented members of a runtime options record");
-        ok = false;
-        break;
-      }
-    }
-    /* anything else: an undocumented key, dropped like Node drops it */
+    scr_dyn_release(owned);
   }
   if (ok && (*cert_out == NULL || *key_out == NULL)) {
     ScrJsonBuf b;
@@ -3070,69 +3137,96 @@ static void scr_https_apply_http_options(ScrNetServer *s, const ScrDyn *opts /*b
     return;
   }
   if (opts->kind != SCR_DYN_OBJ) return;
-  const ScrDyn *v;
-  const ScrDyn *headers = NULL;
-  /* Each step stops at its first throwing validation, so the first bad
-   * option in Node's order is the one the call reports. */
-  if ((v = scr_dyn_obj_get(opts, "maxHeaderSize", sizeof "maxHeaderSize" - 1)) != NULL &&
-      v->kind != SCR_DYN_UNDEF) {
+  /* Node reads each option through ordinary property access, so an
+   * accessor's getter runs once and its value is what the setter sees. Each
+   * step stops at its first throwing validation, so the first bad option in
+   * Node's order is the one the call reports. */
+  ScrDyn *v = scr_dyn_obj_read(opts, "maxHeaderSize", sizeof "maxHeaderSize" - 1);
+  if (v == NULL) return; /* a getter threw; exception pending */
+  if (v->kind != SCR_DYN_UNDEF) {
     if (v->kind != SCR_DYN_NUM) {
       scr_dyn_arg_type_fail("maxHeaderSize", "of type number", v);
+      scr_dyn_release(v);
       return;
     }
     scr_http_server_max_header_size(s, v->v.num);
-    if (scr_exc_pending()) return;
   }
+  scr_dyn_release(v);
+  if (scr_exc_pending()) return;
   /* requestTimeout, then headersTimeout (the default derives from the
    * request timeout), then their range relation. */
-  v = scr_dyn_obj_get(opts, "requestTimeout", sizeof "requestTimeout" - 1);
-  if (v != NULL) {
+  v = scr_dyn_obj_read(opts, "requestTimeout", sizeof "requestTimeout" - 1);
+  if (v == NULL) return;
+  if (v->kind != SCR_DYN_UNDEF) {
     scr_net_server_timeout_option_set(s, 3, v);
+    scr_dyn_release(v);
     if (scr_exc_pending()) return;
+  } else {
+    scr_dyn_release(v);
   }
-  headers = scr_dyn_obj_get(opts, "headersTimeout", sizeof "headersTimeout" - 1);
-  if (headers != NULL) {
+  ScrDyn *headers = scr_dyn_obj_read(opts, "headersTimeout", sizeof "headersTimeout" - 1);
+  if (headers == NULL) return;
+  if (headers->kind != SCR_DYN_UNDEF) {
     scr_net_server_timeout_option_set(s, 2, headers);
-    if (scr_exc_pending()) return;
-    if (headers->kind == SCR_DYN_UNDEF) headers = NULL;
+    if (scr_exc_pending()) {
+      scr_dyn_release(headers);
+      return;
+    }
   }
-  scr_http_server_headers_timeout_default(s, headers);
+  scr_http_server_headers_timeout_default(s, headers->kind == SCR_DYN_UNDEF ? NULL : headers);
+  scr_dyn_release(headers);
   if (scr_exc_pending()) return;
-  v = scr_dyn_obj_get(opts, "keepAliveTimeout", sizeof "keepAliveTimeout" - 1);
-  if (v != NULL) {
+  v = scr_dyn_obj_read(opts, "keepAliveTimeout", sizeof "keepAliveTimeout" - 1);
+  if (v == NULL) return;
+  if (v->kind != SCR_DYN_UNDEF) {
     scr_net_server_timeout_option_set(s, 1, v);
+    scr_dyn_release(v);
     if (scr_exc_pending()) return;
+  } else {
+    scr_dyn_release(v);
   }
-  v = scr_dyn_obj_get(opts, "keepAliveTimeoutBuffer", sizeof "keepAliveTimeoutBuffer" - 1);
-  if (v != NULL) {
+  v = scr_dyn_obj_read(opts, "keepAliveTimeoutBuffer", sizeof "keepAliveTimeoutBuffer" - 1);
+  if (v == NULL) return;
+  if (v->kind != SCR_DYN_UNDEF) {
     scr_net_server_timeout_option_set(s, 4, v);
+    scr_dyn_release(v);
     if (scr_exc_pending()) return;
+  } else {
+    scr_dyn_release(v);
   }
-  v = scr_dyn_obj_get(opts, "connectionsCheckingInterval",
-                      sizeof "connectionsCheckingInterval" - 1);
-  if (v != NULL) {
-    scr_http_server_connections_checking_interval(s, v);
-    if (scr_exc_pending()) return;
-  }
-  v = scr_dyn_obj_get(opts, "joinDuplicateHeaders", sizeof "joinDuplicateHeaders" - 1);
-  if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+  v = scr_dyn_obj_read(opts, "connectionsCheckingInterval",
+                       sizeof "connectionsCheckingInterval" - 1);
+  if (v == NULL) return;
+  scr_http_server_connections_checking_interval(s, v);
+  scr_dyn_release(v);
+  if (scr_exc_pending()) return;
+  v = scr_dyn_obj_read(opts, "joinDuplicateHeaders", sizeof "joinDuplicateHeaders" - 1);
+  if (v == NULL) return;
+  if (v->kind != SCR_DYN_UNDEF) {
     if (v->kind != SCR_DYN_BOOL) {
       scr_dyn_arg_type_fail("options.joinDuplicateHeaders", "of type boolean", v);
+      scr_dyn_release(v);
       return;
     }
     if (v->v.b) scr_http_server_join_duplicate_headers(s);
   }
-  v = scr_dyn_obj_get(opts, "requireHostHeader", sizeof "requireHostHeader" - 1);
-  if (v != NULL && v->kind != SCR_DYN_UNDEF) {
+  scr_dyn_release(v);
+  v = scr_dyn_obj_read(opts, "requireHostHeader", sizeof "requireHostHeader" - 1);
+  if (v == NULL) return;
+  if (v->kind != SCR_DYN_UNDEF) {
     if (v->kind != SCR_DYN_BOOL) {
       scr_dyn_arg_type_fail("options.requireHostHeader", "of type boolean", v);
+      scr_dyn_release(v);
       return;
     }
     if (!v->v.b) scr_http_server_allow_missing_host_header(s);
   }
-  v = scr_dyn_obj_get(opts, "rejectNonStandardBodyWrites",
-                      sizeof "rejectNonStandardBodyWrites" - 1);
-  if (v != NULL) scr_http_server_reject_non_standard_body_writes(s, v);
+  scr_dyn_release(v);
+  v = scr_dyn_obj_read(opts, "rejectNonStandardBodyWrites",
+                       sizeof "rejectNonStandardBodyWrites" - 1);
+  if (v == NULL) return;
+  scr_http_server_reject_non_standard_body_writes(s, v);
+  scr_dyn_release(v);
 }
 
 ScrNetServer *scr_https_create_server_dyn(const ScrDyn *opts /*borrowed*/,

@@ -632,16 +632,27 @@ export function cjsNestedExportReplacementOf(sf: ts.SourceFile): ts.BinaryExpres
  *   }
  *
  * Every assignment to `module.exports` in the file must be an inline require
- * of a program module whose own exports are a static table, and every table
- * must name the same members. The module's export globals then take their
- * values from the branch that ran, so importers read the same members Node
- * answers. Null when the file has no such assignment, when one resolves to
- * anything else (a computed object, a function, an object literal), or when
- * the tables disagree on their members. */
+ * of a program module whose own exports are a static table. The module's
+ * export globals then take their values from the branch that ran, so
+ * importers read the same members Node answers. The tables need not name the
+ * same members: React 19's development build exports `act` and
+ * `captureOwnerStack`, which its production build does not, so `names` is
+ * the union over the arms and a member an arm's table lacks stays undefined
+ * when that arm runs, as it is in Node. `ownNames` is the table of the arm a
+ * target stands for. Null when the file has no such assignment or when one
+ * resolves to anything else (a computed object, a function, an object
+ * literal). */
 export function cjsConditionalWholeExportTargetsOf(
   lowerer: Lowerer,
   sf: ts.SourceFile,
-): { assign: ts.BinaryExpression; req: InlineRequire; names: string[] }[] | null {
+):
+  | {
+      assign: ts.BinaryExpression;
+      req: InlineRequire;
+      names: string[];
+      ownNames: string[];
+    }[]
+  | null {
   // A top-level whole-export statement keeps its own treatment (a pure
   // re-export resolves through the target module's own table).
   if (sf.statements.nodes.some((stmt) => cjsExportAssignmentOf(stmt) !== null)) return null;
@@ -661,13 +672,24 @@ export function cjsConditionalWholeExportTargetsOf(
   if (found.length < 2) return null;
   const first = cjsWholeExportMemberNamesOf(lowerer, found[0]!.req.dep);
   if (first === null) return null;
-  for (const { req } of found) {
+  const union = [...first];
+  const seen = new Set(first);
+  const ownNames = [first];
+  for (const { req } of found.slice(1)) {
     const names = cjsWholeExportMemberNamesOf(lowerer, req.dep);
-    if (names === null || names.length !== first.length) return null;
-    const have = new Set(names);
-    if (first.some((name) => !have.has(name))) return null;
+    if (names === null) return null;
+    ownNames.push(names);
+    for (const name of names)
+      if (!seen.has(name)) {
+        seen.add(name);
+        union.push(name);
+      }
   }
-  return found.map((entry) => ({ ...entry, names: first }));
+  return found.map((entry, index) => ({
+    ...entry,
+    names: union,
+    ownNames: ownNames[index]!,
+  }));
 }
 
 /** The member names a module exports, as a conditional whole export's

@@ -185,7 +185,7 @@ function lowerTestOptions(
       `${what} with a non-literal options argument`,
       node,
       suite
-        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency? }"
+        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency?, timeout? }"
         : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout? }",
     );
   }
@@ -273,7 +273,7 @@ function lowerTestOptions(
           "concurrency takes the literal true/false or a number here",
         );
       }
-    } else if (name === "timeout" && !suite) {
+    } else if (name === "timeout") {
       out.timeout = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), locOf(init));
     } else if (name === "expectFailure") {
       if (init.kind === ts.SyntaxKind.TrueKeyword) {
@@ -306,7 +306,7 @@ function lowerTestOptions(
         `${what} option '${name}'`,
         prop,
         suite
-          ? "skip, todo, only, and concurrency are the supported suite options"
+          ? "skip, todo, only, concurrency and timeout are the supported suite options"
           : "skip, todo, only, concurrency, plan, and timeout are the supported options",
       );
     }
@@ -635,7 +635,16 @@ function lowerSuite(
     {
       kind: "libCall",
       fn: "test.suite",
-      args: [name, mode, msg, cb, at, flags, opts.concurrency ?? numLit(0, loc)],
+      args: [
+        name,
+        mode,
+        msg,
+        cb,
+        at,
+        flags,
+        opts.concurrency ?? numLit(0, loc),
+        opts.timeout ?? numLit(0, loc),
+      ],
       type: VOID,
       loc,
     },
@@ -1378,11 +1387,13 @@ export function lowerTestMethodCall(
     }
     // The data payload rides the test:log event only, so the reporter prints
     // the message alone; it is still evaluated for its side effects, after
-    // the message, as the arguments evaluate in source order.
+    // the message, as the arguments evaluate in source order. It lowers as a
+    // discarded expression statement, so a bare `null`/`undefined` payload
+    // is a no-op instead of a bare unit literal the IR has no value for.
     const pre: IrStmt[] = [];
     const msgSlot = lowerer.declareHiddenLocal("%logMessage", STRING);
     pre.push({ kind: "varDecl", localId: msgSlot.id, init: msg, loc });
-    pre.push({ kind: "exprStmt", expr: lowerer.lowerExpr(data), loc });
+    pre.push(lowerer.lowerExprStatement(data));
     return {
       kind: "seqExpr",
       stmts: pre,

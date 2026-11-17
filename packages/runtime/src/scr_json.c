@@ -23453,6 +23453,13 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
  * entry of the native table has it. */
 #define SCR_WEAK_ISLAND_KIND (~0u)
 
+/* A target or token the registry cannot key weakly: it is accepted, keeps
+ * no entry, and unregister answers false for it. Distinct from every kind
+ * scr_weak_key answers (0 is a plain object, 4+tag are handles, 32 a typed
+ * reference, 0x10000 a promise, ~0 an island) and never reaches the weak
+ * tables. */
+#define SCR_WEAK_UNTRACKED_KIND 0x20000u
+
 /* Whether the island's collection holds the entries of `key`: an island
  * object, and, in a program with Node islands, a symbol. An island symbol
  * is a native symbol paired with it (scr_node_island_handle.c), so a symbol
@@ -24291,20 +24298,18 @@ static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind
   }
   int supported = scr_weak_key(value, ptr, kind);
   if (supported < 0) {
-    /* A TARGET whose reference kind has no weak lifetime lowering: the
-     * registry keeps no per-target entry (it counts unregister tokens only),
-     * and ECMAScript lets an implementation never collect a target or call
-     * its cleanup, so the registration is accepted and simply never
-     * collected. A TOKEN of such a kind still refuses: its count is the one
-     * thing the registry reads back. */
-    if (invalid) {
-      *ptr = NULL;
-      *kind = 0;
-      return true;
-    }
-    static const char message[] = "FinalizationRegistry unregister tokens of this native reference type have no weak lifetime lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return false;
+    /* A target or token whose reference kind has no weak lifetime lowering
+     * (a copied native value, a handle kind without a weak entry): the
+     * registry keeps no entry for it. ECMAScript lets an implementation
+     * never collect a target or call its cleanup, so a registration with
+     * such a target is accepted and never collected; with such a token the
+     * count the registry would read back does not exist, so the
+     * registration is accepted without counting it and unregister answers
+     * false for the token. Anything that can be told apart from 'no entry'
+     * is SCR_WEAK_UNTRACKED_KIND. */
+    *ptr = NULL;
+    *kind = SCR_WEAK_UNTRACKED_KIND;
+    return true;
   }
   if (!supported) {
     if (invalid) {
@@ -24354,6 +24359,9 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
         scr_dyn_release(registered);
         return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
       }
+      /* A token with no weak lifetime keeps no count, so there is nothing
+       * to record: the registration is accepted as it is. */
+      if (kind == SCR_WEAK_UNTRACKED_KIND) return scr_dyn_retain(scr_dyn_undefined());
       ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
       double count = entry && entry->value->kind == SCR_DYN_NUM ? entry->value->v.num : 0;
       ScrDyn *next = scr_dyn_new_num(count + 1);
@@ -24369,6 +24377,8 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
       int found = scr_ni_dyn_ops->weak_test(tokens->island, false, first, true);
       return found < 0 ? NULL : scr_dyn_new_bool(found);
     }
+    /* No count was kept for such a token at registration. */
+    if (kind == SCR_WEAK_UNTRACKED_KIND) return scr_dyn_new_bool(false);
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
     if (entry) scr_weak_remove(entry);
     return scr_dyn_new_bool(entry != NULL);

@@ -290,6 +290,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_tls_sock_disable_renegotiation does nothing: the provider keeps
   // renegotiation off, which is what the call asks for.
   "tls.sockDisableRenegotiation",
+  // scr_dgram_async_dispose allocates the promise and registers the close
+  // listener; the only failure is allocation, which aborts.
+  "dgram.asyncDispose",
+  // socket.type and `instanceof dgram.Socket`: pure reads, never throw.
+  "dgram.type",
+  "dgram.isSocket",
   // scr_util_transferable_abort_controller allocates a controller and its
   // signal state; running out of memory ends the process, and no argument
   // is read (surplus arguments are evaluated by the call site).

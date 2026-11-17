@@ -2433,7 +2433,39 @@ function buildLibFnSignatures() {
      * defers the callback to the next turn (SEMANTICS.md documents the
      * blocking divergence); its per-union adapter builds the
      * `Error | null` first argument. */
-    "dgram.createSocket": { argTypes: [BOOL], result: DGRAMSOCK_T },
+    "dgram.createSocket": { argTypes: [DYN], result: DGRAMSOCK_T },
+    /** createSocket's listener form: the callback registers as on('message'). */
+    "dgram.createSocketCb": { argTypes: [DYN, null], result: DGRAMSOCK_T },
+    /** bind(options[, callback]) — the untyped options object. */
+    "dgram.bindOpts": { argTypes: [DGRAMSOCK_T, DYN], result: VOID },
+    "dgram.bindOptsCb": {
+      argTypes: [DGRAMSOCK_T, DYN, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    /** bindSync(options): binds synchronously; the address record the
+     * frontend pins is read back through the address() parts. */
+    "dgram.bindSync": { argTypes: [DGRAMSOCK_T, DYN], result: VOID },
+    /** connectSync(port[, address]): the synchronous connect. */
+    "dgram.connectSync": { argTypes: [DGRAMSOCK_T, F64, STRING, BOOL], result: VOID },
+    /** The source-specific multicast joins, interface given flag last. */
+    "dgram.addSourceMembership": {
+      argTypes: [DGRAMSOCK_T, STRING, STRING, STRING, BOOL],
+      result: VOID,
+    },
+    "dgram.dropSourceMembership": {
+      argTypes: [DGRAMSOCK_T, STRING, STRING, STRING, BOOL],
+      result: VOID,
+    },
+    /** socket.type: "udp4" or "udp6". */
+    "dgram.type": { argTypes: [DGRAMSOCK_T], result: STRING },
+    /** `x instanceof dgram.Socket` over a checked-dynamic value: the
+     * socket handle's tag. */
+    "dgram.isSocket": { argTypes: [DYN], result: BOOL },
+    /** remoteAddress(): the remote AddressInfo record (the frontend pins
+     * its {address, family, port} shape, built from the runtime parts). */
+    "dgram.remoteAddress": { argTypes: [DGRAMSOCK_T], result: VOID },
+    /** socket[Symbol.asyncDispose](): a promise of 'close'. */
+    "dgram.asyncDispose": { argTypes: [DGRAMSOCK_T], result: { kind: "promise", inner: VOID } },
     "dgram.bind": { argTypes: [DGRAMSOCK_T, F64, STRING], result: VOID },
     "dgram.bindCb": {
       argTypes: [DGRAMSOCK_T, F64, STRING, { kind: "func", params: [], ret: VOID }],

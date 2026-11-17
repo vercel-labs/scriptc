@@ -796,6 +796,12 @@ static ScrDyn *scr_ar_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
   ScrAsyncResource *r = h;
   (void)what;
   if (strcmp(method, "runInAsyncScope") == 0 && argc >= 1) {
+    /* The dynamic call takes the same checks as the lowered one: Node's
+     * own apply error for a value that is not a function. */
+    if (!scr_dyn_is_callable(args[0])) {
+      scr_ar_apply_type_error(args[0]);
+      return NULL;
+    }
     ScrDyn *args_array = scr_dyn_new_arr();
     for (size_t i = 2; i < argc; i++) scr_dyn_arr_push(args_array, scr_dyn_retain(args[i]));
     ScrDyn *result = scr_ar_call_in_scope(
@@ -804,8 +810,14 @@ static ScrDyn *scr_ar_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
     scr_dyn_release(args_array);
     return result;
   }
-  if (strcmp(method, "bind") == 0 && argc >= 1)
+  if (strcmp(method, "bind") == 0 && argc >= 1) {
+    /* bind validates the function at the call, as the lowered form does. */
+    if (!scr_dyn_is_callable(args[0])) {
+      scr_dyn_arg_type_fail("fn", "of type function", args[0]);
+      return NULL;
+    }
     return scr_ar_make_bound(self, args[0], argc >= 2 ? args[1] : scr_dyn_undefined());
+  }
   if (strcmp(method, "emitDestroy") == 0) return scr_dyn_retain(self);
   if (strcmp(method, "asyncId") == 0) return scr_dyn_new_num(r->async_id);
   if (strcmp(method, "triggerAsyncId") == 0) return scr_dyn_new_num(r->trigger_id);

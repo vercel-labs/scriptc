@@ -121,3 +121,19 @@ try {
 } catch (error) {
   console.log('static bind type:', error.code, error.message);
 }
+
+// A resource held as an untyped value takes the same checks as a typed one:
+// bind rejects a non-function at the bind call (not at the bound call), and
+// runInAsyncScope answers Node's own apply error.
+const bindOf = (resource) => resource.bind(5);
+const runOf = (resource) => resource.runInAsyncScope(5);
+try {
+  bindOf(res);
+} catch (error) {
+  console.log('dynamic bind non-function:', error.code, '|', error.message);
+}
+try {
+  runOf(res);
+} catch (error) {
+  console.log('dynamic run non-function:', error.message);
+}

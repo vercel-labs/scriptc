@@ -107,7 +107,7 @@ test("a local also written an ordinary number keeps the exact index check", () =
   expect(fn).not.toContain("fcmp ord double");
 });
 
-test("a local whose writes grow from its own value keeps the exact index check", () => {
+test("a local whose writes grow from its own value keeps the integer-or-NaN fact", () => {
   const llvm = emitLlvmModule(
     module([
       { kind: "varDecl", localId: "c", init: byteRead(ref("i", F64)), loc },
@@ -125,6 +125,8 @@ test("a local whose writes grow from its own value keeps the exact index check",
     ]),
   );
   const fn = body(llvm);
-  expect(count(fn, /fcmp oeq double/g)).toBe(2);
-  expect(fn).not.toContain("fcmp ord double");
+  // The counter's own step keeps the fact: only the parameter it starts
+  // from needs the exactness round trip.
+  expect(count(fn, /fcmp oeq double/g)).toBe(1);
+  expect(fn).toContain("fcmp ord double");
 });

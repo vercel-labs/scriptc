@@ -5229,8 +5229,6 @@ struct ScrHttpClientReq {
    * their lengths stay in the message's buffer answer until the socket is
    * assigned, and each keeps its own chunk on the wire because the message
    * does not autocork yet. */
-  size_t pre_len;    /* bytes of the writes buffered before 'socket' */
-  size_t pre_framed; /* those bytes plus their chunk framing */
   /* the head a corked write committed, sent first at the flush */
   char *held_head;
   size_t held_head_len, held_head_cap;
@@ -5241,6 +5239,7 @@ struct ScrHttpClientReq {
   bool abort_emitted;
   bool sock_ready;
   bool socket_emitted;
+  bool pre_flushing; /* a flush of the pre-socket writes is in progress */
   bool finish_queued;
   bool writable_finished;
   bool response_started; /* head parsed, res exists */
@@ -5442,16 +5441,12 @@ static void scr_http_client_queue_close(ScrHttpClientReq *c) {
   scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_CLOSE, scr_http_client_retain(c));
 }
 
+static void scr_http_client_cork_flush(ScrHttpClientReq *c);
+
 static void scr_http_client_queue_finish(ScrHttpClientReq *c) {
   if (!c->ended || !c->sock_ready || c->destroyed || c->close_emitted || c->finish_queued || c->writable_finished) return;
   c->finish_queued = true;
   scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_FINISH, scr_http_client_retain(c));
-}
-
-/* The pre-socket writes are the socket's from here on. */
-static void scr_http_client_clear_pre_socket(ScrHttpClientReq *c) {
-  c->pre_len = 0;
-  c->pre_framed = 0;
 }
 
 static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
@@ -5461,9 +5456,8 @@ static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
     return;
   }
   c->socket_emitted = true;
-  /* Node flushes the message's outputData as its socket is assigned, so the
-   * writes made before the event stop counting towards its buffer. */
-  scr_http_client_clear_pre_socket(c);
+  /* the writes that waited for the socket go out now */
+  scr_http_client_cork_flush(c);
   ScrNetL *snap;
   size_t count = scr_net_ls_snapshot(&c->socket_ls, &snap);
   scr_dyn_this_push(c, SCR_DYNH_HTTP_CLIENT);
@@ -5789,16 +5783,19 @@ static void scr_http_client_send_held_head(ScrHttpClientReq *c) {
 
 static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, size_t len) {
   if (c->ended || c->destroyed || c->close_emitted) return; /* write-after-end drops (divergence 48's stance) */
-  if (!c->socket_emitted && c->corked == 0 && len > 0) {
-    /* Before the 'socket' event Node's message counts its writes in
-     * outputData until the socket arrives: the bytes go out in order (one
-     * chunk each, since the message does not autocork yet) and their length
-     * stays in writableLength's answer until then. */
-    /* running totals: a chunked body's size line costs its hex digits
-     * plus the two CRLFs, counted once per write here instead of rescanned
-     * per write from every earlier length */
-    c->pre_len += len;
-    c->pre_framed += len + scr_http_hex_digits(len) + 4;
+  if (!c->socket_emitted && !c->pre_flushing && c->corked == 0 && len > 0) {
+    /* Node's message buffers its writes in outputData until its socket is
+     * assigned: they wait in this message's buffer — the buffer
+     * writableLength reports — instead of reaching the socket early, where
+     * the same bytes would be counted twice. */
+    if (!c->head_sent) {
+      c->hold_head = true;
+      scr_http_client_send_head(c, -1);
+      c->hold_head = false;
+      if (scr_exc_pending()) return;
+    }
+    scr_http_cork_buffer(&c->cork_buf, &c->cork_len, &c->cork_cap, data, len);
+    return;
   }
   if (c->corked > 0) {
     /* Node's write_() builds the implicit head even while corked */
@@ -5876,7 +5873,10 @@ static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
   size_t held_len = c->cork_len;
   c->cork_buf = NULL;
   c->cork_len = c->cork_cap = 0;
+  bool was_pre = c->pre_flushing;
+  c->pre_flushing = true;
   scr_http_client_write_raw(c, held, held_len);
+  c->pre_flushing = was_pre;
   free(held);
   scr_http_client_maybe_drain(c);
 }
@@ -5894,10 +5894,6 @@ double scr_http_client_writable_corked(ScrHttpClientReq *c) { return (double)c->
  * writableLength/'drain' accounting over a request's buffer. */
 double scr_http_client_writable_length(ScrHttpClientReq *c) {
   double buffered = 0;
-  if (c->pre_len != 0) {
-    buffered = (double)(c->chunked ? c->pre_framed : c->pre_len);
-    if (c->held_head_len > 0) buffered += (double)c->held_head_len;
-  }
   if (c->cork_len != 0) {
     buffered = (double)c->cork_len;
     if (c->chunked) buffered += (double)(scr_http_hex_digits(c->cork_len) + 4);
@@ -5981,6 +5977,10 @@ static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_
     if (scr_exc_pending()) return;
     if (c->chunked) {
       scr_http_client_write_raw(c, data, len);
+      /* the terminating chunk and the trailers follow the body on the
+       * wire: a body the message still holds goes out first */
+      scr_http_client_cork_flush(c);
+      if (scr_exc_pending()) return;
       if (c->sock) scr_http_send_chunk_end(c->sock, &c->trailers);
     } else if (c->held_head != NULL) {
       char *head = c->held_head;
@@ -6000,6 +6000,8 @@ static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_
     }
   } else {
     scr_http_client_write_raw(c, data, len);
+    scr_http_client_cork_flush(c);
+    if (scr_exc_pending()) return;
     if (c->chunked && c->sock) scr_http_send_chunk_end(c->sock, &c->trailers);
   }
   c->ended = true;
@@ -6776,6 +6778,10 @@ static void scr_http_client_sock_established(void *ctx) {
   ScrHttpClientReq *c = conn->client;
   if (!c) return;
   c->sock_ready = true;
+  /* a dial that never runs the 'socket' emit (a socket-path connect, a
+   * transport that establishes on its own) still flushes what the message
+   * held for it */
+  if (c->cork_len != 0 || c->held_head != NULL) scr_http_client_cork_flush(c);
   scr_http_client_queue_finish(c);
 }
 

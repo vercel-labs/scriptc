@@ -83,6 +83,7 @@ import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
 import {
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefReadType,
   ambientUndefinedFnSymbolOf,
   ambientUndefinedVarSymbolOf,
@@ -246,6 +247,26 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
       return hostGlobalValue(lowerer, hostGlobal, expr);
     }
+  }
+  // A global only a types-only package declares (`XRWebGLLayer` from
+  // @types/webxr): Node has no such value, so the read is an ordinary
+  // global lookup — the catchable ReferenceError "<name> is not defined"
+  // (typeof answers "undefined" in static-typeof.ts). It is never an
+  // import: the declaration's package ships no implementation.
+  if (ambientTypesOnlyGlobalSymbolOf(lowerer, expr) !== null) {
+    // A program that installs the name on the global object answers the
+    // installed value, exactly as an undeclared or erased global does
+    // (global-object-writes.ts): the read is the global object's own.
+    if (programMayWriteGlobalName(lowerer, expr.text, expr))
+      return {
+        kind: "libCall",
+        fn: "global.bindingRead",
+        args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+        type: DYN,
+        loc,
+      };
+    const t = ambientUndefReadType(lowerer, expr) ?? F64;
+    return nsUndefRead(lowerer, expr.text, expr, t);
   }
   // A compiler-projected adapter as a VALUE: the adapter has no
   // runtime function object (its calls rewrite directly) — call it

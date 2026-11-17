@@ -43,6 +43,7 @@ import { varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefinedFnSymbolOf,
   ambientUndefinedVarSymbolOf,
   isNodeUndefinedGlobalRoot,
@@ -453,7 +454,9 @@ function lowerTypeofAnswer(
     // a read throws ReferenceError.
     if (
       ambientUndefinedVarSymbolOf(lowerer, tested) ||
-      ambientUndefinedFnSymbolOf(lowerer, tested)
+      ambientUndefinedFnSymbolOf(lowerer, tested) ||
+      (ambientTypesOnlyGlobalSymbolOf(lowerer, tested) &&
+        !programMayWriteGlobalName(lowerer, tested.text, tested))
     ) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }

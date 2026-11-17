@@ -7597,7 +7597,7 @@ function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<stri
   return names;
 }
 
-/** `Number.prototype` / `Boolean.prototype` in a JavaScript source: the
+/** `String.prototype` / `Number.prototype` / `Boolean.prototype` in a JavaScript source: the
  * prototype object the checked-dynamic world builds (with its methods), or
  * one of its members read as a value. Typed sources keep their own
  * lowering, so no typed program links the unit that builds it. */
@@ -7607,7 +7607,7 @@ function jsPrimitivePrototypeValue(
 ): IrExpr | null {
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
   const loc = locOf(expr);
-  const value = (kind: "Number" | "Boolean"): IrExpr =>
+  const value = (kind: "String" | "Number" | "Boolean"): IrExpr =>
     kind === "Boolean"
       ? // The wrapper unit's Boolean.prototype is the object Boolean
         // instances inherit from, so its valueOf/toString are the interned
@@ -7662,9 +7662,10 @@ export function isPrimitivePrototypeRead(lowerer: Lowerer, expr: ts.Expression):
 function primitivePrototypeKind(
   lowerer: Lowerer,
   expr: ts.Expression,
-): "Number" | "Boolean" | null {
+): "String" | "Number" | "Boolean" | null {
   if (!ts.isPropertyAccessExpression(expr) || expr.name.text !== "prototype") return null;
   if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  if (lowerer.stdlibGlobalMember(expr, "String") === "prototype") return "String";
   if (lowerer.stdlibGlobalMember(expr, "Number") === "prototype") return "Number";
   if (lowerer.stdlibGlobalMember(expr, "Boolean") === "prototype") return "Boolean";
   return null;

@@ -3681,6 +3681,49 @@ static ScrDyn *scr_dyn_canonical_prototype_find(const char *cls) {
   return NULL;
 }
 
+static void scr_dyn_canonical_prototype_store(const char *cls, ScrDyn *prototype /* takes the +1 */) {
+  if (scr_canonical_n == scr_canonical_cap) {
+    size_t cap = scr_canonical_cap ? scr_canonical_cap * 2 : 4;
+    ScrDynCanonicalPrototype *grown = realloc(scr_canonical_prototypes, cap * sizeof *grown);
+    if (grown == NULL) {
+      fputs("scriptc: out of memory\n", stderr);
+      abort();
+    }
+    scr_canonical_prototypes = grown;
+    scr_canonical_cap = cap;
+  }
+  if (scr_canonical_n == 0) scr_atexit(scr_canonical_prototypes_cleanup);
+  size_t len = strlen(cls);
+  char *copy = malloc(len + 1);
+  if (copy == NULL) {
+    fputs("scriptc: out of memory\n", stderr);
+    abort();
+  }
+  memcpy(copy, cls, len + 1);
+  scr_canonical_prototypes[scr_canonical_n].cls = copy;
+  scr_canonical_prototypes[scr_canonical_n].prototype = prototype;
+  scr_canonical_n++;
+}
+
+/* The canonical prototype already built for `cls` (+1), or NULL. */
+ScrDyn *scr_dyn_canonical_prototype_for(const char *cls) {
+  ScrDyn *existing = scr_dyn_canonical_prototype_find(cls);
+  return existing != NULL ? scr_dyn_retain(existing) : NULL;
+}
+
+/* Registers `prototype` as the canonical object for `cls` unless one
+ * exists; the reference moves in. The wrapper units' String/Number/Boolean
+ * prototypes adopt themselves so `Object.getPrototypeOf(<primitive>)` and
+ * the program's `<Ctor>.prototype` read answer one object whichever is
+ * built first. */
+void scr_dyn_canonical_prototype_adopt(const char *cls, ScrDyn *prototype) {
+  if (scr_dyn_canonical_prototype_find(cls) != NULL) {
+    scr_dyn_release(prototype);
+    return;
+  }
+  scr_dyn_canonical_prototype_store(cls, prototype);
+}
+
 static ScrDyn *scr_dyn_canonical_prototype(const char *cls) {
   ScrDyn *existing = scr_dyn_canonical_prototype_find(cls);
   if (existing != NULL) return scr_dyn_retain(existing);
@@ -3704,26 +3747,7 @@ static ScrDyn *scr_dyn_canonical_prototype(const char *cls) {
     }
   }
 #endif
-  if (scr_canonical_n == scr_canonical_cap) {
-    size_t cap = scr_canonical_cap ? scr_canonical_cap * 2 : 4;
-    ScrDynCanonicalPrototype *grown = realloc(scr_canonical_prototypes, cap * sizeof *grown);
-    if (grown == NULL) {
-      fputs("scriptc: out of memory\n", stderr);
-      abort();
-    }
-    scr_canonical_prototypes = grown;
-    scr_canonical_cap = cap;
-  }
-  if (scr_canonical_n == 0) scr_atexit(scr_canonical_prototypes_cleanup);
-  char *copy = malloc(len + 1);
-  if (copy == NULL) {
-    fputs("scriptc: out of memory\n", stderr);
-    abort();
-  }
-  memcpy(copy, cls, len + 1);
-  scr_canonical_prototypes[scr_canonical_n].cls = copy;
-  scr_canonical_prototypes[scr_canonical_n].prototype = prototype;
-  scr_canonical_n++;
+  scr_dyn_canonical_prototype_store(cls, scr_dyn_retain(prototype));
   return scr_dyn_retain(prototype);
 }
 

@@ -2179,6 +2179,11 @@ typedef const char *(*ScrDynFnSourceLookup)(const void *closure);
 void scr_dyn_fn_source_install(ScrDynFnSourceLookup lookup);
 const char *scr_dyn_fn_source_text(const ScrDyn *fn);
 ScrDyn *scr_dyn_object_prototype(void);
+/* The canonical prototype built for a builtin class name (+1), or NULL; and
+ * the adoption that makes a unit's own prototype object THE canonical one
+ * (the reference moves in, ignored when one exists). */
+ScrDyn *scr_dyn_canonical_prototype_for(const char *cls);
+void scr_dyn_canonical_prototype_adopt(const char *cls, ScrDyn *prototype);
 /* Function.prototype as a value: the anonymous function (length 0, empty
  * name) every function's prototype chain links to, and `Function.prototype`
  * reads answer. +1, one function per thread. */

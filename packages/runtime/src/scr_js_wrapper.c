@@ -364,6 +364,18 @@ static ScrDyn *scr_js_wrapper_object(int kind, ScrDyn *primitive) {
  * Object.prototype. */
 static ScrDyn *scr_js_wrapper_primitive_prototype(int kind);
 
+/* Defines the kind's prototype members on `prototype`, keeping any member
+ * an earlier builder already placed there (the interned method values are
+ * the same objects either way). */
+static void scr_js_wrapper_define_members(int kind, ScrDyn *prototype) {
+  const ScrJsWrapperMember *members = kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
+                                    : kind == SCR_JS_WRAPPER_NUMBER ? scr_js_wrapper_number_members
+                                    : scr_js_wrapper_boolean_members;
+  for (const ScrJsWrapperMember *m = members; m->name; m++)
+    if (scr_dyn_obj_get(prototype, m->name, strlen(m->name)) == NULL)
+      scr_js_wrapper_define_hidden(prototype, m->name, scr_js_wrapper_method_value(m->name, kind, m->length));
+}
+
 static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   /* getPrototypeOf shares this object with the program's own wrapper
    * reads. The hook is set here, not at load: taking the builder's address
@@ -371,6 +383,25 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
    * (and the invoke unit it calls) in every program that links the unit
    * for its guard alone. */
   scr_dyn_wrapper_prototype_hook = scr_js_wrapper_primitive_prototype;
+  /* Object.getPrototypeOf(<primitive>) may have answered first, before the
+   * hook was installed, and built the canonical object for this class: that
+   * object IS the class's prototype, so the program's own <Ctor>.prototype
+   * read must answer it (with the members this wrapper adds). */
+  ScrDyn *canonical = scr_dyn_canonical_prototype_for(scr_js_wrapper_names[kind]);
+  if (canonical != NULL) {
+    scr_js_wrapper_define_members(kind, canonical);
+    /* Seed the constructor's own `prototype` member once: a canonical
+     * object built by a primitive's getPrototypeOf already seeded the
+     * compiled constructor, and that member is read-only, so a second
+     * assignment would throw where Node's read succeeds. */
+    if (constructor != NULL && scr_dyn_obj_get(canonical, "constructor", 11) == NULL) {
+      scr_js_wrapper_define_hidden(canonical, "constructor", scr_dyn_retain(constructor));
+      scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(canonical));
+    }
+    scr_js_wrapper_register_cleanup();
+    scr_js_wrapper_prototypes[kind] = canonical; /* the slot owns the +1 */
+    return canonical;
+  }
   if (scr_js_wrapper_prototypes[kind]) {
     /* Object.getPrototypeOf built the object first (its hook passes no
      * constructor); the program's own `String.prototype` read seeds the
@@ -399,16 +430,15 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   ScrDyn *prototype = scr_js_wrapper_object(kind, primitive);
   scr_dyn_release(primitive);
   if (constructor != NULL) scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
-  const ScrJsWrapperMember *members = kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
-                                    : kind == SCR_JS_WRAPPER_NUMBER ? scr_js_wrapper_number_members
-                                    : scr_js_wrapper_boolean_members;
-  for (const ScrJsWrapperMember *m = members; m->name; m++)
-    scr_js_wrapper_define_hidden(prototype, m->name, scr_js_wrapper_method_value(m->name, kind, m->length));
+  scr_js_wrapper_define_members(kind, prototype);
   /* The constructor's own `prototype` member is this object, as in Node:
    * `Boolean.prototype === Object(true).constructor.prototype`, and every
    * wrapper's chain ends here. It is non-writable, non-enumerable and
    * non-configurable, like a builtin constructor's. */
   if (constructor != NULL) scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
+  /* The other direction: a later canonical lookup (a primitive's
+   * getPrototypeOf after this read) answers this object, not a new one. */
+  scr_dyn_canonical_prototype_adopt(scr_js_wrapper_names[kind], scr_dyn_retain(prototype));
   scr_js_wrapper_prototypes[kind] = prototype;
   return prototype;
 }

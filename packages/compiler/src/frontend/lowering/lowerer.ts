@@ -3909,6 +3909,11 @@ export class Lowerer {
    * the same tables, so the slot a module's statements fill and its
    * importers read is keyed by module, never by symbol. */
   readonly cjsConditionalWholeExportGlobals = new Map<ts.SourceFile, Map<string, IrGlobal>>();
+  /** The one checked-dynamic slot holding `module.exports` for a module whose
+   * whole export a run-time write chooses (a UMD wrapper or a condition that
+   * replaces a single value, cjs-inline-require.ts). Importers and default
+   * imports read the slot, and each write stores the value Node stores. */
+  readonly cjsRuntimeWholeExportValueGlobals = new Map<ts.SourceFile, IrGlobal>();
   /** The selection global of each module whose whole export is chosen at run
    * time between static tables: every branch statement stores the index
    * (+ 1) of the table it selected. */
@@ -6530,6 +6535,7 @@ export class Lowerer {
     "cjsConditionalAliasSelectGlobals",
     "cjsConditionalWholeExportGlobals",
     "cjsConditionalWholeExportSelectGlobals",
+    "cjsRuntimeWholeExportValueGlobals",
     "cjsConditionalExportMirrors",
     "cjsInFileExportMemberGlobals",
     "cjsWholeExportSymbols",
@@ -9258,6 +9264,12 @@ export class Lowerer {
    * modules that re-export the same tables. */
   cjsConditionalWholeExportSlotOf(dep: ts.SourceFile, name: string): IrGlobal | null {
     return this.cjsConditionalWholeExportGlobals.get(dep)?.get(name) ?? null;
+  }
+
+  /** The checked-dynamic `module.exports` slot of a module whose whole
+   * export a run-time write chooses, or null for every other module. */
+  cjsRuntimeWholeExportValueSlotOf(dep: ts.SourceFile): IrGlobal | null {
+    return this.cjsRuntimeWholeExportValueGlobals.get(dep) ?? null;
   }
 
   /** Whether a write of export global `globalId` also has to reach the slots

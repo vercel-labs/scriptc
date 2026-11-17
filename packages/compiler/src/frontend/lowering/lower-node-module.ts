@@ -558,6 +558,13 @@ export function lowerNodeModuleProperty(
   if (!direct && !nodeModuleType(lowerer, expr.expression)) return null;
   if (expr.questionDotToken) return null;
   const member = expr.name.text;
+  if (member === "exports" && direct) {
+    // A module whose whole export a run-time write chooses: the read is the
+    // checked-dynamic slot that write filled (an empty object before it).
+    const slot = lowerer.cjsRuntimeWholeExportValueSlotOf(ts.getSourceFileOfNode(expr));
+    if (slot !== null && !moduleExportsAlwaysTruthy(lowerer, expr))
+      return { kind: "varRef", localId: slot.id, type: DYN, loc: locOf(expr) };
+  }
   if (member === "exports" && direct && moduleExportsAlwaysTruthy(lowerer, expr))
     return boolLit(true, locOf(expr));
   if (member === "exports" && direct) {

@@ -595,6 +595,101 @@ export function cjsWholeExportValueOf(
   return { assign: kept, rhs };
 }
 
+/** The `module.exports = <value>` writes of a CommonJS module whose whole
+ * export is chosen at run time — a UMD wrapper's body or an arm of a
+ * condition — when every write replaces the whole export with a value this
+ * build can carry checked-dynamically: an inline require of a single-value
+ * program module, or an expression whose type converts to the checked-
+ * dynamic tree. Node's require and default import answer whatever the
+ * executed write left in `module.exports`, so one module-level slot holds
+ * that value (registered by collectGlobals) and every write stores into it.
+ * Member exports and `exports` rebindings keep their existing treatment:
+ * the slot replaces the whole object, so a member write through the old
+ * object is not the same thing. Null when the module has no such write or
+ * when any export write falls outside that shape. */
+export function cjsRuntimeWholeExportValueWritesOf(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  depth = 0,
+): ts.BinaryExpression[] | null {
+  if (depth > 32) return null;
+  // A top-level whole-export statement keeps its own treatment (alias
+  // plumbing for a value, member slots for a chosen table).
+  if (sf.statements.nodes.some((stmt) => cjsExportAssignmentOf(stmt) !== null)) return null;
+  if (!ts.sourceTextIncludes(sf, "module.exports")) return null;
+  const writes: ts.BinaryExpression[] = [];
+  let conforms = true;
+  ts.walkPreorder(sf, (node) => {
+    if (!conforms) return "stop";
+    if (!ts.isBinaryExpression(node)) return undefined;
+    // A member export, an `exports` rebinding, or a member write through
+    // `module.exports` needs the exports object itself; leave those shapes
+    // to the fences they already have.
+    if (
+      !isModuleExportsAccess(node.left) &&
+      (isCjsExportsIdentifier(lowerer, node.left) ||
+        (ts.isPropertyAccessExpression(node.left) &&
+          (isCjsModuleExports(lowerer, node.left.expression) ||
+            isCjsExportsIdentifier(lowerer, node.left.expression))))
+    ) {
+      conforms = false;
+      return "stop";
+    }
+    if (
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isModuleExportsAccess(node.left) &&
+      // The statement lowering stores this assignment (a UMD body or a
+      // condition's arm). A write nested inside another expression keeps
+      // its existing refusal instead of filling a slot its producer never
+      // reaches.
+      runtimeWholeExportWriteStatementOf(node) !== null
+    ) {
+      if (!cjsRuntimeWholeExportValueRhs(lowerer, node.right, depth)) {
+        conforms = false;
+        return "stop";
+      }
+      writes.push(node);
+    }
+    return undefined;
+  });
+  return conforms && writes.length > 0 ? writes : null;
+}
+
+/** The expression statement a run-time `module.exports = value` write is,
+ * through parentheses, or null when the write is nested in another
+ * expression (where the statement lowering does not store it). */
+function runtimeWholeExportWriteStatementOf(node: ts.Node): ts.ExpressionStatement | null {
+  let current: ts.Node = node;
+  while (current.parent !== undefined && ts.isParenthesizedExpression(current.parent))
+    current = current.parent;
+  const parent = current.parent;
+  return parent !== undefined && ts.isExpressionStatement(parent) && parent.expression === current
+    ? parent
+    : null;
+}
+
+/** Whether one run-time whole-export write's value converts to the
+ * checked-dynamic tree: an inline require of a single-value program module
+ * (the value Node's require answers), or an expression whose mapped type
+ * dynFrom can carry. A table module's exports object has no static value,
+ * so a branch requiring one keeps the conditional-table path. */
+function cjsRuntimeWholeExportValueRhs(
+  lowerer: Lowerer,
+  rhs: ts.Expression,
+  depth: number,
+): boolean {
+  const req = inlineProgramRequireOf(lowerer, rhs);
+  if (req !== null) {
+    if (cjsNamespaceModule(lowerer, req.dep)) return false;
+    return (
+      cjsWholeExportValueOf(req.dep) !== null ||
+      cjsRuntimeWholeExportValueWritesOf(lowerer, req.dep, depth + 1) !== null
+    );
+  }
+  const t = lowerer.mapTypeOf(lowerer.typeOf(rhs));
+  return t !== null && t.kind !== "void" && lowerer.dynConvertible(t);
+}
+
 /** The first `module.exports = <value>` of a CommonJS module that is not a
  * top-level statement: inside a function (a UMD wrapper's body) or in an arm
  * of a condition. The value is chosen when the module runs, so the module's
@@ -991,7 +1086,12 @@ export function cjsNamespaceTargetOf(lowerer: Lowerer, dep: ts.SourceFile): ts.S
   // A pure forwarding cycle has no terminal table. Mark this module before
   // following its edge so revisiting it terminates the search.
   lowerer.cjsNamespaceTargets.set(dep, null);
+  // A module whose whole export a run-time write chooses is a single value,
+  // not a static table. The syntactic test keeps this independent of the
+  // order modules register their globals in; a write the checked-dynamic
+  // slot cannot carry keeps its own refusal when the value is read.
   const whole = cjsWholeExportValueOf(dep);
+  if (whole === null && cjsNestedExportReplacementOf(dep) !== null) return null;
   if (whole === null) {
     lowerer.cjsNamespaceTargets.set(dep, dep);
     return dep;
@@ -1060,6 +1160,12 @@ export function wholeExportValue(
    * a re-export chain passed through. */
   from: ts.SourceFile = ts.getSourceFileOfNode(blame),
 ): IrExpr | null {
+  // A module whose whole export a run-time write chooses answers the slot
+  // that write filled: Node's require and default import answer whatever
+  // module.exports held when the module evaluated.
+  const runtimeSlot = lowerer.cjsRuntimeWholeExportValueSlotOf(dep);
+  if (runtimeSlot !== null && depth <= 32)
+    return { kind: "varRef", localId: runtimeSlot.id, type: DYN, loc: locOf(blame) };
   const whole = cjsWholeExportValueOf(dep);
   if (whole === null || depth > 32) return null;
   // An accessor-exporting module answers every requiring module a value of
@@ -1111,6 +1217,7 @@ export function wholeExportValue(
  * side-effect-free shape test used where lowering the value would be
  * premature (binding classification, property-symbol resolution). */
 export function hasWholeExportValue(lowerer: Lowerer, dep: ts.SourceFile, depth = 0): boolean {
+  if (lowerer.cjsRuntimeWholeExportValueSlotOf(dep) !== null) return true;
   const whole = cjsWholeExportValueOf(dep);
   if (whole === null || depth > 32) return false;
   const inner = inlineProgramRequireOf(lowerer, whole.rhs);

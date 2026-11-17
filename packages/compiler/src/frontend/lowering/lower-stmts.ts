@@ -135,6 +135,7 @@ import {
   cjsNamespaceDestructureOf,
   cjsNamespaceTargetOf,
   cjsRequireSnapshotBindingsOf,
+  cjsRuntimeWholeExportValueWritesOf,
   cjsTableExportNamesInOrder,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
@@ -10714,6 +10715,29 @@ function lowerCjsConditionalWholeExportStatement(
   return { kind: "block", body, loc };
 }
 
+/** `module.exports = <value>` at a run-time position of a module whose
+ * whole export is chosen that way (a UMD wrapper or a condition): the value
+ * is evaluated where Node evaluates it and stored in the module's
+ * checked-dynamic export slot, so every later read by the module or a
+ * requirer answers what Node's module.exports holds. Null for every other
+ * statement and module. */
+function lowerCjsRuntimeWholeExportValueStatement(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+): IrStmt | null {
+  const sf = ts.getSourceFileOfNode(expr);
+  const slot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
+  if (slot === null) return null;
+  const writes = cjsRuntimeWholeExportValueWritesOf(lowerer, sf);
+  if (writes === null || !writes.includes(expr)) return null;
+  return {
+    kind: "assign",
+    localId: slot.id,
+    value: lowerer.lowerExprExpecting(expr.right, DYN),
+    loc: locOf(expr),
+  };
+}
+
 function lowerCjsSingleValueExport(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -11210,6 +11234,8 @@ export function lowerExprStatement(
     if (isCjsModuleExports(lowerer, expr.left)) {
       const lowered = lowerCjsConditionalWholeExportStatement(lowerer, expr);
       if (lowered !== null) return lowered;
+      const runtimeValue = lowerCjsRuntimeWholeExportValueStatement(lowerer, expr);
+      if (runtimeValue !== null) return runtimeValue;
     }
     lowerer.unsupported(
       "SC1090",

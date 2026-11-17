@@ -78,6 +78,7 @@ import {
   cjsHasLiveMemberExports,
   cjsNamespaceModule,
   cjsRequireSnapshotBindingsOf,
+  cjsRuntimeWholeExportValueWritesOf,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   nestedCjsExportAssignmentsOf,
@@ -1924,6 +1925,39 @@ function registerCjsConditionalWholeExportGlobals(
     lowerer.globalsList.push(select);
   }
   for (const g of slots.values()) lowerer.globalsList.push(g);
+}
+
+/** Register the one checked-dynamic `module.exports` slot of a module whose
+ * whole export a run-time write chooses (a UMD wrapper or a condition that
+ * replaces a single value). Node starts the module with an empty exports
+ * object, so the slot holds a checked-dynamic empty object from module entry;
+ * every `module.exports = value` write stores the value Node stores, and
+ * importers (require, default import) read the slot. */
+function registerCjsRuntimeWholeExportValueGlobals(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  tag: string,
+): void {
+  if (cjsRuntimeWholeExportValueWritesOf(lowerer, sf) === null) return;
+  const loc = locOf(sf.statements.nodes[0] ?? sf);
+  const g: IrGlobal = {
+    id: `%g.${tag}%exportValue`,
+    name: "module.exports",
+    type: DYN,
+    mutable: true,
+  };
+  lowerer.cjsRuntimeWholeExportValueGlobals.set(sf, g);
+  lowerer.globalsList.push(g);
+  // The module's initial exports object: empty, and the identity every
+  // `module.exports`/`exports` read answers before a replacement runs.
+  const actions = lowerer.jsonInitActions.get(sf) ?? [];
+  actions.push({
+    kind: "assign",
+    localId: g.id,
+    value: { kind: "dynObjLit", fields: [], type: DYN, loc },
+    loc,
+  });
+  lowerer.jsonInitActions.set(sf, actions);
 }
 
 /** Register the forwarding edges a conditional whole export needs: Node's
@@ -3997,6 +4031,7 @@ export function collectGlobals(
   }
   if (isJsSourceFile(sf)) {
     registerCjsConditionalWholeExportGlobals(lowerer, sf, tag);
+    registerCjsRuntimeWholeExportValueGlobals(lowerer, sf, tag);
     registerCjsConditionalAliasGlobals(lowerer, sf, tag);
     registerNestedCjsExportMembers(lowerer, sf, tag, topStmts);
   }

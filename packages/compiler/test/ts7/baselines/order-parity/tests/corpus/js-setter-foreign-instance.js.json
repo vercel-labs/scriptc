@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-setter-foreign-instance.js"
+ ],
+ "diags": []
+}

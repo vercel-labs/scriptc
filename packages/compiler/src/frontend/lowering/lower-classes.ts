@@ -4526,17 +4526,49 @@ export function collectClassShapeInner(
             shapes.splice(0, shapes.length, ...overridden.sig.params);
             ft.ret = overridden.sig.ret;
             if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
+          } else if (fencedJsOverride) {
+            // A JavaScript override that declares a different signature.
+            // Node ignores the relation: a call through a base-typed
+            // reference passes the base's arguments (surplus ones included),
+            // a call through this class passes its own, and the body reads
+            // whatever arrives. The slot keeps the inherited arity and every
+            // parameter takes checked-dynamic storage, so neither call shape
+            // checks an argument against a declared type. A narrower or
+            // unrelated parameter type therefore never converts or throws
+            // where Node passes the value through. Return values still cross
+            // into the inherited result type at the slot.
+            const inheritedParams = overridden.sig.params;
+            const arity = Math.max(shapes.length, inheritedParams.length);
+            shapes.splice(
+              0,
+              shapes.length,
+              ...Array.from({ length: arity }, (_, index): ParamShape => {
+                const slot = inheritedParams[index];
+                if (slot === undefined) return { type: DYN, mode: "omittable" };
+                return {
+                  type: DYN,
+                  mode:
+                    slot.mode === "omittable"
+                      ? "omittable"
+                      : slot.mode === "dynRest"
+                        ? "dynRest"
+                        : "required",
+                };
+              }),
+            );
+            ft.params = shapes.map((shape) => shape.type);
+            ft.ret = overridden.sig.ret;
+            if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
           } else if (
-            fencedJsOverride ||
             // The TypeScript form (class-member-refusals.ts): the inherited
             // method dispatches through its slot (it is neither async nor
             // a generator, which dispatch statically, and its class is the
             // program's), so a call through a base-typed receiver reaches
             // the fence, and a use through this class is a build error.
-            (confinesMemberRefusals &&
-              overridden.declarer.decl != null &&
-              overridden.sig.async !== true &&
-              overridden.sig.gen === undefined)
+            confinesMemberRefusals &&
+            overridden.declarer.decl != null &&
+            overridden.sig.async !== true &&
+            overridden.sig.gen === undefined
           ) {
             // A dormant JS method must not poison the whole class. Keep
             // the inherited call/dispatch ABI and refuse at method entry;
@@ -5505,16 +5537,21 @@ export function collectClassShapeInner(
         // TypeScript classes keep the compile-time fence too: an annotated
         // program can spell `T | undefined` itself.
         if (isJsSourceFile(ts.getSourceFileOfNode(decl))) {
-          const original = undefArmedFieldType(lowerer, p);
-          const armed =
-            original === null
+          // A field a mismatched override writes from a parameter holds
+          // whatever the caller passed (markFamilyWrites), so its slot is
+          // checked-dynamic even when the checker inferred a scalar type.
+          const familyWidened = lowerer.jsFieldWidened(decl, ts.symbolName(p));
+          const original = familyWidened ? DYN : undefArmedFieldType(lowerer, p);
+          const armed = familyWidened
+            ? DYN
+            : original === null
               ? null
               : inheritedJsFieldType(lowerer, decl, ts.symbolName(p), original);
           if (armed !== null) {
             // Unknown JS properties use the instance bag: they do not
             // exist until assigned, and a subclass may declare the same
             // name as an ordinary layout field.
-            if (armed.kind === "dyn") continue;
+            if (armed.kind === "dyn" && !familyWidened) continue;
             fields.set(ts.symbolName(p), armed);
             fieldOrder.push({
               name: ts.symbolName(p),
@@ -9704,6 +9741,61 @@ export function collectInheritedJsFieldWrites(
   }
 }
 
+/** Whether an override's mapped signature differs from the inherited
+ * member's, which is the lowering's own question (the checker's TS2416 asks a
+ * bivariance-tolerant one and misses a narrowed class parameter). */
+function mappedSignaturesDiffer(
+  lowerer: Lowerer,
+  member: ts.MethodDeclaration,
+  property: ts.Symbol,
+): boolean {
+  const own = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(member));
+  const inherited = lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbolAtLocation(property, member));
+  return own === null || inherited === null || !typeEquals(own, inherited);
+}
+
+/** Give checked-dynamic storage to the fields a function writes from its own
+ * parameters: the slot never checked those values, so the instance holds
+ * whatever a caller passed (Node stores it as it is). Used for the members of
+ * a mismatched override family and for JavaScript set accessors, whose
+ * parameter is checked-dynamic by construction (paramShape). */
+function markFamilyWrites(
+  lowerer: Lowerer,
+  method: ts.MethodDeclaration | ts.SetAccessorDeclaration,
+): void {
+  const owner = method.parent;
+  if (!(owner !== undefined && (ts.isClassDeclaration(owner) || ts.isClassExpression(owner))))
+    return;
+  const parameters = new Set<ts.Node>(method.parameters.nodes);
+  if (parameters.size === 0) return;
+  ts.walkPreorder(method, (node) => {
+    if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+      return undefined;
+    const left = node.left;
+    if (
+      !ts.isPropertyAccessExpression(left) ||
+      left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
+      !ts.isIdentifier(left.name)
+    )
+      return undefined;
+    let writes = false;
+    const ask = (child: ts.Node): void => {
+      if (writes) return;
+      if (ts.isIdentifier(child)) {
+        const declaration = lowerer.checker.getSymbolAtLocation(child)?.valueDeclaration;
+        if (declaration !== undefined && parameters.has(declaration)) writes = true;
+      }
+      ts.forEachChild(child, (grandchild) => {
+        ask(grandchild);
+        return undefined;
+      });
+    };
+    ask(node.right);
+    if (writes) lowerer.markJsWidenedField(owner, left.name.text);
+    return undefined;
+  });
+}
+
 /** Discover overrides before choosing inferred method ABIs. Class collection
  * visits bases first, including imported bases and class expressions, so the
  * collected subclass graph cannot answer this question yet. The checker
@@ -9713,6 +9805,10 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
   lowerer.speculativeTypeQueries(() => collectClassMethodMutations(lowerer, files));
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      if (isJsSourceFile(ts.getSourceFileOfNode(node)))
+        for (const member of node.members.nodes)
+          if (ts.isSetAccessorDeclaration(member) && ts.isIdentifier(member.name))
+            markFamilyWrites(lowerer, member);
       const accessors = node.members.nodes.filter(
         (member): member is ts.GetAccessorDeclaration | ts.SetAccessorDeclaration =>
           (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) &&
@@ -9797,6 +9893,17 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
                   !checkedJsOverride(lowerer, declaration, member)
                 ) {
                   lowerer.virtualJsMethods.add(declaration);
+                  // A JavaScript override whose mapped signature differs from
+                  // its base's: both sides of the family take checked-dynamic
+                  // parameters and results, so a call through either class
+                  // passes what Node passes and dispatch never converts an
+                  // argument against a declared type.
+                  if (property !== undefined && mappedSignaturesDiffer(lowerer, member, property)) {
+                    lowerer.checkedVirtualJsMethods.add(declaration);
+                    lowerer.checkedVirtualJsMethods.add(member);
+                    markFamilyWrites(lowerer, member);
+                    markFamilyWrites(lowerer, declaration);
+                  }
                   if (
                     isJsSourceFile(ts.getSourceFileOfNode(member)) &&
                     !member.typeParameters?.nodes &&

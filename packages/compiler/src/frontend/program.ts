@@ -813,6 +813,10 @@ export interface LoadResult {
   /** How scriptc's type world differs from the project's own tsc setup —
    * used only to label the TypeScript errors those differences cause. */
   typeWorld?: TypeWorldDifferences;
+  /** Whether a file is a dependency's shipped JavaScript (see
+   * dependencyJsPredicate): preflight reports no checker diagnostics for it,
+   * and the lowering compiles it as unchecked JavaScript. */
+  dependencyJs?: (file: string) => boolean;
   /** Coverage-only external host modules: exact bare specifier → local
    * declaration file. These participate in checker resolution but never
    * become runtime module edges. */
@@ -1247,6 +1251,27 @@ export function entryPackageFilePredicate(entryPath: string): (file: string) => 
         normalized.startsWith(prefix) &&
         !normalized.slice(prefix.length).split("/").includes("node_modules"))
     );
+  };
+}
+
+/** Whether `file` is a dependency's shipped JavaScript: not an explicit
+ * entry package's own source, under node_modules or a workspace package's
+ * shipped files, or outside the project's own sources (the files its
+ * tsconfig's `files`/`include` names). Preflight reports no checker
+ * diagnostics for such a file, and the lowering compiles it as unchecked
+ * JavaScript so the two stances agree. The project's `checkJs` asks tsc to
+ * check the project's own JavaScript, not a package's; `// @ts-check` is the
+ * module author's own request to be checked and still applies. */
+export function dependencyJsPredicate(
+  entryFileName: string,
+  projectSources: ReadonlySet<string> | null,
+): (file: string) => boolean {
+  const entryPackageFile = entryPackageFilePredicate(entryFileName);
+  return (file) => {
+    if (entryPackageFile(file)) return false;
+    if (isNodeModulesPath(file)) return true;
+    if (workspacePackageOfPath(file) !== null && !isWorkspaceSourcePath(file)) return true;
+    return projectSources !== null && !projectSources.has(tsgoPath(resolve(file)));
   };
 }
 
@@ -1885,6 +1910,10 @@ function loadProgram7(
     const entry = program.getSourceFile(entryPath);
     if (!entry) throw new Error(`could not load ${entryPath}`);
     const externalTypeSpecifiersByFile = externalTypeFileClosure7(program, externalTypes);
+    const projectSources =
+      config.sources === undefined
+        ? null
+        : new Set(config.sources.map((file) => tsgoPath(resolve(file))));
     let projectWorld: ts.Program | null = null;
     const projectLibraries = projectOnlyLibraries(config.projectLib);
     let libraryWorld: ts.Program | null = null;
@@ -1912,15 +1941,13 @@ function loadProgram7(
       ...(importWarnings.length > 0 ? { importWarnings } : {}),
       ...(elidedSources.size > 0 ? { elidedSources } : {}),
       ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
+      dependencyJs: dependencyJsPredicate(entry.fileName, projectSources),
       typeWorld: {
         nodeFallback: nodeTypes === null,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,
-        projectSources:
-          config.sources === undefined
-            ? null
-            : new Set(config.sources.map((file) => tsgoPath(resolve(file)))),
+        projectSources,
         legacyDecoratorFiles,
         projectModule: config.module ?? null,
       },
@@ -8226,10 +8253,6 @@ function preflightGate7(load: LoadResult): PreflightGate {
   // match its base (the rows that say `checkedJs: "enforce"` in
   // JS_OPINIONS).
   const projectCheckJs = load.typeWorld?.projectCheckJs ?? false;
-  // The project's own source files, from its tsconfig's `files`/`include`;
-  // null without a tsconfig. A JavaScript file outside this set reached the
-  // program through an import (dependencyJsCheckDiagnostic below).
-  const projectSources = load.typeWorld?.projectSources ?? null;
   // The opinion sites this preflight admits (tsc-codes.ts, JS_OPINIONS),
   // deduped across the worlds the gate consults (the lowering world, the
   // project world, the JSX text). The lowering asks opinionAt about one of
@@ -8381,7 +8404,8 @@ function preflightGate7(load: LoadResult): PreflightGate {
       !isNpmStaticSubclassArgument(p, d);
     // A dependency's JavaScript: a JS file outside the project's own sources
     // — a vendored package, or a module reached only through an import — that
-    // the project's tsconfig does not check. TypeScript never reports a
+    // the project's tsconfig does not check (dependencyJsPredicate above;
+    // the lowering reads the same predicate, so both stances agree). TypeScript never reports a
     // dependency's checker opinions: a JavaScript file it does not name is
     // either an external library it does not typecheck, or (outside
     // node_modules) plain JavaScript, where only grammar and early errors
@@ -8394,16 +8418,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
     // an admitted opinion above, and the file's own parse errors — no
     // lowering can compile what the parser could not read. A JSDoc error sits
     // in a comment and tsc reports it only for a file it checks, so it goes.
-    const entryPackageFile = entryPackageFilePredicate(entry.fileName);
-    const dependencyJsFile = (file: string): boolean => {
-      // An explicit entry can itself live in an installed package; its own
-      // sources are program code, whatever their location (the same rule
-      // unselectedPackageJsFilePredicate applies).
-      if (entryPackageFile(file)) return false;
-      if (isNodeModulesPath(file)) return true;
-      if (workspacePackageOfPath(file) !== null && !isWorkspaceSourcePath(file)) return true;
-      return projectSources !== null && !projectSources.has(tsgoPath(resolve(file)));
-    };
+    const dependencyJsFile = load.dependencyJs ?? (() => false);
     const dependencyJsCheckDiagnostic = (d: ts.Diagnostic): boolean => {
       if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
       const sf = p.getSourceFile(d.fileName);

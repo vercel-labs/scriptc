@@ -1805,7 +1805,7 @@ export function lowerRecordableHistogramMethodCall(
     return {
       kind: "libCall",
       fn: "perf.histoRecord",
-      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
       type: VOID,
       loc,
     };
@@ -1853,7 +1853,7 @@ export function lowerRecordableHistogramMethodCall(
     return {
       kind: "libCall",
       fn: "perf.histoCountAt",
-      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
       type: F64,
       loc,
     };
@@ -1862,7 +1862,7 @@ export function lowerRecordableHistogramMethodCall(
     return {
       kind: "libCall",
       fn: name === "cdf" ? "perf.histoCdf" : "perf.histoCcdf",
-      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
       type: F64,
       loc,
     };

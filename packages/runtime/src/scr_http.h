@@ -215,9 +215,9 @@ void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* response.writeInformation(statusCode[, headers][, callback]) — an
  * arbitrary 1xx response (100..199, 101 refused). */
-void scr_http_res_write_information(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
-                                    const ScrDyn *headers /*borrowed*/,
-                                    ScrClosure *cb /*moves, nullable*/);
+void scr_http_res_write_information_dyn(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
+                                        const ScrDyn *headers /*borrowed*/,
+                                        ScrClosure *cb /*moves, nullable*/);
 /* createServer({ joinDuplicateHeaders: true }): repeated request-header
  * names read back joined ", " (Node's option; the default keeps first). */
 void scr_http_server_join_duplicate_headers(ScrNetServer *s);

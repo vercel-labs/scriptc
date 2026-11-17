@@ -2071,9 +2071,9 @@ static bool scr_http_information_is_array(const ScrDyn *v) {
          (v->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(v));
 }
 
-void scr_http_res_write_information(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
-                                    const ScrDyn *headers /*borrowed*/,
-                                    ScrClosure *cb /*moves, nullable*/) {
+void scr_http_res_write_information_dyn(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
+                                        const ScrDyn *headers /*borrowed*/,
+                                        ScrClosure *cb /*moves, nullable*/) {
   if (!scr_http_headers_unsent(r->head_sent, "write")) {
     if (cb) scr_closure_release(cb);
     return;
@@ -9117,7 +9117,7 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
       scr_dyn_arg_type_fail("callback", "of type function", args[2]);
       return NULL;
     }
-    scr_http_res_write_information(r, status, headers, cb);
+    scr_http_res_write_information_dyn(r, status, headers, cb);
     if (scr_exc_pending()) return NULL;
     return scr_dyn_new_bool(true);
   }

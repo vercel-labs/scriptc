@@ -774,6 +774,32 @@ void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb
   scr_dgram_update_read(s);
 }
 
+/* The kernel bind behind a send, connect or connectSync on an unbound
+ * socket: Node's uv_udp_bind on the wildcard, port 0. It really binds —
+ * address() answers an ephemeral port, 'listening' is emitted for it, and
+ * a datagram can arrive — even when the operation is refused just after
+ * (a blocked address or destination). False with the exception pending. */
+static bool scr_dgram_bind_wildcard(ScrDgramSocket *s) {
+  if (s->bound) return true;
+  struct sockaddr_storage bsa;
+  socklen_t blen = sizeof bsa;
+  if (!scr_dgram_host_addr(s, "", 0, &bsa, &blen)) return false;
+  scr_dgram_ensure_fd(s);
+  if (bind(s->fd, (struct sockaddr *)&bsa, blen) != 0) {
+    int err = errno;
+    char ip[64];
+    scr_dgram_sockaddr_ip(&bsa, ip, sizeof ip);
+    close(s->fd);
+    s->fd = -1;
+    scr_dgram_throw_exception_host_port(err, "bind", ip, 0);
+    return false;
+  }
+  s->bound = true;
+  s->emit_listening = true; /* Node's implicit bind emits 'listening' */
+  scr_dgram_apply_init_buffers(s);
+  return true;
+}
+
 /* connect(port, host): implicit-binds (Node emits 'listening' for that,
  * then 'connect'); UDP connect(2) is local and immediate, so failures
  * here are deferred 'error's only for bad hosts. An address the socket's
@@ -805,26 +831,10 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
     return;
   }
   scr_dgram_ensure_fd(s);
-  if (!s->bound) {
-    /* Node's connect binds first (the wildcard, port 0), so the socket is
-     * really bound — address() answers an ephemeral port — even when the
-     * address is refused below. */
-    struct sockaddr_storage bsa;
-    socklen_t blen = sizeof bsa;
-    if (!scr_dgram_host_addr(s, "", 0, &bsa, &blen)) return;
-    if (bind(s->fd, (struct sockaddr *)&bsa, blen) != 0) {
-      int err = errno;
-      char ip[64];
-      scr_dgram_sockaddr_ip(&bsa, ip, sizeof ip);
-      close(s->fd);
-      s->fd = -1;
-      scr_dgram_throw_exception_host_port(err, "bind", ip, 0);
-      return;
-    }
-    s->bound = true;
-    s->emit_listening = true; /* Node's implicit bind emits 'listening' */
-    scr_dgram_apply_init_buffers(s);
-  }
+  /* Node's connect binds first (the wildcard, port 0), so the socket is
+   * really bound — address() answers an ephemeral port — even when the
+   * address is refused below. */
+  if (!scr_dgram_bind_wildcard(s)) return;
   scr_dgram_register(s); /* the pending 'listening' (and a failure) defers */
   char peer_ip[64];
   scr_dgram_sockaddr_ip(&sa, peer_ip, sizeof peer_ip);
@@ -844,6 +854,9 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
       if (!s->pending_err) s->pending_err = scr_str_new(msg, (size_t)n);
       s->pending_code = "ERR_IP_BLOCKED";
     }
+    /* The bind stands and, as in Node, the socket keeps receiving: its read
+     * watch goes on with the failure, and 'listening' still emits. */
+    scr_dgram_update_read(s);
     return;
   }
   if (connect(s->fd, (struct sockaddr *)&sa, salen) != 0) {
@@ -937,30 +950,15 @@ void scr_dgram_connect_sync(ScrDgramSocket *s, double port, ScrStr *host, bool h
         "must be a numeric IP address; connectSync does not perform DNS resolution");
     return;
   }
-  if (!s->bound) {
-    /* Node's this.bindSync(): the wildcard, port 0, 'listening' pending */
-    struct sockaddr_storage bsa;
-    socklen_t blen = sizeof bsa;
-    if (!scr_dgram_host_addr(s, "", 0, &bsa, &blen)) return;
-    scr_dgram_ensure_fd(s);
-    if (bind(s->fd, (struct sockaddr *)&bsa, blen) != 0) {
-      int err = errno;
-      char ip[64];
-      scr_dgram_sockaddr_ip(&bsa, ip, sizeof ip);
-      close(s->fd);
-      s->fd = -1;
-      scr_dgram_throw_exception_host_port(err, "bind", ip, 0);
-      return;
-    }
-    s->bound = true;
-    s->emit_listening = true;
-    scr_dgram_apply_init_buffers(s);
-  }
+  /* Node's this.bindSync(): the wildcard, port 0, 'listening' pending */
+  if (!scr_dgram_bind_wildcard(s)) return;
   char peer_ip[64];
   scr_dgram_sockaddr_ip(&sa, peer_ip, sizeof peer_ip);
   if (scr_dgram_send_blocked(s, peer_ip, sa.ss_family == AF_INET6 ? 6 : 4)) {
     /* Node's connectSync: the block check throws after the implicit
-     * bindSync, so the socket is left bound. */
+     * bindSync, so the socket is left bound, in the loop and receiving. */
+    scr_dgram_register(s);
+    scr_dgram_update_read(s);
     char text[160];
     int n = snprintf(text, sizeof text, "IP(%s) is blocked by net.BlockList", peer_ip);
     scr_throw_error_msg_code(SCR_ERR_ERROR, text, (size_t)n, "ERR_IP_BLOCKED");
@@ -1402,14 +1400,10 @@ static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, 
     scr_dgram_defer_err(s, msg);
     return;
   }
-  scr_dgram_ensure_fd(s);
-  if (!s->bound) {
-    /* Implicit ephemeral bind — Node's send-before-bind, 'listening'
-     * emits for it there too. */
-    s->bound = true;
-    s->emit_listening = true;
-    scr_dgram_apply_init_buffers(s);
-  }
+  /* The kernel bind behind Node's send-before-bind (and 'listening' emits
+   * for it there too): the socket is really bound, and can receive, even
+   * when the destination is blocked below. */
+  if (!scr_dgram_bind_wildcard(s)) return;
   scr_dgram_register(s); /* an open sender holds the loop, like Node */
   {
     char ip[64];
@@ -3037,14 +3031,10 @@ static void scr_dgram_send_out(ScrDgramSocket *s, const char *data, size_t len, 
   if (h != NULL && !scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
   } else {
-    scr_dgram_ensure_fd(s);
-    if (!s->bound) {
-      /* Implicit ephemeral bind — Node's send-before-bind emits
-       * 'listening' for it. */
-      s->bound = true;
-      s->emit_listening = true;
-      scr_dgram_apply_init_buffers(s);
-    }
+    /* The kernel bind behind Node's send-before-bind: a blocked send
+     * returns with the socket really bound (address(), 'listening' and
+     * receiving all hold). */
+    if (!scr_dgram_bind_wildcard(s)) return;
     scr_dgram_register(s); /* an open sender holds the loop, like Node */
     /* sendBlockList: Node checks the looked-up destination address of a
      * non-connected send (a connected send carries no address and is

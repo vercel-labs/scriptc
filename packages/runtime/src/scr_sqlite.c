@@ -1370,35 +1370,41 @@ static ScrDyn *scr_sqlite_tag_invoke(void *h, ScrDyn *self, const char *method,
   ScrSqliteStmt *stmt = scr_sqlite_tag_statement(store, sql);
   scr_str_release(sql);
   if (stmt == NULL) return NULL;
-  if (!scr_sqlite_tag_bind(stmt, args, argc)) return NULL;
-
-  if (strcmp(method, "run") == 0) return scr_sqlite_stmt_run_result(stmt);
-  if (strcmp(method, "all") == 0) return scr_sqlite_stmt_all_result(stmt);
-  if (strcmp(method, "get") == 0) {
+  /* The cache's reference is not enough for the call: a user function the
+   * statement runs can clear() the store, and the statement being executed
+   * must stay alive until it finishes. */
+  scr_sqlite_stmt_retain(stmt);
+  ScrDyn *out = NULL;
+  if (!scr_sqlite_tag_bind(stmt, args, argc)) {
+    /* The bind's own exception is pending. */
+  } else if (strcmp(method, "run") == 0) {
+    out = scr_sqlite_stmt_run_result(stmt);
+  } else if (strcmp(method, "all") == 0) {
+    out = scr_sqlite_stmt_all_result(stmt);
+  } else if (strcmp(method, "get") == 0) {
     int r = sqlite3_step(stmt->stmt);
-    ScrDyn *out;
     if (r == SQLITE_DONE || (r == SQLITE_ROW && sqlite3_column_count(stmt->stmt) == 0)) {
       out = scr_dyn_retain(scr_dyn_undefined());
+      sqlite3_reset(stmt->stmt);
     } else if (r != SQLITE_ROW) {
       sqlite3_reset(stmt->stmt);
       scr_sqlite_throw_db_error(stmt->db);
-      return NULL;
     } else {
       out = scr_sqlite_row(stmt, stmt->return_arrays);
+      sqlite3_reset(stmt->stmt);
     }
-    sqlite3_reset(stmt->stmt);
-    return out;
-  }
-  if (strcmp(method, "iterate") == 0) {
+  } else if (strcmp(method, "iterate") == 0) {
     ScrSqliteIter *it = calloc(1, sizeof *it);
     if (it == NULL) scr_sqlite_oom();
     it->rc = 1;
     it->stmt = scr_sqlite_stmt_retain(stmt);
     it->generation = stmt->generation;
-    return scr_sqlite_iter_new(it);
+    out = scr_sqlite_iter_new(it);
+  } else {
+    scr_sqlite_not_a_function(what);
   }
-  scr_sqlite_not_a_function(what);
-  return NULL;
+  scr_sqlite_stmt_release(stmt);
+  return out;
 }
 
 static ScrDyn *scr_sqlite_tag_get(void *h, const char *key, size_t len) {

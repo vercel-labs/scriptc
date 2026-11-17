@@ -2433,7 +2433,39 @@ function buildLibFnSignatures() {
      * defers the callback to the next turn (SEMANTICS.md documents the
      * blocking divergence); its per-union adapter builds the
      * `Error | null` first argument. */
-    "dgram.createSocket": { argTypes: [BOOL], result: DGRAMSOCK_T },
+    "dgram.createSocket": { argTypes: [DYN], result: DGRAMSOCK_T },
+    /** createSocket's listener form: the callback registers as on('message'). */
+    "dgram.createSocketCb": { argTypes: [DYN, null], result: DGRAMSOCK_T },
+    /** bind(options[, callback]) — the untyped options object. */
+    "dgram.bindOpts": { argTypes: [DGRAMSOCK_T, DYN], result: VOID },
+    "dgram.bindOptsCb": {
+      argTypes: [DGRAMSOCK_T, DYN, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    /** bindSync(options): binds synchronously; the address record the
+     * frontend pins is read back through the address() parts. */
+    "dgram.bindSync": { argTypes: [DGRAMSOCK_T, DYN], result: VOID },
+    /** connectSync(port[, address]): the synchronous connect. */
+    "dgram.connectSync": { argTypes: [DGRAMSOCK_T, F64, STRING, BOOL], result: VOID },
+    /** The source-specific multicast joins, interface given flag last. */
+    "dgram.addSourceMembership": {
+      argTypes: [DGRAMSOCK_T, STRING, STRING, STRING, BOOL],
+      result: VOID,
+    },
+    "dgram.dropSourceMembership": {
+      argTypes: [DGRAMSOCK_T, STRING, STRING, STRING, BOOL],
+      result: VOID,
+    },
+    /** socket.type: "udp4" or "udp6". */
+    "dgram.type": { argTypes: [DGRAMSOCK_T], result: STRING },
+    /** `x instanceof dgram.Socket` over a checked-dynamic value: the
+     * socket handle's tag. */
+    "dgram.isSocket": { argTypes: [DYN], result: BOOL },
+    /** remoteAddress(): the remote AddressInfo record (the frontend pins
+     * its {address, family, port} shape, built from the runtime parts). */
+    "dgram.remoteAddress": { argTypes: [DGRAMSOCK_T], result: VOID },
+    /** socket[Symbol.asyncDispose](): a promise of 'close'. */
+    "dgram.asyncDispose": { argTypes: [DGRAMSOCK_T], result: { kind: "promise", inner: VOID } },
     "dgram.bind": { argTypes: [DGRAMSOCK_T, F64, STRING], result: VOID },
     "dgram.bindCb": {
       argTypes: [DGRAMSOCK_T, F64, STRING, { kind: "func", params: [], ret: VOID }],
@@ -2543,7 +2575,7 @@ function buildLibFnSignatures() {
      * BORROWED, callbacks MOVE. register/suite/hook attach to the runner
      * tree (register: name, mode 0|1|2 run/skip/todo, directive message ""
      * = none, cb or absent via registerEmpty, flags 1 async | 2 takes-ctx
-     * | 4 only, "file:line:col"); suite runs its body AT registration
+     * | 4 only | 32 an explicit only: false, "file:line:col"); suite runs its body AT registration
      * (Node's collection phase). sub is t.test — runs the subtest INLINE
      * on the runner fiber and returns the settled promise the await
      * consumes. ctxSkip/ctxTodo mark the running test; ctxDiagnostic
@@ -2575,6 +2607,7 @@ function buildLibFnSignatures() {
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
+    "test.ctxLog": { argTypes: [TESTCTX_T, STRING], result: VOID },
     // t.signal: the test's AbortSignal handle (created on first read; the
     // abortSignal runtime feature links the unit), and t.error: Node's
     // ERR_TEST_FAILURE wrapper over the failure, or null.
@@ -2593,13 +2626,17 @@ function buildLibFnSignatures() {
     // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
     // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
-    // t.plan(count), and the count of one t.assert call.
-    "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+    // t.plan(count[, { wait }]) — hasWait says whether the options object
+    // carried the property; the count of one t.assert call follows.
+    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64], result: VOID },
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
+    // mock.fn's and mock.method's { times }: Node's non-negative-integer
+    // validation, which throws ERR_OUT_OF_RANGE and answers the count.
+    "test.mockTimes": { argTypes: [F64], result: F64 },
     "test.mockTrack": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
     "test.mockRestoreAll": { argTypes: [], result: VOID },
     "test.mockReset": { argTypes: [], result: VOID },
@@ -2625,6 +2662,9 @@ function buildLibFnSignatures() {
     // the default JSON.stringify(value, null, 2)); a throw becomes Node's
     // "The provided serializers did not generate a string." ERR_INVALID_STATE.
     "test.snapshotSerialize": { argTypes: [DYN, DYN], result: DYN },
+    // snapshot.setDefaultSnapshotSerializers(serializers): the list is a
+    // checked-dynamic array of serializer functions.
+    "test.snapshotSetDefaultSerializers": { argTypes: [DYN], result: VOID },
     "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
     "test.mockTimersTick": { argTypes: [F64], result: VOID },
     "test.mockTimersRunAll": { argTypes: [], result: VOID },
@@ -2755,6 +2795,19 @@ function buildLibFnSignatures() {
     "http.resWriteContinue": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteProcessing": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteEarlyHints": { argTypes: [HTTPRES_T, arrayOf(STRING)], result: VOID },
+    /** The callback forms: the callback fires once the head is written. */
+    "http.resWriteContinueCb": {
+      argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    "http.resWriteProcessingCb": {
+      argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    "http.resWriteEarlyHintsCb": {
+      argTypes: [HTTPRES_T, arrayOf(STRING), { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "http.resWrite": { argTypes: [HTTPRES_T, STRING], result: BOOL },
     "http.resWriteBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: BOOL },
     "http.resEnd": { argTypes: [HTTPRES_T], result: VOID },
@@ -2961,7 +3014,10 @@ function buildLibFnSignatures() {
      * socket POOLING is not modeled (one dial per request); maxSockets
      * accounting is real: over-limit requests defer their dial and queue.
      * MAY THROW. */
-    "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64, DYN], result: DYN },
+    "http.agentNew": {
+      argTypes: [BOOL, BOOL, F64, F64, F64, BOOL, F64, F64, F64, DYN],
+      result: DYN,
+    },
     /** http.globalAgent / https.globalAgent (true): Node's keepAlive global
      * agent, the one requests without an agent option use. */
     "http.globalAgent": { argTypes: [BOOL], result: DYN },
@@ -6680,23 +6736,27 @@ function buildLibFnSignatures() {
     /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
      * the zlib gating precedent): a process-global name→channel registry;
      * channel values are f64 handles (type-mapper.ts maps Channel to F64, the
-     * readline.Interface pattern). Subscribers are dyn function values —
-     * identity-compared by unsubscribe, called (message, name) by publish
-     * over a SNAPSHOT of the list (a subscriber unsubscribing itself
-     * mid-publish still lets its siblings fire, Node's behavior). dc.publish
-     * MAY THROW: a subscriber's throw propagates out of publish (catchable
-     * there) where Node routes it to triggerUncaughtException — the
-     * documented divergence. subscribe/unsubscribe throw Node's
-     * ERR_INVALID_ARG_TYPE TypeError for non-function subscribers. */
-    "dc.channel": { argTypes: [STRING], result: F64 },
-    "dc.subscribe": { argTypes: [STRING, DYN], result: VOID },
-    "dc.unsubscribe": { argTypes: [STRING, DYN], result: BOOL },
-    "dc.hasSubscribers": { argTypes: [STRING], result: BOOL },
+     * readline.Interface pattern). Names and subscribers cross as dyn values
+     * so the runtime applies Node's own checks: channel()/subscribe() raise
+     * ERR_INVALID_ARG_TYPE for a name that is not a string, subscribe raises
+     * the "subscription" TypeError for a non-function, and
+     * unsubscribe/hasSubscribers answer false there (a symbol name fences
+     * with SC2020). Subscribers are identity-compared by unsubscribe and
+     * called (message, name) by publish over a SNAPSHOT of the list (a
+     * subscriber unsubscribing itself mid-publish still lets its siblings
+     * fire, Node's behavior). A subscriber throw does not stop the dispatch
+     * and does not leave publish: like Node's
+     * process.nextTick(triggerUncaughtException), it surfaces as an uncaught
+     * exception on a later tick. */
+    "dc.channel": { argTypes: [DYN], result: F64 },
+    "dc.subscribe": { argTypes: [DYN, DYN], result: VOID },
+    "dc.unsubscribe": { argTypes: [DYN, DYN], result: BOOL },
+    "dc.hasSubscribers": { argTypes: [DYN], result: BOOL },
     "dc.publish": { argTypes: [F64, DYN], result: VOID },
     "dc.chanSubscribe": { argTypes: [F64, DYN], result: VOID },
     "dc.chanUnsubscribe": { argTypes: [F64, DYN], result: BOOL },
     "dc.chanHasSubscribers": { argTypes: [F64], result: BOOL },
-    "dc.chanName": { argTypes: [F64], result: STRING },
+    "dc.chanName": { argTypes: [F64], result: DYN },
     /** TracingChannel (dc.tracingChannel): a registry entry of the five
      * event channels, an f64 handle like Channel (type-mapper.ts). tcSubscribe/
      * tcUnsubscribe walk a dyn handlers object's five event keys (truthy
@@ -6719,7 +6779,7 @@ function buildLibFnSignatures() {
      * the executor IS setImmediate, so resolve rides the immediate queue
      * (scr_async.c). Never throws. */
     "timers.immediatePromise": { argTypes: [], result: { kind: "promise", inner: DYN } },
-    "dc.tracingChannel": { argTypes: [STRING], result: F64 },
+    "dc.tracingChannel": { argTypes: [DYN], result: F64 },
     /** node:trace_events (scr_async_dyn.c): createTracing(options) validates
      * the options object and its categories array (Node's ERR_INVALID_ARG_TYPE
      * and ERR_TRACE_EVENTS_CATEGORY_REQUIRED — MAY THROW) and answers a

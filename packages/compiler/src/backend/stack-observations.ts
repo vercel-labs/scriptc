@@ -29,8 +29,10 @@ const STRING_KINDS: readonly IrNodeKind[] = ["strLit"];
 const CENSUS_KINDS: readonly IrNodeKind[] = ["call", ...FUNCTION_REFERENCE_KINDS];
 const DECLARATION_KINDS: readonly IrNodeKind[] = ["varDecl"];
 
-/** Lib calls that read a captured stack trace. */
-const STACK_READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["error.stack"]);
+/** Lib calls that read a captured stack trace: an error's own `stack`, and
+ * a Console instance's trace (its write carries the frames the call
+ * captured, as the global console.trace intrinsic's does). */
+const STACK_READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>(["error.stack", "console.instTrace"]);
 
 /** Intrinsics that read a captured stack trace: console.trace prints the
  * frames the call captured. */

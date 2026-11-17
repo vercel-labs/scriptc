@@ -26,6 +26,7 @@ import {
   arrayOf,
 } from "../../ir/ir.js";
 import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 const MODULE_FIELDS = new Set([
   "children",
@@ -230,6 +231,37 @@ function requireMainPresent(lowerer: Lowerer): boolean {
   return !isNodeEsmFile(lowerer.entry, lowerer.program);
 }
 
+function isRequireMainExpr(lowerer: Lowerer, node: ts.Expression): boolean {
+  const value = withoutParenthesesTypeWrappers(node);
+  if (ts.isPropertyAccessExpression(value) && !value.questionDotToken && value.name.text === "main")
+    return cjsGlobal(lowerer, withoutParenthesesTypeWrappers(value.expression), "require");
+  return false;
+}
+
+/** `typeof <module value>` for the two spellings whose value the entry kind
+ * decides: `require.main` (parenthesized or not) and a const bound from it.
+ * A CommonJS entry always has a main module ("object"); an ES-module entry
+ * has none, so the value is undefined ("undefined"). Null for every other
+ * operand. */
+export function lowerModuleValueTypeof(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  const loc = locOf(node);
+  const answer = (): IrExpr => strLit(requireMainPresent(lowerer) ? "object" : "undefined", loc);
+  if (isRequireMainExpr(lowerer, node)) return answer();
+  const value = withoutParenthesesTypeWrappers(node);
+  if (!ts.isIdentifier(value)) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(value);
+  const decl = symbol?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer === undefined ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  return isRequireMainExpr(lowerer, decl.initializer) ? answer() : null;
+}
+
 function moduleObjectExpression(lowerer: Lowerer, node: ts.Expression): boolean {
   if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return false;
   if (node.name.text === "main" && cjsGlobal(lowerer, node.expression, "require"))
@@ -251,6 +283,7 @@ function nodeModuleType(lowerer: Lowerer, node: ts.Expression): boolean {
     !requireMainPresent(lowerer)
   )
     return false;
+  if (isRequireMainExpr(lowerer, node)) return requireMainPresent(lowerer);
   if (moduleObjectExpression(lowerer, node)) return true;
   const type = lowerer.typeOf(node);
   // `require.main` and `module.parent` are typed `ScriptcModule |

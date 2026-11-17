@@ -1221,12 +1221,18 @@ ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers) {
     scr_dyn_release(undef);
     scr_dyn_release(space);
   } else {
+    /* The list can be the module's default, borrowed from the global: a
+     * serializer that installs a new default releases that global, so the
+     * iteration holds its own reference and keeps walking the array it
+     * started with, as Node's does. */
+    ScrDyn *list = scr_dyn_retain(serializers);
     v = scr_dyn_retain(value);
-    for (size_t i = 0; v && i < serializers->v.arr.len; i++) {
-      ScrDyn *next = scr_dyn_call(serializers->v.arr.items[i], &v, 1, "serializer");
+    for (size_t i = 0; v && i < list->v.arr.len; i++) {
+      ScrDyn *next = scr_dyn_call(list->v.arr.items[i], &v, 1, "serializer");
       scr_dyn_release(v);
       v = next;
     }
+    scr_dyn_release(list);
   }
   if (v && !scr_exc_pending()) return v;
   scr_dyn_release(v);

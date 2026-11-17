@@ -326,9 +326,17 @@ static void scr_dgram_fire0(ScrDgramLs *l) {
   free(snap);
 }
 
+/* Take the listener just added off a list without firing it (the caller
+ * owns the reference): a connect callback Node removes from 'connect'
+ * when the connect fails before it can emit. */
+static ScrClosure *scr_dgram_ls_pop_last(ScrDgramLs *l) {
+  if (l->n == 0) return NULL;
+  return l->ls[--l->n].cb;
+}
+
 /* 'error' with NO listener is fatal, like Node's unhandled EventEmitter
  * 'error' (the scr_net.c stance — _Exit skips atexit on purpose). */
-static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg) {
+static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg, const char *code) {
   if (l->n == 0) {
     scr_stdout_settle();
     fflush(stdout);
@@ -336,9 +344,12 @@ static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg) {
     _Exit(1);
   }
   /* Node's error object for the message: errno, code and syscall, plus the
-   * address and port (or hostname) the detail names. Every listener
-   * receives the same object. */
-  ScrError *system = scr_system_error_from_message(msg);
+   * address and port (or hostname) the detail names; a message that names
+   * no system error takes pending_code instead (ERR_IP_BLOCKED). Every
+   * listener receives the same object. */
+  ScrError *system = code != NULL ? scr_error_new(SCR_ERR_ERROR, msg)
+                                  : scr_system_error_from_message(msg);
+  if (system != NULL && code != NULL) system->code = scr_str_new(code, strlen(code));
   ScrError *saved = scr_event_error_payload;
   if (system != NULL) scr_event_error_payload = system;
   ScrDgramL *snap;
@@ -401,6 +412,8 @@ void scr_dgram_release(ScrDgramSocket *s) {
     scr_dgram_ls_drop(&s->close_ls);
     scr_dgram_ls_drop(&s->conn_ls);
     scr_str_release(s->pending_err);
+    scr_dyn_release(s->send_block_list);
+    scr_dyn_release(s->recv_block_list);
     if (s->fd >= 0) scr_dgram_close_fd_raw(s->fd);
 #ifdef SCR_RC_AUDIT
     scr_dgram_live--;
@@ -556,6 +569,8 @@ static void scr_dgram_throw_errno(int err, const char *syscall);
 static void scr_dgram_throw_exception_host_port(int err, const char *syscall, const char *ip,
                                                 int port);
 static void scr_dgram_apply_init_buffers(ScrDgramSocket *s);
+static bool scr_dgram_send_blocked(ScrDgramSocket *s, const char *ip, int family);
+static ScrDyn *scr_dgram_blocked_error(const char *ip);
 
 /* A JS number as V8 prints it in an error's Received tail ("70000",
  * "1.5", "NaN", "Infinity"). Integer-valued doubles print without a
@@ -761,7 +776,9 @@ void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb
 
 /* connect(port, host): implicit-binds (Node emits 'listening' for that,
  * then 'connect'); UDP connect(2) is local and immediate, so failures
- * here are deferred 'error's only for bad hosts. */
+ * here are deferred 'error's only for bad hosts. An address the socket's
+ * sendBlockList blocks fails the connect itself (Node's doConnect answers
+ * the callback, or emits 'error', with ERR_IP_BLOCKED). */
 void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb) {
   if (s->closing || s->close_emitted) {
     scr_closure_release(cb);
@@ -789,9 +806,45 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
   }
   scr_dgram_ensure_fd(s);
   if (!s->bound) {
+    /* Node's connect binds first (the wildcard, port 0), so the socket is
+     * really bound — address() answers an ephemeral port — even when the
+     * address is refused below. */
+    struct sockaddr_storage bsa;
+    socklen_t blen = sizeof bsa;
+    if (!scr_dgram_host_addr(s, "", 0, &bsa, &blen)) return;
+    if (bind(s->fd, (struct sockaddr *)&bsa, blen) != 0) {
+      int err = errno;
+      char ip[64];
+      scr_dgram_sockaddr_ip(&bsa, ip, sizeof ip);
+      close(s->fd);
+      s->fd = -1;
+      scr_dgram_throw_exception_host_port(err, "bind", ip, 0);
+      return;
+    }
     s->bound = true;
     s->emit_listening = true; /* Node's implicit bind emits 'listening' */
     scr_dgram_apply_init_buffers(s);
+  }
+  scr_dgram_register(s); /* the pending 'listening' (and a failure) defers */
+  char peer_ip[64];
+  scr_dgram_sockaddr_ip(&sa, peer_ip, sizeof peer_ip);
+  if (scr_dgram_send_blocked(s, peer_ip, sa.ss_family == AF_INET6 ? 6 : 4)) {
+    /* Node's doConnect failure: a callback (registered as once('connect'))
+     * is removed and answered with ERR_IP_BLOCKED, otherwise the failure
+     * is the deferred 'error'; 'connect' never emits. The implicit bind
+     * above stands, as in Node, so the socket stays usable. The typed
+     * connect callback takes no argument, so the error the listener would
+     * receive is not observable here. */
+    ScrClosure *failed = cb != NULL ? scr_dgram_ls_pop_last(&s->conn_ls) : NULL;
+    if (failed != NULL) {
+      scr_next_tick(failed);
+    } else {
+      char msg[160];
+      int n = snprintf(msg, sizeof msg, "IP(%s) is blocked by net.BlockList", peer_ip);
+      if (!s->pending_err) s->pending_err = scr_str_new(msg, (size_t)n);
+      s->pending_code = "ERR_IP_BLOCKED";
+    }
+    return;
   }
   if (connect(s->fd, (struct sockaddr *)&sa, salen) != 0) {
     char msg[128];
@@ -902,6 +955,16 @@ void scr_dgram_connect_sync(ScrDgramSocket *s, double port, ScrStr *host, bool h
     s->bound = true;
     s->emit_listening = true;
     scr_dgram_apply_init_buffers(s);
+  }
+  char peer_ip[64];
+  scr_dgram_sockaddr_ip(&sa, peer_ip, sizeof peer_ip);
+  if (scr_dgram_send_blocked(s, peer_ip, sa.ss_family == AF_INET6 ? 6 : 4)) {
+    /* Node's connectSync: the block check throws after the implicit
+     * bindSync, so the socket is left bound. */
+    char text[160];
+    int n = snprintf(text, sizeof text, "IP(%s) is blocked by net.BlockList", peer_ip);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, text, (size_t)n, "ERR_IP_BLOCKED");
+    return;
   }
   if (connect(s->fd, (struct sockaddr *)&sa, salen) != 0) {
     char ip[64];
@@ -1023,19 +1086,6 @@ static bool scr_dgram_opt_read(const ScrDyn *obj, const char *name, size_t len, 
   return true;
 }
 
-/* A receiveBlockList/sendBlockList member: the value check and the refusal
- * for the option families with no native behavior yet. */
-static void scr_dgram_block_list_fail(const char *name, const ScrDyn *m) {
-  char prop[64];
-  snprintf(prop, sizeof prop, "options.%s", name);
-  if (!(m->kind == SCR_DYN_HANDLE && m->v.handle.tag == SCR_DYNH_NET_BLOCK_LIST)) {
-    scr_dyn_prop_type_fail(prop, "an net.BlockList", m);
-  } else {
-    static const char msg[] = "a receiveBlockList or sendBlockList is not supported yet";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
-  }
-}
-
 /* createSocket(type | options[, listener]) — Node's Socket constructor.
  * The listener (nullable, moves) registers as on('message'). NULL with the
  * exception pending (ERR_SOCKET_BAD_TYPE, ERR_OUT_OF_RANGE, the
@@ -1051,6 +1101,7 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
   const ScrDyn *type = v;
   bool v6 = false, reuse = false, ipv6_only = false, reuse_port = false;
   double recv = 0, send = 0;
+  ScrDyn *recv_list = NULL, *send_list = NULL; /* retained, move onto the socket */
   if (v->kind == SCR_DYN_OBJ) {
     ScrDyn *m = NULL;
     bool ok = true;
@@ -1111,19 +1162,35 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
       ok = false;
     }
     if (ok && scr_dgram_opt_read(v, "receiveBlockList", 16, &m)) {
-      scr_dgram_block_list_fail("receiveBlockList", m);
-      scr_dyn_release(m);
-      ok = false;
+      /* Node stores the option only when it is truthy, then checks the
+       * type: null, false and 0 stand for "no list". */
+      if (!scr_dgram_dyn_truthy(m)) {
+        scr_dyn_release(m);
+      } else if (!scr_net_is_block_list(m)) {
+        scr_dyn_prop_type_fail("options.receiveBlockList", "an net.BlockList", m);
+        scr_dyn_release(m);
+        ok = false;
+      } else {
+        recv_list = m; /* retained: moves onto the socket */
+      }
     }
     if (ok && scr_dgram_opt_read(v, "sendBlockList", 13, &m)) {
-      scr_dgram_block_list_fail("sendBlockList", m);
-      scr_dyn_release(m);
-      ok = false;
+      if (!scr_dgram_dyn_truthy(m)) {
+        scr_dyn_release(m);
+      } else if (!scr_net_is_block_list(m)) {
+        scr_dyn_prop_type_fail("options.sendBlockList", "an net.BlockList", m);
+        scr_dyn_release(m);
+        ok = false;
+      } else {
+        send_list = m; /* retained: moves onto the socket */
+      }
     }
     ScrDyn *type_member = NULL;
     if (ok && scr_dgram_opt_read(v, "type", 4, &type_member)) type = type_member;
     if (ok && scr_exc_pending()) ok = false;
     if (!ok) {
+      scr_dyn_release(recv_list);
+      scr_dyn_release(send_list);
       scr_dyn_release(type_member);
       scr_dyn_release(owned);
       scr_closure_release(cb);
@@ -1135,6 +1202,8 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
         (type->v.str->len == 4 && memcmp(type->v.str->data, "udp6", 4) == 0))) {
     static const char msg[] = "Bad socket type specified. Valid types are: udp4, udp6";
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_SOCKET_BAD_TYPE");
+    scr_dyn_release(recv_list);
+    scr_dyn_release(send_list);
     scr_dyn_release(owned);
     scr_closure_release(cb);
     return NULL;
@@ -1142,6 +1211,8 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
   v6 = type->v.str->data[3] == '6';
   if (type != v) scr_dyn_release((ScrDyn *)type);
   ScrDgramSocket *s = scr_dgram_create(v6, reuse, ipv6_only, reuse_port, recv, send);
+  s->recv_block_list = recv_list;
+  s->send_block_list = send_list;
   scr_dyn_release(owned);
   if (cb) scr_dgram_on_message(s, cb, fn, false);
   return s;
@@ -1340,6 +1411,17 @@ static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, 
     scr_dgram_apply_init_buffers(s);
   }
   scr_dgram_register(s); /* an open sender holds the loop, like Node */
+  {
+    char ip[64];
+    scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
+    if (scr_dgram_send_blocked(s, ip, sa.ss_family == AF_INET6 ? 6 : 4)) {
+      /* sendBlockList: the blocked datagram never reaches the wire, and a
+       * send with no completion callback answers nothing (Node's doSend
+       * drop). */
+      scr_dgram_update_read(s);
+      return;
+    }
+  }
   if (sendto(s->fd, data, len, 0, (struct sockaddr *)&sa, salen) < 0 &&
       errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
     char ip[64];
@@ -2007,6 +2089,11 @@ static void scr_dgram_read(ScrDgramSocket *s) {
     } else if (from.ss_family == AF_INET) {
       inet_ntop(AF_INET, &((struct sockaddr_in *)&from)->sin_addr, ip, sizeof ip);
       rport = ntohs(((struct sockaddr_in *)&from)->sin_port);
+    }
+    /* receiveBlockList: a blocked source's datagram is dropped silently */
+    if (s->recv_block_list != NULL && (from6 || from.ss_family == AF_INET) &&
+        scr_net_block_list_blocks(s->recv_block_list, ip, from6 ? 6 : 4)) {
+      continue;
     }
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
     chunk->is_buffer = true; /* the message is a Buffer */
@@ -2701,7 +2788,8 @@ static void scr_dgram_sweep(void) {
     if (s->pending_err) {
       ScrStr *msg = s->pending_err;
       s->pending_err = NULL;
-      scr_dgram_fire_err(&s->err_ls, msg);
+      scr_dgram_fire_err(&s->err_ls, msg, s->pending_code);
+      s->pending_code = NULL;
       scr_str_release(msg);
       if (scr_exc_pending()) {
         scr_dgram_release(s);
@@ -2907,6 +2995,26 @@ static ScrDyn *scr_dgram_send_error(const char *msg) {
   return d;
 }
 
+/* The sendBlockList gate: a blocked destination answers the completion
+ * callback with Node's ERR_IP_BLOCKED Error and the datagram is never
+ * sent. */
+static bool scr_dgram_send_blocked(ScrDgramSocket *s, const char *ip, int family) {
+  return s->send_block_list != NULL &&
+         scr_net_block_list_blocks(s->send_block_list, ip, family);
+}
+
+static ScrDyn *scr_dgram_blocked_error(const char *ip) {
+  char text[160];
+  int n = snprintf(text, sizeof text, "IP(%s) is blocked by net.BlockList", ip);
+  ScrStr *msg = scr_str_new(text, (size_t)n);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_error_set_code(e, "ERR_IP_BLOCKED");
+  ScrDyn *d = scr_dyn_from_error(e);
+  scr_error_release(e);
+  return d;
+}
+
 /* The ladder's send: Node's healthCheck, then one datagram — to the
  * connected peer when host is NULL, else to host:port (an empty host is
  * Node's 127.0.0.1). With a completion callback the result defers to the
@@ -2938,6 +3046,26 @@ static void scr_dgram_send_out(ScrDgramSocket *s, const char *data, size_t len, 
       scr_dgram_apply_init_buffers(s);
     }
     scr_dgram_register(s); /* an open sender holds the loop, like Node */
+    /* sendBlockList: Node checks the looked-up destination address of a
+     * non-connected send (a connected send carries no address and is
+     * never gated). A blocked datagram never reaches the wire: the
+     * completion callback gets ERR_IP_BLOCKED, no-callback sends answer
+     * nothing. */
+    char blocked_ip[64];
+    blocked_ip[0] = '\0';
+    bool blocked = false;
+    if (h != NULL && s->send_block_list != NULL) {
+      scr_dgram_sockaddr_ip(&sa, blocked_ip, sizeof blocked_ip);
+      blocked = scr_dgram_send_blocked(s, blocked_ip, sa.ss_family == AF_INET6 ? 6 : 4);
+    }
+    if (blocked) {
+      if (has_cb) {
+        ScrDyn *arg = scr_dgram_blocked_error(blocked_ip);
+        scr_dns_call_later(callback, &arg, 1, false);
+      }
+      scr_dgram_update_read(s);
+      return;
+    }
     ssize_t sent = h != NULL ? sendto(s->fd, data, len, 0, (struct sockaddr *)&sa, salen)
                              : send(s->fd, data, len, 0);
     if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {

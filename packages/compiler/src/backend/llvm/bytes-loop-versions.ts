@@ -1052,8 +1052,21 @@ function findWhileCounterAccesses(
     if (cond.kind !== "bin") return;
     const below = cond.op === "<" || cond.op === "<=",
       above = cond.op === ">" || cond.op === ">=";
-    const c = below ? cond.left : above ? cond.right : null,
+    const operand = below ? cond.left : above ? cond.right : null,
       bound = below ? cond.right : cond.left;
+    // A counter multiplied by a positive integer is bounded by the same
+    // value: while the guard holds, `2*i < k` keeps i below k. The version's
+    // guard requires the counter's entry value to be at least the access
+    // offsets (0 here), and a counter only steps in its recorded direction,
+    // so the counter is non-negative in the body and the implication holds.
+    const scaled = (e: IrExpr): IrExpr | null => {
+      if (e.kind !== "bin" || e.op !== "*") return null;
+      const positive = (x: IrExpr): boolean =>
+        x.kind === "numLit" && Number.isSafeInteger(x.value) && x.value >= 1;
+      return positive(e.left) ? e.right : positive(e.right) ? e.left : null;
+    };
+    const c =
+      operand?.kind === "varRef" ? operand : operand === null ? null : scaled(operand);
     if (c?.kind !== "varRef" || !counter(c.localId) || into.has(c.localId)) return;
     const key = host.boundKey(bound);
     if (key === null) return;

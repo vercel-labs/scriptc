@@ -1684,10 +1684,11 @@ void scr_test_snapshot_set_default_serializers(ScrDyn *serializers /*borrowed*/)
  * file's snapshot file is first needed. The closure moves in; a new resolver
  * forgets the path the previous one answered. */
 void scr_test_snapshot_set_resolve_path(ScrClosure *cb /*moves*/) {
+  /* Node resolves a file once and keeps that answer: a resolver installed
+   * after the program's snapshot file was resolved is never consulted, so a
+   * new resolver does not forget the cached path. */
   scr_closure_release(scr_snap_resolve_path);
   scr_snap_resolve_path = cb;
-  scr_str_release(scr_snap_resolved);
-  scr_snap_resolved = NULL;
 }
 
 /* The snapshot file for `file`: "<file>.snapshot" without a resolver, else

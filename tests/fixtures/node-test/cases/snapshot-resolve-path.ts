@@ -21,3 +21,12 @@ test("second", (t) => {
   assert.strictEqual(calls[0]!.endsWith("snapshot-resolve-path.ts"), true);
   t.diagnostic("resolved once");
 });
+
+test("replacing the resolver keeps the resolved file", (t) => {
+  snapshot.setResolveSnapshotPath((path: string) => {
+    calls.push("second");
+    return path;
+  });
+  t.assert.snapshot("three");
+  assert.strictEqual(calls.length, 1);
+});

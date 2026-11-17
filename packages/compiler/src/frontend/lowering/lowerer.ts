@@ -4231,6 +4231,13 @@ export class Lowerer {
     const known = this.runtimeOptionalBindingTypes.get(symbol);
     if (known) {
       const global = this.globalsBySymbol.get(symbol);
+      // A checked-dynamic slot already holds `undefined` natively, so the
+      // optional analysis's narrower arm has nothing to add there. Using it
+      // would leave the global's reads at a record or union type while its
+      // storage stays checked-dynamic (a JavaScript literal holding an
+      // existing checked-dynamic object registers that storage before any
+      // body lowers), a disagreement the backend rejects.
+      if (global?.type.kind === "dyn") return global.type;
       return global ? tdzStorage(global, known) : known;
     }
     // A module-scope function alias is collected as a global before the
@@ -14428,6 +14435,16 @@ export class Lowerer {
         const flowClass = recordFlows.bindingClass(symbol);
         const fields = settledFields(flowClass, optionalFields.get(symbol));
         if (!dynamicObjectEntryRows.has(symbol) && !optionalSymbols.has(symbol) && !fields) return;
+        // A checked-dynamic module global (a JavaScript literal holding an
+        // existing checked-dynamic value registers that storage before any
+        // body lowers) already stores undefined natively and carries no
+        // record layout. Promoting it to the checker's narrowed arm would
+        // leave every read above its declaration at a type the storage does
+        // not have, which the backend rejects.
+        const storedGlobal = ts.isIdentifier(node.name)
+          ? this.globalOf(node.name)
+          : this.globalsBySymbol.get(symbol);
+        if (storedGlobal?.type.kind === "dyn") return;
         const current = this.mapTypeOf(this.typeOf(node.name));
         if (!current) return;
         let promoted = dynamicObjectEntryRows.has(symbol) ? DYN : current;

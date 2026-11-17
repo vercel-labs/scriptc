@@ -12662,6 +12662,27 @@ function needsNoValue(lowerer: Lowerer, expr: ts.Expression): boolean {
       expr.operatorToken.kind === ts.SyntaxKind.CommaToken)
   )
     return needsNoValue(lowerer, expr.right);
+  // A conditional whose arms produce no value (`tag ? warnA() : flag ?
+  // warnB() : warnC()`): the checker may spell the whole expression `any`
+  // through one arm (`value && (warnB(), warnC())` with an untyped
+  // `value`), so the type test below cannot see the void join. Its value
+  // is discarded in statement position either way, and the value form
+  // would build a void ternary the IR cannot hold.
+  if (ts.isConditionalExpression(expr)) {
+    // A never-returning arm keeps the conditional's void-type fallback: the
+    // statement form is not this early return's to claim (each arm may be
+    // any non-void shape there), so leave those conditionals to the caller's
+    // value-form path and its control-flow retry.
+    const neverArm = (arm: ts.Expression): boolean => {
+      let value = arm;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      if (ts.isConditionalExpression(value))
+        return neverArm(value.whenTrue) || neverArm(value.whenFalse);
+      return (lowerer.typeOf(value).flags & ts.TypeFlags.Never) !== 0;
+    };
+    if (neverArm(expr.whenTrue) || neverArm(expr.whenFalse)) return false;
+    return needsNoValue(lowerer, expr.whenTrue) && needsNoValue(lowerer, expr.whenFalse);
+  }
   const type = lowerer.typeOf(expr);
   return (
     (type.flags & (ts.TypeFlags.Void | ts.TypeFlags.TypeParameter)) !== 0 &&

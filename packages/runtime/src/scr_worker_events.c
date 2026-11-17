@@ -1946,10 +1946,18 @@ static bool scr_worker_limits(ScrDyn *limits, size_t *stack_size, double out[4])
   for (size_t i = 0; i < sizeof heap / sizeof heap[0]; i++) {
     const ScrDyn *value = scr_dyn_obj_get(limits, heap[i], strlen(heap[i]));
     if (!value || value->kind != SCR_DYN_NUM) continue;
-    double number = value->v.num;
-    /* Node's parseResourceLimits clamps the old generation to 2 MB. */
-    if (i == 1 && number < 2) number = 2;
-    out[i] = number;
+    /* A compiled program has one heap for every thread, so a heap limit
+     * cannot be enforced. Requesting one is refused rather than accepted
+     * and ignored: a caller that asked for a memory bound must not get a
+     * worker that runs without one. The literal form of the same request
+     * is refused at build time (lowering's refuseHeapLimits); this answers
+     * the options object a program computes. */
+    char msg[192];
+    int len = snprintf(msg, sizeof msg,
+                       "worker threads share the process heap, so resourceLimits.%s cannot be enforced",
+                       heap[i]);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, "ERR_SCRIPTC_WORKER_HEAP_LIMITS");
+    return false;
   }
   const ScrDyn *megabytes = scr_dyn_obj_get(limits, "stackSizeMb", 11);
   if (megabytes && megabytes->kind == SCR_DYN_NUM && megabytes->v.num > 0) {

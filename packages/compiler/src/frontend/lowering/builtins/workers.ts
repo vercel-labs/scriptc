@@ -71,12 +71,13 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
 }
 
 /** The checks every Worker construction shares: an island a worker thread
- * may not reach (SC8012), the targets that cannot host a thread, and foreign
- * native callbacks. */
+ * may not reach (SC8012), the targets that cannot host a thread, foreign
+ * native callbacks, and the V8 heap fields the runtime refuses. */
 function refuseWorkerShape(
   lowerer: Lowerer,
   expression: ts.NewExpression,
   entryPaths: readonly string[],
+  args: readonly ts.Expression[],
 ): void {
   if (lowerer.nodeIslands !== null) {
     for (const path of entryPaths)
@@ -103,6 +104,7 @@ function refuseWorkerShape(
       "native callbacks in worker executables must run on their owning script thread",
     );
   }
+  refuseHeapLimits(lowerer, args[1]);
 }
 
 /** The worker root a compiled entry path names, or undefined when the path
@@ -150,7 +152,7 @@ function lowerStaticWorkerNew(
       "the worker entry must resolve to a statically compiled source file",
     );
   }
-  refuseWorkerShape(lowerer, expression, [path]);
+  refuseWorkerShape(lowerer, expression, [path], args);
   lowerer.usesWorkers = true;
   const loc = locOf(expression);
   const options = args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : workerUndefinedOptions(loc);
@@ -198,6 +200,7 @@ function lowerBoundedWorkerNew(
     lowerer,
     expression,
     arms.map((arm) => arm.path),
+    args,
   );
   lowerer.usesWorkers = true;
   const loc = locOf(expression);
@@ -332,6 +335,39 @@ function capturesStdio(options: ts.Expression | undefined): boolean {
       ts.isPropertyAssignment(option) && option.initializer.kind === ts.SyntaxKind.FalseKeyword
     );
   });
+}
+
+const HEAP_LIMITS = new Set([
+  "maxOldGenerationSizeMb",
+  "maxYoungGenerationSizeMb",
+  "codeRangeSizeMb",
+]);
+
+/** resourceLimits' V8 heap fields, when an options literal spells them with
+ * numbers. A compiled program has one heap for every thread, so a heap limit
+ * cannot be enforced: requesting one is refused here, and the runtime
+ * refuses the same request when the options object is not a literal. A
+ * limit the program does not ask for stays unset, and `worker.resourceLimits`
+ * reports it as Node does (-1). */
+function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined): void {
+  if (!options || !ts.isObjectLiteralExpression(options)) return;
+  for (const option of options.properties.nodes) {
+    if (!ts.isPropertyAssignment(option) || propertyNameText(option.name) !== "resourceLimits")
+      continue;
+    if (!ts.isObjectLiteralExpression(option.initializer)) continue;
+    for (const limit of option.initializer.properties.nodes) {
+      if (!ts.isPropertyAssignment(limit)) continue;
+      const name = propertyNameText(limit.name);
+      if (name === undefined || !HEAP_LIMITS.has(name)) continue;
+      const type = lowerer.checker.getTypeAtLocation(limit.initializer);
+      if (!(type.flags & ts.TypeFlags.NumberLike)) continue;
+      lowerer.noLowering(
+        `Worker resourceLimits.${name}`,
+        limit,
+        "worker threads share the process heap, so a heap limit cannot be enforced; resourceLimits supports stackSizeMb",
+      );
+    }
+  }
 }
 
 function propertyNameText(name: ts.PropertyName): string | undefined {

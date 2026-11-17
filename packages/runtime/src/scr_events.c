@@ -2541,14 +2541,23 @@ static bool scr_emit_signal_listeners(const ScrStr *name, ScrDyn *const *args, s
     snap[i].cb = scr_dyn_retain(snap[i].cb);
     snap[i].name = scr_str_retain(snap[i].name);
   }
+  /* The snapshot above is the dispatch order, and `reg` may be freed by a
+   * listener that removes the signal's last handler (the registry and its
+   * disposition go with it, and a later `on` can build a new one), so no
+   * registry pointer survives a callback: each once entry's removal finds
+   * the LIVE registry by signal again. */
   for (size_t i = 0; i < count; i++) {
     if (snap[i].once) {
       /* Node's once wrapper leaves the live list before its call, so an
        * `off` from inside it finds the entry gone. */
-      for (size_t j = 0; j < reg->n; j++) {
-        if (reg->ls[j].id != snap[i].id) continue;
-        scr_sig_remove(reg, j);
-        break;
+      ScrSigReg *live = scr_sig_regs;
+      while (live != NULL && live->sig != sig) live = live->next;
+      if (live != NULL) {
+        for (size_t j = 0; j < live->n; j++) {
+          if (live->ls[j].id != snap[i].id) continue;
+          scr_sig_remove(live, j);
+          break;
+        }
       }
     }
     if (snap[i].island == 0) {

@@ -2186,13 +2186,11 @@ static bool scr_emit_dyn_listeners(ScrRejListener **list, size_t *n, ScrDyn *con
   return true;
 }
 
-bool scr_process_emit(ScrDyn *args) {
-  size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
-  ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
-  if (argc == 0 || items[0] == NULL || items[0]->kind != SCR_DYN_STR) return false;
-  const ScrStr *event = items[0]->v.str;
-  ScrDyn *const *rest = argc > 1 ? items + 1 : NULL;
-  size_t restc = argc - 1;
+/* The dispatch over an event name and an owned argument vector. The vector
+ * and the name outlive every listener call: a listener can grow (and so
+ * reallocate) the array the call forwarded, which is the program's own
+ * value, so no step here reads the caller's storage after user code ran. */
+static bool scr_process_emit_dispatch(const ScrStr *event, ScrDyn *const *rest, size_t restc) {
   if (scr_emit_event_is(event, "warning")) return scr_emit_warning_value(rest, restc);
   if (scr_emit_event_is(event, "uncaughtException"))
     return scr_emit_dyn_listeners(&scr_uncaught_ls[0], &scr_uncaught_n[0], rest, restc);
@@ -2223,6 +2221,28 @@ bool scr_process_emit(ScrDyn *args) {
   if (scr_process_emit_lifecycle_hook != NULL)
     return scr_process_emit_lifecycle_hook(event, rest, restc);
   return false;
+}
+
+bool scr_process_emit(ScrDyn *args) {
+  size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
+  if (argc == 0 || items[0] == NULL || items[0]->kind != SCR_DYN_STR) return false;
+  /* A forwarded argument list is the program's own array: spread semantics
+   * give the listeners the values the call carried, so hold an owned copy of
+   * the name and every argument. A listener that pushes to that array
+   * reallocates it, and this vector must not follow. */
+  ScrStr *event = scr_str_retain(items[0]->v.str);
+  size_t restc = argc - 1;
+  ScrDyn **rest = restc != 0 ? malloc(restc * sizeof *rest) : NULL;
+  if (restc != 0) {
+    if (rest == NULL) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < restc; i++) rest[i] = scr_dyn_retain(items[i + 1]);
+  }
+  bool answered = scr_process_emit_dispatch(event, rest, restc);
+  for (size_t i = 0; i < restc; i++) scr_dyn_release(rest[i]);
+  free(rest);
+  scr_str_release(event);
+  return answered;
 }
 
 

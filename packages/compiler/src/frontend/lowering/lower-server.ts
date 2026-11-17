@@ -5911,6 +5911,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
   let kaMsecs: IrExpr = numLit(-1, loc);
   let maxSockets: IrExpr = numLit(-1, loc);
   let maxFree: IrExpr = numLit(-1, loc);
+  let maxTotal: IrExpr = numLit(-1, loc);
+  let maxTotalSet = false;
   let timeout: IrExpr = numLit(-1, loc);
   let port: IrExpr = numLit(-1, loc);
   let scheduling: IrExpr = lowerer.coerceToExpected(strLit("lifo", loc), DYN);
@@ -5988,6 +5990,12 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
         case "maxFreeSockets":
           maxFree = lowerVal("f64");
           break;
+        case "maxTotalSockets":
+          // Node's cap across every name, not just this one; the runtime
+          // validates it the way the constructor does (>= 1)
+          maxTotal = lowerVal("f64");
+          maxTotalSet = true;
+          break;
         case "timeout":
           timeout = lowerVal("f64");
           break;
@@ -6013,8 +6021,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
             api,
             bi.module === "https" ? HTTPS_AGENT_DOCUMENTED_OPTIONS : AGENT_DOCUMENTED_OPTIONS,
             bi.module === "https"
-              ? "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options; pass TLS options such as ca and rejectUnauthorized on each https.request"
-              : "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options",
+              ? "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, maxTotalSockets, timeout, port, and scheduling are the supported options; pass TLS options such as ca and rejectUnauthorized on each https.request"
+              : "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, maxTotalSockets, timeout, port, and scheduling are the supported options",
           );
       }
     }
@@ -6028,6 +6036,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
       kaMsecs,
       maxSockets,
       maxFree,
+      boolLit(maxTotalSet, loc),
+      maxTotal,
       timeout,
       port,
       scheduling,

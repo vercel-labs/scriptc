@@ -430,8 +430,9 @@ bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
  * close; an Agent handle = queue accounting); port < 0 means "no port
  * option" — the agent's (settable) defaultPort, then the scheme's. */
 ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
-                            double max_sockets, double max_free, double timeout_ms,
-                            double port /* < 0 = unset: the option-merge default */,
+                            double max_sockets, double max_free, bool has_max_total,
+                            double max_total,
+                            double timeout_ms, double port /* < 0 = unset: the option-merge default */,
                             const ScrDyn *scheduling /* borrowed; NULL = 'lifo' */); /* +1 */
 ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double port,
                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,

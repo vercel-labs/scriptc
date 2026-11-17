@@ -1410,6 +1410,7 @@ static ScrStr *scr_test_failure_message(const ScrTestCtx *t) {
        * fallback text keeps that layout. */
       bool previous = scr_insp_custom_inspect(false);
       scr_insp_layout(INFINITY, INFINITY, false, 100);
+      scr_str_release(msg);
       msg = scr_insp_dyn(value, 0, 2);
       scr_insp_layout(80, 3, false, 100);
       scr_insp_custom_inspect(previous);

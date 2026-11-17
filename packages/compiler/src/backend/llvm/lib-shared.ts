@@ -153,6 +153,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "mime.is": "scr_mime_is",
   "sqlite.dbNew": "scr_sqlite_db_new",
   "sqlite.is": "scr_sqlite_is",
+  "sqlite.backup": "scr_sqlite_backup",
   "util.callbackify": "scr_util_callbackify",
   "util.promisifyDyn": "scr_util_promisify",
   "util.promisifyCustom": "scr_util_promisify_custom",
@@ -558,6 +559,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.rmdirSync": "scr_fs_rmdir",
   "fs.readdirSync": "scr_fs_readdir",
   "fs.readdirRecursiveSync": "scr_fs_readdir_recursive",
+  "fs.readdirBytesSync": "scr_fs_readdir_bytes",
+  "fs.readdirEncodedSync": "scr_fs_readdir_encoded",
   "fs.globSync": "scr_fs_glob_strings",
   "fs.callbackGlob": "scr_fs_glob_callback",
   "fsp.globStrings": "scr_fsp_glob_strings",
@@ -610,6 +613,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.deqEnter": "scr_assert_deq_enter",
   "assert.deqLeave": "scr_assert_deq_leave",
   "assert.match": "scr_assert_match",
+  "assert.throwsAmbiguous": "scr_assert_throws_ambiguous",
   "assert.throwsNone": "scr_assert_throws_none",
   "assert.throwsMismatch": "scr_assert_throws_mismatch",
   "assert.throwsRegex": "scr_assert_throws_regex",
@@ -873,6 +877,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.cipherNew": "scr_crypto_cipher_new",
   "crypto.ecdhNew": "scr_crypto_ecdh_new",
   "crypto.ecdhConvertKey": "scr_crypto_ecdh_convert_key",
+  "crypto.argon2Sync": "scr_crypto_argon2_sync",
+  "crypto.argon2Cb": "scr_crypto_argon2_cb",
   "crypto.dhNew": "scr_crypto_dh_new",
   "crypto.checkPrimeSync": "scr_crypto_check_prime_sync",
   "crypto.getCipherInfo": "scr_crypto_get_cipher_info",
@@ -1191,6 +1197,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.lutimes": "scr_fsp_lutimes",
   "fsp.rename": "scr_fsp_rename",
   "fsp.readdir": "scr_fsp_readdir",
+  "fsp.readdirBytes": "scr_fsp_readdir_bytes",
+  "fsp.readdirRecursive": "scr_fsp_readdir_recursive",
+  "fsp.readdirEncoded": "scr_fsp_readdir_encoded",
   "fsp.rm": "scr_fsp_rm",
   "fsp.rmOpts": "scr_fsp_rm_opts",
   "fsp.rmRetry": "scr_fsp_rm_opts_retry",
@@ -1287,6 +1296,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.responseJsonStatic": "scr_fetch_response_json_static",
   "fetch.input": "scr_fetch_input",
   "abort.controllerNew": "scr_fetch_abort_controller_new",
+  "abort.signalIs": "scr_dyn_abort_signal_is",
   "event.targetNew": "scr_event_target_new",
   "event.new": "scr_event_new",
   "event.customNew": "scr_custom_event_new",
@@ -1639,6 +1649,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "worker.shareEnv": "scr_worker_share_env",
   "worker.resourceLimits": "scr_worker_resource_limits",
   "worker.threadName": "scr_worker_thread_name_current",
+  "worker.performance": "scr_worker_performance",
   "worker.channel": "scr_worker_message_channel",
   "worker.receiveMessageOnPort": "scr_worker_receive_message_on_port",
   "worker.setEnvironmentData": "scr_worker_set_environment_data",
@@ -2106,6 +2117,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dc.chanBindStore": "scr_dc_chan_bind_store",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",
+  // node:trace_events (scr_async_dyn.c): native Tracing handles.
+  "te.createTracing": "scr_te_create",
+  "te.getEnabledCategories": "scr_te_get_enabled_categories",
   // process warning/rejection events (scr_lib.c / scr_async_dyn.c):
   // dyn listeners are borrowed (the runtime retains its copy);
   // onUnhandledRejection marks the loop live (the checkpoint report
@@ -2309,6 +2323,7 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.scryptAnyCb",
   "crypto.randomBytesAnyCb",
   "crypto.randomIntAnyCb",
+  "crypto.argon2Cb",
   "process.emitWarning",
   // The finalization registration reports its ExperimentalWarnings through
   // the deferred tick queue, and its callbacks run from the exit listeners

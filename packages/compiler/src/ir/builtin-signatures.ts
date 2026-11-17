@@ -19,6 +19,7 @@ import {
   FILEHANDLE_T,
   FSWATCHER_T,
   WATCHEVENTS_T,
+  STATWATCHER_T,
   HTTP2SESSION_T,
   HTTP2STREAM_T,
   HTTPCLIENTREQ_T,
@@ -73,6 +74,7 @@ function buildLibFnSignatures() {
     "fetch.responseLight": { argTypes: [DYN], result: arrayOf(STRING) },
     "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "abort.controllerNew": { argTypes: [], result: DYN },
+    "abort.signalIs": { argTypes: [DYN], result: BOOL },
     /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
      * the Event constructors take the argument vector as one dyn array and
      * throw Node's validation errors; `event.is` is `v instanceof Event`
@@ -912,6 +914,8 @@ function buildLibFnSignatures() {
     /** `fs.readdirSync(path, { recursive: true })`: every entry below the
      * path, relative to it, in Node's queue order. */
     "fs.readdirRecursiveSync": { argTypes: [STRING], result: arrayOf(STRING) },
+    "fs.readdirBytesSync": { argTypes: [STRING], result: arrayOf(BYTES_U8) },
+    "fs.readdirEncodedSync": { argTypes: [STRING, STRING], result: arrayOf(STRING) },
     // Result is the call site's Dirent record array (VOID is the
     // structure-checked sentinel, the os.networkInterfaces pattern).
     /** `fs.readdirSync(path, { withFileTypes: true })` — Dirent rows over
@@ -923,6 +927,7 @@ function buildLibFnSignatures() {
      * sorts), the directory's order on Windows; no "."/"..". Throws
      * Node's scandir errno error (may-throw seed set); fresh +1 array. */
     "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
+    "fs.readdirTypesRecursiveSync": { argTypes: [STRING], result: VOID },
     /** fs.globSync / fs.glob / fs/promises glob (scr_glob.c, Node's
      * lib/internal/fs/glob.js walk): pattern and options are dyn values the
      * runtime validates in Node's order. The string forms answer string[];
@@ -1674,6 +1679,7 @@ function buildLibFnSignatures() {
     "mime.is": { argTypes: [DYN, F64], result: BOOL },
     "sqlite.dbNew": { argTypes: [DYN, DYN], result: DYN },
     "sqlite.is": { argTypes: [DYN, F64], result: BOOL },
+    "sqlite.backup": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.callbackify": { argTypes: [DYN], result: DYN },
     /** util.promisify over an untyped function value: a native dyn function
      * whose calls answer a dyn promise the appended callback settles. */
@@ -1800,7 +1806,9 @@ function buildLibFnSignatures() {
      * program-dependent, so the slot pins the arity. Statement position
      * only (Node returns a StatWatcher). fs.unwatchFile(path[, listener])
      * takes a borrowed listener; the null slot is the absent one. */
-    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: VOID },
+    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: STATWATCHER_T },
+    "statWatcher.ref": { argTypes: [STATWATCHER_T], result: VOID },
+    "statWatcher.unref": { argTypes: [STATWATCHER_T], result: VOID },
     "fs.unwatchFile": { argTypes: [STRING, null], result: VOID },
     /** fsPromises.watch(path, persistent) → the async iterator
      * (scr_watch_async.c — its own gated unit over scr_watch.c's watcher;
@@ -2074,6 +2082,9 @@ function buildLibFnSignatures() {
     /** worker_threads.threadName: the Worker's name in a worker, "" in the
      * main thread (scr_worker.c). */
     "worker.threadName": { argTypes: [], result: DYN },
+    /** worker.performance: the Worker's { eventLoopUtilization } object
+     * (scr_worker_events.c; the receiver is its Worker handle). */
+    "worker.performance": { argTypes: [DYN], result: DYN },
     /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
      * (scr_worker_events.c; the latter may throw). */
     "worker.channel": { argTypes: [], result: DYN },
@@ -4209,6 +4220,8 @@ function buildLibFnSignatures() {
     "webcrypto.deriveBits": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.deriveKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.getPublicKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "crypto.argon2Sync": { argTypes: [DYN], result: DYN },
+    "crypto.argon2Cb": { argTypes: [DYN], result: VOID },
     "webcrypto.keyObjectToCryptoKey": { argTypes: [DYN], result: DYN },
     "webcrypto.keyObjectFrom": { argTypes: [DYN], result: DYN },
     "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
@@ -4656,6 +4669,18 @@ function buildLibFnSignatures() {
     "fsp.lutimes": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.rename": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.readdir": { argTypes: [STRING], result: { kind: "promise", inner: arrayOf(STRING) } },
+    "fsp.readdirRecursive": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: arrayOf(STRING) },
+    },
+    "fsp.readdirBytes": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: arrayOf(BYTES_U8) },
+    },
+    "fsp.readdirEncoded": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: arrayOf(STRING) },
+    },
     // Result is promise<call-site Dirent record array>; the libCall case
     // validates the program-dependent record shape in validate.ts.
     /** `fs.promises.readdir(path, { withFileTypes: true })` — the settled-
@@ -4663,6 +4688,10 @@ function buildLibFnSignatures() {
      * call-site-shaped Dirent rows, then move the array into a promise;
      * scandir failure becomes its rejection. */
     "fsp.readdirTypes": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+    "fsp.readdirTypesRecursive": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.rm": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     /** `fs.promises.rm(path, options)`: fs.rmOptsSync and fs.rmRetrySync
      * behind a settled promise; their errors become its rejection. */
@@ -6187,6 +6216,10 @@ function buildLibFnSignatures() {
     "assert.deqEnter": { argTypes: [null, null], result: BOOL },
     "assert.deqLeave": { argTypes: [], result: VOID },
     "assert.match": { argTypes: [STRING, REGEX, BOOL, STRING, BOOL], result: VOID },
+    /* expectsError's string-matcher check: a thrown object whose `message`
+     * is the matcher string, or the string itself, throws
+     * ERR_AMBIGUOUS_ARGUMENT; otherwise returns. */
+    "assert.throwsAmbiguous": { argTypes: [DYN, STRING], result: VOID },
     "assert.throwsNone": { argTypes: [BOOL, STRING, BOOL, STRING, BOOL], result: VOID },
     "assert.throwsMismatch": {
       argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],
@@ -6687,6 +6720,13 @@ function buildLibFnSignatures() {
      * (scr_async.c). Never throws. */
     "timers.immediatePromise": { argTypes: [], result: { kind: "promise", inner: DYN } },
     "dc.tracingChannel": { argTypes: [STRING], result: F64 },
+    /** node:trace_events (scr_async_dyn.c): createTracing(options) validates
+     * the options object and its categories array (Node's ERR_INVALID_ARG_TYPE
+     * and ERR_TRACE_EVENTS_CATEGORY_REQUIRED — MAY THROW) and answers a
+     * Tracing handle; getEnabledCategories answers the sorted, de-duplicated
+     * categories of the enabled Tracing objects, or the undefined value. */
+    "te.createTracing": { argTypes: [DYN], result: DYN },
+    "te.getEnabledCategories": { argTypes: [], result: DYN },
     "dc.tracingChannelOf": { argTypes: [F64, F64, F64, F64, F64], result: F64 },
     "dc.tcChannel": { argTypes: [F64, F64], result: F64 },
     "dc.tcHasSubscribers": { argTypes: [F64], result: BOOL },

@@ -310,6 +310,9 @@ ScrPromise *scr_webcrypto_sign(ScrDyn *args);
 ScrPromise *scr_webcrypto_get_public_key(ScrDyn *args);
 ScrDyn *scr_wc_key_object_to_crypto_key(ScrDyn *args);
 ScrDyn *scr_wc_key_object_from(ScrDyn *args);
+/* crypto.argon2 and crypto.argon2Sync (scr_argon2.c): the argument vector. */
+ScrDyn *scr_crypto_argon2_sync(ScrDyn *args);
+ScrDyn *scr_crypto_argon2_cb(ScrDyn *args);
 ScrPromise *scr_webcrypto_verify(ScrDyn *args);
 ScrPromise *scr_webcrypto_digest(ScrDyn *args);
 /* encrypt and decrypt (scr_webcrypto_aes.c, linked with the cipher

@@ -5361,7 +5361,9 @@ function validateFunction(
     }
     if (
       e.fn === "fs.readdirTypesSync" ||
+      e.fn === "fs.readdirTypesRecursiveSync" ||
       e.fn === "fsp.readdirTypes" ||
+      e.fn === "fsp.readdirTypesRecursive" ||
       e.fn === "fs.globTypesSync" ||
       e.fn === "fsp.globTypes"
     ) {
@@ -5369,12 +5371,8 @@ function validateFunction(
       // name: string, parentPath: string} rows (canonical field
       // order; the structure lowerFsReaddirTypesCall pinned). The glob
       // forms answer the array itself.
-      const result =
-        e.fn === "fsp.readdirTypes"
-          ? e.type.kind === "promise"
-            ? e.type.inner
-            : undefined
-          : e.type;
+      const promiseForm = e.fn === "fsp.readdirTypes" || e.fn === "fsp.readdirTypesRecursive";
+      const result = promiseForm ? (e.type.kind === "promise" ? e.type.inner : undefined) : e.type;
       const shape =
         result?.kind === "array" && result.elem.kind === "record"
           ? records.get(result.elem.shapeId)
@@ -5382,7 +5380,7 @@ function validateFunction(
       const ok = shape !== undefined && isDirentShape(shape);
       if (!ok) {
         err(
-          `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          `libCall ${e.fn} must return ${promiseForm ? "a promise of " : ""}the Dirent record array`,
           e.loc,
         );
       }

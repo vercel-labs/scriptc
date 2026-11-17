@@ -1,4 +1,5 @@
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
+import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { mayReplacePrototype } from "./class-method-mutations.js";
 import { lowerIteratorFromDyn } from "./iterator-prototype.js";
@@ -593,6 +594,12 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // A void-typed call whose result a truthiness test reads (tsc-codes.ts
+  // TS1345): Node's test reads what the call answered, and the callee may
+  // answer any value, so the call runs through the checked-dynamic
+  // invocation and the test reads that value.
+  const voidValue = lowerVoidTruthinessCall(lowerer, expr);
+  if (voidValue !== null) return voidValue;
   // A call that asks an arguments object what it is (arguments-object.ts).
   return (
     lowerArgumentsObjectCall(lowerer, expr, locOf(expr), () => lowerOrdinaryCall(lowerer, expr)) ??
@@ -609,6 +616,72 @@ function staticallyStringPattern(lowerer: Lowerer, pattern: ts.Expression | unde
   return (
     type !== null && (type.kind === "string" || type.kind === "undefinedT" || type.kind === "void")
   );
+}
+
+/** A void-typed call whose result a truthiness test reads (preflight
+ * admitted the test, tsc-codes.ts TS1345, because the callee is one the
+ * analysis cannot prove answers undefined). Node's ToBoolean reads the value
+ * the call answered, so the call goes through the checked-dynamic
+ * invocation: the receiver and the callee are read once, in source order,
+ * the arguments follow, and the runtime applies the callee's own `this` and
+ * returns its value — which the test then reads. Null for every other call,
+ * so a program that admitted no such site keeps its IR. */
+function lowerVoidTruthinessCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr | null {
+  if (expr.questionDotToken !== undefined) return null;
+  if (!lowerer.opinionAt(expr, 1345)) return null;
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (result?.kind !== "void") return null;
+  if (!voidTruthinessNeedsRuntimeValue(expr, lowerer.program)) return null;
+  const calleeNode = expr.expression;
+  if (calleeNode.questionDotToken !== undefined) return null;
+  const loc = locOf(expr);
+  const stmts: IrStmt[] = [];
+  const save = (value: IrExpr, name: string): IrExpr => {
+    const local = lowerer.declareHiddenLocal(name, DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc });
+    return varRef(local.id, DYN, loc);
+  };
+  let callee: IrExpr;
+  let receiver: IrExpr | undefined;
+  if (ts.isPropertyAccessExpression(calleeNode) || ts.isElementAccessExpression(calleeNode)) {
+    // `o.f(...)`: Node reads the receiver once, then the member (which may
+    // run a getter), then evaluates the arguments with `this` = the
+    // receiver.
+    receiver = save(lowerer.lowerExprExpecting(calleeNode.expression, DYN), "%voidCalleeReceiver");
+    const key = ts.isPropertyAccessExpression(calleeNode)
+      ? lowerer.coerceInto(
+          calleeNode,
+          { kind: "strLit", value: calleeNode.name.text, type: STRING, loc },
+          DYN,
+        )
+      : lowerer.lowerExprExpecting(calleeNode.argumentExpression, DYN);
+    callee = save({ kind: "dynKeyGet", value: receiver, key, type: DYN, loc }, "%voidCallee");
+  } else if (ts.isIdentifier(calleeNode)) {
+    callee = save(
+      lowerer.coerceInto(calleeNode, lowerer.lowerExpr(calleeNode), DYN),
+      "%voidCallee",
+    );
+  } else {
+    return null;
+  }
+  const args: IrExpr[] = [];
+  for (const argument of expr.arguments.nodes) {
+    if (ts.isSpreadElement(argument)) return null;
+    args.push(lowerer.lowerExprExpecting(argument, DYN));
+  }
+  const call: IrExpr = {
+    kind: "dynCall",
+    callee,
+    ...(receiver !== undefined ? { receiver } : {}),
+    calleeName:
+      ts.isPropertyAccessExpression(calleeNode) || ts.isElementAccessExpression(calleeNode)
+        ? ts.getTextOfNode(calleeNode)
+        : calleeNode.text,
+    args,
+    type: DYN,
+    loc,
+  };
+  return stmts.length === 0 ? call : { kind: "seqExpr", stmts, result: call, type: DYN, loc };
 }
 
 function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {

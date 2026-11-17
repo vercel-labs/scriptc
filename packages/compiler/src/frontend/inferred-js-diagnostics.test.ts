@@ -367,14 +367,12 @@ test.for([
   "/** @type {() => void} */\nconst cb = () => 1;\nexport const ok = !cb();",
   // A parameter typed `() => void` receives whatever function the caller passes.
   "/** @param {() => void} f */\nfunction run(f) { return f() ? 'yes' : 'no'; }\nexport const ok = run(() => 'x');",
-  // A binding or property a write can replace holds the replacement.
+  // A binding a write can replace holds the replacement.
   "let g = function () {};\ng = () => 's';\nexport const ok = g() ? 'yes' : 'no';",
-  "const o = { m() {} };\no.m = () => 2;\nexport const ok = !o.m();",
-  // A reassignable alias or a property holds whatever was stored last, even
-  // when it first held a function that answers undefined.
+  // A reassignable alias holds whatever was stored last, even when it first
+  // held a function that answers undefined.
   "function noop() {}\nlet cb = noop;\ncb = () => 1;\nexport const ok = cb() ? 'yes' : 'no';",
   "const noop = () => {};\nlet cb = noop;\ncb = () => 1;\nexport const ok = cb() ? 'yes' : 'no';",
-  "function noop() {}\nconst o = { cb: noop };\no.cb = () => 1;\nexport const ok = !o.cb();",
   "class A { m() {} }\nlet f = new A().m;\nf = () => 1;\nexport const ok = f() ? 'yes' : 'no';",
   // A write, by name, by string key or by reflection, can replace a class
   // method on an instance or on the prototype.
@@ -389,6 +387,17 @@ test.for([
 ])("a void-typed operand that can hold a value keeps the truthiness refusal: %s", (library) => {
   const result = diagnostics(library, 'import { ok } from "./library.js"; console.log(ok);');
   expect(result.some((d) => d.code === "SC1090" && d.message.includes("truthiness"))).toBe(true);
+});
+
+test.for([
+  // A member of a plain object the program builds: the object takes
+  // checked-dynamic storage, the function the program stored keeps its own
+  // return, and the call reads that value as Node does.
+  "const o = { m() {} };\no.m = () => 2;\nexport const ok = !o.m();",
+  "function noop() {}\nconst o = { cb: noop };\no.cb = () => 1;\nexport const ok = !o.cb();",
+  "function noop() {}\nconst o = { d: { f: noop } };\no.d.f = () => 3;\nexport const ok = o.d.f() ? 'yes' : 'no';",
+])("a void-typed call through a plain object's member reads the value: %s", (library) => {
+  expect(diagnostics(library, 'import { ok } from "./library.js"; console.log(ok);')).toEqual([]);
 });
 
 test("JavaScript drops the diagnostic where the void-typed operand is undefined", () => {
@@ -449,11 +458,16 @@ test("a named class expression's inner binding names the immutable inner binding
   expect(kept.hint).toContain("named class expression's inner binding");
 });
 
-test("a function declaration assignment names the mutable binding", () => {
-  const kept = refusal("function value() { return 1; }\nvalue = () => 2;\nexport { value };");
-  expect(kept.message).toContain("assigning to a function binding");
-  expect(kept.hint).toContain("binding is mutable");
-  expect(kept.hint).not.toContain("in strict mode and modules");
+test("a function declaration assignment compiles: the binding is mutable", () => {
+  // Node's function declaration is a mutable binding, and the declaration
+  // lowers to a checked-dynamic binding the write replaces
+  // (rebindable-functions.ts).
+  expect(
+    diagnostics(
+      "function value() { return 1; }\nvalue = () => 2;\nexport { value };",
+      'import * as library from "./library.js"; console.log(library);',
+    ),
+  ).toEqual([]);
 });
 
 test("a named function expression's inner binding names the immutable binding", () => {

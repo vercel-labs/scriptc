@@ -49,6 +49,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // error.
   "watchEvents.wait",
   "watchEvents.close",
+  // scr_stat_watcher_ref / scr_stat_watcher_unref move one registration's
+  // liveness flag; a registration fs.unwatchFile already removed is a no-op.
+  "statWatcher.ref",
+  "statWatcher.unref",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
   // scr_sqlite_is compares a handle's tag.
@@ -74,6 +78,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // scr_te_get_enabled_categories reads the registry's own strings.
+  "te.getEnabledCategories",
   // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its
   // counter; neither runs program code.
   "perf.loopExit",
@@ -166,6 +172,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // on first use; it takes no argument, and running out of memory ends the
   // process.
   "worker.shareEnv",
+  // scr_worker_performance answers the Worker's { eventLoopUtilization }
+  // object, made once per Worker; a handle of another class reads undefined,
+  // and running out of memory ends the process.
+  "worker.performance",
   // scr_emitter_symbol_name allocates the registry key of the symbol it is
   // given (scr_str_symbol_key); running out of memory ends the process.
   "emitter.symName",

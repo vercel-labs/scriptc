@@ -1695,6 +1695,10 @@ void scr_test_snapshot_set_resolve_path(ScrClosure *cb /*moves*/) {
  * the resolver's answer, computed once per program as Node computes it once
  * per test file. +1, or NULL after a throw from the resolver. */
 ScrStr *scr_test_snapshot_path(ScrStr *file /*borrowed*/) {
+  /* Node resolves the file once per program, default answer included: a
+   * resolver installed after a snapshot already resolved it is never
+   * consulted, so the assertions that follow keep the first file. */
+  if (scr_snap_resolved) return scr_str_retain(scr_snap_resolved);
   if (!scr_snap_resolve_path) {
     size_t n = file->len + sizeof ".snapshot" - 1;
     char *buf = malloc(n ? n : 1);
@@ -1703,9 +1707,9 @@ ScrStr *scr_test_snapshot_path(ScrStr *file /*borrowed*/) {
     memcpy(buf + file->len, ".snapshot", sizeof ".snapshot" - 1);
     ScrStr *out = scr_str_new(buf, n);
     free(buf);
+    scr_snap_resolved = scr_str_retain(out);
     return out;
   }
-  if (scr_snap_resolved) return scr_str_retain(scr_snap_resolved);
   /* The closure owns its argument and answers a retained string, as every
    * generated closure does. */
   ScrStr *out = ((ScrStr *(*)(ScrClosure *, ScrStr *))scr_snap_resolve_path->fn)(

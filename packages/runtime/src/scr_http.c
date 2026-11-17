@@ -7764,9 +7764,25 @@ static bool scr_http_key_same(const ScrStr *a, const ScrStr *b) {
 }
 
 /* Takes a free socket for `name` off the list, or NULL: the most recently
- * freed one under 'lifo' scheduling, the oldest under 'fifo'. */
+ * freed one under 'lifo' scheduling, the oldest under 'fifo'. Destroyed
+ * sockets leave the list first, as Node drops them before it picks
+ * (`while (freeSockets[0].destroyed) freeSockets.shift()`), so a request made
+ * right after agent.destroy() never takes a socket that is on its way out. */
 static ScrHttpAgentFree *scr_http_agent_free_take(ScrHttpAgent *a, const ScrStr *name,
                                                   const ScrStr *pool_key) {
+  for (ScrHttpAgentFree **link = &a->free_socks; *link;) {
+    if ((*link)->sock == NULL || !scr_net_sock_destroyed((*link)->sock)) {
+      link = &(*link)->next;
+      continue;
+    }
+    ScrHttpAgentFree *dead = *link;
+    *link = dead->next;
+    if (dead->conn != NULL) dead->conn->pool_agent = NULL;
+    scr_str_release(dead->name);
+    scr_str_release(dead->pool_key);
+    scr_net_sock_release(dead->sock);
+    free(dead);
+  }
   ScrHttpAgentFree **found = NULL;
   for (ScrHttpAgentFree **link = &a->free_socks; *link; link = &(*link)->next) {
     if (!scr_http_name_same((*link)->name, name) || !scr_http_key_same((*link)->pool_key, pool_key))
@@ -9711,9 +9727,13 @@ static bool scr_http_dynh_agent_set(void *h, const char *key, size_t key_len, co
   ScrHttpAgent *a = (ScrHttpAgent *)h;
   (void)key_len;
   if (strcmp(key, "scheduling") == 0) {
-    /* a plain property: any assigned value is kept, as Node's is */
+    /* a plain property: any assigned value is kept, as Node's is, and the
+     * pick order follows it — Node reads `this.scheduling === 'fifo'` at
+     * the moment it takes a free socket */
     scr_dyn_release(a->scheduling_val);
     a->scheduling_val = scr_dyn_retain((ScrDyn *)value);
+    a->fifo = value->kind == SCR_DYN_STR && value->v.str->len == 4 &&
+              memcmp(value->v.str->data, "fifo", 4) == 0;
     return true;
   }
   if (strcmp(key, "defaultPort") == 0 || strcmp(key, "maxSockets") == 0 ||

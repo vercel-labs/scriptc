@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-agent-destroy-then-request.ts"
+ ],
+ "diags": []
+}

@@ -554,6 +554,7 @@ import {
   usesCjsTopLevelThis,
 } from "./lower-node-module.js";
 import {
+  cjsRuntimeWholeExportValueWritesOf,
   accessorRequirerAssign,
   accessorRequirerSlot,
   type CjsConditionalAlias,
@@ -3926,6 +3927,25 @@ export class Lowerer {
    * the same tables, so the slot a module's statements fill and its
    * importers read is keyed by module, never by symbol. */
   readonly cjsConditionalWholeExportGlobals = new Map<ts.SourceFile, Map<string, IrGlobal>>();
+  /** The one checked-dynamic slot holding `module.exports` for a module whose
+   * whole export a run-time write chooses (a UMD wrapper or a condition that
+   * replaces a single value, cjs-inline-require.ts). Importers and default
+   * imports read the slot, and each write stores the value Node stores. */
+  readonly cjsRuntimeWholeExportValueGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** The value a module whose whole export is chosen at run time held when
+   * it finished evaluating. Node builds an ESM default import from that
+   * value, so a replacement the module performs later (an exported function
+   * that assigns module.exports) does not change the binding. Required
+   * bindings read the live slot at their own position instead. */
+  readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** The require bindings whose module had a run-time export choice: they
+   * keep their own checked-dynamic storage (the value the require answered
+   * at that position), unlike alias-plumbing require bindings. */
+  readonly cjsRuntimeRequireBindings = new Set<ts.Symbol>();
+  /** Memoized `cjsRuntimeWholeExportValueWritesOf` per module: the detection
+   * is a pure function of the source, and registration and binding
+   * classification must agree whatever order modules are collected in. */
+  private readonly cjsRuntimeWholeExportModules = new Map<ts.SourceFile, boolean>();
   /** The selection global of each module whose whole export is chosen at run
    * time between static tables: every branch statement stores the index
    * (+ 1) of the table it selected. */
@@ -6555,6 +6575,13 @@ export class Lowerer {
     "cjsConditionalAliasSelectGlobals",
     "cjsConditionalWholeExportGlobals",
     "cjsConditionalWholeExportSelectGlobals",
+    "cjsRuntimeWholeExportValueGlobals",
+    // The run-time export-choice registrations are a pure function of the
+    // program's modules (registered before lowering begins), and the memo is
+    // a cache of that detection.
+    "cjsRuntimeExportSnapshotGlobals",
+    "cjsRuntimeRequireBindings",
+    "cjsRuntimeWholeExportModules",
     "cjsConditionalExportMirrors",
     "cjsInFileExportMemberGlobals",
     "cjsWholeExportSymbols",
@@ -8969,7 +8996,7 @@ export class Lowerer {
   /** The source file a checker-resolved module-specifier node names. The
    * checker path is preferred; resolveImport is the canonical fallback for
    * every project-module spelling. */
-  private moduleSourceFileOf(from: ts.SourceFile, spec: ts.StringLiteral): ts.SourceFile | null {
+  moduleSourceFileOf(from: ts.SourceFile, spec: ts.StringLiteral): ts.SourceFile | null {
     const moduleSymbol = this.checker.getSymbolAtLocation(spec);
     for (const decl of moduleSymbol ? moduleSymbol.declarations : []) {
       if (ts.isSourceFile(decl))
@@ -9297,6 +9324,28 @@ export class Lowerer {
    * modules that re-export the same tables. */
   cjsConditionalWholeExportSlotOf(dep: ts.SourceFile, name: string): IrGlobal | null {
     return this.cjsConditionalWholeExportGlobals.get(dep)?.get(name) ?? null;
+  }
+
+  /** The checked-dynamic `module.exports` slot of a module whose whole
+   * export a run-time write chooses, or null for every other module. */
+  cjsRuntimeWholeExportValueSlotOf(dep: ts.SourceFile): IrGlobal | null {
+    return this.cjsRuntimeWholeExportValueGlobals.get(dep) ?? null;
+  }
+
+  /** Whether a module's whole export is chosen by run-time writes this build
+   * carries checked-dynamically (cjs-inline-require.ts). */
+  cjsRuntimeWholeExportModule(dep: ts.SourceFile): boolean {
+    const cached = this.cjsRuntimeWholeExportModules.get(dep);
+    if (cached !== undefined) return cached;
+    const found = cjsRuntimeWholeExportValueWritesOf(this, dep) !== null;
+    this.cjsRuntimeWholeExportModules.set(dep, found);
+    return found;
+  }
+
+  /** The value a slotted module held when it finished evaluating — what an
+   * ESM default import of it binds — or null for every other module. */
+  cjsRuntimeExportSnapshotOf(dep: ts.SourceFile): IrGlobal | null {
+    return this.cjsRuntimeExportSnapshotGlobals.get(dep) ?? null;
   }
 
   /** Whether a write of export global `globalId` also has to reach the slots

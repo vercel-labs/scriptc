@@ -5874,8 +5874,19 @@ function lowerHttpCreateServerForms(
         valueRef(option),
       ]);
     }
-    if (byKey.has("requestTimeout") || byKey.has("headersTimeout"))
-      apply("http.serverHeadersTimeoutDefault", [ref, boolLit(byKey.has("headersTimeout"), loc)]);
+    if (byKey.has("requestTimeout") || byKey.has("headersTimeout")) {
+      // The DYN value distinguishes an explicit undefined (Node treats it as
+      // absent and derives the default) from a number.
+      const headersValue: IrExpr = byKey.has("headersTimeout")
+        ? valueRef("headersTimeout")
+        : {
+            kind: "dynFrom",
+            value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+            type: DYN,
+            loc,
+          };
+      apply("http.serverHeadersTimeoutDefault", [ref, headersValue]);
+    }
     for (const option of ["keepAliveTimeout", "keepAliveTimeoutBuffer"] as const) {
       if (!byKey.has(option)) continue;
       apply("http.serverTimeoutOptionSet", [

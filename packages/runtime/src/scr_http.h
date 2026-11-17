@@ -218,7 +218,7 @@ void scr_http_server_allow_missing_host_header(ScrNetServer *s);
 /* createServer({ requestTimeout?, headersTimeout? }): the headersTimeout
  * default (min(60000, requestTimeout)) and Node's headersTimeout <=
  * requestTimeout check. MAY THROW. */
-void scr_http_server_headers_timeout_default(ScrNetServer *s, bool headers_given);
+void scr_http_server_headers_timeout_default(ScrNetServer *s, const ScrDyn *headers_value /*borrowed*/);
 /* createServer({ connectionsCheckingInterval }): Node's validateInteger
  * ladder over the connection checker's period. MAY THROW. */
 void scr_http_server_connections_checking_interval(ScrNetServer *s, const ScrDyn *value /*borrowed*/);

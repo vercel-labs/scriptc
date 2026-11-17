@@ -58257,6 +58257,7 @@
           "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/http-server-options-timeouts.ts",
           "tests/corpus/http-server-response-headers.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts",
           "tests/corpus/http-set-headers.mjs",
           "tests/corpus/http-set-headers.ts",
           "tests/corpus/http-write-backpressure.ts",
@@ -60015,11 +60016,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:headersTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:http.headersTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts"
         ]
       },
@@ -60097,11 +60097,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:requestTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:http.requestTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts"
         ]
       },

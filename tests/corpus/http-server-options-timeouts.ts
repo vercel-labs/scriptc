@@ -38,6 +38,10 @@ const derived = createServer({ requestTimeout: 1000 });
 console.log("derived", derived.headersTimeout, derived.requestTimeout);
 derived.close();
 
+const explicitHeaders = createServer({ requestTimeout: 1000, headersTimeout: undefined });
+console.log("explicit headers undefined", explicitHeaders.headersTimeout, explicitHeaders.requestTimeout);
+explicitHeaders.close();
+
 const disabled = createServer({ requestTimeout: 0 });
 console.log("disabled", disabled.headersTimeout, disabled.requestTimeout);
 disabled.close();

@@ -2683,7 +2683,7 @@ function buildLibFnSignatures() {
     "http.serverTimeoutOptionSet": { argTypes: [NETSERVER_T, F64, DYN], result: VOID },
     /** headersTimeout's constructor default (min(60000, requestTimeout))
      * and Node's headersTimeout <= requestTimeout check. MAY THROW. */
-    "http.serverHeadersTimeoutDefault": { argTypes: [NETSERVER_T, BOOL], result: VOID },
+    "http.serverHeadersTimeoutDefault": { argTypes: [NETSERVER_T, DYN], result: VOID },
     /** createServer({ connectionsCheckingInterval }): Node's validateInteger
      * and the stored check interval. MAY THROW. */
     "http.serverConnectionsCheckingInterval": { argTypes: [NETSERVER_T, DYN], result: VOID },

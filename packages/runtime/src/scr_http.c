@@ -5192,6 +5192,9 @@ static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
   scr_net_sock_set_native_idle_checker(sock, &scr_http_conn_is_idle);
   scr_net_sock_set_native_events(sock, NULL, &scr_http_conn_err);
   scr_net_sock_set_native_http_timeout(sock, &scr_http_conn_server_timeout);
+  /* Node starts the headers deadline at accept: a client that sends no
+   * bytes at all must still time out. */
+  scr_http_conn_arm_request_timers(conn);
 }
 
 /* The unguarded h2-only stream call (`req.stream.on(...)`): stream IS
@@ -5291,13 +5294,15 @@ void scr_http_server_allow_missing_host_header(ScrNetServer *s) {
  * headersTimeout default from the request timeout (min(60000,
  * requestTimeout)) and refuses a headers timeout longer than the request
  * timeout. Both fields hold what the option setters just stored. */
-void scr_http_server_headers_timeout_default(ScrNetServer *s, bool headers_given) {
-  double request = scr_net_server_timeout_get(s, 3);
+void scr_http_server_headers_timeout_default(ScrNetServer *s,
+                                             const ScrDyn *headers_value /*borrowed*/) {
+  bool headers_given = headers_value != NULL && headers_value->kind != SCR_DYN_UNDEF;
+  double request = scr_net_server_timeout_raw(s, 3);
   if (!headers_given) {
     double headers = request < 60000 ? request : 60000;
     scr_net_server_timeout_set(s, 2, headers);
   }
-  double headers = scr_net_server_timeout_get(s, 2);
+  double headers = scr_net_server_timeout_raw(s, 2);
   if (request > 0 && headers > 0 && headers > request) {
     char shown[48];
     scr_num_received(headers, shown);

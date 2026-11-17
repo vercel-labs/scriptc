@@ -1,5 +1,6 @@
-// headersTimeout and requestTimeout are enforced: a partial request head and
-// an incomplete body each answer Node's 408 Request Timeout with
+// headersTimeout and requestTimeout are enforced from the moment a
+// connection is accepted: a client that sends no bytes, a partial request
+// head, and an incomplete body each answer Node's 408 Request Timeout with
 // Connection: close and no Date line, then the socket is destroyed. A
 // 'clientError' listener receives ERR_HTTP_REQUEST_TIMEOUT instead and owns
 // the socket.
@@ -26,35 +27,45 @@ function exercise(label: string, server: Server, send: (socket: Socket) => void,
   });
 }
 
-const headersServer = createServer({ connectionsCheckingInterval: 25 });
-headersServer.headersTimeout = 100;
-headersServer.requestTimeout = 5000;
+const silentServer = createServer({ connectionsCheckingInterval: 25 });
+silentServer.headersTimeout = 100;
+silentServer.requestTimeout = 5000;
 exercise(
-  "headers",
-  headersServer,
-  (socket) => socket.write("GET / HTTP/1.1\r\nHost: local"),
+  "silent",
+  silentServer,
+  () => {},
   () => {
-    const requestServer = createServer({ connectionsCheckingInterval: 25 });
-    requestServer.headersTimeout = 100;
-    requestServer.requestTimeout = 200;
+    const headersServer = createServer({ connectionsCheckingInterval: 25 });
+    headersServer.headersTimeout = 100;
+    headersServer.requestTimeout = 5000;
     exercise(
-      "request",
-      requestServer,
-      (socket) =>
-        socket.write("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nab"),
+      "headers",
+      headersServer,
+      (socket) => socket.write("GET / HTTP/1.1\r\nHost: local"),
       () => {
-        const listened = createServer({ connectionsCheckingInterval: 25 });
-        listened.headersTimeout = 100;
-        listened.requestTimeout = 5000;
-        listened.on("clientError", (error: NodeJS.ErrnoException, socket) => {
-          console.log("clientError", error.code, error.message);
-          socket.destroy();
-        });
+        const requestServer = createServer({ connectionsCheckingInterval: 25 });
+        requestServer.headersTimeout = 100;
+        requestServer.requestTimeout = 200;
         exercise(
-          "listened",
-          listened,
-          (socket) => socket.write("GET / HTTP/1.1\r\nHost: local"),
-          () => console.log("done"),
+          "request",
+          requestServer,
+          (socket) =>
+            socket.write("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\n\r\nab"),
+          () => {
+            const listened = createServer({ connectionsCheckingInterval: 25 });
+            listened.headersTimeout = 100;
+            listened.requestTimeout = 5000;
+            listened.on("clientError", (error: NodeJS.ErrnoException, socket) => {
+              console.log("clientError", error.code, error.message);
+              socket.destroy();
+            });
+            exercise(
+              "listened",
+              listened,
+              (socket) => socket.write("GET / HTTP/1.1\r\nHost: local"),
+              () => console.log("done"),
+            );
+          },
         );
       },
     );

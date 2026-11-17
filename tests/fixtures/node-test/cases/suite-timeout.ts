@@ -7,7 +7,7 @@
 // cancelled without running, and a suite running beside a timed one is not
 // bounded by its sibling's deadline.
 import assert from "node:assert/strict";
-import { describe, it, test } from "node:test";
+import { beforeEach, describe, it, test } from "node:test";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const ran: string[] = [];
@@ -47,6 +47,23 @@ describe("outer", { concurrency: 2 }, () => {
 describe("suite concurrency still runs", { concurrency: 2 }, () => {
   it("a", () => {});
   it("b", () => {});
+});
+
+describe("nested deadlines", { timeout: 20 }, () => {
+  describe("longer inner", { timeout: 200 }, () => {
+    it("slow", async () => {
+      await sleep(60);
+    });
+  });
+});
+
+describe("inherited hook deadline", { timeout: 20 }, () => {
+  beforeEach(async () => {
+    await sleep(60);
+  });
+  describe("hook inner", () => {
+    it("child", () => {});
+  });
 });
 
 test("report", () => {

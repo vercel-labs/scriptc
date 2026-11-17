@@ -147,6 +147,7 @@ struct ScrTestCtx {
    * never share a deadline. */
   double deadline_ms;
   bool timed_out;        /* the async body was still pending when the timeout elapsed */
+  bool cancelled_parent; /* a suite { timeout } above cut this suite's run short */
   /* { concurrency }: how many subtests run at once (1 runs them in order),
    * the parent's value without the option. Above 1, each subtest runs on
    * its own fiber, started in order as slots free up. */
@@ -543,17 +544,21 @@ static void scr_test_await_timeout(ScrPromise *p, ScrTestCtx *t) {
   }
 }
 
-/* The nearest suite whose { timeout } deadline bounds `node`, and that
- * deadline: a test races the deadline of the innermost suite above it, and
- * two suites running side by side on their own fibers keep their own. */
+/* The suite above `node` whose { timeout } deadline comes first, and that
+ * deadline: a test races the earliest deadline in its ancestor chain, so a
+ * nested suite's longer timeout cannot mask an ancestor's, and two suites
+ * running side by side on their own fibers keep their own. */
 static ScrTestCtx *scr_test_deadline_of(const ScrTestCtx *node, double *deadline) {
+  ScrTestCtx *best = NULL;
+  double best_deadline = INFINITY;
   for (const ScrTestCtx *n = node; n != NULL; n = n->parent) {
-    if (n->is_suite && isfinite(n->deadline_ms)) {
-      *deadline = n->deadline_ms;
-      return (ScrTestCtx *)n;
+    if (n->is_suite && isfinite(n->deadline_ms) && n->deadline_ms < best_deadline) {
+      best = (ScrTestCtx *)n;
+      best_deadline = n->deadline_ms;
     }
   }
-  return NULL;
+  *deadline = best_deadline;
+  return best;
 }
 
 /* Waits for a body or hook, bounded by the test's own { timeout } and by
@@ -561,9 +566,14 @@ static ScrTestCtx *scr_test_deadline_of(const ScrTestCtx *node, double *deadline
  * suite deadline wins, the suite fails with its own "test timed out after
  * <timeout>ms" and the running child is cancelled with Node's parent
  * message; the body keeps running unobserved. */
-static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *scope) {
+static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *scope,
+                                   ScrTestCtx *ctx) {
+  /* A hook runs for its context: an inherited beforeEach is bounded by the
+   * deadlines above the test it runs for, not above the suite that
+   * registered it. */
+  ScrTestCtx *run = t != NULL ? t : ctx;
   double suite_deadline = INFINITY;
-  ScrTestCtx *owner = scr_test_deadline_of(t != NULL ? t : scope, &suite_deadline);
+  ScrTestCtx *owner = scr_test_deadline_of(run, &suite_deadline);
   double suite_left = owner != NULL ? suite_deadline - scr_now_ms() : INFINITY;
   double own_left = t != NULL && isfinite(t->timeout) ? t->timeout : INFINITY;
   if (own_left <= suite_left) {
@@ -598,13 +608,16 @@ static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *sco
     owner->err = scr_exc_take();
   }
   static const char msg[] = "test did not finish before its parent and was cancelled";
-  /* The running test is the one cancelled; a hook's test is the scope it
-   * runs for, which reports the cancellation as a cancelled test. */
-  ScrTestCtx *cancelled = t;
-  if (cancelled == NULL && scope != NULL && !scope->is_suite) cancelled = scope;
+  /* The running test is the one cancelled, and every suite between it and
+   * the suite whose deadline fired reports the same cancellation, as Node
+   * cancels the subtree its timer cut short. */
+  ScrTestCtx *cancelled = (run != NULL && !run->is_suite) ? run : NULL;
   if (cancelled != NULL) {
     cancelled->timed_out = true;
     scr_test_abort_now(cancelled);
+  }
+  for (ScrTestCtx *n = run; n != NULL && n != owner; n = n->parent) {
+    if (n != cancelled && n->is_suite) n->cancelled_parent = true;
   }
   scr_throw_str(scr_str_new(msg, sizeof msg - 1));
 }
@@ -744,7 +757,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
       ((void (*)(ScrClosure *, ScrTestCtx *, ScrClosure *))cb->fn)(
           cb, takes_ctx ? scr_testctx_retain(ctx) : NULL, scr_closure_retain(done));
       if (!scr_exc_pending()) {
-        scr_test_await_bounded(d->p, timed, scope);
+        scr_test_await_bounded(d->p, timed, scope, ctx);
       }
     }
     scr_closure_release(done);
@@ -767,7 +780,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
             ? ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *)) cb->fn)(cb, scr_testctx_retain(ctx))
             : ((ScrPromise * (*)(ScrClosure *)) cb->fn)(cb);
     if (!scr_exc_pending() && p) {
-      scr_test_await_bounded(p, timed, scope);
+      scr_test_await_bounded(p, timed, scope, ctx);
     }
     scr_promise_release(p);
   } else if (takes_ctx) {
@@ -1270,6 +1283,21 @@ static void scr_test_run_node(ScrTestCtx *t) {
         t->listed = true;
       }
       scr_test_cancel_pending(t);
+    }
+    /* An ancestor's { timeout } cut this suite's run short: Node cancels the
+     * subtree it cut, and the suite reports the same parent message. */
+    if (t->cancelled_parent) {
+      static const char msg[] = "test did not finish before its parent and was cancelled";
+      if (t->err == NULL) {
+        scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+        t->err = scr_exc_take();
+      }
+      t->listed = true;
+      t->dur_ms = scr_now_ms() - start;
+      t->passed = false;
+      t->state = SCR_TS_CANCELLED;
+      scr_test_report_result(t);
+      return;
     }
     /* { expectFailure }: the suite passes only if its own run threw. The
      * expected failure stays t.error, but the result is a pass. */

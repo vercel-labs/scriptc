@@ -693,6 +693,20 @@ export function lowerPropertyAccessExpr(
       lowerBufferPrototypeMember(lowerer, expr) ?? lowerBufferPrototypeObject(lowerer, expr);
     if (member) return member;
   }
+  // socket.type: "udp4" or "udp6", the socket's own family.
+  if (
+    !expr.questionDotToken &&
+    expr.name.text === "type" &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "dgramSocket"
+  ) {
+    return {
+      kind: "libCall",
+      fn: "dgram.type",
+      args: [lowerer.lowerExpr(expr.expression)],
+      type: STRING,
+      loc,
+    };
+  }
   // A dgram socket's method read as a value in JavaScript (`emit:
   // socket.emit.bind(socket)`): the socket crosses as its checked-dynamic
   // handle, whose methods are function values that dispatch on their

@@ -5957,6 +5957,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
   let kaMsecs: IrExpr = numLit(-1, loc);
   let maxSockets: IrExpr = numLit(-1, loc);
   let maxFree: IrExpr = numLit(-1, loc);
+  let maxTotal: IrExpr = numLit(-1, loc);
+  let maxTotalSet = false;
   let timeout: IrExpr = numLit(-1, loc);
   let port: IrExpr = numLit(-1, loc);
   let scheduling: IrExpr = lowerer.coerceToExpected(strLit("lifo", loc), DYN);
@@ -6034,6 +6036,12 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
         case "maxFreeSockets":
           maxFree = lowerVal("f64");
           break;
+        case "maxTotalSockets":
+          // Node's cap across every name, not just this one; the runtime
+          // validates it the way the constructor does (>= 1)
+          maxTotal = lowerVal("f64");
+          maxTotalSet = true;
+          break;
         case "timeout":
           timeout = lowerVal("f64");
           break;
@@ -6059,8 +6067,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
             api,
             bi.module === "https" ? HTTPS_AGENT_DOCUMENTED_OPTIONS : AGENT_DOCUMENTED_OPTIONS,
             bi.module === "https"
-              ? "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options; pass TLS options such as ca and rejectUnauthorized on each https.request"
-              : "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, timeout, port, and scheduling are the supported options",
+              ? "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, maxTotalSockets, timeout, port, and scheduling are the supported options; pass TLS options such as ca and rejectUnauthorized on each https.request"
+              : "keepAlive, keepAliveMsecs, maxSockets, maxFreeSockets, maxTotalSockets, timeout, port, and scheduling are the supported options",
           );
       }
     }
@@ -6074,6 +6082,8 @@ export function lowerHttpAgentNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
       kaMsecs,
       maxSockets,
       maxFree,
+      boolLit(maxTotalSet, loc),
+      maxTotal,
       timeout,
       port,
       scheduling,
@@ -9831,8 +9841,30 @@ function lowerHttpResMethodCall(
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     if (name !== "writeEarlyHints") {
-      if (args.length !== 0)
-        lowerer.noLowering(`res.${name} callback`, call, `${name}() supports no callback here`);
+      if (args.length > 1)
+        lowerer.noLowering(
+          `res.${name} with ${args.length} arguments`,
+          call,
+          `use ${name}([callback])`,
+        );
+      if (args.length === 1) {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[0]!,
+          `${name} callbacks`,
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        return {
+          kind: "libCall",
+          fn: name === "writeContinue" ? "http.resWriteContinueCb" : "http.resWriteProcessingCb",
+          args: [receiver, cb],
+          type: VOID,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
         fn: name === "writeContinue" ? "http.resWriteContinue" : "http.resWriteProcessing",
@@ -9841,11 +9873,11 @@ function lowerHttpResMethodCall(
         loc,
       };
     }
-    if (args.length !== 1)
+    if (args.length < 1 || args.length > 2)
       lowerer.noLowering(
         "res.writeEarlyHints arguments",
         call,
-        "pass one header object or Record<string, string> without a callback",
+        "use writeEarlyHints(headers[, callback])",
       );
     const node = args[0]!;
     let pairs: IrExpr;
@@ -9889,6 +9921,24 @@ function lowerHttpResMethodCall(
         );
       }
       pairs = { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+    }
+    if (args.length === 2) {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "writeEarlyHints callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http.resWriteEarlyHintsCb",
+        args: [receiver, pairs, cb],
+        type: VOID,
+        loc,
+      };
     }
     return {
       kind: "libCall",

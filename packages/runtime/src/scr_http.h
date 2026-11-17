@@ -158,6 +158,11 @@ void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*bor
 void scr_http_res_write_continue(ScrHttpRes *r);
 void scr_http_res_write_processing(ScrHttpRes *r);
 void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
+/* The callback forms: the callback fires once the message is written. */
+void scr_http_res_write_continue_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
+void scr_http_res_write_processing_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
+void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/,
+                                       ScrClosure *cb /*moves, nullable*/);
 /* writeHead with a CHECKED-DYNAMIC headers object (borrowed): OBJ
  * entries setHeader in insertion order (string/number values), then the
  * head goes out; undefined/null = the plain head; may throw. */
@@ -443,8 +448,9 @@ bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
  * close; an Agent handle = queue accounting); port < 0 means "no port
  * option" — the agent's (settable) defaultPort, then the scheme's. */
 ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
-                            double max_sockets, double max_free, double timeout_ms,
-                            double port /* < 0 = unset: the option-merge default */,
+                            double max_sockets, double max_free, bool has_max_total,
+                            double max_total,
+                            double timeout_ms, double port /* < 0 = unset: the option-merge default */,
                             const ScrDyn *scheduling /* borrowed; NULL = 'lifo' */); /* +1 */
 ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double port,
                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,

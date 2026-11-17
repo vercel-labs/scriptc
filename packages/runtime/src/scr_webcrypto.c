@@ -306,6 +306,11 @@ typedef struct {
   const char *hash;   /* HMAC: the normalized hash name */
   bool has_length;
   double length;
+  /* KMAC sign and verify: KmacParams' required output length in bits and
+   * its optional customization (+1 until the caller drops it). */
+  bool has_output_length;
+  double output_length;
+  ScrBytes *customization;
 } ScrWcAlgorithm;
 
 const char scr_wc_normalize_prefix[] = "Failed to normalize algorithm";
@@ -368,7 +373,7 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
  * process-warning unit is linked, and otherwise to the default report. It
  * does not go through scr_emit_warning, which would make every WebCrypto
  * program link that unit. */
-static SCR_TL bool scr_wc_experimental_warned[5];
+static SCR_TL bool scr_wc_experimental_warned[7];
 
 static void scr_wc_warning_tick(ScrClosure *self) {
   ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
@@ -392,8 +397,8 @@ static void scr_wc_warning_tick(ScrClosure *self) {
 }
 
 static void scr_wc_warn_experimental_algorithm(const char *canonical) {
-  static const char *const names[] = {"SHA3-256", "SHA3-384", "SHA3-512", "AES-OCB",
-                                      "ChaCha20-Poly1305"};
+  static const char *const names[] = {"SHA3-256", "SHA3-384",      "SHA3-512", "AES-OCB",
+                                      "ChaCha20-Poly1305", "KMAC128", "KMAC256"};
   for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
     if (strcmp(canonical, names[i]) != 0) continue;
     if (scr_wc_experimental_warned[i]) return;
@@ -554,6 +559,65 @@ static bool scr_wc_is_kdf(const char *name) {
   return strcmp(name, "PBKDF2") == 0 || strcmp(name, "HKDF") == 0;
 }
 
+static bool scr_wc_is_kmac(const char *name) {
+  return strcmp(name, "KMAC128") == 0 || strcmp(name, "KMAC256") == 0;
+}
+
+/* KmacImportParams / KmacKeyGenParams' optional [EnforceRange] length in
+ * bits; absent leaves the default for the caller. */
+static bool scr_wc_kmac_length_params(ScrDyn *identifier, ScrWcAlgorithm *out) {
+  if (!scr_wc_is_object(identifier)) return true;
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  ScrDyn *length = scr_wc_member(plain, "length");
+  bool ok = true;
+  if (length->kind != SCR_DYN_UNDEF) {
+    double x;
+    if (scr_wc_enforce_range(scr_wc_normalize_prefix, "length in passed algorithm", length,
+                             4294967295.0, &x)) {
+      out->has_length = true;
+      out->length = x;
+    } else {
+      ok = false;
+    }
+  }
+  scr_dyn_release(length);
+  scr_dyn_release(plain);
+  return ok;
+}
+
+/* KmacParams for sign and verify: the required [EnforceRange] output
+ * length in bits, then the optional customization BufferSource. */
+static bool scr_wc_kmac_params(ScrDyn *identifier, ScrWcAlgorithm *out) {
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("KmacParams", "outputLength");
+    return false;
+  }
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  ScrDyn *length = scr_wc_member(plain, "outputLength");
+  bool ok = true;
+  if (length->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("KmacParams", "outputLength");
+    ok = false;
+  } else {
+    double x;
+    if (scr_wc_enforce_range(scr_wc_normalize_prefix, "outputLength in passed algorithm", length,
+                             4294967295.0, &x)) {
+      out->has_output_length = true;
+      out->output_length = x;
+    } else {
+      ok = false;
+    }
+  }
+  scr_dyn_release(length);
+  if (ok)
+    ok = scr_wc_dictionary_buffer(plain, "KmacParams", "customization", false,
+                                  &out->customization);
+  scr_dyn_release(plain);
+  return ok;
+}
+
 typedef enum {
   SCR_WC_OP_IMPORT,
   SCR_WC_OP_SIGN,
@@ -576,6 +640,9 @@ static bool scr_wc_normalize(ScrDyn *identifier, const char *const *names, size_
     return false;
   }
   scr_wc_warn_experimental_algorithm(out->name);
+  bool kmac = scr_wc_is_kmac(out->name);
+  if (kmac && op == SCR_WC_OP_SIGN) return scr_wc_kmac_params(identifier, out);
+  if (kmac) return scr_wc_kmac_length_params(identifier, out);
   bool hmac = strcmp(out->name, "HMAC") == 0;
   if (op == SCR_WC_OP_IMPORT && hmac)
     return scr_wc_hmac_params(identifier, "HmacImportParams", "DataError", "importKey", out);
@@ -798,7 +865,8 @@ static void scr_wc_truncate_bits(unsigned char *data, size_t len, double bits) {
 
 /* The usages each key algorithm accepts. */
 static unsigned scr_wc_allowed_usages(const char *name) {
-  if (strcmp(name, "HMAC") == 0) return SCR_WC_USAGE_SIGN | SCR_WC_USAGE_VERIFY;
+  if (strcmp(name, "HMAC") == 0 || scr_wc_is_kmac(name))
+    return SCR_WC_USAGE_SIGN | SCR_WC_USAGE_VERIFY;
   if (strcmp(name, "AES-KW") == 0) return SCR_WC_USAGE_WRAP_KEY | SCR_WC_USAGE_UNWRAP_KEY;
   if (scr_wc_is_kdf(name)) return SCR_WC_USAGE_DERIVE_KEY | SCR_WC_USAGE_DERIVE_BITS;
   return SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_DECRYPT | SCR_WC_USAGE_WRAP_KEY |
@@ -830,6 +898,7 @@ static const char *scr_wc_jwk_alg(const char *name, const char *hash, double len
     return buf;
   }
   if (scr_wc_is_chacha(name)) return "C20P";
+  if (scr_wc_is_kmac(name)) return strcmp(name, "KMAC256") == 0 ? "K256" : "K128";
   if (!scr_wc_is_aes(name)) return NULL;
   snprintf(buf, size, "A%.0f%s", length, name + 4);
   return buf;
@@ -1147,6 +1216,60 @@ done:
   return result;
 }
 
+/* kmacImportKey: the usage check, then the format, then the key length.
+ * Node imports KMAC keys from raw-secret or JWK only (raw is refused),
+ * and the JWK alg is K128/K256. */
+static ScrDyn *scr_wc_import_kmac(const char *format, ScrBytes *data, const ScrWcJwk *jwk,
+                                  const ScrWcAlgorithm *algorithm, bool extractable, long usages,
+                                  bool *unsupported) {
+  if (!scr_wc_check_usages(algorithm->name, usages)) return NULL;
+  ScrBytes *bytes = NULL;
+  if (strcmp(format, "raw-secret") == 0) {
+    bytes = scr_bytes_retain(data);
+  } else if (strcmp(format, "jwk") == 0) {
+    bytes = scr_wc_jwk_secret(jwk, extractable, usages, "sig");
+    if (!bytes) return NULL;
+    const char *expected = scr_wc_jwk_alg(algorithm->name, NULL, 0, NULL, 0);
+    if (jwk->alg && expected && !scr_wc_str_is(jwk->alg, expected)) {
+      scr_bytes_release(bytes);
+      scr_throw_domex("DataError", "JWK \"alg\" does not match the requested algorithm");
+      return NULL;
+    }
+  } else {
+    *unsupported = true;
+    return NULL;
+  }
+  ScrDyn *result = NULL;
+  {
+    ScrBytes *view = bytes;
+    SCR_BYTES_SNAPSHOT(view);
+    size_t len = (size_t)scr_bytes_byte_len(view);
+    double length = (double)len * 8;
+    if (len == 0) {
+      scr_throw_domex("DataError", "Invalid key length");
+      goto done;
+    }
+    if (algorithm->has_length) {
+      if (scr_wc_bits_to_bytes(algorithm->length) != len) {
+        scr_throw_domex("DataError", "Invalid key length");
+        goto done;
+      }
+      length = algorithm->length;
+    }
+    result = scr_crypto_key_new(view->data, len, algorithm->name, NULL, length, (unsigned)usages,
+                                extractable);
+    /* A declared bit length that is not a whole byte count keeps only its
+     * high bits, like Node's key import. */
+    if (result) {
+      ScrCryptoKey *created = scr_crypto_key_of(result);
+      scr_wc_truncate_bits(created->data, created->len, length);
+    }
+  }
+done:
+  scr_bytes_release(bytes);
+  return result;
+}
+
 /* aesImportKey: the usage check, then the format and the key length. */
 static ScrDyn *scr_wc_import_aes(const char *format, ScrBytes *data, const ScrWcJwk *jwk,
                                  const char *name, bool extractable, long usages,
@@ -1226,6 +1349,8 @@ static ScrDyn *scr_wc_import_key_sync(const char *format, ScrBytes *data, const 
     key = scr_wc_import_aes(format, data, jwk, algorithm->name, extractable, usages, &unsupported);
   else if (scr_wc_is_kdf(algorithm->name))
     key = scr_wc_import_kdf(format, data, algorithm->name, extractable, usages, &unsupported);
+  else if (scr_wc_is_kmac(algorithm->name))
+    key = scr_wc_import_kmac(format, data, jwk, algorithm, extractable, usages, &unsupported);
   else {
     scr_wc_unsupported_algorithm("importKey", algorithm->name);
     return NULL;
@@ -1431,7 +1556,8 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
                         SCR_WC_OP_GENERATE, &algorithm))
     goto done;
   bool hmac = strcmp(algorithm.name, "HMAC") == 0;
-  if (!hmac && !scr_wc_is_cipher_key(algorithm.name)) {
+  bool kmac = scr_wc_is_kmac(algorithm.name);
+  if (!hmac && !kmac && !scr_wc_is_cipher_key(algorithm.name)) {
     scr_wc_unsupported_algorithm("generateKey", algorithm.name);
     goto done;
   }
@@ -1452,6 +1578,9 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
                                        strcmp(algorithm.hash, "SHA-512") == 0
                                  ? 1024
                                  : 512)
+                  : kmac ? (algorithm.has_length
+                                ? algorithm.length
+                                : strcmp(algorithm.name, "KMAC256") == 0 ? 256 : 128)
                   : scr_wc_is_chacha(algorithm.name) ? 256
                   : algorithm.has_length              ? algorithm.length
                                                       : 512;
@@ -1477,6 +1606,14 @@ static bool scr_wc_exportable(const char *format, const ScrCryptoKey *key) {
   if (scr_wc_is_kdf(key->name)) {
     char message[64];
     snprintf(message, sizeof message, "%s key export is not supported", key->name);
+    scr_throw_domex("NotSupportedError", message);
+    return false;
+  }
+  /* KMAC keys export as raw-secret (and JWK) but not as raw. */
+  if (scr_wc_is_kmac(key->name) && strcmp(format, "raw") == 0) {
+    char message[96];
+    snprintf(message, sizeof message, "Unable to export %s secret key using %s format", key->name,
+             format);
     scr_throw_domex("NotSupportedError", message);
     return false;
   }
@@ -1573,10 +1710,9 @@ ScrPromise *scr_webcrypto_export_key(ScrDyn *args) {
 }
 
 /* sign(algorithm, key, data) / verify(algorithm, key, signature, data):
- * the HMAC over `data`, or NULL with the error pending. *mac_len is the
- * digest length. */
-static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char mac[64],
-                               size_t *mac_len, ScrBytes **signature) {
+ * the HMAC or KMAC over `data` (+1), or NULL with the error pending. */
+static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, ScrBytes **mac_out,
+                               ScrBytes **signature) {
   const char *prefix = verify ? "Failed to execute 'verify' on 'SubtleCrypto'"
                               : "Failed to execute 'sign' on 'SubtleCrypto'";
   const char *method = verify ? "verify" : "sign";
@@ -1586,6 +1722,8 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char ma
   scr_wc_args_take(&a, args, n);
   bool ok = false;
   ScrBytes *data = NULL;
+  ScrWcAlgorithm algorithm;
+  memset(&algorithm, 0, sizeof algorithm);
   if (!scr_wc_is_object(a.v[0])) {
     ScrStr *s = scr_wc_dom_string(a.v[0]);
     if (!s) goto done;
@@ -1603,11 +1741,11 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char ma
   }
   data = scr_wc_buffer_source(prefix, verify ? 3 : 2, a.v[verify ? 3 : 2]);
   if (!data) goto done;
-  ScrWcAlgorithm algorithm;
   if (!scr_wc_normalize(a.v[0], scr_wc_sign_names, SCR_WC_COUNT(scr_wc_sign_names),
                         SCR_WC_OP_SIGN, &algorithm))
     goto done;
-  if (strcmp(algorithm.name, "HMAC") != 0) {
+  bool kmac = scr_wc_is_kmac(algorithm.name);
+  if (!kmac && strcmp(algorithm.name, "HMAC") != 0) {
     scr_wc_unsupported_algorithm(method, algorithm.name);
     goto done;
   }
@@ -1624,11 +1762,46 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char ma
   {
     ScrBytes *view = data;
     SCR_BYTES_SNAPSHOT(view);
-    *mac_len = scr_crypto_hmac_raw(scr_wc_native_hash(key->hash), key->data, key->len, view->data,
-                                   (size_t)scr_bytes_byte_len(view), mac);
+    size_t data_len = (size_t)scr_bytes_byte_len(view);
+    if (kmac) {
+      size_t out_bytes = scr_wc_bits_to_bytes(algorithm.output_length);
+      /* OpenSSL's KMAC refuses outputs above 2^21 - 1 bytes. */
+      if (out_bytes > 2097151) {
+        scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
+        goto done;
+      }
+      /* OpenSSL's KMAC accepts a customization of at most 512 bytes. */
+      if (algorithm.customization && scr_bytes_byte_len(algorithm.customization) > 512) {
+        scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
+        goto done;
+      }
+      ScrBytes *mac = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
+      ScrKeccakCtx ctx;
+      /* KMAC encodes the key's declared bit length, which a WebCrypto key
+       * can record below its whole byte count. */
+      size_t key_bits = key->length > 0 ? (size_t)key->length : key->len * 8;
+      size_t key_bytes = (key_bits + 7) / 8;
+      if (key_bytes > key->len) key_bytes = key->len;
+      scr_kmac_init(&ctx, strcmp(algorithm.name, "KMAC256") == 0, key->data, key_bytes, key_bits,
+                    algorithm.customization ? algorithm.customization->data : NULL,
+                    algorithm.customization
+                        ? (size_t)scr_bytes_byte_len(algorithm.customization)
+                        : 0);
+      scr_keccak_update(&ctx, view->data, data_len);
+      scr_kmac_final(&ctx, out_bytes, (size_t)algorithm.output_length, mac->data);
+      *mac_out = mac;
+    } else {
+      unsigned char raw[64];
+      size_t len = scr_crypto_hmac_raw(scr_wc_native_hash(key->hash), key->data, key->len,
+                                       view->data, data_len, raw);
+      ScrBytes *mac = scr_bytes_new(SCR_BYTES_U8, (double)len);
+      if (len) memcpy(mac->data, raw, len);
+      *mac_out = mac;
+    }
   }
   ok = true;
 done:
+  if (algorithm.customization) scr_bytes_release(algorithm.customization);
   if (data) scr_bytes_release(data);
   scr_wc_args_drop(&a, n);
   return ok;
@@ -1640,13 +1813,10 @@ ScrPromise *scr_webcrypto_sign(ScrDyn *args) {
     return scr_wc_asymmetric ? scr_wc_asymmetric->sign(args)
                              : scr_wc_asymmetric_missing("sign", asymmetric);
   }
-  unsigned char mac[64];
-  size_t mac_len = 0;
-  if (!scr_wc_sign_verify(args, false, mac, &mac_len, NULL)) return scr_wc_rejected();
-  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)mac_len);
-  memcpy(out->data, mac, mac_len);
+  ScrBytes *mac = NULL;
+  if (!scr_wc_sign_verify(args, false, &mac, NULL)) return scr_wc_rejected();
   ScrPromise *p = scr_promise_new();
-  scr_crypto_defer_bytes(out, NULL, scr_crypto_promise_callback(p),
+  scr_crypto_defer_bytes(mac, NULL, scr_crypto_promise_callback(p),
                          scr_crypto_promise_settle_array_buffer);
   return p;
 }
@@ -1667,26 +1837,31 @@ ScrPromise *scr_webcrypto_verify(ScrDyn *args) {
     return scr_wc_asymmetric ? scr_wc_asymmetric->verify(args)
                              : scr_wc_asymmetric_missing("verify", asymmetric);
   }
-  unsigned char mac[64];
-  size_t mac_len = 0;
+  ScrBytes *mac = NULL;
   ScrBytes *signature = NULL;
-  if (!scr_wc_sign_verify(args, true, mac, &mac_len, &signature)) {
+  if (!scr_wc_sign_verify(args, true, &mac, &signature)) {
+    if (mac) scr_bytes_release(mac);
     if (signature) scr_bytes_release(signature);
     return scr_wc_rejected();
   }
   bool equal;
   {
     ScrBytes *view = signature;
+    ScrBytes *expected = mac;
     SCR_BYTES_SNAPSHOT(view);
+    SCR_BYTES_SNAPSHOT(expected);
     /* A signature of another length is simply not valid; equal lengths
      * compare in constant time. */
+    size_t mac_len = (size_t)scr_bytes_byte_len(expected);
     size_t sig_len = (size_t)scr_bytes_byte_len(view);
     equal = sig_len == mac_len;
     unsigned char diff = 0;
-    for (size_t i = 0; equal && i < mac_len; i++) diff |= (unsigned char)(view->data[i] ^ mac[i]);
+    for (size_t i = 0; equal && i < mac_len; i++)
+      diff |= (unsigned char)(view->data[i] ^ expected->data[i]);
     equal = equal && diff == 0;
   }
   scr_bytes_release(signature);
+  scr_bytes_release(mac);
   ScrPromise *p = scr_promise_new();
   scr_crypto_defer_dyn(scr_dyn_new_bool(equal), NULL, scr_crypto_promise_callback(p),
                        scr_wc_settle_verified);

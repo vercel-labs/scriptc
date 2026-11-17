@@ -1,29 +1,22 @@
-compat-absent-http-members.ts:12:26 - error SC0001: Property 'createConnection' does not exist on type 'Agent'.
+compat-absent-http-members.ts:13:26 - error SC0001: Property 'createConnection' does not exist on type 'Agent'.
 
-  11 | const agent = new http.Agent({ keepAlive: true });
-  12 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+  12 | const agent = new http.Agent({ keepAlive: true });
+  13 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
      |                          ^~~~~~~~~~~~~~~~
-  13 | console.log(agent.maxTotalSockets);
+  14 | agent.destroy();
 
-compat-absent-http-members.ts:12:57 - error SC0001: Property 'keepSocketAlive' does not exist on type 'Agent'.
+compat-absent-http-members.ts:13:57 - error SC0001: Property 'keepSocketAlive' does not exist on type 'Agent'.
 
-  11 | const agent = new http.Agent({ keepAlive: true });
-  12 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+  12 | const agent = new http.Agent({ keepAlive: true });
+  13 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
      |                                                         ^~~~~~~~~~~~~~~
-  13 | console.log(agent.maxTotalSockets);
+  14 | agent.destroy();
 
-compat-absent-http-members.ts:12:87 - error SC0001: Property 'reuseSocket' does not exist on type 'Agent'. Did you mean 'freeSockets'?
+compat-absent-http-members.ts:13:87 - error SC0001: Property 'reuseSocket' does not exist on type 'Agent'. Did you mean 'freeSockets'?
 
-  11 | const agent = new http.Agent({ keepAlive: true });
-  12 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+  12 | const agent = new http.Agent({ keepAlive: true });
+  13 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
      |                                                                                       ^~~~~~~~~~~
-  13 | console.log(agent.maxTotalSockets);
-
-compat-absent-http-members.ts:13:19 - error SC0001: Property 'maxTotalSockets' does not exist on type 'Agent'. Did you mean 'maxSockets'?
-
-  12 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
-  13 | console.log(agent.maxTotalSockets);
-     |                   ^~~~~~~~~~~~~~~
   14 | agent.destroy();
 
 compat-absent-http-members.ts:20:23 - error SC0001: Property 'signal' does not exist on type 'IncomingMessage'.

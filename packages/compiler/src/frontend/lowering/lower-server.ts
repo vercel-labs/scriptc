@@ -10101,6 +10101,27 @@ function lowerHttpResMethodCall(
       }
       return { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
     };
+    /** Whether a headers record's slots may hold an array (`string[]`).
+     * Informational headers stringify each value with String(value), which
+     * joins an array with commas, while the env.pairs helper the static form
+     * uses expands an array into one line per element (writeHead's rule). A
+     * record that can hold an array takes the dynamic ladder, which coerces
+     * the value the way Node does. */
+    const recordHasArrayHeaderSlot = (shapeId: string): boolean => {
+      const seen = new Set<string>();
+      const isArray = (t: IrType): boolean => {
+        if (t.kind === "array") return true;
+        if (t.kind !== "union" || seen.has(t.unionId)) return false;
+        seen.add(t.unionId);
+        return (lowerer.unions.get(t.unionId)?.arms ?? []).some(isArray);
+      };
+      const shape = lowerer.shapes.get(shapeId);
+      if (shape === undefined) return true;
+      return (
+        shape.fields.some((f) => isArray(f.type)) ||
+        (shape.indexValue !== undefined && isArray(shape.indexValue))
+      );
+    };
     /** Whether a writeInformation call's arguments are the shapes the static
      * lowering reads: the status alone, or headers as an object literal of
      * static keys and string values, or a record the env.pairs helper
@@ -10121,7 +10142,8 @@ function lowerHttpResMethodCall(
         });
       }
       const t = lowerer.mapTypeOf(lowerer.typeOf(headers));
-      return t?.kind === "record" && lowerer.envToPairsHelper(t.shapeId, loc) !== null;
+      if (t?.kind !== "record" || recordHasArrayHeaderSlot(t.shapeId)) return false;
+      return lowerer.envToPairsHelper(t.shapeId, loc) !== null;
     };
     if (name === "writeInformation") {
       if (isJsSourceFile(ts.getSourceFileOfNode(call)) && !informationArgsAreStatic()) {

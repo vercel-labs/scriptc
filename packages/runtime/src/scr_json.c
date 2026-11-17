@@ -24246,11 +24246,17 @@ size_t scr_weak_collect_entries(void) { return scr_weak_judge_all(); }
  * bookkeeping as Node does; the cleanup callback never runs, which
  * ECMAScript allows (an implementation need not collect a target or call
  * its cleanup), so the registry keeps neither the callback nor the held
- * values. The unregister tokens are keys of an internal WeakMap counting
- * each token's registrations, so the registry keeps no token alive. */
+ * values. A token with a weak lifetime is a key of an internal WeakMap
+ * counting its registrations, so it is not kept alive. A token the weak
+ * tables cannot key (a handle kind without a weak entry, a copied native
+ * value) is held here instead, compared by value, so unregister still
+ * answers for the registration the program made; the registry releases
+ * those tokens with itself. */
 typedef struct {
   size_t rc;
   ScrDyn *tokens; /* WeakMap: token -> registration count */
+  ScrDyn **held_tokens; /* tokens with no weak lifetime, compared by value */
+  size_t held_len, held_cap;
 } ScrFinalizationRegistry;
 
 static void *scr_finalization_registry_retain(void *ptr) {
@@ -24264,7 +24270,33 @@ static void scr_finalization_registry_release(void *ptr) {
   /* Weak collections keyed by the registry drop their entries. */
   scr_weak_dispose(registry);
   scr_dyn_release(registry->tokens);
+  for (size_t i = 0; i < registry->held_len; i++) scr_dyn_release(registry->held_tokens[i]);
+  free(registry->held_tokens);
   free(registry);
+}
+
+/* The position of a token the weak tables cannot key, compared the way
+ * JavaScript compares the token it is handed back (a handle's own identity,
+ * a copied value's own), or -1. */
+static long scr_finalization_held_index(const ScrFinalizationRegistry *registry,
+                                        const ScrDyn *token) {
+  for (size_t i = 0; i < registry->held_len; i++)
+    if (scr_dyn_strict_eq(registry->held_tokens[i], token)) return (long)i;
+  return -1;
+}
+
+/* Keep a token with no weak lifetime, once (one entry answers every
+ * registration with it, as the count does for a weak key). */
+static void scr_finalization_hold(ScrFinalizationRegistry *registry, ScrDyn *token) {
+  if (scr_finalization_held_index(registry, token) >= 0) return;
+  if (registry->held_len == registry->held_cap) {
+    size_t cap = registry->held_cap ? registry->held_cap * 2 : 4;
+    ScrDyn **grown = scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    registry->held_tokens = grown;
+    registry->held_cap = cap;
+  }
+  registry->held_tokens[registry->held_len++] = scr_dyn_retain(token);
 }
 
 static void scr_finalization_type_error(const char *message) {
@@ -24359,9 +24391,12 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
         scr_dyn_release(registered);
         return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
       }
-      /* A token with no weak lifetime keeps no count, so there is nothing
-       * to record: the registration is accepted as it is. */
-      if (kind == SCR_WEAK_UNTRACKED_KIND) return scr_dyn_retain(scr_dyn_undefined());
+      /* A token with no weak lifetime cannot be counted in the weak map:
+       * it is held by value instead, so unregister answers for it. */
+      if (kind == SCR_WEAK_UNTRACKED_KIND) {
+        scr_finalization_hold(registry, token);
+        return scr_dyn_retain(scr_dyn_undefined());
+      }
       ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
       double count = entry && entry->value->kind == SCR_DYN_NUM ? entry->value->v.num : 0;
       ScrDyn *next = scr_dyn_new_num(count + 1);
@@ -24377,8 +24412,15 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
       int found = scr_ni_dyn_ops->weak_test(tokens->island, false, first, true);
       return found < 0 ? NULL : scr_dyn_new_bool(found);
     }
-    /* No count was kept for such a token at registration. */
-    if (kind == SCR_WEAK_UNTRACKED_KIND) return scr_dyn_new_bool(false);
+    if (kind == SCR_WEAK_UNTRACKED_KIND) {
+      long at = scr_finalization_held_index(registry, first);
+      if (at < 0) return scr_dyn_new_bool(false);
+      ScrDyn *held = registry->held_tokens[at];
+      registry->held_len--;
+      registry->held_tokens[at] = registry->held_tokens[registry->held_len];
+      scr_dyn_release(held);
+      return scr_dyn_new_bool(true);
+    }
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
     if (entry) scr_weak_remove(entry);
     return scr_dyn_new_bool(entry != NULL);

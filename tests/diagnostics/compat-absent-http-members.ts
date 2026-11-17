@@ -3,8 +3,9 @@
 // program for marking the rows a verified absence instead of an
 // unverified registry gap. Implemented members leave this program:
 // net.Server's `[Symbol.asyncDispose]`, OutgoingMessage's setHeaders,
-// writableLength and 'drain', OutgoingMessage.pipe(), and
-// ServerResponse.writeInformation have their own differential programs.
+// writableLength and 'drain', OutgoingMessage.pipe(), and the informational
+// responses (writeInformation and the three that delegate to it) have their
+// own differential programs.
 import * as http from "node:http";
 
 // Agent: the socket hooks. maxTotalSockets is implemented

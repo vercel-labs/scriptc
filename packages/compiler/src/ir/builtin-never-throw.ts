@@ -38,6 +38,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http.clientWritableNeedDrain",
   "http.resOnDrain",
   "http.clientOnDrain",
+  // scr_test_snapshot_set_resolve_path stores the resolver closure.
+  "test.snapshotSetResolvePath",
   "process.finalization",
   // scr_watcher_ref / scr_watcher_unref move one open watcher's loop-liveness
   // flag; a closed watcher ignores them, and nothing user-visible runs.
@@ -182,6 +184,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Reads the fork channel registry and answers undefined, null or the
   // retained Control object; a plain process has no channel.
   "process.channel",
+  // The stream object a descriptor the program already holds names: a cache
+  // lookup and a retain, with no allocation, coercion or program code. The
+  // cursor methods use it to reach the same object process.stdio answers.
+  "process.stdioOf",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
   "readable.encodingName",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a

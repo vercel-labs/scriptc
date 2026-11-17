@@ -2671,6 +2671,10 @@ function buildLibFnSignatures() {
     // snapshot.setDefaultSnapshotSerializers(serializers): the list is a
     // checked-dynamic array of serializer functions.
     "test.snapshotSetDefaultSerializers": { argTypes: [DYN], result: VOID },
+    // snapshot.setResolveSnapshotPath(fn): a (path: string) => string closure
+    // moves in; test.snapshotPath asks a test file's snapshot path (+1).
+    "test.snapshotSetResolvePath": { argTypes: [null], result: VOID },
+    "test.snapshotPath": { argTypes: [STRING], result: STRING },
     "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
     "test.mockTimersTick": { argTypes: [F64], result: VOID },
     "test.mockTimersRunAll": { argTypes: [], result: VOID },
@@ -2810,6 +2814,9 @@ function buildLibFnSignatures() {
     "http.resWriteContinue": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteProcessing": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteEarlyHints": { argTypes: [HTTPRES_T, arrayOf(STRING)], result: VOID },
+    /* writeInformation(status[, headers]): the generic informational
+     * response, answering write()'s backpressure boolean. */
+    "http.resWriteInformation": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: BOOL },
     /** The callback forms: the callback fires once the head is written. */
     "http.resWriteContinueCb": {
       argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
@@ -5097,6 +5104,9 @@ function buildLibFnSignatures() {
      * never throws. */
     "process.stdoutWrite": { argTypes: [STRING], result: BOOL },
     "process.stdio": { argTypes: [F64], result: DYN },
+    /** The same stream object for a procStream VALUE (the cursor methods'
+     * receiver): its scalar representation IS the descriptor. */
+    "process.stdioOf": { argTypes: [PROCSTREAM_T], result: DYN },
     /** The same stream object, reached by the typed write-slot lowering
      * (the write method as a value, its replacement, a patched program's
      * typed writes): identical at run time. */
@@ -6864,6 +6874,14 @@ function buildLibFnSignatures() {
      * then the listeners. */
     "process.onWarning": { argTypes: [DYN], result: VOID },
     "process.offWarning": { argTypes: [DYN], result: VOID },
+    /** process.emit(event, ...args): Node's EventEmitter emit on process,
+     * for the events whose listeners cross as checked-dynamic callbacks. The
+     * event name and its argument vector arrive as checked values; the
+     * result is whether any listener existed. */
+    "process.emit": { argTypes: [DYN, DYN], result: BOOL },
+    /** process.emit('error', ...): no listener can be registered for it, so
+     * the runtime throws Node's unhandled-error contract. */
+    "process.emitError": { argTypes: [DYN], result: VOID },
     "process.emitWarning": { argTypes: [DYN], result: VOID },
     /** A Warning-typed process warning with this message (the console
      * members' warnings), emitted on the next tick as Node's emitWarning

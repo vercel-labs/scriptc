@@ -1017,6 +1017,7 @@ const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [
   "regex.new",
   "regex.resetLastIndex",
   "regex.newChecked",
+  "regex.callChecked",
   "regex.replaceCallback",
   "dyn.keySet",
   "dyn.fnOwnSet",

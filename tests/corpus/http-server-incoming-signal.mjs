@@ -11,6 +11,19 @@ const server = createServer((req, res) => {
     const reason = signal.reason;
     console.log("abort event", req.url, signal.aborted, reason?.name, reason?.message, req.aborted);
   });
+  if (req.url === "/signal") {
+    const key = req.url.slice(1);
+    const dynamic = req[key];
+    console.log("dynamic key", dynamic === signal, dynamic.aborted);
+    res.end("ok");
+    return;
+  }
+  if (req.url === "/self-destroy") {
+    req.on("close", () => console.log("close", req.url, req.complete, req.aborted));
+    req.destroy();
+    console.log("destroyed", signal.aborted);
+    return;
+  }
   if (req.url === "/destroy") {
     req.on("close", () => console.log("close", req.url, req.complete, req.aborted));
     return;
@@ -34,5 +47,11 @@ server.listen(0, () => {
     socket.on("data", () => {});
     socket.on("close", () => setTimeout(next, 20));
   };
-  run("/clean", false, () => run("/destroy", true, () => server.close(() => console.log("closed"))));
+  run("/clean", false, () =>
+    run("/signal", false, () =>
+      run("/self-destroy", true, () =>
+        run("/destroy", true, () => server.close(() => console.log("closed"))),
+      ),
+    ),
+  );
 });

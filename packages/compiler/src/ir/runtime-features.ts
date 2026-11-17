@@ -2162,8 +2162,10 @@ const RUNTIME_FEATURE_RULES = {
     // A checked-dynamic read of a `signal` member (IncomingMessage.signal in
     // a JavaScript source) reaches the abort unit through the handle's dyn
     // dispatch, where no libCall names it.
+    // A runtime key can name signal, so every dynamic member read selects
+    // the unit the handle's dispatch needs.
     expr: (node) =>
-      node.kind === "dynKeyGet" && node.key.kind === "strLit" && node.key.value === "signal",
+      node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),

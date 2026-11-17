@@ -795,6 +795,13 @@ bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
  * events flow through the socket's native hooks like a peer close. */
 void scr_http_req_destroy(ScrHttpReq *r) {
   r->destroyed = true;
+  /* Node aborts the request's signal when an incomplete message is
+   * destroyed, before the socket teardown runs; the request reads as
+   * aborted from that moment. */
+  if (!r->received || !r->ended) {
+    r->aborted = true;
+    scr_http_req_abort_signal(r);
+  }
   if (r->h2_stream != NULL) {
     scr_http_h2_ops->destroy(r->h2_stream);
     return;

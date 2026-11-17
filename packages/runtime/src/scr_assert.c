@@ -280,9 +280,9 @@ static ScrStr *scr_assert_cf_inspect(const ScrDyn *d); /* the dyn renderer below
 
 void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *message,
                                 ScrDyn *operator_value, ScrDyn *default_operator) {
-  /* Node's `options.operator ?? default`: an operator that is undefined at
-   * run time (not only an omitted argument) takes the default. */
-  if (!operator_value || scr_dyn_is_nullish(operator_value)) operator_value = default_operator;
+  /* Node's `operator === undefined ? default : operator`: a null operator
+   * stays null in the property and in the generated message. */
+  if (!operator_value || operator_value == scr_dyn_undefined()) operator_value = default_operator;
   if (message && (scr_dyn_ref_is_error(message) || scr_dyn_is_error_prototype(message))) {
     scr_dyn_throw(scr_dyn_retain(message));
     return;
@@ -293,6 +293,11 @@ void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *messag
     ScrStr *ia = scr_assert_cf_inspect(actual);
     ScrStr *ib = scr_assert_cf_inspect(expected);
     ScrStr *op = scr_dyn_string_coerce_js(operator_value);
+    if (scr_exc_pending()) {
+      scr_str_release(ia);
+      scr_str_release(ib);
+      return;
+    }
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_write(&b, ia->data, ia->len);
@@ -307,6 +312,7 @@ void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *messag
     generated = true;
   } else {
     text = scr_dyn_string_coerce_js(message);
+    if (scr_exc_pending()) return;
     generated = !scr_dyn_truthy(message);
   }
   ScrError *e = scr_error_new(SCR_ERR_ASSERTION, text);

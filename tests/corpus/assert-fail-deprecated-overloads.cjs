@@ -64,3 +64,19 @@ try {
 } catch (e) {
   console.log("side", JSON.stringify(e.message));
 }
+// Each argument is read once, in order: a later argument that reassigns a
+// local must not change the value the error records.
+let reassigned = { v: 1 };
+try {
+  assert.fail(reassigned, (reassigned = { v: 2 }, 2));
+} catch (e) {
+  console.log("snap", JSON.stringify(e.actual), JSON.stringify(e.message));
+}
+// A throwing ToString on the message propagates that error; on an operator it
+// surfaces only when the generated message needs it.
+const throwingText = { toString() { throw new Error("str-boom"); } };
+try { assert.fail(1, 2, throwingText); } catch (e) { console.log("msgThrow", e.name, e.message); }
+try { assert.fail(throwingText, 2); } catch (e) { console.log("genThrow", e.name, e.message); }
+// A null operator stays null in the property and the generated message.
+try { assert.fail(1, 2, "m", null); } catch (e) { console.log("nullOp", e.operator, JSON.stringify(e.message)); }
+try { assert.fail(1, 2, null, null); } catch (e) { console.log("nullBoth", e.operator, JSON.stringify(e.message)); }

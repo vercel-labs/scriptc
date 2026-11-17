@@ -1167,8 +1167,18 @@ function lowerAssertOk(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): 
 function lowerAssertFailDeprecated(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = expr.arguments.nodes;
   const stmts: IrStmt[] = [];
+  // Node evaluates each argument once, in order, and the failing error
+  // carries the value read then: a later argument that reassigns a local the
+  // earlier one named must not change what was recorded. The value is kept in
+  // a hidden local of its own even when it is a plain variable reference.
+  const snapshot = (value: IrExpr, name: string): IrExpr => {
+    if (value.kind !== "varRef") return stableValue(lowerer, stmts, value, name, loc);
+    const slot = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    return { kind: "varRef", localId: slot.id, type: value.type, loc };
+  };
   const boxed = (node: ts.Expression, name: string): IrExpr =>
-    stableValue(lowerer, stmts, recordedValue(lowerer, lowerer.lowerExpr(node), loc), name, loc);
+    snapshot(recordedValue(lowerer, lowerer.lowerExpr(node), loc), name);
   const actual = boxed(args[0]!, "%assertFailActual");
   const expected = boxed(args[1]!, "%assertFailExpected");
   const messageNode = args[2];
@@ -1178,25 +1188,16 @@ function lowerAssertFailDeprecated(lowerer: Lowerer, expr: ts.CallExpression, lo
   const message: IrExpr =
     messageNode === undefined
       ? dynUndefinedExpr(loc)
-      : stableValue(
-          lowerer,
-          stmts,
-          recordedValue(lowerer, lowerer.lowerExpr(messageNode), loc),
-          "%assertFailMessage",
-          loc,
-        );
+      : snapshot(recordedValue(lowerer, lowerer.lowerExpr(messageNode), loc), "%assertFailMessage");
   // Node reads `operator` and falls back to the default when the value is
   // nullish at run time, not only when the argument is the undefined literal.
   const operatorNode = args[3];
   const operator: IrExpr =
     operatorNode !== undefined &&
     !(ts.isIdentifier(operatorNode) && operatorNode.text === "undefined")
-      ? stableValue(
-          lowerer,
-          stmts,
+      ? snapshot(
           lowerer.coerceToExpected(lowerer.lowerExpr(operatorNode), DYN),
           "%assertFailOperator",
-          loc,
         )
       : dynUndefinedExpr(loc);
   const defaultOperator = lowerer.coerceToExpected(

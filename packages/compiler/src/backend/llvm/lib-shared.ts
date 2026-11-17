@@ -1728,6 +1728,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "webstream.toWebReadable": "scr_stream_to_web_readable",
   "webstream.toWebReadableDyn": "scr_stream_to_web_readable_dyn",
   "webstream.writableFromWeb": "scr_stream_writable_from_web",
+  "webstream.writableToWeb": "scr_stream_writable_to_web",
   "writable.writeEncoding": "scr_stream_write_encoding",
   "writable.setDefaultEncoding": "scr_stream_set_default_encoding",
   "stream.chunkDone": "scr_stream_chunk_done",

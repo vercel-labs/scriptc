@@ -328,6 +328,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
+  "webstream.writableToWeb",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -414,6 +415,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
+  "webstream.writableToWeb",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -1923,6 +1925,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
+      "webstream.writableToWeb",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
       // method value.
@@ -2243,6 +2246,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
+      "webstream.writableToWeb",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",

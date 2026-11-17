@@ -148,6 +148,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Readable.toWeb builds the web stream over the readable's chunks; the
   // read it starts runs later, on the promise's reaction.
   "webstream.toWebReadable",
+  // Writable.toWeb builds the sink object and the web WritableStream over it;
+  // the sink's functions run later, on the web stream's calls.
+  "webstream.writableToWeb",
   // stream.getDefaultHighWaterMark reads the runtime's default for the mode:
   // no allocation, no coercion and no program code.
   "stream.getDefaultHwm",

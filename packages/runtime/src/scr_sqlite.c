@@ -1659,14 +1659,22 @@ static void scr_sqlite_backup_step(ScrClosure *self);
  * completion: the loop keeps running between two steps, so a writer that
  * holds the destination (or a write transaction on the source) can release
  * it while a busy step waits, and timers and other fibers keep running
- * instead of stalling behind the copy. */
+ * instead of stalling behind the copy.
+ *
+ * The step goes on the immediate queue rather than the deferred-callback
+ * one: the immediate station snapshots the callbacks queued for this turn,
+ * so a step that queues the next one runs at most once per turn in the
+ * runtime's own loop, and in a hosted loop each step is handed to the host's
+ * check phase, which runs it on a later host turn. The deferred queue is
+ * drained to exhaustion in one host turn, which would run a busy copy's
+ * whole retry chain without ever returning to the loop. */
 static void scr_sqlite_backup_schedule(ScrSqliteBackupJob *job) {
   ScrClosure *step = scr_closure_new((void *)scr_sqlite_backup_step, 1);
   ScrBox *box =
       scr_box_new_obj(scr_sqlite_backup_job_retain, scr_sqlite_backup_job_release, NULL);
   scr_box_set_ref(box, scr_sqlite_backup_job_retain(job)); /* the box owns this reference */
   step->caps[0] = box;
-  scr_loop_defer(step);
+  (void)scr_set_immediate(step); /* the queue owns the closure */
 }
 
 /* One step of the copy, then either the next turn, the rejection or the

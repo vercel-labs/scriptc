@@ -1265,7 +1265,9 @@ static void scr_test_run_node(ScrTestCtx *t) {
       t->listed = true; /* a failing suite lists in the failing section */
       scr_test_cancel_pending(t);
     } else if (!t->err) {
-      if (isfinite(t->timeout)) t->deadline_ms = start + t->timeout;
+      /* Node starts a suite's timer once its setup hooks have finished: the
+       * children get the full timeout budget after the before hooks run. */
+      if (isfinite(t->timeout)) t->deadline_ms = scr_now_ms() + t->timeout;
       if (t->concurrency > 1) {
         scr_test_defer++;
         scr_test_run_children(t);

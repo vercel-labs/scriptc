@@ -280,6 +280,54 @@ const operatorConvertsType = (type: ts.Type): boolean =>
           ts.TypeFlags.BooleanLike)) !==
       0;
 
+/** Whether `type` is a union mixing the operator's string and numeric arms
+ * (`const lastDot = nodeName && nodeName.lastIndexOf(".")` types `"" |
+ * number`, three.js's parseTrackName): no single static form of `+` applies,
+ * while Node chooses the sum or the concatenation from the value the operand
+ * holds, converting it exactly as the checked-dynamic arithmetic lowering
+ * does. Every arm must be one the lowering converts (operatorConvertsType);
+ * an object arm has no static ToPrimitive and keeps the refusal. A union of
+ * one form (`1 | 2`, `"a" | "b"`) is a form tsc already accepts, so no
+ * diagnostic reaches this guard for it. */
+const mixedFormOperandType = (type: ts.Type): boolean =>
+  (type.flags & ts.TypeFlags.Union) !== 0 &&
+  operatorConvertsType(type) &&
+  ts.constituentTypes(type).some((arm) => (arm.flags & ts.TypeFlags.StringLike) !== 0) &&
+  ts
+    .constituentTypes(type)
+    .some((arm) => (arm.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BigIntLike)) !== 0);
+
+/** Whether the operator's diagnostic comes from an operand typed as a union
+ * that mixes the operator's string and numeric arms (`const lastDot = name &&
+ * name.indexOf(".")` types `"" | number`): the operand holds whichever arm
+ * the source produced, Node picks the sum or the concatenation from it, and
+ * the checked-dynamic lowering's conversion does the same. The other operand
+ * must be one the lowering already converts (or a JavaScript binding whose
+ * storage the widening prepass follows). */
+const jsMixedFormOperand = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  if (bigintCompoundTarget(node, program)) return false;
+  const checker = program.getTypeChecker();
+  const operands = operatorOperandNodes(node);
+  return (
+    operands.some((operand) => mixedFormOperandType(checker.getTypeAtLocation(operand))) &&
+    operands.every(
+      (operand) =>
+        operatorConvertsType(checker.getTypeAtLocation(operand)) ||
+        jsWritableBindingRead(operand, program) !== null,
+    )
+  );
+};
+
+/** The operands TS2362/2363/2365 admit for arithmetic in plain JavaScript:
+ * an `any`, wrapper or BigInt operand the operator converts
+ * (coercibleOperatorOperand), and a mixed-form union operand
+ * (jsMixedFormOperand). */
+const convertibleOperatorOperand = (
+  node: ts.Node,
+  d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => coercibleOperatorOperand(node, d, program) || jsMixedFormOperand(node, d, program);
+
 /** Whether the operator's diagnostic comes from a JavaScript binding whose
  * checker type is the shape one assignment stored, not the value the
  * operator converts at run time: shipped JavaScript reuses a `var` for a
@@ -292,7 +340,9 @@ const operatorConvertsType = (type: ts.Type): boolean =>
  * comparison lowering applies that conversion. Every operand of the operator
  * must be one such binding or one the lowering already converts; a static
  * record operand keeps tsc's refusal, because its conversion has no native
- * form. A checked JavaScript file keeps the diagnostic. */
+ * form. A checked JavaScript file keeps the diagnostic.
+ */
+
 const jsRetypedOperatorOperand = (
   node: ts.Node,
   _d: ts.Diagnostic,
@@ -314,7 +364,8 @@ const jsRetypedOperatorOperand = (
       retyped = true;
       continue;
     }
-    if (!operatorConvertsType(checker.getTypeAtLocation(operand))) return false;
+    const type = checker.getTypeAtLocation(operand);
+    if (!operatorConvertsType(type)) return false;
   }
   return retyped;
 };
@@ -1619,7 +1670,7 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   [
     2362,
     at(
-      coercibleOperatorOperand,
+      convertibleOperatorOperand,
       CHECKER(
         "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
         ["tests/corpus/js-primitive-wrappers.js", "tests/corpus/js-primitive-wrappers-zero-arg.js"],
@@ -1629,7 +1680,7 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   [
     2363,
     at(
-      coercibleOperatorOperand,
+      convertibleOperatorOperand,
       CHECKER(
         "an 'any', wrapper or BigInt operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
       ),
@@ -1655,7 +1706,8 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
     at(
       (node, d, program, projectCheckJs) =>
         coercibleOperatorOperand(node, d, program) ||
-        jsRetypedOperatorOperand(node, d, program, projectCheckJs),
+        jsRetypedOperatorOperand(node, d, program, projectCheckJs) ||
+        jsMixedFormOperand(node, d, program),
       CHECKER(
         "an 'any', wrapper, BigInt or retyped JavaScript binding operand is plain JavaScript: the operator converts both with ToPrimitive/ToNumeric first",
         [
@@ -1887,21 +1939,23 @@ export function jsOpinion(code: number): Opinion | null {
  * the construct needs a lowering that does not exist yet, so admitting the
  * code would compile a program the lowerer cannot build correctly.
  *
- *  - TS2365 with no BigInt operand (an operator on operands the lowerer
- *    cannot convert, `true + 1`) needs ToPrimitive on a static operand; the
- *    arithmetic lowering answers SC1043. Its BigInt forms are admitted by the
- *    row above, because the checked-dynamic arithmetic, bitwise and
+ *  - TS2365 with no BigInt operand (an operator on a STATIC operand the
+ *    lowerer cannot convert, `true + 1`) needs ToPrimitive on a static
+ *    operand; the arithmetic lowering answers SC1043. Its BigInt forms and a
+ *    union operand that mixes the string and numeric arms (`"" | number`,
+ *    whose value decides between the sum and the concatenation) are admitted
+ *    by the row above, because the checked-dynamic arithmetic, bitwise and
  *    comparison lowering already applies ToNumeric/ToPrimitive in Node's
  *    order. Its TS2362/2363 siblings (an arithmetic operand of the wrong
- *    type) never fire on a JS source — TypeScript only demands an operand
- *    type it knows, and an unannotated JavaScript value is `any` — so the pair
- *    has nothing to relax here. The invalid-assignment-target forms the
- *    checker does report stay refused too: `f() += g()` (TS2364) and `f()++`
- *    (TS2357) are legal JavaScript, but Node CALLS `f` and then throws a
- *    ReferenceError ("Invalid left-hand side in assignment", "Invalid
- *    left-hand side expression in postfix operation"), and the lowering has
- *    no invalid-target path that calls and then throws. TS2362/2363 keep
- *    their `any`-only admission below.
+ *    type) otherwise never fire on a JS source — TypeScript only demands an
+ *    operand type it knows, and an unannotated JavaScript value is `any` —
+ *    so the pair has nothing to relax there. The invalid-assignment-target
+ *    forms the checker does report stay refused too: `f() += g()` (TS2364)
+ *    and `f()++` (TS2357) are legal JavaScript, but Node CALLS `f` and then
+ *    throws a ReferenceError ("Invalid left-hand side in assignment",
+ *    "Invalid left-hand side expression in postfix operation"), and the
+ *    lowering has no invalid-target path that calls and then throws.
+ *    TS2362/2363 keep their `any`/wrapper/BigInt and mixed-form admission.
  *  - TS2508 ("No base constructor has the specified number of type
  *    arguments", `class X extends Iterator {}`) has LEFT this list: the
  *    heritage lowering learned the callable-base path for the lib's generic

@@ -2503,6 +2503,15 @@ double scr_net_server_timeout_get(ScrNetServer *s, double field) {
   return s->http_timeouts[i];
 }
 
+/* A timeout field as the HTTP timeout checker reads it: a non-number value
+ * reads 0 (Node's NumberIsFinite guard), never a pending exception. */
+double scr_net_server_timeout_raw(ScrNetServer *s, double field) {
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  if (s->http_timeout_dyn[i] != NULL) return 0;
+  return s->http_timeouts[i];
+}
+
 void scr_net_server_timeout_set(ScrNetServer *s, double field, double value) {
   int i = (int)field;
   if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */

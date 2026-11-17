@@ -254,6 +254,10 @@ declare module "stream" {
     static from(iterable: unknown, options?: ReadableOptions): Readable;
     /* stream.isDisturbed. */
     static isDisturbed(stream: unknown): boolean;
+    /* A web ReadableStream over this readable's chunks: a byte chunk arrives
+     * as a Uint8Array and an encoded stream's chunk as its string. The
+     * options have no lowering yet. */
+    static toWeb(readable: Readable, options?: {}): ReadableStream<Uint8Array>;
     /* A Readable over a web ReadableStream's reader. */
     static fromWeb(
       readableStream: globalThis.ReadableStream,

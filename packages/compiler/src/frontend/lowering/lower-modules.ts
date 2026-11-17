@@ -1872,9 +1872,13 @@ function registerCjsConditionalWholeExportGlobals(
   for (const name of first.names) {
     const diagsBefore = lowerer.diags.length;
     try {
-      const symbol =
-        lowerer.cjsModuleExportSymbol(sf, name) ??
-        lowerer.cjsModuleExportSymbol(first.req.dep, name);
+      // The member's symbol may be declared by any arm's table (a name only
+      // a later table exports — `act` of React 19's development build).
+      let symbol = lowerer.cjsModuleExportSymbol(sf, name);
+      for (const target of targets) {
+        if (symbol !== undefined) break;
+        symbol = lowerer.cjsModuleExportSymbol(target.req.dep, name);
+      }
       if (symbol === undefined) continue;
       const strict = lowerer.checker.getTypeOfSymbol(symbol);
       let t = lowerer.mapTypeOf(strict) ?? dynFallbackType(lowerer, first.assign, strict);
@@ -1889,6 +1893,15 @@ function registerCjsConditionalWholeExportGlobals(
         cjsExportIsRuntimeOptional(lowerer, entry.req.dep, name),
       );
       if (mayBeAbsent) t = cjsMaybeAbsentExportType(lowerer, t);
+      // A member one arm's table lacks entirely (React 19's `act`, which only
+      // the development build exports) is absent when that arm runs, as it is
+      // in Node: the slot admits undefined too, so a read before the arm that
+      // has the member does not see garbage.
+      const missingSomewhere = targets.some((target) => !target.ownNames.includes(name));
+      // The same widening as the runtime-optional case: it leaves a
+      // checked-dynamic slot dynamic (a union cannot hold a dyn arm) and
+      // handles unions, unit types and generators.
+      if (missingSomewhere) t = cjsMaybeAbsentExportType(lowerer, t);
       // Modules that re-export the same tables share the checker's
       // synthesized member symbols, so each module's slot is keyed by the
       // module (and its statements and importers look it up that way). The
@@ -1896,10 +1909,8 @@ function registerCjsConditionalWholeExportGlobals(
       // the first module to register a shared symbol owns it.
       const g: IrGlobal = { id: `%g.${tag}%export.${name}`, name, type: t, mutable: false };
       slots.set(name, g);
-      if (mayBeAbsent) {
-        lowerer.runtimeOptionalGlobals.add(g);
-        noteVarGlobalEntryInit(lowerer, sf, g);
-      }
+      if (mayBeAbsent) lowerer.runtimeOptionalGlobals.add(g);
+      if (mayBeAbsent || missingSomewhere) noteVarGlobalEntryInit(lowerer, sf, g);
       if (lowerer.globalsBySymbol.has(symbol)) continue;
       lowerer.globalsBySymbol.set(symbol, g);
       if (mayBeAbsent) lowerer.runtimeOptionalBindingTypes.set(symbol, g.type);
@@ -1942,7 +1953,9 @@ function collectCjsConditionalExportMirrors(lowerer: Lowerer, parts: FileParts[]
     const select = lowerer.cjsConditionalWholeExportSelectGlobals.get(sf);
     if (select === undefined) continue;
     targets.forEach((target, index) => {
-      for (const name of target.names) {
+      // Only the members this arm's table owns: it is the exports object
+      // Node handed out, and a member it lacks stays absent.
+      for (const name of target.ownNames) {
         const slot = lowerer.cjsConditionalWholeExportSlotOf(sf, name);
         if (slot !== null)
           addCjsConditionalExportMirror(lowerer, target.req.dep, name, select, index + 1, slot);

@@ -45,8 +45,8 @@ import {
   nodeUndefinedGlobalProperty,
 } from "../lower-namespaces.js";
 import { isF64HandleTyped } from "../f64-handles.js";
-import { nodeValueTypeof } from "../node-value-reads.js";
-import { nodeModuleMemberKind } from "../node-values.js";
+import { nodeGlobalObjectOf, nodeValueTypeof } from "../node-value-reads.js";
+import { nodeGlobalKind, nodeModuleMemberKind } from "../node-values.js";
 import { COMMONJS_MODULE_BINDINGS } from "../../builtin-modules.js";
 import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
 import { undeclaredGlobalTypeof } from "../global-object-names.js";
@@ -726,6 +726,49 @@ export function lowerDynTypeofTest(
     // Non-literal comparisons use the ordinary typeof string value,
     // preserving both operands' evaluation order without a narrowing test.
     if (!ts.isStringLiteral(b)) continue;
+    // A Node value whose kind the pinned-Node census fixes (`typeof
+    // performance === "object"`, `typeof crypto`, `typeof
+    // performance.now === "function"`): typeof needs no value, and the
+    // dyn test below would read the operand — the held object a program
+    // that only tests the name never needs, whose members native code
+    // answers as placeholders (an environment-dependent export test like
+    // scheduler's reads only the name). Node's answer is the census's,
+    // unless the program replaces the global object's member
+    // (`globalThis.performance = …`), where a read follows the write.
+    if (isJsSourceFile(ts.getSourceFileOfNode(a))) {
+      let operand = a.expression;
+      while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+      const direct = stdlibGlobalNameOf(lowerer, operand);
+      const receiver =
+        ts.isPropertyAccessExpression(operand) && !operand.questionDotToken
+          ? stdlibGlobalNameOf(lowerer, operand.expression)
+          : null;
+      const globalName = direct !== null && direct !== "globalThis" ? direct : receiver;
+      // A MEMBER is the census's answer only for a Node global OBJECT the
+      // runtime provides (performance, process, console, crypto, navigator).
+      // An ECMAScript builtin class's member is NOT: the census describes the
+      // pinned Node release, and the native runtime has no
+      // `ArrayBuffer.prototype` value at all, so `typeof ArrayBuffer.prototype
+      // === "object"` must keep answering "undefined" as the runtime does —
+      // folding it true would make the feature test that follows
+      // (`typeof ArrayBuffer.prototype.resize === "function"`) evaluate a
+      // member of an object the program does not have.
+      const memberRead = ts.isPropertyAccessExpression(operand) && !operand.questionDotToken;
+      let nodeObjectMember = true;
+      if (memberRead && ts.isPropertyAccessExpression(operand)) {
+        const object = nodeGlobalObjectOf(lowerer, operand.expression);
+        const kind = object === null ? null : nodeGlobalKind(object);
+        nodeObjectMember = kind !== null && kind.kind === "value" && kind.type === "object";
+      }
+      if (
+        nodeObjectMember &&
+        (globalName === null || !programMayWriteGlobalName(lowerer, globalName, operand))
+      ) {
+        const answer = nodeValueTypeof(lowerer, a.expression);
+        if (answer !== null)
+          return { kind: "boolLit", value: (answer === b.text) !== negated, type: BOOL, loc };
+      }
+    }
     const declared = lowerer.mapTypeOf(lowerer.typeOf(a.expression));
     // `typeof undeclared === "..."` in a JavaScript source is a runtime
     // question only when the program can have created the global object's

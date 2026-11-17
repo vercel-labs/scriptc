@@ -160,6 +160,14 @@ void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*bor
 void scr_http_res_write_continue(ScrHttpRes *r);
 void scr_http_res_write_processing(ScrHttpRes *r);
 void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
+/* writeInformation(status[, headers]): the generic informational response,
+ * status 100..199 but never 101; answers write()'s backpressure boolean. */
+bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed, nullable*/);
+/* The callback forms: the callback fires once the message is written. */
+void scr_http_res_write_continue_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
+void scr_http_res_write_processing_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
+void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/,
+                                       ScrClosure *cb /*moves, nullable*/);
 /* writeHead with a CHECKED-DYNAMIC headers object (borrowed): OBJ
  * entries setHeader in insertion order (string/number values), then the
  * head goes out; undefined/null = the plain head; may throw. */
@@ -207,11 +215,25 @@ void scr_http_res_on_prefinish(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool onc
  * false has its bytes out. */
 void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/);
+/* response.writeInformation(statusCode[, headers][, callback]) — an
+ * arbitrary 1xx response (100..199, 101 refused). */
+void scr_http_res_write_information_dyn(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
+                                        const ScrDyn *headers /*borrowed*/,
+                                        ScrClosure *cb /*moves, nullable*/);
 /* createServer({ joinDuplicateHeaders: true }): repeated request-header
  * names read back joined ", " (Node's option; the default keeps first). */
 void scr_http_server_join_duplicate_headers(ScrNetServer *s);
 /* createServer({ requireHostHeader: false }): allow HTTP/1.1 without Host. */
 void scr_http_server_allow_missing_host_header(ScrNetServer *s);
+/* createServer({ requestTimeout?, headersTimeout? }): the headersTimeout
+ * default (min(60000, requestTimeout)) and Node's headersTimeout <=
+ * requestTimeout check. MAY THROW. */
+void scr_http_server_headers_timeout_default(ScrNetServer *s, const ScrDyn *headers_value /*borrowed*/);
+/* createServer({ connectionsCheckingInterval }): Node's validateInteger
+ * ladder over the connection checker's period. MAY THROW. */
+void scr_http_server_connections_checking_interval(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
+/* createServer({ rejectNonStandardBodyWrites: true }). */
+void scr_http_server_reject_non_standard_body_writes(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
 void scr_http_handler_thunk0(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);
 void scr_http_handler_thunk1(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);
 void scr_http_handler_thunk2(ScrClosure *cb, ScrHttpReq *req, ScrHttpRes *res);
@@ -287,6 +309,10 @@ void scr_http_req_on_close(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_destroy(ScrHttpRes *r);
 void scr_http_res_on_close(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed*/);
+/* writeHead(status, object): parallel names and dyn values (string, number
+ * or string array), with Node's fast and progressive paths. */
+void scr_http_res_write_head_object(ScrHttpRes *r, double status, ScrArr *names /*borrowed*/,
+                                    ScrArr *values /*borrowed*/);
 
 /* node:http, the CLIENT slice (http.request/http.get over the net client
  * machinery — one dialed connection per request, no agent pooling; the
@@ -427,8 +453,9 @@ bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
  * close; an Agent handle = queue accounting); port < 0 means "no port
  * option" — the agent's (settable) defaultPort, then the scheme's. */
 ScrDyn *scr_http_agent_new(bool secure, bool keep_alive, double ka_msecs,
-                            double max_sockets, double max_free, double timeout_ms,
-                            double port /* < 0 = unset: the option-merge default */,
+                            double max_sockets, double max_free, bool has_max_total,
+                            double max_total,
+                            double timeout_ms, double port /* < 0 = unset: the option-merge default */,
                             const ScrDyn *scheduling /* borrowed; NULL = 'lifo' */); /* +1 */
 ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double port,
                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,

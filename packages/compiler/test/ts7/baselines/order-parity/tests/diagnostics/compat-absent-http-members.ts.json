@@ -8,8 +8,8 @@
    "message": "Property 'createConnection' does not exist on type 'Agent'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 614,
-    "end": 630
+    "start": 764,
+    "end": 780
    }
   },
   {
@@ -17,8 +17,8 @@
    "message": "Property 'keepSocketAlive' does not exist on type 'Agent'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 645,
-    "end": 660
+    "start": 795,
+    "end": 810
    }
   },
   {
@@ -26,35 +26,8 @@
    "message": "Property 'reuseSocket' does not exist on type 'Agent'. Did you mean 'freeSockets'?",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 675,
-    "end": 686
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'maxTotalSockets' does not exist on type 'Agent'. Did you mean 'maxSockets'?",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 707,
-    "end": 722
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'signal' does not exist on type 'IncomingMessage'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1007,
-    "end": 1013
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'writeInformation' does not exist on type 'ServerResponse'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1084,
-    "end": 1100
+    "start": 825,
+    "end": 836
    }
   },
   {
@@ -62,8 +35,8 @@
    "message": "Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import(\"node:http\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1236,
-    "end": 1257
+    "start": 1153,
+    "end": 1174
    }
   }
  ]

@@ -38,11 +38,13 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { builtinImportBindingByName } from "../builtins/module-bindings.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
   cjsAbsentMemberValue,
   cjsDestructuredModuleBindingOf,
+  cjsExportsObjectValue,
   cjsModuleLacksExport,
   cjsNestedExportReplacementOf,
   splitRequireBindingOfIdent,
@@ -954,6 +956,19 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
       );
     }
+    // A NESTED declaration's require binding used as a value IS its
+    // exports object: the runtime's per-module view over the module's
+    // export globals. The top-level spelling keeps its fence (a value the
+    // module can mutate after evaluation is not modeled for it), and a
+    // namespace import keeps its own member fences.
+    const bindingDecl = lowerer.checker
+      .getSymbolAtLocation(expr)
+      ?.declarations.find(ts.isVariableDeclaration);
+    const bindingStmt = bindingDecl?.parent?.parent;
+    const nestedBinding = bindingStmt !== undefined && !ts.isSourceFile(bindingStmt.parent);
+    const exportsObject =
+      nestedBinding && dep !== null ? cjsExportsObjectValue(lowerer, dep, expr) : null;
+    if (exportsObject !== null) return exportsObject;
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -1433,6 +1448,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // name when the program created one (`globalThis.X = class X {}`, in this
   // module or another), as in Node, and the ReferenceError otherwise.
   if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    // A named import of a builtin whose export the checker resolves to a
+    // declared TYPE (an ambient interface) leaves the read with no value
+    // symbol, but it is still that module's member: keep the member's own
+    // refusal (node-value-reads.ts) instead of compiling a global read of
+    // the name, which would answer a ReferenceError at run time.
+    const importedMember = builtinImportBindingByName(
+      lowerer,
+      ts.getSourceFileOfNode(expr),
+      expr.text,
+    );
+    if (importedMember !== null)
+      return unloweredModuleMemberValue(lowerer, importedMember, expr, loc, true);
     if (NODE_GLOBALS_WITHOUT_NATIVE.has(expr.text)) lowerer.hostGlobalFence(expr.text, expr);
     return {
       kind: "libCall",

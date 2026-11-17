@@ -140,6 +140,12 @@ struct ScrTestCtx {
   int plan_count;        /* t.assert calls and subtests counted against the plan */
   ScrTestHooks mocks;    /* t.mock: the restore closure of each mock, in creation order */
   double timeout;        /* { timeout } in ms, INFINITY without one */
+  /* A suite's { timeout } as an absolute deadline (its start + timeout):
+   * the bound its hooks and tests race. INFINITY without one and once the
+   * suite's children have finished, so its cleanup runs unbounded. It is
+   * read off the node tree, not thread state, so concurrent sibling suites
+   * never share a deadline. */
+  double deadline_ms;
   bool timed_out;        /* the async body was still pending when the timeout elapsed */
   /* { concurrency }: how many subtests run at once (1 runs them in order),
    * the parent's value without the option. Above 1, each subtest runs on
@@ -321,6 +327,7 @@ static ScrTestCtx *scr_test_node_new(ScrStr *name /*borrowed*/, int mode,
   t->plan = -1;
   t->plan_wait = -1;
   t->timeout = INFINITY;
+  t->deadline_ms = INFINITY;
   t->concurrency = 1;
   t->start_ms = NAN;
   if (scr_test_nnodes == scr_test_nodes_cap) {
@@ -536,21 +543,28 @@ static void scr_test_await_timeout(ScrPromise *p, ScrTestCtx *t) {
   }
 }
 
-/* Node's suite { timeout }: a suite's timer bounds its hooks and the tests
- * inside it — when it elapses the running child is cancelled with Node's
- * "did not finish before its parent" message and the suite fails with its
- * own timeout. The innermost suite's deadline is what a child races. */
-static SCR_TL double scr_test_deadline = INFINITY;
-static SCR_TL ScrTestCtx *scr_test_deadline_owner = NULL;
+/* The nearest suite whose { timeout } deadline bounds `node`, and that
+ * deadline: a test races the deadline of the innermost suite above it, and
+ * two suites running side by side on their own fibers keep their own. */
+static ScrTestCtx *scr_test_deadline_of(const ScrTestCtx *node, double *deadline) {
+  for (const ScrTestCtx *n = node; n != NULL; n = n->parent) {
+    if (n->is_suite && isfinite(n->deadline_ms)) {
+      *deadline = n->deadline_ms;
+      return (ScrTestCtx *)n;
+    }
+  }
+  return NULL;
+}
 
 /* Waits for a body or hook, bounded by the test's own { timeout } and by
  * the enclosing suite's { timeout } deadline, whichever is nearer. When the
  * suite deadline wins, the suite fails with its own "test timed out after
  * <timeout>ms" and the running child is cancelled with Node's parent
  * message; the body keeps running unobserved. */
-static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t) {
-  double suite_left =
-      scr_test_deadline_owner != NULL ? scr_test_deadline - scr_now_ms() : INFINITY;
+static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *scope) {
+  double suite_deadline = INFINITY;
+  ScrTestCtx *owner = scr_test_deadline_of(t != NULL ? t : scope, &suite_deadline);
+  double suite_left = owner != NULL ? suite_deadline - scr_now_ms() : INFINITY;
   double own_left = t != NULL && isfinite(t->timeout) ? t->timeout : INFINITY;
   if (own_left <= suite_left) {
     if (own_left == INFINITY) {
@@ -573,7 +587,6 @@ static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t) {
     scr_promise_release(timer);
   }
   if (scr_exc_pending() || !scr_promise_is_pending(p)) return;
-  ScrTestCtx *owner = scr_test_deadline_owner;
   if (owner != NULL && !owner->err) {
     char num[32];
     size_t n = scr_f64_to_str(owner->timeout, num);
@@ -585,9 +598,13 @@ static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t) {
     owner->err = scr_exc_take();
   }
   static const char msg[] = "test did not finish before its parent and was cancelled";
-  if (t != NULL) {
-    t->timed_out = true;
-    scr_test_abort_now(t);
+  /* The running test is the one cancelled; a hook's test is the scope it
+   * runs for, which reports the cancellation as a cancelled test. */
+  ScrTestCtx *cancelled = t;
+  if (cancelled == NULL && scope != NULL && !scope->is_suite) cancelled = scope;
+  if (cancelled != NULL) {
+    cancelled->timed_out = true;
+    scr_test_abort_now(cancelled);
   }
   scr_throw_str(scr_str_new(msg, sizeof msg - 1));
 }
@@ -727,7 +744,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
       ((void (*)(ScrClosure *, ScrTestCtx *, ScrClosure *))cb->fn)(
           cb, takes_ctx ? scr_testctx_retain(ctx) : NULL, scr_closure_retain(done));
       if (!scr_exc_pending()) {
-        scr_test_await_bounded(d->p, timed);
+        scr_test_await_bounded(d->p, timed, scope);
       }
     }
     scr_closure_release(done);
@@ -750,7 +767,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
             ? ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *)) cb->fn)(cb, scr_testctx_retain(ctx))
             : ((ScrPromise * (*)(ScrClosure *)) cb->fn)(cb);
     if (!scr_exc_pending() && p) {
-      scr_test_await_bounded(p, timed);
+      scr_test_await_bounded(p, timed, scope);
     }
     scr_promise_release(p);
   } else if (takes_ctx) {
@@ -863,6 +880,29 @@ static void scr_test_fiber_leave(void) {
   }
 }
 
+static void scr_test_cancel_unrun(ScrTestCtx *c);
+
+/* The next queued sibling takes the freed slot. A suite { timeout } that
+ * elapsed cancels the children still queued, without running them, as Node
+ * never starts what the deadline passed. */
+static void scr_test_start_next_queued(ScrTestCtx *parent) {
+  double dl = INFINITY;
+  ScrTestCtx *owner = scr_test_deadline_of(parent, &dl);
+  bool expired = owner != NULL && (owner->timed_out || scr_now_ms() >= dl);
+  for (size_t i = 0; i < parent->nchildren; i++) {
+    ScrTestCtx *c = parent->children[i];
+    if (!c->queued) continue;
+    if (expired) {
+      c->queued = false;
+      scr_test_cancel_unrun(c);
+      scr_promise_fulfill_void(c->done);
+      continue;
+    }
+    scr_test_spawn(c);
+    break;
+  }
+}
+
 static void scr_test_child_entry(ScrFiber *self, void *arg) {
   (void)self;
   ScrTestCtx *c = arg;
@@ -874,13 +914,7 @@ static void scr_test_child_entry(ScrFiber *self, void *arg) {
   scr_test_run_node(c);
   scr_test_fiber_leave();
   parent->active--;
-  /* The next queued sibling takes the freed slot. */
-  for (size_t i = 0; i < parent->nchildren; i++) {
-    if (parent->children[i]->queued) {
-      scr_test_spawn(parent->children[i]);
-      break;
-    }
-  }
+  scr_test_start_next_queued(parent);
   scr_promise_fulfill_void(c->done);
   if (parent->slot) scr_promise_fulfill_void(parent->slot);
   scr_testctx_release(c);
@@ -898,6 +932,15 @@ static void scr_test_spawn(ScrTestCtx *c) {
 static void scr_test_start(ScrTestCtx *c) {
   ScrTestCtx *parent = c->parent;
   c->done = scr_promise_new();
+  /* A suite { timeout } that already elapsed cancels a subtest started
+   * after it, as Node never starts what the deadline passed. */
+  double dl = INFINITY;
+  ScrTestCtx *owner = scr_test_deadline_of(parent, &dl);
+  if (owner != NULL && (owner->timed_out || scr_now_ms() >= dl)) {
+    scr_test_cancel_unrun(c);
+    scr_promise_fulfill_void(c->done);
+    return;
+  }
   if (parent->active >= parent->concurrency) {
     c->queued = true;
     return;
@@ -1148,10 +1191,13 @@ static void scr_test_run_children(ScrTestCtx *t) {
     }
     /* A suite { timeout } that elapsed cancels the children that have not
      * run, with Node's parent message. */
-    if (scr_test_deadline_owner == t &&
-        (t->timed_out || scr_now_ms() >= scr_test_deadline)) {
-      scr_test_cancel_unrun(c);
-      continue;
+    {
+      double dl = INFINITY;
+      ScrTestCtx *owner = scr_test_deadline_of(t, &dl);
+      if (owner != NULL && (owner->timed_out || scr_now_ms() >= dl)) {
+        scr_test_cancel_unrun(c);
+        continue;
+      }
     }
     /* Subtests t.test already ran INLINE at their call site, or started on
      * their own fiber. */
@@ -1206,13 +1252,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
       t->listed = true; /* a failing suite lists in the failing section */
       scr_test_cancel_pending(t);
     } else if (!t->err) {
-      double saved_deadline = scr_test_deadline;
-      ScrTestCtx *saved_owner = scr_test_deadline_owner;
-      if (isfinite(t->timeout)) {
-        double end = scr_now_ms() + t->timeout;
-        if (end < scr_test_deadline) scr_test_deadline = end;
-        scr_test_deadline_owner = t;
-      }
+      if (isfinite(t->timeout)) t->deadline_ms = start + t->timeout;
       if (t->concurrency > 1) {
         scr_test_defer++;
         scr_test_run_children(t);
@@ -1223,8 +1263,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
       /* The suite's after hooks are the cleanup a timed-out suite still
        * runs, as Node runs them; they are no longer bounded by the elapsed
        * deadline. */
-      scr_test_deadline = saved_deadline;
-      scr_test_deadline_owner = saved_owner;
+      t->deadline_ms = INFINITY;
       scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
       if (scr_exc_pending()) {
         t->err = scr_exc_take();

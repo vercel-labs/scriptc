@@ -5816,7 +5816,9 @@ static void scr_http_client_autocork_nt(ScrClosure *cb) {
 }
 
 static void scr_http_client_autocork(ScrHttpClientReq *c) {
-  if (c->ended || c->destroyed || c->close_emitted || c->sock == NULL || c->corked > 0) return;
+  if (c->ended || c->destroyed || c->close_emitted || !c->socket_emitted || c->sock == NULL ||
+      c->corked > 0)
+    return;
   c->corked++;
   ScrClosure *cb = scr_closure_new((void *)&scr_http_client_autocork_nt, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_client_retain_v, &scr_http_client_release_v, NULL);

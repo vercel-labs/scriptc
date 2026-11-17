@@ -75,6 +75,7 @@ import {
   jsStoresWrittenValue,
   jsWritableBindingDeclaration,
   operatorOperandNodes,
+  voidTruthinessNeedsRuntimeValue,
 } from "../tsc-codes.js";
 import {
   builtinClassKind,
@@ -93,6 +94,7 @@ import { lowerParallelCall } from "./parallel-loops.js";
 import { isExperimentalDeclarationFile } from "../experimental-import.js";
 import {
   checkCycleBindingAccesses,
+  heritageChecksFor,
   refuseUncheckedCycleReads,
   type CycleInitFlag,
 } from "./cycle-initialization.js";
@@ -148,6 +150,7 @@ import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { concreteCollectionNarrow } from "./collection-narrowing.js";
 import { sharedDynConversion, statsDynConversion } from "./expressions/narrowing.js";
 import { lowerWorkerMetadata } from "./builtins/workers.js";
+import { lowerAbortSignalNew } from "./builtins/abort-signal.js";
 import { fenceStaticBlobMember, lowerBlobNew, lowerStaticBlobCall } from "./builtins/blob.js";
 import {
   lowerWebAssemblyCall,
@@ -169,7 +172,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf, writableStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
-import { lowerSqliteNew } from "./builtins/sqlite.js";
+import { lowerSqliteCall, lowerSqliteNew } from "./builtins/sqlite.js";
 import { lowerPerfNew } from "./builtins/performance.js";
 import {
   installFetchBodyWebStreams,
@@ -5793,6 +5796,10 @@ export class Lowerer {
   /** Initialization flags of classes reachable before their statement ran,
    * by class name (cycle-initialization.ts). */
   readonly classInitFlags = new Map<string, CycleInitFlag>();
+  /** Class declarations whose `extends` clause reads a flagged cycle class:
+   * the flag is checked where that class statement runs
+   * (cycle-initialization.ts). */
+  readonly heritageClassChecks = new Map<ts.ClassLikeDeclaration, CycleInitFlag[]>();
   /** Initialization flags of import-cycle bindings that have no module
    * storage and are only ever called (cycle-initialization.ts). */
   readonly calledBindingInitFlags: CycleInitFlag[] = [];
@@ -6286,6 +6293,7 @@ export class Lowerer {
       checkedTable("closureDynLets", () => this.closureDynLets.size),
       checkedTable("cycleInitFlags", () => this.cycleInitFlags.size),
       checkedTable("classInitFlags", () => this.classInitFlags.size),
+      checkedTable("heritageClassChecks", () => this.heritageClassChecks.size),
       checkedTable("calledBindingInitFlags", () => this.calledBindingInitFlags.length),
       checkedTable("cycleInitDeclarations", () => this.cycleInitDeclarations.size),
       checkedTable("uninitializedLexicalGlobals", () => this.uninitializedLexicalGlobals.size),
@@ -10248,6 +10256,22 @@ export class Lowerer {
           if (setterParam) this.jsWidenedBindings.add(setterParam);
           return undefined;
         }
+        // A void-typed truthiness test preflight admitted because its callee
+        // may answer a value (tsc-codes.ts TS1345): the function the program
+        // stores in the callee's member keeps its own return value only in
+        // checked-dynamic storage, so the binding the callee is read from
+        // widens (lower-calls.ts performs the call dynamically).
+        if (
+          ts.isCallExpression(node) &&
+          this.opinionAt(node, 1345) &&
+          voidTruthinessNeedsRuntimeValue(node, this.program)
+        ) {
+          const calleeBinding = this.voidTruthinessCalleeBinding(node);
+          if (calleeBinding !== null && !this.runtimeOptionalBindingTypes.has(calleeBinding)) {
+            widenBinding(calleeBinding);
+            return undefined;
+          }
+        }
         // An annotated binding whose initializer the checker cannot show
         // fits the annotation (`/** @type {Base|undefined} */ const b = v;`
         // with `v` an `any`) holds the value it is given.
@@ -10359,6 +10383,19 @@ export class Lowerer {
         return undefined;
       });
     }
+  }
+
+  /** The binding a void-typed truthiness test's callee is read from
+   * (`Internals.d.f()` reads through `Internals`), or null when the callee
+   * is reached any other way. */
+  private voidTruthinessCalleeBinding(expr: ts.CallExpression): ts.Symbol | null {
+    let callee: ts.Node = expr.expression;
+    while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+    let root: ts.Node = callee;
+    while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+      root = root.expression;
+    while (ts.isParenthesizedExpression(root)) root = root.expression;
+    return ts.isIdentifier(root) ? this.resolveValueSymbol(root) : null;
   }
 
   /** The bindings that take the pairs or values of an open spread value's
@@ -21524,6 +21561,12 @@ export class Lowerer {
     return lowerStaticFieldInits(this, info);
   }
 
+  /** The initialization checks a class statement carries for the cycle
+   * classes its `extends` clause reads. */
+  heritageChecksFor(decl: ts.ClassLikeDeclaration, loc: SrcLoc): IrStmt[] {
+    return heritageChecksFor(this, decl, loc);
+  }
+
   /** Method-like members with their collected method-map names. Body
    * lowering omits abstract declarations; ABI analysis must include them
    * because an abstract-typed call selects the same virtual slot. An array,
@@ -23306,6 +23349,7 @@ export class Lowerer {
       lowerDiffieHellmanCall(this, expr) ??
       lowerNetAddressCall(this, expr) ??
       lowerMimeCall(this, expr) ??
+      lowerSqliteCall(this, expr) ??
       lowerFetchElementMethodCall(this, expr) ??
       lowerDynamicImportCall(this, expr) ??
       lowerCall(this, expr)
@@ -23542,6 +23586,7 @@ export class Lowerer {
       lowerInternTableNew(this, expr) ??
       lowerThreadSlotsNew(this, expr) ??
       lowerAbortControllerNew(this, expr) ??
+      lowerAbortSignalNew(this, expr) ??
       lowerDisposableStackNew(this, expr) ??
       lowerEventTargetNew(this, expr) ??
       lowerFetchWebNew(this, expr) ??

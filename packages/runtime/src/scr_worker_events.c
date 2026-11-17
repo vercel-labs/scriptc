@@ -61,6 +61,11 @@ typedef struct ScrWorkerView {
   ScrStream *stdin_stream;
   ScrDyn *stdin_box;
   bool stdin_captured;
+  /* worker.performance: { eventLoopUtilization }, made on first read, and
+   * whether the worker's 'online' event has been delivered: Node answers the
+   * zero object until then, even when the thread already published metrics */
+  ScrDyn *performance_box;
+  bool online;
   struct ScrWorkerView *next;
 } ScrWorkerView;
 
@@ -180,6 +185,7 @@ static void scr_worker_view_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   }
   visit(view->stdin_stream, ctx);
   visit(view->stdin_box, ctx);
+  visit(view->performance_box, ctx);
 }
 
 static void scr_worker_view_gcfree(void *ptr) {
@@ -208,6 +214,7 @@ static void scr_worker_view_destroy(void *ptr) {
     free(wait);
   }
   scr_promise_release(view->disposal);
+  scr_dyn_release(view->performance_box);
   for (int i = 0; i < 2; i++) {
     if (view->stdio[i]) scr_worker_stdio_ops->release(view->stdio[i]);
     scr_dyn_release(view->stdio_box[i]);
@@ -444,6 +451,121 @@ static bool scr_worker_transfer_has(const ScrDyn *transfer, const ScrWorkerView 
  * the dispatch ladders below call strcmp only for names that can match. */
 static inline bool method_is(const char *method, const char *name) {
   return method[0] == name[0] && strcmp(method, name) == 0;
+}
+
+/* ── worker.performance ──────────────────────────────────────────────── */
+
+/* A reading's `idle` or `active` as JS reads it (Node's internal
+ * eventLoopUtilization subtracts the properties without validating them). */
+static bool scr_worker_perf_field(const ScrDyn *reading, const char *name, double *out) {
+  ScrDyn *value = scr_dyn_obj_read(reading, name, strlen(name));
+  bool ok = value && !scr_exc_pending() && scr_dyn_number_coerce_js(value, out);
+  scr_dyn_release(value);
+  return ok && !scr_exc_pending();
+}
+
+/* The utilization object, in Node's key order. */
+static ScrDyn *scr_worker_perf_object(double idle, double active) {
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "idle", 4, scr_dyn_new_num(idle));
+  scr_dyn_obj_set(object, "active", 6, scr_dyn_new_num(active));
+  scr_dyn_obj_set(object, "utilization", 11, scr_dyn_new_num(active / (idle + active)));
+  return object;
+}
+
+/* Node's internalEventLoopUtilization over the worker's loop: `now` is this
+ * thread's process.hrtime, the loop start and idle time are the worker's. */
+static ScrDyn *scr_worker_perf_elu_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  double id = scr_box_get_f64(closure->caps[0]);
+  ScrWorkerView *view = scr_worker_views;
+  while (view && (double)scr_worker_thread_id(view->thread) != id) view = view->next;
+  double loop_start = 0;
+  double idle = 0;
+  /* Node answers zeros before the worker's online event has been delivered —
+   * its own metrics may already be published by then — and after the worker
+   * exits, when its view has left this thread's registry. */
+  bool live = view && view->online && !view->closed &&
+              scr_worker_thread_metrics(view->thread, &loop_start, &idle) && loop_start > 0;
+  /* Node answers a literal zero object, never a 0/0 utilization. */
+  if (!live) {
+    ScrDyn *zeros = scr_dyn_new_obj();
+    scr_dyn_obj_set(zeros, "idle", 4, scr_dyn_new_num(0));
+    scr_dyn_obj_set(zeros, "active", 6, scr_dyn_new_num(0));
+    scr_dyn_obj_set(zeros, "utilization", 11, scr_dyn_new_num(0));
+    return zeros;
+  }
+  /* A static reading crossing into the checked-dynamic tree reads its
+   * fields through the materialized view. */
+  ScrDyn *materialized[2] = {NULL, NULL};
+  const ScrDyn *util[2] = {NULL, NULL};
+  for (size_t i = 0; i < 2; i++) {
+    if ((size_t)argc <= i || !scr_dyn_truthy(args[i])) continue;
+    if (args[i]->kind == SCR_DYN_TYPED_REF) {
+      materialized[i] = scr_dyn_typed_ref_materialize(args[i]);
+      if (!materialized[i] || scr_exc_pending()) {
+        scr_dyn_release(materialized[0]);
+        scr_dyn_release(materialized[1]);
+        return NULL;
+      }
+      util[i] = materialized[i];
+    } else {
+      util[i] = args[i];
+    }
+  }
+  double out_idle = idle;
+  double out_active = scr_perf_now() - loop_start - idle;
+  if (util[1]) {
+    /* Node reads utilization1's fields as JS reads them, so a missing first
+     * reading throws its TypeError. */
+    const ScrDyn *first = util[0] ? util[0] : scr_dyn_undefined();
+    double idle1, active1, idle2, active2;
+    if (!scr_worker_perf_field(first, "idle", &idle1) ||
+        !scr_worker_perf_field(first, "active", &active1) ||
+        !scr_worker_perf_field(util[1], "idle", &idle2) ||
+        !scr_worker_perf_field(util[1], "active", &active2)) {
+      scr_dyn_release(materialized[0]);
+      scr_dyn_release(materialized[1]);
+      return NULL;
+    }
+    out_idle = idle1 - idle2;
+    out_active = active1 - active2;
+  } else if (util[0]) {
+    double idle0, active0;
+    if (!scr_worker_perf_field(util[0], "idle", &idle0) ||
+        !scr_worker_perf_field(util[0], "active", &active0)) {
+      scr_dyn_release(materialized[0]);
+      return NULL;
+    }
+    out_idle = idle - idle0;
+    out_active = out_active - active0;
+  }
+  ScrDyn *object = scr_worker_perf_object(out_idle, out_active);
+  scr_dyn_release(materialized[0]);
+  scr_dyn_release(materialized[1]);
+  return object;
+}
+
+/* worker.performance: an object holding the bound eventLoopUtilization, as
+ * Node's constructor makes one for every Worker. */
+static ScrDyn *scr_worker_performance_object(ScrWorkerView *view) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[0], (double)scr_worker_thread_id(view->thread));
+  ScrDyn *function = scr_dyn_new_func(closure, &scr_worker_perf_elu_call, 2,
+                                      "(utilization1, utilization2)", "eventLoopUtilization");
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "eventLoopUtilization", 20, function);
+  return object;
+}
+
+/* worker.performance over a Worker handle (the compiler's worker.performance
+ * libCall): the same object reading the property answers. */
+ScrDyn *scr_worker_performance(ScrDyn *value) {
+  if (!value || value->kind != SCR_DYN_HANDLE || value->v.handle.tag != SCR_DYNH_WORKER)
+    return scr_dyn_retain(scr_dyn_undefined());
+  ScrWorkerView *view = value->v.handle.ptr;
+  if (!view->performance_box) view->performance_box = scr_worker_performance_object(view);
+  return scr_dyn_retain(view->performance_box);
 }
 
 static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *method,
@@ -702,6 +824,10 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
     ScrDyn *value = scr_dyn_new_str(copy);
     scr_str_release(copy);
     return value;
+  }
+  if (!view->port && length == 11 && !memcmp(key, "performance", 11)) {
+    if (!view->performance_box) view->performance_box = scr_worker_performance_object(view);
+    return scr_dyn_retain(view->performance_box);
   }
   if (!view->port && length == 14 && !memcmp(key, "resourceLimits", 14))
     return view->closed ? scr_dyn_new_obj() : scr_worker_refusal("worker.resourceLimits is not supported yet");
@@ -1027,6 +1153,7 @@ static void scr_worker_dispatch(void) {
     scr_mail_event_free(event);
     return;
   }
+  if (event->kind == SCR_WORKER_ONLINE) view->online = true;
   const char *event_name = event->kind == SCR_WORKER_ONLINE ? "online" :
     event->kind == SCR_WORKER_EXIT ? "exit" : event->kind == SCR_WORKER_ERROR ? "error" : "message";
   ScrDyn *argument = event->message ? scr_message_decode(event->message) :

@@ -372,6 +372,28 @@ const symbolStringOperator = (_node: ts.Node, d: ts.Diagnostic): boolean => {
 const stringWrapperReceiver = (_node: ts.Node, d: ts.Diagnostic): boolean =>
   ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'");
 
+/** TS2630 in a JavaScript source whose target is a function DECLARATION the
+ * program reassigns: the declaration lowers to a mutable binding holding the
+ * function as a checked-dynamic value (rebindable-functions.ts), which the
+ * assignment replaces as Node does. A named function expression's own inner
+ * binding is immutable, and its assignment keeps the diagnostic: strict code
+ * throws Node's TypeError there and sloppy code ignores the write. */
+const rebindableFunctionAssignment = (
+  node: ts.Node,
+  _d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
+  let target: ts.Node = node;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    target = target.left;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isIdentifier(target)) return false;
+  const symbol = program.getTypeChecker().getSymbolAtLocation(target);
+  const declaration = symbol?.valueDeclaration;
+  return declaration !== undefined && ts.isFunctionDeclaration(declaration);
+};
+
 /** The deprecated `Buffer(...)` call without `new`, which Node's Buffer
  * function accepts (containers/bytes.ts lowers it), `fs.ReadStream(...)` /
  * `fs.WriteStream(...)`, which construct their stream
@@ -793,12 +815,51 @@ const undefinedAtRunTime = (node: ts.Node, program: ts.Program, depth = 0): bool
   return named.initializer === held && constInitializerOf(held);
 };
 
+/** A void-typed truthiness operand whose value Node reads at run time: a
+ * call the checker types `void` that the analysis cannot prove answers
+ * undefined. The lowering performs the call through the checked-dynamic
+ * invocation so the test reads the value Node's call answers
+ * (lower-calls.ts). */
+export function voidTruthinessNeedsRuntimeValue(node: ts.Node, program: ts.Program): boolean {
+  if (!ts.isCallExpression(node)) return false;
+  // The callee is a MEMBER of a plain object the program builds
+  // (`Internals.d.f()`), so the lowering can give that object
+  // checked-dynamic storage and read back the function the program stored
+  // there, value included. A callee that is a binding, a parameter, a class
+  // instance's method or a class value keeps the refusal: their storage
+  // cannot follow the value a `void` signature discards.
+  let callee: ts.Node = node.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  if (
+    (!ts.isPropertyAccessExpression(callee) && !ts.isElementAccessExpression(callee)) ||
+    callee.questionDotToken !== undefined
+  )
+    return false;
+  let root: ts.Node = callee.expression;
+  while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+    root = root.expression;
+  while (ts.isParenthesizedExpression(root)) root = root.expression;
+  if (!ts.isIdentifier(root)) return false;
+  const checker = program.getTypeChecker();
+  const rootType = checker.getNonNullableType(checker.getTypeAtLocation(root));
+  if ((rootType.flags & ts.TypeFlags.Object) === 0) return false;
+  const objectType = rootType as ts.ObjectType;
+  if ((objectType.objectFlags & ts.ObjectFlags.ClassOrInterface) !== 0) return false;
+  if (checker.getSignaturesOfType(rootType, ts.SignatureKind.Call).length > 0) return false;
+  if (checker.getSignaturesOfType(rootType, ts.SignatureKind.Construct).length > 0) return false;
+  return !undefinedAtRunTime(node, program);
+}
+
 /** TS1345 where Node's ToBoolean of the operand is known: the boolean of a
- * discarded negation is never read, and an operand that is always
- * `undefined` tests false. Any other void-typed operand keeps the triage
+ * discarded negation is never read, an operand that is always `undefined`
+ * tests false, and a call through a plain object's member reads the value
+ * its callee answers (voidTruthinessNeedsRuntimeValue). Any other void-typed
+ * operand keeps the triage
  * row, because the lowering has no runtime value for it. */
 const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean =>
-  discardedVoidNegation(node) || undefinedAtRunTime(node, program);
+  discardedVoidNegation(node) ||
+  undefinedAtRunTime(node, program) ||
+  voidTruthinessNeedsRuntimeValue(node, program);
 
 /* ---- family reasons ---- */
 
@@ -1574,6 +1635,21 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  // 2630, an assignment to a reassigned JavaScript function declaration:
+  // the declaration is a mutable binding that holds the function as a
+  // checked-dynamic value (rebindable-functions.ts), and the write replaces
+  // it as Node does. A named function expression's inner binding keeps the
+  // triage row (strict code throws there).
+  [
+    2630,
+    at(
+      rebindableFunctionAssignment,
+      WIDEN(
+        "a JavaScript function declaration's binding is mutable, and the declaration's value lives in checked-dynamic storage the write replaces",
+        ["tests/corpus/js-function-declaration-reassigned.js"],
+      ),
+    ),
+  ],
   [
     2365,
     at(
@@ -1684,23 +1760,29 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
-  // 1345, a truthiness test of a void-typed operand whose answer is known
-  // (`!register();`, `if (this["~findRoute"](event))` on an empty base
-  // method): a discarded negation's boolean is never read, and a call of a
-  // function whose own body never returns a value answers undefined, which
-  // tests false; the operand still evaluates once for its effects and any
-  // exception. A class method overridden to answer a value is dispatched by
-  // the class, which carries that value. Every other void-typed operand keeps
-  // the triage row below. A checked project keeps the diagnostic: it asked
-  // tsc to judge the test.
+  // 1345, a truthiness test of a void-typed operand: a discarded negation's
+  // boolean is never read, a call of a function whose own body never
+  // returns a value answers undefined, which tests false, and a call whose
+  // callee the analysis cannot prove answers undefined reads the value the
+  // call answered — the call runs through the checked-dynamic invocation
+  // and the test reads its result, as Node's does (lower-calls.ts). The
+  // operand still evaluates once for its effects and any exception. A class
+  // method overridden to answer a value is dispatched by the class, which
+  // carries that value. Every other void-typed operand keeps the triage row
+  // below. A checked project keeps the diagnostic: it asked tsc to judge the
+  // test.
   [
     1345,
     inCheckedJs(
       at(
         voidTruthinessKnown,
         CHECKER(
-          "a discarded negation's boolean is never read, and a call of a function whose body returns no value is undefined, which tests false; the lowering evaluates the operand once for its effects",
-          ["tests/corpus/discarded-void-negation.mjs", "tests/corpus/js-void-call-truthiness.js"],
+          "a discarded negation's boolean is never read, a call of a function whose body returns no value is undefined, and a call the analysis cannot prove answers a value is performed dynamically so the test reads that value; the operand evaluates once for its effects",
+          [
+            "tests/corpus/discarded-void-negation.mjs",
+            "tests/corpus/js-void-call-truthiness.js",
+            "tests/corpus/js-void-call-reassigned-function.js",
+          ],
         ),
       ),
     ),

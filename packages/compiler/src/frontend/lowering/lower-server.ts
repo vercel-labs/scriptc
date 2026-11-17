@@ -6762,6 +6762,156 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
     : { kind: "libCall", fn: "tls.connect", args: [port, host, opts], type: NETSOCKET_T, loc };
 }
 
+/** `new tls.Server(options[, secureConnectionListener])`: Node's Server
+ * constructor, the same lowering tls.createServer takes. */
+export function lowerTlsServerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  const callee = expr.expression;
+  const isTlsServer =
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "Server" &&
+      lowerer.builtinMemberOf(callee)?.module === "tls") ||
+    (ts.isIdentifier(callee) &&
+      lowerer.builtinImportOf(callee)?.module === "tls" &&
+      lowerer.builtinImportOf(callee)?.member === "Server");
+  if (!isTlsServer) return null;
+  const loc = locOf(expr);
+  const args = expr.arguments?.nodes ?? [];
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      "new tls.Server with a spread argument",
+      expr,
+      "the supported form is new tls.Server({ cert, key }, socket => ...)",
+    );
+  }
+  return lowerTlsCreateServer(lowerer, expr, args, loc);
+}
+
+/** `x instanceof tls.Server`: the server handle's TLS marker. Null when
+ * the right side is not tls.Server. */
+export function lowerTlsServerInstanceOf(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const callee = expr.right;
+  const isTlsServer =
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "Server" &&
+      lowerer.builtinMemberOf(callee)?.module === "tls") ||
+    (ts.isIdentifier(callee) &&
+      lowerer.builtinImportOf(callee)?.module === "tls" &&
+      lowerer.builtinImportOf(callee)?.member === "Server");
+  if (!isTlsServer) return null;
+  const value = lowerer.lowerExpr(expr.left);
+  if (value.type.kind === "netServer") {
+    return { kind: "libCall", fn: "tls.serverIs", args: [value], type: BOOL, loc };
+  }
+  // A union (a server or null) and an untyped value answer through the
+  // handle tag at run time.
+  if (value.type.kind === "dyn" || value.type.kind === "union") {
+    return {
+      kind: "libCall",
+      fn: "tls.serverIsDyn",
+      args: [lowerer.coerceToExpected(value, DYN)],
+      type: BOOL,
+      loc,
+    };
+  }
+  // Every other value is no tls.Server; the operand still runs. A bare
+  // null/undefined literal is a pure no-op with no IR value of its own, so it
+  // drops instead of tripping the validator's bare-unitLit rule.
+  if (value.kind === "unitLit") return { kind: "boolLit", value: false, type: BOOL, loc };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: { kind: "boolLit", value: false, type: BOOL, loc },
+    type: BOOL,
+    loc,
+  };
+}
+
+/** tls.createServer(options[, secureConnectionListener]) and
+ * `new tls.Server(...)`: the same constructor either way. */
+function lowerTlsCreateServer(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr {
+  if (args.length < 1 || args.length > 2) {
+    lowerer.noLowering(
+      `createServer with ${args.length} arguments`,
+      expr,
+      "the supported form is createServer({ cert, key }, socket => ...)",
+    );
+  }
+  const opts = lowerTlsServerOptionsOrDyn(
+    lowerer,
+    args[0]!,
+    "tls.createServer",
+    false,
+    TLS_SERVER_RUNTIME_OPTIONS,
+    true,
+  );
+  if (args.length === 1) {
+    if (opts.dyn !== undefined)
+      return {
+        kind: "libCall",
+        fn: "tls.createServerDyn",
+        args: [opts.dyn],
+        type: NETSERVER_T,
+        loc,
+      };
+    return opts.sni !== undefined
+      ? {
+          kind: "libCall",
+          fn: "tls.createServerSni",
+          args: [opts.cert, opts.key, opts.sni],
+          type: NETSERVER_T,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: "tls.createServer",
+          args: [opts.cert, opts.key],
+          type: NETSERVER_T,
+          loc,
+        };
+  }
+  const { cb } = lowerCallbackArg(
+    lowerer,
+    args[1]!,
+    "secureConnection listeners",
+    1,
+    (p) => p.kind === "netSocket",
+    "use (socket) or ()",
+    [NETSOCKET_T],
+  );
+  if (opts.dyn !== undefined)
+    return {
+      kind: "libCall",
+      fn: "tls.createServerDynCb",
+      args: [opts.dyn, cb],
+      type: NETSERVER_T,
+      loc,
+    };
+  return opts.sni !== undefined
+    ? {
+        kind: "libCall",
+        fn: "tls.createServerSniCb",
+        args: [opts.cert, opts.key, opts.sni, cb],
+        type: NETSERVER_T,
+        loc,
+      }
+    : {
+        kind: "libCall",
+        fn: "tls.createServerCb",
+        args: [opts.cert, opts.key, cb],
+        type: NETSERVER_T,
+        loc,
+      };
+}
+
 /** Module-function calls on tls import bindings: createServer(options[,
  * secureConnectionListener]) — the listener fires post-handshake with a
  * socket that behaves exactly like a net socket. Everything else the
@@ -6775,78 +6925,7 @@ function lowerTlsModuleCall(
 ): IrExpr {
   const args = expr.arguments.nodes;
   if (bi.member === "createServer") {
-    if (args.length < 1 || args.length > 2) {
-      lowerer.noLowering(
-        `createServer with ${args.length} arguments`,
-        expr,
-        "the supported form is createServer({ cert, key }, socket => ...)",
-      );
-    }
-    const opts = lowerTlsServerOptionsOrDyn(
-      lowerer,
-      args[0]!,
-      "tls.createServer",
-      false,
-      TLS_SERVER_RUNTIME_OPTIONS,
-      true,
-    );
-    if (args.length === 1) {
-      if (opts.dyn !== undefined)
-        return {
-          kind: "libCall",
-          fn: "tls.createServerDyn",
-          args: [opts.dyn],
-          type: NETSERVER_T,
-          loc,
-        };
-      return opts.sni !== undefined
-        ? {
-            kind: "libCall",
-            fn: "tls.createServerSni",
-            args: [opts.cert, opts.key, opts.sni],
-            type: NETSERVER_T,
-            loc,
-          }
-        : {
-            kind: "libCall",
-            fn: "tls.createServer",
-            args: [opts.cert, opts.key],
-            type: NETSERVER_T,
-            loc,
-          };
-    }
-    const { cb } = lowerCallbackArg(
-      lowerer,
-      args[1]!,
-      "secureConnection listeners",
-      1,
-      (p) => p.kind === "netSocket",
-      "use (socket) or ()",
-      [NETSOCKET_T],
-    );
-    if (opts.dyn !== undefined)
-      return {
-        kind: "libCall",
-        fn: "tls.createServerDynCb",
-        args: [opts.dyn, cb],
-        type: NETSERVER_T,
-        loc,
-      };
-    return opts.sni !== undefined
-      ? {
-          kind: "libCall",
-          fn: "tls.createServerSniCb",
-          args: [opts.cert, opts.key, opts.sni, cb],
-          type: NETSERVER_T,
-          loc,
-        }
-      : {
-          kind: "libCall",
-          fn: "tls.createServerCb",
-          args: [opts.cert, opts.key, cb],
-          type: NETSERVER_T,
-          loc,
-        };
+    return lowerTlsCreateServer(lowerer, expr, args, loc);
   }
   if (bi.member === "connect") {
     return lowerTlsConnectCall(lowerer, expr, loc);

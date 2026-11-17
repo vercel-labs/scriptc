@@ -9174,11 +9174,14 @@ function analyzeEsmNamedImportLinks(
     return npmStaticDepSf7(program, from, spec);
   };
 
+  /** One identity per CommonJS module a star re-export spreads, so a name
+   * the same module contributes through two paths stays unambiguous. */
+  const cjsStarExports = new Map<ts.SourceFile, object>();
   const runtimeExport = (
     dep: ts.SourceFile,
     name: string,
     seenModules: ReadonlySet<ts.SourceFile> = new Set(),
-  ): ts.Symbol | undefined => {
+  ): unknown => {
     if (seenModules.has(dep)) return undefined;
     const nextSeen = new Set(seenModules);
     nextSeen.add(dep);
@@ -9221,14 +9224,56 @@ function analyzeEsmNamedImportLinks(
     // resolved symbol may arrive through multiple stars, while distinct
     // symbols make the name unavailable. `default` never star-reexports.
     if (name === "default") return undefined;
-    let starExport: ts.Symbol | undefined;
+    let starExport: unknown;
     for (const stmt of dep.statements.nodes) {
       if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly || stmt.exportClause !== undefined)
         continue;
       if (stmt.moduleSpecifier === undefined || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
       const target = resolveEdge(dep, stmt.moduleSpecifier.text);
-      if (target === null || target.fileName.endsWith(".json") || !isNodeEsmFile7(target, program))
+      if (target === null || target.fileName.endsWith(".json")) continue;
+      if (!isNodeEsmFile7(target, program)) {
+        // `export *` over a CommonJS module: Node re-exports the names its
+        // lexer detects through the module's ESM facade (a member a branch
+        // attaches counts — the lexer reads bytes, not control flow), its
+        // CommonJS re-exports included, and never `default`. Each CommonJS
+        // module contributes bindings of its own, so one name arriving from
+        // two of them is ambiguous exactly as two ES modules' would be.
+        if (!isCjsJsFile7(target, program)) continue;
+        if (!cjsNamespaceExportNames(program, target).has(name)) continue;
+        // The member's own symbol when the checker declares it: a named
+        // re-export of the same member (`export { name } from './x.cjs'`,
+        // reached directly or through another star) resolves to that symbol,
+        // so both paths agree and the name is not called ambiguous. Node
+        // spreads bindings, not paths.
+        const member = checker
+          .getSymbolAtLocation(target)
+          ?.getExports()
+          .get(ts.escapedSymbolName(name));
+        if (member !== undefined) {
+          let resolved = member;
+          const seenSymbols = new Set<ts.Symbol>();
+          while ((resolved.flags & ts.SymbolFlags.Alias) !== 0 && !seenSymbols.has(resolved)) {
+            seenSymbols.add(resolved);
+            resolved = checker.getAliasedSymbol(resolved);
+          }
+          if (resolved.flags & ts.SymbolFlags.Value) {
+            if (starExport !== undefined && starExport !== resolved) return undefined;
+            starExport = resolved;
+            continue;
+          }
+        }
+        // A name only the lexer detects (the checker declares no member):
+        // one identity per contributing module, so the same module reached
+        // through two stars stays unambiguous.
+        let sentinel = cjsStarExports.get(target);
+        if (sentinel === undefined) {
+          sentinel = { commonJsStar: target.fileName };
+          cjsStarExports.set(target, sentinel);
+        }
+        if (starExport !== undefined && starExport !== sentinel) return undefined;
+        starExport = sentinel;
         continue;
+      }
       const candidate = runtimeExport(target, name, nextSeen);
       if (candidate === undefined) continue;
       if (starExport !== undefined && starExport !== candidate) return undefined;

@@ -4230,6 +4230,13 @@ ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {
  * provider by default (mbedTLS 3.x), which is what the call asks for. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }
 
+/* `x instanceof tls.Server` over a checked-dynamic value: false for every
+ * non-server value (a null, another handle, a plain object). */
+bool scr_tls_server_is_dyn(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_HANDLE || v->v.handle.tag != SCR_DYNH_NET_SERVER) return false;
+  return scr_net_server_is_tls((const ScrNetServer *)v->v.handle.ptr);
+}
+
 /* tlsSocket.servername (which == 0) and getSession (1) over the shared
  * checked-dynamic member entry. */
 ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which) {

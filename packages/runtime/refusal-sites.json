@@ -2394,6 +2394,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_tls.c",
+  "function": "scr_tls_srv_opts_walk_ex",
+  "message": "the https.createServer options record changed while its members were read",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_util_callable.c",
   "function": "uc_fence",
   "message": "",

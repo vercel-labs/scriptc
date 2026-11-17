@@ -32,7 +32,7 @@ void scr_testctx_release_v(void *t);
 void scr_test_register(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at,
                        double plan, double timeout, double concurrency);
 void scr_test_suite(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, ScrStr *at,
-                    double flags, double concurrency);
+                    double flags, double concurrency, double timeout);
 /* before/after/beforeEach/afterEach on the CURRENT registration parent
  * (`which`: 0 before, 1 after, 2 beforeEach, 3 afterEach); `at` is the
  * hook call's "file:line:col". The root's before and after hooks run

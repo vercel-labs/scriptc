@@ -444,6 +444,10 @@ function adoptProjectConfig7(
   projectLib?: readonly string[];
   forcedStrictNullChecks?: boolean;
   checkJs?: boolean;
+  /** The project's own sources: the files its `files` and `include` name
+   * outside node_modules, which tsc compiles as the project itself rather
+   * than as a dependency it merely imports. */
+  sources?: readonly string[];
   /** The project's own declarations: the `.d.ts` files its `files` and
    * `include` name, and the entry declarations of the packages its `types`
    * names. They join the program as roots. */
@@ -519,6 +523,11 @@ function adoptProjectConfig7(
   const declarations = parsed.fileNames.filter(
     (file) => /\.d\.[mc]?ts$/.test(file) && !isNodeModulesPath(file),
   );
+  // The project's own source files, as its `files`/`include` naming decides
+  // them. A JavaScript file that is not one of them reached the program
+  // through an import: it is a dependency's shipped code, which tsc compiles
+  // as an external library rather than as project source.
+  const sources = parsed.fileNames.filter((file) => !isNodeModulesPath(file));
   // `types`: the type packages whose globals the project asks for. "node"
   // is resolved on its own (resolveNodeTypes7); a name that resolves to
   // nothing is tsc's error to report, not a reason to stop here.
@@ -578,6 +587,7 @@ function adoptProjectConfig7(
     ...(projectLib === undefined ? {} : { projectLib }),
     forcedStrictNullChecks,
     checkJs: parsed.options["checkJs"] === true,
+    ...(sources.length > 0 ? { sources } : {}),
     ...(declarations.length > 0 ? { declarations } : {}),
     ...(parsed.options["module"] === undefined
       ? {}
@@ -698,6 +708,10 @@ export interface TypeWorldDifferences {
   /** The project's tsconfig sets `checkJs` (scriptc's own checker always
    * reads JavaScript files; this records whether the project's does). */
   projectCheckJs: boolean;
+  /** The project's own source files, from its tsconfig's `files`/`include`
+   * (normalized paths), or null when the project has no tsconfig. A
+   * JavaScript file outside this set is a dependency's shipped code. */
+  projectSources: ReadonlySet<string> | null;
   /** The files with decorators the project compiles under
    * `experimentalDecorators`: refused by name (SC0016), which stands in for
    * the checker's errors about those decorators' signatures. */
@@ -1903,6 +1917,10 @@ function loadProgram7(
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,
+        projectSources:
+          config.sources === undefined
+            ? null
+            : new Set(config.sources.map((file) => tsgoPath(resolve(file)))),
         legacyDecoratorFiles,
         projectModule: config.module ?? null,
       },
@@ -8208,6 +8226,10 @@ function preflightGate7(load: LoadResult): PreflightGate {
   // match its base (the rows that say `checkedJs: "enforce"` in
   // JS_OPINIONS).
   const projectCheckJs = load.typeWorld?.projectCheckJs ?? false;
+  // The project's own source files, from its tsconfig's `files`/`include`;
+  // null without a tsconfig. A JavaScript file outside this set reached the
+  // program through an import (dependencyJsCheckDiagnostic below).
+  const projectSources = load.typeWorld?.projectSources ?? null;
   // The opinion sites this preflight admits (tsc-codes.ts, JS_OPINIONS),
   // deduped across the worlds the gate consults (the lowering world, the
   // project world, the JSX text). The lowering asks opinionAt about one of
@@ -8357,6 +8379,44 @@ function preflightGate7(load: LoadResult): PreflightGate {
       keptApartFromOpinionTextually(d) &&
       !inferredJsDiagnosticSuppressed(p, d) &&
       !isNpmStaticSubclassArgument(p, d);
+    // A dependency's JavaScript: a JS file outside the project's own sources
+    // — a vendored package, or a module reached only through an import — that
+    // the project's tsconfig does not check. TypeScript never reports a
+    // dependency's checker opinions: a JavaScript file it does not name is
+    // either an external library it does not typecheck, or (outside
+    // node_modules) plain JavaScript, where only grammar and early errors
+    // are reported. scriptc still compiles that JavaScript, as
+    // checked-dynamic code whose values are checked at every typed boundary,
+    // so the checker's type opinions about it are not build errors. The codes
+    // that stay are the ones scriptc itself adjudicates: a triage row (a
+    // grammar or early error Node rejects too, or a construct the lowering
+    // cannot build, where the refusal stands until a lowering proof lands),
+    // an admitted opinion above, and the file's own parse errors — no
+    // lowering can compile what the parser could not read. A JSDoc error sits
+    // in a comment and tsc reports it only for a file it checks, so it goes.
+    const entryPackageFile = entryPackageFilePredicate(entry.fileName);
+    const dependencyJsFile = (file: string): boolean => {
+      // An explicit entry can itself live in an installed package; its own
+      // sources are program code, whatever their location (the same rule
+      // unselectedPackageJsFilePredicate applies).
+      if (entryPackageFile(file)) return false;
+      if (isNodeModulesPath(file)) return true;
+      if (workspacePackageOfPath(file) !== null && !isWorkspaceSourcePath(file)) return true;
+      return projectSources !== null && !projectSources.has(tsgoPath(resolve(file)));
+    };
+    const dependencyJsCheckDiagnostic = (d: ts.Diagnostic): boolean => {
+      if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
+      const sf = p.getSourceFile(d.fileName);
+      // A dependency's shipped JavaScript is external to the project in the
+      // `maxNodeModuleJsDepth` sense: the project's `checkJs` asks tsc to
+      // check the project's JavaScript, not a package's. `// @ts-check` is
+      // the module author's own request to be checked, and stays.
+      if (sf === undefined || isCheckedJsSourceFile(sf, false)) return false;
+      if (!dependencyJsFile(sf.fileName)) return false;
+      if (d.pos !== undefined && insideBlockComment(sf.text, d.pos)) return true;
+      if (jsTscCodeTriage(d.code) !== null) return false;
+      return !syntacticOf(sf).some((s) => s.code === d.code && s.pos === d.pos && s.end === d.end);
+    };
     const admitted: { d: ts.Diagnostic; opinion: Opinion }[] = [];
     const kept = all.filter((d) => {
       if (d.category !== ts.DiagnosticCategory.Error) return false;
@@ -8388,7 +8448,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
         admitted.push({ d, opinion });
         return false;
       }
-      return keptApartFromOpinion(d);
+      return keptApartFromOpinion(d) && !dependencyJsCheckDiagnostic(d);
     });
     for (const { d, opinion } of admitted) {
       // No span, no site: nothing a view's lowering could be gated on.

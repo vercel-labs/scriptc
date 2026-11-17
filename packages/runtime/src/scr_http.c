@@ -5814,6 +5814,12 @@ struct ScrHttpClientReq {
    * chunks on the wire in Node, not one). */
   size_t *pre_sizes;
   size_t pre_count, pre_cap;
+  /* Running totals over pre_sizes: a proxy that pipes an upload into the
+   * request before the socket connects writes many times, and
+   * writableLength runs on every write, so the sums are kept as writes
+   * arrive rather than recomputed. */
+  size_t pre_bytes;  /* sum of pre_sizes */
+  size_t pre_framed; /* sum of each entry's chunk header and terminator */
   /* the head a corked write committed, sent first at the flush */
   char *held_head;
   size_t held_head_len, held_head_cap;
@@ -6387,6 +6393,8 @@ static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, siz
       c->pre_sizes = grown;
     }
     c->pre_sizes[c->pre_count++] = len;
+    c->pre_bytes += len;
+    c->pre_framed += (size_t)scr_http_hex_digits(len) + 4;
     scr_http_cork_buffer(&c->cork_buf, &c->cork_len, &c->cork_cap, data, len);
     return;
   }
@@ -6470,6 +6478,7 @@ static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
   c->cork_len = c->cork_cap = 0;
   c->pre_sizes = NULL;
   c->pre_count = c->pre_cap = 0;
+  c->pre_bytes = c->pre_framed = 0;
   bool was_pre = c->pre_flushing;
   c->pre_flushing = true;
   if (count > 0) {
@@ -6509,14 +6518,15 @@ double scr_http_client_writable_length(ScrHttpClientReq *c) {
     if (c->chunked) {
       /* Node counts each buffered entry's framing: a write made before the
        * socket is one outputData entry with its own chunk header, while the
-       * writes a cork() coalesced are one. */
-      size_t framed = 0;
-      for (size_t i = 0; i < c->pre_count; i++) {
-        framed += c->pre_sizes[i];
-        buffered += (double)(scr_http_hex_digits(c->pre_sizes[i]) + 4);
+       * writes a cork() coalesced are one. pre_framed holds the per-entry
+       * sum, so this stays O(1) however many writes have buffered. */
+      if (c->pre_count > 0) {
+        buffered += (double)c->pre_framed;
+        if (c->pre_bytes < c->cork_len)
+          buffered += (double)(scr_http_hex_digits(c->cork_len - c->pre_bytes) + 4);
+      } else {
+        buffered += (double)(scr_http_hex_digits(c->cork_len) + 4);
       }
-      if (framed < c->cork_len)
-        buffered += (double)(scr_http_hex_digits(c->cork_len - framed) + 4);
     }
     if (c->held_head_len > 0) buffered += (double)c->held_head_len;
   }

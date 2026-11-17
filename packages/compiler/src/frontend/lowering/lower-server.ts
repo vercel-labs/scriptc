@@ -3385,7 +3385,7 @@ function lowerNetSocketMethodCall(
     return {
       kind: "libCall",
       fn: "tls.sockExportKeyingMaterial",
-      args: [receiver, length, label, context],
+      args: [receiver, length, label, context, boolLit(args.length === 3, loc)],
       type: BYTES_U8,
       loc,
     };

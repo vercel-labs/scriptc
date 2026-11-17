@@ -3943,6 +3943,29 @@ ScrDyn *scr_tls_sock_servername(ScrNetSocket *s) {
   return answer;
 }
 
+/* The error OpenSSL raises for an exporter label a TLS 1.3 connection
+ * refuses, as Node reports it: "error:0A00016F:SSL routines::tls illegal
+ * exporter label" with own library, reason and code properties in Node's
+ * key order. */
+static void scr_tls_throw_illegal_exporter_label(void) {
+  static const char text[] = "error:0A00016F:SSL routines::tls illegal exporter label";
+  static const char library[] = "SSL routines";
+  static const char reason[] = "tls illegal exporter label";
+  static const char code[] = "ERR_SSL_TLS_ILLEGAL_EXPORTER_LABEL";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  const char *keys[] = { "library", "reason", "code" };
+  const char *values[] = { library, reason, code };
+  for (size_t i = 0; i < 3; i++) {
+    if (i == 2) scr_error_set_code(e, code);
+    ScrStr *value = scr_str_new(values[i], strlen(values[i]));
+    scr_error_set_prop(e, keys[i], strlen(keys[i]), scr_dyn_new_str(value));
+    scr_str_release(value);
+  }
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* tlsSocket.exportKeyingMaterial(length, label[, context]): Node's
  * validation ladder (validateInteger length 1..4294967295, a string label,
  * a Buffer/TypedArray context) then the provider's TLS exporter. +1
@@ -3987,6 +4010,13 @@ ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const ScrDyn *len
   if (t == NULL || !scr_net_sock_established(s)) {
     static const char msg[] = "TLS socket connection must be securely established";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_INVALID_STATE");
+    return NULL;
+  }
+  /* RFC 8446's 255-byte label ceiling less the provider's "tls13 " prefix:
+   * a TLS 1.3 connection refuses a longer label where a TLS 1.2 connection
+   * exports any label. */
+  if (label->v.str->len > 249 && strcmp(mbedtls_ssl_get_version(&t->ssl), "TLSv1.3") == 0) {
+    scr_tls_throw_illegal_exporter_label();
     return NULL;
   }
   size_t key_len = (size_t)len;

@@ -1764,7 +1764,10 @@ static void scr_http_buf_header_value(ScrHttpBuf *b, const ScrStr *s) {
     unsigned char ch = (unsigned char)s->data[i];
     if ((ch == 0xc2 || ch == 0xc3) && i + 1 < s->len) {
       unsigned char next = (unsigned char)s->data[++i];
-      char byte = (char)(((ch & 1) << 6) | (next & 0x3f));
+      /* the Latin-1 byte of the code point: the lead byte carries five
+       * bits, not one (dropping them turned U+008D into a raw CR and
+       * U+008A into a raw LF on the wire) */
+      char byte = (char)(((ch & 0x1f) << 6) | (next & 0x3f));
       scr_http_buf_append(b, &byte, 1);
     } else {
       scr_http_buf_append(b, s->data + i, 1);
@@ -8604,6 +8607,20 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
     ScrArr *rest = scr_http_dynh_header_pairs_skip(hints, "link", 4);
     if (rest == NULL) {
       scr_str_release(link_value);
+      return NULL;
+    }
+    /* the general header-value rule the typed call applies before the head
+     * goes out: no CR or LF anywhere in the value (the format check above
+     * only covers the target part, so a value with a CR/LF after a
+     * semicolon would otherwise reach the wire) */
+    ScrStr *link_name = scr_str_new("Link", 4);
+    ScrDyn *link_box = scr_dyn_new_str(link_value);
+    scr_http_validate_header_value(link_name, link_box);
+    scr_dyn_release(link_box);
+    scr_str_release(link_name);
+    if (scr_exc_pending()) {
+      scr_str_release(link_value);
+      scr_arr_release(rest);
       return NULL;
     }
     if (!scr_http_res_informational_h1(r, "writeEarlyHints")) {

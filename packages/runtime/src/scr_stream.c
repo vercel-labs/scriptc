@@ -8482,6 +8482,10 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       st->r.end_emitted = true;
       scr_stream_emit0(s, "end");
       if (scr_exc_pending()) break;
+      /* eos: a readable end reports the watchers of a stream that will not
+       * emit 'close' once its writable half has finished (Node's onend). */
+      if (!scr_stream_will_emit_close(st) && (!st->has_w || st->w.finished))
+        scr_stream_notify_finished(s);
       /* pipe end propagation */
       for (size_t i = 0; i < st->pipes.n; i++) {
         if (st->pipes.end[i]) {

@@ -1,7 +1,7 @@
 // Writable.toWeb: a web WritableStream over a native Writable. A writer's
 // write() completes when the native write does, close() ends the writable,
 // and abort() destroys it with the reason.
-import { Writable } from "node:stream";
+import { Duplex, Writable } from "node:stream";
 
 const log: string[] = [];
 const encoder = new TextEncoder();
@@ -290,6 +290,43 @@ async function main(): Promise<void> {
     () => log.push("write after failure resolved"),
     (error: Error) => log.push(`write after failure rejected ${error.message}`),
   );
+
+  // A Duplex adapts like a Writable: its writer's close settles at the
+  // stream's end-of-stream, which waits for the readable half too (here it
+  // ends after the writable side finished).
+  const duplex = new Duplex({
+    autoDestroy: false,
+    read(): void {
+      setTimeout(() => this.push(null), 10);
+    },
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  duplex.resume();
+  const duplexWeb = Writable.toWeb(duplex);
+  const duplexWriter = duplexWeb.getWriter();
+  await duplexWriter.write(encoder.encode("d"));
+  await duplexWriter.close().then(
+    () => log.push("duplex close resolved"),
+    (error: Error) => log.push(`duplex close rejected ${error.message}`),
+  );
+  log.push(`duplex finished ${duplex.writableFinished} destroyed ${duplex.destroyed}`);
+
+  // An error the writable emits itself is consumed by the adapter and fails
+  // the writer instead of escaping as an unhandled error.
+  const emitting = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const emittingWriter = Writable.toWeb(emitting).getWriter();
+  emitting.emit("error", new Error("emitted"));
+  await emittingWriter.write(encoder.encode("e")).then(
+    () => log.push("write after emitted error resolved"),
+    (error: Error) => log.push(`write after emitted error rejected ${error.message}`),
+  );
+  emitting.destroy();
 }
 
 main().then(() => {

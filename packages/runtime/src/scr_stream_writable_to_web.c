@@ -94,8 +94,10 @@ static void stw3_settle(Stw3Job *j) {
  * instead of rejecting this promise. */
 static void stw3_write_done(ScrClosure *cl) {
   Stw3Job *j = stw3_job_of(cl);
-  scr_promise_fulfill_void(j->p);
-  if (scr_exc_pending()) scr_exc_clear();
+  /* A failed native write rejects the web write: the stream errors and the
+   * transfer settles instead of waiting on a stream that will never accept
+   * more. */
+  stw3_settle(j);
   stw3_job_release(j);
 }
 
@@ -168,6 +170,52 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)argc;
   Stw3Ctx *c = scr_box_get_ref(cl->caps[0]);
   Stw3Job *j = stw3_job_new(c);
+  /* A writable that already finished (or was destroyed) has no terminal event
+   * left to wait for: settle now, or the close would never complete. */
+  if (scr_stream_prop(c->writable, "destroyed") != 0) {
+    /* A writable that is already gone has no terminal event left: a close
+     * rejects with the stream's error, or Node's invalid-state error. */
+    ScrError *already = scr_stream_errored(c->writable);
+    if (already) {
+      scr_throw_obj(already, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+      scr_promise_reject_pending(j->p);
+    } else {
+      static const char invalid_state[] = "Invalid state: Failure to close WritableStream";
+      ScrStr *message = scr_str_new(invalid_state, sizeof invalid_state - 1);
+      ScrError *err = scr_error_new(SCR_ERR_TYPE, message);
+      scr_str_release(message);
+      if (err) {
+        scr_dyn_throw(scr_dyn_from_error(err));
+        scr_promise_reject_pending(j->p);
+        scr_error_release(err);
+      } else {
+        scr_promise_fulfill_void(j->p);
+      }
+    }
+    ScrDyn *settled = scr_dyn_new_promise(j->p);
+    stw3_job_release(j);
+    stw3_unref(c);
+    return settled;
+  }
+  if (scr_stream_prop(c->writable, "writableFinished") != 0) {
+    /* Node's adapter has already errored the stream by the time it is closed:
+     * a close over a finished writable rejects with its invalid-state error. */
+    static const char invalid_state[] = "Invalid state: Failure to close WritableStream";
+    ScrStr *message = scr_str_new(invalid_state, sizeof invalid_state - 1);
+    ScrError *err = scr_error_new(SCR_ERR_TYPE, message);
+    scr_str_release(message);
+    if (err) {
+      scr_dyn_throw(scr_dyn_from_error(err));
+      scr_promise_reject_pending(j->p);
+      scr_error_release(err);
+    } else {
+      scr_promise_fulfill_void(j->p);
+    }
+    ScrDyn *settled = scr_dyn_new_promise(j->p);
+    stw3_job_release(j);
+    stw3_unref(c);
+    return settled;
+  }
   ScrClosure *finish_cl = stw3_job_closure((void *)&stw3_close_finish, j);
   ScrStr *finish_name = scr_str_new("finish", 6);
   scr_emitter_release(scr_emitter_on((ScrEmitter *)c->writable, finish_name, finish_cl,

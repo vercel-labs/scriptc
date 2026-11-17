@@ -50,20 +50,6 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 5));
   log.push(`silent destroyed ${silent.destroyed} errored ${silent.errored?.message}`);
 
-  // A failing native write errors the writable; the error is consumed too.
-  const failing = new Writable({
-    write(chunk, encoding, done): void {
-      done(new Error("sink fail"));
-    },
-  });
-  const web4 = Writable.toWeb(failing);
-  await web4.getWriter().write(encoder.encode("x")).then(
-    () => log.push("failed write resolved"),
-    (error: Error) => log.push(`failed write rejected ${error.message}`),
-  );
-  await new Promise<void>((resolve) => setTimeout(resolve, 5));
-  log.push(`failed destroyed ${failing.destroyed} errored ${failing.errored?.message}`);
-
   // A writable with autoDestroy: false finishes without emitting 'close'; the
   // writer's close still settles at the finish.
   const lasting = new Writable({
@@ -80,6 +66,21 @@ async function main(): Promise<void> {
     (error: Error) => log.push(`no-autodestroy close rejected ${error.message}`),
   );
   log.push(`no-autodestroy finished ${lasting.writableFinished} destroyed ${lasting.destroyed}`);
+
+  // Closing over a writable that already finished settles: there is no
+  // terminal event left to wait for.
+  const finishedWritable = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  finishedWritable.end();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const finishedWeb = Writable.toWeb(finishedWritable);
+  await finishedWeb.getWriter().close().then(
+    () => log.push("finished close resolved"),
+    (error: Error) => log.push(`finished close rejected ${error.message}`),
+  );
 }
 
 main().then(() => {

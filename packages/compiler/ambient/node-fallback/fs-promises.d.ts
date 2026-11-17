@@ -191,6 +191,18 @@ declare module "fs/promises" {
     options?: { recursive?: boolean; mode?: number },
   ): Promise<void>;
   export function readdir(path: string | URL): Promise<string[]>;
+  /* The bare encoding spellings and the bytes record, like readdirSync's. */
+  export function readdir(path: string | URL, options: "buffer"): Promise<Buffer[]>;
+  export function readdir(path: string | URL, options: BufferEncoding): Promise<string[]>;
+  export function readdir(
+    path: string | URL,
+    options: { encoding: "buffer"; withFileTypes?: false; recursive?: false },
+  ): Promise<Buffer[]>;
+  /* The names decoded with the record's encoding (utf8 by default). */
+  export function readdir(
+    path: string | URL,
+    options: { encoding?: BufferEncoding | null; withFileTypes?: false; recursive?: boolean },
+  ): Promise<string[]>;
   export function readdir(
     path: string | URL,
     options: {
@@ -244,6 +256,21 @@ declare module "fs/promises" {
     path: string | URL,
     options?: import("node:fs").OpenDirOptions,
   ): Promise<import("node:fs").Dir>;
+  /** One entry of fsPromises.watch's iteration: the event kind and the
+   * entry name the platform reported. */
+  export interface FileChangeInfo {
+    eventType: string;
+    filename: string | null;
+  }
+  export interface WatchOptions {
+    persistent?: boolean;
+    recursive?: boolean;
+    encoding?: string;
+  }
+  export function watch(
+    filename: string | URL,
+    options?: WatchOptions,
+  ): AsyncIterable<FileChangeInfo>;
 }
 
 declare module "node:fs/promises" {

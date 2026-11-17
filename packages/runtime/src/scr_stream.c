@@ -3708,12 +3708,28 @@ static void scr_stream_fin_add(ScrStreamState *st, ScrClosure *cb /*moves*/, Scr
   st->fin.n++;
 }
 
+/* Node's willEmitClose: the autoDestroy lifecycle emits 'close'. */
+static bool scr_stream_will_emit_close(const ScrStreamState *st) {
+  return st->auto_destroy && st->emit_close;
+}
+
+/* A half is finished for eos's non-strict check (isWritableFinished and
+ * isReadableFinished with strict false): its ended state with nothing
+ * buffered counts, even before 'finish'/'end' was emitted. */
+static bool scr_stream_w_finished_eos(const ScrStreamState *st) {
+  return st->w.finished || (st->w.ending && st->w.length == 0);
+}
+static bool scr_stream_r_finished_eos(const ScrStreamState *st) {
+  return st->r.end_emitted || (st->r.ended && st->r.length == 0);
+}
+
 /* The stream's finish status: +1 error (the recorded one, or premature
  * close), or NULL for a clean end+finish. */
 static ScrError *scr_stream_finish_status(ScrStream *s) {
   ScrStreamState *st = s->st;
   if (st->errored) return scr_error_retain(st->errored);
-  if ((st->has_r && !st->r.end_emitted) || (st->has_w && !st->w.finished)) {
+  if ((st->has_r && !scr_stream_r_finished_eos(st)) ||
+      (st->has_w && !scr_stream_w_finished_eos(st))) {
     return scr_stream_mkerr("ERR_STREAM_PREMATURE_CLOSE", "Premature close");
   }
   return NULL;
@@ -3761,7 +3777,9 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
 ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
   ScrStreamState *st = s->st;
   scr_stream_fin_add(st, scr_closure_retain(cb), inv);
-  if (st->close_emitted) {
+  bool will_close = scr_stream_will_emit_close(st);
+  if ((st->emit_close && st->close_emitted) || st->destroyed ||
+      (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
     /* Already terminal: Node's eos still calls back asynchronously. */
     scr_st_tick(s, SCR_ST_FIN, NULL, NULL);
   }
@@ -8539,6 +8557,11 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       if (scr_exc_pending()) break;
       scr_stream_emit0(s, "finish");
       if (scr_exc_pending()) break;
+      /* Node's eos fires at 'finish' for a stream that will not emit
+       * 'close' (autoDestroy or emitClose is off), once the readable half
+       * is done; a stream that will emit close reports at the close. */
+      if (!scr_stream_will_emit_close(st) && (!st->has_r || st->r.end_emitted))
+        scr_stream_notify_finished(s);
       if (st->auto_destroy && (!st->has_r || st->r.end_emitted || !st->r.readable_listening)) {
         /* Node: autoDestroy after finish once the readable half is done
          * (a half-open duplex with a live readable side stays up) */
@@ -8558,12 +8581,16 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
         }
         if (st->fin.n > 0 && !scr_emitter_has((ScrEmitter *)s, "error")) {
           /* a finished()/pipeline watcher consumes it (Node's eos and
-           * pipeline register their own 'error' handlers) — the watcher
-           * reports it at the terminal point instead of crashing */
+           * pipeline register their own 'error' handlers): it reports the
+           * error now, as Node's eos 'error' handler does */
+          scr_stream_notify_finished(s);
           break;
         }
         scr_stream_emit_error(s, t->err);
         if (!scr_exc_pending()) scr_stream_settle_next(s);
+        /* Node's eos reports an emitted error from its own 'error'
+         * handler. */
+        if (!scr_exc_pending()) scr_stream_notify_finished(s);
       }
       break;
     }
@@ -8580,8 +8607,10 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
           if (w) scr_stream_next_fulfill(st, w, NULL, SCR_ENTRY_BYTES);
         }
         /* eos ordering: the finished()/pipeline watchers fire right after
-         * 'close' (Node's willEmitClose stance). */
-        scr_stream_notify_finished(s);
+         * 'close' (Node's willEmitClose stance); a stream without the
+         * 'close' event reports at 'finish' or, for a destroy before it,
+         * not at all (Node leaves that watcher pending). */
+        if (st->emit_close) scr_stream_notify_finished(s);
         /* Fully closed: nothing calls the option callbacks again (Node's
          * contract), so drop them here — this breaks the reference cycle
          * a callback capturing its own stream forms, including the dyn-

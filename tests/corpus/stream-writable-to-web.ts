@@ -253,6 +253,43 @@ async function main(): Promise<void> {
     (error: Error & { code?: string }) =>
       log.push(`finished close rejected ${error.name} ${error.code} ${error.message}`),
   );
+
+  // A native writable ended while its web stream is open ends the adapter
+  // that way too: Node errors the web stream with an AbortError, so a later
+  // write rejects with it.
+  const endedLater = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const endedWeb = Writable.toWeb(endedLater);
+  const endedWriter = endedWeb.getWriter();
+  endedLater.end();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await endedWriter.write(encoder.encode("x")).then(
+    () => log.push("write after end resolved"),
+    (error: Error & { code?: string }) =>
+      log.push(`write after end rejected ${error.name} ${error.code ?? "-"}`),
+  );
+
+  // An accepted write that fails later leaves the adapter errored: the next
+  // write rejects with the stream's error instead of being accepted.
+  const failingOnce = new Writable({
+    write(chunk, encoding, done): void {
+      setTimeout(() => done(new Error("first")), 5);
+    },
+  });
+  failingOnce.on("error", () => {});
+  const onceWriter = Writable.toWeb(failingOnce).getWriter();
+  await onceWriter.write(encoder.encode("a")).then(
+    () => log.push("accepted write resolved"),
+    (error: Error) => log.push(`accepted write rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await onceWriter.write(encoder.encode("b")).then(
+    () => log.push("write after failure resolved"),
+    (error: Error) => log.push(`write after failure rejected ${error.message}`),
+  );
 }
 
 main().then(() => {

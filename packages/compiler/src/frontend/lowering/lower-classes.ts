@@ -4526,7 +4526,20 @@ export function collectClassShapeInner(
             shapes.splice(0, shapes.length, ...overridden.sig.params);
             ft.ret = overridden.sig.ret;
             if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
-          } else if (fencedJsOverride) {
+          } else if (
+            fencedJsOverride &&
+            // The checked-dynamic slot below passes the inherited arity with
+            // every parameter unchecked. A body that reads `arguments`, or a
+            // rest parameter on either declaration, depends on the call's
+            // actual tuple, which that slot does not carry, and a narrower
+            // calling convention there would hand the body wrong values: those
+            // shapes keep the calling-convention fence.
+            !bodyReadsArguments(member) &&
+            !member.parameters.nodes.some((parameter) => parameter.dotDotDotToken) &&
+            overridden.sig.params.every(
+              (parameter) => parameter.mode !== "dynRest" && parameter.mode !== "rest",
+            )
+          ) {
             // A JavaScript override that declares a different signature.
             // Node ignores the relation: a call through a base-typed
             // reference passes the base's arguments (surplus ones included),
@@ -4560,15 +4573,18 @@ export function collectClassShapeInner(
             ft.ret = overridden.sig.ret;
             if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
           } else if (
-            // The TypeScript form (class-member-refusals.ts): the inherited
+            // A JavaScript override of a shape the checked-dynamic slot cannot
+            // carry (above), or the TypeScript form (class-member-refusals.ts):
+            // the inherited
             // method dispatches through its slot (it is neither async nor
             // a generator, which dispatch statically, and its class is the
             // program's), so a call through a base-typed receiver reaches
             // the fence, and a use through this class is a build error.
-            confinesMemberRefusals &&
-            overridden.declarer.decl != null &&
-            overridden.sig.async !== true &&
-            overridden.sig.gen === undefined
+            fencedJsOverride ||
+            (confinesMemberRefusals &&
+              overridden.declarer.decl != null &&
+              overridden.sig.async !== true &&
+              overridden.sig.gen === undefined)
           ) {
             // A dormant JS method must not poison the whole class. Keep
             // the inherited call/dispatch ABI and refuse at method entry;

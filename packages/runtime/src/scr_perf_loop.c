@@ -318,9 +318,9 @@ void scr_eld_reset(double handle) {
  * resolution (>= 1 ms), where that layout and this one share bucket bounds. */
 #define SCR_ELD_EMPTY_PERCENTILE 511
 
-/* hdr_value_at_percentile; the compiler checked Node's 0 < p <= 100 range. */
-double scr_eld_percentile(double handle, double percentile) {
-  ScrEld *h = scr_eld_of(handle);
+/* hdr_value_at_percentile in the bucket's exact int64 value (the BigInt
+ * answer); the compiler checked Node's 0 < p <= 100 range. */
+static int64_t scr_eld_percentile_i64(const ScrEld *h, double percentile) {
   if (h == NULL || h->total == 0) return SCR_ELD_EMPTY_PERCENTILE;
   double requested = percentile < 100.0 ? percentile : 100.0;
   int64_t wanted = (int64_t)((requested / 100.0) * (double)h->total + 0.5);
@@ -328,9 +328,13 @@ double scr_eld_percentile(double handle, double percentile) {
   int64_t seen = 0;
   for (size_t i = 0; i < h->counts_len; i++) {
     seen += h->counts[i];
-    if (seen >= wanted) return (double)scr_hdr_highest_equivalent(scr_hdr_value_at_index(i));
+    if (seen >= wanted) return scr_hdr_highest_equivalent(scr_hdr_value_at_index(i));
   }
   return 0;
+}
+
+double scr_eld_percentile(double handle, double percentile) {
+  return (double)scr_eld_percentile_i64(scr_eld_of(handle), percentile);
 }
 
 /* which: 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
@@ -435,7 +439,9 @@ static int scr_histo_log2_ceil(int64_t value) {
 /* hdr_calculate_bucket_config; false for the configurations hdr_init
  * refuses (ERR_INVALID_ARG_VALUE from Node's _Histogram constructor). */
 static bool scr_histo_config(ScrHisto *h, int64_t lowest, int64_t highest, int figures) {
-  if (lowest < 1 || figures < 1 || figures > 5 || lowest * 2 > highest) return false;
+  /* highest >= 2 * lowest, written overflow-safe (lowest may be near
+   * INT64_MAX; Node's own check multiplies and can overflow). */
+  if (lowest < 1 || figures < 1 || figures > 5 || lowest > highest / 2) return false;
   int64_t largest_single_unit = 2;
   for (int i = 0; i < figures; i++) largest_single_unit *= 10;
   int32_t sub_bucket_count_magnitude = scr_histo_log2_ceil(largest_single_unit);
@@ -498,13 +504,20 @@ static int64_t scr_histo_range_size(const ScrHisto *h, int64_t value) {
   int32_t bucket = scr_histo_bucket_index(h, value);
   int32_t sub = scr_histo_sub_bucket_index(h, value, bucket);
   int32_t adjusted = sub >= h->sub_bucket_count ? bucket + 1 : bucket;
-  return (int64_t)1 << (h->unit_magnitude + adjusted);
+  int32_t shift = h->unit_magnitude + adjusted;
+  /* The top bucket's nominal width reaches 2^63: saturate rather than
+   * shifting a signed 1 into the sign bit (undefined behavior). */
+  if (shift >= 63) return INT64_MAX;
+  return (int64_t)1 << shift;
 }
 
 static int64_t scr_histo_lowest_equivalent(const ScrHisto *h, int64_t value) {
   int32_t bucket = scr_histo_bucket_index(h, value);
   int32_t sub = scr_histo_sub_bucket_index(h, value, bucket);
-  return ((int64_t)sub) << (bucket + h->unit_magnitude);
+  int32_t shift = bucket + h->unit_magnitude;
+  if (shift >= 63 || shift < 0) return value < 0 ? 0 : INT64_MAX;
+  int64_t lowest = ((int64_t)sub) << shift;
+  return lowest < 0 ? INT64_MAX : lowest;
 }
 
 static int64_t scr_histo_median_equivalent(const ScrHisto *h, int64_t value) {
@@ -821,6 +834,10 @@ void scr_histo_record_delta(double handle) {
 }
 
 void scr_histo_reset(double handle) {
+  if (handle >= 1) {
+    scr_eld_reset(handle);
+    return;
+  }
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL) return;
   memset(h->counts, 0, (size_t)h->counts_len * sizeof *h->counts);
@@ -881,7 +898,23 @@ void scr_histo_subtract(double handle, double other_handle) {
 }
 
 /* which: 0 count, 1 min, 2 max, 3 mean, 4 stddev, 5 exceeds. */
+/* The createHistogram selectors (0 count, 1 min, 2 max, 3 mean, 4 stddev,
+ * 5 exceeds) and the event-loop histogram's (0 min, 1 max, 2 mean,
+ * 3 stddev, 4 count, 5 exceeds) name the same readings in a different
+ * order; an upcast maps between them. */
+static double scr_histo_eld_selector(int which) {
+  switch (which) {
+    case 0: return 4;
+    case 1: return 0;
+    case 2: return 1;
+    case 3: return 2;
+    case 4: return 3;
+    default: return 5;
+  }
+}
+
 double scr_histo_stat(double handle, double which) {
+  if (handle >= 1) return scr_eld_stat(handle, scr_histo_eld_selector((int)which));
   ScrHisto *h = scr_histo_of(handle);
   int w = (int)which;
   if (h == NULL) return w == 1 ? (double)INT64_MAX : (w == 3 || w == 4) ? NAN : 0;
@@ -921,6 +954,27 @@ double scr_histo_stat(double handle, double which) {
 }
 
 ScrBigInt *scr_histo_stat_big(double handle, double which) {
+  if (handle >= 1) {
+    ScrEld *eld = scr_eld_of(handle);
+    int w = (int)scr_histo_eld_selector((int)which);
+    if (eld == NULL) return scr_bigint_from_i64(w == 0 ? INT64_MAX : 0);
+    switch (w) {
+      case 0:
+        return scr_bigint_from_i64((int64_t)eld->count);
+      case 1:
+        if (eld->counts_len > 0 && eld->counts[0] > 0) return scr_bigint_from_i64(0);
+        return scr_bigint_from_i64(eld->min_value == INT64_MAX
+                                       ? INT64_MAX
+                                       : scr_hdr_lowest_equivalent(eld->min_value));
+      case 2:
+        return scr_bigint_from_i64(eld->max_value == 0
+                                       ? 0
+                                       : scr_hdr_highest_equivalent(eld->max_value));
+      default:
+        /* The ELD's highest is INT64_MAX, so nothing exceeds it. */
+        return scr_bigint_from_i64(0);
+    }
+  }
   ScrHisto *h = scr_histo_of(handle);
   int w = (int)which;
   if (h == NULL) return scr_bigint_from_i64(w == 1 ? INT64_MAX : 0);
@@ -940,10 +994,36 @@ ScrBigInt *scr_histo_stat_big(double handle, double which) {
   }
 }
 
+/* A Histogram-typed value can be either table: a value read through the
+ * base Histogram interface may be a createHistogram RecordableHistogram
+ * (negative handle) or a monitorEventLoopDelay IntervalHistogram (positive
+ * handle). The base readings dispatch on the handle sign, so an upcast
+ * answers the same values as the value's own interface. The ELD counts use
+ * the default Histogram bucket layout (lowest 1, three figures), so its
+ * countAt/cdf run over the generic bucket math. */
+static ScrHisto *scr_histo_lookup(double handle, ScrHisto *tmp) {
+  if (handle >= 1) {
+    ScrEld *eld = scr_eld_of(handle);
+    if (eld == NULL) return NULL;
+    *tmp = (ScrHisto){0};
+    tmp->counts = eld->counts;
+    tmp->counts_len = (int64_t)eld->counts_len;
+    tmp->total = eld->total;
+    tmp->min_value = eld->min_value;
+    tmp->max_value = eld->max_value;
+    tmp->unit_magnitude = 0;
+    tmp->sub_bucket_half_count_magnitude = SCR_HDR_SUB_BUCKET_HALF_MAG;
+    tmp->sub_bucket_half_count = SCR_HDR_SUB_BUCKET_HALF;
+    tmp->sub_bucket_count = SCR_HDR_SUB_BUCKET_COUNT;
+    tmp->sub_bucket_mask = SCR_HDR_SUB_BUCKET_MASK;
+    tmp->highest = INT64_MAX;
+    return tmp;
+  }
+  return scr_histo_of(handle);
+}
+
 /* hdr_value_at_percentile; the compiler checked Node's 0 < p <= 100. */
-double scr_histo_percentile(double handle, double percentile) {
-  ScrHisto *h = scr_histo_of(handle);
-  if (h == NULL) return 0;
+static int64_t scr_histo_percentile_i64(const ScrHisto *h, double percentile) {
   double requested = percentile < 100.0 ? percentile : 100.0;
   int64_t wanted = (int64_t)((requested / 100.0) * (double)h->total + 0.5);
   if (wanted < 1) wanted = 1;
@@ -956,12 +1036,22 @@ double scr_histo_percentile(double handle, double percentile) {
       break;
     }
   }
-  if (percentile == 0.0) return (double)scr_histo_lowest_equivalent(h, value);
-  return (double)scr_histo_highest_equivalent(h, value);
+  if (percentile == 0.0) return scr_histo_lowest_equivalent(h, value);
+  return scr_histo_highest_equivalent(h, value);
+}
+
+double scr_histo_percentile(double handle, double percentile) {
+  if (handle >= 1) return scr_eld_percentile(handle, percentile);
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return 0;
+  return (double)scr_histo_percentile_i64(h, percentile);
 }
 
 ScrBigInt *scr_histo_percentile_big(double handle, double percentile) {
-  return scr_bigint_from_i64((int64_t)scr_histo_percentile(handle, percentile));
+  if (handle >= 1) return scr_bigint_from_i64(scr_eld_percentile_i64(scr_eld_of(handle), percentile));
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return scr_bigint_from_i64(0);
+  return scr_bigint_from_i64(scr_histo_percentile_i64(h, percentile));
 }
 
 /* Node's CountAt converts the double with V8's int64 truncation; a NaN or a
@@ -974,7 +1064,8 @@ static bool scr_histo_to_i64(double value, int64_t *out) {
 }
 
 double scr_histo_count_at(double handle, double value) {
-  ScrHisto *h = scr_histo_of(handle);
+  ScrHisto tmp;
+  ScrHisto *h = scr_histo_lookup(handle, &tmp);
   int64_t at = 0;
   if (h == NULL || !scr_histo_to_i64(value, &at)) return 0;
   if (at < 0) return 0;
@@ -986,7 +1077,8 @@ double scr_histo_count_at(double handle, double value) {
 /* Node's Histogram::Cdf: the first index whose highest equivalent value
  * reaches `value`, empty buckets included. */
 double scr_histo_cdf(double handle, double value) {
-  ScrHisto *h = scr_histo_of(handle);
+  ScrHisto tmp;
+  ScrHisto *h = scr_histo_lookup(handle, &tmp);
   int64_t at = 0;
   if (h == NULL || h->total == 0 || !scr_histo_to_i64(value, &at)) return 0.0;
   int64_t target = at;

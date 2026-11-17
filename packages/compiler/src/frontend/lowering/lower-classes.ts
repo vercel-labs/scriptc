@@ -9914,7 +9914,19 @@ export function collectVirtualJsMethods(lowerer: Lowerer, files: readonly ts.Sou
                   // parameters and results, so a call through either class
                   // passes what Node passes and dispatch never converts an
                   // argument against a declared type.
-                  if (property !== undefined && mappedSignaturesDiffer(lowerer, member, property)) {
+                  // A pair whose call tuple the checked-dynamic slot cannot
+                  // carry (a rest parameter on either declaration, or a body
+                  // reading `arguments`) keeps its declared signatures: giving
+                  // both sides dyn storage would make the two signatures
+                  // compare equal below and skip the calling-convention fence,
+                  // handing the override's rest binding a scalar.
+                  if (
+                    property !== undefined &&
+                    mappedSignaturesDiffer(lowerer, member, property) &&
+                    !bodyReadsArguments(member) &&
+                    !member.parameters.nodes.some((parameter) => parameter.dotDotDotToken) &&
+                    !declaration.parameters.nodes.some((parameter) => parameter.dotDotDotToken)
+                  ) {
                     lowerer.checkedVirtualJsMethods.add(declaration);
                     lowerer.checkedVirtualJsMethods.add(member);
                     markFamilyWrites(lowerer, member);

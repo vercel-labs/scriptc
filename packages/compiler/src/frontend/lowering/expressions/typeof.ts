@@ -17,7 +17,11 @@ import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
 import { isNavigatorGlobal } from "../builtins/navigator.js";
 import { processHasIpc } from "../builtins/process.js";
 import { lowerPerfHooksTypeof } from "../builtins/performance.js";
-import { isNodeModuleValue } from "../lower-node-module.js";
+import {
+  isNodeModuleValue,
+  lowerModuleParentTypeof,
+  lowerModuleValueTypeof,
+} from "../lower-node-module.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { builtinModuleMemberCensus } from "../builtin-module-members.js";
 import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
@@ -39,25 +43,85 @@ import { varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefinedFnSymbolOf,
   ambientUndefinedVarSymbolOf,
   isNodeUndefinedGlobalRoot,
   nodeUndefinedGlobalProperty,
 } from "../lower-namespaces.js";
 import { isF64HandleTyped } from "../f64-handles.js";
-import { nodeValueTypeof } from "../node-value-reads.js";
-import { nodeModuleMemberKind } from "../node-values.js";
+import { nodeGlobalObjectOf, nodeValueTypeof } from "../node-value-reads.js";
+import { nodeGlobalKind, nodeModuleMemberKind } from "../node-values.js";
 import { COMMONJS_MODULE_BINDINGS } from "../../builtin-modules.js";
 import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
 import { undeclaredGlobalTypeof } from "../global-object-names.js";
 import { erasedGlobalBindingOf, programMayWriteGlobalName } from "../global-object-writes.js";
 import { staticTypeofAnswer } from "../static-typeof.js";
+import { reboundRequireBindingOf } from "../rebindable-requires.js";
+import { builtinNamespaceBoxServes } from "../module-namespace-elements.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
   return withCycleBindingRead(lowerer, expr.expression, lowerTypeofAnswer(lowerer, expr, loc), loc);
 }
 
-function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
+function lowerTypeofAnswer(
+  lowerer: Lowerer,
+  expr: ts.TypeOfExpression,
+  loc: SrcLoc,
+  skipRebound = false,
+): IrExpr {
+  // A `require()` binding the file REASSIGNS no longer holds the module
+  // (rebindable-requires.ts): the program's own storage answers every
+  // read of it and of its members, so typeof must read the value. The
+  // static folds below describe the module the declaration originally
+  // required, and the read has no effects to lose. A builtin module's
+  // boxed value serves the members the lowering tables give a value form;
+  // for an unserved member the box answers undefined, so the static
+  // answer applies exactly while the storage still holds the ORIGINAL
+  // module object and any replacement answers for itself.
+  if (!skipRebound) {
+    let operand = expr.expression;
+    while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+    const member = ts.isPropertyAccessExpression(operand) ? operand : null;
+    const target = member === null ? operand : withoutParentheses(member.expression);
+    const binding = reboundRequireBindingOf(lowerer, target);
+    if (binding !== null) {
+      // The raw checker type: typeOf answers `any` for the binding's
+      // reads, while this needs the module the declaration required.
+      const nsType = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(binding));
+      const builtinNs = nsType?.kind === "moduleNs" && nsType.moduleId.startsWith("builtin:");
+      const unserved =
+        builtinNs &&
+        member !== null &&
+        ts.isIdentifier(member.name) &&
+        !builtinNamespaceBoxServes(lowerer, nsType.moduleId, member.name.text, loc);
+      if (unserved && nsType?.kind === "moduleNs" && member !== null) {
+        const box = lowerer.moduleNamespaceDyn({
+          kind: "moduleNsRef",
+          moduleId: nsType.moduleId,
+          type: nsType,
+          loc,
+        });
+        const stored = lowerer.lowerExpr(target);
+        if (box !== null && stored.type.kind === "dyn") {
+          const value = lowerer.lowerExpr(member);
+          if (value.type.kind === "dyn")
+            return {
+              kind: "ternary",
+              cond: { kind: "dynScalarEq", left: box, right: stored, type: BOOL, loc },
+              then: lowerTypeofAnswer(lowerer, expr, loc, true),
+              else_: { kind: "libCall", fn: "dyn.typeof", args: [value], type: STRING, loc },
+              type: STRING,
+              loc,
+            };
+        }
+      } else {
+        const value = lowerer.lowerExpr(expr.expression);
+        if (value.type.kind === "dyn")
+          return { kind: "libCall", fn: "dyn.typeof", args: [value], type: STRING, loc };
+      }
+    }
+  }
   // typeof is a READ, not a use: Node has these constructors, so the answer is
   // "function" exactly as it is for a provided class (host-global-values.ts).
   // Folded before every other guess — including the ambient `declare var` fold
@@ -127,6 +191,14 @@ function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: Src
       stdlibGlobalNameOf(lowerer, operand.expression) === "globalThis"
     )
       return { kind: "strLit", value: "undefined", type: STRING, loc };
+  }
+  {
+    const moduleValue = lowerModuleValueTypeof(lowerer, expr.expression);
+    if (moduleValue) return moduleValue;
+  }
+  {
+    const moduleParent = lowerModuleParentTypeof(lowerer, expr.expression);
+    if (moduleParent) return moduleParent;
   }
   if (isNodeModuleValue(lowerer, expr.expression)) {
     return { kind: "strLit", value: "object", type: STRING, loc };
@@ -234,7 +306,14 @@ function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: Src
       // `snapshot` of node:test as callable, and Node has an object there.
       const member = lowerer.builtinMemberOf(tested);
       const kind = member === null ? undefined : nodeModuleMemberKind(member.module, member.member);
-      const t = lowerer.typeOf(tested);
+      // A member read through a require binding the file reassigns types as
+      // unchecked `any` in lowering, but this fold describes the module the
+      // declaration required, so the checker's member type answers it.
+      const t =
+        ts.isIdentifier(tested.expression) &&
+        reboundRequireBindingOf(lowerer, tested.expression) !== null
+          ? lowerer.checker.getTypeAtLocation(tested)
+          : lowerer.typeOf(tested);
       if (
         kind !== undefined && kind !== null
           ? kind.kind === "function"
@@ -375,7 +454,9 @@ function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: Src
     // a read throws ReferenceError.
     if (
       ambientUndefinedVarSymbolOf(lowerer, tested) ||
-      ambientUndefinedFnSymbolOf(lowerer, tested)
+      ambientUndefinedFnSymbolOf(lowerer, tested) ||
+      (ambientTypesOnlyGlobalSymbolOf(lowerer, tested) &&
+        !programMayWriteGlobalName(lowerer, tested.text, tested))
     ) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }
@@ -726,6 +807,49 @@ export function lowerDynTypeofTest(
     // Non-literal comparisons use the ordinary typeof string value,
     // preserving both operands' evaluation order without a narrowing test.
     if (!ts.isStringLiteral(b)) continue;
+    // A Node value whose kind the pinned-Node census fixes (`typeof
+    // performance === "object"`, `typeof crypto`, `typeof
+    // performance.now === "function"`): typeof needs no value, and the
+    // dyn test below would read the operand — the held object a program
+    // that only tests the name never needs, whose members native code
+    // answers as placeholders (an environment-dependent export test like
+    // scheduler's reads only the name). Node's answer is the census's,
+    // unless the program replaces the global object's member
+    // (`globalThis.performance = …`), where a read follows the write.
+    if (isJsSourceFile(ts.getSourceFileOfNode(a))) {
+      let operand = a.expression;
+      while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+      const direct = stdlibGlobalNameOf(lowerer, operand);
+      const receiver =
+        ts.isPropertyAccessExpression(operand) && !operand.questionDotToken
+          ? stdlibGlobalNameOf(lowerer, operand.expression)
+          : null;
+      const globalName = direct !== null && direct !== "globalThis" ? direct : receiver;
+      // A MEMBER is the census's answer only for a Node global OBJECT the
+      // runtime provides (performance, process, console, crypto, navigator).
+      // An ECMAScript builtin class's member is NOT: the census describes the
+      // pinned Node release, and the native runtime has no
+      // `ArrayBuffer.prototype` value at all, so `typeof ArrayBuffer.prototype
+      // === "object"` must keep answering "undefined" as the runtime does —
+      // folding it true would make the feature test that follows
+      // (`typeof ArrayBuffer.prototype.resize === "function"`) evaluate a
+      // member of an object the program does not have.
+      const memberRead = ts.isPropertyAccessExpression(operand) && !operand.questionDotToken;
+      let nodeObjectMember = true;
+      if (memberRead && ts.isPropertyAccessExpression(operand)) {
+        const object = nodeGlobalObjectOf(lowerer, operand.expression);
+        const kind = object === null ? null : nodeGlobalKind(object);
+        nodeObjectMember = kind !== null && kind.kind === "value" && kind.type === "object";
+      }
+      if (
+        nodeObjectMember &&
+        (globalName === null || !programMayWriteGlobalName(lowerer, globalName, operand))
+      ) {
+        const answer = nodeValueTypeof(lowerer, a.expression);
+        if (answer !== null)
+          return { kind: "boolLit", value: (answer === b.text) !== negated, type: BOOL, loc };
+      }
+    }
     const declared = lowerer.mapTypeOf(lowerer.typeOf(a.expression));
     // `typeof undeclared === "..."` in a JavaScript source is a runtime
     // question only when the program can have created the global object's
@@ -911,12 +1035,11 @@ export function lowerDynTypeofTest(
     if (b.text === "symbol") {
       return { kind: "boolLit", value: negated, type: BOOL, loc };
     }
-    lowerer.unsupported(
-      "SC1090",
-      b,
-      `'typeof' tests against "${b.text}" on 'unknown' values (only "string"/"number"/` +
-        `"boolean"/"undefined"/"object" narrow; use a checked cast — 'v as T' — to extract)`,
-    );
+    // A literal no `typeof` can answer ("unknown", "Object", …): not a kind
+    // test at all. The ordinary comparison below lowers the runtime `typeof`
+    // string against it (tsc narrows such a branch to never, so no read in it
+    // needs the kind test), and the operand still evaluates exactly once.
+    return null;
   }
   return null;
 }

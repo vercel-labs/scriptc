@@ -170,6 +170,9 @@ struct ScrStreamState {
     ScrPromise *next_waiter;
     bool next_dyn;
     bool next_result;
+    /* The adapter's read: take ONE buffered chunk (Node's toWeb enqueues
+     * each 'data' chunk), not the whole buffer the async iterator returns. */
+    bool next_single;
     /* The iterator's own read() is calling _read: synchronous pushes
      * buffer, and the waiter takes the whole buffer afterwards (Node's
      * read() returns everything _read pushed). */
@@ -1553,7 +1556,41 @@ static void scr_stream_iter_step(ScrStream *s) {
   if (!st->destroyed && !st->errored) {
     st->r.next_reading = true;
     ScrEntryKind kind;
-    void *chunk = scr_stream_read_n_kind(s, -1, &kind);
+    /* The adapter's read takes one buffered chunk (Node's toWeb enqueues
+     * each 'data' chunk); the iterator's own read takes the whole buffer.
+     * An empty buffer first runs the stream's _read through a zero-size
+     * read, so the chunks it pushes synchronously buffer as entries of
+     * their own instead of arriving as one merged read. */
+    double want = -1;
+    if (st->r.next_single && !st->r.object_entries && st->r.n == 0 && !st->r.ended &&
+        !st->r.reading && !st->destroyed && !st->errored && !st->constructing &&
+        st->r.read_cb != NULL) {
+      /* Run the stream's _read once, the way read(0) does, so its synchronous
+       * pushes buffer as entries of their own; read(0) itself can return
+       * before _read when the highWaterMark is 0. */
+      st->r.reading = true;
+      st->r.in_read_sync = true;
+      st->r.in_read_call = true;
+      st->r.read_inv(st->r.read_cb, s, (double)st->r.hwm);
+      st->r.in_read_call = false;
+      st->r.in_read_sync = false;
+    }
+    if (st->r.next_single && !st->r.object_entries && st->r.n > 0) {
+      /* Take the head entry directly: an explicit read size would grow the
+       * stream's highWaterMark (Node's read(n)), which a zero-mark stream
+       * cannot do (the growth loop would never terminate). */
+      ScrEntryKind single_kind = scr_stream_rkind(st);
+      size_t take = scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off;
+      void *single = scr_stream_rbuf_take(st, take);
+      st->r.next_reading = false;
+      if (!st->error_emitted && !st->close_emitted) st->r.data_emitted = true;
+      ScrPromise *single_waiter = st->r.next_waiter;
+      st->r.next_waiter = NULL;
+      scr_stream_next_fulfill(st, single_waiter, single, single_kind);
+      if (st->r.ended && st->r.length == 0) scr_stream_end_readable(s);
+      return;
+    }
+    void *chunk = scr_stream_read_n_kind(s, want, &kind);
     st->r.next_reading = false;
     if (scr_exc_pending()) {
       if (chunk) scr_stream_entry_release_kind(st, chunk, kind);
@@ -1620,7 +1657,10 @@ static void scr_stream_settle_next_waiter(ScrStream *s) {
     ScrPromise *w = st->r.next_waiter;
     st->r.next_waiter = NULL;
     ScrEntryKind kind = scr_stream_rkind(st);
-    void *chunk = scr_stream_rbuf_take(st, st->r.object_entries ? 1 : st->r.length);
+    size_t take = st->r.object_entries ? 1 : st->r.length;
+    if (st->r.next_single && !st->r.object_entries && st->r.n > 0)
+      take = scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off;
+    void *chunk = scr_stream_rbuf_take(st, take);
     /* the iterator's read() returned a chunk */
     if (!st->error_emitted && !st->close_emitted) st->r.data_emitted = true;
     scr_stream_next_fulfill(st, w, chunk, kind);
@@ -1647,7 +1687,7 @@ static void scr_stream_settle_next_waiter(ScrStream *s) {
   }
 }
 
-static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool result) {
+static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool result, bool single) {
   ScrStreamState *st = s->st;
   ScrPromise *p = scr_promise_new();
   if (!st->has_r) {
@@ -1665,6 +1705,7 @@ static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool resul
   }
   st->r.next_dyn = dyn;
   st->r.next_result = result;
+  st->r.next_single = single;
   st->r.next_waiter = scr_promise_retain(p);
   st->r.next_parked = false;
   if (!st->r.next_started) {
@@ -1688,15 +1729,25 @@ ScrPromise *scr_stream_next_chunk(ScrStream *s) {
     scr_promise_reject_pending(p);
     return p;
   }
-  return scr_stream_next_chunk_impl(s, false, false);
+  return scr_stream_next_chunk_impl(s, false, false, false);
 }
 
 ScrPromise *scr_stream_next_chunk_dyn(ScrStream *s) {
-  return scr_stream_next_chunk_impl(s, true, false);
+  return scr_stream_next_chunk_impl(s, true, false, false);
+}
+
+/* The web adapters' read: one buffered chunk per call, Node's 'data'
+ * granularity (Readable.toWeb enqueues each chunk as the readable emits it). */
+ScrPromise *scr_stream_next_chunk_dyn_single(ScrStream *s) {
+  return scr_stream_next_chunk_impl(s, true, false, true);
+}
+
+bool scr_stream_readable_object_entries(ScrStream *s) {
+  return s->st->has_r && s->st->r.object_entries;
 }
 
 ScrPromise *scr_stream_next_result_dyn(ScrStream *s) {
-  return scr_stream_next_chunk_impl(s, true, true);
+  return scr_stream_next_chunk_impl(s, true, true, false);
 }
 
 /* ── Readable.from (array, string and Buffer sources) ─────────────────── */

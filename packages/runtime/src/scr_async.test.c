@@ -262,10 +262,49 @@ static void async_resource_handles_own_their_payload(void) {
   printf("async resource handles own their payload\n");
 }
 
+static ScrDyn *ar_test_target(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  return scr_dyn_undefined();
+}
+
+/* A resource the program drops is reclaimed; a binding keeps its payload alive
+ * only while the binding itself is reachable, and the loop leaves the live
+ * count where it started (no growing registry of finished resources). */
+static void async_resource_bindings_own_and_release_their_payload(void) {
+  const size_t before = scr_ar_live_resources();
+  ScrStr *name = scr_str_new("BOUND", 5);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < 64; i++) {
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    ScrClosure *closure = scr_closure_new(NULL, 0);
+    ScrDyn *target = scr_dyn_new_func(closure, ar_test_target, 0, "()", "target");
+    ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
+    assert(bound != NULL);
+    /* Dropping the value leaves the binding's reference in place... */
+    scr_dyn_release(resource);
+    assert(scr_ar_live_resources() == before + 1);
+    /* ...and dropping the binding reclaims the payload. */
+    scr_dyn_release(bound);
+    scr_dyn_release(target);
+    assert(scr_ar_live_resources() == before);
+  }
+  scr_dyn_release(type);
+  assert(scr_ar_live_resources() == before);
+  printf("async resource bindings own and release their payload\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
     due_timers_run_by_deadline_before_immediates();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "bindings") == 0) {
+    async_resource_bindings_own_and_release_their_payload();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "resources") == 0) {

@@ -56,6 +56,12 @@ test("fiber stacks commit on demand and preserve large frames across suspension"
 // With every deadline already passed, the order is the timer heap's and the
 // loop's, not the clock's: tests/corpus/timers-cross-kind-clears.ts once
 // showed the first of these only when its own script ran fast enough.
+test("AsyncResource bindings own their payload and release it", async () => {
+  const result = await execFileAsync(bin, ["bindings"]);
+  expect(result.stdout).toBe("async resource bindings own and release their payload\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("an AsyncResource handle owns its payload", async () => {
   const result = await execFileAsync(bin, ["resources"]);
   expect(result.stdout).toBe("async resource handles own their payload\n");

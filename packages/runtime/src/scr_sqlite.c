@@ -1578,18 +1578,67 @@ static const ScrDynHandleOps scr_sqlite_limits_ops = {
 static char *scr_sqlite_validate_path(const ScrDyn *path);
 static ScrSqliteDb *scr_sqlite_db_of(const ScrDyn *box);
 
-/* The destination of a backup, closed after the copy: the error code it
- * left, read before the handle turns sick. */
-typedef struct ScrSqliteBackup {
+/* One backup run: the destination handle the copy writes, the source
+ * connection it reads, and the state its deferred steps share. The promise
+ * settles on the turn that reaches SQLITE_DONE, so the job outlives the call
+ * that started it and frees itself with that turn's closure. */
+typedef struct ScrSqliteBackupJob {
+  size_t rc;
+  ScrPromise *promise; /* owned */
+  ScrSqliteDb *source; /* owned */
+  ScrDyn *progress; /* owned, NULL without a callback */
+  ScrStr *source_db; /* owned when options named one */
+  ScrStr *dest_db; /* owned when options named one */
   sqlite3 *dest;
-  int status;
-} ScrSqliteBackup;
+  sqlite3_backup *copy;
+  int rate;
+} ScrSqliteBackupJob;
 
-static void scr_sqlite_backup_close(ScrSqliteBackup *job) {
-  if (job->dest != NULL) {
-    sqlite3_close_v2(job->dest);
-    job->dest = NULL;
+static void *scr_sqlite_backup_job_retain(void *p) {
+  ((ScrSqliteBackupJob *)p)->rc++;
+  return p;
+}
+
+/* Rejects the backup's promise. A step that fails names its own code, which
+ * is the error Node reports; a copy that never started (BUSY and LOCKED leave
+ * the destination without one) reports the destination handle's error. That
+ * text belongs to the handle, so it is copied before the job's release closes
+ * it. */
+static void scr_sqlite_backup_reject(ScrSqliteBackupJob *job, int code) {
+  int errcode;
+  const char *text;
+  if (code != SQLITE_OK) {
+    errcode = code;
+    text = sqlite3_errstr(code);
+  } else {
+    errcode = job->dest == NULL ? SQLITE_ERROR : sqlite3_extended_errcode(job->dest);
+    text = job->dest != NULL ? sqlite3_errmsg(job->dest) : sqlite3_errstr(errcode);
   }
+  ScrStr *message = scr_str_new(text, strlen(text));
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(e, "ERR_SQLITE_ERROR");
+  const char *errtext = sqlite3_errstr(errcode);
+  ScrStr *errstr = scr_str_new(errtext, strlen(errtext));
+  ScrDyn *errstr_dyn = scr_dyn_new_str(errstr);
+  scr_str_release(errstr);
+  scr_error_set_prop(e, "errcode", 7, scr_dyn_new_num((double)errcode));
+  scr_error_set_prop(e, "errstr", 6, errstr_dyn);
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+  scr_promise_reject_pending(job->promise);
+}
+
+static void scr_sqlite_backup_job_release(void *p) {
+  ScrSqliteBackupJob *job = p;
+  if (job == NULL || --job->rc > 0) return;
+  if (job->copy != NULL) sqlite3_backup_finish(job->copy);
+  if (job->dest != NULL) sqlite3_close_v2(job->dest);
+  scr_promise_release(job->promise);
+  scr_dyn_release(job->progress);
+  scr_str_release(job->source_db);
+  scr_str_release(job->dest_db);
+  scr_sqlite_db_release(job->source);
+  free(job);
 }
 
 /* The JavaScript progress callback over { totalPages, remainingPages }. */
@@ -1609,12 +1658,75 @@ static bool scr_sqlite_backup_progress(ScrSqliteDb *db, const ScrDyn *progress, 
   return true;
 }
 
+static void scr_sqlite_backup_step(ScrClosure *self);
+
+/* Queues the next step on a later loop turn, as Node's BackupJob schedules
+ * one threadpool work item per step and settles the promise from that work's
+ * completion: the loop keeps running between two steps, so a writer that
+ * holds the destination (or a write transaction on the source) can release
+ * it while a busy step waits, and timers and other fibers keep running
+ * instead of stalling behind the copy.
+ *
+ * The step goes on the immediate queue rather than the deferred-callback
+ * one: the immediate station snapshots the callbacks queued for this turn,
+ * so a step that queues the next one runs at most once per turn in the
+ * runtime's own loop, and in a hosted loop each step is handed to the host's
+ * check phase, which runs it on a later host turn. The deferred queue is
+ * drained to exhaustion in one host turn, which would run a busy copy's
+ * whole retry chain without ever returning to the loop. */
+static void scr_sqlite_backup_schedule(ScrSqliteBackupJob *job) {
+  ScrClosure *step = scr_closure_new((void *)scr_sqlite_backup_step, 1);
+  ScrBox *box =
+      scr_box_new_obj(scr_sqlite_backup_job_retain, scr_sqlite_backup_job_release, NULL);
+  scr_box_set_ref(box, scr_sqlite_backup_job_retain(job)); /* the box owns this reference */
+  step->caps[0] = box;
+  (void)scr_set_immediate(step); /* the queue owns the closure */
+}
+
+/* One step of the copy, then either the next turn, the rejection or the
+ * page count. */
+static void scr_sqlite_backup_step(ScrClosure *self) {
+  ScrSqliteBackupJob *job = scr_box_get_ref(self->caps[0]);
+  int status = sqlite3_backup_step(job->copy, job->rate);
+  if (!(status == SQLITE_OK || status == SQLITE_DONE || status == SQLITE_BUSY ||
+        status == SQLITE_LOCKED)) {
+    scr_sqlite_backup_reject(job, status);
+    scr_sqlite_backup_job_release(job);
+    return;
+  }
+  int total = sqlite3_backup_pagecount(job->copy);
+  int remaining = sqlite3_backup_remaining(job->copy);
+  if (remaining != 0) {
+    /* Pages are left, whether the step copied some or was held off by a
+     * lock (BUSY and LOCKED leave the counters as the last successful step
+     * set them). The progress callback runs here, between two steps. */
+    if (!scr_sqlite_backup_progress(job->source, job->progress, total, remaining)) {
+      scr_promise_reject_pending(job->promise); /* the callback's exception */
+    } else {
+      scr_sqlite_backup_schedule(job);
+    }
+    scr_sqlite_backup_job_release(job);
+    return;
+  }
+  if (status != SQLITE_DONE) {
+    /* A first step that could not start: Node rejects rather than retrying a
+     * copy whose page count it never learned. */
+    scr_sqlite_backup_reject(job, SQLITE_OK);
+    scr_sqlite_backup_job_release(job);
+    return;
+  }
+  ScrDyn *pages = scr_dyn_new_num((double)total);
+  scr_promise_fulfill_ref(job->promise, pages, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+  scr_sqlite_backup_job_release(job);
+}
+
 /* sqlite.backup(sourceDb, path[, options]): copies the source database into
  * a new file and answers the promise of its page count, as Node's BackupJob
- * does. A settled promise from the synchronous copy (fs/promises' bridge):
- * awaiting sees the same count, and the progress callbacks run before it
- * settles. All arguments are borrowed; +1, or NULL with the exception
- * pending for the validation failures Node throws. */
+ * does. The copy is a pending promise: the destination is opened here, and
+ * each step runs on its own loop turn, so the progress callbacks and every
+ * other pending fiber run between steps and the loop never stalls on a
+ * writer that holds a lock. All arguments are borrowed; +1, or NULL with the
+ * exception pending for the validation failures Node throws. */
 ScrDyn *scr_sqlite_backup(ScrDyn *source, ScrDyn *path, ScrDyn *options) {
   ScrSqliteDb *db = scr_sqlite_db_of(source);
   if (db == NULL) {
@@ -1698,18 +1810,18 @@ ScrDyn *scr_sqlite_backup(ScrDyn *source, ScrDyn *path, ScrDyn *options) {
     }
   }
 
-  ScrSqliteBackup job = {.dest = NULL, .status = SQLITE_OK};
-  int r = sqlite3_open_v2(destination, &job.dest,
+  sqlite3 *dest = NULL;
+  int r = sqlite3_open_v2(destination, &dest,
                           SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, NULL);
   free(destination);
   if (r != SQLITE_OK) {
     /* The message belongs to the destination handle, so copy it before the
      * handle closes. Node rejects the promise (the destination is opened
      * before the work starts), so the error becomes the rejection. */
-    int errcode = job.dest != NULL ? sqlite3_extended_errcode(job.dest) : r;
-    const char *text = job.dest != NULL ? sqlite3_errmsg(job.dest) : sqlite3_errstr(r);
+    int errcode = dest != NULL ? sqlite3_extended_errcode(dest) : r;
+    const char *text = dest != NULL ? sqlite3_errmsg(dest) : sqlite3_errstr(r);
     ScrStr *message = scr_str_new(text, strlen(text));
-    scr_sqlite_backup_close(&job);
+    if (dest != NULL) sqlite3_close_v2(dest);
     ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
     scr_str_release(message);
     scr_error_set_code(e, "ERR_SQLITE_ERROR");
@@ -1728,76 +1840,35 @@ ScrDyn *scr_sqlite_backup(ScrDyn *source, ScrDyn *path, ScrDyn *options) {
     scr_promise_release(promise);
     return box;
   }
-  sqlite3_backup *copy = sqlite3_backup_init(job.dest, dest_db, db->conn, source_db);
+  sqlite3_backup *copy = sqlite3_backup_init(dest, dest_db, db->conn, source_db);
   if (copy == NULL) {
-    int errcode = sqlite3_errcode(job.dest);
-    scr_sqlite_backup_close(&job);
+    int errcode = sqlite3_errcode(dest);
     scr_sqlite_throw_coded_error(errcode, sqlite3_errstr(errcode));
-    ScrPromise *promise = scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+    sqlite3_close_v2(dest);
+    ScrPromise *promise =
+        scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
     scr_dyn_release(progress);
     scr_str_release(held_source);
     scr_str_release(held_target);
     ScrDyn *box = scr_dyn_new_promise(promise);
-  scr_promise_release(promise);
-  return box;
+    scr_promise_release(promise);
+    return box;
   }
 
-  ScrPromise *promise = NULL;
-  for (;;) {
-    job.status = sqlite3_backup_step(copy, rate);
-    if (!(job.status == SQLITE_OK || job.status == SQLITE_DONE || job.status == SQLITE_BUSY ||
-          job.status == SQLITE_LOCKED)) {
-      int errcode = job.status;
-      sqlite3_backup_finish(copy);
-      scr_sqlite_backup_close(&job);
-      scr_sqlite_throw_coded_error(errcode, sqlite3_errstr(errcode));
-      promise =
-          scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
-      break;
-    }
-    int total = sqlite3_backup_pagecount(copy);
-    int remaining = sqlite3_backup_remaining(copy);
-    if (remaining != 0) {
-      if (!scr_sqlite_backup_progress(db, progress, total, remaining)) {
-        sqlite3_backup_finish(copy);
-        scr_sqlite_backup_close(&job);
-        /* The callback's exception is the rejection. */
-        promise =
-            scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
-        break;
-      }
-      continue;
-    }
-    if (job.status != SQLITE_DONE) {
-      int errcode = sqlite3_errcode(job.dest);
-      const char *message = sqlite3_errmsg(job.dest);
-      ScrStr *msg = scr_str_new(message, strlen(message));
-      sqlite3_backup_finish(copy);
-      scr_sqlite_backup_close(&job);
-      ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
-      scr_str_release(msg);
-      scr_error_set_code(e, "ERR_SQLITE_ERROR");
-      ScrStr *errstr = scr_str_new(sqlite3_errstr(errcode), strlen(sqlite3_errstr(errcode)));
-      ScrDyn *errstr_dyn = scr_dyn_new_str(errstr);
-      scr_str_release(errstr);
-      scr_error_set_prop(e, "errcode", 7, scr_dyn_new_num((double)errcode));
-      scr_error_set_prop(e, "errstr", 6, errstr_dyn);
-      scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
-      promise =
-          scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
-      break;
-    }
-    sqlite3_backup_finish(copy);
-    scr_sqlite_backup_close(&job);
-    ScrDyn *pages = scr_dyn_new_num((double)total);
-    promise = scr_promise_settled_ref(pages, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
-    break;
-  }
-  scr_dyn_release(progress);
-  scr_str_release(held_source);
-  scr_str_release(held_target);
-  ScrDyn *box = scr_dyn_new_promise(promise);
-  scr_promise_release(promise);
+  ScrSqliteBackupJob *job = calloc(1, sizeof *job);
+  if (job == NULL) scr_sqlite_oom();
+  job->rc = 1;
+  job->promise = scr_promise_new();
+  job->source = scr_sqlite_db_retain(db);
+  job->progress = progress; /* ownership moves */
+  job->source_db = held_source; /* ownership moves */
+  job->dest_db = held_target; /* ownership moves */
+  job->dest = dest;
+  job->copy = copy;
+  job->rate = rate;
+  scr_sqlite_backup_schedule(job); /* the step's box owns a reference */
+  ScrDyn *box = scr_dyn_new_promise(job->promise);
+  scr_sqlite_backup_job_release(job); /* the caller's reference */
   return box;
 }
 

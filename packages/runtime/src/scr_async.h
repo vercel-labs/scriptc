@@ -432,6 +432,16 @@ extern SCR_TL void (*scr_promise_inspect_dyn_fn)(const ScrPromise *p, bool *pend
 void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
+/* process.emit(event, ...args): dispatch to the listeners of the process
+ * events registered as checked-dynamic callbacks — the exception families,
+ * 'warning' and the rejection families — answering whether any listener
+ * existed (Node's EventEmitter return). The compiler refuses the typed
+ * listener families, and a name none of these matches answers false. */
+bool scr_process_emit_named(ScrDyn *event, ScrDyn *args);
+/* process.emit('error', ...): no 'error' listener can be registered, so
+ * Node's EventEmitter contract throws — an Error payload throws itself, any
+ * other payload throws ERR_UNHANDLED_ERROR. */
+void scr_process_emit_error(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
 /* process.emitWarning = fn (borrowed; the runtime keeps its own
  * reference). Later process.emitWarning(...) calls apply the replacement

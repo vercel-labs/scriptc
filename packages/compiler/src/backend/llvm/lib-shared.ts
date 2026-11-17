@@ -492,6 +492,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.envPairs": "scr_env_pairs",
   "process.stdoutWrite": "scr_process_stdout_write",
   "process.stdio": "scr_process_stdio",
+  "process.stdioOf": "scr_process_stdio",
   "process.stdioSlot": "scr_process_stdio",
   "process.stdioWriteDyn": "scr_process_stdio_write_dyn",
   "process.stdioWriteStr": "scr_stdio_write_str_dyn",
@@ -1724,6 +1725,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.duplexFromGenSignal": "scr_stream_duplex_from_gen_signal",
   "stream.duplexFromAsyncFnSignal": "scr_stream_duplex_from_async_fn_signal",
   "fetch.readableFromWeb": "scr_stream_readable_from_web",
+  "webstream.toWebReadable": "scr_stream_to_web_readable",
+  "webstream.toWebReadableDyn": "scr_stream_to_web_readable_dyn",
   "webstream.writableFromWeb": "scr_stream_writable_from_web",
   "writable.writeEncoding": "scr_stream_write_encoding",
   "writable.setDefaultEncoding": "scr_stream_set_default_encoding",
@@ -1962,6 +1965,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.resWriteEarlyHintsCb": "scr_http_res_write_early_hints_cb",
   "http.resWriteProcessing": "scr_http_res_write_processing",
   "http.resWriteEarlyHints": "scr_http_res_write_early_hints",
+  "http.resWriteInformation": "scr_http_res_write_information",
   "http.resWrite": "scr_http_res_write_str",
   "http.resWriteBytes": "scr_http_res_write_bytes",
   "http.resEnd": "scr_http_res_end",
@@ -1997,6 +2001,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.resHasHeader": "scr_http_res_has_header_named",
   "http.resRemoveHeader": "scr_http_res_remove_header",
   "http.resWriteHeadPairs": "scr_http_res_write_head_pairs",
+  "http.resWriteHeadObject": "scr_http_res_write_head_object",
   "http.resWriteHeadDyn": "scr_http_res_write_head_dyn",
   "http.serverJoinDupHeaders": "scr_http_server_join_duplicate_headers",
   "http.serverAllowMissingHostHeader": "scr_http_server_allow_missing_host_header",
@@ -2006,6 +2011,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.serverCloseIdleConnections": "scr_net_server_close_idle_connections",
   "http.serverTimeoutSet": "scr_net_server_timeout_set",
   "http.serverTimeoutOptionSet": "scr_net_server_timeout_option_set",
+  "http.serverHeadersTimeoutDefault": "scr_http_server_headers_timeout_default",
+  "http.serverConnectionsCheckingInterval": "scr_http_server_connections_checking_interval",
+  "http.serverRejectNonStandardBodyWrites": "scr_http_server_reject_non_standard_body_writes",
   "http.clientWrite": "scr_http_client_write_str",
   "http.clientSetHeader": "scr_http_client_set_header",
   "http.clientHasHeader": "scr_http_client_has_header_named",
@@ -2050,6 +2058,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.clientMaxHeadersCountGet": "scr_http_client_max_headers_count_get",
   "http.clientMaxHeadersCountSet": "scr_http_client_max_headers_count_set",
   "http.clientSignalCheck": "scr_http_client_signal_check",
+  "http.reqSignal": "scr_http_req_signal",
   "http.clientProtocolCheck": "scr_http_client_protocol_check",
   "http.clientProtocolCheckAgent": "scr_http_client_protocol_check_agent",
   "https.nextServername": "scr_https_set_next_servername",
@@ -2139,6 +2148,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // dispatches the listeners).
   "process.onWarning": "scr_process_on_warning",
   "process.offWarning": "scr_process_off_warning",
+  "process.emit": "scr_process_emit_named",
+  "process.emitError": "scr_process_emit_error",
   "process.emitWarning": "scr_process_emit_warning",
   "process.emitWarningText": "scr_process_emit_warning_text",
   "process.deprecationFlag": "scr_process_deprecation_flag",
@@ -2384,6 +2395,8 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "worker.receiveMessageOnPort",
   "worker.broadcastChannel",
   "process.stdio",
+  // The same stream object for a procStream value.
+  "process.stdioOf",
   // The typed write slot and the run-time-typed chunk write keep the loop
   // live for the write callbacks they queue: both reach the same stream
   // object as process.stdio and call back from a nextTick.

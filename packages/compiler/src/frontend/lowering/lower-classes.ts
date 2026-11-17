@@ -228,9 +228,15 @@ import {
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
 } from "./symbol-fields.js";
-import { lowerHttpAgentNew, lowerHttpServerNew, lowerTlsSocketNew } from "./lower-server.js";
+import {
+  lowerHttpAgentNew,
+  lowerHttpServerNew,
+  lowerTlsServerNew,
+  lowerTlsSocketNew,
+} from "./lower-server.js";
 import {
   ambientNsRootOf,
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefReadType,
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
@@ -253,7 +259,7 @@ import {
   usesStaticReceiver,
 } from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
-import { lowerDnsResolverNew } from "./lower-dgram.js";
+import { lowerDgramSocketNew, lowerDnsResolverNew } from "./lower-dgram.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import {
@@ -12831,6 +12837,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
   }
+  // `new dgram.Socket(type | options[, listener])`: Node's own Socket
+  // constructor — the same native socket createSocket builds.
+  {
+    const socket = lowerDgramSocketNew(lowerer, expr);
+    if (socket) return socket;
+  }
   // `new dns.Resolver(options?)` / `new dns.promises.Resolver(options?)`:
   // the module's Resolver class builds a stub-resolver handle value.
   {
@@ -13036,6 +13048,19 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     }
     return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
   }
+  // `new XRWebGLLayer(...)` where the callee names a global only a
+  // types-only package declares: Node throws the ReferenceError at the
+  // callee read, before any argument runs (the ambient-namespace stance,
+  // one identifier deep).
+  if (ts.isIdentifier(expr.expression)) {
+    if (ambientTypesOnlyGlobalSymbolOf(lowerer, expr.expression) !== null) {
+      // The read throws before the construction runs; its value is typed for
+      // the slot it lands in, and the checked-dynamic value converts into a
+      // declared type where one names it (the conversion never runs).
+      const t = ambientUndefReadType(lowerer, expr) ?? DYN;
+      return nsUndefRead(lowerer, expr.expression.text, expr, t);
+    }
+  }
   // A package declaration without a compiled constructor cannot provide
   // a runtime value. Report the package at the construction site.
   {
@@ -13204,6 +13229,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // `new tls.TLSSocket(socket, options)` — the server-mode wrap of an open
   // socket (lower-server).
   {
+    const tlsServer = lowerTlsServerNew(lowerer, expr);
+    if (tlsServer !== null) return tlsServer;
     const tlsSocket = lowerTlsSocketNew(lowerer, expr);
     if (tlsSocket) return tlsSocket;
   }

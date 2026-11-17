@@ -1938,8 +1938,7 @@ function registerCjsRuntimeWholeExportValueGlobals(
   sf: ts.SourceFile,
   tag: string,
 ): void {
-  if (cjsRuntimeWholeExportValueWritesOf(lowerer, sf) === null) return;
-  const loc = locOf(sf.statements.nodes[0] ?? sf);
+  if (!lowerer.cjsRuntimeWholeExportModule(sf)) return;
   const g: IrGlobal = {
     id: `%g.${tag}%exportValue`,
     name: "module.exports",
@@ -1948,16 +1947,17 @@ function registerCjsRuntimeWholeExportValueGlobals(
   };
   lowerer.cjsRuntimeWholeExportValueGlobals.set(sf, g);
   lowerer.globalsList.push(g);
-  // The module's initial exports object: empty, and the identity every
-  // `module.exports`/`exports` read answers before a replacement runs.
-  const actions = lowerer.jsonInitActions.get(sf) ?? [];
-  actions.push({
-    kind: "assign",
-    localId: g.id,
-    value: { kind: "dynObjLit", fields: [], type: DYN, loc },
-    loc,
-  });
-  lowerer.jsonInitActions.set(sf, actions);
+  // What module.exports holds when the module finishes evaluating: the value
+  // Node binds an ESM default import to. A replacement the module performs
+  // later does not change it.
+  const snapshot: IrGlobal = {
+    id: `%g.${tag}%exportSnapshot`,
+    name: "%exportSnapshot",
+    type: DYN,
+    mutable: true,
+  };
+  lowerer.cjsRuntimeExportSnapshotGlobals.set(sf, snapshot);
+  lowerer.globalsList.push(snapshot);
 }
 
 /** Register the forwarding edges a conditional whole export needs: Node's
@@ -3922,6 +3922,21 @@ export function collectGlobals(
             type = unitOnlyUnion(lowerer.unions);
           }
           if (type.kind === "void") lowerer.badType(nameNode, lowerer.typeOf(nameNode));
+          // A JS `const|let|var f = require("./m")` of a module whose whole
+          // export is chosen at run time holds the value the require
+          // answered at this position (a later module.exports replacement
+          // must not change it), so the binding takes checked-dynamic
+          // storage and its own assignment statement.
+          const runtimeExportRequire =
+            isJsSourceFile(sf) && decl.initializer !== undefined && ts.isIdentifier(decl.name)
+              ? inlineProgramRequireOf(lowerer, decl.initializer)
+              : null;
+          if (
+            runtimeExportRequire !== null &&
+            lowerer.cjsRuntimeWholeExportModule(runtimeExportRequire.dep)
+          ) {
+            type = DYN;
+          }
           // A JS file-scope FUNCTION binding whose unannotated return
           // infers a record (`const wrapped = function () { return
           // expectedResult; }`): the closure VALUE lowers with a dyn
@@ -3996,6 +4011,13 @@ export function collectGlobals(
           };
           lowerer.globalsBySymbol.set(symbol, g);
           lowerer.globalsList.push(g);
+          if (
+            runtimeExportRequire !== null &&
+            lowerer.cjsRuntimeWholeExportModule(runtimeExportRequire.dep)
+          ) {
+            lowerer.jsWidenedBindings.add(symbol);
+            lowerer.cjsRuntimeRequireBindings.add(symbol);
+          }
           // `let f: T;` initializes the binding (to undefined) where the
           // declaration runs: later writes are ordinary stores, which the
           // pointer guard alone would refuse (markCycleEarlyBindings).
@@ -4079,6 +4101,13 @@ function noteVarGlobalEntryInit(lowerer: Lowerer, sf: ts.SourceFile, g: IrGlobal
  * the module. JSON documents and native FFI requires keep their storage. */
 function requireAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
   if (splitRequireBindingOf(lowerer, decl) !== null) return true;
+  // A binding of a module whose whole export is chosen at run time keeps its
+  // own storage: Node's require answered a value at THIS position, and a
+  // replacement the module performs later does not change it.
+  if (decl.initializer !== undefined && ts.isIdentifier(decl.name)) {
+    const req = inlineProgramRequireOf(lowerer, decl.initializer);
+    if (req !== null && lowerer.cjsRuntimeWholeExportModule(req.dep)) return false;
+  }
   return (
     decl.initializer !== undefined &&
     requireSpecOf(decl.initializer) !== null &&
@@ -4391,6 +4420,21 @@ export function lowerFileInit(
         kind: "assign",
         localId: exportsThis.id,
         value: { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
+        loc: loc0,
+      });
+    }
+    // The module's initial `module.exports` IS that same object: Node starts
+    // the wrapper with `this === module.exports === exports`, so an identity
+    // test before a replacement answers true. A module that never observes
+    // the original object's identity starts from a fresh empty one.
+    const runtimeExport = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
+    if (runtimeExport !== null) {
+      header.push({
+        kind: "assign",
+        localId: runtimeExport.id,
+        value: exportsThis
+          ? { kind: "varRef", localId: exportsThis.id, type: DYN, loc: loc0 }
+          : { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
         loc: loc0,
       });
     }
@@ -4720,6 +4764,19 @@ export function lowerFileInit(
     while (funduleAt < funduleFns.length) {
       body.push(...funduleFnStoreAt(funduleFns[funduleAt]!));
       funduleAt++;
+    }
+    // The value an ESM default import of this module binds: module.exports
+    // after every statement of the module ran (a top-level return records it
+    // at its own position, lower-stmts.ts).
+    const exportSnapshot = lowerer.cjsRuntimeExportSnapshotOf(sf);
+    const exportSlot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
+    if (exportSnapshot !== null && exportSlot !== null) {
+      body.push({
+        kind: "assign",
+        localId: exportSnapshot.id,
+        value: { kind: "varRef", localId: exportSlot.id, type: DYN, loc: loc0 },
+        loc: loc0,
+      });
     }
     for (const { at, g } of unionEntryInits) {
       if (g.type.kind !== "dyn") continue;

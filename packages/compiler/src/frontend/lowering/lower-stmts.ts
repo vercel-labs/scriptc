@@ -2407,10 +2407,27 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
   }
   const loc = locOf(stmt);
   const ret: IrStmt = { kind: "return", value: null, loc };
-  if (!stmt.expression) return ret;
+  // A module whose whole export is chosen at run time records what
+  // module.exports holds here: a top-level return ends the module, so an
+  // ESM default import binds this value.
+  const snapshot = lowerer.cjsRuntimeExportSnapshotOf(sf);
+  const exportSlot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
+  const store: IrStmt[] =
+    snapshot !== null && exportSlot !== null
+      ? [
+          {
+            kind: "assign",
+            localId: snapshot.id,
+            value: { kind: "varRef", localId: exportSlot.id, type: DYN, loc },
+            loc,
+          },
+        ]
+      : [];
+  if (!stmt.expression)
+    return store.length === 0 ? ret : { kind: "block", body: [...store, ret], loc };
   return {
     kind: "block",
-    body: [{ kind: "exprStmt", expr: lowerer.lowerExpr(stmt.expression), loc }, ret],
+    body: [{ kind: "exprStmt", expr: lowerer.lowerExpr(stmt.expression), loc }, ...store, ret],
     loc,
   };
 }

@@ -624,8 +624,13 @@ export function cjsRuntimeWholeExportValueWritesOf(
     if (!ts.isBinaryExpression(node)) return undefined;
     // A member export, an `exports` rebinding, or a member write through
     // `module.exports` needs the exports object itself; leave those shapes
-    // to the fences they already have.
+    // to the fences they already have. Comparisons read the objects and do
+    // not change the export, so they stay.
+    const operator = node.operatorToken.kind;
+    const assigns =
+      operator >= ts.SyntaxKind.FirstAssignment && operator <= ts.SyntaxKind.LastAssignment;
     if (
+      assigns &&
       !isModuleExportsAccess(node.left) &&
       (isCjsExportsIdentifier(lowerer, node.left) ||
         (ts.isPropertyAccessExpression(node.left) &&
@@ -1087,11 +1092,18 @@ export function cjsNamespaceTargetOf(lowerer: Lowerer, dep: ts.SourceFile): ts.S
   // following its edge so revisiting it terminates the search.
   lowerer.cjsNamespaceTargets.set(dep, null);
   // A module whose whole export a run-time write chooses is a single value,
-  // not a static table. The syntactic test keeps this independent of the
-  // order modules register their globals in; a write the checked-dynamic
-  // slot cannot carry keeps its own refusal when the value is read.
+  // not a static table — unless every write forwards a static export table,
+  // which is the conditional-table shape its importers still read through
+  // member slots. The syntactic tests keep this independent of the order
+  // modules register their globals in; a write the checked-dynamic slot
+  // cannot carry keeps its own refusal when the value is read.
   const whole = cjsWholeExportValueOf(dep);
-  if (whole === null && cjsNestedExportReplacementOf(dep) !== null) return null;
+  if (
+    whole === null &&
+    cjsNestedExportReplacementOf(dep) !== null &&
+    cjsConditionalWholeExportTargetsOf(lowerer, dep) === null
+  )
+    return null;
   if (whole === null) {
     lowerer.cjsNamespaceTargets.set(dep, dep);
     return dep;
@@ -1177,6 +1189,12 @@ export function wholeExportValue(
   const inner = inlineProgramRequireOf(lowerer, whole.rhs);
   if (inner !== null) return wholeExportValue(lowerer, inner.dep, blame, depth + 1, dep);
   if (ts.isIdentifier(whole.rhs)) {
+    // A binding holding a require of a module whose whole export is chosen
+    // at run time has its own storage (the value that require answered).
+    // Reading the binding IS the export Node copies here.
+    const bindingSymbol = lowerer.resolveValueSymbol(whole.rhs);
+    if (bindingSymbol !== null && lowerer.cjsRuntimeRequireBindings.has(bindingSymbol))
+      return lowerer.lowerExpr(whole.rhs);
     // A source binding that is REASSIGNED in its module stores its VALUE in
     // the snapshot global keyed by this statement (collectGlobals): Node's
     // export keeps that storage, so requiring the module answers the
@@ -1240,6 +1258,13 @@ export function wholeExportValueOfModuleBinding(
   if (depth > 32) return null;
   if (splitRequireBindingOfIdent(lowerer, expr) !== null) return null;
   const dep = lowerer.cjsModuleBindingDepOf(expr);
+  // A DEFAULT import of a module whose whole export is chosen at run time
+  // was bound to the value that module held when it finished evaluating.
+  // Node keeps that value even after an exported function replaces
+  // module.exports, so the module's snapshot owns the read.
+  const snapshot = dep === null ? null : lowerer.cjsRuntimeExportSnapshotOf(dep);
+  if (snapshot !== null)
+    return { kind: "varRef", localId: snapshot.id, type: DYN, loc: locOf(expr) };
   if (dep === null || cjsNamespaceModule(lowerer, dep)) return null;
   if (!hasWholeExportValue(lowerer, dep)) return null;
   return wholeExportValue(lowerer, dep, expr, depth);

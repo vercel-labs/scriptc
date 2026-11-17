@@ -82,6 +82,7 @@ import { callableMemberFieldTarget, lowerCallableAssign } from "./callable-prope
 import type { Lowerer } from "./lowerer.js";
 import {
   cjsAbsentMemberValue,
+  cjsExportValueByName,
   cjsModuleLacksExport,
   inlineNamespaceRequireOf,
   lowerInlineRequireValue,
@@ -340,6 +341,7 @@ import {
 import {
   ambientNsRootOf,
   ambientUndefReadType,
+  declarationOnlyGlobalNsRootOf,
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
   contextualUndefReadType,
@@ -12922,6 +12924,106 @@ const PROMISE_GENERIC_STATICS: ReadonlySet<string> = new Set([
   "reject",
 ]);
 
+/** The root identifier of a member chain (`React.createContext` reads
+ * `React`), through parentheses. */
+function memberChainRoot(e: ts.Expression): ts.Identifier | null {
+  let root: ts.Expression = e;
+  while (ts.isPropertyAccessExpression(root) && root.questionDotToken === undefined) {
+    root = root.expression;
+  }
+  while (ts.isParenthesizedExpression(root)) root = root.expression;
+  return ts.isIdentifier(root) ? root : null;
+}
+
+/** A call of a SIGNATURE-ONLY generic member: a generic declaration with no
+ * body to monomorphize. JavaScript erases the type arguments and calls the
+ * function object the member holds, so the call crosses the checked-dynamic
+ * boundary when the receiver has a runtime representation:
+ *
+ *   - an ambient namespace declared only in declaration files is erased by
+ *     Node; the receiver read throws the catchable ReferenceError before
+ *     the member or any argument runs;
+ *   - a module binding whose member the compiled JavaScript implements
+ *     (`React.createContext` over the react package) calls the export value
+ *     the module stores, checked-dynamically (a function that reads `this`
+ *     keeps the refusal: Node would pass the module's exports object);
+ *   - any other receiver that lowers to a value is read and called
+ *     dynamically, the receiver evaluated once and the member read once,
+ *     before the arguments.
+ *
+ * Null keeps the caller's refusal. */
+function lowerSignatureOnlyGenericMemberCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+): IrExpr | null {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  const ambient = declarationOnlyGlobalNsRootOf(lowerer, access.expression);
+  if (ambient !== null) {
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(call));
+    const result = mapped && mapped.kind !== "void" ? mapped : DYN;
+    return nsUndefRead(lowerer, ambient.text, call, result);
+  }
+  const args = (): IrExpr[] =>
+    call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  const root = memberChainRoot(access.expression);
+  const dep = root === null ? null : lowerer.cjsModuleBindingDepOf(root);
+  if (dep !== null) {
+    if (!cjsExportCallIgnoresThis(lowerer, dep, name)) return null;
+    const member = cjsExportValueByName(lowerer, dep, name, access);
+    const callee = member === null ? null : lowerer.coerceToExpected(member, DYN);
+    if (callee !== null && callee.type.kind === "dyn")
+      return {
+        kind: "dynCall",
+        callee,
+        calleeName: v8CalleeText(access),
+        args: args(),
+        type: DYN,
+        loc,
+      };
+  }
+  const receiver = tryLowerExpression(lowerer, access.expression);
+  if (receiver === null) return null;
+  if (receiver.type.kind !== "dyn" && !lowerer.dynConvertible(receiver.type)) return null;
+  const recvDyn = receiver.type.kind === "dyn" ? receiver : lowerer.coerceToExpected(receiver, DYN);
+  if (recvDyn.type.kind !== "dyn") return null;
+  const receiverLocal = lowerer.declareHiddenLocal("%genericReceiver", DYN);
+  const calleeLocal = lowerer.declareHiddenLocal("%genericCallee", DYN);
+  const receiverRef = varRef(receiverLocal.id, DYN, loc);
+  const calleeRef = varRef(calleeLocal.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: receiverLocal.id, init: recvDyn, loc },
+      {
+        kind: "varDecl",
+        localId: calleeLocal.id,
+        init: {
+          kind: "dynKeyGet",
+          value: receiverRef,
+          key: { kind: "strLit", value: name, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: {
+      kind: "dynCall",
+      callee: calleeRef,
+      receiver: receiverRef,
+      calleeName: v8CalleeText(access),
+      args: args(),
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
 function lowerObjLitGenericMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -13179,6 +13281,8 @@ function lowerObjLitGenericMethodCall(
         `calls of the generic method '${name}' through this receiver (the interface declaration is signature-only and generic methods dispatch statically, so the receiver's runtime class must be provable — bind the receiver to a const initialized with its 'new' expression, e.g. 'const r: ${lowerer.checker.typeToString(recvT)} = new C(...)')`,
       );
     }
+    const dynamicGeneric = lowerSignatureOnlyGenericMemberCall(lowerer, call, access, name);
+    if (dynamicGeneric !== null) return dynamicGeneric;
     lowerer.unsupported(
       "SC1090",
       call,

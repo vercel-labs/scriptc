@@ -8,6 +8,7 @@ import {
   workerSourcePath,
 } from "../../worker-target.js";
 import { boundLoadValues } from "../../specifier-bounds.js";
+import { staticForkString } from "../../fork-target.js";
 import { tsgoPath } from "../../dts-paths.js";
 import { isIslandProgramModule } from "../../../node-islands/boundary.js";
 import { varRef } from "../../../ir/build.js";
@@ -146,10 +147,14 @@ function lowerStaticWorkerNew(
 ): IrExpr {
   const root = workerRootOf(lowerer, path);
   if (root === undefined) {
+    // A statically known path that no compiled source implements: a
+    // declaration file, a file excluded from the program, or one the
+    // resolution missed. Name the resolved path, so the refusal says what
+    // the compiler saw.
     lowerer.noLowering(
-      "this Worker entry point",
-      expression,
-      "the worker entry must resolve to a statically compiled source file",
+      `this Worker entry point (it resolves to '${workerSourcePath(path)}', which no compiled worker implements)`,
+      args[0]!,
+      `${workerSourcePath(path)}: the entry must resolve to a statically compiled source file of this program — use new URL('./worker.ts', import.meta.url), a file: URL, an absolute path, or __filename naming a TypeScript module the program compiles`,
     );
   }
   refuseWorkerShape(lowerer, expression, [path], args);
@@ -190,10 +195,21 @@ function lowerBoundedWorkerNew(
 ): IrExpr {
   const arms = boundedWorkerArms(lowerer, filename);
   if (arms.length === 0) {
+    // Two different refusals, named apart: a specifier only known at run
+    // time has no compiled entry to start, while a statically known path
+    // Node resolves against the invocation's working directory fixes no
+    // build-time file at all.
+    if (staticForkString(lowerer.program, filename) !== null) {
+      lowerer.noLowering(
+        "this Worker entry point (a path relative to the invocation's working directory)",
+        filename,
+        "fix the entry at compile time instead — new URL('./entry.ts', import.meta.url), a file: URL, an absolute path, or __filename — so it resolves to a statically compiled source file",
+      );
+    }
     lowerer.noLowering(
-      "this Worker entry point",
+      "this Worker entry point (the specifier is a runtime value)",
       filename,
-      "the worker entry must resolve to a statically compiled source file",
+      "the worker entry must resolve to a statically compiled source file, so the entry has to be a static module path — a relative path literal, a template of literals, or new URL('./entry.ts', import.meta.url)",
     );
   }
   refuseWorkerShape(

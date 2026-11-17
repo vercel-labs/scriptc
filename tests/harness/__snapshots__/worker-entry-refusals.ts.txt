@@ -1,0 +1,26 @@
+worker-entry-refusals.ts:9:21 - error SC2020: 'this Worker entry point (the specifier is a runtime value)' is part of the standard library types but has no scriptc lowering yet
+
+   8 | function start(specifier: string | URL): Worker {
+   9 |   return new Worker(specifier);
+     |                     ^~~~~~~~~
+  10 | }
+
+  hint: the worker entry must resolve to a statically compiled source file, so the entry has to be a static module path — a relative path literal, a template of literals, or new URL('./entry.ts', import.meta.url)
+
+worker-entry-refusals.ts:15:29 - error SC2020: 'this Worker entry point (a path relative to the invocation's working directory)' is part of the standard library types but has no scriptc lowering yet
+
+  14 | // directory: no build-time graph.
+  15 | const relative = new Worker("./entry.ts");
+     |                             ^~~~~~~~~~~~
+  16 | console.log(typeof relative);
+
+  hint: fix the entry at compile time instead — new URL('./entry.ts', import.meta.url), a file: URL, an absolute path, or __filename — so it resolves to a statically compiled source file
+
+worker-entry-refusals.ts:20:32 - error SC2020: 'this Worker entry point (it resolves to 'worker-entry-refusals/decl.d.ts', which no compiled worker implements)' is part of the standard library types but has no scriptc lowering yet
+
+  19 | // but nothing a worker can compile.
+  20 | const declaration = new Worker(new URL("./worker-entry-refusals/decl.d.ts", import.meta.url));
+     |                                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 | console.log(typeof declaration);
+
+  hint: worker-entry-refusals/decl.d.ts: the entry must resolve to a statically compiled source file of this program — use new URL('./worker.ts', import.meta.url), a file: URL, an absolute path, or __filename naming a TypeScript module the program compiles

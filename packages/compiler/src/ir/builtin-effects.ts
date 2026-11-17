@@ -410,6 +410,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
+  // writeInformation validates the status (ERR_OUT_OF_RANGE, and
+  // ERR_HTTP_INVALID_STATUS_CODE for 101), the state
+  // (ERR_HTTP_HEADERS_SENT) and every header name and value.
+  "http.resWriteInformation",
   "http.resWriteContinueCb",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",

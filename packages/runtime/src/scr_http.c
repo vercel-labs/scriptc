@@ -1775,7 +1775,10 @@ static void scr_http_buf_header_value(ScrHttpBuf *b, const ScrStr *s) {
     unsigned char ch = (unsigned char)s->data[i];
     if ((ch == 0xc2 || ch == 0xc3) && i + 1 < s->len) {
       unsigned char next = (unsigned char)s->data[++i];
-      char byte = (char)(((ch & 0x03) << 6) | (next & 0x3f));
+      /* the Latin-1 byte of the code point: the lead byte carries five
+       * bits, not one (dropping them turned U+008D into a raw CR and
+       * U+008A into a raw LF on the wire) */
+      char byte = (char)(((ch & 0x1f) << 6) | (next & 0x3f));
       scr_http_buf_append(b, &byte, 1);
     } else {
       scr_http_buf_append(b, s->data + i, 1);
@@ -1859,6 +1862,9 @@ static bool scr_http_early_link_format(const ScrStr *link) {
  * present it is always the first field, followed by the other object
  * properties in insertion order. This static entry accepts string-valued
  * fields. */
+static bool scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*borrowed*/,
+                                                ScrArr *pairs /*borrowed*/);
+
 void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/,
                                         ScrClosure *cb /*moves, nullable*/) {
   if (!scr_http_res_informational_h1(r, "writeEarlyHints")) {
@@ -1903,11 +1909,29 @@ void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/
     if (cb) scr_closure_release(cb);
     return;
   }
+  bool wrote = scr_http_res_write_early_hints_head(r, link, pairs);
+  scr_str_release(link);
+  if (cb) {
+    if (wrote && !scr_exc_pending()) scr_http_res_on_write_flush(r, cb);
+    else scr_closure_release(cb);
+  }
+}
+
+/* The typed entry: the same checks and the same head, no callback. */
+void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
+  scr_http_res_write_early_hints_cb(r, pairs, NULL);
+}
+
+/* The 103 head with its Link line and the remaining fields: `link` has
+ * already been through validateLinkHeaderValue (a string, or an array of
+ * them joined with ", "), and the pairs are the other headers. */
+static bool scr_http_res_write_early_hints_head(ScrHttpRes *r, ScrStr *link /*borrowed*/,
+                                                ScrArr *pairs /*borrowed*/) {
+  size_t count = (size_t)scr_arr_len(pairs);
   ScrHttpBuf b = {NULL, 0, 0};
   scr_http_buf_str(&b, "HTTP/1.1 103 Early Hints\r\nLink: ");
   scr_http_buf_header_value(&b, link);
   scr_http_buf_str(&b, "\r\n");
-  scr_str_release(link);
   ScrStr *empty_label = scr_str_new("", 0);
   for (size_t i = 0; i + 1 < count; i += 2) {
     ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
@@ -1928,8 +1952,7 @@ void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/
       scr_str_release(value);
       scr_str_release(empty_label);
       free(b.data);
-      if (cb) scr_closure_release(cb);
-      return;
+      return false; /* nothing was written: the callback must not be queued */
     }
     scr_http_buf_append(&b, name->data, name->len);
     scr_http_buf_str(&b, ": ");
@@ -1942,11 +1965,80 @@ void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/
   scr_http_buf_str(&b, "\r\n");
   if (r->sock) scr_net_sock_write_native(r->sock, b.data, b.len);
   free(b.data);
-  if (cb) scr_http_res_on_write_flush(r, cb);
+  return true;
 }
 
-void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
-  scr_http_res_write_early_hints_cb(r, pairs, NULL);
+/* res.writeInformation(status[, headers]): Node's generic informational
+ * response. writeContinue(), writeProcessing() and writeEarlyHints() are
+ * this call with their own status and headers; the status must be an
+ * integer in 100..199 and never 101, and the reason comes from the status
+ * table ('unknown' for an unassigned code). Answers write()'s
+ * backpressure boolean, as Node's _writeRaw does. */
+bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed, nullable*/) {
+  if (!scr_http_res_informational_h1(r, "writeInformation")) return false;
+  if (!scr_http_headers_unsent(r->head_sent, "write")) return false;
+  char recv[48], msg[192];
+  if (!isfinite(status) || status != (double)(long long)status) {
+    scr_num_received(status, recv);
+    int len = snprintf(msg, sizeof msg,
+      "The value of \"statusCode\" is out of range. It must be an integer. Received %s", recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (status < 100 || status > 199) {
+    scr_num_received(status, recv);
+    int len = snprintf(msg, sizeof msg,
+      "The value of \"statusCode\" is out of range. It must be >= 100 && <= 199. Received %s", recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if ((int)status == 101) {
+    int len = snprintf(msg, sizeof msg, "Invalid status code: %d", (int)status);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_HTTP_INVALID_STATUS_CODE");
+    return false;
+  }
+  ScrHttpBuf b = {NULL, 0, 0};
+  char line[96];
+  int n = snprintf(line, sizeof line, "HTTP/1.1 %d %s\r\n", (int)status, scr_http_reason((int)status));
+  scr_http_buf_append(&b, line, (size_t)n);
+  if (pairs != NULL) {
+    size_t count = (size_t)scr_arr_len(pairs);
+    ScrStr *empty_label = scr_str_new("", 0);
+    for (size_t i = 0; i + 1 < count; i += 2) {
+      ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
+      ScrStr *value = (ScrStr *)scr_arr_get_ref(pairs, (double)(i + 1));
+      scr_http_validate_header_name(name, empty_label);
+      if (!scr_exc_pending()) {
+        ScrDyn *wrapped = scr_dyn_new_str(value);
+        scr_http_validate_header_value(name, wrapped);
+        scr_dyn_release(wrapped);
+      }
+      if (scr_exc_pending()) {
+        scr_str_release(name);
+        scr_str_release(value);
+        scr_str_release(empty_label);
+        free(b.data);
+        return false;
+      }
+      scr_http_buf_append(&b, name->data, name->len);
+      scr_http_buf_str(&b, ": ");
+      scr_http_buf_header_value(&b, value);
+      scr_http_buf_str(&b, "\r\n");
+      scr_str_release(name);
+      scr_str_release(value);
+    }
+    scr_str_release(empty_label);
+  }
+  scr_http_buf_str(&b, "\r\n");
+  bool accepted = true;
+  if (r->sock) {
+    scr_net_sock_write_native(r->sock, b.data, b.len);
+    /* Node's _writeRaw answers the socket write: false once the buffer is
+     * at its 64 KiB high-water mark. */
+    accepted = scr_net_sock_writable_length(r->sock) < 65536.0;
+  }
+  free(b.data);
+  return accepted;
 }
 
 /* response.writeInformation(statusCode[, headers][, callback]): Node's
@@ -1979,9 +2071,9 @@ static bool scr_http_information_is_array(const ScrDyn *v) {
          (v->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(v));
 }
 
-void scr_http_res_write_information(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
-                                    const ScrDyn *headers /*borrowed*/,
-                                    ScrClosure *cb /*moves, nullable*/) {
+void scr_http_res_write_information_dyn(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
+                                        const ScrDyn *headers /*borrowed*/,
+                                        ScrClosure *cb /*moves, nullable*/) {
   if (!scr_http_headers_unsent(r->head_sent, "write")) {
     if (cb) scr_closure_release(cb);
     return;
@@ -8930,6 +9022,115 @@ static ScrArr *scr_http_dynh_flat_pairs(const ScrDyn *list) {
   return pairs;
 }
 
+/* A flat [name, value, ...] ScrArr from an informational response's headers
+ * argument: an ordinary object's own entries in insertion order, every value
+ * in Node's template spelling (numbers and booleans as text, arrays joined by
+ * commas). +1; NULL with the argument TypeError pending for a non-object. */
+/* One [name, value] pair appended to an informational response's pairs, with
+ * Node's processInformationHeader checks: the name, the value as given (an
+ * undefined value is ERR_HTTP_INVALID_HEADER_VALUE, not the text), then the
+ * template's string form — an array joins with commas. */
+static bool scr_http_dynh_push_pair(ScrArr *pairs, const ScrStr *name, const ScrDyn *value) {
+  scr_http_validate_header_name((ScrStr *)name, NULL);
+  if (!scr_exc_pending()) scr_http_validate_header_value((ScrStr *)name, value);
+  if (scr_exc_pending()) return false;
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (text == NULL) return false;
+  scr_arr_push_ref(pairs, scr_str_retain((ScrStr *)name));
+  scr_arr_push_ref(pairs, text);
+  return true;
+}
+
+/* The pairs of an informational headers object, in insertion order; a
+ * `skip` key is left out (writeEarlyHints writes its own Link line). +1;
+ * NULL with the exception pending for a bad name, value or coercion. */
+static ScrArr *scr_http_dynh_header_pairs_skip(const ScrDyn *headers, const char *skip,
+                                               size_t skip_len) {
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 8);
+  if (headers->kind == SCR_DYN_UNDEF || headers->kind == SCR_DYN_NULL) return pairs;
+  if (headers->kind != SCR_DYN_OBJ) {
+    scr_dyn_arg_type_fail("headers", "of type object", headers);
+    scr_arr_release(pairs);
+    return NULL;
+  }
+  for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+    if (skip != NULL && e.key_len == skip_len && memcmp(e.key, skip, skip_len) == 0) continue;
+    ScrStr *name = scr_str_new(e.key, e.key_len);
+    bool ok = scr_http_dynh_push_pair(pairs, name, e.value);
+    scr_str_release(name);
+    if (!ok) break;
+  }
+  if (scr_exc_pending()) {
+    scr_arr_release(pairs);
+    return NULL;
+  }
+  return pairs;
+}
+
+static ScrArr *scr_http_dynh_header_pairs(const ScrDyn *headers) {
+  return scr_http_dynh_header_pairs_skip(headers, NULL, 0);
+}
+
+/* validateLinkHeaderValue: one link string, or an array of them joined with
+ * ", " (an empty array answers the empty string). +1, or NULL with Node's
+ * ERR_INVALID_ARG_VALUE pending for an element or value that is not a link. */
+static ScrStr *scr_http_early_link_value_plain(const ScrDyn *link) {
+  static const char *const format_hint =
+    "must be an array or string of format \"</styles.css>; rel=preload; as=style\"";
+  if (link->kind == SCR_DYN_STR) {
+    if (!scr_http_early_link_format(link->v.str)) {
+      ScrDyn *received = scr_dyn_new_str(link->v.str);
+      scr_dyn_arg_value_fail("hints", format_hint, received);
+      scr_dyn_release(received);
+      return NULL;
+    }
+    return scr_str_retain(link->v.str);
+  }
+  if (link->kind == SCR_DYN_ARR) {
+    double n = scr_dyn_arr_len(link);
+    if (n == 0) return scr_str_new("", 0);
+    ScrHttpBuf b = {NULL, 0, 0};
+    for (double i = 0; i < n; i++) {
+      ScrDyn *item = scr_dyn_index_get(link, i);
+      if (item == NULL) {
+        free(b.data);
+        return NULL;
+      }
+      if (item->kind == SCR_DYN_STR && scr_http_early_link_format(item->v.str)) {
+        if (i > 0) scr_http_buf_str(&b, ", ");
+        scr_http_buf_append(&b, item->v.str->data, item->v.str->len);
+        scr_dyn_release(item);
+        continue;
+      }
+      ScrDyn *received =
+        item->kind == SCR_DYN_STR ? scr_dyn_new_str(item->v.str) : scr_dyn_retain(item);
+      scr_dyn_arg_value_fail("hints", format_hint, received);
+      scr_dyn_release(received);
+      scr_dyn_release(item);
+      free(b.data);
+      return NULL;
+    }
+    ScrStr *out = scr_str_new(b.data != NULL ? b.data : "", b.len);
+    free(b.data);
+    return out;
+  }
+  ScrDyn *received = scr_dyn_retain((ScrDyn *)link);
+  scr_dyn_arg_value_fail("hints", format_hint, received);
+  scr_dyn_release(received);
+  return NULL;
+}
+
+/* The value as a plain dyn first: an array written in a typed source arrives
+ * as a live typed ref, not a dyn array. */
+static ScrStr *scr_http_early_link_value(const ScrDyn *link) {
+  ScrDyn *plain = scr_http_header_value_plain((ScrDyn *)link);
+  if (plain == NULL) return NULL;
+  ScrStr *out = scr_http_early_link_value_plain(plain);
+  scr_dyn_release(plain);
+  return out;
+}
+
 static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *method,
                                         ScrDyn *const *args, size_t argc, const char *what) {
   ScrHttpRes *r = (ScrHttpRes *)h;
@@ -8967,7 +9168,7 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
       scr_dyn_arg_type_fail("callback", "of type function", args[2]);
       return NULL;
     }
-    scr_http_res_write_information(r, status, headers, cb);
+    scr_http_res_write_information_dyn(r, status, headers, cb);
     if (scr_exc_pending()) return NULL;
     return scr_dyn_new_bool(true);
   }
@@ -9175,8 +9376,88 @@ static ScrDyn *scr_http_dynh_res_invoke(void *h, ScrDyn *self, const char *metho
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_STREAM_CANNOT_PIPE");
     return NULL;
   }
+  if (strcmp(method, "writeContinue") == 0 || strcmp(method, "writeProcessing") == 0) {
+    if (strcmp(method, "writeContinue") == 0) scr_http_res_write_continue(r);
+    else scr_http_res_write_processing(r);
+    if (scr_exc_pending()) return NULL;
+    /* writeContinue(cb)/writeProcessing(cb): the callback fires once the
+     * head has gone out (Node's _writeRaw callback). */
+    if (argc > 0 && args[0]->kind == SCR_DYN_FUNC)
+      scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[0]));
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (strcmp(method, "writeEarlyHints") == 0) {
+    /* Node's writeEarlyHints: the hints object, its link (a string or an
+     * array joined with ", "), and no head at all — no callback either —
+     * when the link is absent, null, undefined, or an empty array. */
+    const ScrDyn *hints = argc > 0 ? args[0] : scr_dyn_undefined();
+    if (hints->kind != SCR_DYN_OBJ) {
+      scr_dyn_arg_type_fail("hints", "of type object", hints);
+      return NULL;
+    }
+    const ScrDyn *link = scr_dyn_obj_get(hints, "link", 4);
+    if (link == NULL || link->kind == SCR_DYN_NULL || link->kind == SCR_DYN_UNDEF)
+      return scr_dyn_retain(scr_dyn_undefined());
+    ScrStr *link_value = scr_http_early_link_value(link);
+    if (link_value == NULL) return NULL;
+    if (link_value->len == 0) {
+      scr_str_release(link_value);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    ScrArr *rest = scr_http_dynh_header_pairs_skip(hints, "link", 4);
+    if (rest == NULL) {
+      scr_str_release(link_value);
+      return NULL;
+    }
+    /* the general header-value rule the typed call applies before the head
+     * goes out: no CR or LF anywhere in the value (the format check above
+     * only covers the target part, so a value with a CR/LF after a
+     * semicolon would otherwise reach the wire) */
+    ScrStr *link_name = scr_str_new("Link", 4);
+    ScrDyn *link_box = scr_dyn_new_str(link_value);
+    scr_http_validate_header_value(link_name, link_box);
+    scr_dyn_release(link_box);
+    scr_str_release(link_name);
+    if (scr_exc_pending()) {
+      scr_str_release(link_value);
+      scr_arr_release(rest);
+      return NULL;
+    }
+    if (!scr_http_res_informational_h1(r, "writeEarlyHints")) {
+      scr_str_release(link_value);
+      scr_arr_release(rest);
+      return NULL;
+    }
+    if (!scr_http_headers_unsent(r->head_sent, "write")) {
+      scr_str_release(link_value);
+      scr_arr_release(rest);
+      return NULL;
+    }
+    bool wrote = scr_http_res_write_early_hints_head(r, link_value, rest);
+    scr_str_release(link_value);
+    scr_arr_release(rest);
+    if (scr_exc_pending()) return NULL;
+    if (wrote && argc > 1 && args[1]->kind == SCR_DYN_FUNC)
+      scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[1]));
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (strcmp(method, "writeInformation") == 0) {
+    const ScrDyn *status = argc > 0 ? args[0] : scr_dyn_undefined();
+    if (status->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("statusCode", "of type number", status);
+      return NULL;
+    }
+    ScrArr *pairs = scr_http_dynh_header_pairs(argc > 1 ? args[1] : scr_dyn_undefined());
+    if (pairs == NULL) return NULL;
+    bool accepted = scr_http_res_write_information(r, status->v.num, pairs);
+    scr_arr_release(pairs);
+    if (scr_exc_pending()) return NULL;
+    if (argc > 2 && args[2]->kind == SCR_DYN_FUNC)
+      scr_http_res_on_write_flush(r, scr_dyn_listener_closure0(args[2]));
+    return scr_dyn_new_bool(accepted);
+  }
   {
-    static const char *const known[] = { "writeContinue", "writeProcessing", "writeEarlyHints",
+    static const char *const known[] = {
       "addTrailers", "off", "removeListener", "removeAllListeners", "emit",
       "prependListener", "prependOnceListener", "listenerCount", "listeners", "setDefaultEncoding", NULL };
     if (scr_http_dynh_in(method, known)) {

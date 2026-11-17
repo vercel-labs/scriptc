@@ -1,7 +1,7 @@
-// A method that reads its own `this` makes its object literal a live-object
-// view (wave-2 3b = A): the literal lowers as a checked-dynamic object and
-// the method keeps JavaScript's own receiver rule — the call's receiver,
-// `undefined` when detached, the other object when the method is copied.
+// A method that reads its own `this` keeps JavaScript's own receiver rule —
+// the call's receiver, `undefined` when detached, the other object when the
+// method is copied — and the literal keeps its record. An accessor in the
+// literal makes it a live-object view.
 // Both shapes pi's rpc-mode.ts hit are here: a contextual interface whose
 // `label` member the literal implements with a getter (a member-kind
 // disagreement, records 1 = B) and a plain method-only interface.

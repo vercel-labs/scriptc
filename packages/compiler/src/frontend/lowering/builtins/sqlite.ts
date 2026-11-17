@@ -68,6 +68,68 @@ export function lowerSqliteNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr
   };
 }
 
+/** `backup(sourceDb, path[, options])`, the module's one function: the
+ * promise of the copy's page count. */
+export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  if (call.questionDotToken) return null;
+  const callee = call.expression;
+  let isBackup = false;
+  if (ts.isIdentifier(callee)) {
+    const builtin = builtinImportOf(lowerer, callee);
+    isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
+  } else if (ts.isPropertyAccessExpression(callee) && !callee.questionDotToken) {
+    const builtin = lowerer.builtinMemberOf(callee);
+    isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
+  }
+  if (!isBackup) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  const nodes = call.arguments.nodes;
+  const argument = (index: number): IrExpr =>
+    index < nodes.length ? lowerer.lowerExprExpecting(nodes[index]!, DYN) : dynUndefinedExpr(loc);
+  const source = argument(0);
+  const path = argument(1);
+  const options = argument(2);
+  // Arguments evaluate left to right, and the surplus ones exist only for
+  // their effects: with any, every argument lands in a hidden local in
+  // source order, then the call reads the three it keeps.
+  const surplus = nodes.slice(3).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  if (surplus.length === 0) {
+    return {
+      kind: "libCall",
+      fn: "sqlite.backup",
+      args: [source, path, options],
+      type: DYN,
+      loc,
+    };
+  }
+  const sourceLocal = lowerer.declareHiddenLocal("%sqliteSource", DYN);
+  const pathLocal = lowerer.declareHiddenLocal("%sqliteBackupPath", DYN);
+  const optionsLocal = lowerer.declareHiddenLocal("%sqliteBackupOptions", DYN);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: sourceLocal.id, init: source, loc },
+      { kind: "varDecl", localId: pathLocal.id, init: path, loc },
+      { kind: "varDecl", localId: optionsLocal.id, init: options, loc },
+      ...surplus.map((expr) => ({ kind: "exprStmt" as const, expr, loc: expr.loc })),
+    ],
+    result: {
+      kind: "libCall",
+      fn: "sqlite.backup",
+      args: [
+        varRef(sourceLocal.id, DYN, loc),
+        varRef(pathLocal.id, DYN, loc),
+        varRef(optionsLocal.id, DYN, loc),
+      ],
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
 /** `v instanceof DatabaseSync` / `v instanceof StatementSync`. */
 export function lowerSqliteInstanceof(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr | null {
   const cls = sqliteClassOf(lowerer, expr.right);

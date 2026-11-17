@@ -300,6 +300,22 @@ ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
  * pending for a non-object) and the name it carries (+1). */
 double scr_als_new_options(const ScrDyn *options);
 ScrDyn *scr_als_name(double id);
+/* ── node:trace_events (trace_events.Tracing — scr_async_dyn.c) ───────
+ * A compiled binary carries no trace-event agent, which is what Node's
+ * tracing objects drive; without the agent (Node run without
+ * --trace-event-* flags) what a program observes is the object's own
+ * bookkeeping: its categories string and its enabled flag, plus the
+ * process-wide enabled-categories list. The objects are native handles
+ * (typeof "object", no own keys, `Tracing { enabled: false, categories:
+ * 'v8,node' }`), so member reads and calls ride the checked-dynamic tree.
+ * scr_te_create applies createTracing's checks (options object, the
+ * categories array, its string members, at least one category) and answers
+ * the handle (+1) or NULL with the exception pending;
+ * scr_te_get_enabled_categories answers the sorted, de-duplicated list
+ * (+1) or the undefined value when no tracing object is enabled. */
+ScrDyn *scr_te_create(ScrDyn *options);
+ScrDyn *scr_te_get_enabled_categories(void);
+
 /* AsyncLocalStorage.bind over a dyn function and the dyn completion
  * callbacks (fn borrowed; +1), and AsyncLocalStorage.snapshot() (+1). */
 ScrDyn *scr_als_bind_dyn(ScrDyn *fn, bool always);
@@ -323,15 +339,18 @@ ScrDyn *scr_als_with_scope(double id, ScrDyn *store);
  * Node's `type` string and the triggerAsyncId/requireManualDestroy
  * options (NaN with the exception pending); runInScope/bind/bindStatic
  * MAY THROW (their calls and Node's argument checks). */
-double scr_ar_new(ScrDyn *type, ScrDyn *options);
-ScrDyn *scr_ar_run_in_scope(double handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args);
-ScrDyn *scr_ar_bind(double handle, ScrDyn *fn, ScrDyn *this_arg);
+ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options);
+ScrDyn *scr_ar_run_in_scope(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args);
+ScrDyn *scr_ar_bind(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg);
 /* AsyncResource.bind(fn[, type[, thisArg]]): `type` falsy takes fn's name,
  * and a name that is still falsy takes 'bound-anonymous-fn' (Node's). */
 ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg);
-double scr_ar_emit_destroy(double handle); /* answers the handle */
-double scr_ar_async_id(double handle);
-double scr_ar_trigger_id(double handle);
+ScrDyn *scr_ar_emit_destroy(ScrDyn *handle); /* answers the handle */
+/* The number of AsyncResource payloads alive: a dropped handle's payload is
+ * freed, so this returns to its old value (the runtime test pins it). */
+size_t scr_ar_live_resources(void);
+double scr_ar_async_id(ScrDyn *handle);
+double scr_ar_trigger_id(ScrDyn *handle);
 /* The execution context's ids: executionAsyncId()/triggerAsyncId(). */
 double scr_ar_execution_id(void);
 double scr_ar_execution_trigger(void);

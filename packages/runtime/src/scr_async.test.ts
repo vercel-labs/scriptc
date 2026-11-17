@@ -25,6 +25,8 @@ beforeAll(async () => {
     ...(sanitize ? ["-fsanitize=address,undefined", "-DSCR_RC_AUDIT"] : []),
     ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
     join(import.meta.dirname, "scr_async.test.c"),
+    // The gated async unit: the AsyncResource handle and its payload.
+    join(import.meta.dirname, "scr_async_dyn.c"),
     ...EXECUTABLE_RUNTIME_SOURCES.filter((name) => name !== "scr_async.c").map((name) =>
       join(import.meta.dirname, name),
     ),
@@ -54,6 +56,12 @@ test("fiber stacks commit on demand and preserve large frames across suspension"
 // With every deadline already passed, the order is the timer heap's and the
 // loop's, not the clock's: tests/corpus/timers-cross-kind-clears.ts once
 // showed the first of these only when its own script ran fast enough.
+test("an AsyncResource handle owns its payload", async () => {
+  const result = await execFileAsync(bin, ["resources"]);
+  expect(result.stdout).toBe("async resource handles own their payload\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("due timers run by deadline, then by creation, before the turn's immediates", async () => {
   const result = await execFileAsync(bin, ["timers"]);
   expect(result.stdout).toBe(

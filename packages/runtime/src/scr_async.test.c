@@ -243,10 +243,33 @@ static void clearing_the_newest_immediate_does_not_walk_the_cleared_ones(void) {
   puts("clearing the newest immediate does not walk the cleared ones");
 }
 
+/* A handle the program drops frees the resource it named: the live count
+ * returns to what it was, and (under the sanitized build's leak check) the
+ * type string and captured context are released too. */
+static void async_resource_handles_own_their_payload(void) {
+  const size_t before = scr_ar_live_resources();
+  ScrStr *name = scr_str_new("TEST", 4);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < 32; i++) {
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    assert(scr_ar_async_id(resource) >= 1.0);
+    scr_dyn_release(resource);
+  }
+  scr_dyn_release(type);
+  assert(scr_ar_live_resources() == before);
+  printf("async resource handles own their payload\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
     due_timers_run_by_deadline_before_immediates();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "resources") == 0) {
+    async_resource_handles_own_their_payload();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "immediates") == 0) {

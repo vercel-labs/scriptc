@@ -15,6 +15,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",
+  // scr_test_ctx_log writes the ℹ line at once; printing cannot raise.
+  "test.ctxLog",
   // Console instance state that answers text: the timer labels are already
   // strings, the stores are the instance's own tables, and no program code
   // runs. (The counters and the table can throw, so they are not here.)
@@ -49,6 +51,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // error.
   "watchEvents.wait",
   "watchEvents.close",
+  // scr_stat_watcher_ref / scr_stat_watcher_unref move one registration's
+  // liveness flag; a registration fs.unwatchFile already removed is a no-op.
+  "statWatcher.ref",
+  "statWatcher.unref",
   // scr_global_binding_value looks the name up in the global object's own
   // properties and retains what it finds.
   // scr_sqlite_is compares a handle's tag.
@@ -61,8 +67,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_dyn_register_class_to_string copies the type key and retains the
   // function in a thread-local table; no program code runs.
   "dyn.registerClassToString",
-  // scr_weak_ref_is compares the value's kind and handle tag.
+  // scr_weak_ref_is and scr_dyn_abort_signal_is compare the value's kind
+  // and handle tag.
   "weakRef.is",
+  "abort.signalIs",
   // scr_dyn_adoptable compares the value's kind.
   "dyn.adoptable",
   // scr_dyn_function_prototype builds the one anonymous function answering
@@ -82,6 +90,24 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "ar.asyncId",
   "ar.emitDestroy",
   "ar.triggerAsyncId",
+  // publish runs every subscriber and catches its throw: like Node's
+  // process.nextTick(triggerUncaughtException), the exception is delivered
+  // on a later tick instead of leaving the call, so publish itself raises
+  // nothing.
+  "dc.publish",
+  // scr_dc_has_subscribers answers false for a name that is neither a string
+  // nor a symbol and compares its registry by name identity; no program code
+  // runs.
+  "dc.hasSubscribers",
+  // scr_dc_chan_name retains the interned name string.
+  "dc.chanName",
+  // The tracing handles' reads compare registry entries and dispatch the
+  // hasSubscribers conjunction.
+  "dc.tcChannel",
+  "dc.tcHasSubscribers",
+  "dc.chanHasSubscribers",
+  // scr_te_get_enabled_categories reads the registry's own strings.
+  "te.getEnabledCategories",
   // scr_perf_loop_exit and scr_perf_loop_count read the loop's clock and its
   // counter; neither runs program code.
   "perf.loopExit",
@@ -174,6 +200,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // on first use; it takes no argument, and running out of memory ends the
   // process.
   "worker.shareEnv",
+  // scr_worker_performance answers the Worker's { eventLoopUtilization }
+  // object, made once per Worker; a handle of another class reads undefined,
+  // and running out of memory ends the process.
+  "worker.performance",
   // scr_emitter_symbol_name allocates the registry key of the symbol it is
   // given (scr_str_symbol_key); running out of memory ends the process.
   "emitter.symName",

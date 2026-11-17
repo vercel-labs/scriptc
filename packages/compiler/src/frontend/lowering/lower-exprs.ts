@@ -3437,6 +3437,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "httpClientReq":
     case "secureCtx":
     case "fsWatcher":
+    case "statWatcher":
     case "cryptoHash":
     case "cryptoHmac":
     case "childStream":

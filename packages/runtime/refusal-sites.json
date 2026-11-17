@@ -145,6 +145,18 @@
  },
  {
   "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_readdir",
+  "message": "fs.readdir with withFileTypes and a non-utf8 encoding has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
+  "function": "scr_fs_cb_readdir",
+  "message": "fs.readdir with recursive and a non-utf8 encoding has no native lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_bytes_io.c",
   "function": "scr_fs_cb_invoke",
   "message": "fs.glob stored as a value has no native lowering; call fs.glob directly",
   "code": "SC2020"
@@ -153,12 +165,6 @@
   "file": "scr_bytes_io.c",
   "function": "scr_fs_cb_invoke",
   "message": "fs.copyFile clone flags have no native lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_bytes_io.c",
-  "function": "scr_fs_cb_invoke",
-  "message": "Recursive readdir and Dirent results have no native lowering",
   "code": "SC2020"
  },
  {
@@ -1461,6 +1467,12 @@
   "file": "scr_lib.c",
   "function": "scr_native_date_invoke",
   "message": "Native Date method has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_message.c",
+  "function": "scr_message_value",
+  "message": "carrying a primitive wrapper object (new String/Number/Boolean or Object(primitive)) through a message is not supported yet",
   "code": "SC2020"
  },
  {

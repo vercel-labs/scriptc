@@ -1054,6 +1054,9 @@ struct ScrHttpRes {
    * the connection detaches. */
   double hwm;
   bool no_date; /* res.sendDate = false: suppress the implicit Date header */
+  /* Node's _sent100: writeContinue() answered an Expect: 100-continue
+   * request, so the final response may keep the connection alive. */
+  bool sent100;
   /* removeHeader('connection' / 'content-length' / 'transfer-encoding'):
    * the head adds no such header of its own (Node's _removedConnection,
    * _removedContLen and _removedTE) unless one is set again */
@@ -1786,17 +1789,36 @@ static bool scr_http_res_informational_h1(ScrHttpRes *r, const char *method) {
 
 /* Node's writeContinue(), writeProcessing() and writeEarlyHints() are
  * writeInformation(): ERR_HTTP_HEADERS_SENT once the head is committed. */
-void scr_http_res_write_continue(ScrHttpRes *r) {
-  if (!scr_http_res_informational_h1(r, "writeContinue")) return;
-  if (!scr_http_headers_unsent(r->head_sent, "write")) return;
+void scr_http_res_write_continue_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/) {
+  if (!scr_http_res_informational_h1(r, "writeContinue")) {
+    if (cb) scr_closure_release(cb);
+    return;
+  }
+  if (!scr_http_headers_unsent(r->head_sent, "write")) {
+    if (cb) scr_closure_release(cb);
+    return;
+  }
   if (r->sock) scr_net_sock_write_native(r->sock, "HTTP/1.1 100 Continue\r\n\r\n", 25);
+  r->sent100 = true;
+  if (cb) scr_http_res_on_write_flush(r, cb);
 }
 
-void scr_http_res_write_processing(ScrHttpRes *r) {
-  if (!scr_http_res_informational_h1(r, "writeProcessing")) return;
-  if (!scr_http_headers_unsent(r->head_sent, "write")) return;
+void scr_http_res_write_continue(ScrHttpRes *r) { scr_http_res_write_continue_cb(r, NULL); }
+
+void scr_http_res_write_processing_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/) {
+  if (!scr_http_res_informational_h1(r, "writeProcessing")) {
+    if (cb) scr_closure_release(cb);
+    return;
+  }
+  if (!scr_http_headers_unsent(r->head_sent, "write")) {
+    if (cb) scr_closure_release(cb);
+    return;
+  }
   if (r->sock) scr_net_sock_write_native(r->sock, "HTTP/1.1 102 Processing\r\n\r\n", 27);
+  if (cb) scr_http_res_on_write_flush(r, cb);
 }
+
+void scr_http_res_write_processing(ScrHttpRes *r) { scr_http_res_write_processing_cb(r, NULL); }
 
 /* Node's linkValueRegExp from internal/validators: `<...>` followed by
  * optional semicolon parameters. Its string arm refuses an empty or
@@ -1833,8 +1855,12 @@ static bool scr_http_early_link_format(const ScrStr *link) {
  * present it is always the first field, followed by the other object
  * properties in insertion order. This static entry accepts string-valued
  * fields. */
-void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
-  if (!scr_http_res_informational_h1(r, "writeEarlyHints")) return;
+void scr_http_res_write_early_hints_cb(ScrHttpRes *r, ScrArr *pairs /*borrowed*/,
+                                        ScrClosure *cb /*moves, nullable*/) {
+  if (!scr_http_res_informational_h1(r, "writeEarlyHints")) {
+    if (cb) scr_closure_release(cb);
+    return;
+  }
   size_t count = (size_t)scr_arr_len(pairs);
   ScrStr *link = NULL;
   for (size_t i = 0; i + 1 < count; i += 2) {
@@ -1845,12 +1871,16 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
     }
     scr_str_release(name);
   }
-  if (!link) return;
+  if (!link) {
+    if (cb) scr_closure_release(cb);
+    return;
+  }
   if (!scr_http_early_link_format(link)) {
     ScrDyn *received = scr_dyn_new_str(link);
     scr_dyn_arg_value_fail("hints", "must be an array or string of format \"</styles.css>; rel=preload; as=style\"", received);
     scr_dyn_release(received);
     scr_str_release(link);
+    if (cb) scr_closure_release(cb);
     return;
   }
   ScrStr *link_name = scr_str_new("Link", 4);
@@ -1860,11 +1890,13 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
   scr_str_release(link_name);
   if (scr_exc_pending()) {
     scr_str_release(link);
+    if (cb) scr_closure_release(cb);
     return;
   }
   /* after the link's own checks, before the other fields', as in Node */
   if (!scr_http_headers_unsent(r->head_sent, "write")) {
     scr_str_release(link);
+    if (cb) scr_closure_release(cb);
     return;
   }
   ScrHttpBuf b = {NULL, 0, 0};
@@ -1892,6 +1924,7 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
       scr_str_release(value);
       scr_str_release(empty_label);
       free(b.data);
+      if (cb) scr_closure_release(cb);
       return;
     }
     scr_http_buf_append(&b, name->data, name->len);
@@ -1905,6 +1938,11 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
   scr_http_buf_str(&b, "\r\n");
   if (r->sock) scr_net_sock_write_native(r->sock, b.data, b.len);
   free(b.data);
+  if (cb) scr_http_res_on_write_flush(r, cb);
+}
+
+void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
+  scr_http_res_write_early_hints_cb(r, pairs, NULL);
 }
 
 static void scr_http_buf_chunk_end(ScrHttpBuf *b, const ScrHttpTrailers *t) {
@@ -1994,6 +2032,20 @@ static void scr_http_res_send_head(ScrHttpRes *r, long long body_len) {
   free(b.data);
 }
 
+/* Whether the paired request carried Expect: 100-continue (Node's
+ * _expect_continue): a final response that never sent a 100 closes the
+ * connection, since the client may still put bytes on the wire. */
+static bool scr_http_res_request_expects_continue(const ScrHttpRes *r) {
+  const ScrHttpReq *req = r->req_ref;
+  if (req == NULL) return false;
+  for (size_t i = 0; i < req->nheaders; i++) {
+    if (scr_http_name_is(req->hnames[i], "expect") &&
+        scr_http_header_has_token(req->hvalues[i], "100-continue"))
+      return true;
+  }
+  return false;
+}
+
 /* The HTTP/1 head serialization behind scr_http_res_send_head: fills *out
  * (caller frees) and commits head_sent/chunked, or throws
  * ERR_HTTP_TRAILER_INVALID and returns false with nothing to free. Callers
@@ -2069,6 +2121,7 @@ static bool scr_http_res_build_head(ScrHttpRes *r, long long body_len, ScrHttpBu
     r->chunked = false;
     r->keep_alive = false;
   }
+  if (!r->sent100 && scr_http_res_request_expects_continue(r)) r->keep_alive = false;
   if (have_connection) {
     /* the user's own Connection header is already serialized; "close"
      * ends the connection after this response */
@@ -5816,7 +5869,9 @@ static void scr_http_client_autocork_nt(ScrClosure *cb) {
 }
 
 static void scr_http_client_autocork(ScrHttpClientReq *c) {
-  if (c->ended || c->destroyed || c->close_emitted || c->sock == NULL || c->corked > 0) return;
+  if (c->ended || c->destroyed || c->close_emitted || !c->socket_emitted || c->sock == NULL ||
+      c->corked > 0)
+    return;
   c->corked++;
   ScrClosure *cb = scr_closure_new((void *)&scr_http_client_autocork_nt, 1);
   cb->caps[0] = scr_box_new_obj(&scr_http_client_retain_v, &scr_http_client_release_v, NULL);

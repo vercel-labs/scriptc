@@ -1233,6 +1233,8 @@ export function formatIrType(
         return append("FSWatcher");
       case "watchEvents":
         return append("FSWatchEvents");
+      case "statWatcher":
+        return append("StatWatcher");
       case "childStream":
         return append("Readable");
       case "childWriter":
@@ -4698,8 +4700,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return F64;
   }
-  // async_hooks.AsyncResource: a 1-based f64 handle into the runtime's
-  // resource registry (the AsyncLocalStorage story).
+  // async_hooks.AsyncResource: a checked-dynamic handle whose payload lives
+  // exactly as long as the value does, so a resource the program drops is
+  // reclaimed with everything it captured.
   if (
     psym !== undefined &&
     psymName === "AsyncResource" &&
@@ -4710,7 +4713,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         isDeclaredInAmbientModule(d, "async_hooks"),
     )
   ) {
-    return F64;
+    return DYN;
+  }
+  // trace_events.Tracing: a native handle the runtime builds for
+  // createTracing, so the value is checked-dynamic and its member reads and
+  // enable()/disable() calls ride the dyn tree.
+  if (
+    psym !== undefined &&
+    psymName === "Tracing" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "trace_events"),
+    )
+  ) {
+    return DYN;
   }
   // async_hooks.RunScope (AsyncLocalStorage.withScope): a checked-dynamic
   // object carrying dispose and [Symbol.dispose] — the runtime builds it.
@@ -4986,7 +5004,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (psym !== undefined && psymName === "StatementSyncIterator") ||
       (psym !== undefined && psymName === "Session") ||
       (psym !== undefined && psymName === "SQLTagStore") ||
-      (psym !== undefined && psymName === "DatabaseSyncLimits")) &&
+      (psym !== undefined && psymName === "DatabaseSyncLimits") ||
+      // sqlite.backup's progress record, read through the callback's
+      // checked-dynamic parameter.
+      (psym !== undefined && psymName === "BackupProgressInfo")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
@@ -5595,6 +5616,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "fsWatcher" };
+  }
+  // fs.StatWatcher: the fs.watchFile handle (scr_watch_file.c), declared
+  // beside FSWatcher in the same ambient module.
+  if (
+    psym !== undefined &&
+    psymName === "StatWatcher" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  ) {
+    return { kind: "statWatcher" };
   }
   // The piped child-output stream, under BOTH spellings @types/node uses
   // for it: stream.Readable (ChildProcess.stdout's declared type — the

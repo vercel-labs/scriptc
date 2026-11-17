@@ -1630,6 +1630,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "fileHandle":
     case "dir":
     case "watcher":
+    case "statWatcher":
     case "stats":
     case "bigstats":
     case "zlib":
@@ -1670,6 +1671,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "async":
     case "als":
     case "ar":
+    case "te":
       return host.emitAsyncContextLibCall(e);
     case "process":
     case "stdin":

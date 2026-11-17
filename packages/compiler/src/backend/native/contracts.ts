@@ -472,6 +472,8 @@ export interface CcOptions {
    * createDiffieHellmanGroup: compiles scr_dh.c and links the mbedTLS
    * archive (shared with tls). */
   dh?: boolean;
+  /** crypto.argon2 and crypto.argon2Sync: compiles scr_argon2.c. */
+  argon2?: boolean;
   /** Asymmetric KeyObjects and signatures: compiles scr_pki.c and links
    * the mbedTLS archive. */
   pki?: boolean;

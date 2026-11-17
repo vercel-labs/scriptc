@@ -319,13 +319,6 @@ static void scr_rs_release(void *h) {
   free(s);
 }
 
-/* The scope's one outgoing edge: a store value that itself names the scope
- * is a cycle the collector must see. */
-static void scr_rs_trace(void *p, ScrTraceVisit visit, void *ctx) {
-  ScrRunScope *s = p;
-  if (s->previous != NULL) scr_dyn_trace_v(s->previous, visit, ctx);
-}
-
 static void scr_rs_dispose(ScrRunScope *s) {
   if (s->disposed) return;
   s->disposed = true;
@@ -373,7 +366,10 @@ static ScrDyn *scr_rs_symbol_dispose_call(ScrClosure *self, ScrDyn *const *args,
 static ScrDyn *scr_rs_symbol_get(void *h, const ScrDyn *key) {
   if (!scr_dyn_is_dispose_symbol(key)) return NULL;
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->caps[0] = scr_box_new_obj(scr_rs_retain, scr_rs_release, scr_rs_trace);
+  /* The RunScope payload is a plain allocation with no cycle header, so the
+   * box treats it as acyclic: a trace here would send the collector through a
+   * header that does not exist (memory corruption). */
+  closure->caps[0] = scr_box_new_obj(scr_rs_retain, scr_rs_release, NULL);
   scr_box_set_ref(closure->caps[0], scr_rs_retain(h));
   return scr_dyn_new_func(closure, scr_rs_symbol_dispose_call, 0, "()", "[Symbol.dispose]");
 }
@@ -435,31 +431,72 @@ double scr_ar_execution_trigger(void) { return scr_ar_exec_trigger; }
 
 static double scr_ar_next_async_id(void) { return ++scr_ar_next_id; }
 
-typedef struct {
+typedef struct ScrAsyncResource {
+  size_t rc;
   ScrDyn *type;   /* owned: the validated type string */
   ScrAlsCtx *ctx; /* owned: the store snapshot at construction (NULL: none) */
   double async_id;
   double trigger_id;
   bool destroyed;
+  /* The live list, only so the process releases what a program still holds
+   * at exit (the resource itself is reclaimed by its last reference). */
+  struct ScrAsyncResource *next;
 } ScrAsyncResource;
 
-static SCR_TL ScrAsyncResource *scr_ar_entries = NULL;
-static SCR_TL size_t scr_ar_count = 0;
-static SCR_TL size_t scr_ar_cap = 0;
+static SCR_TL ScrAsyncResource *scr_ar_live = NULL;
+static SCR_TL size_t scr_ar_live_count = 0;
 
-static void scr_ar_teardown(void) {
-  for (size_t i = 0; i < scr_ar_count; i++) {
-    scr_dyn_release(scr_ar_entries[i].type);
-    scr_als_ctx_release(scr_ar_entries[i].ctx);
+/* Live resources: a handle that the program drops must take its payload
+ * (type, captured store context) with it. */
+size_t scr_ar_live_resources(void) { return scr_ar_live_count; }
+
+/* Release what a resource still owns without freeing it: the audit at exit
+ * wants every string and context released, and a box released by a later
+ * atexit handler still owns the (now empty) struct. */
+static void scr_ar_release_payload(ScrAsyncResource *r) {
+  if (r->type != NULL) {
+    scr_dyn_release(r->type);
+    r->type = NULL;
   }
-  free(scr_ar_entries);
-  scr_ar_entries = NULL;
-  scr_ar_count = scr_ar_cap = 0;
+  if (r->ctx != NULL) {
+    scr_als_ctx_release(r->ctx);
+    r->ctx = NULL;
+  }
 }
 
-static ScrAsyncResource *scr_ar_entry(double handle) {
-  size_t i = (size_t)handle - 1;
-  return handle >= 1 && i < scr_ar_count ? &scr_ar_entries[i] : NULL;
+static void scr_ar_teardown(void) {
+  for (ScrAsyncResource *r = scr_ar_live; r != NULL; r = r->next) scr_ar_release_payload(r);
+}
+
+static void *scr_ar_retain(void *h) {
+  ScrAsyncResource *r = h;
+  if (r != NULL) r->rc++;
+  return h;
+}
+
+static void scr_ar_release(void *h) {
+  ScrAsyncResource *r = h;
+  if (r == NULL || --r->rc > 0) return;
+  for (ScrAsyncResource **link = &scr_ar_live; link != NULL; link = &(*link)->next) {
+    if (*link == r) {
+      *link = r->next;
+      break;
+    }
+  }
+  scr_ar_release_payload(r);
+  scr_ar_live_count--;
+  free(r);
+}
+
+/* The resource behind a handle box. A value asserted past the type can carry
+ * anything, so a value that is not a live resource handle answers NULL and
+ * the member that needed it raises Node's argument error. */
+static ScrDyn *scr_ar_box(ScrAsyncResource *r);
+
+static ScrAsyncResource *scr_ar_payload(const ScrDyn *h) {
+  if (h == NULL || h->kind != SCR_DYN_HANDLE || h->v.handle.tag != SCR_DYNH_ASYNC_RESOURCE)
+    return NULL;
+  return (ScrAsyncResource *)h->v.handle.ptr;
 }
 
 /* NumberIsSafeInteger: a finite integer within ±(2^53 - 1). */
@@ -542,16 +579,14 @@ static void scr_ar_apply_type_error(const ScrDyn *fn) {
 /* new AsyncResource(type[, opts]): Node's checks in its order — `type`
  * first, then the trigger (a number opts is the legacy trigger form; an
  * object reads triggerAsyncId, defaulting to executionAsyncId(), and
- * requireManualDestroy). */
-double scr_ar_new(ScrDyn *type, ScrDyn *options) {
-  static SCR_TL bool teardown_registered = false;
-  if (!teardown_registered) {
-    teardown_registered = true;
-    scr_atexit(scr_ar_teardown);
-  }
+ * requireManualDestroy). The resource is a checked-dynamic handle whose
+ * payload is refcounted: dropping the last reference to the value releases
+ * the type and the captured store context, so a program that creates
+ * resources per request does not grow for the life of the process. */
+ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options) {
   if (type->kind != SCR_DYN_STR) {
     scr_dyn_arg_type_fail("type", "of type string", type);
-    return NAN;
+    return NULL;
   }
   double trigger = scr_ar_exec_id;
   if (options != NULL && options->kind != SCR_DYN_UNDEF) {
@@ -563,7 +598,7 @@ double scr_ar_new(ScrDyn *type, ScrDyn *options) {
       scr_str_release(key_name);
       ScrDyn *value = scr_dyn_reflect_get(options, key, options);
       scr_dyn_release(key);
-      if (value == NULL) return NAN; /* pending: a null receiver's read */
+      if (value == NULL) return NULL; /* pending: a null receiver's read */
       /* Node reads requireManualDestroy before it validates the trigger,
        * so a throwing getter here answers before the trigger's error. */
       ScrStr *manual_name = scr_str_new("requireManualDestroy", 20);
@@ -573,7 +608,7 @@ double scr_ar_new(ScrDyn *type, ScrDyn *options) {
       scr_dyn_release(manual_key);
       if (manual == NULL) {
         scr_dyn_release(value);
-        return NAN;
+        return NULL;
       }
       scr_dyn_release(manual);
       if (value->kind == SCR_DYN_UNDEF) trigger = scr_ar_exec_id;
@@ -582,7 +617,7 @@ double scr_ar_new(ScrDyn *type, ScrDyn *options) {
           !scr_ar_safe_integer(trigger) || trigger < -1) {
         scr_ar_invalid_trigger(value);
         scr_dyn_release(value);
-        return NAN;
+        return NULL;
       }
       scr_dyn_release(value);
     }
@@ -590,23 +625,25 @@ double scr_ar_new(ScrDyn *type, ScrDyn *options) {
   /* The legacy numeric options form takes the same trigger check. */
   if (!scr_ar_safe_integer(trigger) || trigger < -1) {
     scr_ar_invalid_trigger_number(trigger);
-    return NAN;
+    return NULL;
   }
-  double id = scr_ar_next_async_id();
-  if (scr_ar_count == scr_ar_cap) {
-    size_t cap = scr_ar_cap ? scr_ar_cap * 2 : 8;
-    ScrAsyncResource *grown = realloc(scr_ar_entries, cap * sizeof *grown);
-    if (!grown) scr_ad_oom();
-    scr_ar_entries = grown;
-    scr_ar_cap = cap;
+  static SCR_TL bool teardown_registered = false;
+  if (!teardown_registered) {
+    teardown_registered = true;
+    scr_atexit(scr_ar_teardown);
   }
-  ScrAsyncResource *entry = &scr_ar_entries[scr_ar_count++];
-  entry->type = scr_dyn_retain(type);
-  entry->ctx = scr_als_capture();
-  entry->async_id = id;
-  entry->trigger_id = trigger;
-  entry->destroyed = false;
-  return (double)scr_ar_count;
+  ScrAsyncResource *r = calloc(1, sizeof *r);
+  if (!r) scr_ad_oom();
+  r->rc = 1;
+  r->type = scr_dyn_retain(type);
+  r->ctx = scr_als_capture();
+  r->async_id = scr_ar_next_async_id();
+  r->trigger_id = trigger;
+  r->destroyed = false;
+  r->next = scr_ar_live;
+  scr_ar_live = r;
+  scr_ar_live_count++;
+  return scr_ar_box(r);
 }
 
 /* The call inside a resource's scope: its store snapshot and ids for the
@@ -628,9 +665,12 @@ static ScrDyn *scr_ar_call_in_scope(ScrAsyncResource *r, ScrDyn *fn, ScrDyn *thi
   return result;
 }
 
-ScrDyn *scr_ar_run_in_scope(double handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args) {
-  ScrAsyncResource *r = scr_ar_entry(handle);
-  if (r == NULL) return NULL;
+ScrDyn *scr_ar_run_in_scope(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args) {
+  ScrAsyncResource *r = scr_ar_payload(handle);
+  if (r == NULL) {
+    if (!scr_exc_pending()) scr_dyn_arg_type_fail("this", "an instance of AsyncResource", handle);
+    return NULL;
+  }
   if (!scr_dyn_is_callable(fn)) {
     scr_ar_apply_type_error(fn);
     return NULL;
@@ -642,8 +682,8 @@ ScrDyn *scr_ar_run_in_scope(double handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn 
 
 /* The bound function: caps[0] the function (owned), caps[1] its receiver
  * (owned; an absent receiver is the undefined value), caps[2] the resource
- * handle. Node names the result "bound", or "bound runInAsyncScope" when
- * the receiver is given, and gives it the bound function's length. Its
+ * handle (owned). Node names the result "bound", or "bound runInAsyncScope"
+ * when the receiver is given, and gives it the bound function's length. Its
  * no-receiver form is a plain function Node calls with the receiver the
  * bound function was INVOKED with (ArrayPrototypeUnshift(args, fn, this)),
  * so `obj.f()` runs fn with `this` === obj; the receiver-given form always
@@ -651,7 +691,7 @@ ScrDyn *scr_ar_run_in_scope(double handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn 
 static ScrDyn *scr_ar_bound_call(ScrClosure *self, ScrDyn *const *args, size_t argc) {
   ScrDyn *fn = scr_box_get_ref(self->caps[0]);
   ScrDyn *this_arg = scr_box_get_ref(self->caps[1]);
-  ScrAsyncResource *r = scr_ar_entry(scr_box_get_f64(self->caps[2]));
+  ScrAsyncResource *r = scr_box_get_ref(self->caps[2]);
   ScrDyn *result = NULL;
   if (!scr_dyn_is_callable(fn)) {
     scr_ar_apply_type_error(fn);
@@ -665,22 +705,29 @@ static ScrDyn *scr_ar_bound_call(ScrClosure *self, ScrDyn *const *args, size_t a
   return result;
 }
 
-static ScrDyn *scr_ar_make_bound(double handle, ScrDyn *fn, ScrDyn *this_arg) {
+static ScrDyn *scr_ar_make_bound(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg) {
   ScrClosure *closure = scr_closure_new(NULL, 3);
   closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
   scr_box_set_ref(closure->caps[0], scr_dyn_retain(fn));
   closure->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
   scr_box_set_ref(closure->caps[1], scr_dyn_retain(this_arg));
-  closure->caps[2] = scr_box_new(SCR_BOX_F64);
-  scr_box_set_f64(closure->caps[2], handle);
+  /* The bound function owns the resource payload itself (retained by the
+   * box), not a dynamic handle value: no dyn value is left behind for the
+   * exit audit to find, and the payload's context is released at exit. */
+  closure->caps[2] = scr_box_new_obj(scr_ar_retain, scr_ar_release, NULL);
+  scr_box_set_ref(closure->caps[2], scr_ar_retain(scr_ar_payload(handle)));
   uint32_t arity = fn->kind == SCR_DYN_FUNC ? fn->v.fn.arity : 0;
   const char *name = this_arg->kind == SCR_DYN_UNDEF ? "bound" : "bound runInAsyncScope";
   return scr_dyn_new_func(closure, scr_ar_bound_call, arity, "(...args)", name);
 }
 
-ScrDyn *scr_ar_bind(double handle, ScrDyn *fn, ScrDyn *this_arg) {
+ScrDyn *scr_ar_bind(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg) {
   if (!scr_dyn_is_callable(fn)) {
     scr_dyn_arg_type_fail("fn", "of type function", fn);
+    return NULL;
+  }
+  if (scr_ar_payload(handle) == NULL) {
+    if (!scr_exc_pending()) scr_dyn_arg_type_fail("this", "an instance of AsyncResource", handle);
     return NULL;
   }
   return scr_ar_make_bound(handle, fn, this_arg);
@@ -705,27 +752,93 @@ ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg) {
     scr_str_release(text);
     owned = true;
   }
-  double handle = scr_ar_new(chosen, NULL);
+  ScrDyn *handle = scr_ar_new(chosen, NULL);
   if (owned) scr_dyn_release(chosen);
-  if (isnan(handle)) return NULL;
-  return scr_ar_bind(handle, fn, this_arg);
+  if (handle == NULL) return NULL;
+  ScrDyn *bound = scr_ar_bind(handle, fn, this_arg);
+  scr_dyn_release(handle);
+  return bound;
 }
 
-double scr_ar_emit_destroy(double handle) {
-  ScrAsyncResource *r = scr_ar_entry(handle);
+ScrDyn *scr_ar_emit_destroy(ScrDyn *handle) {
+  ScrAsyncResource *r = scr_ar_payload(handle);
   if (r != NULL) r->destroyed = true; /* destroy hooks dispatch here */
-  return handle;
+  return scr_dyn_retain(handle);
 }
 
-double scr_ar_async_id(double handle) {
-  ScrAsyncResource *r = scr_ar_entry(handle);
+double scr_ar_async_id(ScrDyn *handle) {
+  ScrAsyncResource *r = scr_ar_payload(handle);
   return r != NULL ? r->async_id : NAN;
 }
 
-double scr_ar_trigger_id(double handle) {
-  ScrAsyncResource *r = scr_ar_entry(handle);
+double scr_ar_trigger_id(ScrDyn *handle) {
+  ScrAsyncResource *r = scr_ar_payload(handle);
   return r != NULL ? r->trigger_id : NAN;
 }
+
+static const ScrDynHandleMethod scr_ar_methods[] = {{"runInAsyncScope", 0, false},
+                                                    {"bind", 0, false},
+                                                    {"emitDestroy", 0, false},
+                                                    {"asyncId", 0, false},
+                                                    {"triggerAsyncId", 0, false},
+                                                    {NULL, 0, false}};
+
+static ScrDyn *scr_ar_empty_view(void *h) {
+  (void)h;
+  return scr_dyn_new_obj();
+}
+
+/* Dynamic member calls (`resource.runInAsyncScope(...)` on a value the
+ * program holds as checked-dynamic): the same helpers the lowered calls
+ * use. */
+static ScrDyn *scr_ar_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  ScrAsyncResource *r = h;
+  (void)what;
+  if (strcmp(method, "runInAsyncScope") == 0 && argc >= 1) {
+    ScrDyn *args_array = scr_dyn_new_arr();
+    for (size_t i = 2; i < argc; i++) scr_dyn_arr_push(args_array, scr_dyn_retain(args[i]));
+    ScrDyn *result = scr_ar_call_in_scope(
+        r, args[0], argc >= 2 ? args[1] : scr_dyn_undefined(), args_array->v.arr.items,
+        args_array->v.arr.len);
+    scr_dyn_release(args_array);
+    return result;
+  }
+  if (strcmp(method, "bind") == 0 && argc >= 1)
+    return scr_ar_make_bound(self, args[0], argc >= 2 ? args[1] : scr_dyn_undefined());
+  if (strcmp(method, "emitDestroy") == 0) return scr_dyn_retain(self);
+  if (strcmp(method, "asyncId") == 0) return scr_dyn_new_num(r->async_id);
+  if (strcmp(method, "triggerAsyncId") == 0) return scr_dyn_new_num(r->trigger_id);
+  static const char message[] = "AsyncResource member is not a function: ";
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, message);
+  scr_jb_puts(&b, method);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+static ScrDyn *scr_ar_box(ScrAsyncResource *r) {
+  static SCR_TL bool installed;
+  if (!installed) {
+    installed = true;
+    static const ScrDynHandleOps ops = {
+        .cls = "AsyncResource",
+        .retain = scr_ar_retain,
+        .release = scr_ar_release,
+        .invoke = scr_ar_invoke,
+        .inspect_view = scr_ar_empty_view,
+        .json_empty_object = true,
+        .inspect_view_empty = true,
+        .methods = scr_ar_methods,
+    };
+    scr_dyn_handle_install(SCR_DYNH_ASYNC_RESOURCE, &ops);
+  }
+  ScrDyn *box = scr_dyn_new_handle(r, SCR_DYNH_ASYNC_RESOURCE);
+  scr_ar_release(r);
+  return box;
+}
+
 
 /* The two rejection-event registries share one shape: listeners with a
  * `once` flag (auto-removed after one delivery, Node's once) and
@@ -3102,4 +3215,264 @@ ScrDyn *scr_crypto_native(void) {
   ScrDyn *subtle = scr_dyn_new_obj();
   scr_dyn_obj_set(subtle, "digest", 6, scr_dyn_new_func(scr_closure_new(NULL, 0), scr_crypto_digest_call, 2, "crypto.subtle.digest", "digest"));
   ScrDyn *result = scr_dyn_new_obj(); scr_dyn_obj_set(result, "subtle", 6, subtle); return result;
+}
+
+/* ── node:trace_events (trace_events.Tracing) ─────────────────────────
+ * A compiled binary carries no trace-event agent, which is what Node's
+ * tracing objects drive. Without the agent — Node run without the
+ * --trace-event-* flags — what a program observes is the object's own
+ * bookkeeping: its categories string, its enabled flag, and the
+ * process-wide enabled-categories list. The object is a native handle
+ * (typeof "object", no own keys, `Tracing { enabled: false, categories:
+ * 'v8,node' }`), with member reads and calls through the checked-dynamic
+ * tree; enable()/disable() flip the flag, as Node's do when no agent is
+ * recording. */
+typedef struct {
+  size_t rc;
+  ScrStr *categories; /* owned: the options' categories joined by ',' */
+  bool enabled;
+} ScrTraceEvents;
+
+/* Only ENABLED tracers are referenced here (Node's tracing agent holds the
+ * enabled ones the same way): getEnabledCategories walks this list, and a
+ * tracer the program discards while disabled is freed with its handle —
+ * creating and dropping tracers in a loop retains and slows nothing. */
+static SCR_TL ScrTraceEvents **scr_te_enabled = NULL;
+static SCR_TL size_t scr_te_enabled_count = 0, scr_te_enabled_cap = 0;
+
+static void *scr_te_retain(void *h) {
+  ((ScrTraceEvents *)h)->rc++;
+  return h;
+}
+
+static void scr_te_release(void *h) {
+  ScrTraceEvents *t = h;
+  if (!t || --t->rc > 0) return;
+  scr_str_release(t->categories);
+  free(t);
+}
+
+static void scr_te_teardown(void) {
+  for (size_t i = 0; i < scr_te_enabled_count; i++) scr_te_release(scr_te_enabled[i]);
+  free(scr_te_enabled);
+  scr_te_enabled = NULL;
+  scr_te_enabled_count = scr_te_enabled_cap = 0;
+}
+
+static void scr_te_set_enabled(ScrTraceEvents *t, bool enabled) {
+  if (t->enabled == enabled) return;
+  t->enabled = enabled;
+  if (enabled) {
+    if (scr_te_enabled_count == scr_te_enabled_cap) {
+      scr_te_enabled_cap = scr_te_enabled_cap ? scr_te_enabled_cap * 2 : 4;
+      ScrTraceEvents **grown = realloc(scr_te_enabled, scr_te_enabled_cap * sizeof *grown);
+      if (!grown) scr_ad_oom();
+      scr_te_enabled = grown;
+      if (scr_te_enabled_count == 0) scr_atexit(scr_te_teardown);
+    }
+    scr_te_retain(t);
+    scr_te_enabled[scr_te_enabled_count++] = t;
+    return;
+  }
+  for (size_t i = 0; i < scr_te_enabled_count; i++) {
+    if (scr_te_enabled[i] != t) continue;
+    scr_te_enabled[i] = scr_te_enabled[--scr_te_enabled_count];
+    scr_te_release(t);
+    return;
+  }
+}
+
+static ScrDyn *scr_te_member(void *h, const char *key, size_t len);
+static ScrDyn *scr_te_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what);
+static ScrDyn *scr_te_inspect_view(void *h);
+static const ScrDynHandleMethod scr_te_methods[];
+
+static ScrDyn *scr_te_box(ScrTraceEvents *t) {
+  static const ScrDynHandleOps ops = {
+      .cls = "Tracing",
+      .retain = scr_te_retain,
+      .release = scr_te_release,
+      .invoke = scr_te_invoke,
+      .get = scr_te_member,
+      .inspect_view = scr_te_inspect_view,
+      .methods = scr_te_methods,
+  };
+  scr_dyn_handle_install(SCR_DYNH_TRACING, &ops);
+  /* The handle owns the resource; nothing else references a disabled
+   * tracer, so dropping the handle frees it. */
+  ScrDyn *box = scr_dyn_new_handle(t, SCR_DYNH_TRACING);
+  scr_te_release(t);
+  return box;
+}
+
+/* `tracing.enabled` / `tracing.categories` as Node's prototype getters
+ * answer them; any other name is no member (undefined). */
+static ScrDyn *scr_te_member(void *h, const char *key, size_t len) {
+  ScrTraceEvents *t = h;
+  if (len == 7 && memcmp(key, "enabled", 7) == 0) return scr_dyn_new_bool(t->enabled);
+  if (len == 10 && memcmp(key, "categories", 10) == 0)
+    return scr_dyn_new_str(t->categories); /* the box retains its own */
+  return NULL;
+}
+
+static ScrDyn *scr_te_undefined(void) { return scr_dyn_retain(scr_dyn_undefined()); }
+
+static ScrDyn *scr_te_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  (void)what;
+  ScrTraceEvents *t = h;
+  if (strcmp(method, "enable") == 0) {
+    scr_te_set_enabled(t, true);
+    return scr_te_undefined();
+  }
+  if (strcmp(method, "disable") == 0) {
+    scr_te_set_enabled(t, false);
+    return scr_te_undefined();
+  }
+  static const char message[] = "Tracing member is not a function: ";
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, message);
+  scr_jb_puts(&b, method);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+static ScrDyn *scr_te_inspect_view(void *h) {
+  ScrTraceEvents *t = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_dyn_obj_set(view, "enabled", 7, scr_dyn_new_bool(t->enabled));
+  scr_dyn_obj_set(view, "categories", 10, scr_dyn_new_str(t->categories));
+  return view;
+}
+
+static const ScrDynHandleMethod scr_te_methods[] = {
+    {"enable", 0, false}, {"disable", 0, false}, {NULL, 0, false}};
+
+ScrDyn *scr_te_create(ScrDyn *options) {
+  bool object_kind = options != NULL && (options->kind == SCR_DYN_OBJ ||
+                                         options->kind == SCR_DYN_TYPED_REF ||
+                                         options->kind == SCR_DYN_PROXY);
+  if (!object_kind) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  /* scr_dyn_obj_get borrows: only the undefined stand-in is ours to free.
+   * The array itself is retained rather than borrowed: the element reads
+   * below run program code (an index the array does not own is answered
+   * through its prototype chain), and a getter there can remove
+   * options.categories — the object's reference — leaving the array dead
+   * under the reads that follow. */
+  ScrDyn *cats = scr_dyn_obj_get(options, "categories", 10);
+  bool cats_owned = false;
+  if (cats == NULL) {
+    if (scr_exc_pending()) return NULL;
+    /* An absent member reads as undefined, which is not an Array. */
+    cats = scr_dyn_retain(scr_dyn_undefined());
+    cats_owned = true;
+  } else {
+    cats = scr_dyn_retain(cats);
+    cats_owned = true;
+  }
+  if (cats->kind != SCR_DYN_ARR) {
+    scr_dyn_prop_type_fail("options.categories", "an instance of Array", cats);
+    if (cats_owned) scr_dyn_release(cats);
+    return NULL;
+  }
+  double len = scr_dyn_arr_len(cats);
+  if (len >= 1) {
+    ScrJsonBuf joined;
+    scr_jb_init(&joined);
+    for (double i = 0; i < len; i++) {
+      ScrDyn *item = scr_dyn_arr_at(cats, i);
+      if (item == NULL) {
+        scr_jb_abandon(&joined); /* the joined string is never built */
+        if (cats_owned) scr_dyn_release(cats);
+        return NULL;
+      }
+      if (item->kind != SCR_DYN_STR) {
+        char name[40];
+        snprintf(name, sizeof name, "options.categories[%d]", (int)i);
+        scr_dyn_prop_type_fail(name, "of type string", item);
+        scr_dyn_release(item);
+        scr_jb_abandon(&joined); /* the joined string is never built */
+        if (cats_owned) scr_dyn_release(cats);
+        return NULL;
+      }
+      if (i > 0) scr_jb_putc(&joined, ',');
+      scr_jb_put_str(&joined, item->v.str);
+      scr_dyn_release(item);
+    }
+    if (cats_owned) scr_dyn_release(cats);
+    ScrTraceEvents *t = malloc(sizeof *t);
+    if (!t) scr_ad_oom();
+    t->rc = 1;
+    t->categories = scr_jb_finish(&joined);
+    t->enabled = false;
+    return scr_te_box(t);
+  }
+  if (cats_owned) scr_dyn_release(cats);
+  static const char message[] = "At least one category is required";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
+                           "ERR_TRACE_EVENTS_CATEGORY_REQUIRED");
+  return NULL;
+}
+
+static int scr_te_name_cmp(const void *a, const void *b) {
+  const ScrStr *x = *(const ScrStr *const *)a;
+  const ScrStr *y = *(const ScrStr *const *)b;
+  size_t n = x->len < y->len ? x->len : y->len;
+  int c = memcmp(x->data, y->data, n);
+  if (c != 0) return c;
+  return x->len < y->len ? -1 : x->len > y->len ? 1 : 0;
+}
+
+/* getEnabledCategories(): every enabled tracing object's categories, split
+ * on ',', de-duplicated and sorted, joined back — Node's answer, and the
+ * undefined value when nothing is enabled. */
+ScrDyn *scr_te_get_enabled_categories(void) {
+  ScrStr **names = NULL;
+  size_t n = 0, cap = 0;
+  for (size_t i = 0; i < scr_te_enabled_count; i++) {
+    ScrTraceEvents *t = scr_te_enabled[i];
+    size_t start = 0;
+    for (size_t at = 0; at <= t->categories->len; at++) {
+      if (at < t->categories->len && t->categories->data[at] != ',') continue;
+      ScrStr *part = scr_str_new(t->categories->data + start, at - start);
+      start = at + 1;
+      bool seen = false;
+      for (size_t j = 0; j < n && !seen; j++) seen = scr_str_eq(names[j], part);
+      if (seen) {
+        scr_str_release(part);
+        continue;
+      }
+      if (n == cap) {
+        cap = cap ? cap * 2 : 8;
+        names = realloc(names, cap * sizeof *names);
+        if (!names) scr_ad_oom();
+      }
+      names[n++] = part;
+    }
+  }
+  if (n == 0) {
+    free(names);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  qsort(names, n, sizeof *names, scr_te_name_cmp);
+  ScrJsonBuf joined;
+  scr_jb_init(&joined);
+  for (size_t i = 0; i < n; i++) {
+    if (i > 0) scr_jb_putc(&joined, ',');
+    scr_jb_put_str(&joined, names[i]);
+    scr_str_release(names[i]);
+  }
+  free(names);
+  ScrStr *text = scr_jb_finish(&joined);
+  ScrDyn *result = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return result;
 }

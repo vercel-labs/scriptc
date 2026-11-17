@@ -24011,6 +24011,21 @@ export class Lowerer {
         return { module: "timers/promises", member: `scheduler.${access.name.text}` };
       }
     }
+    // node:test's snapshot.setDefaultSnapshotSerializers and
+    // setResolveSnapshotPath: methods of the module's snapshot object.
+    if (
+      access.name.text === "setDefaultSnapshotSerializers" ||
+      access.name.text === "setResolveSnapshotPath"
+    ) {
+      const owner = access.expression;
+      const imported = ts.isIdentifier(owner)
+        ? this.builtinImportOf(owner)
+        : ts.isPropertyAccessExpression(owner)
+          ? this.builtinMemberOf(owner)
+          : null;
+      if (imported?.module === "test" && imported.member === "snapshot")
+        return { module: "test", member: `snapshot.${access.name.text}` };
+    }
     // punycode.ucs2.decode / encode: methods of the module's ucs2 object,
     // dispatched as module members.
     if (access.name.text === "decode" || access.name.text === "encode") {

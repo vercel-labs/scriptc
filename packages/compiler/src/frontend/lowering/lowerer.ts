@@ -10382,10 +10382,47 @@ export class Lowerer {
       if (widened.has(symbol)) this.jsWidenedReturnDecls.add(owner);
     if (this.jsWidenedReturnDecls.size === 0) return;
     // A binding that stores a widened function's result holds the same value
-    // (`const stored = getKey()`): the checker inferred its type from the
-    // function's return, which follows the widened binding. Widening those
-    // targets can in turn flow through the assignment edges above, so the
-    // walk repeats until nothing else widens.
+    // (`const stored = getKey()`, `const other = keys.getKey()`), and a
+    // function that forwards such a call (`return getKey()`) answers it too.
+    // The checker inferred both from the callee's declared return, which
+    // follows the widened binding. Widening a target can widen further calls
+    // and returns, so the walk repeats until nothing else changes.
+    const widenedReturnCallee = (
+      expression: ts.Expression,
+    ): ts.SignatureDeclaration | undefined => {
+      let callee = expression;
+      while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+      let declared: ts.Node | undefined;
+      if (ts.isIdentifier(callee)) declared = this.checker.getSymbolAtLocation(callee)?.valueDeclaration;
+      else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name))
+        declared = this.checker.getSymbolAtLocation(callee.name)?.valueDeclaration;
+      if (
+        declared !== undefined &&
+        ts.isVariableDeclaration(declared) &&
+        declared.initializer !== undefined &&
+        (ts.isArrowFunction(declared.initializer) || ts.isFunctionExpression(declared.initializer))
+      )
+        declared = declared.initializer;
+      return declared !== undefined &&
+        ts.isSignatureDeclaration(declared) &&
+        declared.asteriskToken === undefined
+        ? declared
+        : undefined;
+    };
+    const storeTargetOf = (call: ts.CallExpression): ts.Node | undefined => {
+      let parent: ts.Node | undefined = call.parent;
+      while (parent !== undefined && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+      if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === call)
+        return parent.name;
+      if (
+        parent !== undefined &&
+        ts.isBinaryExpression(parent) &&
+        parent.right === call &&
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      )
+        return parent.left;
+      return undefined;
+    };
     for (let changed = true; changed; ) {
       changed = false;
       const seeds: ts.Symbol[] = [];
@@ -10393,39 +10430,33 @@ export class Lowerer {
         if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
         if (this.checkedJsFile(sf)) continue;
         ts.walkPreorder(sf, (node) => {
-          if (!ts.isCallExpression(node)) return undefined;
-          let callee = ts.isIdentifier(node.expression)
-            ? this.checker.getSymbolAtLocation(node.expression)?.valueDeclaration
-            : undefined;
-          if (
-            callee !== undefined &&
-            ts.isVariableDeclaration(callee) &&
-            callee.initializer !== undefined &&
-            (ts.isArrowFunction(callee.initializer) ||
-              ts.isFunctionExpression(callee.initializer))
-          )
-            callee = callee.initializer;
-          if (
-            callee === undefined ||
-            !ts.isSignatureDeclaration(callee) ||
-            !this.jsWidenedReturnDecls.has(callee)
-          )
+          if (ts.isCallExpression(node)) {
+            const callee = widenedReturnCallee(node.expression);
+            if (callee === undefined || !this.jsWidenedReturnDecls.has(callee)) return undefined;
+            const nameNode = storeTargetOf(node);
+            if (nameNode === undefined || !ts.isIdentifier(nameNode)) return undefined;
+            const target = this.checker.getSymbolAtLocation(nameNode);
+            if (target && !widened.has(target)) seeds.push(target);
             return undefined;
-          let parent: ts.Node | undefined = node.parent;
-          while (parent !== undefined && ts.isParenthesizedExpression(parent)) parent = parent.parent;
-          let nameNode: ts.Node | undefined;
-          if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === node)
-            nameNode = parent.name;
-          else if (
-            parent !== undefined &&
-            ts.isBinaryExpression(parent) &&
-            parent.right === node &&
-            parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
-          )
-            nameNode = parent.left;
-          if (nameNode === undefined || !ts.isIdentifier(nameNode)) return undefined;
-          const target = this.checker.getSymbolAtLocation(nameNode);
-          if (target && !widened.has(target)) seeds.push(target);
+          }
+          if (ts.isReturnStatement(node) && node.expression !== undefined) {
+            let expression = node.expression;
+            while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+            if (!ts.isCallExpression(expression)) return undefined;
+            const callee = widenedReturnCallee(expression.expression);
+            if (callee === undefined || !this.jsWidenedReturnDecls.has(callee)) return undefined;
+            let owner = node.parent;
+            while (owner !== undefined && !ts.isFunctionLike(owner)) owner = owner.parent;
+            if (
+              owner !== undefined &&
+              ts.isSignatureDeclaration(owner) &&
+              owner.asteriskToken === undefined &&
+              !this.jsWidenedReturnDecls.has(owner)
+            ) {
+              this.jsWidenedReturnDecls.add(owner);
+              changed = true;
+            }
+          }
           return undefined;
         });
       }

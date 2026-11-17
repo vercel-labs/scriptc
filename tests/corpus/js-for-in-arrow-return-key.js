@@ -19,6 +19,23 @@ later = getKey();
 console.log("stored", stored, typeof stored);
 console.log("later", later, typeof later);
 
+class Keys {
+  method() {
+    return key;
+  }
+}
+
+const keys = new Keys();
+const fromMethod = keys.method();
+const parenthesized = (getKey)();
+function forward() {
+  return getKey();
+}
+
+console.log("method", fromMethod, typeof fromMethod);
+console.log("parens", parenthesized, typeof parenthesized);
+console.log("forward", forward(), typeof forward());
+
 function readAfter() {
   for (var name in { second: 1 }) {
     // a declared head binding is a string the checker already knows

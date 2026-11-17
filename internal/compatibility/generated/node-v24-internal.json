@@ -67908,21 +67908,16 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
           "tests/corpus/2672-http-request-response-callback.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts",
+          "tests/corpus/5597-http-agent-idle-sockets.ts",
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/https-server-close-surface.mjs",
+          "tests/corpus/https-server-inherited-surface.ts",
           "tests/corpus/https-server-max-headers-count.ts",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-dispose-http.ts",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs"
+          "tests/corpus/net-server-dispose-http.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -68020,17 +68015,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.close",
+        "status": "supported",
+        "evidence": "compiler-feature:https.server.close",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/https-server-close-surface.mjs",
+          "tests/corpus/https-server-inherited-surface.ts",
+          "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/2689-http-server-timeout-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -68053,7 +68044,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:https.server",
         "tests": [
           "tests/corpus/net-server-dispose-http.ts"
@@ -68079,11 +68070,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:https.server.closeAllConnections",
         "tests": [
-          "tests/corpus/compat-http-server-tail.mjs",
-          "tests/corpus/compat-http-server-tail.ts"
+          "tests/corpus/https-server-inherited-surface.ts",
+          "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/5597-http-agent-idle-sockets.ts"
         ]
       },
       "anchorSource": "exact"
@@ -68106,11 +68098,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:https.server.closeIdleConnections",
         "tests": [
-          "tests/corpus/compat-http-server-tail.mjs",
-          "tests/corpus/compat-http-server-tail.ts"
+          "tests/corpus/https-server-inherited-surface.ts",
+          "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/5597-http-agent-idle-sockets.ts"
         ]
       },
       "anchorSource": "exact"
@@ -68133,17 +68126,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:server.listen",
+        "status": "supported",
+        "evidence": "compiler-feature:https.server.listen",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/https-server-close-surface.mjs",
+          "tests/corpus/https-server-inherited-surface.ts",
+          "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/2689-http-server-timeout-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -68275,11 +68264,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:timeout",
+        "status": "supported",
+        "evidence": "compiler-feature:https.timeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
+          "tests/corpus/https-server-close-surface.mjs",
+          "tests/corpus/https-server-inherited-surface.ts",
+          "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/2689-http-server-timeout-properties.ts"
         ]
       },

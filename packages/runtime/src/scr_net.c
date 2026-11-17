@@ -616,6 +616,9 @@ struct ScrNetSocket {
   /* write buffer: [whead, wlen) of wbuf is unsent */
   char *wbuf;
   size_t whead, wlen, wcap;
+  /* a write callback queued another one during this sweep: the next batch
+   * waits for the next tick instead of draining in the same sweep */
+  bool wcb_deferred;
   /* Node's writable state.length: each write with bytes in the buffer
    * counts in full until its last byte is sent (a partly sent write
    * included). wq[wq_head, wq_n) holds those writes in order, each with
@@ -1272,6 +1275,24 @@ static void scr_net_work_add(ScrNetSocket *s) {
   }
   scr_net_work_push(&scr_net_work, &scr_net_work_n, &scr_net_work_cap, s);
   scr_net_work_up(scr_net_work_n - 1);
+}
+
+/* A write callback that queues another callback must yield to the loop: the
+ * sweep fires one batch, the next tick re-arms the socket's work. */
+static void scr_net_wcb_yield_tick(ScrClosure *cb) {
+  ScrNetSocket *s = scr_box_get_ref(cb->caps[0]);
+  s->wcb_deferred = false;
+  scr_net_work_add(s);
+  scr_net_sock_release(s);
+}
+
+static void scr_net_sock_defer_wcb(ScrNetSocket *s) {
+  if (s->wcb_deferred) return;
+  s->wcb_deferred = true;
+  ScrClosure *cb = scr_closure_new((void *)&scr_net_wcb_yield_tick, 1);
+  cb->caps[0] = scr_box_new_obj(&scr_net_sock_retain_v, &scr_net_sock_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_net_sock_retain(s));
+  scr_next_tick(cb);
 }
 
 static ScrNetSocket *scr_net_work_pop(void) {
@@ -2500,6 +2521,15 @@ double scr_net_server_timeout_get(ScrNetServer *s, double field) {
     scr_dyn_arg_type_fail(names[i], "of type number", s->http_timeout_dyn[i]);
     return 0; /* pending exception; typed reads validate an any-written value */
   }
+  return s->http_timeouts[i];
+}
+
+/* A timeout field as the HTTP timeout checker reads it: a non-number value
+ * reads 0 (Node's NumberIsFinite guard), never a pending exception. */
+double scr_net_server_timeout_raw(ScrNetServer *s, double field) {
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  if (s->http_timeout_dyn[i] != NULL) return 0;
   return s->http_timeouts[i];
 }
 
@@ -8730,6 +8760,11 @@ void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg) {
 
 void scr_net_server_defer_connections(ScrNetServer *s) { s->defer_conn = true; }
 
+/* Whether this server speaks TLS: the handshake-complete event is the
+ * marker (tls.createServer/tls.Server and https set it; a plain net
+ * server and http2's secure server do not). */
+bool scr_net_server_is_tls(const ScrNetServer *s) { return s->defer_conn; }
+
 void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, void **ctx,
                                      void (**ctx_free)(void *)) {
   *fn = s->native_conn;
@@ -8780,7 +8815,7 @@ static bool scr_net_sock_has_work(ScrNetSocket *s, bool due) {
   /* recorded 'lookup'/'connectionAttempt' events wait for the sweep */
   if (s->lookup_evs != NULL || s->attempt_evs != NULL) return true;
   if (s->finish_pending && (!due || s->finish_ls.n > 0)) return true;
-  if (s->wcb_ls.n > 0 && (s->wlen == s->whead || s->fd < 0)) return true;
+  if (s->wcb_ls.n > 0 && (s->wlen == s->whead || s->fd < 0) && !s->wcb_deferred) return true;
   /* bytes already out of the kernel with a consumer waiting — decrypted
    * plaintext inside a transport, or unshifted bytes in the receive
    * buffer: the poller can't re-signal them, the sweep must deliver */
@@ -8962,6 +8997,8 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     scr_net_fire_arg_this(&sock->wcb_ls, no_error, sock, SCR_DYNH_NET_SOCKET);
     scr_dyn_release(no_error);
     if (scr_exc_pending()) return false;
+    /* callbacks queued by a callback wait for the next tick */
+    if (sock->wcb_ls.n > 0) scr_net_sock_defer_wcb(sock);
   }
   if (sock->finish_pending) {
     sock->finish_pending = false;

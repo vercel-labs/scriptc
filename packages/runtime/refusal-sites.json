@@ -48,6 +48,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_async_dyn.c",
+  "function": "scr_process_emit_error",
+  "message": "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_blob.c",
   "function": "scr_blob_source_list",
   "message": "new Blob(sources) over this iterable has no lowering; pass an array",
@@ -771,6 +777,12 @@
   "file": "scr_http.c",
   "function": "scr_http_req_set_encoding",
   "message": "setEncoding('%s') is not supported yet (only 'utf8' here)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_req_signal",
+  "message": "IncomingMessage.signal is not supported by this runtime build",
   "code": "SC2020"
  },
  {
@@ -1809,6 +1821,12 @@
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream_to_web.c",
+  "function": "scr_stream_to_web_readable_dyn",
+  "message": "Readable.toWeb over a checked-dynamic value that is not a native readable stream is not supported yet",
   "code": "SC2020"
  },
  {

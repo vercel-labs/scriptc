@@ -41,6 +41,34 @@ console.log("value", typeof c, typeof c.m);
   ],
 };
 
+test("a static returning a dynamic import keeps its namespace-promise adapter", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "scriptc-class-value-fence-"));
+  try {
+    await writeFile(join(directory, "package.json"), '{"type":"module"}\n');
+    await writeFile(join(directory, "mod.js"), "export const answer = 42;\n");
+    await writeFile(
+      join(directory, "main.ts"),
+      `class C { static load() { return import("./mod.js"); } }
+const c: any = C;
+console.log("value", typeof c, typeof c.load);
+`,
+    );
+    const result = await compile(join(directory, "main.ts"), {
+      outDir: directory,
+      outPath: join(directory, "app"),
+      backend: "llvm",
+      optimization: "dev",
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const native = spawnSync(result.binaryPath, [], { encoding: "utf8" });
+    expect(native.stderr).toBe("");
+    expect(native.stdout).toBe("value function function\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test.for(Object.entries(programs))("%s", async ([name, [source, expected]]) => {
   const directory = await mkdtemp(join(tmpdir(), "scriptc-class-value-fence-"));
   try {

@@ -216,19 +216,19 @@ function staticTableMemberValue(
   }
 }
 
-/** A table entry coerced into the checked-dynamic value every entry is. A
- * member whose value cannot convert (a signature with no checked-dynamic
- * form) becomes the fence instead of malformed IR. */
+/** A table entry coerced into the checked-dynamic value every entry is. The
+ * coercion adapts what it can (a boxable function, a namespace promise from a
+ * dynamic import), and a member whose value it cannot convert becomes the
+ * fence instead of malformed IR. */
 function tableEntryValue(
   lowerer: Lowerer,
   info: ClassInfo,
   value: IrExpr,
   display: string,
 ): IrExpr {
-  const entry = lowerer.dynConvertible(value.type)
-    ? value
-    : staticMemberFence(lowerer, info, display);
-  return lowerer.coerceToExpected(entry, DYN);
+  const coerced = lowerer.coerceToExpected(value, DYN);
+  if (coerced.type.kind === "dyn") return coerced;
+  return lowerer.coerceToExpected(staticMemberFence(lowerer, info, display), DYN);
 }
 
 /** The lifted function that installs `info`'s static table on the class

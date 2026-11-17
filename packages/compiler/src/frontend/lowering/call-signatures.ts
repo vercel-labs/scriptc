@@ -1410,11 +1410,18 @@ export function lambdaSignature(
   let ret =
     ts.isArrowFunction(node) && !ts.isBlock(node.body) && isStreamUndefCallExpr(lowerer, node.body)
       ? VOID
-      : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-          !returnedValue &&
-          voidContextualSlot(lowerer, node, contextualSigs)
-        ? VOID
-        : lowerer.declaredReturnType(node, node);
+      : // A lambda written into a checked-dynamic member answers what its
+        // body answers: the member's storage is checked-dynamic, so the
+        // function object keeps its own value, as Node's does. The typed
+        // slot's `void` would drop it (jsDynStoredLambda).
+        (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+          jsDynStoredLambda(lowerer, node)
+        ? DYN
+        : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+            !returnedValue &&
+            voidContextualSlot(lowerer, node, contextualSigs)
+          ? VOID
+          : lowerer.declaredReturnType(node, node);
 
   ret = lowerer.runtimeOptionalFunctionReturnType(node, ret);
   // A contextually-typed arrow/function EXPRESSION whose slot signature
@@ -1544,6 +1551,7 @@ export function lambdaSignature(
       !inferredLiteral &&
       ret.kind !== "void" &&
       ctxSigs.length === 1 &&
+      !(ts.isMethodDeclaration(node) ? false : jsDynStoredLambda(lowerer, node)) &&
       !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void) &&
       !(
         (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
@@ -1597,12 +1605,78 @@ function voidContextualSlot(
     ts.isObjectLiteralExpression(node.parent.parent)
   )
     return false;
+  // An assignment stores the function VALUE, and JavaScript's function
+  // object keeps its own return type: only a call through the `void` slot
+  // discards the result, which is what the slot's signature says. Node
+  // answers the value to any other caller (a checked-dynamic read of the
+  // member, a later `typeof`), so the lambda keeps its inferred return. The
+  // store still adapts a value the slot cannot carry, exactly as an object
+  // literal's property (above) does.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+    ts.isBinaryExpression(node.parent) &&
+    node.parent.right === node &&
+    node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  )
+    return false;
   const sigs = contextualSigs();
   return (
     sigs.length === 1 &&
     (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0 &&
     !finallyObservesResult(lowerer, node)
   );
+}
+
+/** A JavaScript lambda written into a member of a binding whose storage is
+ * checked-dynamic (`Internals.d.f = function () { …; return v; }`): the
+ * member holds the function object, and JavaScript's function object keeps
+ * the value its body answers — only a call through a `void`-typed slot
+ * discards it. The lambda therefore answers a checked-dynamic result, which
+ * the dynamic storage carries (lower-calls.ts reads it back). */
+function jsDynStoredLambda(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): boolean {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  // The stored VALUE is the lambda, or the object literal it is a property
+  // of (however deeply nested: `d = { f: function () { … } }`).
+  let value: ts.Node = node;
+  let parent = value.parent;
+  while (
+    parent !== undefined &&
+    ts.isPropertyAssignment(parent) &&
+    parent.initializer === value &&
+    ts.isObjectLiteralExpression(parent.parent)
+  ) {
+    value = parent.parent;
+    parent = value.parent;
+  }
+  if (parent === undefined || lowerer.jsWidenedBindings.size === 0) return false;
+  // The value goes into a binding the preflight widened: either a member of
+  // one (`o.f = function () { …; return v; }`) or the binding's own
+  // initializer (`var o = { f: function () { …; return v; } }`), whose
+  // literal the checked-dynamic storage keeps as written.
+  let root: ts.Node;
+  if (ts.isVariableDeclaration(parent) && parent.initializer === value) {
+    if (!ts.isIdentifier(parent.name)) return false;
+    root = parent.name;
+  } else if (
+    ts.isBinaryExpression(parent) &&
+    parent.right === value &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  ) {
+    let target: ts.Node = parent.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
+      return false;
+    root = target.expression;
+    while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+      root = root.expression;
+    while (ts.isParenthesizedExpression(root)) root = root.expression;
+  } else return false;
+  if (!ts.isIdentifier(root)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(root);
+  return symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);
 }
 
 /** Whether `node` is the callback of a promise's `finally` and may return a

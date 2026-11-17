@@ -228,6 +228,14 @@ export interface TypeFailure {
 /** SC3002–SC3004 — native-helper target, installation, and execution
  * failures. These are ordinary build diagnostics: a missing optional package
  * or malformed LLVM input must never surface as an internal compiler error. */
+
+/** What each native-helper diagnostic says when its site supplied no reason:
+ * the code alone would not tell a user which stage failed. */
+const NATIVE_CODEGEN_FALLBACK: Record<"SC3002" | "SC3003" | "SC3004", string> = {
+  SC3002: "the native target was refused without a stated reason",
+  SC3003: "the native helper installation or version check failed without a stated reason",
+  SC3004: "the native helper code generation failed without a stated reason",
+};
 export function nativeCodegenDiag(
   code: "SC3002" | "SC3003" | "SC3004",
   message: string,
@@ -241,7 +249,7 @@ export function nativeCodegenDiag(
       : undefined);
   return {
     code,
-    message,
+    message: message.trim() === "" ? NATIVE_CODEGEN_FALLBACK[code] : message,
     loc: { file, start: 0, end: 0 },
     ...(shown !== undefined ? { hint: shown } : {}),
   };
@@ -1238,13 +1246,14 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // declaration carry an initialization check (Node's TDZ ReferenceError).
   // SC1016 remains for the shapes without an exact representation —
   // CommonJS members, top-level await, default-export expressions,
-  // namespace imports or re-exports of cycle members, and var or class
-  // bindings reachable before their declaration ran. The message names
-  // the offending construct.
+  // namespace imports or re-exports of cycle members, and var bindings
+  // reachable before their declaration ran. Classes carry an
+  // initialization check like the let/const bindings they behave as. The
+  // message names the offending construct.
   SC1016: {
     feature: "circular imports",
     milestone: "later",
-    hint: "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge",
+    hint: "ES-module cycles of let/const/function/class bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var) or break the named edge",
   },
   // Class DECLARATIONS shipped; SC1020's remaining use is class expressions.
   SC1020: { feature: "class expressions", milestone: "later" },

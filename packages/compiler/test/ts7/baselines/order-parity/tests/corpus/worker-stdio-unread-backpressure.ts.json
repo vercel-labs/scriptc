@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/worker-stdio-unread-backpressure.ts"
+ ],
+ "diags": []
+}

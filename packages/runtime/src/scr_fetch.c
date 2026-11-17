@@ -700,6 +700,38 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* `value instanceof AbortSignal`: the handles this unit boxes are the only
+ * values that carry the signal tag, so a signal answers true and every other
+ * value — undefined, null, a controller, a plain object — answers false, as
+ * Node's prototype chain does for the interfaces' real instances. */
+bool scr_dyn_abort_signal_is(const ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_HANDLE &&
+      value->v.handle.tag == SCR_DYNH_ABORT_SIGNAL;
+}
+
+/* ── the test runner's t.signal ────────────────────────────────────────
+ * The same native signal, exposed to scr_test.c, which reaches these through
+ * weak declarations. They live in the fetch unit's shared part so the
+ * signal-only build (scr_abort.c) and the full fetch build both define
+ * them: a program that reads t.signal and one that also uses fetch each
+ * resolve the runner's references. */
+ScrDyn *scr_test_abort_controller_new(void) { return scr_fetch_abort_controller_new(); }
+
+ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) {
+  if (controller == NULL || controller->kind != SCR_DYN_HANDLE ||
+      controller->v.handle.tag != SCR_DYNH_ABORT_CONTROLLER)
+    return scr_dyn_undefined();
+  return scr_dyn_new_handle(controller->v.handle.ptr, SCR_DYNH_ABORT_SIGNAL);
+}
+
+void scr_test_abort_controller_abort(ScrDyn *controller) {
+  if (controller == NULL || controller->kind != SCR_DYN_HANDLE ||
+      controller->v.handle.tag != SCR_DYNH_ABORT_CONTROLLER)
+    return;
+  SfSignal *s = controller->v.handle.ptr;
+  if (!s->aborted) sf_signal_abort_default(s, false);
+}
+
 /* util.transferableAbortSignal(signal): node checks the argument and
  * answers the same signal. The transfer marking it leaves on the signal is
  * read only by structuredClone/postMessage, which copy any AbortSignal the

@@ -75,6 +75,9 @@ export interface PreparedExecutableModule {
   mod: IrModule;
   sourceTexts: Map<string, string>;
   stats: LowerStats;
+  /** With unit reuse: the emitted-function names this build lowered rather
+   * than applied (LowerResult.changedUnits). */
+  changedUnits?: readonly string[];
   /** Divergence warnings (SC6xxx): the build succeeds; these sites can
    * behave differently from Node. */
   warnings: ScrDiagnostic[];
@@ -813,6 +816,7 @@ function prepareRound(
     mod: lowered.module!,
     sourceTexts,
     stats: lowered.stats,
+    ...(lowered.changedUnits !== undefined ? { changedUnits: lowered.changedUnits } : {}),
     ...(lowered.nodeIslandUse !== undefined ? { nodeIslandUse: lowered.nodeIslandUse } : {}),
     warnings: [
       ...(islandDecision?.notes ?? []),

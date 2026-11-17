@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/worker-wrapper-init-race.mjs"
+ ],
+ "diags": []
+}

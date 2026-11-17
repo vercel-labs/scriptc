@@ -230,14 +230,35 @@ declare const console: {
 
 // node:console exports the global instance's bound methods and the Console
 // constructor: instances over process.stdout/process.stderr or node:stream
-// writables lower their log/info/debug/error/warn members; their remaining
-// methods are declared so unsupported uses reach named fences.
+// writables lower every member — the output members through util.format,
+// and count/time/group/table/trace/assert/clear over the instance's own
+// counters, timers and group indentation, written to its own streams.
 type ScriptcConsoleMethods = typeof console;
 declare module "node:console" {
+  export interface ConsoleConstructorOptions {
+    stdout?: unknown;
+    stderr?: unknown;
+    ignoreErrors?: boolean;
+    /** 'auto' colors only a terminal's inspect output, which this runtime
+     * never styles; false turns colors off — the two lower identically,
+     * and true is refused (the util.inspect colors boundary). */
+    colorMode?: boolean | "auto";
+    /** Spaces per open group (default 2), validated like Node's
+     * validateInteger(0..1000). */
+    groupIndentation?: number;
+  }
   export class Console {
+    /** The options form. Node destructures the known keys and ignores the
+     * rest; every initializer still evaluates, in source order. */
+    constructor(options: ConsoleConstructorOptions);
     constructor(stdout: unknown, stderr?: unknown, ignoreErrors?: boolean);
   }
-  export interface Console extends ScriptcConsoleMethods {}
+  /** Node's Console instances define the global console's members except
+   * the inspector-only three, which exist on the global console alone. */
+  export interface Console extends Omit<
+    ScriptcConsoleMethods,
+    "profile" | "profileEnd" | "timeStamp"
+  > {}
   export const log: ScriptcConsoleMethods["log"];
   export const info: ScriptcConsoleMethods["info"];
   export const debug: ScriptcConsoleMethods["debug"];
@@ -944,7 +965,8 @@ interface KmacKeyGenParams extends Algorithm {
   length?: number;
 }
 interface KmacParams extends Algorithm {
-  algorithm: string;
+  /* Node's runtime reads the dictionary's name and ignores this member. */
+  algorithm?: string;
   outputLength: number;
   customization?: BufferSource;
 }
@@ -968,22 +990,23 @@ interface CryptoKeyPair {
   publicKey: CryptoKey;
 }
 /* HMAC and AES keys generate, import and export as 'raw' and 'jwk'
- * (PBKDF2 and HKDF keys import as 'raw'); ECDSA and RSA keys generate,
- * import and export as 'spki', 'pkcs8' and 'jwk', and ECDSA public keys as
- * 'raw'. */
+ * (PBKDF2 and HKDF keys import as 'raw'); ECDSA, ECDH, X25519 and RSA keys
+ * generate, import and export as 'spki', 'pkcs8' and 'jwk', ECDSA and
+ * ECDH public keys as 'raw', and X25519 public keys as 'raw'. RSA-OAEP
+ * encrypts and decrypts. */
 interface SubtleCrypto {
   decrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   deriveBits(
-    algorithm: Pbkdf2Params | HkdfParams,
+    algorithm: Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     length?: number | null,
   ): Promise<ArrayBuffer>;
   deriveKey(
-    algorithm: Pbkdf2Params | HkdfParams,
+    algorithm: Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     derivedKeyType: AlgorithmIdentifier | AesDerivedKeyParams | HmacImportParams,
     extractable: boolean,
@@ -991,38 +1014,60 @@ interface SubtleCrypto {
   ): Promise<CryptoKey>;
   digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
   encrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   exportKey(format: "jwk", key: CryptoKey): Promise<JsonWebKey>;
   exportKey(format: Exclude<KeyFormat, "jwk">, key: CryptoKey): Promise<ArrayBuffer>;
+  getPublicKey(key: CryptoKey, keyUsages: readonly KeyUsage[]): Promise<CryptoKey>;
   generateKey(
-    algorithm: EcKeyGenParams | RsaHashedKeyGenParams | "Ed25519" | { name: "Ed25519" },
+    algorithm:
+      | EcKeyGenParams
+      | RsaHashedKeyGenParams
+      | "Ed25519"
+      | { name: "Ed25519" }
+      | "X25519"
+      | { name: "X25519" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;
   generateKey(
-    algorithm: AesKeyGenParams | HmacKeyGenParams,
+    algorithm:
+      | AesKeyGenParams
+      | HmacKeyGenParams
+      | KmacKeyGenParams
+      | "ChaCha20-Poly1305"
+      | { name: "ChaCha20-Poly1305" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   importKey(
     format: "jwk",
     keyData: JsonWebKey,
-    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
+    algorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   importKey(
     format: Exclude<KeyFormat, "jwk">,
     keyData: BufferSource,
-    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
+    algorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   sign(
-    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    algorithm: AlgorithmIdentifier | EcdsaParams | KmacParams | RsaPssParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -1036,7 +1081,7 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   verify(
-    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    algorithm: AlgorithmIdentifier | EcdsaParams | KmacParams | RsaPssParams,
     key: CryptoKey,
     signature: BufferSource,
     data: BufferSource,
@@ -1214,6 +1259,24 @@ interface BufferConstructor {
   /* The pool slab size for allocUnsafe, from, and concat. */
   poolSize: number;
   concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
+  /* A pooled copy of a typed array's underlying bytes over
+   * [offset, offset + length) in element indices. */
+  copyBytesFrom(
+    view:
+      | Int8Array
+      | Uint8Array
+      | Uint8ClampedArray
+      | Int16Array
+      | Uint16Array
+      | Int32Array
+      | Uint32Array
+      | Float32Array
+      | Float64Array
+      | BigInt64Array
+      | BigUint64Array,
+    offset?: number,
+    length?: number,
+  ): Buffer;
   isBuffer(obj: unknown): obj is Buffer;
   byteLength(input: string | Uint8Array, encoding?: BufferEncoding): number;
   isEncoding(encoding: string): boolean;
@@ -1334,10 +1397,11 @@ interface AbortSignal extends EventTarget {
   throwIfAborted(): void;
 }
 declare var AbortSignal: {
-  timeout(ms: number): AbortSignal;
+  readonly prototype: AbortSignal;
+  new (): AbortSignal;
   abort(reason?: unknown): AbortSignal;
   any(signals: readonly AbortSignal[]): AbortSignal;
-  readonly prototype: AbortSignal;
+  timeout(ms: number): AbortSignal;
 };
 
 interface QueuingStrategySize<T = unknown> {
@@ -1939,6 +2003,24 @@ declare var PerformanceMark: typeof import("node:perf_hooks").PerformanceMark;
 declare var PerformanceMeasure: typeof import("node:perf_hooks").PerformanceMeasure;
 declare var PerformanceObserver: typeof import("node:perf_hooks").PerformanceObserver;
 declare var PerformanceObserverEntryList: typeof import("node:perf_hooks").PerformanceObserverEntryList;
+
+/* Node 24's navigator global (no import needed): the platform facts a
+ * browser exposes, over Node's own values. hardwareConcurrency is
+ * os.availableParallelism(), language the default locale as a BCP 47 tag,
+ * languages the one frozen array of it, platform Node's name for the
+ * process platform and architecture, and userAgent `Node.js/<major>`.
+ * Every member is a getter, so the object owns no properties.
+ * navigator.locks (the Web Locks API) has no lowering and is not declared;
+ * @types/node's own declaration stands in when adopted, and the lowered
+ * surface is the same either way. */
+interface Navigator {
+  readonly hardwareConcurrency: number;
+  readonly language: string;
+  readonly languages: readonly string[];
+  readonly platform: string;
+  readonly userAgent: string;
+}
+declare var navigator: Navigator;
 
 /* import.meta: module-loader metadata with no value representation —
  * direct file-backed fields lower to constants, while the object and

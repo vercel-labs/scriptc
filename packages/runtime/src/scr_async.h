@@ -300,6 +300,22 @@ ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
  * pending for a non-object) and the name it carries (+1). */
 double scr_als_new_options(const ScrDyn *options);
 ScrDyn *scr_als_name(double id);
+/* ── node:trace_events (trace_events.Tracing — scr_async_dyn.c) ───────
+ * A compiled binary carries no trace-event agent, which is what Node's
+ * tracing objects drive; without the agent (Node run without
+ * --trace-event-* flags) what a program observes is the object's own
+ * bookkeeping: its categories string and its enabled flag, plus the
+ * process-wide enabled-categories list. The objects are native handles
+ * (typeof "object", no own keys, `Tracing { enabled: false, categories:
+ * 'v8,node' }`), so member reads and calls ride the checked-dynamic tree.
+ * scr_te_create applies createTracing's checks (options object, the
+ * categories array, its string members, at least one category) and answers
+ * the handle (+1) or NULL with the exception pending;
+ * scr_te_get_enabled_categories answers the sorted, de-duplicated list
+ * (+1) or the undefined value when no tracing object is enabled. */
+ScrDyn *scr_te_create(ScrDyn *options);
+ScrDyn *scr_te_get_enabled_categories(void);
+
 /* AsyncLocalStorage.bind over a dyn function and the dyn completion
  * callbacks (fn borrowed; +1), and AsyncLocalStorage.snapshot() (+1). */
 ScrDyn *scr_als_bind_dyn(ScrDyn *fn, bool always);

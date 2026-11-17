@@ -2454,6 +2454,14 @@ declare module "tty" {
     off(event: string, listener: (...args: any[]) => void): this;
     removeListener(event: string, listener: (...args: any[]) => void): this;
     getWindowSize(): [number, number];
+    /* The cursor methods Node's tty.WriteStream implements with escape
+     * sequences through the stream's own write; a stream whose descriptor is
+     * no terminal has none of them. */
+    cursorTo(x: number, y?: number, callback?: () => void): boolean;
+    cursorTo(x: number, callback?: () => void): boolean;
+    moveCursor(dx: number, dy: number, callback?: () => void): boolean;
+    clearLine(dir: number, callback?: () => void): boolean;
+    clearScreenDown(callback?: () => void): boolean;
   }
   export function isatty(fd: number): boolean;
 }

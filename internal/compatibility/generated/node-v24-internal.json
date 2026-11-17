@@ -105592,8 +105592,10 @@
           "tests/corpus/1448-stream-columns.ts",
           "tests/corpus/2992-stream-rows.ts",
           "tests/corpus/terminal-stream-properties.ts",
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
-          "tests/harness/terminal-geometry.test.ts"
+          "tests/harness/terminal-geometry.test.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -105761,8 +105763,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.clearLine",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105784,8 +105790,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.clearScreenDown",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105807,8 +105817,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.cursorTo",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105906,8 +105920,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "supported",
+        "evidence": "compiler-dedicated:writeStream.moveCursor",
+        "tests": [
+          "tests/corpus/tty-write-stream-cursor-methods.ts",
+          "tests/harness/tty-cursor-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

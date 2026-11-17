@@ -1,7 +1,14 @@
 import { keyedHelperName } from "../stable-names.js";
 import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
-import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  boolLit,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import { withIgnoredArguments } from "./call-arguments.js";
 import { dynArgumentPack } from "../call-arguments.js";
 import { checkedTimerStyleCallback } from "../lower-timers.js";
@@ -298,6 +305,222 @@ export const NODE_COMPAT_VERSION = "24.22.1";
  * the original stdout/stderr descriptor. Other declared stream members
  * retain member-qualified diagnostics.
  * Null for non-procStream receivers. */
+/** The tty.WriteStream cursor methods a process stream has only while its
+ * descriptor is a terminal, by the rl.seq kind that builds their escape
+ * sequence: cursorTo(x[, y]), moveCursor(dx, dy), clearLine(dir) and
+ * clearScreenDown(). */
+const CURSOR_STREAM_METHODS: ReadonlyMap<string, number> = new Map([
+  ["cursorTo", 0],
+  ["moveCursor", 1],
+  ["clearLine", 2],
+  ["clearScreenDown", 3],
+]);
+
+function isNullishNode(node: ts.Expression): boolean {
+  const value = withoutParenthesesTypeWrappers(node);
+  return (
+    value.kind === ts.SyntaxKind.NullKeyword ||
+    (ts.isIdentifier(value) && value.text === "undefined")
+  );
+}
+
+/** `out.cursorTo(x[, y][, callback])`, `out.moveCursor(dx, dy[, callback])`,
+ * `out.clearLine(dir[, callback])` and `out.clearScreenDown([callback])`:
+ * the escape sequence rl.seq builds, written through the stream. A stream
+ * whose descriptor is no terminal has none of these methods in Node, so the
+ * call throws Node's TypeError there instead of writing. */
+function lowerProcStreamCursorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  kind: number,
+  loc: SrcLoc,
+): IrExpr {
+  const name = access.name.text;
+  const args = [...call.arguments.nodes];
+  const optional = call.questionDotToken !== undefined;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`WritableStream.${name} with a spread argument`, call);
+  }
+  const isFuncNode = (node: ts.Expression): boolean =>
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
+  const numberCount = kind === 0 || kind === 1 ? 2 : kind === 2 ? 1 : 0;
+  const minimum = kind === 1 ? 2 : kind === 2 ? 1 : 0;
+  let numberNodes: ts.Expression[];
+  let callbackNode: ts.Expression | undefined;
+  if (kind === 0 && args.length === 2 && isFuncNode(args[1]!)) {
+    // cursorTo(x, callback): the second slot is the completion callback.
+    numberNodes = [args[0]!];
+    callbackNode = args[1];
+  } else if (kind === 0 && args.length === 3 && args[2] !== undefined && isFuncNode(args[2])) {
+    // cursorTo(x, y, callback), and cursorTo(x, undefined, callback).
+    numberNodes = isNullishNode(args[1]!) ? [args[0]!] : [args[0]!, args[1]!];
+    callbackNode = args[2];
+  } else {
+    numberNodes = args.slice(0, numberCount);
+    callbackNode = args[numberCount];
+  }
+  const numeric = numberNodes.filter((node) => !isNullishNode(node));
+  if (args.length > numberCount + 1 || numeric.length < minimum) {
+    lowerer.noLowering(`WritableStream.${name} with ${args.length} arguments`, call);
+  }
+  const prelude: IrStmt[] = [];
+  const stream = (() => {
+    const slot = lowerer.declareHiddenLocal("%cursorStream", lowerer.irTypeOf(access.expression));
+    const value = lowerer.lowerExpr(access.expression);
+    prelude.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    return { kind: "varRef" as const, localId: slot.id, type: value.type, loc };
+  })();
+  const isTTY = processStreamValueMember(lowerer, "isTTY", stream, loc);
+  const terminal = isTTY === null ? null : lowerer.ensureBool(isTTY, access.expression);
+  // Everything below runs only when the stream really is a terminal: Node
+  // skips an optional call (and its arguments) on a pipe, and a plain one
+  // throws.
+  /* A plain call evaluates its arguments before the call is attempted;
+   * only an optional call skips them when the method is absent. */
+  const callStmts: IrStmt[] = [];
+  const argStmts = optional ? callStmts : prelude;
+  const hold = (label: string, value: IrExpr): IrExpr => {
+    const slot = lowerer.declareHiddenLocal(label, value.type);
+    argStmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    return { kind: "varRef", localId: slot.id, type: value.type, loc };
+  };
+  let noX = false;
+  const values: IrExpr[] = [];
+  let hasB = false;
+  for (let i = 0; i < numberNodes.length; i++) {
+    const node = numberNodes[i]!;
+    if (kind === 0 && isNullishNode(node)) {
+      if (i === 0) {
+        noX = true;
+        values.push(numLit(0, loc));
+      }
+      continue;
+    }
+    if (!(lowerer.typeOf(node).flags & ts.TypeFlags.NumberLike)) {
+      lowerer.noLowering(`WritableStream.${name} with an argument that is not a number`, node);
+    }
+    values.push(hold("%cursorArg", lowerer.lowerExprExpecting(node, F64)));
+    if (i === 1) hasB = true;
+  }
+  let callback: IrExpr | null = null;
+  if (callbackNode !== undefined && !isNullishNode(callbackNode)) {
+    const c = lowerer.lowerExpr(callbackNode);
+    if (c.type.kind !== "func" || c.type.params.length > 0 || c.type.ret.kind !== "void") {
+      lowerer.noLowering(
+        `WritableStream.${name} callbacks with parameters or a return value`,
+        callbackNode,
+        "() => void callbacks are supported",
+      );
+    }
+    callback = hold("%cursorCallback", voidizedCallback(lowerer, c, loc));
+  }
+  const seqKind = noX && hasB && kind === 0 ? 4 : kind;
+  /* The escape sequence is built only where the method exists: rl.seq
+   * applies Node's NaN checks and throws ERR_INVALID_ARG_VALUE, and a
+   * stream without the method never reaches them — its call answers the
+   * TypeError first, after the arguments above have been evaluated. */
+  const seqSlot = lowerer.declareHiddenLocal("%cursorSeq", STRING);
+  callStmts.push({
+    kind: "varDecl",
+    localId: seqSlot.id,
+    init: {
+      kind: "libCall",
+      fn: "rl.seq",
+      args: [
+        numLit(seqKind, loc),
+        values[0] ?? numLit(0, loc),
+        values[1] ?? numLit(0, loc),
+        boolLit(hasB, loc),
+      ],
+      type: STRING,
+      loc,
+    },
+    loc,
+  });
+  const seq: IrExpr = { kind: "varRef", localId: seqSlot.id, type: STRING, loc };
+  /* Node's tty methods write through the stream (`stream.write(data,
+   * callback)`, readline's cursorTo/moveCursor/...), so a replaced write
+   * decides when — or whether — the completion callback runs. With a
+   * callback the write goes through the stream object's own write method;
+   * without one the direct descriptor write keeps its path. */
+  const write: IrExpr = callback
+    ? lowerer.coerceInto(
+        call,
+        {
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(
+            { kind: "libCall", fn: "process.stdioOf", args: [stream], type: DYN, loc },
+            DYN,
+          ),
+          method: "write",
+          calleeName: name,
+          args: [lowerer.coerceToExpected(seq, DYN), lowerer.coerceToExpected(callback, DYN)],
+          type: DYN,
+          loc,
+        },
+        BOOL,
+      )
+    : { kind: "libCall", fn: "procStream.write", args: [stream, seq], type: BOOL, loc };
+  /* The branch that writes nothing (a zero-delta moveCursor, a cursorTo
+   * without a column) still runs Node's next-tick callback. */
+  const skip: IrExpr = callback
+    ? {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "process.nextTick", args: [callback], type: VOID, loc },
+            loc,
+          },
+        ],
+        result: boolLit(true, loc),
+        type: BOOL,
+        loc,
+      }
+    : boolLit(true, loc);
+  let callBody: IrExpr;
+  if (noX && !hasB) {
+    callBody = skip;
+  } else if (kind === 1) {
+    callBody = {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "rl.moves", args: [values[0]!, values[1]!], type: BOOL, loc },
+      then: write,
+      else_: skip,
+      type: BOOL,
+      loc,
+    };
+  } else {
+    callBody = write;
+  }
+  const body: IrExpr = { kind: "seqExpr", stmts: callStmts, result: callBody, type: BOOL, loc };
+  if (terminal === null) {
+    return { kind: "seqExpr", stmts: prelude, result: body, type: BOOL, loc };
+  }
+  const absent: IrExpr = optional
+    ? lowerer.coerceToExpected(
+        { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        lowerer.withUndefinedArmOf(BOOL) ?? BOOL,
+      )
+    : nodeThrowExpr(1, "", `${ts.getTextOfNode(call.expression)} is not a function`, BOOL, loc);
+  const resultType = optional ? (lowerer.withUndefinedArmOf(BOOL) ?? BOOL) : BOOL;
+  return {
+    kind: "seqExpr",
+    stmts: prelude,
+    result: {
+      kind: "ternary",
+      cond: terminal,
+      then: lowerer.coerceToExpected(body, resultType),
+      else_: absent,
+      type: resultType,
+      loc,
+    },
+    type: resultType,
+    loc,
+  };
+}
+
 export function lowerProcStreamMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -329,6 +552,10 @@ export function lowerProcStreamMethodCall(
         loc,
       };
     }
+  }
+  const cursorKind = CURSOR_STREAM_METHODS.get(name);
+  if (cursorKind !== undefined) {
+    return lowerProcStreamCursorCall(lowerer, call, access, cursorKind, loc);
   }
   const terminalArity = TERMINAL_STREAM_METHODS.get(name);
   if (

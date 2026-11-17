@@ -882,6 +882,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.prependExit",
   "process.prependSignal",
   "process.stdio",
+  "process.stdioOf",
   "process.stdinIsRaw",
   "process.stdioSlot",
   "process.stdioWriteDyn",
@@ -2422,7 +2423,10 @@ const RUNTIME_FEATURE_RULES = {
    * SCR_NODE_ISLAND_STDIO build of scr_node_island.c, which make the
    * island's two output streams read and write the program's write slots;
    * every other program with islands keeps its island units unchanged. */
-  stdioObject: rule({ fns: ["process.stdio", "process.stdioSlot"], types: ["procStream"] }),
+  stdioObject: rule({
+    fns: ["process.stdio", "process.stdioOf", "process.stdioSlot"],
+    types: ["procStream"],
+  }),
   /** The program holds a process stream as a value and names getColorDepth
    * or hasColors: links scr_tty_colors.c (Node's color rules over an
    * environment object) and the SCR_TTY_COLORS build of scr_events.c, whose

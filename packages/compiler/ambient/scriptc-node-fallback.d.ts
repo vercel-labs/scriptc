@@ -1000,12 +1000,12 @@ interface SubtleCrypto {
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   deriveBits(
-    algorithm: Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
+    algorithm: Argon2Params | Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     length?: number | null,
   ): Promise<ArrayBuffer>;
   deriveKey(
-    algorithm: Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
+    algorithm: Argon2Params | Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     derivedKeyType: AlgorithmIdentifier | AesDerivedKeyParams | HmacImportParams,
     extractable: boolean,

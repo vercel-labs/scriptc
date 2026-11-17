@@ -294,6 +294,13 @@ void scr_sm3_init(ScrSm3Ctx *ctx);
 void scr_sm3_update(ScrSm3Ctx *ctx, const unsigned char *data, size_t len);
 void scr_sm3_final(const ScrSm3Ctx *ctx, unsigned char out[32]);
 
+/* Argon2 (scr_argon2.c): the RFC 9106 tag for a password, salt and cost
+ * parameters, algorithm named "argon2d", "argon2i" or "argon2id" (+1). */
+ScrBytes *scr_argon2_hash(const char *algorithm, const unsigned char *pwd, size_t pwd_len,
+                          const unsigned char *salt, size_t salt_len,
+                          const unsigned char *secret, size_t secret_len,
+                          const unsigned char *ad, size_t ad_len, uint32_t passes,
+                          uint32_t memory, uint32_t parallelism, uint32_t tag_len);
 size_t scr_crypto_digest_raw(const char *alg, const unsigned char *data, size_t len,
                              unsigned char out[64]);
 size_t scr_crypto_hmac_raw(const char *alg, const unsigned char *key, size_t keylen,

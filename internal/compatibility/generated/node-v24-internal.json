@@ -116220,6 +116220,7 @@
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/webcrypto-aes-ocb.ts",
           "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/webcrypto-chacha20-poly1305.ts",
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
@@ -117402,9 +117403,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.associatedData",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117428,9 +117430,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.memory",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117454,9 +117457,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117480,9 +117484,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.nonce",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117506,9 +117511,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.parallelism",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117532,9 +117538,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.passes",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117558,9 +117565,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.secretValue",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117584,9 +117592,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.version",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },

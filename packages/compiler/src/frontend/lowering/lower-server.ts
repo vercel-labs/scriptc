@@ -9909,8 +9909,15 @@ function lowerHttpResMethodCall(
     if (resultIsDiscarded(call)) return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
     return receiverReturningCall(lowerer, fn, callArgs, HTTPRES_T, loc);
   }
-  if (name === "writeContinue" || name === "writeProcessing" || name === "writeEarlyHints") {
-    requireStatementPosition(lowerer, call, `res.${name}(...)`);
+  if (
+    name === "writeContinue" ||
+    name === "writeProcessing" ||
+    name === "writeEarlyHints" ||
+    name === "writeInformation"
+  ) {
+    // writeInformation answers write()'s boolean, so it may stand in an
+    // expression; the three delegating forms are statements.
+    if (name !== "writeInformation") requireStatementPosition(lowerer, call, `res.${name}(...)`);
     if (ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse") {
       lowerer.noLowering(
         `Http2ServerResponse.${name}`,
@@ -9919,7 +9926,9 @@ function lowerHttpResMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
-    if (name !== "writeEarlyHints") {
+    if (name === "writeContinue" || name === "writeProcessing") {
+      /* the callback form fires once the informational head is written;
+       * writeEarlyHints and writeInformation fall through below */
       if (args.length > 1)
         lowerer.noLowering(
           `res.${name} with ${args.length} arguments`,
@@ -9952,41 +9961,37 @@ function lowerHttpResMethodCall(
         loc,
       };
     }
-    if (args.length < 1 || args.length > 2)
-      lowerer.noLowering(
-        "res.writeEarlyHints arguments",
-        call,
-        "use writeEarlyHints(headers[, callback])",
-      );
-    const node = args[0]!;
-    let pairs: IrExpr;
-    if (ts.isObjectLiteralExpression(node)) {
-      const elems: IrExpr[] = [];
-      for (const prop of node.properties.nodes) {
-        const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
-        if (!ts.isPropertyAssignment(prop) || key === null) {
-          lowerer.noLowering(
-            "writeEarlyHints headers with dynamic keys, spreads, or shorthand entries",
-            prop,
-            "use literal header keys and string values",
-          );
+    /** The headers argument as the flat [name, value, ...] array the runtime
+     * writes one line per pair from: an object literal's static keys, or a
+     * Record<string, string> through the env.pairs helper. */
+    const headerPairs = (node: ts.Expression, what: string): IrExpr => {
+      if (ts.isObjectLiteralExpression(node)) {
+        const elems: IrExpr[] = [];
+        for (const prop of node.properties.nodes) {
+          const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
+          if (!ts.isPropertyAssignment(prop) || key === null) {
+            lowerer.noLowering(
+              `${what} headers with dynamic keys, spreads, or shorthand entries`,
+              prop,
+              "use literal header keys and string values",
+            );
+          }
+          const value = lowerer.lowerExpr(prop.initializer);
+          if (value.type.kind !== "string") {
+            lowerer.noLowering(
+              `${what} value of type '${lowerer.fmt(value.type)}'`,
+              prop.initializer,
+              "header values must be strings here",
+            );
+          }
+          elems.push({ kind: "strLit", value: key, type: STRING, loc }, value);
         }
-        const value = lowerer.lowerExpr(prop.initializer);
-        if (value.type.kind !== "string") {
-          lowerer.noLowering(
-            `writeEarlyHints value of type '${lowerer.fmt(value.type)}'`,
-            prop.initializer,
-            "header values must be strings here",
-          );
-        }
-        elems.push({ kind: "strLit", value: key, type: STRING, loc }, value);
+        return { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
       }
-      pairs = { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
-    } else {
       const value = lowerer.lowerExpr(node);
       if (value.type.kind !== "record") {
         lowerer.noLowering(
-          `writeEarlyHints headers of '${lowerer.fmt(value.type)}'`,
+          `${what} headers of '${lowerer.fmt(value.type)}'`,
           node,
           "pass an object literal or a Record<string, string>",
         );
@@ -9994,13 +9999,42 @@ function lowerHttpResMethodCall(
       const helper = lowerer.envToPairsHelper(value.type.shapeId, loc);
       if (helper === null) {
         lowerer.noLowering(
-          "writeEarlyHints header values",
+          `${what} header values`,
           node,
           "use a Record<string, string> with string values",
         );
       }
-      pairs = { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+      return { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+    };
+    if (name === "writeInformation") {
+      if (args.length < 1 || args.length > 2) {
+        lowerer.noLowering(
+          `res.writeInformation with ${args.length} arguments`,
+          call,
+          "the supported forms are writeInformation(status) and writeInformation(status, headers) (no callback)",
+        );
+      }
+      const status = lowerer.lowerExprExpecting(args[0]!, F64);
+      const pairs: IrExpr =
+        args.length === 2
+          ? headerPairs(args[1]!, "writeInformation")
+          : { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
+      return {
+        kind: "libCall",
+        fn: "http.resWriteInformation",
+        args: [receiver, status, pairs],
+        type: BOOL,
+        loc,
+      };
     }
+    if (args.length < 1 || args.length > 2)
+      lowerer.noLowering(
+        "res.writeEarlyHints arguments",
+        call,
+        "use writeEarlyHints(headers[, callback])",
+      );
+    const node = args[0]!;
+    const pairs = headerPairs(node, "writeEarlyHints");
     if (args.length === 2) {
       const { cb } = lowerCallbackArg(
         lowerer,

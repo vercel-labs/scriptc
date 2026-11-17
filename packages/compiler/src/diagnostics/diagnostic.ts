@@ -1266,9 +1266,9 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // `var` declarations shipped (function-scope hoisting, redeclaration
   // merge, the shared-binding loop capture semantics). SC1030's remaining
   // uses are the var edges with no honest lowering — each names its shape
-  // and remedy inline (a reference above the declaration whose early reads
-  // would be an unrepresentable `undefined`; `var` loop bindings in
-  // `for await`).
+  // and remedy inline (a reference above the declaration that can run
+  // before its first store, where Node's `undefined` is unrepresentable;
+  // `var` loop bindings in `for await`).
   SC1030: {
     feature: "var declarations",
     milestone: "later",

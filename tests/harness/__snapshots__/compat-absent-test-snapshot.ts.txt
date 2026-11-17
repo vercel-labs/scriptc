@@ -1,8 +1,0 @@
-compat-absent-test-snapshot.ts:5:1 - error SC2020: 'snapshot.setResolveSnapshotPath' is part of the standard library types but has no scriptc lowering yet
-
-  4 | 
-  5 | snapshot.setResolveSnapshotPath((path: string) => `${path}.snapshot`);
-    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  6 | // End with a nonblank context line so diagnostic snapshots carry no trailing whitespace.
-
-  hint: snapshot.setDefaultSnapshotSerializers is the supported snapshot module function

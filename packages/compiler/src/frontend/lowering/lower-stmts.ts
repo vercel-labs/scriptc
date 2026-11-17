@@ -136,6 +136,7 @@ import {
   cjsNamespaceDestructureOf,
   cjsNamespaceTargetOf,
   cjsRequireSnapshotBindingsOf,
+  cjsRuntimeWholeExportValueWritesOf,
   cjsTableExportNamesInOrder,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
@@ -2153,6 +2154,32 @@ function hoistVarBinding(
   return local;
 }
 
+/** Whether a JavaScript `var` declaration may keep an existing
+ * checked-dynamic value: the declaration is unannotated, the static type is
+ * a record or array, and the initializer may answer an existing value
+ * (`jsBindingKeepsCheckedObject`; lowerJsVarFromExisting lowers the
+ * initializer first for exactly those forms). Such a slot is
+ * checked-dynamic even though the static type is narrower, and only the
+ * lowered initializer could say so, so a slot declared before it takes the
+ * checked-dynamic form up front. Fresh construction keeps the declared
+ * type. */
+function varInitMayKeepChecked(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  type: IrType,
+): boolean {
+  if (decl.initializer === undefined) return false;
+  const nameNode = ts.isIdentifier(decl.name) ? decl.name : null;
+  if (nameNode === null || !jsBindingKeepsCheckedObject(lowerer, nameNode, type)) return false;
+  let node: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node))
+    node = node.expression;
+  const holdsChecked =
+    (ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node)) &&
+    jsHoldsDynObject(lowerer, node);
+  return holdsChecked || existingValueForm(node);
+}
+
 /** The forward twin of hoistVarBinding, entered from resolution failure: a
  * reference to a `var` whose declaration statement has not lowered yet —
  * a read/write lexically above the declaration in the same function
@@ -2161,11 +2188,15 @@ function hoistVarBinding(
  * such reads `undefined`, never a TDZ error, so the hoisted slot must
  * hold `undefined` from function entry — which is only honest for
  * undefined-armed union types (the interned arm) and checked-dynamic
- * bindings (the dyn undefined). Everything else returns false
- * and the reference lands on the named fence in rejectUnresolvedSymbol:
- * a slot of a narrower type has no bit pattern for the `undefined` Node
- * would yield if the capture ran early, and guessing "it won't" would
- * produce wrong output without an error. */
+ * bindings (the dyn undefined). A narrower type starts the slot EMPTY
+ * (no bit pattern for `undefined`) when var-hoisting proved every read of
+ * the binding runs after its first store: the forward reference can only
+ * observe the assigned value, exactly as its own declaration's hoisting
+ * relies on. A declaration that may keep an existing checked-dynamic value
+ * takes that checked-dynamic slot instead (varInitMayKeepChecked), since
+ * only the lowered initializer could have said so. Anything else returns
+ * false and the reference lands on the named fence in
+ * rejectUnresolvedSymbol. */
 export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boolean {
   // Module-scope vars already have their global storage.
   if (lowerer.globalsBySymbol.has(symbol)) return false;
@@ -2191,14 +2222,25 @@ export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boole
   const ctx = owner.ctx;
   if (ctx.hoistedVars.has(symbol)) return false; // would have resolved
   // Only a slot that can hold `undefined` can carry pre-initialization
-  // reads: an undefined-armed union or a native checked-value binding.
-  const type = varBindingType(lowerer, nameNode);
+  // reads: an undefined-armed union or a native checked-value binding. A
+  // narrow type predeclares too when every read of the binding runs after
+  // its first store — the slot then starts empty, unobservable there.
+  let type = varBindingType(lowerer, nameNode);
   if (!type) return false;
-  const wrapped =
+  let wrapped =
     type.kind === "dyn"
       ? dynUndefinedExpr(locOf(decl))
       : lowerer.unassignedSlotInit(type, locOf(decl));
-  if (!wrapped) return false;
+  if (!wrapped) {
+    if (!lowerer.forwardStoredVars.has(symbol)) return false;
+    // A declaration that may keep an existing checked-dynamic value takes a
+    // checked-dynamic slot wherever it is declared; the static type alone
+    // would convert the value into a copy.
+    if (varInitMayKeepChecked(lowerer, decl, type)) {
+      type = DYN;
+      wrapped = dynUndefinedExpr(locOf(decl));
+    }
+  }
   const root = lowerer.activeStmtLists.find((e) => e.ctx === ctx)!;
   const name = nameNode.text;
   const count = ctx.localCounters.get(name) ?? 0;
@@ -2408,10 +2450,27 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
   }
   const loc = locOf(stmt);
   const ret: IrStmt = { kind: "return", value: null, loc };
-  if (!stmt.expression) return ret;
+  // A module whose whole export is chosen at run time records what
+  // module.exports holds here: a top-level return ends the module, so an
+  // ESM default import binds this value.
+  const snapshot = lowerer.cjsRuntimeExportSnapshotOf(sf);
+  const exportSlot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
+  const store: IrStmt[] =
+    snapshot !== null && exportSlot !== null
+      ? [
+          {
+            kind: "assign",
+            localId: snapshot.id,
+            value: { kind: "varRef", localId: exportSlot.id, type: DYN, loc },
+            loc,
+          },
+        ]
+      : [];
+  if (!stmt.expression)
+    return store.length === 0 ? ret : { kind: "block", body: [...store, ret], loc };
   return {
     kind: "block",
-    body: [{ kind: "exprStmt", expr: lowerer.lowerExpr(stmt.expression), loc }, ret],
+    body: [{ kind: "exprStmt", expr: lowerer.lowerExpr(stmt.expression), loc }, ...store, ret],
     loc,
   };
 }
@@ -3067,6 +3126,23 @@ function lowerVarDeclarator(
       return init ? [init] : [];
     }
     if (isDeadTscHelperDecl(lowerer, stmt)) return [];
+  }
+  // A require binding of a module whose whole export is chosen at run time
+  // keeps its own storage: Node's require answered a value at this position,
+  // and a replacement the module performs later does not change the binding
+  // (a require created after the replacement answers the replacement).
+  if (decl.initializer !== undefined && ts.isIdentifier(decl.name)) {
+    const req = inlineProgramRequireOf(lowerer, decl.initializer);
+    if (req !== null && lowerer.cjsRuntimeWholeExportModule(req.dep)) {
+      const symbol = lowerer.resolveValueSymbol(decl.name);
+      if (symbol !== null) {
+        lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+        lowerer.jsWidenedBindings.add(symbol);
+        lowerer.cjsRuntimeRequireBindings.add(symbol);
+      }
+      const lowered = lowerer.lowerVarDecl(decl, isLet);
+      return lowered ? [lowered] : [];
+    }
   }
   // CommonJS require declarations (JS files): at the module's top
   // level the BINDINGS are alias plumbing (no storage;
@@ -10811,6 +10887,29 @@ function lowerCjsConditionalWholeExportStatement(
   return { kind: "block", body, loc };
 }
 
+/** `module.exports = <value>` at a run-time position of a module whose
+ * whole export is chosen that way (a UMD wrapper or a condition): the value
+ * is evaluated where Node evaluates it and stored in the module's
+ * checked-dynamic export slot, so every later read by the module or a
+ * requirer answers what Node's module.exports holds. Null for every other
+ * statement and module. */
+function lowerCjsRuntimeWholeExportValueStatement(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+): IrStmt | null {
+  const sf = ts.getSourceFileOfNode(expr);
+  const slot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
+  if (slot === null) return null;
+  const writes = cjsRuntimeWholeExportValueWritesOf(lowerer, sf);
+  if (writes === null || !writes.includes(expr)) return null;
+  return {
+    kind: "assign",
+    localId: slot.id,
+    value: lowerer.lowerExprExpecting(expr.right, DYN),
+    loc: locOf(expr),
+  };
+}
+
 function lowerCjsSingleValueExport(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
@@ -11307,6 +11406,8 @@ export function lowerExprStatement(
     if (isCjsModuleExports(lowerer, expr.left)) {
       const lowered = lowerCjsConditionalWholeExportStatement(lowerer, expr);
       if (lowered !== null) return lowered;
+      const runtimeValue = lowerCjsRuntimeWholeExportValueStatement(lowerer, expr);
+      if (runtimeValue !== null) return runtimeValue;
     }
     lowerer.unsupported(
       "SC1090",

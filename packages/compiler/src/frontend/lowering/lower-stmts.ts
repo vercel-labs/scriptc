@@ -2154,6 +2154,32 @@ function hoistVarBinding(
   return local;
 }
 
+/** Whether a JavaScript `var` declaration may keep an existing
+ * checked-dynamic value: the declaration is unannotated, the static type is
+ * a record or array, and the initializer may answer an existing value
+ * (`jsBindingKeepsCheckedObject`; lowerJsVarFromExisting lowers the
+ * initializer first for exactly those forms). Such a slot is
+ * checked-dynamic even though the static type is narrower, and only the
+ * lowered initializer could say so, so a slot declared before it takes the
+ * checked-dynamic form up front. Fresh construction keeps the declared
+ * type. */
+function varInitMayKeepChecked(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  type: IrType,
+): boolean {
+  if (decl.initializer === undefined) return false;
+  const nameNode = ts.isIdentifier(decl.name) ? decl.name : null;
+  if (nameNode === null || !jsBindingKeepsCheckedObject(lowerer, nameNode, type)) return false;
+  let node: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node))
+    node = node.expression;
+  const holdsChecked =
+    (ts.isArrayLiteralExpression(node) || ts.isObjectLiteralExpression(node)) &&
+    jsHoldsDynObject(lowerer, node);
+  return holdsChecked || existingValueForm(node);
+}
+
 /** The forward twin of hoistVarBinding, entered from resolution failure: a
  * reference to a `var` whose declaration statement has not lowered yet —
  * a read/write lexically above the declaration in the same function
@@ -2162,11 +2188,15 @@ function hoistVarBinding(
  * such reads `undefined`, never a TDZ error, so the hoisted slot must
  * hold `undefined` from function entry — which is only honest for
  * undefined-armed union types (the interned arm) and checked-dynamic
- * bindings (the dyn undefined). Everything else returns false
- * and the reference lands on the named fence in rejectUnresolvedSymbol:
- * a slot of a narrower type has no bit pattern for the `undefined` Node
- * would yield if the capture ran early, and guessing "it won't" would
- * produce wrong output without an error. */
+ * bindings (the dyn undefined). A narrower type starts the slot EMPTY
+ * (no bit pattern for `undefined`) when var-hoisting proved every read of
+ * the binding runs after its first store: the forward reference can only
+ * observe the assigned value, exactly as its own declaration's hoisting
+ * relies on. A declaration that may keep an existing checked-dynamic value
+ * takes that checked-dynamic slot instead (varInitMayKeepChecked), since
+ * only the lowered initializer could have said so. Anything else returns
+ * false and the reference lands on the named fence in
+ * rejectUnresolvedSymbol. */
 export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boolean {
   // Module-scope vars already have their global storage.
   if (lowerer.globalsBySymbol.has(symbol)) return false;
@@ -2192,14 +2222,25 @@ export function predeclareForwardVar(lowerer: Lowerer, symbol: ts.Symbol): boole
   const ctx = owner.ctx;
   if (ctx.hoistedVars.has(symbol)) return false; // would have resolved
   // Only a slot that can hold `undefined` can carry pre-initialization
-  // reads: an undefined-armed union or a native checked-value binding.
-  const type = varBindingType(lowerer, nameNode);
+  // reads: an undefined-armed union or a native checked-value binding. A
+  // narrow type predeclares too when every read of the binding runs after
+  // its first store — the slot then starts empty, unobservable there.
+  let type = varBindingType(lowerer, nameNode);
   if (!type) return false;
-  const wrapped =
+  let wrapped =
     type.kind === "dyn"
       ? dynUndefinedExpr(locOf(decl))
       : lowerer.unassignedSlotInit(type, locOf(decl));
-  if (!wrapped) return false;
+  if (!wrapped) {
+    if (!lowerer.forwardStoredVars.has(symbol)) return false;
+    // A declaration that may keep an existing checked-dynamic value takes a
+    // checked-dynamic slot wherever it is declared; the static type alone
+    // would convert the value into a copy.
+    if (varInitMayKeepChecked(lowerer, decl, type)) {
+      type = DYN;
+      wrapped = dynUndefinedExpr(locOf(decl));
+    }
+  }
   const root = lowerer.activeStmtLists.find((e) => e.ctx === ctx)!;
   const name = nameNode.text;
   const count = ctx.localCounters.get(name) ?? 0;

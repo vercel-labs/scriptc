@@ -3896,6 +3896,11 @@ export class Lowerer {
    * (var-hoisting.ts): nothing can observe them unassigned, so their writes
    * may decide their type (jsVarWriteType). */
   readonly storedBeforeReadVars = new Set<ts.Symbol>();
+  /** Typed `var` bindings a reference lexically above the declaration names
+   * whose every read runs after the first store (var-hoisting.ts): the
+   * forward reference reads assigned storage, so its slot needs no
+   * undefined arm and lower-stmts may declare it empty. */
+  readonly forwardStoredVars = new Set<ts.Symbol>();
   /** Enums whose object some code uses as a value (enum-objects.ts), by
    * symbol and by their first and last declarations. Filled before the
    * globals are collected. */
@@ -6214,6 +6219,7 @@ export class Lowerer {
       checkedTable("unstableSwitchBindings", () => this.unstableSwitchBindings.size),
       checkedTable("earlyReadVars", () => this.earlyReadVars.size),
       checkedTable("storedBeforeReadVars", () => this.storedBeforeReadVars.size),
+      checkedTable("forwardStoredVars", () => this.forwardStoredVars.size),
       checkedTable("enumObjects", () => this.enumObjects.size),
       checkedTable("enumObjectDecls", () => this.enumObjectDecls.size),
       checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
@@ -13983,6 +13989,10 @@ export class Lowerer {
     // An unannotated JavaScript `var` these reads never see unassigned may
     // take a type derived from its writes (jsVarWriteType).
     for (const symbol of varReads.storedBeforeRead) this.storedBeforeReadVars.add(symbol);
+    // A narrow `var` whose forward references all run after its first
+    // store: the read sees the assignment, so the predeclaration carries
+    // the declared type with an empty slot instead of fencing.
+    for (const symbol of varReads.forwardStored) this.forwardStoredVars.add(symbol);
     // Number the sites of every file. The first and the last pass visit
     // every site; the passes between visit only the sites whose facts
     // changed (SiteDependencies). When such a pass changes nothing, a full
@@ -22910,8 +22920,9 @@ export class Lowerer {
     // The `var` twin: a reference above the `var` statement (a direct read
     // tsc allowed because the type carries undefined, or a nested function
     // capturing the binding early). JS reads undefined there — never a TDZ
-    // error — so only undefined-armed types predeclare; the rest land on
-    // rejectUnresolvedSymbol's named fence.
+    // error — so only undefined-armed types predeclare, plus a narrow type
+    // whose reads all run after the store (the slot starts empty, never
+    // observed); the rest land on rejectUnresolvedSymbol's named fence.
     if (blame && predeclareForwardVar(this, symbol)) {
       return this.resolveKey(symbol, blame);
     }

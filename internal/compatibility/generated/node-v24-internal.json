@@ -30141,7 +30141,8 @@
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -30210,10 +30211,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.hasSubscribers",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30236,10 +30239,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.channel",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.channel",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30262,10 +30267,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.subscribe",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.subscribe",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30288,10 +30295,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.unsubscribe",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.unsubscribe",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30314,10 +30323,12 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.tracingChannel",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.diagnostics_channel.tracingChannel",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30363,11 +30374,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.start",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30390,11 +30402,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.end",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30417,11 +30430,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.asyncStart",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30444,11 +30458,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.asyncEnd",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30471,11 +30486,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.error",
         "tests": [
           "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs"
+          "tests/corpus/2211-dc-trace-promise.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31809,13 +31825,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.Channel",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31838,13 +31854,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.channel.publish",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31867,13 +31883,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.channel.subscribe",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31896,13 +31912,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.channel.unsubscribe",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31928,10 +31944,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.channel.bindStore",
         "tests": [
-          "tests/corpus/2094-diagnostics-channel.ts",
-          "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31957,10 +31971,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.channel.unbindStore",
         "tests": [
-          "tests/corpus/2094-diagnostics-channel.ts",
-          "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -31986,10 +31998,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.channel.runStores",
         "tests": [
-          "tests/corpus/2094-diagnostics-channel.ts",
-          "tests/corpus/2160-dc-tracing-channel.cjs",
-          "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32012,10 +32022,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.hasSubscribers",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2094-diagnostics-channel.ts",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -32038,13 +32049,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.TracingChannel",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32067,13 +32078,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.subscribe",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32096,13 +32107,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.unsubscribe",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32125,13 +32136,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.traceSync",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32154,13 +32165,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.tracePromise",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32183,13 +32194,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.tracingChannel.traceCallback",
         "tests": [
           "tests/corpus/2094-diagnostics-channel.ts",
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -32212,10 +32223,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.diagnostics_channel.hasSubscribers",
+        "status": "supported",
+        "evidence": "compiler-feature:diagnostics_channel.hasSubscribers",
         "tests": [
-          "tests/corpus/2214-dc-bind-store.cjs"
+          "tests/corpus/2160-dc-tracing-channel.cjs",
+          "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -58255,8 +58267,10 @@
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-server-client-error.ts",
+          "tests/corpus/http-server-informational-callbacks.ts",
           "tests/corpus/http-server-limit-values.ts",
           "tests/corpus/http-server-max-headers-count.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts",
           "tests/corpus/http-set-headers.mjs",
           "tests/corpus/http-set-headers.ts",
           "tests/corpus/http-write-backpressure.ts",
@@ -60870,10 +60884,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeContinue",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60896,10 +60912,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeEarlyHints",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60976,10 +60994,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.writeProcessing",
         "tests": [
-          "tests/corpus/2956-http-static-informational.ts"
+          "tests/corpus/http-server-informational-callbacks.ts",
+          "tests/corpus/2956-http-static-informational.ts",
+          "tests/corpus/compat-http-interim-responses.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61367,10 +61387,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.message.destroy",
         "tests": [
-          "tests/corpus/2985-http-static-message-destroy.ts"
+          "tests/corpus/2976-http-static-incoming-state.ts",
+          "tests/corpus/2977-http-static-incoming-timeout.ts",
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61393,12 +61416,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.message.setTimeout",
         "tests": [
           "tests/corpus/2976-http-static-incoming-state.ts",
           "tests/corpus/2977-http-static-incoming-timeout.ts",
-          "tests/corpus/2987-http-static-timeout-errors.ts"
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61853,10 +61877,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'aborted'",
         "tests": [
-          "tests/corpus/2985-http-static-message-destroy.ts"
+          "tests/corpus/2976-http-static-incoming-state.ts",
+          "tests/corpus/2977-http-static-incoming-timeout.ts",
+          "tests/corpus/2985-http-static-message-destroy.ts",
+          "tests/corpus/http-server-request-aborted-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -97595,6 +97622,7 @@
           "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-log.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
@@ -97609,7 +97637,10 @@
           "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/only-false.ts",
+          "tests/fixtures/node-test/cases/only-filter.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
@@ -97778,8 +97809,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.only",
+        "tests": [
+          "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/only-filter.ts",
+          "tests/fixtures/node-test/cases/only-false.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98577,8 +98614,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.MockFunctionContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98998,8 +99040,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.MockTracker",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99231,8 +99280,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.MockTimers",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-timers-date.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99915,8 +99969,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.TestContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-hooks.ts",
+          "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99943,6 +100005,7 @@
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99971,6 +100034,7 @@
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99999,6 +100063,7 @@
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100027,6 +100092,7 @@
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100082,8 +100148,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.log",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100110,6 +100180,7 @@
         "tests": [
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100646,8 +100717,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.SuiteContext",
+        "tests": [
+          "tests/fixtures/node-test/cases/suite-context.ts",
+          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -100697,8 +100773,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.context.log",
+        "tests": [
+          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

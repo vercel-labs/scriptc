@@ -67,7 +67,7 @@ function lowerMockTrackerMember(
 
 const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
-  "t.test, t.skip, t.todo, t.diagnostic, t.runOnly, t.plan, t.waitFor, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, t.filePath, t.attempt, t.passed, t.workerId, t.tags, and t.assert.* are the supported TestContext members";
+  "t.test, t.skip, t.todo, t.diagnostic, t.log, t.runOnly, t.plan, t.waitFor, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, t.filePath, t.attempt, t.passed, t.workerId, t.tags, and t.assert.* are the supported TestContext members";
 
 /** Registration calls return Node's Promise<void>, but the promise only
  * resolves through the runner — consuming it outside `await t.test(...)`
@@ -100,6 +100,9 @@ interface TestOptions {
   todo: boolean;
   todoMsg: IrExpr | null;
   only: boolean;
+  /** An explicit { only: false }: Node filters the test (or a suite's whole
+   * subtree) out of an in-process run, even beside no `only` test. */
+  onlyFalse: boolean;
   /** { expectFailure }: the test passes only if its body throws. A string
    * reason behaves as true (Node's matcher forms are refused). */
   expectFailure: boolean;
@@ -120,6 +123,7 @@ const noOptions = (): TestOptions => ({
   todo: false,
   todoMsg: null,
   only: false,
+  onlyFalse: false,
   expectFailure: false,
   plan: -1,
   timeout: null,
@@ -152,6 +156,7 @@ const optionFlags = (opts: TestOptions): number =>
   (opts.only ? 4 : 0) |
   (opts.timeout ? 8 : 0) |
   (opts.concurrency ? 16 : 0) |
+  (opts.onlyFalse ? 32 : 0) |
   (opts.expectFailure ? 64 : 0);
 
 /** Evaluates a non-literal option value into a hidden local, so option
@@ -236,7 +241,8 @@ function lowerTestOptions(
       }
     } else if (name === "only") {
       if (init.kind === ts.SyntaxKind.TrueKeyword) out.only = true;
-      else if (init.kind !== ts.SyntaxKind.FalseKeyword) {
+      else if (init.kind === ts.SyntaxKind.FalseKeyword) out.onlyFalse = true;
+      else {
         lowerer.noLowering(
           `${what} with a non-literal only value`,
           init,
@@ -1150,16 +1156,49 @@ export function lowerTestMethodCall(
   }
   if (member === "plan") {
     requireStatementPosition(lowerer, call, "t.plan(...)");
-    if (args.length !== 1) {
+    if (args.length > 2) {
       lowerer.noLowering(
         `t.plan with ${args.length} arguments`,
         call,
-        "the supported form is t.plan(count) (plan options have no lowering)",
+        "the supported form is t.plan(count[, { wait? }])",
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
     const count = lowerer.lowerExprExpecting(args[0]!, F64);
-    return { kind: "libCall", fn: "test.ctxPlan", args: [receiver, count], type: VOID, loc };
+    let wait: IrExpr | null = null;
+    const optionsNode = args[1];
+    if (optionsNode !== undefined) {
+      if (!ts.isObjectLiteralExpression(optionsNode)) {
+        lowerer.noLowering(
+          "t.plan with a non-literal options argument",
+          optionsNode,
+          "pass the options as an object literal: { wait? }",
+        );
+      }
+      for (const prop of optionsNode.properties.nodes) {
+        if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
+          lowerer.noLowering(
+            "t.plan options with computed keys or spreads",
+            prop,
+            "each option must be a `name: value` entry with a literal key",
+          );
+        }
+        const name = (prop.name as ts.Identifier).text;
+        if (name !== "wait") {
+          lowerer.noLowering(`t.plan option '${name}'`, prop, "wait is the supported plan option");
+        }
+        // An explicit undefined takes Node's default (no wait).
+        if (ts.isIdentifier(prop.initializer) && prop.initializer.text === "undefined") continue;
+        wait = lowerer.lowerExprExpecting(prop.initializer, F64);
+      }
+    }
+    return {
+      kind: "libCall",
+      fn: "test.ctxPlan",
+      args: [receiver, count, boolLit(wait !== null, loc), wait ?? numLit(0, loc)],
+      type: VOID,
+      loc,
+    };
   }
   if (member === "runOnly") {
     requireStatementPosition(lowerer, call, "t.runOnly(...)");
@@ -1263,6 +1302,42 @@ export function lowerTestMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     const msg = lowerer.lowerExprExpecting(args[0]!, STRING);
     return { kind: "libCall", fn: "test.ctxDiagnostic", args: [receiver, msg], type: VOID, loc };
+  }
+  if (member === "log") {
+    requireStatementPosition(lowerer, call, "t.log(...)");
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `t.log with ${args.length} arguments`,
+        call,
+        "the supported form is t.log(message[, data])",
+      );
+    }
+    const receiver = lowerer.lowerExpr(access.expression);
+    const msg = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const data = args[1];
+    if (!data) {
+      return { kind: "libCall", fn: "test.ctxLog", args: [receiver, msg], type: VOID, loc };
+    }
+    // The data payload rides the test:log event only, so the reporter prints
+    // the message alone; it is still evaluated for its side effects, after
+    // the message, as the arguments evaluate in source order.
+    const pre: IrStmt[] = [];
+    const msgSlot = lowerer.declareHiddenLocal("%logMessage", STRING);
+    pre.push({ kind: "varDecl", localId: msgSlot.id, init: msg, loc });
+    pre.push({ kind: "exprStmt", expr: lowerer.lowerExpr(data), loc });
+    return {
+      kind: "seqExpr",
+      stmts: pre,
+      result: {
+        kind: "libCall",
+        fn: "test.ctxLog",
+        args: [receiver, varRef(msgSlot.id, STRING, loc)],
+        type: VOID,
+        loc,
+      },
+      type: VOID,
+      loc,
+    };
   }
   lowerer.noLowering(
     `TestContext.${member}`,

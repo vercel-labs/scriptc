@@ -139,6 +139,8 @@ export interface EarlyExecutableNativeFeatures {
   arrJoinStr?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
+  /** node:sqlite: scr_sqlite.c and the vendored SQLite archive. */
+  sqlite?: boolean;
   webStreams?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;
@@ -194,11 +196,14 @@ export interface EarlyExecutableNativeFeatures {
   textCodecDyn: boolean;
   watch: boolean;
   watchFile: boolean;
+  /** fsPromises.watch: scr_watch_async.c (with scr_watch.c). */
+  watchEvents: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
   cipher: boolean;
   ecdh: boolean;
+  argon2: boolean;
   dh: boolean;
   pki: boolean;
   ed25519: boolean;

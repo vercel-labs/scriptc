@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { expect, test, vi } from "vitest";
+import { dirname, join } from "node:path";
+import { afterAll, expect, test, vi } from "vitest";
 import {
   checkModuleOrder,
   checkPreflight,
@@ -17,6 +17,11 @@ import { AstNode } from "./ts7/ast-node.js";
 import { SemanticChecker } from "./ts7/semantic-checker.js";
 import { DECL_BOUNDARY_PREFIX } from "./decl-projection.js";
 import { elideProgramImports } from "./import-elision.js";
+import { cjsVoidInitPreambleTargets, type CjsVoidInitPreamble } from "./program.js";
+import * as adapter from "./ts7/adapter.js";
+import { closeSourceParser, parseSourceFile } from "./ts7/source-parser-node.js";
+
+afterAll(closeSourceParser);
 
 // The elision's own function, counted: a load asks it once.
 vi.mock("./import-elision.js", async (original) => {
@@ -671,5 +676,189 @@ test("asking for the module order first leaves the report and the order as they 
     single.dispose();
     ordered.dispose();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+/** The first `= void 0` export write in `source` as a preamble the lowering
+ * may elide (program.ts, cjsVoidInitPreambleTargets). */
+function voidPreambleOf(source: string): CjsVoidInitPreamble | null {
+  const file = parseSourceFile("/pkg/index.js", source, "js");
+  const writes: adapter.BinaryExpression[] = [];
+  adapter.walkPreorder(file, (node) => {
+    if (!adapter.isExpressionStatement(node)) return undefined;
+    let e: adapter.Expression = node.expression;
+    while (adapter.isParenthesizedExpression(e)) e = e.expression;
+    if (adapter.isBinaryExpression(e) && e.operatorToken.kind === adapter.SyntaxKind.EqualsToken) {
+      let tail: adapter.Expression = e.right;
+      while (
+        adapter.isBinaryExpression(tail) &&
+        tail.operatorToken.kind === adapter.SyntaxKind.EqualsToken
+      )
+        tail = tail.right;
+      if (tail.kind === adapter.SyntaxKind.VoidExpression) writes.push(e);
+    }
+    return undefined;
+  });
+  if (writes.length === 0) throw new Error("no void write");
+  return cjsVoidInitPreambleTargets(writes[0]!);
+}
+
+/** Whether the first `= void 0` export write in `source` is a preamble the
+ * lowering may elide. */
+function voidPreambleDropped(source: string): boolean {
+  return voidPreambleOf(source) !== null;
+}
+
+test("a void export preamble lowers to nothing when both conditional arms assign", () => {
+  expect(
+    voidPreambleDropped(`
+exports.now = void 0;
+if (typeof performance === 'object') { exports.now = function () { return 1; }; }
+else { exports.now = function () { return 2; }; }
+exports.later = function () { return exports.now(); };
+`),
+  ).toBe(true);
+});
+
+test("a void export preamble lowers to nothing when a later statement assigns", () => {
+  expect(
+    voidPreambleDropped(`
+exports.now = void 0;
+exports.now = function () { return 1; };
+`),
+  ).toBe(true);
+});
+
+test("a void export preamble lowers inside a wrapper function whose branches assign", () => {
+  expect(
+    voidPreambleDropped(`
+(function () {
+  exports.now = void 0;
+  if (typeof performance === 'object') { exports.now = function () { return 1; }; }
+  else { exports.now = function () { return 2; }; }
+})();
+`),
+  ).toBe(true);
+});
+
+test("a chained void preamble lowers when every arm replaces every member", () => {
+  expect(
+    voidPreambleDropped(`
+exports.a = exports.b = void 0;
+if (typeof performance === 'object') { exports.a = exports.b = function () { return 'p'; }; }
+else { exports.a = exports.b = function () { return 'd'; }; }
+`),
+  ).toBe(true);
+});
+
+test.each([
+  ["no later assignment", `exports.now = void 0;\n`],
+  [
+    "only one arm assigns",
+    `exports.now = void 0;\nif (cond) { exports.now = function () { return 1; }; }\n`,
+  ],
+  ["another void write", `exports.now = void 0;\nexports.now = void 0;\n`],
+  [
+    "an assignment whose value reads the member",
+    `exports.now = void 0;\nexports.now = exports.now || function () { return 1; };\n`,
+  ],
+  [
+    "a read between the write and the assignment",
+    `exports.now = void 0;\nconsole.log(exports.now);\nexports.now = function () { return 1; };\n`,
+  ],
+  [
+    "a class declaration between the write and the assignment",
+    `exports.now = void 0;\nclass C {}\nexports.now = function () { return 1; };\n`,
+  ],
+  [
+    "a condition that reads the member",
+    `exports.now = void 0;\nif (exports.now) { exports.now = function () { return 1; }; }\nelse { exports.now = function () { return 2; }; }\n`,
+  ],
+  [
+    "an early return inside a function",
+    `function init() {\n  exports.now = void 0;\n  if (cond) return;\n  exports.now = function () { return 1; };\n}`,
+  ],
+  [
+    "an assignment inside a loop",
+    `function init() {\n  exports.now = void 0;\n  for (var i = 0; i < 2; i++) { if (cond) return; }\n  exports.now = function () { return 1; };\n}`,
+  ],
+  [
+    "an assignment inside a try block",
+    `function init() {\n  exports.now = void 0;\n  try { exports.now = function () { return 1; }; } catch (e) {}\n}`,
+  ],
+  [
+    "an assignment inside a switch",
+    `exports.now = void 0;\nswitch (kind) { default: exports.now = function () { return 1; }; }\n`,
+  ],
+])("a void export preamble stays when there is %s", (_what, source) => {
+  expect(voidPreambleDropped(source)).toBe(false);
+});
+
+test("a void 0 preamble has no operand to evaluate when it is elided", () => {
+  expect(
+    voidPreambleOf(`exports.now = void 0;\nexports.now = function () { return 1; };\n`)?.effect,
+  ).toBeNull();
+});
+
+test("an elided preamble keeps an effectful void operand to evaluate", () => {
+  const preamble = voidPreambleOf(`
+exports.now = void mark();
+if (cond) { exports.now = function () { return 1; }; }
+else { exports.now = function () { return 2; }; }
+`);
+  expect(preamble).not.toBeNull();
+  const effect = preamble!.effect;
+  expect(effect === null ? "" : adapter.getTextOfNode(effect)).toBe("mark()");
+});
+
+test("a pure void operand has nothing to evaluate", () => {
+  expect(
+    voidPreambleOf(`exports.now = void "value";\nexports.now = function () { return 1; };\n`)
+      ?.effect,
+  ).toBeNull();
+});
+
+test("a void export preamble stays when one conditional arm assigns a different member", () => {
+  expect(
+    voidPreambleDropped(`
+exports.now = void 0;
+if (cond) { exports.now = function () { return 1; }; }
+else { exports.later = function () { return 2; }; }
+`),
+  ).toBe(false);
+});
+
+test("`export *` over a CommonJS module re-exports the names Node's lexer finds", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-cjs-star-"));
+  const write = (name: string, text: string): void => {
+    mkdirSync(join(dir, dirname(name)), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  };
+  write("package.json", '{"type":"module"}');
+  write(
+    "tsconfig.json",
+    '{"compilerOptions":{"target":"es2022","module":"nodenext","moduleResolution":"nodenext","strict":true,"allowJs":true,"noEmit":true}}',
+  );
+  write(
+    "impl.cjs",
+    "'use strict';\nfunction jsx() { return 1; }\nconst Fragment = 'f';\nmodule.exports = { jsx, Fragment };\n",
+  );
+  // The conditional whole export React ships: the names live on the table
+  // the taken branch required, not on this module's own statements.
+  write(
+    "runtime.cjs",
+    "'use strict';\nif (true) {\n  module.exports = require('./impl.cjs');\n} else {\n  module.exports = require('./impl.cjs');\n}\n",
+  );
+  write("main.ts", 'export const local = 1;\nexport * from "./runtime.cjs";\n');
+  const load = loadProgram(join(dir, "main.ts"));
+  try {
+    const sf = load.program.getSourceFile(join(dir, "main.ts"));
+    expect(sf?.text).toContain('import "./runtime.cjs";');
+    expect(sf?.text).toContain('export { "jsx", "Fragment" } from "./runtime.cjs";');
+    expect(sf?.text).toContain('as "module.exports"');
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -41,6 +41,7 @@ import {
 } from "../../../ir/ir.js";
 import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
 import { lowerSocketInstanceOf } from "../lower-server.js";
+import { lowerDgramSocketInstanceOf } from "../lower-dgram.js";
 import { lowerDnsResolverInstanceOf } from "../lower-dgram.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
@@ -51,12 +52,14 @@ import {
 } from "../builtin-namespace-probe.js";
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
+import { lowerAbortSignalInstanceOf } from "../builtins/abort-signal.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { lowerMimeInstanceof } from "../builtins/mime.js";
+import { lowerSqliteInstanceof } from "../builtins/sqlite.js";
 import { lowerPerfInstanceof } from "../builtins/performance.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
@@ -452,6 +455,10 @@ function hostGlobalInstanceOfAnswer(
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
   const iteratorTest = lowerIteratorInstanceOf(lowerer, expr, loc);
   if (iteratorTest !== null) return iteratorTest;
+  // `value instanceof AbortSignal`: the runtime's signal handles are the
+  // instances, and the handle's tag answers the test (abort-signal.ts).
+  const abortSignalTest = lowerAbortSignalInstanceOf(lowerer, expr);
+  if (abortSignalTest !== null) return abortSignalTest;
   // A listed Node global's value is a constructor native code never created
   // an instance from, so `x instanceof X` is false for every value — an
   // ordinary function's [[Prototype]] included, which the generic walk
@@ -481,6 +488,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
   if (sockTest !== null) return sockTest;
+  // `x instanceof dgram.Socket`: the native socket handle (an always-true
+  // answer for a statically-typed socket, the handle tag for an untyped
+  // value).
+  const dgramTest = lowerDgramSocketInstanceOf(lowerer, expr, loc);
+  if (dgramTest !== null) return dgramTest;
   // `x instanceof dns.Resolver` / `dns.promises.Resolver`: the stub
   // resolver's own handle tag (scr_dns_resolve.c).
   const resolverTest = lowerDnsResolverInstanceOf(lowerer, expr, loc);
@@ -660,6 +672,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (netAddress) return netAddress;
     const mime = lowerMimeInstanceof(lowerer, expr);
     if (mime) return mime;
+    const sqlite = lowerSqliteInstanceof(lowerer, expr);
+    if (sqlite) return sqlite;
     const perfClass = lowerPerfInstanceof(lowerer, expr);
     if (perfClass) return perfClass;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);

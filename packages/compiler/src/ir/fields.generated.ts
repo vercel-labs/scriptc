@@ -2101,6 +2101,10 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       return;
     }
+    case "statWatcher": {
+      walker.string(node.kind);
+      return;
+    }
     case "stats": {
       walker.string(node.kind);
       return;
@@ -2131,6 +2135,10 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
       return;
     }
     case "void": {
+      walker.string(node.kind);
+      return;
+    }
+    case "watchEvents": {
       walker.string(node.kind);
       return;
     }
@@ -3435,6 +3443,7 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "secureCtx" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "set" }>, "kind" | "elem">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "spawnRes" }>, "kind">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "statWatcher" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "stats" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "string" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "symbol" }>, "kind">>,
@@ -3443,4 +3452,5 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "union" }>, "kind" | "unionId">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "url" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "void" }>, "kind">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "watchEvents" }>, "kind">>,
 ];

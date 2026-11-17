@@ -92,6 +92,14 @@ bool scr_crypto_hash_stream_write(ScrCryptoHash *hash, ScrBytes *chunk);
 ScrBytes *scr_crypto_hash_stream_flush(ScrCryptoHash *hash);
 /* Secret KeyObjects (scr_lib.c). */
 ScrDyn *scr_crypto_create_secret_key(ScrDyn *key, ScrDyn *encoding);
+/* A secret KeyObject over a copy of `data`. */
+ScrDyn *scr_crypto_secret_key_object_from_bytes(const unsigned char *data, size_t len);
+/* KeyObject.toCryptoKey and KeyObject.from (scr_webcrypto.c installs them
+ * when WebCrypto is linked): the KeyObject handle's method arguments are
+ * borrowed; each answers NULL with the DOMException pending. */
+extern ScrDyn *(*scr_crypto_to_crypto_key)(const ScrDyn *key, const ScrDyn *const *args,
+                                           size_t argc);
+extern ScrDyn *(*scr_crypto_key_object_from)(const ScrDyn *crypto_key);
 ScrDyn *scr_crypto_generate_key_sync(ScrDyn *type, ScrDyn *options);
 /* Node's synchronous callback gate for generateKey: a non-function throws
  * ERR_INVALID_ARG_TYPE, a function passes. */
@@ -242,6 +250,13 @@ typedef struct ScrKeccakCtx {
 void scr_keccak_init(ScrKeccakCtx *ctx, size_t rate, unsigned char pad);
 void scr_keccak_update(ScrKeccakCtx *ctx, const unsigned char *data, size_t len);
 void scr_keccak_final(const ScrKeccakCtx *ctx, unsigned char *out, size_t len);
+/* KMAC (NIST SP 800-185): cSHAKE over the byte-padded key, the message
+ * and right_encode(output bits) under the "KMAC" function name. The
+ * context starts with the empty message already absorbed; finalization
+ * squeezes `out_bytes` bytes and clears the low bits past `bits`. */
+void scr_kmac_init(ScrKeccakCtx *ctx, bool kmac256, const unsigned char *key, size_t keylen,
+                   size_t key_bits, const unsigned char *custom, size_t customlen);
+void scr_kmac_final(const ScrKeccakCtx *ctx, size_t out_bytes, size_t bits, unsigned char *out);
 typedef struct ScrRipemd160Ctx {
   uint32_t h[5];
   uint64_t bytes;
@@ -299,6 +314,12 @@ ScrPromise *scr_webcrypto_import_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_generate_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_export_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_sign(ScrDyn *args);
+ScrPromise *scr_webcrypto_get_public_key(ScrDyn *args);
+ScrDyn *scr_wc_key_object_to_crypto_key(ScrDyn *args);
+ScrDyn *scr_wc_key_object_from(ScrDyn *args);
+/* crypto.argon2 and crypto.argon2Sync (scr_argon2.c): the argument vector. */
+ScrDyn *scr_crypto_argon2_sync(ScrDyn *args);
+ScrDyn *scr_crypto_argon2_cb(ScrDyn *args);
 ScrPromise *scr_webcrypto_verify(ScrDyn *args);
 ScrPromise *scr_webcrypto_digest(ScrDyn *args);
 /* encrypt and decrypt (scr_webcrypto_aes.c, linked with the cipher

@@ -154,6 +154,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
+  statWatcher: 103,
 };
 
 /** SCR_DYNH_NODE_ISLAND (scr_dyn.h): the handle a value an island made

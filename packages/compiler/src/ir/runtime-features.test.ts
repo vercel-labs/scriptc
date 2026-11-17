@@ -18,6 +18,7 @@ import {
   jsObjectModelFact,
   moduleRuntimeFeatures,
   moduleUsesHttp2,
+  moduleUsesRegex,
   moduleUsesTlsCa,
 } from "./runtime-features.js";
 
@@ -33,6 +34,39 @@ describe("runtime feature snapshots", () => {
     kind: "exprStmt" as const,
     loc,
     expr: { kind: "libCall" as const, fn, args: [], type: VOID, loc },
+  });
+
+  const readConstructor = (name: string): IrStmt => ({
+    kind: "exprStmt",
+    loc,
+    expr: {
+      kind: "libCall",
+      fn: "dyn.globalConstructor",
+      args: [{ kind: "strLit", value: name, type: STRING, loc }],
+      type: DYN,
+      loc,
+    },
+  });
+
+  test("links the regex engine when the RegExp constructor is read as a value", () => {
+    const other = module();
+    other.functions[0]!.body.push(readConstructor("Map"));
+    expect(moduleUsesRegex(other)).toBe(false);
+    const regExp = module();
+    regExp.functions[0]!.body.push(readConstructor("RegExp"));
+    expect(moduleUsesRegex(regExp)).toBe(true);
+  });
+
+  test("links the units that build the host classes read as values", () => {
+    const event = module();
+    event.functions[0]!.body.push(readConstructor("Event"));
+    expect(moduleRuntimeFeatures(event)).toMatchObject({
+      eventTarget: true,
+      abortSignal: false,
+    });
+    const abort = module();
+    abort.functions[0]!.body.push(readConstructor("AbortController"));
+    expect(moduleRuntimeFeatures(abort)).toMatchObject({ eventTarget: false, abortSignal: true });
   });
 
   test("updates link requirements after an IR edit without changing earlier snapshots", () => {

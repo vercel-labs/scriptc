@@ -254,6 +254,14 @@ void scr_http_server_on_check(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttp
 /* The maxHeaderSize option of createServer / http.request; throws Node's
  * ERR_OUT_OF_RANGE for a negative or non-integer value. */
 void scr_http_server_max_header_size(ScrNetServer *s, double value);
+/* createServer's option checks, run as Node's constructor reads each option
+ * (before the next one is read); each leaves Node's error pending. */
+bool scr_http_server_max_header_size_check(double value);
+void scr_http_server_timeout_option_check(double field, const ScrDyn *value /*borrowed*/);
+void scr_http_server_headers_timeout_check(const ScrDyn *request_timeout /*borrowed, nullable*/,
+                                           const ScrDyn *headers_timeout /*borrowed, nullable*/);
+void scr_http_server_boolean_option_check(const char *name, const ScrDyn *value /*borrowed*/);
+void scr_http_server_connections_checking_interval_check(const ScrDyn *value /*borrowed*/);
 ScrArr *scr_http_req_raw_headers(ScrHttpReq *r); /* +1 — [name, value, ...], arrival order/case */
 ScrArr *scr_http_req_header_pairs(ScrHttpReq *r); /* +1 — lowercased names, the headers snapshot */
 ScrArr *scr_http_req_header_lines(ScrHttpReq *r); /* +1 — every line, lowercased names */

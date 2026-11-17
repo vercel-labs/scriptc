@@ -2994,11 +2994,14 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
   size_t member_count = scr_dyn_obj_count(opts);
   char **member_keys = NULL;
   size_t *member_lens = NULL;
+  bool *member_defined = NULL;
   if (member_count > 0) {
     member_keys = calloc(member_count, sizeof *member_keys);
     member_lens = calloc(member_count, sizeof *member_lens);
-    if (member_keys == NULL || member_lens == NULL) scr_tls_oom();
+    member_defined = calloc(member_count, sizeof *member_defined);
+    if (member_keys == NULL || member_lens == NULL || member_defined == NULL) scr_tls_oom();
     for (size_t i = 0; i < member_count; i++) {
+      ScrDynProp p = scr_dyn_obj_prop_at(opts, i);
       size_t len = 0;
       const char *key = scr_dyn_obj_key_at(opts, i, &len);
       member_keys[i] = malloc(len + 1);
@@ -3006,6 +3009,9 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
       memcpy(member_keys[i], key, len);
       member_keys[i][len] = '\0';
       member_lens[i] = len;
+      /* an accessor may answer anything; a data property set to undefined
+       * reads as absent, like Node */
+      member_defined[i] = p.accessor || (p.value != NULL && p.value->kind != SCR_DYN_UNDEF);
     }
   }
   static const char *const VALUE_OPTS[] = { "ca", "cert", "key", "requestCert",
@@ -3017,7 +3023,8 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
       if (strcmp(member_keys[i], VALUE_OPTS[k]) == 0) value_opt = true;
     if (value_opt) continue; /* read by name below, in Node's order */
     ScrDynProp e = {.key = member_keys[i], .key_len = member_lens[i]};
-    if (!scr_tls_srv_opt_member(&e, NULL, true, api, server_ok, cert_out, key_out, auth))
+    if (!scr_tls_srv_opt_member(&e, NULL, member_defined[i], api, server_ok, cert_out, key_out,
+                                auth))
       ok = false;
   }
   for (size_t i = 0; ok && VALUE_OPTS[i] != NULL; i++) {
@@ -3050,6 +3057,7 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
   for (size_t i = 0; i < member_count; i++) free(member_keys[i]);
   free(member_keys);
   free(member_lens);
+  free(member_defined);
   if (ok && (*cert_out == NULL || *key_out == NULL)) {
     ScrJsonBuf b;
     scr_jb_init(&b);
@@ -3183,33 +3191,64 @@ typedef struct ScrHttpsHttpOpts {
   ScrDyn *reject_non_standard_body_writes;
 } ScrHttpsHttpOpts;
 
-static void scr_https_read_http_options(const ScrDyn *opts /*OBJ, borrowed*/,
+/* Reads each modeled HTTP option and runs the check Node's constructor
+ * performs on it before it reads the next one, so an invalid early option
+ * throws before the rest of the record's getters run. False when a getter
+ * threw or a check failed (the exception is pending). */
+static bool scr_https_read_http_options(const ScrDyn *opts /*OBJ, borrowed*/,
                                         ScrHttpsHttpOpts *out) {
   out->max_header_size = scr_dyn_obj_read(opts, "maxHeaderSize", sizeof "maxHeaderSize" - 1);
+  if (out->max_header_size == NULL) return false; /* a getter threw */
+  if (out->max_header_size->kind == SCR_DYN_NUM) {
+    if (!scr_http_server_max_header_size_check(out->max_header_size->v.num)) return false;
+  } else if (out->max_header_size->kind != SCR_DYN_UNDEF) {
+    scr_dyn_arg_type_fail("maxHeaderSize", "of type number", out->max_header_size);
+    return false;
+  }
   out->request_timeout = scr_dyn_obj_read(opts, "requestTimeout", sizeof "requestTimeout" - 1);
+  if (out->request_timeout == NULL) return false;
+  scr_http_server_timeout_option_check(3, out->request_timeout);
+  if (scr_exc_pending()) return false;
   out->headers_timeout = scr_dyn_obj_read(opts, "headersTimeout", sizeof "headersTimeout" - 1);
+  if (out->headers_timeout == NULL) return false;
+  scr_http_server_timeout_option_check(2, out->headers_timeout);
+  if (scr_exc_pending()) return false;
+  scr_http_server_headers_timeout_check(out->request_timeout, out->headers_timeout);
+  if (scr_exc_pending()) return false;
   out->keep_alive_timeout =
       scr_dyn_obj_read(opts, "keepAliveTimeout", sizeof "keepAliveTimeout" - 1);
+  if (out->keep_alive_timeout == NULL) return false;
+  scr_http_server_timeout_option_check(1, out->keep_alive_timeout);
+  if (scr_exc_pending()) return false;
   out->keep_alive_timeout_buffer =
       scr_dyn_obj_read(opts, "keepAliveTimeoutBuffer", sizeof "keepAliveTimeoutBuffer" - 1);
+  if (out->keep_alive_timeout_buffer == NULL) return false;
+  scr_http_server_timeout_option_check(4, out->keep_alive_timeout_buffer);
+  if (scr_exc_pending()) return false;
   out->connections_checking_interval = scr_dyn_obj_read(
       opts, "connectionsCheckingInterval", sizeof "connectionsCheckingInterval" - 1);
+  if (out->connections_checking_interval == NULL) return false;
+  scr_http_server_connections_checking_interval_check(out->connections_checking_interval);
+  if (scr_exc_pending()) return false;
   out->join_duplicate_headers =
       scr_dyn_obj_read(opts, "joinDuplicateHeaders", sizeof "joinDuplicateHeaders" - 1);
+  if (out->join_duplicate_headers == NULL) return false;
+  scr_http_server_boolean_option_check("options.joinDuplicateHeaders",
+                                       out->join_duplicate_headers);
+  if (scr_exc_pending()) return false;
   out->require_host_header =
       scr_dyn_obj_read(opts, "requireHostHeader", sizeof "requireHostHeader" - 1);
+  if (out->require_host_header == NULL) return false;
+  scr_http_server_boolean_option_check("options.requireHostHeader", out->require_host_header);
+  if (scr_exc_pending()) return false;
   out->reject_non_standard_body_writes = scr_dyn_obj_read(
       opts, "rejectNonStandardBodyWrites", sizeof "rejectNonStandardBodyWrites" - 1);
+  if (out->reject_non_standard_body_writes == NULL) return false;
+  scr_http_server_boolean_option_check("options.rejectNonStandardBodyWrites",
+                                       out->reject_non_standard_body_writes);
+  return !scr_exc_pending();
 }
 
-/* False when a getter threw (its exception is pending). */
-static bool scr_https_http_options_read(const ScrHttpsHttpOpts *o) {
-  return o->max_header_size != NULL && o->request_timeout != NULL &&
-         o->headers_timeout != NULL && o->keep_alive_timeout != NULL &&
-         o->keep_alive_timeout_buffer != NULL && o->connections_checking_interval != NULL &&
-         o->join_duplicate_headers != NULL && o->require_host_header != NULL &&
-         o->reject_non_standard_body_writes != NULL;
-}
 
 static void scr_https_release_http_options(ScrHttpsHttpOpts *o) {
   scr_dyn_release(o->max_header_size);
@@ -3302,14 +3341,11 @@ ScrNetServer *scr_https_create_server_dyn(const ScrDyn *opts /*borrowed*/,
   ScrHttpsHttpOpts http;
   memset(&http, 0, sizeof http);
   bool has_http = obj != NULL && obj->kind == SCR_DYN_OBJ;
-  if (has_http) {
-    scr_https_read_http_options(obj, &http);
-    if (!scr_https_http_options_read(&http)) {
-      scr_https_release_http_options(&http);
-      scr_dyn_release(plain);
-      scr_closure_release(handler);
-      return NULL;
-    }
+  if (has_http && !scr_https_read_http_options(obj, &http)) {
+    scr_https_release_http_options(&http);
+    scr_dyn_release(plain);
+    scr_closure_release(handler);
+    return NULL;
   }
   if (!scr_tls_srv_opts_walk_ex(opts, "https.createServer", &cert, &key, false, &auth)) {
     scr_https_release_http_options(&http);

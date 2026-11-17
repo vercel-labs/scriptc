@@ -21,3 +21,23 @@ function callIt(value) {
 console.log(callIt(3));
 held = function (value) { return value * 10; };
 console.log(callIt(3));
+
+// A rebound declaration beside ordinary declarators still gives its siblings
+// their module globals: a function reading one must see its value.
+var scaled = require("./whole.cjs"), factor = 3, tag = "scaled";
+function describe(value) {
+  return tag + ":" + scaled(value) * factor;
+}
+console.log(describe(4));
+scaled = function (value) { return value + 1; };
+console.log(describe(4));
+
+// typeof reads the binding's current value, and a builtin module's boxed
+// value answers the members it serves.
+var pathModule = require("node:path"), base = "corpus";
+function label(name) {
+  return base + ":" + pathModule.basename(name);
+}
+console.log(typeof pathModule.join, label("/a/b.txt"));
+pathModule = { join: function () { return "joined"; } };
+console.log(typeof pathModule.join, typeof pathModule.sep, pathModule.join());

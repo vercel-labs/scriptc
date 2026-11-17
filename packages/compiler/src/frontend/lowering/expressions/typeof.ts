@@ -52,12 +52,42 @@ import { hostGlobalNameOfTypeofOperand } from "../host-globals.js";
 import { undeclaredGlobalTypeof } from "../global-object-names.js";
 import { erasedGlobalBindingOf, programMayWriteGlobalName } from "../global-object-writes.js";
 import { staticTypeofAnswer } from "../static-typeof.js";
+import { reboundRequireBindingOf } from "../rebindable-requires.js";
+import { builtinNamespaceBoxServes } from "../module-namespace-elements.js";
 
 export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
   return withCycleBindingRead(lowerer, expr.expression, lowerTypeofAnswer(lowerer, expr, loc), loc);
 }
 
 function lowerTypeofAnswer(lowerer: Lowerer, expr: ts.TypeOfExpression, loc: SrcLoc): IrExpr {
+  // A `require()` binding the file REASSIGNS no longer holds the module
+  // (rebindable-requires.ts): the program's own storage answers every
+  // read of it and of its members, so typeof must read the value. The
+  // static folds below describe the module the declaration originally
+  // required, and the read has no effects to lose. A builtin module's
+  // boxed value serves the members the lowering tables give a value form;
+  // an unserved one reads undefined there, so its answer stays with the
+  // static tables below.
+  {
+    let operand = expr.expression;
+    while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+    const member = ts.isPropertyAccessExpression(operand) ? operand : null;
+    const target = member === null ? operand : withoutParentheses(member.expression);
+    const binding = reboundRequireBindingOf(lowerer, target);
+    if (binding !== null) {
+      let answered = true;
+      if (member !== null && ts.isIdentifier(member.name)) {
+        const nsType = lowerer.mapTypeOf(lowerer.typeOf(binding));
+        if (nsType?.kind === "moduleNs" && nsType.moduleId.startsWith("builtin:"))
+          answered = builtinNamespaceBoxServes(lowerer, nsType.moduleId, member.name.text, loc);
+      }
+      if (answered) {
+        const value = lowerer.lowerExpr(expr.expression);
+        if (value.type.kind === "dyn")
+          return { kind: "libCall", fn: "dyn.typeof", args: [value], type: STRING, loc };
+      }
+    }
+  }
   // typeof is a READ, not a use: Node has these constructors, so the answer is
   // "function" exactly as it is for a provided class (host-global-values.ts).
   // Folded before every other guess — including the ambient `declare var` fold

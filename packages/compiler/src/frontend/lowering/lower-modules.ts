@@ -2514,10 +2514,18 @@ export function collectGlobals(
       // A require binding the file reassigns owns a checked-dynamic module
       // global (rebindable-requires.ts): the declaration stores the module's
       // value there, and reads and writes of the binding alias it. Every
-      // other statement continues into the registration below.
+      // other statement continues into the registration below, and so does
+      // a MIXED statement (`var a = require("x"), b = 1`): its siblings
+      // need their ordinary globals or a function reading one has no
+      // storage at all. The registration below leaves the rebound
+      // declarator alone — its symbol is registered here already.
       let rebound = false;
+      let siblings = false;
       for (const decl of stmt.declarationList.declarations.nodes) {
-        if (!ts.isIdentifier(decl.name) || !isRebindableRequireDecl(lowerer, decl)) continue;
+        if (!ts.isIdentifier(decl.name) || !isRebindableRequireDecl(lowerer, decl)) {
+          siblings = true;
+          continue;
+        }
         rebound = true;
         const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
         if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
@@ -2537,7 +2545,7 @@ export function collectGlobals(
           noteVarGlobalEntryInit(lowerer, sf, g);
         }
       }
-      if (rebound) continue;
+      if (rebound && !siblings) continue;
     }
     if (ts.isFunctionDeclaration(stmt) && stmt.name && isRebindableFunction(lowerer, stmt)) {
       const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
@@ -2975,6 +2983,9 @@ export function collectGlobals(
       // probes below would otherwise claim the call-initializer shape
       // and put its fences on the build.
       if (provenanceElidedConstDecl(lowerer, decl)) continue;
+      // A require binding the file reassigns owns checked-dynamic storage
+      // from the registration at the top of this pass; nothing here.
+      if (ts.isIdentifier(decl.name) && isRebindableRequireDecl(lowerer, decl)) continue;
       // A require declarator beside other declarators (`var EventEmitter =
       // require("events"), R = class extends EventEmitter {}`): the
       // statement lowering treats it as the alias plumbing of a whole

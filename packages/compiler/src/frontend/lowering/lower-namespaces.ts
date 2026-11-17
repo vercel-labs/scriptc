@@ -569,6 +569,35 @@ export function ambientNsRootOf(lowerer: Lowerer, e: ts.Expression): ts.Identifi
   return root;
 }
 
+/** The root identifier of a chain whose namespace is declared only in
+ * declaration files and is not imported from anywhere (`declare namespace
+ * Lib { ... }` in a project's .d.ts): Node erases every declaration, so the
+ * name has no runtime object and the read throws the catchable
+ * ReferenceError "<name> is not defined". Import bindings resolve through
+ * an alias and keep their module path. */
+export function declarationOnlyGlobalNsRootOf(
+  lowerer: Lowerer,
+  e: ts.Expression,
+): ts.Identifier | null {
+  let root: ts.Expression = e;
+  while (ts.isPropertyAccessExpression(root) && root.questionDotToken === undefined) {
+    root = root.expression;
+  }
+  while (ts.isParenthesizedExpression(root)) root = root.expression;
+  if (!ts.isIdentifier(root)) return null;
+  const sym = lowerer.checker.getSymbolAtLocation(root);
+  if (!sym || (sym.flags & ts.SymbolFlags.Alias) !== 0) return null;
+  if (!(sym.flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule))) return null;
+  if (lowerer.isStdlibSymbol(sym)) return null;
+  const decls = sym.declarations;
+  if (decls.length === 0) return null;
+  return decls.every(
+    (d) => ts.isModuleDeclaration(d) && ts.getSourceFileOfNode(d).isDeclarationFile,
+  )
+    ? root
+    : null;
+}
+
 /** The ROOT identifier of an expression whose FIRST runtime step is a read
  * Node cannot serve — the `declare const __VERSION__` stance's CHAIN form,
  * widened over every chain shape whose root evaluates first. Three root

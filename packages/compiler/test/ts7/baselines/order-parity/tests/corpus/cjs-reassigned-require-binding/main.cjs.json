@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-reassigned-require-binding/whole.cjs",
+  "<repo>/tests/corpus/cjs-reassigned-require-binding/main.cjs"
+ ],
+ "diags": []
+}

@@ -3747,7 +3747,9 @@ static ScrDyn *scr_dyn_canonical_prototype(const char *cls) {
     }
   }
 #endif
-  scr_dyn_canonical_prototype_store(cls, scr_dyn_retain(prototype));
+  /* The table takes the object's own reference; the caller gets a retain.
+   * (A retain stored here would leave one reference no cleanup releases.) */
+  scr_dyn_canonical_prototype_store(cls, prototype);
   return scr_dyn_retain(prototype);
 }
 

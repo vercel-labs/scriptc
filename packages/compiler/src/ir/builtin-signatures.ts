@@ -6834,6 +6834,11 @@ function buildLibFnSignatures() {
     "process.onWarning": { argTypes: [DYN], result: VOID },
     "process.offWarning": { argTypes: [DYN], result: VOID },
     "process.emitWarning": { argTypes: [DYN], result: VOID },
+    /** process.emit(event, ...args): Node's EventEmitter dispatch over the
+     * process registries, with the argument vector as one dyn array. The
+     * answer is whether the event had a listener ('warning' always has
+     * Node's default report listener); an unhandled 'error' throws. */
+    "process.emit": { argTypes: [DYN], result: BOOL },
     /** A Warning-typed process warning with this message (the console
      * members' warnings), emitted on the next tick as Node's emitWarning
      * does (so the loop runs); an empty message emits nothing. */

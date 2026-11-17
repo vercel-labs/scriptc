@@ -114,6 +114,10 @@ ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
  * Proxy's forwarded Get reads. A program without the unit answers the
  * undefined read. */
 ScrDyn *(*scr_dyn_inherited_member_hook)(const ScrDyn *d, const ScrStr *key) = NULL;
+/* Set by scr_events.c when the events unit is linked: process.emit's
+ * 'exit', 'beforeExit' and signal dispatch. */
+bool (*scr_process_emit_lifecycle_hook)(const ScrStr *event, ScrDyn *const *args, size_t argc) =
+    NULL;
 
 /* The inherited member `key` of `d`, +1, or NULL when the program links no
  * unit that answers them (or the name is none of theirs). */
@@ -3631,6 +3635,142 @@ static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
 static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d);
 static bool scr_typed_ref_plain_array(const ScrDyn *d);
 
+/* The gated units' prototype objects for builtin value kinds, installed at
+ * load (scr_js_wrapper.c, scr_dyn_collections.c, scr_dyn_stdlib_prototype.c,
+ * scr_data_view_proto.c, scr_bytes_dyn.c). Keeping the pointers here means a
+ * unit that answers one is linked only where its own interface is; a program
+ * that links none still gets the canonical object below. */
+ScrDyn *(*scr_dyn_wrapper_prototype_hook)(int kind) = NULL;
+ScrDyn *(*scr_dyn_collection_prototype_hook)(const ScrDyn *value) = NULL;
+ScrDyn *(*scr_dyn_date_prototype_hook)(void) = NULL;
+ScrDyn *(*scr_dyn_data_view_prototype_hook)(void) = NULL;
+ScrDyn *(*scr_dyn_buffer_prototype_hook)(void) = NULL;
+ScrDyn *(*scr_dyn_function_prototype_hook)(void) = NULL;
+
+/* One canonical prototype object per builtin class name that no linked unit
+ * models, kept for the lifetime of the program. The object carries
+ * Object.prototype behind it (what every builtin prototype but Buffer has)
+ * and the runtime's constructor of that name as its `constructor` when the
+ * invoke unit is linked, so a chain walk reaches a stable, distinct
+ * object. */
+typedef struct {
+  char *cls; /* owned */
+  ScrDyn *prototype; /* owned */
+} ScrDynCanonicalPrototype;
+
+static SCR_TL ScrDynCanonicalPrototype *scr_canonical_prototypes = NULL;
+static SCR_TL size_t scr_canonical_n = 0, scr_canonical_cap = 0;
+
+static void scr_canonical_prototypes_cleanup(void) {
+  for (size_t i = 0; i < scr_canonical_n; i++) {
+    free(scr_canonical_prototypes[i].cls);
+    scr_dyn_release(scr_canonical_prototypes[i].prototype);
+  }
+  free(scr_canonical_prototypes);
+  scr_canonical_prototypes = NULL;
+  scr_canonical_n = scr_canonical_cap = 0;
+}
+
+/* The canonical prototype already answered for `cls`, or NULL. Borrowed. */
+static ScrDyn *scr_dyn_canonical_prototype_find(const char *cls) {
+  size_t len = strlen(cls);
+  for (size_t i = 0; i < scr_canonical_n; i++)
+    if (strlen(scr_canonical_prototypes[i].cls) == len &&
+        memcmp(scr_canonical_prototypes[i].cls, cls, len) == 0)
+      return scr_canonical_prototypes[i].prototype;
+  return NULL;
+}
+
+static ScrDyn *scr_dyn_canonical_prototype(const char *cls) {
+  ScrDyn *existing = scr_dyn_canonical_prototype_find(cls);
+  if (existing != NULL) return scr_dyn_retain(existing);
+  size_t len = strlen(cls);
+  ScrDyn *prototype = scr_dyn_new_obj(); /* Object.prototype behind it */
+  /* The runtime's constructor value, where the invoke unit answers one:
+   * `Object.getPrototypeOf(v).constructor` then names the class as Node's
+   * prototype does. Only the synthetic constructor is available here, so a
+   * program's compiled constructor value keeps its own answer elsewhere. */
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_global_constructor_hook != NULL) {
+    ScrStr *name = scr_str_new(cls, len);
+    ScrDyn *ctor = scr_dyn_global_constructor_hook(name);
+    scr_str_release(name);
+    if (ctor != NULL) {
+      scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain(ctor));
+      scr_dyn_obj_set_attrs_at(prototype, scr_dyn_obj_index_of(prototype, "constructor", 11), true, false,
+                               true);
+      scr_dyn_fn_seed_prototype(ctor, scr_dyn_retain(prototype));
+      scr_dyn_release(ctor);
+    }
+  }
+#endif
+  if (scr_canonical_n == scr_canonical_cap) {
+    size_t cap = scr_canonical_cap ? scr_canonical_cap * 2 : 4;
+    ScrDynCanonicalPrototype *grown = realloc(scr_canonical_prototypes, cap * sizeof *grown);
+    if (grown == NULL) {
+      fputs("scriptc: out of memory\n", stderr);
+      abort();
+    }
+    scr_canonical_prototypes = grown;
+    scr_canonical_cap = cap;
+  }
+  if (scr_canonical_n == 0) scr_atexit(scr_canonical_prototypes_cleanup);
+  char *copy = malloc(len + 1);
+  if (copy == NULL) {
+    fputs("scriptc: out of memory\n", stderr);
+    abort();
+  }
+  memcpy(copy, cls, len + 1);
+  scr_canonical_prototypes[scr_canonical_n].cls = copy;
+  scr_canonical_prototypes[scr_canonical_n].prototype = prototype;
+  scr_canonical_n++;
+  return scr_dyn_retain(prototype);
+}
+
+/* Function.prototype without the invoke unit: a callable value with an
+ * empty name and length 0, the answer Node gives for a function's
+ * prototype even in a program that models no other function value. One per
+ * thread, kept for the program's lifetime. */
+static SCR_TL ScrDyn *scr_canonical_function_prototype_value = NULL;
+
+static void scr_canonical_function_prototype_cleanup(void) {
+  scr_dyn_release(scr_canonical_function_prototype_value);
+  scr_canonical_function_prototype_value = NULL;
+}
+
+static ScrDyn *scr_canonical_function_prototype_call(ScrClosure *closure, ScrDyn *const *args,
+                                                    size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_dyn_canonical_function_prototype(void) {
+  if (scr_canonical_function_prototype_value == NULL) {
+    scr_canonical_function_prototype_value =
+        scr_dyn_new_func(scr_closure_new(NULL, 0), scr_canonical_function_prototype_call, 0, "()", "");
+    scr_atexit(scr_canonical_function_prototype_cleanup);
+  }
+  return scr_dyn_retain(scr_canonical_function_prototype_value);
+}
+
+/* A primitive's prototype: the wrapper unit's String/Number/Boolean object
+ * when linked (so `Object.getPrototypeOf("x") === String.prototype`), the
+ * canonical object otherwise. */
+static ScrDyn *scr_dyn_primitive_prototype(int kind, const char *cls) {
+  /* Once this kind has answered the canonical object, keep answering it: a
+   * wrapper prototype built by a later read must not change the identity a
+   * caller of Object.getPrototypeOf already holds (or vice versa). */
+  ScrDyn *existing = scr_dyn_canonical_prototype_find(cls);
+  if (existing != NULL) return scr_dyn_retain(existing);
+  if (scr_dyn_wrapper_prototype_hook != NULL) {
+    ScrDyn *prototype = scr_dyn_wrapper_prototype_hook(kind);
+    if (prototype != NULL) return prototype;
+  }
+  return scr_dyn_canonical_prototype(cls);
+}
+
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
@@ -3686,8 +3826,92 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
-  static const char message[] = "Object.getPrototypeOf on this value is not supported yet";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  /* Every other value representation answers its prototype, as Node's
+   * Object.getPrototypeOf boxes primitives and reaches a builtin class's
+   * prototype for native values: a store's `getPrototypeOf(v) ===
+   * Object.prototype` test must answer false for them, not throw. */
+  if (object->kind == SCR_DYN_BOOL) return scr_dyn_primitive_prototype(2, "Boolean");
+  if (object->kind == SCR_DYN_NUM) return scr_dyn_primitive_prototype(1, "Number");
+  if (object->kind == SCR_DYN_STR) return scr_dyn_primitive_prototype(0, "String");
+  if (object->kind == SCR_DYN_BIGINT) return scr_dyn_canonical_prototype("BigInt");
+  if (object->kind == SCR_DYN_SYMBOL) return scr_dyn_canonical_prototype("Symbol");
+  if (object->kind == SCR_DYN_BYTES) {
+    if (object->buffer) {
+      if (scr_dyn_buffer_prototype_hook != NULL) {
+        ScrDyn *prototype = scr_dyn_buffer_prototype_hook();
+        if (prototype != NULL) return prototype;
+      }
+      return scr_dyn_canonical_prototype("Buffer");
+    }
+    if (object->v.bytes->is_data_view) {
+      if (scr_dyn_data_view_prototype_hook != NULL) {
+        ScrDyn *prototype = scr_dyn_data_view_prototype_hook();
+        if (prototype != NULL) return prototype;
+      }
+      return scr_dyn_canonical_prototype("DataView");
+    }
+    return scr_dyn_canonical_prototype(scr_bytes_elem_name(object->v.bytes->elem));
+  }
+  if (object->kind == SCR_DYN_PROMISE) return scr_dyn_canonical_prototype("Promise");
+  if (object->kind == SCR_DYN_FUNC) {
+    /* Function.prototype, the object every function's chain links to, when
+     * the invoke unit models it as a value. Function.prototype's own
+     * [[Prototype]] is Object.prototype, so a chain walk must not answer the
+     * object itself (Node's answer, and the end of the walk). */
+    if (scr_dyn_function_prototype_hook != NULL) {
+      ScrDyn *prototype = scr_dyn_function_prototype_hook();
+      if (prototype != NULL) {
+        bool self = scr_dyn_strict_eq(prototype, object);
+        if (self) {
+          scr_dyn_release(prototype);
+          return scr_dyn_object_prototype();
+        }
+        return prototype;
+      }
+    }
+    if (object == scr_canonical_function_prototype_value) return scr_dyn_object_prototype();
+    return scr_dyn_canonical_function_prototype();
+  }
+  if (object->kind == SCR_DYN_HANDLE) {
+    /* A handle class the runtime models as a value answers its own
+     * prototype, so `value instanceof Class` and a prototype comparison
+     * agree. */
+    if (scr_dyn_handle_class_ops != NULL) {
+      ScrDyn *prototype = scr_dyn_handle_class_ops->prototype_of(object);
+      if (prototype != NULL || scr_exc_pending()) return prototype;
+    }
+    if (scr_dyn_collection_prototype_hook != NULL) {
+      ScrDyn *prototype = scr_dyn_collection_prototype_hook(object);
+      if (prototype != NULL || scr_exc_pending()) return prototype;
+    }
+    if (object->v.handle.tag == SCR_DYNH_DATE && scr_dyn_date_prototype_hook != NULL) {
+      ScrDyn *prototype = scr_dyn_date_prototype_hook();
+      if (prototype != NULL) return prototype;
+    }
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(object);
+    return scr_dyn_canonical_prototype(ops != NULL && ops->cls != NULL ? ops->cls : "Object");
+  }
+  if (object->kind == SCR_DYN_TYPED_REF) {
+    /* A class instance's capsule: its checked view carries the instance's
+     * prototype chain, including the class prototype the compiled code
+     * registered. */
+    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+    if (view == NULL) return NULL;
+    ScrDyn *result = scr_dyn_get_prototype(view);
+    scr_dyn_release(view);
+    return result;
+  }
+  if (object->kind == SCR_DYN_PROXY) {
+    ScrDyn *trap = scr_dyn_obj_read(object->v.proxy.handler, "getPrototypeOf", 14);
+    bool none = trap == NULL || trap->kind == SCR_DYN_UNDEF || trap->kind == SCR_DYN_NULL;
+    scr_dyn_release(trap);
+    if (scr_exc_pending()) return NULL;
+    if (none) return scr_dyn_get_prototype(object->v.proxy.target);
+    scr_dyn_proxy_unsupported("getPrototypeOf traps");
+    return NULL;
+  }
+  static const char message[] = "scriptc: internal error: value kind has no prototype\n";
+  scr_trap(message);
   return NULL;
 }
 

@@ -641,6 +641,12 @@ declare var process: {
   /* emitWarning — Node's full grammar (string or Error warning; type/
    * ctor/options second; code/ctor third). */
   emitWarning(warning: string | Error, ...args: any[]): void;
+  /* emit(event, ...args) — EventEmitter.emit bound to process: the
+   * 'warning', 'uncaughtException'/'uncaughtExceptionMonitor', rejection,
+   * 'exit'/'beforeExit' and signal registries dispatch synchronously with
+   * the given arguments, and the answer says whether a listener ran. An
+   * event nothing registered answers false; an unhandled 'error' throws. */
+  emit(event: string | symbol, ...args: any[]): boolean;
   /** Present in a child created by child_process.fork(). */
   readonly connected: boolean;
   /* The IPC channel of a forked child — Node's Control: `undefined` in a

@@ -1514,6 +1514,27 @@ ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object);
 bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key);
 bool scr_dyn_is_class_capsule(const ScrDyn *d);
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object);
+/* The builtin value kinds' prototype objects, for Object.getPrototypeOf
+ * (scr_dyn_get_prototype). Each hook is installed at load by the gated unit
+ * that models that prototype as a value, so a program that links the unit
+ * gets the very object its own prototype reads answer. A NULL hook — or a
+ * NULL answer — leaves scr_json.c's canonical ordinary object for the
+ * class: an object that is stable across calls and distinct from
+ * Object.prototype, so an untyped isRecord test classifies the value as
+ * Node does even where the full interface is not modeled. */
+extern ScrDyn *(*scr_dyn_wrapper_prototype_hook)(int kind); /* 0 String, 1 Number, 2 Boolean */
+extern ScrDyn *(*scr_dyn_collection_prototype_hook)(const ScrDyn *value);
+extern ScrDyn *(*scr_dyn_date_prototype_hook)(void);
+extern ScrDyn *(*scr_dyn_data_view_prototype_hook)(void);
+extern ScrDyn *(*scr_dyn_buffer_prototype_hook)(void);
+extern ScrDyn *(*scr_dyn_function_prototype_hook)(void); /* Function.prototype (scr_dyn_invoke.c) */
+/* process.emit's lifecycle dispatch ('exit', 'beforeExit' and the signal
+ * family): installed at load by scr_events.c, which owns those registries.
+ * A thread with no events unit linked has no such listener, so the NULL
+ * hook answers false. Answers whether a listener ran; `args` are the emit
+ * call's arguments after the event name. */
+extern bool (*scr_process_emit_lifecycle_hook)(const ScrStr *event, ScrDyn *const *args,
+                                                      size_t argc);
 ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object);
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype);
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object);

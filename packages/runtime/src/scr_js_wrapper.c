@@ -362,8 +362,31 @@ static ScrDyn *scr_js_wrapper_object(int kind, ScrDyn *primitive) {
  * As in Node, it is itself a wrapper of "", 0 or false, so its valueOf
  * and toString answer that primitive; its own prototype is
  * Object.prototype. */
+static ScrDyn *scr_js_wrapper_primitive_prototype(int kind);
+
 static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
-  if (scr_js_wrapper_prototypes[kind]) return scr_js_wrapper_prototypes[kind];
+  /* getPrototypeOf shares this object with the program's own wrapper
+   * reads. The hook is set here, not at load: taking the builder's address
+   * in a load-time initializer would keep this unit's method dispatch
+   * (and the invoke unit it calls) in every program that links the unit
+   * for its guard alone. */
+  scr_dyn_wrapper_prototype_hook = scr_js_wrapper_primitive_prototype;
+  if (scr_js_wrapper_prototypes[kind]) {
+    /* Object.getPrototypeOf built the object first (its hook passes no
+     * constructor); the program's own `String.prototype` read seeds the
+     * link the other direction, so both spellings agree. */
+    if (constructor != NULL) {
+      ScrDyn *existing = scr_js_wrapper_prototypes[kind];
+      /* Once. The constructor's `prototype` member is non-writable, so a
+       * second seed would throw Node's read-only assignment TypeError from
+       * an ordinary prototype read. */
+      if (scr_dyn_obj_get(existing, "constructor", 11) == NULL) {
+        scr_js_wrapper_define_hidden(existing, "constructor", scr_dyn_retain(constructor));
+        scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(existing));
+      }
+    }
+    return scr_js_wrapper_prototypes[kind];
+  }
   scr_js_wrapper_register_cleanup();
   ScrDyn *primitive;
   if (kind == SCR_JS_WRAPPER_STRING) {
@@ -375,7 +398,7 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   }
   ScrDyn *prototype = scr_js_wrapper_object(kind, primitive);
   scr_dyn_release(primitive);
-  scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
+  if (constructor != NULL) scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
   const ScrJsWrapperMember *members = kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
                                     : kind == SCR_JS_WRAPPER_NUMBER ? scr_js_wrapper_number_members
                                     : scr_js_wrapper_boolean_members;
@@ -385,9 +408,18 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
    * `Boolean.prototype === Object(true).constructor.prototype`, and every
    * wrapper's chain ends here. It is non-writable, non-enumerable and
    * non-configurable, like a builtin constructor's. */
-  scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
+  if (constructor != NULL) scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
   scr_js_wrapper_prototypes[kind] = prototype;
   return prototype;
+}
+
+/* Object.getPrototypeOf's answer for a primitive (scr_json.c's
+ * scr_dyn_get_prototype): the kind's prototype object, built before any
+ * constructor value reaches it when the primitive is read first. The
+ * value is +1. */
+static ScrDyn *scr_js_wrapper_primitive_prototype(int kind) {
+  if (kind < 0 || kind > 2) return NULL;
+  return scr_dyn_retain(scr_js_wrapper_prototype(kind, NULL));
 }
 
 /* `Number.prototype` / `Boolean.prototype` read as a JavaScript value

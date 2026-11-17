@@ -2127,6 +2127,123 @@ void scr_process_emit_warning(ScrDyn *args) {
   scr_dyn_release(options);
 }
 
+/* ── process.emit(event, ...args) ─────────────────────────────────────
+ * Node's process IS an EventEmitter, so emit dispatches synchronously over
+ * the registries this unit owns (the warning channel with Node's default
+ * report listener, the uncaught-exception pair and the rejection events)
+ * and, through scr_events.c's hook, over 'exit', 'beforeExit' and signals.
+ * The call's argument vector arrives as one dyn array with the event name
+ * first, exactly as emitWarning's does. An event no registry answers is
+ * false, an unhandled 'error' throws, and a listener's throw propagates
+ * from the emit call. */
+
+static bool scr_emit_event_is(const ScrStr *event, const char *name) {
+  size_t len = strlen(name);
+  return event->len == len && memcmp(event->data, name, len) == 0;
+}
+
+/* Node's onWarning test: only an Error reaches the default report, while a
+ * program's 'warning' listener receives whatever value the emit carried. */
+static bool scr_emit_warning_is_error(const ScrDyn *value) {
+  ScrError *error = scr_errdyn_err_of(value); /* +1: the identity lookup retains */
+  if (error != NULL) {
+    scr_error_release(error);
+    return true;
+  }
+  if (value->kind == SCR_DYN_OBJ && scr_dyn_obj_get(value, "%error", 6) != NULL) return true;
+  return scr_dyn_ref_is_error(value);
+}
+
+static bool scr_emit_warning_value(ScrDyn *const *args, size_t argc) {
+  ScrDyn *warning = argc >= 1 ? args[0] : (ScrDyn *)scr_dyn_undefined();
+  if (scr_emit_warning_is_error(warning)) {
+    /* The default report and the listeners, in Node's listener order. */
+    scr_warning_dispatch(warning);
+    return true;
+  }
+  /* Node's default listener ignores a non-Error and is still registered, so
+   * the emit answers true; user listeners receive the value as it is. */
+  SCR_PE_ENTER();
+  for (size_t i = 0; i < scr_nwarn; i++) {
+    ScrDyn *r = scr_dyn_call(scr_warn_listeners[i], &warning, 1, "listener");
+    if (r == NULL) {
+      SCR_PE_LEAVE();
+      return true;
+    }
+    scr_dyn_release(r);
+  }
+  SCR_PE_LEAVE();
+  return true;
+}
+
+/* One rejection-family registry's listeners with the emit's own arguments.
+ * The answer says the registry had a listener, Node's emit answer; a
+ * listener's throw stays pending for the caller. */
+static bool scr_emit_dyn_listeners(ScrRejListener **list, size_t *n, ScrDyn *const *args,
+                                   size_t argc) {
+  if (*n == 0) return false;
+  scr_rej_fire(list, n, (ScrDyn **)args, argc);
+  return true;
+}
+
+/* The dispatch over an event name and an owned argument vector. The vector
+ * and the name outlive every listener call: a listener can grow (and so
+ * reallocate) the array the call forwarded, which is the program's own
+ * value, so no step here reads the caller's storage after user code ran. */
+static bool scr_process_emit_dispatch(const ScrStr *event, ScrDyn *const *rest, size_t restc) {
+  if (scr_emit_event_is(event, "warning")) return scr_emit_warning_value(rest, restc);
+  if (scr_emit_event_is(event, "uncaughtException"))
+    return scr_emit_dyn_listeners(&scr_uncaught_ls[0], &scr_uncaught_n[0], rest, restc);
+  if (scr_emit_event_is(event, "uncaughtExceptionMonitor"))
+    return scr_emit_dyn_listeners(&scr_uncaught_ls[1], &scr_uncaught_n[1], rest, restc);
+  if (scr_emit_event_is(event, "unhandledRejection"))
+    return scr_emit_dyn_listeners(&scr_urj_listeners, &scr_nurj, rest, restc);
+  if (scr_emit_event_is(event, "rejectionHandled"))
+    return scr_emit_dyn_listeners(&scr_rjh_listeners, &scr_nrjh, rest, restc);
+  if (scr_emit_event_is(event, "multipleResolves"))
+    return scr_emit_dyn_listeners(&scr_mr_listeners, &scr_nmr, rest, restc);
+  if (scr_emit_event_is(event, "error")) {
+    /* EventEmitter's unhandled-error rule: an Error argument is rethrown
+     * itself, anything else becomes ERR_UNHANDLED_ERROR. process can never
+     * hold an 'error' listener (Node's own process has none either). */
+    if (restc >= 1 && scr_emit_warning_is_error(rest[0])) {
+      scr_dyn_throw(scr_dyn_retain(rest[0]));
+      return true;
+    }
+    char rendered_buf[160];
+    const char *rendered =
+        restc >= 1 ? scr_dyn_inspect_lite(rest[0], rendered_buf, sizeof rendered_buf) : "undefined";
+    char message[224];
+    int len = snprintf(message, sizeof message, "Unhandled error. (%s)", rendered);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)len, "ERR_UNHANDLED_ERROR");
+    return true;
+  }
+  if (scr_process_emit_lifecycle_hook != NULL)
+    return scr_process_emit_lifecycle_hook(event, rest, restc);
+  return false;
+}
+
+bool scr_process_emit(ScrDyn *args) {
+  size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
+  if (argc == 0 || items[0] == NULL || items[0]->kind != SCR_DYN_STR) return false;
+  /* A forwarded argument list is the program's own array: spread semantics
+   * give the listeners the values the call carried, so hold an owned copy of
+   * the name and every argument. A listener that pushes to that array
+   * reallocates it, and this vector must not follow. */
+  ScrStr *event = scr_str_retain(items[0]->v.str);
+  size_t restc = argc - 1;
+  ScrDyn **rest = restc != 0 ? malloc(restc * sizeof *rest) : NULL;
+  if (restc != 0) {
+    if (rest == NULL) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < restc; i++) rest[i] = scr_dyn_retain(items[i + 1]);
+  }
+  bool answered = scr_process_emit_dispatch(event, rest, restc);
+  for (size_t i = 0; i < restc; i++) scr_dyn_release(rest[i]);
+  free(rest);
+  scr_str_release(event);
+  return answered;
+}
 
 
 /* A caught-exception snapshot as a dyn value — identity-preserving for

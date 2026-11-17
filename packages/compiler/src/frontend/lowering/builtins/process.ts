@@ -1503,6 +1503,40 @@ export function lowerProcessProperty(
   return null;
 }
 
+/** process.emit(event, ...args), Node's EventEmitter.emit over the process
+ * registries: the whole argument vector crosses as ONE dyn array (the event
+ * included), so the runtime dispatches 'warning', 'uncaughtException' and
+ * its monitor, the rejection events, 'exit', 'beforeExit' and the signal
+ * family, answers false for an event nothing registered, and throws Node's
+ * unhandled-'error' error. The answer is Node's boolean: whether a listener
+ * ran. A single SPREAD of a checked-dynamic array passes that array
+ * directly (the shape a forwarded argument vector arrives in). */
+function lowerProcessEmitCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const nodes = call.arguments.nodes;
+  let argsArr: IrExpr;
+  if (nodes.length === 1 && ts.isSpreadElement(nodes[0]!)) {
+    const spread = lowerer.lowerExpr(nodes[0]!.expression);
+    if (spread.type.kind !== "dyn") {
+      lowerer.noLowering(
+        "process.emit with a typed spread argument",
+        nodes[0]!,
+        "spread an untyped (checked-dynamic) array, or write the arguments positionally",
+      );
+    }
+    argsArr = spread;
+  } else if (nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      "process.emit with spread arguments",
+      call,
+      "spread the whole argument list, or write the arguments positionally",
+    );
+    argsArr = lowerTracingArguments(lowerer, [], loc);
+  } else {
+    argsArr = lowerTracingArguments(lowerer, nodes, loc);
+  }
+  return { kind: "libCall", fn: "process.emit", args: [argsArr], type: BOOL, loc };
+}
+
 /** `process.exit(code)` / `process.cwd()` → libCall. The fallback
  * declaration makes exit's code required; @types/node declares it
  * optional. A bare `process.exit()` uses the current exitCode, or zero
@@ -2532,6 +2566,9 @@ export function lowerProcessMethodCall(
       loc,
     };
   }
+  // process.emit(event, ...args): Node's EventEmitter.emit over the
+  // process registries (lowerProcessEmitCall owns the argument shape).
+  if (member === "emit") return lowerProcessEmitCall(lowerer, call, loc);
   // process.emitWarning(...): the argument vector crosses as ONE dyn
   // array and the runtime applies Node's full grammar (string or Error
   // warning; type/ctor/options second; code/ctor third — wrong kinds
@@ -3275,6 +3312,7 @@ export function lowerProcessOptionalMethodCall(
     const asserted = lowerer.stdlibGlobalMember(expr.expression.expression, "process");
     if (asserted === "send") return lowerProcessIpcSend(lowerer, expr);
     if (asserted === "disconnect") return lowerProcessIpcDisconnect(lowerer, expr);
+    if (asserted === "emit") return lowerProcessEmitCall(lowerer, expr, locOf(expr));
     // process.setuid!(id) and friends: the asserted direct call of an
     // optional credential setter (the @types/node Windows-optional
     // spelling).
@@ -3298,6 +3336,7 @@ export function lowerProcessOptionalMethodCall(
   const member = lowerer.stdlibGlobalMember(expr.expression, "process");
   if (member === "send") return lowerProcessIpcSend(lowerer, expr);
   if (member === "disconnect") return lowerProcessIpcDisconnect(lowerer, expr);
+  if (member === "emit") return lowerProcessEmitCall(lowerer, expr, locOf(expr));
   if (member === null) return null;
   if (PROCESS_CREDENTIAL_SETTERS.has(member)) {
     return processCredentialSetterCall(lowerer, expr, member, locOf(expr));

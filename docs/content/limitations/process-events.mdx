@@ -11,3 +11,6 @@ Exception capture callbacks are unsupported.
 `NODE_NO_WARNINGS=1` leaves out the default report of a process warning on stderr once the program has called `process.emitWarning` or registered a `'warning'` listener; listeners still run.
 Before that, and in a program that does neither, the runtime's own warnings (the listener-leak warning of `EventEmitter` and `EventTarget`, the timer duration warnings, the `dgram` deprecation) are still printed.
 The variable is read when a warning is reported, so an assignment to `process.env.NODE_NO_WARNINGS` changes later reports, where Node reads it once at startup.
+
+`process.emit` dispatches synchronously over the same registries with the arguments the call carries: `'exit'`, `'beforeExit'`, the signal family, `'uncaughtException'` and its monitor, the rejection events, and `'warning'` (whose default report listener makes the answer true).
+A listener's declared parameters are still checked when it is called, so an emit that leaves out an argument a listener declares throws the adapter's type error where Node passes `undefined`.

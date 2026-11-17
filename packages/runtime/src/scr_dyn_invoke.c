@@ -3427,3 +3427,10 @@ ScrDyn *scr_dyn_obj_create_with_properties_shapes(ScrDyn *prototype, ScrDyn *des
   scr_dyn_release(defined);
   return object;
 }
+
+/* Object.getPrototypeOf(a function over the checked-dynamic tree)
+ * (scr_json.c's scr_dyn_get_prototype): Function.prototype, the one value
+ * every function's chain links to. +1. */
+__attribute__((constructor)) static void scr_function_prototype_hook_install(void) {
+  scr_dyn_function_prototype_hook = scr_dyn_function_prototype;
+}

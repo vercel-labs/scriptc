@@ -455,7 +455,8 @@ function lowerTypeofAnswer(
     if (
       ambientUndefinedVarSymbolOf(lowerer, tested) ||
       ambientUndefinedFnSymbolOf(lowerer, tested) ||
-      ambientTypesOnlyGlobalSymbolOf(lowerer, tested)
+      (ambientTypesOnlyGlobalSymbolOf(lowerer, tested) &&
+        !programMayWriteGlobalName(lowerer, tested.text, tested))
     ) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }

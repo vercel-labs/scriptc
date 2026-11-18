@@ -439,6 +439,8 @@ ScrStream *scr_stream_from_async_gen(struct ScrGen *g, ScrClosure *next, ScrClos
                                      double hwm);
 ScrDyn *scr_stream_from_done(void); /* +1, the process-lived marker (scr_stream.c) */
 ScrStream *scr_stream_pause(ScrStream *s);            /* recv +1 */
+/* Whether the stream's lifecycle emits 'close' (the emitClose option). */
+bool scr_stream_emits_close(ScrStream *s);
 ScrStream *scr_stream_resume(ScrStream *s);           /* recv +1 */
 bool scr_stream_is_paused(ScrStream *s);
 double scr_stream_flowing(ScrStream *s); /* -1 = null, 0 = false, 1 = true */

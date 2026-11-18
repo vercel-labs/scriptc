@@ -327,6 +327,44 @@ async function main(): Promise<void> {
     (error: Error) => log.push(`write after emitted error rejected ${error.message}`),
   );
   emitting.destroy();
+
+  // A write still waiting on backpressure when the writable ends cleanly
+  // settles (the drain it waited for happens as the queue empties).
+  const endingBp = new Writable({
+    highWaterMark: 1,
+    write(chunk, encoding, done): void {
+      setTimeout(done, 5);
+    },
+  });
+  const endingBpWriter = Writable.toWeb(endingBp).getWriter();
+  const endingWrite = endingBpWriter.write(encoder.encode("xy"));
+  endingBp.end();
+  await endingWrite.then(
+    () => log.push("backpressured end resolved"),
+    (error: Error) => log.push(`backpressured end rejected ${error.message}`),
+  );
+
+  // abort() with no reason errors the writable with an AbortError, which the
+  // adapter consumes and retires on even though this writable never emits
+  // 'close'.
+  const quiet = new Writable({
+    emitClose: false,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const quietWriter = Writable.toWeb(quiet).getWriter();
+  await quietWriter.abort().then(
+    () => log.push("quiet abort resolved"),
+    (error: Error) => log.push(`quiet abort rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  log.push(`quiet destroyed ${quiet.destroyed} errored ${quiet.errored?.message ?? "-"}`);
+  await quietWriter.write(encoder.encode("z")).then(
+    () => log.push("write after quiet abort resolved"),
+    (error: (Error & { name: string }) | undefined) =>
+      log.push(`write after quiet abort rejected ${error ? error.name : "undefined"}`),
+  );
 }
 
 main().then(() => {

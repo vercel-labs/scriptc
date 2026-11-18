@@ -7519,6 +7519,8 @@ ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc) {
   return scr_stream_retain(s);
 }
 
+bool scr_stream_emits_close(ScrStream *s) { return s != NULL && s->st != NULL && s->st->emit_close; }
+
 ScrStream *scr_stream_pause(ScrStream *s) {
   ScrStreamState *st = s->st;
   if (st->has_r && st->r.flowing != 0) {

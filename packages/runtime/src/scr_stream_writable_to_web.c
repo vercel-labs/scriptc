@@ -202,9 +202,16 @@ static void stw3_eos(ScrClosure *cl, ScrStream *s, ScrError *err) {
     scr_promise_release(p);
   } else {
     /* Node's clean-end branch without a close: the web stream errors with an
-     * AbortError, so its next write rejects with one. */
+     * AbortError, so a write still waiting on backpressure and any later write
+     * reject with one. */
     ScrError *abort = scr_error_abort(NULL);
     if (abort) {
+      if (c->backpressure) {
+        ScrPromise *p = c->backpressure;
+        c->backpressure = NULL;
+        stw3_reject(p, abort);
+        scr_promise_release(p);
+      }
       stw3_controller_error(c, abort);
       scr_error_release(abort);
     }
@@ -313,13 +320,19 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
 static ScrDyn *stw3_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   Stw3Ctx *c = stw3_of(cl);
   ScrDyn *reason = argc > 0 ? args[0] : NULL;
+  /* Node's writer.abort() with no reason does not leave the stream
+   * unerrored: the writable is destroyed with an AbortError. */
   ScrError *err =
       reason && reason->kind != SCR_DYN_UNDEF && reason->kind != SCR_DYN_NULL
           ? scr_error_from_dyn(reason)
-          : NULL;
+          : scr_error_abort(NULL);
   if (c->writable && !scr_stream_prop(c->writable, "destroyed")) {
     scr_stream_release(scr_stream_destroy(c->writable, err));
   }
+  /* The destruction errors the writable (an AbortError when the abort had no
+   * reason), which the adapter's own error listener consumes and its eos
+   * watcher reports: the adapter retires from there, so a destroyed stream
+   * that never emits 'close' does not keep it alive until exit. */
   if (err) scr_error_release(err);
   if (scr_exc_pending()) scr_exc_clear();
   ScrPromise *p = scr_promise_new();

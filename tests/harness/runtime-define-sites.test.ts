@@ -139,3 +139,38 @@ test("the map unit's promise-key build is selected exactly when the dynamic prom
   expect(ways.length).toBeGreaterThan(0);
   expect(linking.length).toBeGreaterThanOrEqual(ways.length);
 });
+
+test("scr_dyn_invoke.c names the worker message channel only inside its worker build", () => {
+  // scr_worker_events.c defines it, and only a worker build compiles that unit; the header
+  // declares it non-weak, so a reference from a build without SCR_WORKERS left every
+  // dynamic-invoke program with an undefined _scr_worker_message_channel at link time.
+  const text = readFileSync(join(sourceDir, "scr_dyn_invoke.c"), "utf8");
+  const start = text.indexOf("#ifdef SCR_WORKERS");
+  const end = text.indexOf("#endif", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const outside = text.slice(0, start) + text.slice(end);
+  expect(outside).not.toContain("scr_worker_message_channel()");
+  expect(text.slice(start, end)).toContain("scr_worker_message_channel()");
+});
+
+test("a stored MessageChannel is constructed once per construction", () => {
+  // The condition used to call the channel constructor as a probe and the body called it again:
+  // the probe object, with its two ports and their native channel, was never released, so every
+  // stored `new MessageChannel()` leaked one channel.
+  const text = readFileSync(join(sourceDir, "scr_dyn_invoke.c"), "utf8");
+  const start = text.indexOf("dyn_s50) == 0");
+  const end = text.indexOf("dyn_s52) == 0");
+  expect(start).toBeGreaterThanOrEqual(0);
+  const branch = text.slice(start, end);
+  expect(branch.match(/dyn_worker_channel\(\)/g)?.length).toBe(1);
+});
+
+test("a MessageChannel with no worker build reports the unsupported-construction error", () => {
+  // Returning without a value made every stored construction through the dynamic path a silent
+  // NULL; without a worker build it must raise what any unbuilt constructor raises.
+  const text = readFileSync(join(sourceDir, "scr_dyn_invoke.c"), "utf8");
+  const start = text.indexOf("dyn_s50) == 0");
+  const end = text.indexOf("dyn_s52) == 0");
+  const branch = text.slice(start, end);
+  expect(branch).toContain("dyn_unsupported_constructor(name, result)");
+});

@@ -65,6 +65,11 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // t.error builds Node's wrapper over the failure through the inspect
   // unit's rendering, which can raise.
   "test.ctxError",
+  // The accessor descriptor walk can throw (a fenced class reflection, a
+  // throwing getter trap), and the accessor requirement throws Node's
+  // ERR_INVALID_ARG_VALUE for a missing method.
+  "test.accessorDescriptor",
+  "test.accessorRequire",
   "test.mockTimes",
   "test.registerEmpty",
   "test.sub",

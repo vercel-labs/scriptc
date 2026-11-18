@@ -59,6 +59,11 @@ declare module "fs/promises" {
     createReadStream(options?: CreateReadStreamOptions): import("node:fs").ReadStream;
     createWriteStream(options?: CreateWriteStreamOptions): import("node:fs").WriteStream;
     readLines(options?: CreateReadStreamOptions): import("node:readline").Interface;
+    /** The handle's content as Node's type: "bytes" web stream. */
+    readableWebStream(options?: {
+      type?: "bytes";
+      autoClose?: boolean;
+    }): ReadableStream<Uint8Array>;
     sync(): Promise<void>;
     datasync(): Promise<void>;
     truncate(len?: number): Promise<void>;
@@ -191,6 +196,18 @@ declare module "fs/promises" {
     options?: { recursive?: boolean; mode?: number },
   ): Promise<void>;
   export function readdir(path: string | URL): Promise<string[]>;
+  /* The bare encoding spellings and the bytes record, like readdirSync's. */
+  export function readdir(path: string | URL, options: "buffer"): Promise<Buffer[]>;
+  export function readdir(path: string | URL, options: BufferEncoding): Promise<string[]>;
+  export function readdir(
+    path: string | URL,
+    options: { encoding: "buffer"; withFileTypes?: false; recursive?: false },
+  ): Promise<Buffer[]>;
+  /* The names decoded with the record's encoding (utf8 by default). */
+  export function readdir(
+    path: string | URL,
+    options: { encoding?: BufferEncoding | null; withFileTypes?: false; recursive?: boolean },
+  ): Promise<string[]>;
   export function readdir(
     path: string | URL,
     options: {
@@ -238,12 +255,37 @@ declare module "fs/promises" {
   export function appendFile(path: string | URL, data: string | ScriptcBufferView): Promise<void>;
   export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
   export function mkdtemp(prefix: string | URL): Promise<string>;
+  /** The object fsPromises.mkdtempDisposable answers: the created path, its
+   * removal, and the Symbol.asyncDispose hook. */
+  export interface DisposableTempDir extends AsyncDisposable {
+    path: string;
+    remove(): Promise<void>;
+  }
+  export function mkdtempDisposable(
+    prefix: string | URL,
+    options?: string | { encoding?: string },
+  ): Promise<DisposableTempDir>;
   export function rmdir(path: string | URL): Promise<void>;
   export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(
     path: string | URL,
     options?: import("node:fs").OpenDirOptions,
   ): Promise<import("node:fs").Dir>;
+  /** One entry of fsPromises.watch's iteration: the event kind and the
+   * entry name the platform reported. */
+  export interface FileChangeInfo {
+    eventType: string;
+    filename: string | null;
+  }
+  export interface WatchOptions {
+    persistent?: boolean;
+    recursive?: boolean;
+    encoding?: string;
+  }
+  export function watch(
+    filename: string | URL,
+    options?: WatchOptions,
+  ): AsyncIterable<FileChangeInfo>;
 }
 
 declare module "node:fs/promises" {

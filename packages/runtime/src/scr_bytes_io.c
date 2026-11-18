@@ -1540,6 +1540,106 @@ static ScrArr *scr_fs_cb_vectors(const ScrDyn *buffers) {
   return out;
 }
 
+/* fs.readdir's callback form: getOptions' walk (a bare encoding string, or
+ * the record's `encoding`, `withFileTypes` and `recursive`), then the
+ * listing with that encoding — the entry names decoded from their raw bytes,
+ * Buffers for 'buffer', or Dirent values for withFileTypes. Node's callback
+ * form walks recursively in the synchronous queue order. +1 result, or NULL
+ * with the exception pending. */
+static ScrDyn *scr_fs_cb_readdir(const ScrDyn *options, ScrStr *path, bool *throw_now) {
+  ScrStr *encoding = NULL; /* +1 when the options named one */
+  bool with_types = false;
+  bool recursive = false;
+  if (options != NULL && options->kind == SCR_DYN_STR) {
+    encoding = scr_str_retain(options->v.str);
+  } else if (options != NULL && !scr_fs_dyn_absent(options) && options->kind != SCR_DYN_FUNC) {
+    /* A record reaches the ladder as a plain object or as a typed-ref box
+     * (scr_fs_cb_option materializes either); the callback itself is the
+     * two-argument form's second slot. */
+    ScrDyn *enc = scr_fs_cb_option(options, "encoding");
+    if (enc == NULL) {
+      /* The member read threw: getOptions runs at the call, so it throws. */
+      *throw_now = true;
+      return NULL;
+    }
+    /* assertEncoding: only a truthy value is checked, and every truthy
+     * value that is not an encoding name is Node's ERR_INVALID_ARG_VALUE at
+     * the call — a non-string one is the same error, not a type error. */
+    if (scr_dyn_truthy(enc)) {
+      if (enc->kind != SCR_DYN_STR) {
+        scr_dyn_arg_value_fail("encoding", "is invalid encoding", enc);
+        *throw_now = true;
+        scr_dyn_release(enc);
+        return NULL;
+      }
+      encoding = scr_str_retain(enc->v.str);
+    }
+    scr_dyn_release(enc);
+    with_types = scr_fs_cb_option_bool(options, "withFileTypes");
+    recursive = scr_fs_cb_option_bool(options, "recursive");
+  }
+  /* 'buffer' is getOptions' own spelling for the raw entry names, so it is
+   * not one of the decoder's encodings. */
+  const bool buffer =
+      encoding != NULL && encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0;
+  if (encoding != NULL && !buffer && !scr_fs_read_encoding_valid(encoding)) {
+    /* getOptions runs assertEncoding before the request, so this reaches the
+     * caller as a throw rather than the callback. */
+    scr_str_release(encoding);
+    *throw_now = true;
+    return NULL;
+  }
+  const bool utf8 = encoding == NULL || encoding->len == 0 || scr_fs_read_utf8(encoding);
+  ScrDyn *out = NULL;
+  if (with_types && (buffer || !utf8)) {
+    static const char message[] =
+        "fs.readdir with withFileTypes and a non-utf8 encoding has no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    *throw_now = true;
+  } else if (!with_types && recursive && (buffer || !utf8)) {
+    static const char message[] =
+        "fs.readdir with recursive and a non-utf8 encoding has no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    *throw_now = true;
+  } else if (with_types) {
+    ScrScandir *scan = recursive ? scr_fs_scandir_recursive(path) : scr_fs_scandir(path);
+    if (scan != NULL) {
+      out = scr_dyn_new_arr();
+      for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+        ScrStr *name = scr_fs_scandir_name(scan, i); /* +1 */
+        ScrStr *parent = recursive ? scr_fs_scandir_parent(scan, i) : scr_str_retain(path);
+        scr_dyn_arr_push(out, scr_dirent_dyn(name, parent, scr_fs_scandir_type(scan, i)));
+        scr_str_release(name);
+        if (parent != NULL) scr_str_release(parent);
+      }
+      scr_fs_scandir_free(scan);
+    }
+  } else if (buffer) {
+    ScrArr *names = scr_fs_readdir_bytes(path);
+    if (names != NULL) {
+      out = scr_dyn_new_arr();
+      for (size_t i = 0; i < (size_t)scr_arr_len(names); i++) {
+        ScrBytes *bytes = scr_arr_get_ref(names, (double)i); /* +1 */
+        scr_dyn_arr_push(out, scr_dyn_new_buffer(bytes));
+        scr_bytes_release(bytes); /* the Buffer value keeps its own */
+      }
+      scr_arr_release(names);
+    }
+  } else {
+    ScrArr *names = recursive ? scr_fs_readdir_recursive(path)
+                              : utf8 ? scr_fs_readdir(path)
+                                     : scr_fs_readdir_encoded(path, encoding);
+    if (names != NULL) {
+      out = scr_dyn_new_arr();
+      for (size_t i = 0; i < (size_t)scr_arr_len(names); i++)
+        scr_dyn_arr_push(out, scr_fs_cb_string(scr_arr_get_ref(names, (double)i)));
+      scr_arr_release(names);
+    }
+  }
+  if (encoding != NULL) scr_str_release(encoding);
+  return out;
+}
+
 static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc) {
   /* fs.realpath.native is Node's realpath binding under a second name, so
    * both spellings take the realpath path. */
@@ -2157,16 +2257,13 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     if (timestamp_fd) scr_fs_futimes(fd, access, modified);
     else scr_fs_utimes(path, access, modified, !strcmp(op, "lutimes"));
   } else if (!strcmp(op, "readdir")) {
-    if (scr_fs_cb_refuse_option(ARG(1), "encoding") || scr_fs_cb_option_bool(ARG(1), "withFileTypes") || scr_fs_cb_option_bool(ARG(1), "recursive")) {
-      if (!scr_exc_pending()) { const char *message = "Recursive readdir and Dirent results have no native lowering"; scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020"); }
-      goto done;
+    bool throw_now = false;
+    ScrDyn *names = scr_fs_cb_readdir(ARG(1), path, &throw_now);
+    if (throw_now) {
+      scr_str_release(path);
+      return NULL;
     }
-    ScrArr *names = scr_fs_readdir(path);
-    if (names) {
-      result = scr_dyn_new_arr();
-      for (size_t i = 0; i < (size_t)scr_arr_len(names); i++) scr_dyn_arr_push(result, scr_fs_cb_string(scr_arr_get_ref(names, (double)i)));
-      scr_arr_release(names);
-    }
+    result = names;
   } else {
     char message[160];
     int length = snprintf(message, sizeof message, "Native filesystem callback fs.%s with these options has no lowering", op);

@@ -8,14 +8,19 @@ import {
   SYMBOL_T,
   type IrExpr,
   type IrFunction,
+  type IrGlobal,
   type IrStmt,
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { canonicalBuiltinModule, locOf } from "../program.js";
+import { canonicalBuiltinModule, isCjsJsFile, locOf } from "../program.js";
+import { cjsExportValueByName, cjsTableExportNamesInOrder } from "./cjs-inline-require.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
 import { builtinModuleMemberNames } from "./surfaces.js";
+import { funcTypeFromParamShapes } from "./call-signatures.js";
+import { argumentCountValue } from "./argument-counts.js";
+import { nsReceiverEvaluates } from "./lower-namespaces.js";
 
 /** Computed namespace reads select live exports instead of copying a
  * namespace into a registry snapshot. Constructor registries may contain
@@ -246,25 +251,79 @@ function moduleNamespaceGetter(
 ): { name: string; keys: string[] } | null {
   const source = lowerer.sourceFileOfModuleNamespace(ns.type);
   if (!source) return null;
-  const symbol = lowerer.checker.getSymbolAtLocation(source);
-  if (!symbol) return null;
-  const exports: { key: string; declaration: ts.Node | undefined; symbol: ts.Symbol }[] = [];
-  const runtimeNames = lowerer.runtimeExportNames(source);
-  for (const exported of lowerer.checker.getExportsOfModule(symbol)) {
-    // A name a type-only export forwards has no runtime binding.
-    if (!runtimeNames.has(ts.symbolName(exported))) continue;
-    const target =
-      exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
-    if (!(target.flags & ts.SymbolFlags.Value)) continue;
-    exports.push({
-      key: ts.symbolName(exported),
-      declaration: target.valueDeclaration,
-      symbol: target,
-    });
-  }
-  exports.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  const name = `%module.namespace:${ns.type.moduleId}`;
   const loc = ns.loc;
+  const name = `%module.namespace:${ns.type.moduleId}`;
+  /** One property of the namespace object: its key and the read that answers
+   * it (the export's current value, checked-dynamic). */
+  const entries: { key: string; node: ts.Node; make: () => IrExpr }[] = [];
+  // A CommonJS module's exports are its export TABLE, not ES exports: the
+  // module symbol carries none, so the table's names are the object's — the
+  // value a require() of such a module answers.
+  const cjsNames = isCjsJsFile(source, lowerer.program)
+    ? cjsTableExportNamesInOrder(lowerer, source)
+    : null;
+  if (cjsNames !== null) {
+    for (const key of cjsNames)
+      entries.push({
+        key,
+        node: source,
+        make: () => {
+          const value = cjsExportValueByName(lowerer, source, key, source);
+          if (value === null)
+            lowerer.unsupported(
+              "SC1090",
+              source,
+              `reading the export '${key}' through its module's exports object (the member has no static value)`,
+            );
+          return lowerer.coerceToExpected(value, DYN);
+        },
+      });
+  } else {
+    const symbol = lowerer.checker.getSymbolAtLocation(source);
+    if (!symbol) return null;
+    const runtimeNames = lowerer.runtimeExportNames(source);
+    for (const exported of lowerer.checker.getExportsOfModule(symbol)) {
+      // A name a type-only export forwards has no runtime binding.
+      if (!runtimeNames.has(ts.symbolName(exported))) continue;
+      const target =
+        exported.flags & ts.SymbolFlags.Alias
+          ? lowerer.checker.getAliasedSymbol(exported)
+          : exported;
+      if (!(target.flags & ts.SymbolFlags.Value)) continue;
+      const key = ts.symbolName(exported);
+      const declaration = target.valueDeclaration;
+      const node = declaration ?? source;
+      entries.push({
+        key,
+        node,
+        make: () => {
+          const identifier = declaration?.name as ts.Node | undefined;
+          if (identifier && ts.isIdentifier(identifier))
+            return lowerer.lowerExprExpecting(identifier, DYN);
+          // `export default <expression>` and the anonymous default
+          // class/function have no named binding to read. The module's
+          // pre-registered default global holds the value the export
+          // statement snapshotted — the same storage a default import
+          // reads — so the namespace property answers it instead of
+          // fencing. A default whose type has no checked-dynamic form
+          // still fails the coercion below and keeps its fence.
+          const storage = lowerer.globalsBySymbol.get(target);
+          // An export that is another module's namespace has no binding
+          // either: its value is that module's namespace object.
+          const nested = storage ? null : namespaceExportValue(lowerer, target, loc);
+          if (!storage && !nested) {
+            lowerer.unsupported(
+              "SC1090",
+              node,
+              `reading the unnamed export '${key}' through a module namespace object`,
+            );
+          }
+          return nested ?? lowerer.coerceToExpected(varRef(storage!.id, storage!.type, loc), DYN);
+        },
+      });
+    }
+  }
+  entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   if (!gettersInProgress.has(name) && lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, DYN);
     const previousClass = lowerer.currentClass;
@@ -273,41 +332,15 @@ function moduleNamespaceGetter(
     gettersInProgress.add(name);
     try {
       const body: IrStmt[] = [];
-      for (const { key, declaration, symbol: exportSymbol } of exports) {
-        const node = declaration ?? source;
+      for (const { key, node, make } of entries) {
         const diagsBefore = lowerer.diags.length;
         let read: IrStmt[];
         try {
-          const identifier = declaration?.name as ts.Node | undefined;
-          let value: IrExpr;
-          if (identifier && ts.isIdentifier(identifier)) {
-            value = lowerer.lowerExprExpecting(identifier, DYN);
-          } else {
-            // `export default <expression>` and the anonymous default
-            // class/function have no named binding to read. The module's
-            // pre-registered default global holds the value the export
-            // statement snapshotted — the same storage a default import
-            // reads — so the namespace property answers it instead of
-            // fencing. A default whose type has no checked-dynamic form
-            // still fails the coercion below and keeps its fence.
-            const storage = lowerer.globalsBySymbol.get(exportSymbol);
-            // An export that is another module's namespace has no binding
-            // either: its value is that module's namespace object.
-            const nested = storage ? null : namespaceExportValue(lowerer, exportSymbol, loc);
-            if (!storage && !nested) {
-              lowerer.unsupported(
-                "SC1090",
-                node,
-                `reading the unnamed export '${key}' through a module namespace object`,
-              );
-            }
-            value =
-              nested ?? lowerer.coerceToExpected(varRef(storage!.id, storage!.type, loc), DYN);
-          }
+          const value = make();
           if (value.type.kind !== "dyn") {
             lowerer.unsupported(
               "SC1101",
-              identifier ?? node,
+              node,
               `reading the export '${key}' ('${lowerer.fmt(value.type)}') through a module namespace object`,
             );
           }
@@ -348,7 +381,7 @@ function moduleNamespaceGetter(
       lowerer.currentClass = previousClass;
     }
   }
-  return { name, keys: exports.map(({ key }) => key) };
+  return { name, keys: entries.map(({ key }) => key) };
 }
 
 /** A module namespace taken as an untyped value whose exports a copy
@@ -605,6 +638,24 @@ export function moduleNamespaceBuiltinDynValue(
   return value;
 }
 
+/** Whether the boxed value of a builtin module namespace serves `member`:
+ * the member has a checked-dynamic value lowering, so a read through the
+ * box answers what Node's module object holds. An unserved member reads
+ * undefined there, and a caller that needs Node's answer has to fall back
+ * to the module's static member tables. Builds (and caches) the box when
+ * this is the first ask. */
+export function builtinNamespaceBoxServes(
+  lowerer: Lowerer,
+  moduleId: string,
+  member: string,
+  loc: SrcLoc,
+): boolean {
+  if (!moduleId.startsWith("builtin:")) return false;
+  if (!lowerer.builtinNamespaceBoxKeys.has(moduleId))
+    moduleNamespaceBuiltinDynValue(lowerer, moduleId, loc);
+  return lowerer.builtinNamespaceBoxKeys.get(moduleId)?.includes(member) ?? false;
+}
+
 /** Every member key the box tries, sorted: the lowering tables' value
  * members, the sub-module members and the module-level objects. */
 function builtinBoxMemberNames(lowerer: Lowerer, module: string): string[] {
@@ -720,4 +771,145 @@ export function utilTypesNamespaceAnswer(
   for (const other of expr.arguments.nodes.slice(1))
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(other), loc: locOf(other) });
   return stmts.length === 0 ? answer : { kind: "seqExpr", stmts, result: answer, type: BOOL, loc };
+}
+
+/** A static member read on a module namespace object whose value the checker
+ * cannot resolve (`(ns as any).name`): the value the module exports under
+ * that name — a named binding live, an expression default from the storage
+ * the export statement filled — or `undefined` for a name it does not
+ * export. Node reads a namespace object like any other object: only an
+ * import of a missing name is a load-time error, and shipped JavaScript
+ * probes a package's dev-only members exactly this way (`Scheduler.log` in
+ * react-dom's startup).
+ *
+ * The receiver still runs first: `(log(), ns as any).name` evaluates `log()`
+ * before the read, whatever the member answers. Null for a builtin's
+ * namespace, which the standard-library lowering answers. */
+export function lowerModuleNamespaceMember(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  receiver: IrExpr,
+): IrExpr | null {
+  const namespace = receiver.type;
+  if (namespace.kind !== "moduleNs" || namespace.moduleId.startsWith("builtin:")) return null;
+  const source = lowerer.sourceFileOfModuleNamespace(namespace);
+  if (!source) return null;
+  const loc = locOf(expr);
+  const name = expr.name.text;
+  const symbol = lowerer.checker.getSymbolAtLocation(source);
+  const runtimeNames = lowerer.runtimeExportNames(source);
+  let value: IrExpr | null = null;
+  for (const exported of symbol ? lowerer.checker.getExportsOfModule(symbol) : []) {
+    if (ts.symbolName(exported) !== name) continue;
+    value = namespaceMemberValue(lowerer, expr, exported, name, runtimeNames);
+    break;
+  }
+  const answer = value ?? dynUndefinedExpr(loc);
+  if (!nsReceiverEvaluates(expr.expression)) return answer;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: receiver, loc: receiver.loc }],
+    result: answer,
+    type: answer.type,
+    loc: answer.loc,
+  };
+}
+
+/** The value a namespace property read answers for one export. */
+function namespaceMemberValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  exported: ts.Symbol,
+  name: string,
+  runtimeNames: ReadonlySet<string>,
+): IrExpr | null {
+  // A name a type-only export forwards has no runtime binding.
+  if (!runtimeNames.has(name)) return null;
+  const target =
+    exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;
+  if (!(target.flags & ts.SymbolFlags.Value)) return null;
+  const loc = locOf(expr);
+  // An export that IS a module namespace (`export * as boxed from "./m"`,
+  // `import * as m from "./m"; export { m as default }`): the read answers
+  // that module's own namespace object, the value a typed reference boxed
+  // into an untyped slot already gets.
+  const nested = namespaceExportValue(lowerer, target, loc);
+  if (nested !== null) return nested;
+  // The module global the export owns, following any `export … from` chain:
+  // an expression default (`export default 42`), a CommonJS
+  // `exports.name = <expr>`, and the SNAPSHOT a default over a mutable
+  // binding takes.
+  const stored = exportStorageOf(lowerer, exported);
+  // `default` is a snapshot of the export statement, not a live view of the
+  // binding it names, and a re-export is alias plumbing whose value (a
+  // snapshot again, when it forwards a default) lives where the source module
+  // keeps it. Both read that storage; a plain named export reads its
+  // declaration live below.
+  const alias = (exported.flags & ts.SymbolFlags.Alias) !== 0;
+  if ((name === "default" || alias) && stored !== undefined)
+    return varRef(stored.id, stored.type, loc);
+  // A named binding reads live, like the import of the same name.
+  const identifier = target.valueDeclaration?.name as ts.Node | undefined;
+  if (identifier !== undefined && ts.isIdentifier(identifier))
+    return lowerer.lowerExprExpecting(identifier, DYN);
+  if (stored !== undefined) return varRef(stored.id, stored.type, loc);
+  return anonymousDefaultValue(lowerer, expr, exported, target, loc);
+}
+
+/** An anonymous `export default function () {}` / `export default class {}`:
+ * the declaration is the export's only value. A function reads as the
+ * zero-capture closure the identifier path builds for a named declaration
+ * (interned per function, so the same value answers every read, with its
+ * `length`); a class reads as its class object. */
+function anonymousDefaultValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  exported: ts.Symbol,
+  target: ts.Symbol,
+  loc: SrcLoc,
+): IrExpr | null {
+  const decl = target.valueDeclaration;
+  if (decl === undefined) return null;
+  if (ts.isFunctionDeclaration(decl)) {
+    const sig = lowerer.fnSigsBySymbol.get(exported) ?? lowerer.fnSigsBySymbol.get(target);
+    if (sig === undefined) return null;
+    lowerer.noteEdge(sig.name);
+    const funcType = funcTypeFromParamShapes(sig.params, sig.returnType);
+    if (funcType.kind !== "func") return null;
+    return argumentCountValue(lowerer, decl, expr, {
+      kind: "closure",
+      fnName: sig.name,
+      captures: [],
+      type: funcType,
+      loc,
+    });
+  }
+  if (ts.isClassDeclaration(decl)) {
+    const info = lowerer.classBySymbol.get(exported) ?? lowerer.classBySymbol.get(target);
+    return info === undefined ? null : lowerer.classValueRef(info, expr);
+  }
+  return null;
+}
+
+/** The module global an export owns, following its alias chain one step at a
+ * time: `export { v } from "./m"`, `import v from "./m"; export { v }`, a
+ * local specifier without a rename, and a default over a mutable binding all
+ * pass the value along. Each step is alias plumbing with no storage of its
+ * own, so the value lives where the chain reaches storage — the FIRST step
+ * that owns one, which keeps a snapshot a snapshot (a default over a mutable
+ * binding stopped there when the export statement ran) and a live binding
+ * live. Undefined for an export whose value only its declaration names. */
+function exportStorageOf(lowerer: Lowerer, symbol: ts.Symbol): IrGlobal | undefined {
+  const seen = new Set<ts.Symbol>();
+  let current: ts.Symbol | undefined = symbol;
+  while (current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    const stored = lowerer.globalsBySymbol.get(current);
+    if (stored !== undefined) return stored;
+    // The chain ends at the first symbol that is not an alias (the checker
+    // answers getImmediateAliasedSymbol only for aliases).
+    if ((current.flags & ts.SymbolFlags.Alias) === 0) return undefined;
+    current = lowerer.checker.getImmediateAliasedSymbol(current);
+  }
+  return undefined;
 }

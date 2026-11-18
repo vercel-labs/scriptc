@@ -33,6 +33,11 @@ bool scr_pki_ed25519_ready(void);
 ScrPkiKey *scr_pki_key_retain(ScrPkiKey *key);
 void scr_pki_key_release(ScrPkiKey *key);
 bool scr_pki_key_is_private(const ScrPkiKey *key);
+/* The key material of an asymmetric KeyObject, retained, or NULL. */
+ScrPkiKey *scr_crypto_key_object_material(const ScrDyn *value);
+/* An asymmetric KeyObject over retained `key` (a new reference). */
+ScrDyn *scr_crypto_key_object_from_material(ScrPkiKey *key);
+
 bool scr_pki_key_is_rsa(const ScrPkiKey *key);
 /* An id-RSASSA-PSS key (node:crypto's "rsa-pss" KeyObjects), which WebCrypto
  * does not accept where a plain RSA key is required. */
@@ -68,6 +73,10 @@ ScrPkiKey *scr_pki_generate_x25519(void);
 bool scr_pki_key_is_x25519(const ScrPkiKey *key);
 ScrPkiKey *scr_pki_key_from_x25519_raw(const uint8_t *raw, size_t len);
 ScrBytes *scr_pki_export_x25519_raw(ScrPkiKey *key);
+ScrPkiKey *scr_pki_generate_x448(void);
+bool scr_pki_key_is_x448(const ScrPkiKey *key);
+ScrPkiKey *scr_pki_key_from_x448_raw(const uint8_t *raw, size_t len);
+ScrBytes *scr_pki_export_x448_raw(ScrPkiKey *key);
 /* The shared secret of an ECDH or X25519 key pair: X25519's 32 bytes or
  * ECDH's x coordinate at the field's width. NULL on failure (a public key
  * of another curve or type), with no error pending. */

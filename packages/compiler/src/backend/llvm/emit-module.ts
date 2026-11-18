@@ -632,11 +632,17 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // A program that can register an 'error' listener on a child installs
   // the builder of a failed spawn's error object (runtime-features.ts).
   const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
-  const usesFsWatch = runtimeFeatures.fsWatch;
+  // fsPromises.watch iterates over the watcher unit, so it installs the
+  // same loop hooks.
+  const usesFsWatch = runtimeFeatures.fsWatch || runtimeFeatures.fsWatchEvents;
   // fs.watchFile programs register the poller unit's exit cleanup — the
   // same one-line gating (native/executable.ts links scr_watch_file.c on
   // the same predicate).
   const usesFsWatchFile = runtimeFeatures.fsWatchFile;
+  // fsPromises.watch programs register the iterator unit's exit cleanup —
+  // the same one-line gating (native/executable.ts links scr_watch_async.c
+  // on the same predicate).
+  const usesFsWatchEvents = runtimeFeatures.fsWatchEvents;
   // Programs that call into Node record the libnode pack and its Node
   // version before %main (scr_node_island.c).
   const usesNodeIsland = runtimeFeatures.nodeIsland;
@@ -658,10 +664,6 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesDnsResolve = runtimeFeatures.dnsResolve;
   const usesHttp2 = runtimeFeatures.http2;
   const usesHttp = runtimeFeatures.http;
-  // IncomingMessage.signal builds its AbortController through a factory the
-  // signal unit installs (scr_abort.c): only a program that reads the signal
-  // links it, and scr_http.c holds no reference to it.
-  const usesHttpSignal = runtimeFeatures.httpSignal;
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
@@ -728,6 +730,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
   if (usesFsWatchFile) emitter.declare(`declare void @scr_watch_file_install()`);
+  if (usesFsWatchEvents) emitter.declare(`declare void @scr_watch_events_install()`);
   if (usesNodeIsland) emitter.declare(`declare void @scr_node_island_install(ptr, ptr)`);
   // Interned now: the C-string constants flush before main assembles.
   const nodeIslandConfig = usesNodeIsland
@@ -752,17 +755,6 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesDnsResolve) emitter.declare(`declare void @scr_dns_resolve_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
-  if (usesHttpSignal && usesHttp) {
-    // The program wires the signal unit to http's message signal: neither
-    // unit references the other, so a program that never reads a message
-    // signal links no signal code and an AbortController program links no
-    // http code. A dyn read of `signal` on some other object selects the
-    // signal unit alone, with no http to wire.
-    emitter.declare(`declare void @scr_http_set_abort_factory(ptr)`);
-    emitter.declare(`declare void @scr_http_set_signal_clear(ptr)`);
-    emitter.declare(`declare ptr @scr_fetch_abort_controller_new()`);
-    emitter.declare(`declare void @scr_fetch_abort_controller_clear_listeners(ptr)`);
-  }
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
@@ -1551,6 +1543,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // fs.watchFile programs register the poller unit's atexit cleanup the
     // same way — scr_watch_file.c links only when this line is emitted.
     ...(usesFsWatchFile ? [`  call void @scr_watch_file_install()`] : []),
+    ...(usesFsWatchEvents ? [`  call void @scr_watch_events_install()`] : []),
     ...(nodeIslandConfig
       ? [
           `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,
@@ -1567,12 +1560,6 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
-    ...(usesHttpSignal && usesHttp
-      ? [
-          `  call void @scr_http_set_abort_factory(ptr @scr_fetch_abort_controller_new)`,
-          `  call void @scr_http_set_signal_clear(ptr @scr_fetch_abort_controller_clear_listeners)`,
-        ]
-      : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),
     ...(usesDnsResolve ? [`  call void @scr_dns_resolve_install()`] : []),
     ...(usesHttp2 ? [`  call void @scr_http2_dyn_install()`] : []),

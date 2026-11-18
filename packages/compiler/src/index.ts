@@ -907,6 +907,7 @@ async function compileExecutableNative(
     ...(features.sqlite ? { sqlite: true } : {}),
     ...(features.largePages ? { largePages: true } : {}),
     ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.fsWebStream ? { fsWebStream: true } : {}),
     // The C-source link (a sanitized build) compiles the runtime itself, so it
     // needs the same Blob/File body define the runtime pack selects.
     ...(features.webBodies ? { webBodies: true } : {}),
@@ -947,6 +948,7 @@ async function compileExecutableNative(
     textCodecDyn: features.textCodecDyn,
     watch: features.watch,
     watchFile: features.watchFile,
+    watchEvents: features.watchEvents,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),
     ...(features.youngNursery ? { youngNursery: true } : {}),
@@ -956,6 +958,8 @@ async function compileExecutableNative(
     cipher: features.cipher,
     ecdh: features.ecdh,
     dh: features.dh,
+    argon2: features.argon2 || features.webcrypto,
+    mlkem: features.mlkem,
     pki: features.pki,
     ed25519: features.ed25519,
     x509: features.x509,

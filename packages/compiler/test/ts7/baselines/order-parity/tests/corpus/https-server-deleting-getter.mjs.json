@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/https-server-deleting-getter.mjs"
+ ],
+ "diags": []
+}

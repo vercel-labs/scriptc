@@ -271,7 +271,9 @@ static ScrDyn *ar_test_target(ScrClosure *self, ScrDyn *const *args, size_t argc
 
 /* A resource the program drops is reclaimed; a binding keeps its payload alive
  * only while the binding itself is reachable, and the loop leaves the live
- * count where it started (no growing registry of finished resources). */
+ * count where it started (no growing registry of finished resources). Calling
+ * the binding takes and gives back its own reference, so a called binding is
+ * reclaimed like an uncalled one. */
 static void async_resource_bindings_own_and_release_their_payload(void) {
   const size_t before = scr_ar_live_resources();
   ScrStr *name = scr_str_new("BOUND", 5);
@@ -284,6 +286,9 @@ static void async_resource_bindings_own_and_release_their_payload(void) {
     ScrDyn *target = scr_dyn_new_func(closure, ar_test_target, 0, "()", "target");
     ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
     assert(bound != NULL);
+    ScrDyn *called = scr_dyn_call(bound, NULL, 0, "bound");
+    assert(called != NULL);
+    scr_dyn_release(called);
     /* Dropping the value leaves the binding's reference in place... */
     scr_dyn_release(resource);
     assert(scr_ar_live_resources() == before + 1);
@@ -297,9 +302,11 @@ static void async_resource_bindings_own_and_release_their_payload(void) {
   printf("async resource bindings own and release their payload\n");
 }
 
-/* A destroyed resource releases the store context it captured: the context
- * a per-request resource would otherwise hold for its handle's lifetime. */
-static void async_resource_destroy_releases_its_context(void) {
+/* Node keeps a resource's captured store context after emitDestroy — a later
+ * runInAsyncScope call or bound callback still runs inside that store — so the
+ * destroy does not release it; the context goes with the resource itself when
+ * its last reference does. */
+static void async_resource_destroy_keeps_its_context(void) {
   const size_t live_before = scr_ar_live_resources();
   ScrStr *value_name = scr_str_new("v", 1);
   ScrDyn *store_value = scr_dyn_new_str(value_name);
@@ -319,12 +326,13 @@ static void async_resource_destroy_releases_its_context(void) {
   ScrDyn *same = scr_ar_emit_destroy(resource);
   assert(same != NULL);
   scr_dyn_release(same);
-  assert(ctx->rc == rc_before - 1); /* released at destroy */
-  scr_dyn_release(resource);
+  assert(ctx->rc == rc_before); /* Node keeps it after the destroy */
+  scr_dyn_release(resource);    /* the last reference frees the resource */
+  assert(ctx->rc == rc_before - 1); /* and releases the context with it */
   scr_dyn_release(type);
   assert(scr_ar_live_resources() == live_before);
   scr_als_ctx_release(ctx);
-  printf("a destroyed async resource releases its captured context\n");
+  printf("a destroyed async resource keeps its context until the resource is freed\n");
 }
 
 int main(int argc, char **argv) {
@@ -334,7 +342,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "destroy") == 0) {
-    async_resource_destroy_releases_its_context();
+    async_resource_destroy_keeps_its_context();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "bindings") == 0) {

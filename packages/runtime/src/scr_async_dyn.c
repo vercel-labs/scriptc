@@ -716,6 +716,9 @@ static ScrDyn *scr_ar_bound_call(ScrClosure *self, ScrDyn *const *args, size_t a
   }
   scr_dyn_release(fn);
   scr_dyn_release(this_arg);
+  /* scr_box_get_ref hands out its own reference; the call only borrowed the
+   * payload, so the bound function holds exactly the box's one. */
+  scr_ar_release(r);
   return result;
 }
 
@@ -777,13 +780,14 @@ ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg) {
 ScrDyn *scr_ar_emit_destroy(ScrDyn *handle) {
   ScrAsyncResource *r = scr_ar_payload(handle);
   if (r != NULL && !r->destroyed) {
-    r->destroyed = true; /* destroy hooks dispatch here */
-    /* The resource is done: the store context it captured is released now,
-     * not held until the handle itself dies, so a per-request resource does
-     * not keep its request's stores alive for as long as the handle (or a
-     * bound callback) is referenced. A second destroy is a no-op. */
-    scr_als_ctx_release(r->ctx);
-    r->ctx = NULL;
+    /* Node's emitDestroy marks the resource destroyed and fires the destroy
+     * hook; it keeps the captured store context, so a runInAsyncScope call or
+     * a bound callback made after the destroy still runs inside the resource's
+     * stores. The context is released with the resource itself — when the
+     * value and every binding that holds it are gone, or at exit — so a
+     * per-request resource stops holding its request's stores as soon as the
+     * program drops it. A second destroy is a no-op. */
+    r->destroyed = true;
   }
   return scr_dyn_retain(handle);
 }

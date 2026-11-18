@@ -172,6 +172,12 @@ struct ScrTestCtx {
   bool only_filtered; /* registered under runOnly(true) without { only } */
   bool listed; /* a suite listed in the failing section (a failing root before) */
   bool expect_failure; /* { expectFailure }: throwing is what passes */
+  /* The tracing channels published this node's start/error events already
+   * (Node publishes one error per failed run, before its expectFailure
+   * decision; a node that never started has no end). */
+  bool tr_started;
+  bool tr_ended;
+  bool tr_error;
   /* The failing-section message, rendered when the result settles: exit-time
    * reporting must not run custom inspectors, because module-level values are
    * released before scr_test_exit_code prints the summary. */
@@ -491,12 +497,95 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
   fputc('\n', scr_test_out());
 }
 
+/* ── diagnostics_channel tracing (node:test) ───────────────────────────
+ * The runner publishes to Node's `tracing:node.test` tracing channel, whose
+ * start/end/error messages carry { name, nesting, file, type } (and the
+ * thrown error on error). The diagnostics_channel unit links only for a
+ * program that uses it (a subscriber lives in the program), so its entry
+ * points are weak: a program without subscribers has nothing to publish. */
+extern double scr_dc_channel(ScrDyn *name) __attribute__((weak));
+extern void scr_dc_publish(double handle, ScrDyn *message) __attribute__((weak));
+extern bool scr_dc_chan_has_subscribers(double handle) __attribute__((weak));
+
+static SCR_TL ScrStr *scr_test_entry; /* the compiled entry file's path, owned */
+
+enum { SCR_TR_START = 0, SCR_TR_END = 1, SCR_TR_ERROR = 2 };
+static SCR_TL double scr_test_tr_handles[3] = {-1, -1, -1};
+
+static double scr_test_tr_channel(int which) {
+  if (!scr_dc_channel) return NAN;
+  if (scr_test_tr_handles[which] >= 0) return scr_test_tr_handles[which];
+  static const char *const names[] = {"tracing:node.test:start", "tracing:node.test:end",
+                                      "tracing:node.test:error"};
+  const char *name = names[which];
+  ScrStr *text = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(text);
+  scr_str_release(text);
+  double handle = scr_dc_channel(key);
+  scr_dyn_release(key);
+  if (scr_exc_pending()) {
+    scr_exc_clear();
+    handle = NAN;
+  }
+  scr_test_tr_handles[which] = handle;
+  return handle;
+}
+
+static void scr_test_tr_put(ScrDyn *o, const char *key, size_t key_len, ScrDyn *value /*moves*/) {
+  if (value) scr_dyn_obj_set(o, key, key_len, value);
+}
+
+static ScrDyn *scr_test_tr_ctx(const ScrTestCtx *t) {
+  ScrDyn *o = scr_dyn_new_obj();
+  ScrStr *name = t->name ? scr_str_retain(t->name) : scr_str_new("<root>", 6);
+  scr_test_tr_put(o, "name", 4, scr_dyn_new_str(name));
+  scr_str_release(name);
+  scr_test_tr_put(o, "nesting", 7, scr_dyn_new_num(scr_test_depth(t)));
+  if (scr_test_entry)
+    scr_test_tr_put(o, "file", 4, scr_dyn_new_str(scr_test_entry));
+  else
+    scr_test_tr_put(o, "file", 4, scr_dyn_undefined());
+  /* The implicit root reports as a test, as Node's does. */
+  const char *type = (t->is_suite && t->parent) ? "suite" : "test";
+  ScrStr *type_text = scr_str_new(type, strlen(type));
+  scr_test_tr_put(o, "type", 4, scr_dyn_new_str(type_text));
+  scr_str_release(type_text);
+  return o;
+}
+
+static void scr_test_tr_publish(int which, ScrTestCtx *t, bool with_error) {
+  double handle = scr_test_tr_channel(which);
+  if (isnan(handle)) return;
+  /* Node publishes only with a subscriber attached; skip building the
+   * message otherwise (every test start and end takes this path). */
+  if (scr_dc_chan_has_subscribers && !scr_dc_chan_has_subscribers(handle)) return;
+  ScrDyn *msg = scr_test_tr_ctx(t);
+  if (with_error && t->err) scr_test_tr_put(msg, "error", 5, scr_caught_to_dyn(t->err));
+  scr_dc_publish(handle, msg);
+  scr_dyn_release(msg);
+}
+
+/* The error event, once per failed run (Node publishes the thrown value
+ * before its expectFailure matching decides the outcome). */
+static void scr_test_tr_error(ScrTestCtx *t) {
+  if (t->tr_error || !t->err) return;
+  t->tr_error = true;
+  scr_test_tr_publish(SCR_TR_ERROR, t, true);
+}
+
 /* "<sym> <name> (<dur>ms)[ # directive]" + queued ℹ diagnostics. Held
  * while subtests run concurrently (scr_test_report_tree prints them). A
  * concurrent parent buffering the line does not delay the test's finish:
  * a task the test left behind must already see it finished. */
 static void scr_test_report_result(ScrTestCtx *t) {
   t->finished = true;
+  /* Node's end event lands when the run finishes, before the buffered spec
+   * report prints it; a node that never started publishes none, and a
+   * buffered concurrent result reports it once. */
+  if (t->tr_started && !t->tr_ended) {
+    t->tr_ended = true;
+    scr_test_tr_publish(SCR_TR_END, t, false);
+  }
   if (t->err && !t->fail_msg && t->state != SCR_TS_PASS && t->state != SCR_TS_TODO_PASS &&
       t->state != SCR_TS_CHILDFAIL && t->state != SCR_TS_PENDING)
     t->fail_msg = scr_test_failure_message(t);
@@ -1363,6 +1452,10 @@ static bool scr_test_subtree_failed(const ScrTestCtx *t) {
 static void scr_test_run_node(ScrTestCtx *t) {
   double start = scr_now_ms();
   if (t->mode == SCR_TEST_SKIP) {
+    if (!t->is_suite) {
+      t->tr_started = true;
+      scr_test_tr_publish(SCR_TR_START, t, false);
+    }
     t->dur_ms = scr_now_ms() - start;
     t->state = SCR_TS_SKIPPED;
     t->passed = true;
@@ -1407,6 +1500,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
       t->listed = true; /* a failing suite lists in the failing section */
+      scr_test_tr_error(t);
       scr_test_cancel_pending(t);
     } else if (!t->err) {
       /* Node starts a suite's timer once its setup hooks have finished: the
@@ -1427,6 +1521,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
       if (scr_exc_pending()) {
         t->err = scr_exc_take();
         t->listed = true;
+        scr_test_tr_error(t);
       }
       scr_test_cancel_pending(t);
     }
@@ -1501,7 +1596,10 @@ static void scr_test_run_node(ScrTestCtx *t) {
   if (scr_exc_pending()) {
     t->err = scr_exc_take();
     failed = true;
+    scr_test_tr_error(t);
   } else if (t->cb) {
+    t->tr_started = true;
+    scr_test_tr_publish(SCR_TR_START, t, false);
     scr_test_call(t->cb, t->flags, t, t, t);
     if (t->state != SCR_TS_PENDING) {
       /* Its parent timed out and cancelled it while the body ran: the
@@ -1516,6 +1614,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
       failed = true;
+      scr_test_tr_error(t);
     }
     if (failed && t->timed_out) scr_test_cancel_running(t);
   }
@@ -1528,6 +1627,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
   if (!failed && t->before_err) {
     t->err = scr_caught_retain(t->before_err);
     failed = true;
+    scr_test_tr_error(t);
   }
   /* t.plan: the t.assert calls and subtests the test made. Node reports the
    * mismatch as a string failure. */
@@ -1553,6 +1653,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
       scr_throw_str(scr_str_new(buf, (size_t)n));
       t->err = scr_exc_take();
       failed = true;
+      scr_test_tr_error(t);
     }
   }
   /* { expectFailure }: the test passes only if its own run threw; an
@@ -1574,6 +1675,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     if (!failed && !t->err) {
       t->err = scr_exc_take();
       failed = true;
+      scr_test_tr_error(t);
     } else {
       scr_exc_clear();
     }
@@ -1584,6 +1686,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     if (!failed && !t->err) {
       t->err = scr_exc_take();
       failed = true;
+      scr_test_tr_error(t);
     } else {
       scr_exc_clear();
     }
@@ -1820,7 +1923,9 @@ static SCR_TL ScrStr *scr_snap_resolved = NULL;
  * which scr_test_init takes out of process.argv. */
 static SCR_TL bool scr_test_update_snapshots = false;
 
-void scr_test_init(void) {
+void scr_test_init(const char *entry /*borrowed*/) {
+  scr_str_release(scr_test_entry);
+  scr_test_entry = entry ? scr_str_new(entry, strlen(entry)) : NULL;
   /* The runtime options scr_test_init takes out of process.argv, leading
    * and in any order, as Node accepts its own flags before the entry:
    * `--test-update-snapshots`, and the reporter options
@@ -2706,6 +2811,10 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
     return;
   }
   scr_test_child_add(parent, t);
+  /* Node publishes a suite's start when its body runs (collection), for a
+   * skipped suite too (its body is a noop there). */
+  t->tr_started = true;
+  scr_test_tr_publish(SCR_TR_START, t, false);
   /* The suite body runs NOW (Node's collection phase) — its test()/it()
    * calls attach here. Skipped suites keep their bodies unrun. A body that
    * throws fails the suite (Node fails it and cancels its children), so the
@@ -2719,7 +2828,10 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
       ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(t));
     else
       ((void (*)(ScrClosure *))cb->fn)(cb);
-    if (scr_exc_pending()) t->err = scr_exc_take();
+    if (scr_exc_pending()) {
+      t->err = scr_exc_take();
+      scr_test_tr_error(t);
+    }
     scr_test_scope_leave(outer);
     scr_test_parent_set(prev);
   }
@@ -3820,7 +3932,15 @@ int scr_test_exit_code(void) {
   /* Node's reporter ends its stream at exit: the summary and the failing
    * section print here, after every pending task (and so every late
    * registration) has run. */
-  if (scr_test_runner_spawned && scr_test_run_done) scr_test_print_summary();
+  if (scr_test_runner_spawned && scr_test_run_done) {
+    /* Node's implicit root reports its own start/end once every test has
+     * finished, before the summary ends the stream. */
+    if (scr_test_root) {
+      scr_test_tr_publish(SCR_TR_START, scr_test_root, false);
+      scr_test_tr_publish(SCR_TR_END, scr_test_root, false);
+    }
+    scr_test_print_summary();
+  }
   /* The program is done: the module tracker's restore closures go. */
   if (scr_exit_frees()) {
     scr_test_hooks_free(&scr_test_mocks);

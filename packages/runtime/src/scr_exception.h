@@ -63,6 +63,14 @@ typedef enum {
 typedef struct ScrStackFrame {
   struct ScrStackFrame *previous;
   const char *text;
+  /* The call or throw site the frame is running, when the compiler records
+   * positions: `fn` (NULL for a module's top-level code, whose line prints
+   * the bare position), the script, and the 1-based line and column. A
+   * frame with line 0 holds its one constant `text` line. */
+  const char *fn;
+  const char *script;
+  unsigned line;
+  unsigned column;
 } ScrStackFrame;
 
 void scr_stack_enter(ScrStackFrame *frame, const char *text);

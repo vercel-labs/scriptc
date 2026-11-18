@@ -1012,7 +1012,7 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   digest(
-    algorithm: AlgorithmIdentifier | CShakeParams | TurboShakeParams,
+    algorithm: AlgorithmIdentifier | CShakeParams | KangarooTwelveParams | TurboShakeParams,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   encrypt(

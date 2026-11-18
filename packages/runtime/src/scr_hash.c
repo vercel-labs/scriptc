@@ -292,6 +292,64 @@ void scr_turboshake_hash(bool t256, unsigned char domain, const unsigned char *d
   }
 }
 
+/* RFC 9861's length_encode: the minimal big-endian bytes of x, then the
+ * byte count (no data byte for zero: length_encode(0) is 0x00). */
+static size_t scr_k12_length_encode(unsigned char out[9], uint64_t x) {
+  if (x == 0) {
+    out[0] = 0;
+    return 1;
+  }
+  return scr_kmac_right_encode(out, x);
+}
+
+/* KangarooTwelve (RFC 9861): TurboSHAKE over M || C || length_encode(|C|);
+ * above one 8192-byte chunk the tail chunks become chaining values in a
+ * final node of S_0 || 03 00 00 00 00 00 00 00 || CV_1 .. CV_(n-1) ||
+ * length_encode(n-1) || FF FF, run with domain 0x06. */
+void scr_k12_hash(bool kt256, const unsigned char *custom, size_t custom_len,
+                  const unsigned char *data, size_t data_len, unsigned char *out,
+                  size_t out_bytes) {
+  size_t cv_len = kt256 ? 64 : 32;
+  unsigned char tail[9];
+  size_t tail_len = scr_k12_length_encode(tail, (uint64_t)custom_len);
+  if (custom_len > SIZE_MAX - data_len || data_len + custom_len > SIZE_MAX - tail_len)
+    scr_trap("scriptc: out of memory\n");
+  size_t s_len = data_len + custom_len + tail_len;
+  unsigned char *s = malloc(s_len ? s_len : 1);
+  if (!s) scr_trap("scriptc: out of memory\n");
+  if (data_len) memcpy(s, data, data_len);
+  if (custom_len) memcpy(s + data_len, custom, custom_len);
+  memcpy(s + data_len + custom_len, tail, tail_len);
+  if (s_len <= 8192) {
+    scr_turboshake_hash(kt256, 0x07, s, s_len, out, out_bytes);
+    free(s);
+    return;
+  }
+  size_t chunks = (s_len + 8191) / 8192;
+  unsigned char count[9];
+  size_t count_len = scr_k12_length_encode(count, chunks - 1);
+  size_t final_len = 8192 + 8 + (chunks - 1) * cv_len + count_len + 2;
+  unsigned char *final = malloc(final_len);
+  if (!final) scr_trap("scriptc: out of memory\n");
+  memcpy(final, s, 8192);
+  memset(final + 8192, 0, 8);
+  final[8192] = 0x03;
+  size_t pos = 8192 + 8;
+  for (size_t i = 1; i < chunks; i++) {
+    size_t off = i * 8192;
+    size_t len = s_len - off < 8192 ? s_len - off : 8192;
+    scr_turboshake_hash(kt256, 0x0B, s + off, len, final + pos, cv_len);
+    pos += cv_len;
+  }
+  memcpy(final + pos, count, count_len);
+  pos += count_len;
+  final[pos++] = 0xFF;
+  final[pos++] = 0xFF;
+  scr_turboshake_hash(kt256, 0x06, final, final_len, out, out_bytes);
+  free(final);
+  free(s);
+}
+
 /* ── RIPEMD-160 ─────────────────────────────────────────────────────── */
 
 static uint32_t scr_rotl32(uint32_t x, unsigned n) { return (x << n) | (x >> (32 - n)); }

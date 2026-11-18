@@ -116235,6 +116235,7 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/webcrypto-get-public-key.ts",
           "tests/corpus/webcrypto-kmac.ts",
+          "tests/corpus/webcrypto-kt.ts",
           "tests/corpus/webcrypto-rsa-oaep.ts",
           "tests/corpus/webcrypto-sha3-digest.ts",
           "tests/corpus/webcrypto-turboshake.ts",
@@ -119014,8 +119015,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.KangarooTwelveParams",
+        "tests": [
+          "tests/corpus/webcrypto-kt.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -119037,8 +119041,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.customization",
+        "tests": [
+          "tests/corpus/webcrypto-kt.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119060,8 +119067,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/webcrypto-kt.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119083,8 +119093,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.outputLength",
+        "tests": [
+          "tests/corpus/webcrypto-kt.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

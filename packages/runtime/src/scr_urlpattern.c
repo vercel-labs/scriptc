@@ -168,6 +168,12 @@ static bool ws_tokenize(ScrStr *input, bool strict, WsTokens *out) {
           continue;
         }
         if (r == '(') {
+          /* a regular expression may not capture: a nested group has to be
+           * a non-capturing one, as in "(?:...)" */
+          if (at + 1 >= n || s[at + 1] != '?') {
+            error = true;
+            break;
+          }
           depth++;
         } else if (r == ')') {
           depth--;
@@ -1116,6 +1122,19 @@ static bool ws_read_field(const ScrDyn *object, const char *name, ScrStr **out) 
   return true;
 }
 
+/* A checked-dynamic value's ordinary object view: a typed reference (a
+ * compiled record held in an untyped array or slot) materializes to its
+ * own-field snapshot. NULL when the value is not a record; `*snapshot` then
+ * holds the +1 view the caller releases. */
+static ScrDyn *ws_object_view(ScrDyn *value, ScrDyn **snapshot) {
+  *snapshot = NULL;
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    *snapshot = scr_dyn_typed_ref_materialize(value);
+    return *snapshot;
+  }
+  return value->kind == SCR_DYN_OBJ ? value : NULL;
+}
+
 /* The URL standard's percent-encode sets for a special URL's components.
  * Every non-ASCII byte and the C0 controls are always encoded; these list
  * the ASCII characters each component additionally encodes. */
@@ -1168,10 +1187,48 @@ static ScrStr *ws_strip_one(ScrStr *value, char marker, bool leading) {
   return scr_str_retain(value);
 }
 
+/* The standard's canonicalize a pathname: the value percent-encoded for a
+ * special URL's path, with dot segments removed by the URL parser. A
+ * relative value resolves against the base URL when there is one. */
+static ScrStr *ws_path_canonicalize(ScrStr *value, ScrUrl *base) {
+  if (value->len == 0) return scr_str_new("", 0);
+  ScrStr *encoded = ws_percent_encode(value, WS_PATH_ENCODE);
+  bool absolute = encoded->len > 0 && encoded->data[0] == '/';
+  if (!absolute && base != NULL) {
+    ScrStr *href = scr_url_href(base);
+    ScrUrl *url = scr_url_new_base(encoded, href);
+    scr_str_release(href);
+    scr_str_release(encoded);
+    if (url == NULL) {
+      scr_exc_clear();
+      return NULL;
+    }
+    ScrStr *out = scr_url_pathname(url);
+    scr_url_release(url);
+    return out;
+  }
+  /* The standard parses the value in the path-start state on a dummy URL;
+   * a relative value gets a "/-" prefix so the parser keeps its text and
+   * the prefix is removed below. */
+  ScrStr *candidate = absolute ? ws_str_join("http://x", encoded, NULL)
+                               : ws_str_join("http://x/-", encoded, NULL);
+  scr_str_release(encoded);
+  ScrUrl *url = ws_parse_or_null(candidate);
+  scr_str_release(candidate);
+  if (url == NULL) return NULL;
+  ScrStr *path = scr_url_pathname(url);
+  scr_url_release(url);
+  if (absolute) return path;
+  ScrStr *out = path->len >= 2 ? scr_str_new(path->data + 2, path->len - 2)
+                               : scr_str_new("", 0);
+  scr_str_release(path);
+  return out;
+}
+
 /* The standard's process <component> for init with type "url": the value
  * through the URL parser's canonicalization for that component. NULL with
  * the standard's TypeError pending. */
-static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol) {
+static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol, ScrUrl *base) {
   switch (field) {
   case WF_PROTOCOL: {
     ScrStr *stripped = ws_strip_one(value, ':', false);
@@ -1227,8 +1284,7 @@ static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol) {
     break;
   }
   case WF_PATHNAME:
-    if (value->len == 0) return scr_str_new("", 0);
-    return ws_percent_encode(value, WS_PATH_ENCODE);
+    return ws_path_canonicalize(value, base);
   case WF_SEARCH: {
     ScrStr *stripped = ws_strip_one(value, '?', true);
     ScrStr *out = ws_percent_encode(stripped, WS_QUERY_ENCODE);
@@ -1245,25 +1301,6 @@ static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol) {
   }
   ws_type_error("Failed to construct URLPattern");
   return NULL;
-}
-
-/* A relative pathname resolves against the base URL's directory, like the
- * standard's pathname inheritance for a match input. */
-static ScrStr *ws_resolve_pathname(ScrStr *pathname, ScrUrl *base) {
-  if (pathname->len == 0 || pathname->data[0] == '/' || base == NULL) return pathname;
-  ScrStr *base_path = scr_url_pathname(base);
-  size_t cut = base_path->len;
-  while (cut > 0 && base_path->data[cut - 1] != '/') cut--;
-  ScrStr *out = pathname;
-  if (cut > 0) {
-    WsBuf b = {0};
-    ws_buf_add(&b, base_path->data, cut);
-    ws_buf_scr(&b, pathname);
-    scr_str_release(pathname);
-    out = ws_buf_finish(&b);
-  }
-  scr_str_release(base_path);
-  return out;
 }
 
 /* A base URL's components fill the init's missing ones; a relative
@@ -1354,23 +1391,28 @@ static bool ws_init_from_dyn(ScrDyn *input, ScrStr *base_text, bool *from_string
     if (base_text != NULL && !ws_apply_base(out, base_text)) return false;
     return true;
   }
-  if (input->kind == SCR_DYN_OBJ && base_text != NULL) {
-    /* the standard takes a base URL only with a constructor string */
-    ws_type_error("Failed to construct URLPattern");
-    return false;
-  }
-  if (input->kind == SCR_DYN_OBJ) {
+  if (input->kind == SCR_DYN_OBJ || input->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *snapshot = NULL;
+    ScrDyn *record = ws_object_view(input, &snapshot);
+    if (record == NULL) return false;
+    if (base_text != NULL) {
+      /* the standard takes a base URL only with a constructor string */
+      scr_dyn_release(snapshot);
+      ws_type_error("Failed to construct URLPattern");
+      return false;
+    }
     ScrStr *base_field = NULL;
-    if (!ws_read_field(input, "protocol", &out->protocol) ||
-        !ws_read_field(input, "username", &out->username) ||
-        !ws_read_field(input, "password", &out->password) ||
-        !ws_read_field(input, "hostname", &out->hostname) ||
-        !ws_read_field(input, "port", &out->port) ||
-        !ws_read_field(input, "pathname", &out->pathname) ||
-        !ws_read_field(input, "search", &out->search) ||
-        !ws_read_field(input, "hash", &out->hash) ||
-        !ws_read_field(input, "baseURL", &base_field)) {
+    if (!ws_read_field(record, "protocol", &out->protocol) ||
+        !ws_read_field(record, "username", &out->username) ||
+        !ws_read_field(record, "password", &out->password) ||
+        !ws_read_field(record, "hostname", &out->hostname) ||
+        !ws_read_field(record, "port", &out->port) ||
+        !ws_read_field(record, "pathname", &out->pathname) ||
+        !ws_read_field(record, "search", &out->search) ||
+        !ws_read_field(record, "hash", &out->hash) ||
+        !ws_read_field(record, "baseURL", &base_field)) {
       scr_str_release(base_field);
+      scr_dyn_release(snapshot);
       return false;
     }
     if (out->protocol != NULL) {
@@ -1391,9 +1433,11 @@ static bool ws_init_from_dyn(ScrDyn *input, ScrStr *base_text, bool *from_string
     ScrStr *effective_base = base_text != NULL ? base_text : base_field;
     if (effective_base != NULL && !ws_apply_base(out, effective_base)) {
       scr_str_release(base_field);
+      scr_dyn_release(snapshot);
       return false;
     }
     scr_str_release(base_field);
+    scr_dyn_release(snapshot);
     return true;
   }
   return true; /* undefined/null: the empty pattern */
@@ -1504,21 +1548,25 @@ static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
     scr_url_release(url);
     return true;
   }
-  if (input->kind == SCR_DYN_OBJ) {
+  if (input->kind == SCR_DYN_OBJ || input->kind == SCR_DYN_TYPED_REF) {
     WsInit init;
     memset(&init, 0, sizeof init);
+    ScrDyn *snapshot = NULL;
+    ScrDyn *record = ws_object_view(input, &snapshot);
+    if (record == NULL) return false;
     ScrStr *base_field = NULL;
-    if (!ws_read_field(input, "protocol", &init.protocol) ||
-        !ws_read_field(input, "username", &init.username) ||
-        !ws_read_field(input, "password", &init.password) ||
-        !ws_read_field(input, "hostname", &init.hostname) ||
-        !ws_read_field(input, "port", &init.port) ||
-        !ws_read_field(input, "pathname", &init.pathname) ||
-        !ws_read_field(input, "search", &init.search) ||
-        !ws_read_field(input, "hash", &init.hash) ||
-        !ws_read_field(input, "baseURL", &base_field)) {
+    if (!ws_read_field(record, "protocol", &init.protocol) ||
+        !ws_read_field(record, "username", &init.username) ||
+        !ws_read_field(record, "password", &init.password) ||
+        !ws_read_field(record, "hostname", &init.hostname) ||
+        !ws_read_field(record, "port", &init.port) ||
+        !ws_read_field(record, "pathname", &init.pathname) ||
+        !ws_read_field(record, "search", &init.search) ||
+        !ws_read_field(record, "hash", &init.hash) ||
+        !ws_read_field(record, "baseURL", &base_field)) {
       ws_init_free(&init);
       scr_str_release(base_field);
+      scr_dyn_release(snapshot);
       /* the record's own getter threw: that exception reaches the caller */
       *fatal = true;
       return false;
@@ -1527,6 +1575,7 @@ static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
       /* the standard takes a base URL only with a URL string */
       ws_init_free(&init);
       scr_str_release(base_field);
+      scr_dyn_release(snapshot);
       ws_type_error(base_error);
       *fatal = true;
       return false;
@@ -1542,6 +1591,7 @@ static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
       scr_str_release(base_field);
       if (base == NULL) {
         ws_init_free(&init);
+        scr_dyn_release(snapshot);
         ws_type_error("Failed to construct URLPattern");
         return false;
       }
@@ -1583,17 +1633,16 @@ static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
       if (!has[i]) continue;
       ScrStr **slot = ws_init_field(&init, field);
       if (slot == NULL || *slot == NULL) continue;
-      ScrStr *canonical = ws_canonicalize(field, *slot, init.protocol);
+      ScrStr *canonical = ws_canonicalize(field, *slot, init.protocol, base);
       if (canonical == NULL) {
         if (base != NULL) scr_url_release(base);
         ws_init_free(&init);
+        scr_dyn_release(snapshot);
         return false;
       }
       scr_str_release(*slot);
       *slot = canonical;
     }
-    if (has[WF_PATHNAME] && init.pathname != NULL)
-      init.pathname = ws_resolve_pathname(init.pathname, base);
     if (base != NULL) scr_url_release(base);
     out->protocol = init.protocol;
     out->username = init.username;
@@ -1604,6 +1653,7 @@ static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
     out->search = init.search;
     out->hash = init.hash;
     memset(&init, 0, sizeof init);
+    scr_dyn_release(snapshot);
     return true;
   }
   return true;
@@ -1616,25 +1666,9 @@ static ScrDyn *ws_match_component(WsComponent *component, ScrStr *input, bool *m
   ScrArr *m = scr_regex_exec(input, component->regex);
   if (m == NULL) return NULL;
   ScrDyn *groups = scr_dyn_new_obj();
-  /* Node's groups record carries its names in sorted order. */
-  size_t *order = calloc(component->names_len ? component->names_len : 1, sizeof *order);
-  if (order == NULL) scr_trap("scriptc: out of memory\n");
-  for (size_t i = 0; i < component->names_len; i++) {
-    size_t at = i;
-    while (at > 0) {
-      ScrStr *left = component->names[order[at - 1]];
-      ScrStr *right = component->names[i];
-      size_t common = left->len < right->len ? left->len : right->len;
-      int cmp = memcmp(left->data, right->data, common);
-      if (cmp == 0) cmp = left->len < right->len ? -1 : left->len > right->len ? 1 : 0;
-      if (cmp <= 0) break;
-      order[at] = order[at - 1];
-      at--;
-    }
-    order[at] = i;
-  }
-  for (size_t k = 0; k < component->names_len; k++) {
-    size_t i = order[k];
+  /* Node's groups record carries its names in the reverse of their
+   * pattern order. */
+  for (size_t i = component->names_len; i-- > 0;) {
     size_t capture = i + 1;
     ScrDyn *value;
     if (capture < (size_t)scr_arr_len(m) && scr_arr_dense_state(m, capture) == SCR_ARR_VALUE) {
@@ -1646,7 +1680,6 @@ static ScrDyn *ws_match_component(WsComponent *component, ScrStr *input, bool *m
     }
     scr_dyn_obj_set(groups, component->names[i]->data, component->names[i]->len, value);
   }
-  free(order);
   scr_arr_release(m);
   *matched = true;
   return groups;

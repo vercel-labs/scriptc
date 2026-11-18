@@ -42,6 +42,15 @@ console.log("constructor query props", ctorQuery.pathname, ctorQuery.search, cto
 
 // ":" before an identifier starts a name, so the userinfo's colon joins the
 // username instead of splitting off a password.
+try {
+  new URLPattern({ pathname: "/:a((x))/:b" });
+  console.log("nested capture accepted");
+} catch (error) {
+  console.log("nested capture refused", error.name, error.message);
+}
+const nonCapturing = new URLPattern({ pathname: "/:a((?:x)y)/:b" });
+t("noncapturing group", nonCapturing, "https://h/xy/z");
+
 const colonUserinfo = new URLPattern("https://u:p@h:8/x");
 console.log(
   "userinfo props",

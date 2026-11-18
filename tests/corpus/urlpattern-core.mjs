@@ -85,6 +85,14 @@ console.log(
 );
 console.log("record omitted base", fromRecord.exec({ pathname: "x" }));
 console.log(
+  "record dot segments",
+  JSON.stringify(fromRecord.exec({ pathname: "/a/../x", baseURL: "https://h/" }))
+);
+
+const anyPath = new URLPattern({ pathname: "*" });
+console.log("path dot segments", anyPath.exec({ pathname: "/a/./x" }).pathname.input);
+console.log("path relative dots", JSON.stringify(anyPath.exec({ pathname: "a/../x" }).pathname.input));
+console.log(
   "record canonicalized",
   JSON.stringify(
     fromRecord.exec({ protocol: "HTTPS:", hostname: "H", port: "443", pathname: "/x" })

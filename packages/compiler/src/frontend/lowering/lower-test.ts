@@ -1340,30 +1340,45 @@ export function lowerTestMethodCall(
       const elems = call.arguments.nodes.map((arg) =>
         lowerer.coerceToExpected(lowerer.lowerExpr(arg), DYN),
       );
-      return {
-        kind: "seqExpr",
-        stmts: [
-          { kind: "varDecl", localId: ctxLocal.id, init: receiver, loc },
-          {
-            kind: "exprStmt",
-            expr: {
-              kind: "libCall",
-              fn: "test.ctxCount",
-              args: [ctxRef],
-              type: VOID,
-              loc,
-            },
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: ctxLocal.id, init: receiver, loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "test.ctxCount",
+            args: [ctxRef],
+            type: VOID,
             loc,
           },
-        ],
-        result: {
-          kind: "libCall",
-          fn: "test.ctxCustomAssert",
-          args: [ctxRef, strLit(member, loc), { kind: "dynArrLit", elems, type: DYN, loc }],
-          type: VOID,
           loc,
         },
-        type: VOID,
+      ];
+      const assertion: IrExpr = {
+        kind: "libCall",
+        fn: "test.ctxCustomAssert",
+        args: [ctxRef, strLit(member, loc), { kind: "dynArrLit", elems, type: DYN, loc }],
+        type: DYN,
+        loc,
+      };
+      /* Node's assertion object returns the registered function's result,
+       * so an async assertion's promise reaches the call site: `await
+       * t.assert.custom()` waits for it and a rejection fails the test. */
+      const resultType = lowerer.irTypeOf(call);
+      if (resultType.kind === "void")
+        return {
+          kind: "seqExpr",
+          stmts: [...stmts, { kind: "exprStmt", expr: assertion, loc }],
+          result: { kind: "unitLit", unit: "undefined", type: VOID, loc },
+          type: VOID,
+          loc,
+        };
+      return {
+        kind: "seqExpr",
+        stmts,
+        result:
+          resultType.kind === "dyn" ? assertion : lowerer.coerceToExpected(assertion, resultType),
+        type: resultType,
         loc,
       };
     }

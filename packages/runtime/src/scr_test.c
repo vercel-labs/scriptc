@@ -3833,11 +3833,14 @@ void scr_test_assert_register(ScrStr *name /*borrowed*/, ScrDyn *fn /*borrowed*/
 }
 
 /* t.assert.<registered>(...): the registered function runs with the call's
- * arguments. Node binds the TestContext as `this`; a compiled closure has
- * no receiver, so `this` is not bound here (the limitations page records
- * it). Answering false leaves an exception pending. */
-void scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name /*borrowed*/,
-                                ScrDyn *args /*borrowed*/) {
+ * arguments and the call's value is its result, as Node's assertion object
+ * returns it. An async assertion therefore hands its promise to the call
+ * site: `await t.assert.custom()` waits for it and a rejection fails the
+ * test. Node binds the TestContext as `this`; a compiled closure has no
+ * receiver, so `this` is not bound here (the limitations page records it).
+ * +1; NULL leaves an exception pending. */
+ScrDyn *scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name /*borrowed*/,
+                                   ScrDyn *args /*borrowed*/) {
   (void)t;
   ScrDyn *fn = scr_test_custom_asserts
                    ? scr_dyn_obj_get(scr_test_custom_asserts, name->data, name->len)
@@ -3847,10 +3850,9 @@ void scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name /*borrowed*/,
     int len = snprintf(msg, sizeof msg, "t.assert.%.*s is not a function", (int)name->len,
                        name->data);
     scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
-    return;
+    return NULL;
   }
-  ScrDyn *result = scr_dyn_apply(fn, args, "assertion");
-  scr_dyn_release(result);
+  return scr_dyn_apply(fn, args, "assertion");
 }
 
 /* t.error: Node's ERR_TEST_FAILURE wrapper over the test's failure, or

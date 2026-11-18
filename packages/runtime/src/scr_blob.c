@@ -407,7 +407,6 @@ static ScrBlob *scr_blob_construct(const ScrDyn *sources, const ScrDyn *options)
         if (!out->parts) scr_trap("scriptc: out of memory\n");
         memcpy(out->parts, only->parts, only->nparts * sizeof *out->parts);
       }
-      if (only->name) out->name = scr_str_retain(only->name);
       out->last_modified = only->last_modified;
       out->type = scr_blob_type_of(type); /* consumes the type */
       scr_dyn_release(endings_raw);
@@ -953,6 +952,9 @@ ScrDyn *scr_file_new(ScrDyn *args) {
     scr_blob_release_v(b);
     return NULL;
   }
+  /* A constructor path may have carried a name (a lazy file source): the
+   * new File's name replaces it, so the old string is released first. */
+  scr_str_release(b->name);
   b->name = scr_str_to_well_formed(name);
   scr_str_release(name);
   b->last_modified = last_modified;

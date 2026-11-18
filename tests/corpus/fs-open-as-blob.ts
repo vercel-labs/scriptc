@@ -197,4 +197,28 @@ class BlobOptions {
 const classBlob = await fs.openAsBlob(file, new BlobOptions());
 console.log("class options", classBlob.type);
 
+// 15. A File built from a file-backed File takes the new name without
+// keeping (or leaking) the old one, and a Blob built from a File is a Blob.
+const renameFile = join(dir, "rename.bin");
+fs.writeFileSync(renameFile, "renamed");
+const fileBase = new File([await fs.openAsBlob(renameFile)], "base.bin");
+const renamedRead = new File([fileBase], "x.bin");
+console.log("renames", fileBase.name, renamedRead.name, JSON.stringify(await renamedRead.text()));
+const asBlob = new Blob([fileBase]);
+console.log("wrap file", asBlob instanceof Blob, asBlob instanceof File);
+
+// Renaming in a function that drops everything it made: the base File's name
+// string must be released with it (the sanitized lane's audit counts what is
+// still live at exit).
+function renameRounds(source: Blob): number {
+  const base = new File([source], "base.bin");
+  let total = 0;
+  for (let i = 0; i < 20; i++) {
+    total += new File([base], `copy-${i}.bin`).name.length;
+  }
+  return total;
+}
+const rounds = renameRounds(fileBase);
+console.log("rename rounds", rounds > 0);
+
 fs.rmSync(dir, { recursive: true, force: true });

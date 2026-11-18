@@ -7198,19 +7198,36 @@ void scr_mkdtemp_result_release_v(void *p) {
   scr_mkdtemp_result_release((ScrMkdtempResult *)p);
 }
 
-/* The promise entries the fs.mkdtempDisposable helpers need, referenced
- * weakly: the promise unit (scr_async.c) defines them, and a program that
- * links scr_lib.c without it (a runtime unit test, or a hello build) must
- * not pull the promise machinery into its binary — a constructor that named
- * them did. A program can only reach these helpers after linking the unit,
- * whose own references resolve them; scr_dyn_invoke.c's worker channel uses
- * the same weak-reference pattern. */
-extern ScrPromise *scr_promise_new(void) __attribute__((weak));
-extern void scr_promise_reject_pending(ScrPromise *p) __attribute__((weak));
-extern ScrPromise *scr_promise_settled_ref(
-    void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace)
-    __attribute__((weak));
-extern ScrPromise *scr_promise_settled_void(void) __attribute__((weak));
+/* The promise entries the fs.mkdtempDisposable helpers need. The promise
+ * unit (scr_async.c) defines them strongly; these weak definitions answer a
+ * program that links scr_lib.c without it (a runtime unit test, or a hello
+ * build) without pulling the promise machinery into its binary — a
+ * constructor that named the unit did — and they leave no undefined runtime
+ * symbol behind, which a localized library archive would otherwise carry to
+ * the embedder's link. Only a program that linked the unit can reach the
+ * helpers (they answer promises), so the fallback traps; the weak
+ * definition loses to the unit's strong one. */
+__attribute__((weak)) ScrPromise *scr_promise_new(void) {
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
+__attribute__((weak)) void scr_promise_reject_pending(ScrPromise *p) {
+  (void)p;
+  scr_trap("scriptc: the promise unit is not linked\n");
+}
+__attribute__((weak)) ScrPromise *scr_promise_settled_ref(
+    void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace) {
+  (void)v;
+  (void)retain;
+  (void)release;
+  (void)trace;
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
+__attribute__((weak)) ScrPromise *scr_promise_settled_void(void) {
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
 
 /* A promise already rejected by the pending exception, through the promise
  * unit's entries. */

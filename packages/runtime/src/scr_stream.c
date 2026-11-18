@@ -3814,15 +3814,15 @@ static ScrClosure *scr_stream_finish_register(ScrStream *s, ScrClosure *cb /*mov
   scr_stream_fin_add(st, scr_closure_retain(cb), inv, close_step);
   bool will_close = scr_stream_will_emit_close(st);
   if ((close_step && st->close_emitted) || (st->emit_close && st->close_emitted) ||
-      (st->destroyed && (st->errored == NULL || st->error_emitted)) ||
+      (st->destroyed && (st->errored == NULL || st->error_emitted || st->close_emitted)) ||
       (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
     /* Already terminal: Node's eos still calls back asynchronously. A
      * destroyed stream with a pending error waits for its own error tick,
      * which reports the watcher and consumes the error as Node's eos
      * does; ticking it here would drop the watcher first, so the
      * AbortError asyncDispose destroyed with would emit unhandled. A
-     * cleanly destroyed stream, or one whose error was already reported,
-     * has nothing left to wait for. */
+     * cleanly destroyed stream, one whose error was already reported, or
+     * one whose close step already ran has nothing left to wait for. */
     scr_st_tick(s, SCR_ST_FIN, NULL, NULL);
   }
   ScrClosure *cleanup = scr_closure_new((void *)&scr_stream_finished_cleanup_fn, 2);
@@ -8663,10 +8663,13 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
           if (w) scr_stream_next_fulfill(st, w, NULL, SCR_ENTRY_BYTES);
         }
         /* eos ordering: the finished()/pipeline watchers fire right after
-         * 'close' (Node's willEmitClose stance); a stream without the
-         * 'close' event reports at 'finish' or, for a destroy before it,
-         * not at all (Node leaves that watcher pending). */
-        if (st->emit_close) {
+         * 'close' (Node's willEmitClose stance). A destroyed stream with a
+         * recorded error reports them here even without the 'close' event
+         * (Node's eos calls back with that error, including one a destroy
+         * callback swallowed); a clean silent destroy leaves a watcher
+         * registered before it pending, as Node does, so only a close-step
+         * watcher (an adapter that has to let go) is answered there. */
+        if (st->emit_close || (st->destroyed && st->errored != NULL)) {
           scr_stream_notify_finished(s);
         } else {
           scr_stream_notify_finished_mode(s, true);

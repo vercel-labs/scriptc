@@ -356,6 +356,19 @@ ScrPromise *scr_stream_next_chunk_dyn_single(ScrStream *s);
 bool scr_stream_readable_object_entries(ScrStream *s);
 /* The same step resolving with an iterator result ({ value, done }). */
 ScrPromise *scr_stream_next_result_dyn(ScrStream *s);
+/* readable.iterator([options]) (scr_stream_iterator.c): the async iterator
+ * over the readable's chunks, +1. */
+struct ScrDyn *scr_stream_iterator(ScrStream *s, bool destroy_on_return);
+/* The same for a checked-dynamic receiver, validating the options. */
+/* Installed by the iterator unit (scr_stream_iterator.c) so the stream unit's
+ * checked-dynamic dispatch links it only when the unit is present. */
+/* Marks the stream's next error as consumed by an internal listener (the
+ * iterator's throw): it still reaches stream.errored and user listeners but is
+ * not an unhandled 'error' event. */
+void scr_stream_next_error_consumed(ScrStream *s);
+extern struct ScrDyn *(*scr_stream_iterator_hook)(ScrStream *s, struct ScrDyn *const *args,
+                                                 size_t argc);
+struct ScrDyn *scr_stream_dyn_iterator(ScrStream *s, struct ScrDyn *const *args, size_t argc);
 /* The native readable stream behind a checked-dynamic value (+1), or NULL. */
 ScrStream *scr_stream_native_readable_of_dyn(const struct ScrDyn *value);
 /* for await over a checked-dynamic value in a program with streams

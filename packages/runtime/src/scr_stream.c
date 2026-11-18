@@ -52,6 +52,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Installed by scr_stream_iterator.c's constructor (the units stay separable). */
+ScrDyn *(*scr_stream_iterator_hook)(ScrStream *, ScrDyn *const *, size_t) = NULL;
+
 static void scr_stream_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();
@@ -8145,6 +8148,8 @@ ScrStream *scr_stream_iterator_close(ScrStream *s) {
   return scr_stream_retain(s);
 }
 
+void scr_stream_next_error_consumed(ScrStream *s) { s->st->next_err_consumed = true; }
+
 ScrError *scr_stream_errored(ScrStream *s) {
   return s->st->errored ? scr_error_retain(s->st->errored) : NULL;
 }
@@ -9096,6 +9101,15 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
     ScrStream *returned = !strcmp(method, "pause") ? scr_stream_pause(stream) : scr_stream_resume(stream);
     scr_stream_release(returned);
   } else if (!strcmp(method, "isPaused")) result = scr_dyn_new_bool(scr_stream_is_paused(stream));
+  else if (!strcmp(method, "iterator")) {
+    /* The iterator unit installs the hook; a program that links no unit
+     * answers Node's not-supported error instead of a link failure. */
+    if (scr_stream_iterator_hook) result = scr_stream_iterator_hook(stream, args, argc);
+    else {
+      static const char message[] = "'readable.iterator' has no native lowering in this program";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    }
+  }
   else if (!strcmp(method, "setEncoding")) {
     if (first->kind != SCR_DYN_STR) scr_dyn_arg_type_fail("encoding", "of type string", first);
     else scr_stream_release(scr_stream_set_encoding(stream, first->v.str));
@@ -10558,3 +10572,4 @@ const ScrStreamPipeOps scr_stream_pipe_events_ops = {
     &scr_pl_listen,
     &scr_stream_unpipe_events,
 };
+

@@ -5613,11 +5613,22 @@ export function collectClassShapeInner(
         ? lowerer.paramShapes(abiCtor.parameters.nodes)
         : (base?.ctorParams ??
           (callableBase || extendsDate || extendsArray ? [{ type: DYN, mode: "dynRest" }] : []));
+    // A constructor that reads its actual argument list receives it: every
+    // untyped constructor (JS arity) without a rest parameter, which already
+    // owns that contract, and a typed one whose callers can pass a different
+    // number of arguments than the declaration names (an optional, defaulted
+    // or rest parameter, where a fixed-arity signature folds
+    // `arguments.length` to a constant). A typed rest array holds only the
+    // arguments after the named positions, so the array follows it.
+    const ctorTyped = ctor !== null && !isJsSourceFile(ts.getSourceFileOfNode(ctor));
     if (
       ctor &&
       !mixinForwarding &&
-      isJsSourceFile(ts.getSourceFileOfNode(ctor)) &&
-      !ctorParams.some((shape) => shape.mode === "rest" || shape.mode === "dynRest") &&
+      (ctorTyped
+        ? ctor.parameters.nodes.some(
+            (param) => param.questionToken || param.initializer || param.dotDotDotToken,
+          )
+        : !ctorParams.some((shape) => shape.mode === "rest" || shape.mode === "dynRest")) &&
       bodyReadsArguments(ctor)
     ) {
       ctorParams.push({ type: DYN, mode: "arguments" });

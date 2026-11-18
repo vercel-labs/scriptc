@@ -14,20 +14,11 @@
   },
   {
    "code": "SC0001",
-   "message": "Cannot find name 'WebSocket'. Did you mean 'socket'?",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 348,
-    "end": 357
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Cannot find name 'URLPattern'. Did you mean 'pattern'?",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 416,
-    "end": 426
+    "start": 349,
+    "end": 359
    }
   },
   {
@@ -35,8 +26,8 @@
    "message": "Cannot find name 'CompressionStream'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 529,
-    "end": 546
+    "start": 462,
+    "end": 479
    }
   },
   {
@@ -44,8 +35,8 @@
    "message": "Cannot find name 'DecompressionStream'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 575,
-    "end": 594
+    "start": 508,
+    "end": 527
    }
   }
  ]

@@ -55734,6 +55734,8 @@
           "tests/corpus/webassembly-typed.ts",
           "tests/corpus/webassembly-worker.ts",
           "tests/corpus/webassembly-wpt-jsapi.mjs",
+          "tests/corpus/websocket-echo.ts",
+          "tests/corpus/websocket-validation.mjs",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
@@ -57326,10 +57328,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.WebSocket",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/websocket-echo.ts",
+          "tests/corpus/websocket-validation.mjs"
         ]
       },
       "anchorSource": "exact"

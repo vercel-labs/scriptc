@@ -11,15 +11,6 @@
     "start": 622,
     "end": 630
    }
-  },
-  {
-   "code": "SC0001",
-   "message": "Cannot find name 'WebSocket'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/outside-world.ts",
-    "start": 647,
-    "end": 656
-   }
   }
  ]
 }

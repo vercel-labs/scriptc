@@ -163,7 +163,7 @@ test("a read compiles and answers the constructor; construction refuses", async 
     for (const [name, expression] of [
       ["construct", "new FormData()"],
       ["call", "FormData()"],
-      ["globalThis", "new (globalThis as unknown as { WebSocket: new () => unknown }).WebSocket()"],
+      ["globalThis", "new (globalThis as unknown as { FormData: new () => unknown }).FormData()"],
       ["static", "(FormData as unknown as { OPEN: number }).OPEN"],
       ["prototype", "(FormData as any).prototype.append()"],
     ] as const) {
@@ -193,7 +193,7 @@ test("instanceof answers for the value, and a constant holding it refuses", asyn
     });
   };
   const declarations = [
-    "declare var FormData: { new (): unknown; (): unknown; readonly prototype: object };",
+    "declare var FormData: { new (): unknown; (): unknown; readonly prototype: object; readonly OPEN: number };",
     "declare var WebSocket: { new (url: string): unknown; readonly prototype: object; readonly OPEN: number };",
   ].join("\n");
   try {
@@ -219,9 +219,9 @@ test("instanceof answers for the value, and a constant holding it refuses", asyn
     // members native code does not provide refuse through the alias, and
     // the allowed reads keep working.
     for (const [name, expression] of [
-      ["alias-static", "const Ctor = WebSocket;\nCtor.OPEN;"],
-      ["alias-static-element", 'const Ctor = WebSocket;\nCtor["OPEN"];'],
-      ["alias-chain-static", "const Ctor = WebSocket;\nconst Chain = Ctor;\nChain.OPEN;"],
+      ["alias-static", "const Ctor = FormData;\nCtor.OPEN;"],
+      ["alias-static-element", 'const Ctor = FormData;\nCtor["OPEN"];'],
+      ["alias-chain-static", "const Ctor = FormData;\nconst Chain = Ctor;\nChain.OPEN;"],
       ["alias-construct", "const Ctor = FormData;\nnew Ctor();"],
       ["alias-call", "const Ctor = FormData;\nCtor();"],
       ["prototype-alias", "const body = FormData.prototype;\n(body as any).append();"],

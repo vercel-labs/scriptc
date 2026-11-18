@@ -5,9 +5,6 @@
 const events = new EventSource("http://localhost:1/stream");
 events.close();
 
-const socket = new WebSocket("ws://localhost:1");
-socket.close();
-
 const pattern = new URLPattern({ pathname: "/books/:id" });
 console.log(pattern.test("http://localhost/books/1"));
 

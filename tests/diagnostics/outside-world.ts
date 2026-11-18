@@ -9,5 +9,4 @@ queueMicrotask(() => {});
 const pid = process.pid;
 const cloned = structuredClone({ a: 1 });
 const doc = document;
-const ws = new WebSocket("wss://example.com");
 const store = localStorage;

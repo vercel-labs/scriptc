@@ -487,6 +487,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.histoMannWhitneyU": "scr_histo_mann_whitney_u",
   "perf.histoMannWhitneyZ": "scr_histo_mann_whitney_z",
   "perf.histoMannWhitneyP": "scr_histo_mann_whitney_p",
+  "websocket.new": "scr_websocket_new",
+  "websocket.is": "scr_websocket_is",
   "process.memoryUsageTake": "scr_process_memory_usage_take",
   "process.memoryUsageField": "scr_process_memory_usage_field",
   "process.rss": "scr_process_rss",

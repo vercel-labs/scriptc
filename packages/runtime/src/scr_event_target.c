@@ -1863,6 +1863,33 @@ ScrDyn *scr_event_new_trusted(const char *type) {
   return out;
 }
 
+/* The trusted events a native emitter dispatches (the WebSocket client): a
+ * MessageEvent carrying `data`, and a CloseEvent with its code, reason and
+ * wasClean flag. Both borrow their payloads; +1. */
+ScrDyn *scr_message_event_with(ScrDyn *data, bool trusted) {
+  scr_et_install();
+  ScrEvent *ev = scr_event_alloc(scr_str_new("message", 7), false);
+  ev->trusted = trusted;
+  ev->message = true;
+  ev->detail = scr_dyn_retain(data);
+  ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_MESSAGE_EVENT);
+  scr_event_release_v(ev);
+  return out;
+}
+
+ScrDyn *scr_close_event_with(int64_t code, ScrStr *reason, bool was_clean, bool trusted) {
+  scr_et_install();
+  ScrEvent *ev = scr_event_alloc(scr_str_new("close", 5), false);
+  ev->trusted = trusted;
+  ev->close = true;
+  ev->code = code;
+  ev->reason = scr_str_retain(reason);
+  ev->was_clean = was_clean;
+  ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_CLOSE_EVENT);
+  scr_event_release_v(ev);
+  return out;
+}
+
 /* The constructor's options: null/undefined are none, other non-objects
  * throw; bubbles, cancelable and composed are read in order. */
 static ScrEvent *scr_event_construct(ScrDyn *args, bool custom) {

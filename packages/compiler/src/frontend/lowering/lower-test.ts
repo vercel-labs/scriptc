@@ -1363,24 +1363,18 @@ export function lowerTestMethodCall(
       };
       /* Node's assertion object returns the registered function's result,
        * so an async assertion's promise reaches the call site: `await
-       * t.assert.custom()` waits for it and a rejection fails the test. */
+       * t.assert.custom()` waits for it and a rejection fails the test. A
+       * declaration that types the assertion `void` (a project using
+       * @types/node augments the interface, usually from the registered
+       * function's own `void` return) does not change what the call
+       * carries, so the value stays checked-dynamic there rather than
+       * being dropped before an `await` could adopt it. */
       const resultType = lowerer.irTypeOf(call);
-      if (resultType.kind === "void")
-        return {
-          kind: "seqExpr",
-          stmts: [...stmts, { kind: "exprStmt", expr: assertion, loc }],
-          result: { kind: "unitLit", unit: "undefined", type: VOID, loc },
-          type: VOID,
-          loc,
-        };
-      return {
-        kind: "seqExpr",
-        stmts,
-        result:
-          resultType.kind === "dyn" ? assertion : lowerer.coerceToExpected(assertion, resultType),
-        type: resultType,
-        loc,
-      };
+      const result =
+        resultType.kind === "void" || resultType.kind === "undefinedT"
+          ? assertion
+          : lowerer.coerceToExpected(assertion, resultType);
+      return { kind: "seqExpr", stmts, result, type: result.type, loc };
     }
     lowerer.noLowering(
       `t.assert.${member}`,

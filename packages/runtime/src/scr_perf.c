@@ -93,6 +93,10 @@ static SCR_TL bool scr_perf_scratch_set;
  * returns still reads a live entry. */
 static SCR_TL ScrPerfEntry scr_perf_resource_orphan;
 static SCR_TL bool scr_perf_resource_orphan_set;
+/* The dropped entry as `scr_perf_last`, so the caller's entryKeep reaches it
+ * and the observers' copies answer the same object (Node's observers see
+ * entries the timeline dropped). */
+static SCR_TL ScrPerfBuffer scr_perf_resource_orphan_view;
 /* takeRecords' entries: owned here, borrowed by the view until the next
  * timeline call, like the scratch entry. */
 static SCR_TL ScrPerfEntries scr_perf_taken;
@@ -130,8 +134,10 @@ static void scr_perf_entry_release(ScrPerfEntry *e);
 
 static void scr_perf_resource_orphan_clear(void) {
   if (!scr_perf_resource_orphan_set) return;
+  if (scr_perf_last == &scr_perf_resource_orphan_view) scr_perf_last = NULL;
   scr_perf_entry_release(&scr_perf_resource_orphan);
   scr_perf_resource_orphan = (ScrPerfEntry){0};
+  scr_perf_resource_orphan_view = (ScrPerfBuffer){0};
   scr_perf_resource_orphan_set = false;
 }
 
@@ -687,9 +693,13 @@ static void scr_perf_push_resource(ScrPerfEntry entry) {
   scr_perf_last = NULL;
   scr_perf_observers_enqueue(&entry);
   if (scr_perf_resources.len >= scr_perf_resource_limit) {
-    /* Dropped from the timeline, but the call still returns this entry. */
+    /* Dropped from the timeline, but the call still returns this entry and
+     * the observers still receive it: keep the dropped entry as the entry
+     * the producing call hands to entryKeep. */
     scr_perf_resource_orphan = entry;
     scr_perf_resource_orphan_set = true;
+    scr_perf_resource_orphan_view = (ScrPerfBuffer){&scr_perf_resource_orphan, 1, 1};
+    scr_perf_last = &scr_perf_resource_orphan_view;
     return;
   }
   if (scr_perf_resources.len == scr_perf_resources.cap) {
@@ -909,11 +919,7 @@ ScrDyn *scr_perf_entry_ref(double i) {
  * object as the constructed one, and instanceof asks the tag. */
 
 static void scr_perf_entries_clear(ScrPerfEntries *l) {
-  for (size_t i = 0; i < l->len; i++) {
-    scr_str_release(l->items[i].name);
-    scr_dyn_release(l->items[i].detail);
-    scr_dyn_release(l->items[i].ref);
-  }
+  for (size_t i = 0; i < l->len; i++) scr_perf_entry_release(&l->items[i]);
   l->len = 0;
 }
 

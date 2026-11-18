@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
-import { InternalCompilerError } from "../errors.js";
+import { INTERNAL_COMPILER_ERROR_FALLBACK, InternalCompilerError } from "../errors.js";
 import { compilerCrashDiag, crashSiteOf, isCompilerCrash, noteCrashSite } from "./crash-site.js";
+import { iceDiag } from "./diagnostic.js";
 
 const entry = { file: "/p/main.ts", start: 0, end: 0 };
 const inner = { file: "/p/util.ts", start: 40, end: 52 };
@@ -64,4 +65,29 @@ test("a node without a position names no site, and the next frame's stands", () 
 test("a crash no frame noted falls back to the fence's own node", () => {
   const error = new InternalCompilerError("emitter bug: y");
   expect(compilerCrashDiag(error, entry).loc).toEqual(entry);
+});
+
+test("an internal compiler error created without a message still names the failure", () => {
+  const error = new InternalCompilerError();
+  expect(error.message).toBe(INTERNAL_COMPILER_ERROR_FALLBACK);
+  const diagnostic = compilerCrashDiag(error, entry);
+  expect(diagnostic.code).toBe("SC9001");
+  expect(diagnostic.message).toContain(INTERNAL_COMPILER_ERROR_FALLBACK);
+  expect(diagnostic.message).toContain("please report");
+  expect(diagnostic.message).not.toContain("error:  ");
+});
+
+test("a plain Error without a message names its class instead of a blank reason", () => {
+  const error = new Error("");
+  error.name = "RangeError";
+  const diagnostic = compilerCrashDiag(error, entry);
+  expect(diagnostic.code).toBe("SC9001");
+  expect(diagnostic.message).toContain("RangeError without a message");
+});
+
+test("iceDiag never leaves the reason blank", () => {
+  const diagnostic = iceDiag("   ", entry);
+  expect(diagnostic.code).toBe("SC9001");
+  expect(diagnostic.message).toContain("without a message");
+  expect(diagnostic.loc).toEqual(entry);
 });

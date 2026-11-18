@@ -121,6 +121,7 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["te.", "the node:trace_events surface"],
   ["worker.new", "native worker threads"],
   ["worker.channel", "native worker threads"],
+  ["worker.portConstruct", "native worker threads"],
   ["worker.receiveMessageOnPort", "native worker threads"],
   ["worker.setEnvironmentData", "native worker threads"],
   ["worker.getEnvironmentData", "native worker threads"],

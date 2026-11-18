@@ -1763,6 +1763,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return emitTestLibCall(host, e);
     case "watchEvents":
       return host.emitFilesystemLibCall(e);
+    case "mkdtempResult":
+      return host.emitFilesystemLibCall(e);
     case "tls":
       return emitTlsLibCall(host, e);
     case "http2":

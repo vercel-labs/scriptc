@@ -188,6 +188,7 @@ import { lowerTextCodecNew } from "./builtins/text-codecs.js";
 import {
   lowerBroadcastChannelNew,
   lowerMessageChannelNew,
+  lowerMessagePortNew,
   lowerWorkerNew,
 } from "./builtins/workers.js";
 import {
@@ -12880,7 +12881,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
   if (readlineUi) return readlineUi;
-  const channel = lowerMessageChannelNew(lowerer, expr) ?? lowerBroadcastChannelNew(lowerer, expr);
+  const channel =
+    lowerMessageChannelNew(lowerer, expr) ??
+    lowerMessagePortNew(lowerer, expr) ??
+    lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {

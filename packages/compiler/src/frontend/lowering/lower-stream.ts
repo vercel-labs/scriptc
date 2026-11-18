@@ -183,6 +183,7 @@ export function streamSidesOf(
 /** The instance members the stream spoke owns on stream-rooted
  * receivers (the emitter members ride the base chain as usual). */
 export const STREAM_API_MEMBERS: ReadonlySet<string> = new Set([
+  "iterator",
   "push",
   "unshift",
   "read",
@@ -2244,6 +2245,7 @@ export function lowerStreamStaticCall(
   if (member === "fromWeb" && cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
   if (member === "toWeb" && cls === "%Readable") return lowerReadableToWeb(lowerer, call, loc);
   if (member === "fromWeb" && cls === "%Writable") return lowerWritableFromWeb(lowerer, call, loc);
+  if (member === "toWeb" && cls === "%Writable") return lowerWritableToWeb(lowerer, call, loc);
   // Readable.isDisturbed is stream.isDisturbed, which every stream class
   // inherits from the module's legacy Stream.
   if (member === "isDisturbed") {
@@ -2442,6 +2444,40 @@ function lowerWritableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
     fn: "webstream.writableFromWeb",
     args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
     type: { kind: "object", className: "%Writable" },
+    loc,
+  };
+}
+
+/** Writable.toWeb(writable): a web WritableStream over the writable
+ * (scr_stream_writable_to_web.c). */
+function lowerWritableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+    lowerer.noLowering(
+      `Writable.toWeb with ${args.length} arguments`,
+      call,
+      "the supported form is Writable.toWeb(writable)",
+    );
+  }
+  /* A Duplex's writable half is the same stream object, so a Duplex value
+   * adapts as well as a Writable (Node accepts any Writable). */
+  const value = lowerer.lowerExpr(args[0]!);
+  const valueType = value.type;
+  if (
+    valueType.kind !== "object" ||
+    (valueType.className !== "%Writable" && valueType.className !== "%Duplex")
+  ) {
+    lowerer.noLowering(
+      `Writable.toWeb on '${lowerer.fmt(valueType)}' values`,
+      args[0]!,
+      "the supported form is Writable.toWeb(writable)",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: "webstream.writableToWeb",
+    args: [value, numLit(0, loc)],
+    type: DYN,
     loc,
   };
 }
@@ -7073,6 +7109,64 @@ export function lowerStreamMethodCall(
   info: ClassInfo,
 ): IrExpr | null {
   const member = access.name.text;
+  if (member === "iterator") {
+    const sides = streamSidesOf(lowerer, info);
+    if (sides !== "r" && sides !== "rw") return null;
+    const loc = locOf(call);
+    const args = call.arguments.nodes;
+    if (args.length > 1 || args.some((a) => ts.isSpreadElement(a))) {
+      lowerer.noLowering(
+        `readable.iterator with ${args.length} arguments`,
+        call,
+        "the supported form is readable.iterator() or readable.iterator({ destroyOnReturn })",
+      );
+    }
+    let destroyOnReturn = true;
+    const options = args[0];
+    if (options !== undefined) {
+      if (!ts.isObjectLiteralExpression(options)) {
+        lowerer.noLowering(
+          "readable.iterator options that are not an object literal",
+          options,
+          "pass no options, or { destroyOnReturn }",
+        );
+      }
+      for (const option of options.properties.nodes) {
+        const key =
+          (ts.isPropertyAssignment(option) || ts.isShorthandPropertyAssignment(option)) &&
+          ts.isIdentifier(option.name)
+            ? option.name.text
+            : null;
+        if (key !== "destroyOnReturn" || !ts.isPropertyAssignment(option)) {
+          lowerer.noLowering(
+            key === null
+              ? "readable.iterator options with this member"
+              : `the readable.iterator option '${key}'`,
+            option,
+            "destroyOnReturn is the readable.iterator option",
+          );
+        }
+        const value = option.initializer;
+        if (value.kind === ts.SyntaxKind.TrueKeyword) destroyOnReturn = true;
+        else if (value.kind === ts.SyntaxKind.FalseKeyword) destroyOnReturn = false;
+        else {
+          lowerer.noLowering(
+            "readable.iterator's destroyOnReturn with this value",
+            value,
+            "pass true or false",
+          );
+        }
+      }
+    }
+    const receiver = streamReceiverExpr(lowerer, access.expression);
+    return {
+      kind: "libCall",
+      fn: "readable.iterator",
+      args: [receiver, boolLit(destroyOnReturn, loc)],
+      type: DYN,
+      loc,
+    };
+  }
   if (STREAM_OPERATORS.has(member)) {
     const opSides = streamSidesOf(lowerer, info);
     if (opSides === "r" || opSides === "rw")

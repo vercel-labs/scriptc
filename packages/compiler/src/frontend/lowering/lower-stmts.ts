@@ -638,6 +638,26 @@ function cleanupCall(
       async: false,
     };
   }
+  if (value.type.kind === "mkdtempResult") {
+    /* The sync form's object defines [Symbol.dispose] (removeSync) and the
+     * promise form's defines [Symbol.asyncDispose] (remove); the statement
+     * form picks the hook, as the two declaration types do. */
+    if (awaited)
+      return {
+        call: {
+          kind: "libCall",
+          fn: "mkdtempResult.asyncDispose",
+          args: [value],
+          type: { kind: "promise", inner: VOID },
+          loc,
+        },
+        async: true,
+      };
+    return {
+      call: { kind: "libCall", fn: "mkdtempResult.dispose", args: [value], type: VOID, loc },
+      async: false,
+    };
+  }
   if (value.type.kind === "netServer") {
     /* Server.prototype defines only [Symbol.asyncDispose]: closing waits
      * for 'close', and a server that never listened resolves at once. */

@@ -151,4 +151,22 @@ try {
   console.log("blank changed", (err as Error).name);
 }
 
+// 12. An empty slice of a file Blob carries no bytes: it is an ordinary
+// empty Blob, reading and cloning freely after the file is gone.
+const sliceFile = join(dir, "slice.bin");
+fs.writeFileSync(sliceFile, "0123456789");
+const sliceBlob = await fs.openAsBlob(sliceFile);
+const head = sliceBlob.slice(0, 0);
+const middle = sliceBlob.slice(5, 5);
+fs.rmSync(sliceFile);
+console.log(
+  "empty slices",
+  head.size,
+  JSON.stringify(await head.text()),
+  middle.size,
+  JSON.stringify(await middle.text()),
+);
+const emptyClone = structuredClone(head);
+console.log("empty slice clone", emptyClone.size, JSON.stringify(await emptyClone.text()));
+
 fs.rmSync(dir, { recursive: true, force: true });

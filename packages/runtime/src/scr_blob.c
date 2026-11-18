@@ -470,14 +470,25 @@ static ScrBlob *scr_blob_slice_of(ScrBlob *b, ScrDyn *const *args, size_t argc) 
   size_t from = (size_t)start;
   size_t span = end > start ? (size_t)(end - start) : 0;
   ScrBlob *out = scr_blob_alloc();
-  if (b->source) {
+  if (span == 0) {
+    /* An empty window carries no bytes, so it is an ordinary empty Blob
+     * rather than a view of the file: it reads and clones freely even after
+     * the file is gone, as Node's empty slices do. */
+    ScrBlobStore *empty = malloc(sizeof *empty);
+    if (!empty) scr_trap("scriptc: out of memory\n");
+    empty->rc = 1;
+    empty->len = 0;
+    out->store = empty;
+    out->off = 0;
+  } else if (b->source) {
     b->source->rc++;
     out->source = b->source;
+    out->off = b->off + from;
   } else {
     b->store->rc++;
     out->store = b->store;
+    out->off = b->off + from;
   }
-  out->off = b->off + from;
   out->len = span;
   out->type = type;
   /* Node's queue slice: nothing for an empty span, otherwise every part

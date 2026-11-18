@@ -188,8 +188,21 @@ static void stw3_emitted_error(ScrClosure *cl, void *errp) {
  * premature close is Node's AbortError (handleKnownInternalErrors), and a
  * clean end without a close in flight errors the web stream with one. */
 static void stw3_eos(ScrClosure *cl, ScrStream *s, ScrError *err) {
-  (void)s;
   Stw3Ctx *c = stw3_of(cl);
+  if (!scr_stream_emits_close(s) && scr_stream_prop(s, "destroyed") != 0 &&
+      scr_stream_prop(s, "writableFinished") == 0) {
+    /* The stream closed without a 'close' event, so there is nothing to
+     * report (Node's eos stays pending here); the adapter only lets go. */
+    ScrClosure *eos = c->eos;
+    c->eos = NULL;
+    if (eos) {
+      ((void (*)(ScrClosure *))eos->fn)(eos);
+      scr_closure_release(eos);
+    }
+    stw3_retire(c);
+    stw3_unref(c);
+    return;
+  }
   ScrError *own = err ? scr_error_retain(err) : NULL;
   ScrError *reason = own;
   if (own && stw3_is_premature_close(own)) reason = scr_error_abort(NULL);
@@ -304,7 +317,10 @@ static ScrDyn *stw3_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)argc;
   Stw3Ctx *c = stw3_of(cl);
   ScrPromise *p = scr_promise_new();
-  if (!c->writable || c->closed || scr_stream_prop(c->writable, "writableEnded") != 0) {
+  if (!c->writable) {
+    /* Retired after a destroy that never reported its end: Node leaves a
+     * close on such a stream pending. */
+  } else if (c->closed || scr_stream_prop(c->writable, "writableEnded") != 0) {
     scr_promise_fulfill_void(p);
   } else {
     c->closed = scr_promise_retain(p);
@@ -414,7 +430,7 @@ ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags) {
     stw3_live = c;
     /* One end-of-stream watcher for the adapted stream (after the sink's
      * start, so a synchronously finished stream still sees the controller). */
-    c->eos = scr_stream_finished(c->writable, stw3_closure((void *)&stw3_eos, c), &stw3_eos);
+    c->eos = scr_stream_finished_always(c->writable, stw3_closure((void *)&stw3_eos, c), &stw3_eos);
   }
   stw3_unref(c); /* the constructor's reference */
   return out;

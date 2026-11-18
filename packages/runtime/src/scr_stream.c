@@ -92,6 +92,9 @@ struct ScrStreamState {
 
   /* shared lifecycle */
   bool destroyed, destroy_calling, error_emitted, close_emitted, error_scheduled, close_scheduled;
+  /* A watcher that must report at the close step even when the stream does
+   * not emit 'close' (an adapter that has to let go of the stream). */
+  bool fin_close_step;
   /* a parked for-await consumed the error as its rejection: the 'error'
    * EVENT is suppressed unless a user listener exists (Node's iterator
    * registers its own handler, so no unhandled-'error' crash occurs) */
@@ -3774,11 +3777,13 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
   scr_stream_release(s);
 }
 
-ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
+static ScrClosure *scr_stream_finish_register(ScrStream *s, ScrClosure *cb /*moves*/,
+                                               ScrStreamErrInv inv, bool close_step) {
   ScrStreamState *st = s->st;
+  if (close_step) st->fin_close_step = true;
   scr_stream_fin_add(st, scr_closure_retain(cb), inv);
   bool will_close = scr_stream_will_emit_close(st);
-  if ((st->emit_close && st->close_emitted) || st->destroyed ||
+  if (((st->emit_close || st->fin_close_step) && st->close_emitted) || st->destroyed ||
       (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
     /* Already terminal: Node's eos still calls back asynchronously. */
     scr_st_tick(s, SCR_ST_FIN, NULL, NULL);
@@ -3789,6 +3794,14 @@ ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb /*moves*/, ScrStrea
   cleanup->caps[1] = scr_box_new_obj(&scr_closure_retain_v, &scr_closure_release_v, &scr_closure_trace_v);
   scr_box_set_ref(cleanup->caps[1], cb); /* the move lands here */
   return cleanup;
+}
+
+ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
+  return scr_stream_finish_register(s, cb, inv, false);
+}
+
+ScrClosure *scr_stream_finished_always(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
+  return scr_stream_finish_register(s, cb, inv, true);
 }
 
 /* The dyn-valued finished/pipeline callback (a mustCall wrapper): success
@@ -8616,7 +8629,7 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
          * 'close' (Node's willEmitClose stance); a stream without the
          * 'close' event reports at 'finish' or, for a destroy before it,
          * not at all (Node leaves that watcher pending). */
-        if (st->emit_close) scr_stream_notify_finished(s);
+        if (st->emit_close || st->fin_close_step) scr_stream_notify_finished(s);
         /* Fully closed: nothing calls the option callbacks again (Node's
          * contract), so drop them here — this breaks the reference cycle
          * a callback capturing its own stream forms, including the dyn-

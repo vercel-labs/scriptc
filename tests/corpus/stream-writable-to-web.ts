@@ -365,6 +365,31 @@ async function main(): Promise<void> {
     (error: (Error & { name: string }) | undefined) =>
       log.push(`write after quiet abort rejected ${error ? error.name : "undefined"}`),
   );
+
+  // A destroy with no error on a writable that never emits 'close': a later
+  // write resolves and a later close stays pending, as Node leaves them.
+  const quietDestroy = new Writable({
+    emitClose: false,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const quietDestroyWriter = Writable.toWeb(quietDestroy).getWriter();
+  await quietDestroyWriter.write(encoder.encode("q"));
+  quietDestroy.destroy();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await quietDestroyWriter.write(encoder.encode("r")).then(
+    () => log.push("write after quiet destroy resolved"),
+    (error: Error) => log.push(`write after quiet destroy rejected ${error.message}`),
+  );
+  const quietClose = await Promise.race([
+    quietDestroyWriter.close().then(
+      () => "resolved",
+      (error: Error) => `rejected ${error.message}`,
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 25)),
+  ]);
+  log.push(`close after quiet destroy ${quietClose}`);
 }
 
 main().then(() => {

@@ -30,9 +30,9 @@ void scr_testctx_release(ScrTestCtx *t);
 void *scr_testctx_retain_v(void *t);
 void scr_testctx_release_v(void *t);
 void scr_test_register(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at,
-                       double plan, double timeout, double concurrency);
+                       double plan, double timeout, double concurrency, ScrDyn *signal);
 void scr_test_suite(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, ScrStr *at,
-                    double flags, double concurrency);
+                    double flags, double concurrency, double timeout, ScrDyn *signal);
 /* before/after/beforeEach/afterEach on the CURRENT registration parent
  * (`which`: 0 before, 1 after, 2 beforeEach, 3 afterEach); `at` is the
  * hook call's "file:line:col". The root's before and after hooks run
@@ -41,7 +41,7 @@ void scr_test_hook(double which, ScrClosure *cb, double flags, ScrStr *at);
 /* t.test(...): registers under `t`, runs the subtest INLINE on the
  * runner fiber, and returns the settled promise the `await` consumes (+1). */
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at,
-                         double plan, double timeout, double concurrency);
+                         double plan, double timeout, double concurrency, ScrDyn *signal);
 void scr_test_ctx_skip(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
@@ -57,6 +57,11 @@ ScrDyn *scr_test_ctx_error(ScrTestCtx *t);
 /* snapshot.setDefaultSnapshotSerializers(serializers): the list every later
  * snapshot assertion without its own serializers runs through. */
 void scr_test_snapshot_set_default_serializers(ScrDyn *serializers);
+/* snapshot.setResolveSnapshotPath(fn): the resolver from a test file's path
+ * to its snapshot file (the closure moves in), and the path the lowering
+ * asks for (+1) before each snapshot assertion. */
+void scr_test_snapshot_set_resolve_path(ScrClosure *cb);
+ScrStr *scr_test_snapshot_path(ScrStr *file);
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
 /* t.plan(count[, { wait }]): `has_wait` says whether the options object
  * carried the property; a shortfall then waits that many ms for the

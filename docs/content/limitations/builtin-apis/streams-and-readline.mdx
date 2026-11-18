@@ -35,8 +35,12 @@
   A `Duplex.from` body function may take the `{ signal }` argument, which is aborted with the error the Duplex is destroyed with.
   `stream.compose` accepts streams and async generator functions in any position, an async function as the last stage, and an array, a string, or a generator as the first stage; one stage is `Duplex.from` of it.
   A web `ReadableStream` is read as an async iterable by `Readable.from` and as the first stage of `compose` or `pipeline`, and through its reader by `Readable.fromWeb` (with `objectMode`, `highWaterMark`, `encoding`, and `signal` in an options object literal) and `Duplex.from`.
+  `Readable.toWeb` returns a web `ReadableStream` over the readable: each read pulls one chunk, the readable's error rejects the read, and cancelling destroys the readable.
+  The `Readable.toWeb` options (a byte stream's `type` and a `strategy`) have no lowering yet.
+  In JavaScript, a `Readable.toWeb` argument that is not a native readable stream is refused by name.
   `Writable.fromWeb` returns a `Writable` over a web `WritableStream` writer: a write completes when the writer's `write()` settles, `end()` closes the writer, `destroy()` aborts it, and a failing sink reaches the write callback.
   The `Writable.fromWeb` options have no lowering yet.
+  `Writable.toWeb` returns a web `WritableStream` over the writable: a writer's `write()` completes once the writable accepts the chunk, waits for its `drain` when the write was backpressured, and rejects with the stream's error when that write fails; `close()` ends the writable, and `abort()` destroys it with the reason.
   In TypeScript, `new TransformStream()` without arguments builds the identity transform: its readable side is a web `ReadableStream`, its writable side supports `getWriter`, `abort`, `close`, and `locked`, and the writer supports `write`, `close`, `abort`, `releaseLock`, `ready`, `closed`, and `desiredSize`, with Node's backpressure (a write completes when the readable side reads its chunk).
   In TypeScript, `tee`, `pipeTo`, and `pipeThrough`, the `WritableStream` constructor with an underlying sink, and a `TransformStream` with a transformer or queuing strategies compile: a program that uses one of them builds its `ReadableStream`, `WritableStream`, and `TransformStream` values with the same classes as JavaScript, and a `Response` or `Request` body has those members too.
   A TypeScript program that uses only `getReader`, `cancel`, `locked`, and the identity `TransformStream` keeps the smaller native streams.
@@ -47,7 +51,7 @@
   `readableAborted`, `readableDidRead`, `readableEncoding`, and `writableAborted` read as in Node, on a typed stream and through an untyped value.
   `writableAborted` is `undefined` on a `Duplex`, `Transform`, or `PassThrough`, as in Node, so a `boolean` slot refuses that read with a TypeError.
   `stream[Symbol.asyncDispose]()` and `await using` work on a value typed as a stream class; on an untyped value they are unsupported.
-  `stream.duplexPair`, `readable.wrap`, `Readable.toWeb`, `Writable.toWeb`, `Writable.fromWeb`, `Duplex.fromWeb`, and `Duplex.toWeb` are unsupported.
+  `stream.duplexPair`, `readable.wrap`, `Readable.toWeb`, `Writable.fromWeb`, `Duplex.fromWeb`, and `Duplex.toWeb` are unsupported.
   The `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.

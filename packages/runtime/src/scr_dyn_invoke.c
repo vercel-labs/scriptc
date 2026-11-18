@@ -2562,6 +2562,15 @@ static void dyn_global_ctors_cleanup(void) {
  * executable, and a build that linked no such unit answers the refusal the
  * value always gave. */
 extern ScrDyn *scr_worker_message_channel(void) __attribute__((weak));
+
+/* MessageChannel lives in scr_worker_events.c, which only a worker build compiles. A program
+ * without workers must not name the symbol at all: the header declares it non-weak, so merely
+ * referencing it left the program with an undefined _scr_worker_message_channel at link time. */
+#ifdef SCR_WORKERS
+static ScrDyn *dyn_worker_channel(void) { return scr_worker_message_channel(); }
+#else
+static ScrDyn *dyn_worker_channel(void) { return NULL; }
+#endif
 /* The runtime-provided host classes whose constructors the runtime builds:
  * the abort unit (scr_abort.c / scr_fetch.c), the event-target unit, and the
  * base error unit's DOMException. */
@@ -2646,6 +2655,16 @@ static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, si
  * EventTarget or DOMException builds what the `new` expression builds. The
  * other constructors, Object over a primitive (a wrapper object), and a
  * class whose implementing unit the program did not link, are fenced. */
+/* The error a constructor the runtime has no build for raises. MessageChannel takes it when no
+ * worker build supplied the channel, as it did before the branch stopped probing the symbol. */
+static void dyn_unsupported_constructor(const char *name, ScrDyn **result) {
+  char message[128];
+  int length = snprintf(message, sizeof message, dyn_s33, name,
+                        strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
+  *result = NULL;
+}
+
 static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) {
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != dyn_global_ctor_call) return false;
   const char *name = callee->v.fn.clo->fn;
@@ -2666,8 +2685,13 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
   else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s49) == 0) *result = scr_weak_ref_new((ScrDyn *)first);
-  else if (strcmp(name, dyn_s50) == 0 && scr_worker_message_channel != NULL) {
-    *result = scr_worker_message_channel();
+  else if (strcmp(name, dyn_s50) == 0) {
+    /* One construction: a probe call in the condition built a second channel, and the first
+     * was never released. Without a worker build there is no channel, and the construction is
+     * unsupported like any other the runtime has no build for. */
+    ScrDyn *channel = dyn_worker_channel();
+    if (channel != NULL) *result = channel;
+    else dyn_unsupported_constructor(name, result);
   } else if (strcmp(name, dyn_s52) == 0 && scr_fetch_abort_controller_new != NULL) {
     *result = scr_fetch_abort_controller_new();
   } else if (strcmp(name, dyn_s53) == 0 && scr_event_new != NULL) {
@@ -2683,10 +2707,7 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
       scr_error_release(error);
     }
   } else {
-    char message[128];
-    int length = snprintf(message, sizeof message, dyn_s33, name, strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
-    *result = NULL;
+    dyn_unsupported_constructor(name, result);
   }
   return true;
 }
@@ -2735,14 +2756,12 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
   return ctor;
 }
 
-#ifdef SCR_JS_OBJECT_MODEL
-/* The object model build answers a DataView's `constructor` through this hook
- * (scr_json.c). A program that never reads a global constructor as a value
- * does not link this unit, and the read keeps its named refusal there. */
+/* A value's `constructor` (a DataView's, a DOMException's) is answered through
+ * this hook (scr_json.c) with the global's own interned value. A program that
+ * never asks does not link this unit, and the read keeps its named refusal. */
 __attribute__((constructor)) static void dyn_global_constructor_hook_install(void) {
   scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
 }
-#endif
 
 /* Object.prototype.toString's tag: errors answer "[object Error]" (the
  * shared tag walk in scr_json.c answers "[object Object]" for them). */

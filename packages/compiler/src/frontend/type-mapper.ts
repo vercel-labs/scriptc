@@ -5,6 +5,7 @@ import { CRYPTO_CONSTANTS } from "./lowering/crypto-tables.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
+import { isFallbackDtsPath } from "./dts-paths.js";
 import type { EnumObjectEntry } from "./enum-object-layout.js";
 import type {
   IrRecordField,
@@ -1202,6 +1203,8 @@ export function formatIrType(
         return append("FileHandle");
       case "dir":
         return append("Dir");
+      case "mkdtempResult":
+        return append("DisposableTempDir");
       case "spawnRes":
         return append("SpawnSyncReturns");
       case "child":
@@ -2809,7 +2812,9 @@ function isWorkerHandleSymbol(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-        isDeclaredInAmbientModule(d, "worker_threads"),
+        (isDeclaredInAmbientModule(d, "worker_threads") ||
+          (ts.symbolName(symbol) === "BroadcastChannel" &&
+            isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName))),
     )
   );
 }
@@ -5600,6 +5605,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "secureCtx" };
   }
+  // The object mkdtempDisposable answers: @types/node declares
+  // `interface DisposableTempDir` in both node:fs and node:fs/promises, and
+  // the shipped fallback mirrors it. It is the created path plus the removal
+  // and disposal hooks, so it maps to one handle.
+  if (
+    psym !== undefined &&
+    psymName === "DisposableTempDir" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        (isDeclaredInAmbientModule(d, "fs") || isDeclaredInAmbientModule(d, "fs/promises")),
+    )
+  ) {
+    return { kind: "mkdtempResult" };
+  }
   // Scrypt's runtime options retain property accessors and aliases. Use
   // checked values so presence probes and repeated getter reads match Node.
   if (
@@ -6924,7 +6945,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
   // runtime's histogram table, like a timer handle. Its members lower over
   // the handle (builtins/performance.ts).
-  if (isStdlibInterface("IntervalHistogram")) return F64;
+  // Histogram values are refcounted runtime handle objects: an
+  // IntervalHistogram (monitorEventLoopDelay) and a RecordableHistogram
+  // (createHistogram) are both checked-dynamic handles whose release frees
+  // the buckets when the value dies, so a short-lived histogram does not
+  // stay in a thread table until exit. The members lower over the handle,
+  // which carries the class its fields come from.
+  if (
+    isStdlibInterface("IntervalHistogram") ||
+    isStdlibInterface("Histogram") ||
+    isStdlibInterface("RecordableHistogram")
+  )
+    return DYN;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",

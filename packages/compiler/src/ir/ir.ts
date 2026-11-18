@@ -194,6 +194,11 @@ export type IrType =
    * close() closes it for every alias, and the final release closes a
    * still-open stream. Holds no references and cannot be part of a cycle. */
   | { kind: "dir" }
+  /** The object fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync
+   * answers (scr_lib.c): the created path, its removal and the disposal
+   * hooks. Heap, refcounted, IMMUTABLE — it holds the full path so a later
+   * process.chdir cannot change what remove() deletes. */
+  | { kind: "mkdtempResult" }
   /** A child_process.spawnSync result (scr_child.c): heap, refcounted,
    * IMMUTABLE — the reaped child's status plus its captured utf8 stdout/
    * stderr. Holds only strings — never part of a cycle, no trace. Same
@@ -435,6 +440,7 @@ const POINTER_HANDLE_KINDS = [
   "bigintStats",
   "fileHandle",
   "dir",
+  "mkdtempResult",
   "spawnRes",
   "child",
   "netServer",
@@ -522,6 +528,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   bigintStats: "scr_stats",
   fileHandle: "scr_file_handle",
   dir: "scr_dir",
+  mkdtempResult: "scr_mkdtemp_result",
   spawnRes: "scr_spawn_res",
   child: "scr_child",
   netServer: "scr_net_server",
@@ -592,6 +599,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "bigintStats",
   "fileHandle",
   "dir",
+  "mkdtempResult",
   "spawnRes",
   "child",
   "netServer",
@@ -639,6 +647,7 @@ export const STATS_T: IrType = { kind: "stats" };
 export const BIGINT_STATS_T: IrType = { kind: "bigintStats" };
 export const FILEHANDLE_T: IrType = { kind: "fileHandle" };
 export const DIR_T: IrType = { kind: "dir" };
+export const MKDTEMPRESULT_T: IrType = { kind: "mkdtempResult" };
 export const SPAWNRES_T: IrType = { kind: "spawnRes" };
 export const CHILD_T: IrType = { kind: "child" };
 export const NETSERVER_T: IrType = { kind: "netServer" };

@@ -1393,6 +1393,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.mkdtempDisposable",
+      "kind": "node-builtin",
+      "name": "fs.mkdtempDisposableSync / fsPromises.mkdtempDisposable",
+      "status": "static",
+      "note": "the created temp directory plus its path, remove() and disposal hooks; the path is a string, so only the utf8 encoding is accepted"
+    },
+    {
       "id": "node-builtin.fs.mkdtempSync",
       "kind": "node-builtin",
       "name": "fs.mkdtempSync",
@@ -2351,6 +2358,13 @@
       "name": "perf_hooks.PerformanceObserver",
       "status": "static",
       "note": "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes"
+    },
+    {
+      "id": "node-builtin.perf_hooks.createHistogram",
+      "kind": "node-builtin",
+      "name": "perf_hooks.createHistogram",
+      "status": "static",
+      "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf and the percentiles Map"
     },
     {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",

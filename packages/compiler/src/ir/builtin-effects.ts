@@ -79,6 +79,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // snapshot.setDefaultSnapshotSerializers validates its list (Node's
   // ERR_INVALID_ARG_TYPE).
   "test.snapshotSetDefaultSerializers",
+  // The snapshot path resolver is program code and may throw.
+  "test.snapshotPath",
   "test.snapshotSerialize",
   "test.mockTimersEnable",
   "test.mockTimersTick",
@@ -394,11 +396,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resWriteHeadObject",
   "http.resSetHeader",
   "http.resSetHeaderDyn",
   "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",
+  "http.reqSignal",
   "http.clientProtocolCheck",
   "http.clientProtocolCheckAgent",
   "http.serverMaxHeaderSize",
@@ -407,6 +411,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
+  // writeInformation validates the status (ERR_OUT_OF_RANGE, and
+  // ERR_HTTP_INVALID_STATUS_CODE for 101), the state
+  // (ERR_HTTP_HEADERS_SENT) and every header name and value.
+  "http.resWriteInformation",
   "http.resWriteContinueCb",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",
@@ -417,6 +425,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.resOnPrefinish",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
+  "http.serverHeadersTimeoutDefault",
+  "http.serverConnectionsCheckingInterval",
+  "http.serverRejectNonStandardBodyWrites",
   "net.sockSetEncoding",
   "net.sockSetEncodingDyn",
   // setKeepAlive's positional coercions and its object form run ToNumber
@@ -657,6 +668,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
@@ -693,6 +705,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "process.setTitleDyn",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
   "process.emitWarning",
+  // A listener the emit reaches may throw; the exception is the call's.
+  "process.emit",
+  "process.emitError",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
   // throw Node's ERR_INVALID_ARG_VALUE RangeError, catchably.
   "process.cpuPrevValidate",
@@ -739,6 +754,15 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
+  // createHistogram's options and RecordableHistogram's record forms: Node's
+  // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
+  "perf.histoNew",
+  "perf.histoRecord",
+  "perf.histoRecordBig",
+  "perf.histoRecordCorrected",
+  // add/subtract reject a non-RecordableHistogram argument.
+  "perf.histoAdd",
+  "perf.histoSubtract",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
@@ -1677,6 +1701,15 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // watchEvents.take raises ERR_FS_WATCH_QUEUE_OVERFLOW when the queue
   // overflowed under overflow: "error".
   "watchEvents.take",
+  // The disposable temp directory: creating it validates the options and
+  // can fail in mkdtemp, and its removal raises rm's errors (the promise
+  // form turns them into a rejection, the sync form throws them).
+  "fsp.mkdtempDisposable",
+  "fs.mkdtempDisposableSync",
+  "mkdtempResult.remove",
+  "mkdtempResult.removeSync",
+  "mkdtempResult.asyncDispose",
+  "mkdtempResult.dispose",
   "crypto.x509Fingerprint",
   "crypto.x509FingerprintStr",
   "crypto.x509ValidFrom",

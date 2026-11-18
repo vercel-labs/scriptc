@@ -2242,7 +2242,9 @@ export function lowerStreamStaticCall(
     }
   }
   if (member === "fromWeb" && cls === "%Readable") return lowerReadableFromWeb(lowerer, call, loc);
+  if (member === "toWeb" && cls === "%Readable") return lowerReadableToWeb(lowerer, call, loc);
   if (member === "fromWeb" && cls === "%Writable") return lowerWritableFromWeb(lowerer, call, loc);
+  if (member === "toWeb" && cls === "%Writable") return lowerWritableToWeb(lowerer, call, loc);
   // Readable.isDisturbed is stream.isDisturbed, which every stream class
   // inherits from the module's legacy Stream.
   if (member === "isDisturbed") {
@@ -2441,6 +2443,29 @@ function lowerWritableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
     fn: "webstream.writableFromWeb",
     args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
     type: { kind: "object", className: "%Writable" },
+    loc,
+  };
+}
+
+/** Writable.toWeb(writable): a web WritableStream over the writable
+ * (scr_stream_writable_to_web.c). */
+function lowerWritableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+    lowerer.noLowering(
+      `Writable.toWeb with ${args.length} arguments`,
+      call,
+      "the supported form is Writable.toWeb(writable)",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: "webstream.writableToWeb",
+    args: [
+      lowerer.lowerExprExpecting(args[0]!, { kind: "object", className: "%Writable" }),
+      numLit(0, loc),
+    ],
+    type: DYN,
     loc,
   };
 }
@@ -3335,7 +3360,7 @@ function planStreamArg(
 function lowerStreamArg(
   lowerer: Lowerer,
   node: ts.Expression,
-  what: "finished" | "pipeline" | "addAbortSignal" | "compose",
+  what: "finished" | "pipeline" | "addAbortSignal" | "compose" | "toWeb",
 ): IrExpr {
   return streamArgOf(lowerer, node, lowerer.lowerExpr(node), what);
 }
@@ -3345,7 +3370,7 @@ function streamArgOf(
   lowerer: Lowerer,
   node: ts.Expression,
   lowered: IrExpr,
-  what: "finished" | "pipeline" | "addAbortSignal" | "compose",
+  what: "finished" | "pipeline" | "addAbortSignal" | "compose" | "toWeb",
 ): IrExpr {
   // A Hash, Hmac, Cipheriv or Decipheriv stage is its Transform; pipeline
   // and compose stages keep the value alive until the stream settles.
@@ -6991,6 +7016,76 @@ function lowerReadableCompose(
     fn: "stream.addAbortSignal",
     args: [composed, lowerer.lowerExprExpecting(signalNode, DYN)],
     type: composed.type,
+    loc,
+  };
+}
+
+/** Readable.toWeb(readable): a web ReadableStream over the readable's chunks
+ * (scr_stream_to_web.c). The options are an object literal without members:
+ * `type: 'bytes'` (a byte stream) and `strategy` have no lowering yet. */
+function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
+    lowerer.noLowering(
+      `Readable.toWeb with ${args.length} arguments`,
+      call,
+      "the supported form is Readable.toWeb(readable)",
+    );
+  }
+  const options = args[1];
+  if (options !== undefined) {
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "Readable.toWeb options that are not an object literal",
+        options,
+        "pass no options, or an empty object literal",
+      );
+    }
+    for (const member of options.properties.nodes) {
+      const key =
+        (ts.isPropertyAssignment(member) || ts.isShorthandPropertyAssignment(member)) &&
+        ts.isIdentifier(member.name)
+          ? member.name.text
+          : null;
+      if (key === "type" && ts.isPropertyAssignment(member)) {
+        const t = lowerer.typeOf(member.initializer);
+        if (t.isStringLiteralType() && t.value === "bytes") {
+          lowerer.noLowering(
+            "Readable.toWeb with type: 'bytes'",
+            member,
+            "a byte stream has no lowering yet; omit the option",
+          );
+        }
+      }
+      lowerer.noLowering(
+        key === null
+          ? "Readable.toWeb options with this member"
+          : `the Readable.toWeb option '${key}'`,
+        member,
+        "the supported form is Readable.toWeb(readable)",
+      );
+    }
+  }
+  // The readable is lowered once: a checked-dynamic value takes the dyn
+  // entry point, which unwraps a boxed native stream and refuses anything
+  // else at run time; a typed stream goes through the stream argument rules.
+  const value = lowerer.lowerExpr(args[0]!);
+  let readable: IrExpr;
+  if (value.type.kind === "dyn") {
+    readable = value;
+  } else {
+    try {
+      readable = streamArgOf(lowerer, args[0]!, value, "toWeb");
+    } catch (e) {
+      if (e instanceof StreamArgTypeThrow) return e.expr;
+      throw e;
+    }
+  }
+  return {
+    kind: "libCall",
+    fn: readable.type.kind === "dyn" ? "webstream.toWebReadableDyn" : "webstream.toWebReadable",
+    args: [readable, numLit(0, loc)],
+    type: DYN,
     loc,
   };
 }

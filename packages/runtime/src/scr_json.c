@@ -101,13 +101,11 @@ _Atomic(const ScrMessageWrapperOps *) scr_message_wrapper_ops = NULL;
 void scr_message_set_wrapper_ops(const ScrMessageWrapperOps *ops) {
   atomic_store_explicit(&scr_message_wrapper_ops, ops, memory_order_relaxed);
 }
-#ifdef SCR_JS_OBJECT_MODEL
-/* Set by scr_dyn_invoke.c when the object model build links it, so a
- * DataView's `constructor` is the global's own interned value. A program that
- * only needs the object model (a .js program that never reads a global
- * constructor as a value) keeps this NULL and its named refusal. */
+/* Set by scr_dyn_invoke.c when a program links it, so a value's `constructor`
+ * is the global's own interned value (a DataView's, and a DOMException's —
+ * which must stay that value so `new` and a call without `new` behave as
+ * Node's global does). A program that never asks keeps this NULL. */
 ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name) = NULL;
-#endif
 /* Set by scr_dyn_invoke.c when a program links it (every program that
  * creates a native Proxy does): the Object.prototype, Array.prototype and
  * Function.prototype members a program's computed key or a trap-less
@@ -3195,7 +3193,8 @@ static void scr_builtin_object_prototype_cleanup(void) {
  * interned constructors (scr_dyn_global_constructor). */
 static const char *const scr_error_ctor_names[] = {
     "Error", "TypeError", "RangeError", "SyntaxError", NULL,
-    "ReferenceError", "EvalError", "URIError", "AggregateError",
+    "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError",
+    "SuppressedError",
 };
 #define SCR_ERROR_CTORS (sizeof scr_error_ctor_names / sizeof scr_error_ctor_names[0])
 static SCR_TL ScrDyn *scr_error_ctor_values[SCR_ERROR_CTORS];
@@ -3230,7 +3229,9 @@ ScrDyn *scr_dyn_error_constructor(const char *name) {
       scr_atexit(scr_error_ctors_cleanup);
     }
     if (!scr_error_ctor_values[i]) {
-      uint32_t length = strcmp(name, "AggregateError") == 0 ? 2 : 1;
+      uint32_t length = strcmp(name, "AggregateError") == 0    ? 2
+                        : strcmp(name, "SuppressedError") == 0 ? 3
+                                                               : 1;
       scr_error_ctor_values[i] =
           scr_dyn_new_func(scr_closure_new((void *)scr_error_ctor_names[i], 0), scr_error_ctor_call, length,
                            "native:constructor", scr_error_ctor_names[i]);
@@ -9625,7 +9626,7 @@ static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps 
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
   ScrDynHandleTag tag = d->v.handle.tag;
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
-  ScrDyn *r = ops->get(d->v.handle.ptr, k->data, k->len);
+  ScrDyn *r = ops->get ? ops->get(d->v.handle.ptr, k->data, k->len) : NULL;
   if (scr_exc_pending()) {
     scr_dyn_release(r);
     return NULL;
@@ -9646,12 +9647,11 @@ static bool scr_dyn_handle_in(const ScrDyn *d, const ScrStr *k) {
       scr_dyn_handle_class_ops && scr_dyn_handle_class_ops->accessors
           ? scr_dyn_handle_class_ops->accessors(d)
           : NULL;
-  if (!methods && !accessors) return false;
   for (size_t i = 0; methods && methods[i].name; i++)
     if (strlen(methods[i].name) == k->len && memcmp(methods[i].name, k->data, k->len) == 0) return true;
   for (size_t i = 0; accessors && accessors[i].name; i++)
     if (strlen(accessors[i].name) == k->len && memcmp(accessors[i].name, k->data, k->len) == 0) return true;
-  ScrDyn *value = ops->get(d->v.handle.ptr, k->data, k->len);
+  ScrDyn *value = ops->get ? ops->get(d->v.handle.ptr, k->data, k->len) : NULL;
   if (!value) return scr_dyn_object_proto_name(k);
   scr_dyn_release(value);
   return true;
@@ -20103,14 +20103,25 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
     if (scr_ni_dyn_ops->error_get(d, key, key_len, &island)) return island;
   }
   if (key_len == 11 && memcmp(key, "constructor", 11) == 0) {
-    /* An error's constructor: the interned function value its global
-     * reads as (scr_dyn_error_constructor). */
-    static const char *const names[] = {
-        "Error", "TypeError", "RangeError", "SyntaxError", NULL,
-        "ReferenceError", "EvalError", "URIError", "AggregateError",
-    };
     size_t hit = scr_errdyn_find(d, false);
     const ScrVt *vt = hit == SIZE_MAX ? NULL : scr_errdyn_cache[hit].err->vt;
+    /* A DOMException's constructor is the global's own value
+     * (scr_dyn_global_constructor), so `e.constructor === DOMException` is
+     * identity AND the global keeps the construct and call behavior Node
+     * gives it — the error table's interned functions refuse both. */
+    if (vt == &scr_error_vts[SCR_ERR_DOMEX] && scr_dyn_global_constructor_hook != NULL) {
+      ScrStr *domex_name = scr_str_new("DOMException", 12);
+      ScrDyn *ctor = scr_dyn_global_constructor_hook(domex_name);
+      scr_str_release(domex_name);
+      if (ctor != NULL) return ctor;
+    }
+    /* Every other error's constructor: the interned function value its
+     * global reads as (scr_dyn_error_constructor). */
+    static const char *const names[] = {
+        "Error", "TypeError", "RangeError", "SyntaxError", NULL,
+        "ReferenceError", "EvalError", "URIError", "AggregateError", "AssertionError",
+        "SuppressedError",
+    };
     for (size_t kind = 0; vt && kind < sizeof names / sizeof names[0]; kind++) {
       if (!names[kind]) continue;
       if (vt != &scr_error_vts[kind]) continue;
@@ -24362,7 +24373,18 @@ static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind
   }
   int supported = scr_weak_key(value, ptr, kind);
   if (supported < 0) {
-    static const char message[] = "FinalizationRegistry targets of this native reference type have no weak lifetime lowering";
+    /* A TARGET whose reference kind has no weak lifetime lowering: the
+     * registry keeps no per-target entry (it counts unregister tokens only),
+     * and ECMAScript lets an implementation never collect a target or call
+     * its cleanup, so the registration is accepted and simply never
+     * collected. A TOKEN of such a kind still refuses: its count is the one
+     * thing the registry reads back. */
+    if (invalid) {
+      *ptr = NULL;
+      *kind = 0;
+      return true;
+    }
+    static const char message[] = "FinalizationRegistry unregister tokens of this native reference type have no weak lifetime lowering";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return false;
   }

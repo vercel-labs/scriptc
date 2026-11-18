@@ -416,6 +416,16 @@ declare module "node:fs" {
   ): WriteStream;
   export function accessSync(path: string | URL, mode?: number): void;
   export function mkdtempSync(prefix: string | URL): string;
+  /** The object fs.mkdtempDisposableSync answers: the created path, its
+   * removal, and the Symbol.dispose hook. */
+  export interface DisposableTempDir extends Disposable {
+    path: string;
+    remove(): void;
+  }
+  export function mkdtempDisposableSync(
+    prefix: string,
+    options?: string | { encoding?: string },
+  ): DisposableTempDir;
   export const constants: {
     readonly F_OK: number;
     readonly R_OK: number;

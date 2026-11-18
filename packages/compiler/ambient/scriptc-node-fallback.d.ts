@@ -641,6 +641,11 @@ declare var process: {
   /* emitWarning — Node's full grammar (string or Error warning; type/
    * ctor/options second; code/ctor third). */
   emitWarning(warning: string | Error, ...args: any[]): void;
+  /* process.emit — the exception events (uncaughtException and
+   * uncaughtExceptionMonitor) run their listeners and answer whether any
+   * existed; a custom event answers false. The other process event
+   * families' listeners are typed closures and are refused at lowering. */
+  emit(event: string, ...args: any[]): boolean;
   /** Present in a child created by child_process.fork(). */
   readonly connected: boolean;
   /* The IPC channel of a forked child — Node's Control: `undefined` in a
@@ -995,18 +1000,21 @@ interface SubtleCrypto {
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   deriveBits(
-    algorithm: Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
+    algorithm: Argon2Params | Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     length?: number | null,
   ): Promise<ArrayBuffer>;
   deriveKey(
-    algorithm: Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
+    algorithm: Argon2Params | Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     derivedKeyType: AlgorithmIdentifier | AesDerivedKeyParams | HmacImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
-  digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
+  digest(
+    algorithm: AlgorithmIdentifier | CShakeParams | KangarooTwelveParams | TurboShakeParams,
+    data: BufferSource,
+  ): Promise<ArrayBuffer>;
   encrypt(
     algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
@@ -1362,6 +1370,27 @@ declare var EventTarget: {
   readonly prototype: EventTarget;
 };
 
+/* Node's BroadcastChannel global is the worker_threads class itself: the
+ * global value is declared here so the global form is typed without the
+ * program importing node:worker_threads, and the lowering recognises it as
+ * that class (a fallback global of that name). The members mirror
+ * node-fallback/worker_threads.d.ts, whose file loads only when the program
+ * imports the module; ref()/unref() answer the channel, as Node's do.
+ * MessageChannel and MessagePort stay the global interfaces above: their
+ * event-side members still refuse, so their rows remain unimplemented. */
+interface BroadcastChannel extends EventTarget {
+  readonly name: string;
+  postMessage(message: unknown): void;
+  close(): void;
+  ref(): this;
+  unref(): this;
+  onmessage: ((event: MessageEvent) => void) | null;
+  onmessageerror: ((event: MessageEvent) => void) | null;
+}
+declare var BroadcastChannel: {
+  new (name: string): BroadcastChannel;
+  readonly prototype: BroadcastChannel;
+};
 interface MessagePort extends EventTarget {
   postMessage(value: unknown, transferOrOptions?: unknown): void;
   start(): void;
@@ -1372,13 +1401,13 @@ interface MessagePort extends EventTarget {
   onmessageerror: ((event: MessageEvent) => void) | null;
   onclose: ((event: Event) => void) | null;
 }
-declare var MessagePort: {
-  readonly prototype: MessagePort;
-};
 interface MessageChannel {
   readonly port1: MessagePort;
   readonly port2: MessagePort;
 }
+declare var MessagePort: {
+  readonly prototype: MessagePort;
+};
 declare var MessageChannel: {
   new (): MessageChannel;
   readonly prototype: MessageChannel;
@@ -2007,12 +2036,21 @@ declare module "node:perf_hooks" {
   }
   export interface Histogram {
     readonly count: number;
+    readonly countBigInt: bigint;
     readonly exceeds: number;
+    readonly exceedsBigInt: bigint;
     readonly max: number;
+    readonly maxBigInt: bigint;
     readonly mean: number;
     readonly min: number;
+    readonly minBigInt: bigint;
+    readonly percentiles: Map<number, number>;
     readonly stddev: number;
     percentile(percentile: number): number;
+    percentileBigInt(percentile: number): bigint;
+    countAt(value: number): number;
+    cdf(value: number): number;
+    ccdf(value: number): number;
     reset(): void;
   }
   export interface IntervalHistogram extends Histogram {
@@ -2020,6 +2058,22 @@ declare module "node:perf_hooks" {
     disable(): boolean;
   }
   export function monitorEventLoopDelay(options?: EventLoopMonitorOptions): IntervalHistogram;
+  /* createHistogram's options and the RecordableHistogram its histograms
+   * add recording to (record, recordDelta, recordCorrected, add and
+   * subtract); the readings are the Histogram interface's. */
+  export interface CreateHistogramOptions {
+    lowest?: number | bigint | undefined;
+    highest?: number | bigint | undefined;
+    figures?: number | undefined;
+  }
+  export interface RecordableHistogram extends Histogram {
+    record(val: number | bigint): void;
+    recordDelta(): void;
+    recordCorrected(val: number | bigint, expectedInterval: number | bigint): void;
+    add(other: RecordableHistogram): void;
+    subtract(other: RecordableHistogram): void;
+  }
+  export function createHistogram(options?: CreateHistogramOptions): RecordableHistogram;
 }
 declare module "perf_hooks" {
   export * from "node:perf_hooks";
@@ -2495,6 +2549,14 @@ declare module "tty" {
     off(event: string, listener: (...args: any[]) => void): this;
     removeListener(event: string, listener: (...args: any[]) => void): this;
     getWindowSize(): [number, number];
+    /* The cursor methods Node's tty.WriteStream implements with escape
+     * sequences through the stream's own write; a stream whose descriptor is
+     * no terminal has none of them. */
+    cursorTo(x: number, y?: number, callback?: () => void): boolean;
+    cursorTo(x: number, callback?: () => void): boolean;
+    moveCursor(dx: number, dy: number, callback?: () => void): boolean;
+    clearLine(dir: number, callback?: () => void): boolean;
+    clearScreenDown(callback?: () => void): boolean;
   }
   export function isatty(fd: number): boolean;
 }

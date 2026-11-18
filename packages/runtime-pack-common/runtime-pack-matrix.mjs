@@ -357,8 +357,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // its file symbol in the executable, so no other program gets it.
   ["scr_node_island_child.c", "islandChild"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // Readable.toWeb pulls a Node readable into a web stream.
+  ["scr_stream_to_web.c", all("stream", "webStreams", "dynAsync")],
   // Writable.fromWeb wraps a web WritableStream's writer.
   ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
+  // Writable.toWeb wraps a native writable in a web WritableStream.
+  ["scr_stream_writable_to_web.c", all("stream", "webStreams", "dynAsync")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws

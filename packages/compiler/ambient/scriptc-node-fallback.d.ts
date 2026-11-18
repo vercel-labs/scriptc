@@ -1030,7 +1030,9 @@ interface SubtleCrypto {
       | "Ed25519"
       | { name: "Ed25519" }
       | "X25519"
-      | { name: "X25519" },
+      | { name: "X25519" }
+      | "X448"
+      | { name: "X448" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;

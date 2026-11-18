@@ -1033,26 +1033,12 @@ export function lowerDgramMethodCall(
           (cbType.rest === true || cbType.params.some((p) => p.kind === "dyn"))) ||
         (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
       if (dynamic) {
-        // The callback rides a local so its owned reference is released with
-        // the scope; the runtime retains what it defers.
-        const cbLocal = lowerer.declareHiddenLocal("%dgramConnectCb", DYN);
+        // The arguments stay in the call, so they run in source order; the
+        // runtime takes the callback's owned reference.
         return {
-          kind: "seqExpr",
-          stmts: [
-            {
-              kind: "varDecl",
-              localId: cbLocal.id,
-              init: lowerer.lowerExprExpecting(cbNode, DYN),
-              loc,
-            },
-          ],
-          result: {
-            kind: "libCall",
-            fn: "dgram.connectDyn",
-            args: [receiver, port, host, { kind: "varRef", localId: cbLocal.id, type: DYN, loc }],
-            type: VOID,
-            loc,
-          },
+          kind: "libCall",
+          fn: "dgram.connectDyn",
+          args: [receiver, port, host, lowerer.lowerExprExpecting(cbNode, DYN)],
           type: VOID,
           loc,
         };

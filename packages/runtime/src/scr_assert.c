@@ -2552,16 +2552,11 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
    * no property requirement (Node skips it), while an expected own element
    * needs one on the actual side (an actual hole fails the aligned key
    * check). The unequal-length forms below keep Node's subsequence match. */
-  if (la == lb) {
-    /* Node compares the expected array's own indexes by VALUE: a hole on
-     * either side reads as undefined, so `[, undefined]` partially matches
-     * `[undefined, ,]` (the hole is not a property either side must own). */
-    for (size_t i = 0; i < la; i++) {
-      if (!scr_dyn_arr_has_index(b, i)) continue;
-      const ScrDyn *av = scr_dyn_arr_has_index(a, i) ? a->v.arr.items[i] : scr_dyn_undefined();
-      if (!scr_assert_partial_eq(av, b->v.arr.items[i])) return false;
-    }
-  }
+  /* Node matches the expected array's own index values, in order, against
+   * the actual array's own index values: an expected hole imposes nothing,
+   * and an actual hole is not a value to match (so Array(1) does not
+   * partially match [undefined], while [, undefined] matches
+   * [undefined, ,]). */
   const ScrDyn *pb = b->v.arr.properties;
   if (pb) {
     const ScrDyn *pa = a->v.arr.properties;
@@ -2573,10 +2568,11 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
   }
   size_t pos = 0;
   for (size_t i = 0; i < lb; i++) {
-    while (!scr_assert_partial_eq(a->v.arr.items[pos], b->v.arr.items[i])) {
+    if (!scr_dyn_arr_has_index(b, i)) continue;
+    while (pos < la && !(scr_dyn_arr_has_index(a, pos) &&
+                         scr_assert_partial_eq(a->v.arr.items[pos], b->v.arr.items[i])))
       pos++;
-      if (pos > la - lb + i) return false;
-    }
+    if (pos >= la) return false;
     pos++;
   }
   return true;

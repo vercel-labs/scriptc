@@ -1,0 +1,6 @@
+constructor-returns-instance-into-a-local-class.ts:16:3 - error SC1090: extending a class whose constructor can return an existing instance from a function-local class ('super()' would rebind 'this' to the instance 'Base' returns) is not supported yet
+
+  15 | function make(): number {
+  16 |   class Local extends Base {
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 |     b = 2;

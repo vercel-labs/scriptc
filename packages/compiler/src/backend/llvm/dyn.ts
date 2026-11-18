@@ -154,6 +154,7 @@ export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
   dgramSocket: 62,
   cryptoHash: 52,
   cryptoHmac: 53,
+  statWatcher: 103,
 };
 
 /** SCR_DYNH_NODE_ISLAND (scr_dyn.h): the handle a value an island made
@@ -7202,8 +7203,17 @@ export class LlDyn {
       }
     });
     // VARIADIC (rest-marked) signatures: one extra trailing dyn-array
-    // param carries the call's arguments from index params.length on.
-    const rest = t.rest && !typedRest ? packTail(t.argumentsAll ? 0 : t.params.length) : null;
+    // param carries the call's arguments — all of them for an
+    // `argumentsAll` value, the surplus ones otherwise. A typed rest array
+    // is one of `params`, so an `argumentsAll` value that has one carries
+    // the hidden array after it.
+    const rest = !t.rest
+      ? null
+      : typedRest
+        ? t.argumentsAll === true
+          ? packTail(0)
+          : null
+        : packTail(t.argumentsAll === true ? 0 : t.params.length);
     // The closure CONSUMES its params (+1 each moved in).
     const fnp = B.tmp();
     const fn = B.tmp();

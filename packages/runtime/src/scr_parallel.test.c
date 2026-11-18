@@ -312,8 +312,18 @@ static void overlap_body(ScrClosure *env, ScrBytes *part, double start, double e
      * machine. Which thread runs a chunk is not observable, so a helper
      * that claims none is not a fault. Yield this chunk for a bounded
      * time so a helper can claim one, since the assertion below is about
-     * the pool being used at all. */
-    for (int i = 0; i < 1000000 && atomic_load(&off_thread_chunks) == 0; i++) sched_yield();
+     * the pool being used at all. The bound is wall-clock time, not a count
+     * of yields: under a sanitizer on a loaded machine a million yields can
+     * pass before a helper thread is scheduled once. */
+    struct timespec now, deadline;
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += 2;
+    do {
+      sched_yield();
+      clock_gettime(CLOCK_MONOTONIC, &now);
+    } while (atomic_load(&off_thread_chunks) == 0 &&
+             (now.tv_sec < deadline.tv_sec ||
+              (now.tv_sec == deadline.tv_sec && now.tv_nsec < deadline.tv_nsec)));
   }
   double *elements = (double *)part->data;
   for (size_t k = 0; k < part->len; k++) elements[k] = start + (double)k;

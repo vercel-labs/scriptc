@@ -31,6 +31,11 @@ const references: IrType[] = [
   arrayOf(F64),
   { kind: "symbol" },
   { kind: "netServer" },
+  // Collections are one object each for their whole life: a Map, a Set and
+  // a typed array key compare by pointer identity too.
+  mapOf(STRING, F64),
+  setOf(STRING),
+  { kind: "bytes", elem: "u8" },
 ];
 const union: IrType = { kind: "union", unionId: "keys" };
 
@@ -115,6 +120,86 @@ test("a promise is a reference key: Set<Promise<T>> compares by identity", () =>
   }
 });
 
+test("a Map, a Set and a typed array key by identity, not contents", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-collection-keys-"));
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(
+      entry,
+      `
+      const counts = new Map([["a", 1]]);
+      const names = new Set(["a"]);
+      const bytes = new Uint8Array([1, 2]);
+      const sets = new Set<Set<string>>([names, new Set(["a"])]);
+      const maps = new Set<Map<string, number>>([counts]);
+      const buffers = new Set<Uint8Array>([bytes]);
+      sets.add(names);
+      maps.add(counts);
+      buffers.add(bytes);
+      console.log(sets.size, maps.size, buffers.size);
+      console.log(sets.has(names), maps.has(counts), buffers.has(bytes));
+      maps.delete(counts);
+      maps.add(counts);
+      const byMap = new Map<Map<string, number>, number>([[counts, 1]]);
+      byMap.set(new Map([["a", 1]]), 2);
+      console.log(byMap.size, byMap.get(counts));
+      const bySet = new Set<[Set<string>, Uint8Array]>([[names, bytes]]);
+      const seeded = new Map(bySet);
+      console.log(seeded.size, seeded.get(names) === bytes);
+    `,
+    );
+    const { coverage } = analyze(entry, {});
+    expect(coverage.diagnostics).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a constructor seed cast from a dynamic value is an array conversion, not a key copy", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-collection-seed-"));
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(
+      entry,
+      `
+      const rows: unknown = [{ k: "a" }];
+      const set = new Set(rows as { k: string }[]);
+      const viaName = rows as { k: string }[];
+      const same = new Set(viaName);
+      console.log(set.size, same.size, set.has(viaName[0]!));
+    `,
+    );
+    const { coverage } = analyze(entry, {});
+    expect(coverage.diagnostics).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a key assertion is still refused: a copied key is not the object", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-collection-key-assertion-"));
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(
+      entry,
+      `
+      const row: unknown = { k: "a" };
+      const set = new Set<{ k: string }>();
+      set.add(row as { k: string });
+      console.log(set.size);
+    `,
+    );
+    const { coverage } = analyze(entry, {});
+    expect(coverage.diagnostics.map((d) => d.message)).toEqual([
+      expect.stringContaining(
+        "collection key assertion requiring a structural copy or dynamic conversion",
+      ),
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a promise arm keys a union through the cell its adapter boxes share", () => {
   const promise: IrType = { kind: "promise", inner: F64 };
   expect(isIdentityCollectionKey(promise)).toBe(true);
@@ -153,14 +238,18 @@ test("mixed-value unions select value equality while unsupported arms remain fen
     expect(mapKeyKindNum(union, [reference, scalar])).toBe(7);
     expect(isSupportedSetElem(union, [reference, scalar])).toBe(true);
   }
-  for (const unsupported of [{ kind: "regex" } as IrType, mapOf(STRING, F64), setOf(STRING)]) {
+  for (const unsupported of [
+    { kind: "regex" } as IrType,
+    { kind: "url" } as IrType,
+    { kind: "generator", yieldT: F64, retT: VOID, nextT: UNDEFINED_T } as IrType,
+  ]) {
     expect(isSupportedMapKey(unsupported)).toBe(false);
   }
 });
 
 test("Map value materialization validates the destination key domain", () => {
   const loc = { file: "keys.ts", start: 0, end: 1 };
-  for (const value of [F64, mapOf(STRING, F64)]) {
+  const run = (value: IrType): string[] => {
     const receiver: IrExpr = { kind: "mapNew", type: mapOf(STRING, value), loc };
     const expr: IrExpr = {
       kind: "mapIntrinsic",
@@ -185,13 +274,17 @@ test("Map value materialization validates the destination key domain", () => {
         },
       ],
     };
-    const errors = validateModule(mod);
-    if (value.kind === "f64") expect(errors).toEqual([]);
-    else
-      expect(errors.map((error) => error.message)).toEqual([
-        "in main: mapIntrinsic valueSet element kind map (frontend must fence)",
-      ]);
-  }
+    return validateModule(mod).map((error) => error.message);
+  };
+  // A set of scalars or of another collection stores its values in the key
+  // slot: both are supported elements now.
+  expect(run(F64)).toEqual([]);
+  expect(run(mapOf(STRING, F64))).toEqual([]);
+  // A child handle is a Map value but no Set element (nothing compares it by
+  // identity), so the domain fence names it.
+  expect(run({ kind: "child" })).toEqual([
+    "in main: mapIntrinsic valueSet element kind child (frontend must fence)",
+  ]);
 });
 
 test("primitive key ABI constants remain stable", () => {

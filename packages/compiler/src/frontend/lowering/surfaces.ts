@@ -450,6 +450,26 @@ export const FS_WATCH_FILE_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "bigint",
 ]);
 
+/** fsPromises.watch's documented option keys (@types/node's WatchOptions). */
+export const FS_WATCH_PROMISES_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
+  "encoding",
+  "persistent",
+  "recursive",
+  "signal",
+  "ignore",
+  "maxQueue",
+  "overflow",
+]);
+
+/** Why each documented fsPromises.watch option this surface cannot model
+ * fences by name. */
+export const FS_WATCH_PROMISES_OPTION_HINTS: Record<string, string | undefined> = {
+  recursive:
+    "recursive: true watches with Node's non-native recursive walker, which has no lowering",
+  signal: "options.signal (an AbortSignal ending the iteration) has no lowering",
+  ignore: "options.ignore (a matcher over entry names) has no lowering",
+};
+
 /** fs.readdirSync's documented option keys. */
 export const FS_READDIR_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "encoding",
@@ -2401,6 +2421,14 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // literal of five Channels) is special-cased in lowerBuiltinModuleCall.
       tracingChannel: { fn: "dc.tracingChannel", params: [STRING], result: F64 },
     },
+    // node:trace_events — createTracing answers a native Tracing handle
+    // (type-mapper.ts maps Tracing to the checked-dynamic value, so member
+    // reads and enable()/disable() ride the dyn tree); the options object
+    // crosses as a dyn value (special-cased in lowerBuiltinModuleCall).
+    trace_events: {
+      createTracing: { fn: "te.createTracing", params: [DYN], result: DYN },
+      getEnabledCategories: { fn: "te.getEnabledCategories", params: [], result: DYN },
+    },
   };
 }
 
@@ -2639,8 +2667,15 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.
     rmSync: ["fs.rmOptsSync", "fs.rmRetrySync"],
-    // The { withFileTypes: true } Dirent form and the { recursive: true } walk.
-    readdirSync: ["fs.readdirTypesSync", "fs.readdirRecursiveSync"],
+    // The { withFileTypes: true } Dirent form, the { recursive: true } walk,
+    // and the { encoding: "buffer" } name form.
+    readdirSync: [
+      "fs.readdirTypesSync",
+      "fs.readdirTypesRecursiveSync",
+      "fs.readdirRecursiveSync",
+      "fs.readdirBytesSync",
+      "fs.readdirEncodedSync",
+    ],
     // The { throwIfNoEntry } probe form and the run-time option ladder
     // (bigint and throwIfNoEntry read off a value only the runtime knows).
     statSync: ["fs.statProbeSync", "fs.statSyncDyn"],
@@ -2678,8 +2713,14 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
       "fsp.writeFileData",
       "fsp.writeFileDataFlags",
     ],
-    // The { withFileTypes: true } Dirent form.
-    readdir: ["fsp.readdirTypes"],
+    // The { withFileTypes: true } Dirent form and the { encoding: "buffer" } names.
+    readdir: [
+      "fsp.readdirTypes",
+      "fsp.readdirTypesRecursive",
+      "fsp.readdirRecursive",
+      "fsp.readdirBytes",
+      "fsp.readdirEncoded",
+    ],
     glob: ["fsp.globTypes"],
     // The bytes-data form and the checked-data-argument form.
     appendFile: ["fsp.appendFileBytes", "fsp.appendFileData"],
@@ -2808,6 +2849,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "worker.parentPort",
         "worker.resourceLimits",
         "worker.threadName",
+        "worker.performance",
       ],
       note: "current-thread metadata and the worker's parent message port",
     },
@@ -2879,8 +2921,8 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.fs.watchFile",
       kind: "node-builtin",
       name: "fs.watchFile",
-      fns: ["fs.watchFile"],
-      note: "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused",
+      fns: ["fs.watchFile", "statWatcher.ref", "statWatcher.unref"],
+      note: "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused",
     },
     {
       id: "node-builtin.fs.unwatchFile",
@@ -2888,6 +2930,21 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "fs.unwatchFile",
       fns: ["fs.unwatchFile"],
       note: "removes one listener, or every listener, from a resolved path's poller",
+    },
+    {
+      id: "node-builtin.fs.mkdtempDisposable",
+      kind: "node-builtin",
+      name: "fs.mkdtempDisposableSync / fsPromises.mkdtempDisposable",
+      fns: [
+        "fsp.mkdtempDisposable",
+        "fs.mkdtempDisposableSync",
+        "mkdtempResult.path",
+        "mkdtempResult.remove",
+        "mkdtempResult.removeSync",
+        "mkdtempResult.asyncDispose",
+        "mkdtempResult.dispose",
+      ],
+      note: "the created temp directory plus its path, remove() and disposal hooks; the path is a string, so only the utf8 encoding is accepted",
     },
     // ── the Date slice (lowerDateCall/lowerNew): statics, construction,
     // stored read-only values, calendar getters, and ISO formatting.
@@ -3157,6 +3214,26 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes",
     },
     {
+      id: "node-builtin.perf_hooks.performance.markResourceTiming",
+      kind: "node-builtin",
+      name: "perf_hooks.performance.markResourceTiming",
+      fns: [
+        "perf.resourceMark",
+        "perf.resourceClear",
+        "perf.resourceBufferSize",
+        "perf.entryResourceNum",
+        "perf.entryResourceStr",
+        "perf.entryName",
+        "perf.entryType",
+        "perf.entryStart",
+        "perf.entryDuration",
+        "perf.entryDetail",
+        "perf.entryKeep",
+        "perf.entryRef",
+      ],
+      note: "the PerformanceResourceTiming entries markResourceTiming builds from fetch timing info, clearResourceTimings and setResourceTimingBufferSize; the resource fields and toJSON",
+    },
+    {
       id: "node-builtin.perf_hooks.performance.eventLoopUtilization",
       kind: "node-builtin",
       name: "perf_hooks.performance.eventLoopUtilization",
@@ -3176,6 +3253,39 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.eldStat",
       ],
       note: "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported",
+    },
+    {
+      id: "node-builtin.perf_hooks.createHistogram",
+      kind: "node-builtin",
+      name: "perf_hooks.createHistogram",
+      fns: [
+        "perf.histoNew",
+        "perf.histoRecord",
+        "perf.histoRecordBig",
+        "perf.histoRecordCorrected",
+        "perf.histoRecordDelta",
+        "perf.histoReset",
+        "perf.histoAdd",
+        "perf.histoSubtract",
+        "perf.histoStat",
+        "perf.histoStatBig",
+        "perf.histoPercentile",
+        "perf.histoPercentileBig",
+        "perf.histoCountAt",
+        "perf.histoCdf",
+        "perf.histoCcdf",
+        "perf.histoPercentilesCount",
+        "perf.histoPercentilesKey",
+        "perf.histoPercentilesValue",
+        "perf.histoDispose",
+        "perf.histoKsTest",
+        "perf.histoCohensD",
+        "perf.histoCliffsD",
+        "perf.histoMannWhitneyU",
+        "perf.histoMannWhitneyZ",
+        "perf.histoMannWhitneyP",
+      ],
+      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
     },
     // ── the process global's ambient reads and authority calls
     // (lowerProcessProperty/lowerProcessMethodCall — process is a
@@ -3838,11 +3948,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   util: {
     promisify:
       "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly",
-  },
-  "stream/consumers": {
-    blob:
-      "collecting a stream into a Blob is not supported yet — " +
-      "buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text",
   },
   module: {
     createRequire:

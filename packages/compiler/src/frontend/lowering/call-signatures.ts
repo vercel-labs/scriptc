@@ -299,6 +299,170 @@ export function checkedJsDocumentedParameter(
   return lowerer.checkedJsFile(ts.getSourceFileOfNode(param)) && documentedParameter(param);
 }
 
+/** Whether a JavaScript parameter's annotated type names a class (or a union
+ * with one): the nominal arm a caller's value would have to be an instance
+ * of, which a plain object is not. */
+function jsParameterSlotIsClass(lowerer: Lowerer, param: ts.ParameterDeclaration): boolean {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(param.name));
+  if (mapped === null) return false;
+  const arms =
+    mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
+  return arms.some((arm) => arm.kind === "object");
+}
+
+/** The JSDoc block immediately above `node`, when only whitespace sits
+ * between it and the node's first token: the declaration's OWN documentation.
+ * A member's `parent.pos` reaches back to the start of its class, so a slice
+ * from there would read the tags of every earlier member. */
+function ownJsDocBlock(node: ts.Node): string | null {
+  const before = ts.getSourceFileOfNode(node).text.slice(0, ts.tokenStartOfNode(node));
+  const open = before.lastIndexOf("/**");
+  if (open < 0) return null;
+  const close = before.indexOf("*/", open + 3);
+  return close >= 0 && before.slice(close + 2).trim() === "" ? before.slice(open, close + 2) : null;
+}
+
+/** A JSDoc `@return`/`@returns` on a JavaScript function or method: the
+ * declaration's OWN documentation names the result. The tags read are the
+ * declaration's leading trivia — the span hasExplicitJsDocReturn reads, so
+ * the two answers agree. A member's `parent.pos` reaches back to the start
+ * of its class (a top-level declaration's to the start of its file), and a
+ * slice from there would read every earlier declaration's tags. */
+export function documentedJsReturn(node: ts.SignatureDeclaration): boolean {
+  return ts.sourceTextRangeMatches(
+    ts.getSourceFileOfNode(node),
+    node.pos,
+    ts.tokenStartOfNode(node),
+    /@returns?\b/,
+    ts.LEADING_SPAN,
+  );
+}
+
+/** Whether a return slot's mapped type names a class (or a promise of one):
+ * the nominal arm a returned value would have to be an instance of. */
+export function returnedSlotIsClass(lowerer: Lowerer, ret: IrType): boolean {
+  const value = ret.kind === "promise" ? ret.inner : ret;
+  const arms = value.kind === "union" ? (lowerer.unions.get(value.unionId)?.arms ?? []) : [value];
+  return arms.some((arm) => arm.kind === "object");
+}
+
+/** Whether the value an expression holds is one a checked-dynamic parameter
+ * handed in: the parameter itself, a `const` copy of it, a property read off
+ * such a value, or a conditional/coalesce of such values. A `new` expression
+ * and a call's result are values of their own (the callee builds them). */
+function holdsCheckedDynamicValue(
+  lowerer: Lowerer,
+  expression: ts.Expression,
+  parameters: ReadonlyMap<ts.Symbol, ts.ParameterDeclaration>,
+  isDynamic: (parameter: ts.ParameterDeclaration) => boolean,
+  seen: Set<ts.Symbol>,
+): boolean {
+  let node = expression;
+  while (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node)
+  )
+    node = node.expression;
+  if (ts.isIdentifier(node)) {
+    const symbol = lowerer.resolveValueSymbol(node);
+    if (symbol === null || seen.has(symbol)) return false;
+    const parameter = parameters.get(symbol);
+    if (parameter !== undefined) return isDynamic(parameter);
+    const declarations = symbol.declarations;
+    if (declarations.length !== 1) return false;
+    const declaration = declarations[0]!;
+    if (
+      !ts.isVariableDeclaration(declaration) ||
+      !ts.isIdentifier(declaration.name) ||
+      declaration.type !== undefined ||
+      declaration.initializer === undefined
+    )
+      return false;
+    const list = declaration.parent;
+    if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0)
+      return false;
+    seen.add(symbol);
+    const derived = holdsCheckedDynamicValue(
+      lowerer,
+      declaration.initializer,
+      parameters,
+      isDynamic,
+      seen,
+    );
+    seen.delete(symbol);
+    return derived;
+  }
+  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+    return holdsCheckedDynamicValue(lowerer, node.expression, parameters, isDynamic, seen);
+  if (ts.isConditionalExpression(node))
+    return (
+      holdsCheckedDynamicValue(lowerer, node.whenTrue, parameters, isDynamic, seen) ||
+      holdsCheckedDynamicValue(lowerer, node.whenFalse, parameters, isDynamic, seen)
+    );
+  if (
+    ts.isBinaryExpression(node) &&
+    (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+  )
+    return (
+      holdsCheckedDynamicValue(lowerer, node.left, parameters, isDynamic, seen) ||
+      holdsCheckedDynamicValue(lowerer, node.right, parameters, isDynamic, seen)
+    );
+  return false;
+}
+
+/** Whether a function returns, at least once, a value one of its own
+ * parameters with a checked-dynamic slot handed in (directly, through a
+ * constant copy, or as a property read off one): the result is whatever the
+ * caller passed, which a documented class result does not promise. Returns
+ * inside nested functions are not this function's. */
+export function returnsCheckedDynamicParameter(
+  lowerer: Lowerer,
+  node: ts.SignatureDeclaration,
+): boolean {
+  const parameters = new Map<ts.Symbol, ts.ParameterDeclaration>();
+  for (const parameter of node.parameters.nodes) {
+    if (!ts.isIdentifier(parameter.name)) continue;
+    const symbol = lowerer.resolveValueSymbol(parameter.name);
+    if (symbol !== null) parameters.set(symbol, parameter);
+  }
+  if (parameters.size === 0) return false;
+  // The slot shape costs a type mapping per parameter, so each one is asked
+  // for only when a returned value names it.
+  const dynamicParameters = new Map<ts.ParameterDeclaration, boolean>();
+  const isDynamic = (parameter: ts.ParameterDeclaration): boolean => {
+    const known = dynamicParameters.get(parameter);
+    if (known !== undefined) return known;
+    const dynamic = paramShape(lowerer, parameter).type.kind === "dyn";
+    dynamicParameters.set(parameter, dynamic);
+    return dynamic;
+  };
+  let dynamic = false;
+  const record = (expression: ts.Expression): void => {
+    if (!dynamic && holdsCheckedDynamicValue(lowerer, expression, parameters, isDynamic, new Set()))
+      dynamic = true;
+  };
+  const visit = (child: ts.Node): void => {
+    if (dynamic) return;
+    if (ts.isFunctionLike(child) && child !== node) return;
+    if (ts.isReturnStatement(child)) {
+      if (child.expression !== undefined) record(child.expression);
+      return;
+    }
+    ts.forEachChild(child, (next) => {
+      visit(next);
+      return undefined;
+    });
+  };
+  visit(node);
+  // A concise arrow body is the return expression itself.
+  if (!dynamic && ts.isArrowFunction(node) && !ts.isBlock(node.body)) record(node.body);
+  return dynamic;
+}
+
 /** One parameter's ParamShape — the shared signature-shaped collection
  * point for function declarations, methods, constructors, and lambdas
  * (generic declarations defer to their call sites, where the resolved
@@ -320,6 +484,22 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   if (stage) return { type: stage, mode: "required" };
   if (isJsSourceFile(ts.getSourceFileOfNode(param)) && ts.isSetAccessorDeclaration(param.parent))
     return { type: DYN, mode: "required" };
+  // A JavaScript parameter among the bindings a for-in head writes keys into
+  // (or that stores one) takes checked-dynamic storage in its slot too
+  // (analyzeJsForInKeyBindings, analyzeJsWidenedBindings): the loop writes the
+  // key through the parameter, and a caller passes whatever Node passes.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !param.dotDotDotToken &&
+    ts.isIdentifier(param.name)
+  ) {
+    const symbol = lowerer.resolveValueSymbol(param.name);
+    const widened = symbol === null ? undefined : lowerer.runtimeOptionalBindingTypes.get(symbol);
+    if (widened?.kind === "dyn")
+      return param.initializer !== undefined
+        ? { type: DYN, mode: "omittable", bodyType: DYN }
+        : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
+  }
   if (
     isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     ts.isConstructorDeclaration(param.parent) &&
@@ -346,6 +526,26 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // for constructors, JSDoc in a file TypeScript does not check
     // documents the usual types without constraining callers.
     return param.initializer
+      ? { type: DYN, mode: "omittable", bodyType: DYN }
+      : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
+  }
+  // A JSDoc-typed parameter in a JavaScript file TypeScript does not check:
+  // the annotation documents the class a caller usually passes, not a promise
+  // about the value. `Color.getRGB(_rgb)` in three.js takes a plain
+  // `{ r, g, b }`; a slot typed as the class checks the argument nominally
+  // and throws TypeError where Node stores it. Such a parameter takes
+  // checked-dynamic storage, and its reads and writes apply the same property
+  // rules dynamically. Scalar annotations keep their declared lowering.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !param.dotDotDotToken &&
+    (param.type !== undefined ||
+      (param.parent !== undefined && /@(?:param|type)\b/.test(ownJsDocBlock(param.parent) ?? "")) ||
+      param.initializer !== undefined) &&
+    !checkedJsDocumentedParameter(lowerer, param) &&
+    jsParameterSlotIsClass(lowerer, param)
+  ) {
+    return param.initializer !== undefined
       ? { type: DYN, mode: "omittable", bodyType: DYN }
       : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
   }
@@ -871,6 +1071,25 @@ export function requireExactArityValue(
       ? lowerer.mapTypeOf(lowerer.typeOf(contextual))
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
+  // A signature that can be called with a different number of arguments
+  // (an optional, defaulted or rest parameter) reads its actual argument
+  // list from the hidden "arguments" array (appendArgumentsParameter), and
+  // no checked signature spells that array in its parameter list. A value
+  // that stays checked-dynamic keeps it: the boxed call thunk fills the
+  // array with exactly the arguments its caller passed, so
+  // `arguments.length` answers the call. A typed slot cannot, because its
+  // own parameter list carries no array, and keeps the refusal.
+  if (
+    funcType.kind === "func" &&
+    funcType.argumentsAll === true &&
+    (mapped === null || mapped.kind === "dyn") &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return;
   // A lambda whose OWN signature already spells the completed ABI is a
   // value: every read of it types it that way, and its slot converts it
   // (the surplus-parameter and undefined-arm adapters). The mapped-type
@@ -1175,7 +1394,15 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
  * array unless a declared rest parameter already owns that contract.
  * Class methods are strict; other parameterized forms require ES modules
  * because sloppy-mode arguments alias named parameters, unless the body
- * cannot observe that aliasing (argumentsAliasingUnobservable). */
+ * cannot observe that aliasing (argumentsAliasingUnobservable).
+ *
+ * A TYPED function receives the same hidden array when its callers can pass
+ * a different number of arguments than the declaration names: an optional,
+ * defaulted or rest parameter makes `arguments.length` vary per call, and a
+ * fixed-arity signature is the only one whose count folds to a constant
+ * (property-access.ts). The array holds every argument the caller passed,
+ * so `arguments.length` answers the call itself rather than the declared
+ * parameter count. */
 function appendArgumentsParameter(
   lowerer: Lowerer,
   node: ts.SignatureDeclaration,
@@ -1183,16 +1410,37 @@ function appendArgumentsParameter(
   mode: "arguments" | "dynRest",
 ): void {
   if (
-    shapes.some((s) => s.mode === "rest" || s.mode === "dynRest") ||
     !(
       ts.isFunctionExpression(node) ||
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node)
     ) ||
-    !isJsSourceFile(ts.getSourceFileOfNode(node)) ||
     !bodyReadsArguments(node)
   )
     return;
+  const typed = !isJsSourceFile(ts.getSourceFileOfNode(node));
+  if (typed) {
+    // Typed sources stay zero-cost for a fixed-arity signature: its count is
+    // the declared count (property-access.ts folds it). Only a parameter
+    // that can be absent makes the count a per-call fact. The array follows
+    // every declared slot, a rest array or the flattened positions of a
+    // tuple rest included (declareParams binds those first).
+    if (
+      !node.parameters.nodes.some(
+        (param) => param.questionToken || param.initializer || param.dotDotDotToken,
+      )
+    )
+      return;
+  } else if (shapes.some((s) => s.mode === "rest" || s.mode === "dynRest")) return;
+  // A typed rest spelled `any[]` or `unknown[]` is a checked-dynamic pack
+  // that already holds every argument the call passed, so the body's
+  // `arguments` is that pack (declareFunctionArguments clones it) and no
+  // second trailing array is appended: the variadic value's ABI the
+  // checked-dynamic layer fills carries one.
+  if (shapes.some((s) => s.mode === "dynRest")) return;
+  // The array is a copy of the call's arguments, so a sloppy-mode function
+  // whose `arguments` would alias its parameters keeps the refusal, typed
+  // or not.
   if (node.parameters.nodes.length > 0 || ts.isMethodDeclaration(node)) {
     const classMethod =
       ts.isMethodDeclaration(node) &&
@@ -1212,7 +1460,7 @@ function appendArgumentsParameter(
       );
     }
   }
-  shapes.push({ type: DYN, mode });
+  shapes.push({ type: DYN, mode: typed ? "arguments" : mode });
 }
 
 /** Whether `arguments` inside `node` is Node's unmapped object: strict code
@@ -1410,13 +1658,47 @@ export function lambdaSignature(
   let ret =
     ts.isArrowFunction(node) && !ts.isBlock(node.body) && isStreamUndefCallExpr(lowerer, node.body)
       ? VOID
-      : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-          !returnedValue &&
-          voidContextualSlot(lowerer, node, contextualSigs)
-        ? VOID
-        : lowerer.declaredReturnType(node, node);
+      : // A lambda written into a checked-dynamic member answers what its
+        // body answers: the member's storage is checked-dynamic, so the
+        // function object keeps its own value, as Node's does. The typed
+        // slot's `void` would drop it (jsDynStoredLambda).
+        (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+          jsDynStoredLambda(lowerer, node)
+        ? DYN
+        : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+            !returnedValue &&
+            voidContextualSlot(lowerer, node, contextualSigs)
+          ? VOID
+          : lowerer.declaredReturnType(node, node);
 
   ret = lowerer.runtimeOptionalFunctionReturnType(node, ret);
+  // A documented return in a JavaScript file TypeScript does not check: the
+  // JSDoc names the class the function usually answers, not a promise about
+  // what this body returns (`Color.getRGB` in three answers the plain object
+  // it was handed). A class-typed result slot converts a returned
+  // checked-dynamic value nominally and throws where Node answers it, so the
+  // result is checked-dynamic. Scalar, unit, generator and promise framings
+  // keep their shape (a promise keeps its arms and takes a dynamic payload).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+    !lowerer.checkedJsFile(ts.getSourceFileOfNode(node)) &&
+    documentedJsReturn(node) &&
+    returnedSlotIsClass(lowerer, ret)
+  ) {
+    ret = ret.kind === "promise" ? { ...ret, inner: DYN } : DYN;
+  }
+  // The same for a result the checker INFERRED from one of the function's own
+  // parameters (`getRGB(target) { return target; }` infers Color): the
+  // parameter's slot is checked-dynamic, so the function answers whatever the
+  // caller passed and the result slot follows it.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+    !lowerer.checkedJsFile(ts.getSourceFileOfNode(node)) &&
+    returnedSlotIsClass(lowerer, ret) &&
+    returnsCheckedDynamicParameter(lowerer, node)
+  ) {
+    ret = DYN;
+  }
   // A contextually-typed arrow/function EXPRESSION whose slot signature
   // returns a composite type the inferred return doesn't spell adopts
   // the slot's return as its ABI: `(n) => work()` (inferring Promise<void>) against
@@ -1544,6 +1826,7 @@ export function lambdaSignature(
       !inferredLiteral &&
       ret.kind !== "void" &&
       ctxSigs.length === 1 &&
+      !(ts.isMethodDeclaration(node) ? false : jsDynStoredLambda(lowerer, node)) &&
       !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void) &&
       !(
         (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
@@ -1597,12 +1880,78 @@ function voidContextualSlot(
     ts.isObjectLiteralExpression(node.parent.parent)
   )
     return false;
+  // An assignment stores the function VALUE, and JavaScript's function
+  // object keeps its own return type: only a call through the `void` slot
+  // discards the result, which is what the slot's signature says. Node
+  // answers the value to any other caller (a checked-dynamic read of the
+  // member, a later `typeof`), so the lambda keeps its inferred return. The
+  // store still adapts a value the slot cannot carry, exactly as an object
+  // literal's property (above) does.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+    ts.isBinaryExpression(node.parent) &&
+    node.parent.right === node &&
+    node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  )
+    return false;
   const sigs = contextualSigs();
   return (
     sigs.length === 1 &&
     (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0 &&
     !finallyObservesResult(lowerer, node)
   );
+}
+
+/** A JavaScript lambda written into a member of a binding whose storage is
+ * checked-dynamic (`Internals.d.f = function () { …; return v; }`): the
+ * member holds the function object, and JavaScript's function object keeps
+ * the value its body answers — only a call through a `void`-typed slot
+ * discards it. The lambda therefore answers a checked-dynamic result, which
+ * the dynamic storage carries (lower-calls.ts reads it back). */
+function jsDynStoredLambda(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): boolean {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  // The stored VALUE is the lambda, or the object literal it is a property
+  // of (however deeply nested: `d = { f: function () { … } }`).
+  let value: ts.Node = node;
+  let parent = value.parent;
+  while (
+    parent !== undefined &&
+    ts.isPropertyAssignment(parent) &&
+    parent.initializer === value &&
+    ts.isObjectLiteralExpression(parent.parent)
+  ) {
+    value = parent.parent;
+    parent = value.parent;
+  }
+  if (parent === undefined || lowerer.jsWidenedBindings.size === 0) return false;
+  // The value goes into a binding the preflight widened: either a member of
+  // one (`o.f = function () { …; return v; }`) or the binding's own
+  // initializer (`var o = { f: function () { …; return v; } }`), whose
+  // literal the checked-dynamic storage keeps as written.
+  let root: ts.Node;
+  if (ts.isVariableDeclaration(parent) && parent.initializer === value) {
+    if (!ts.isIdentifier(parent.name)) return false;
+    root = parent.name;
+  } else if (
+    ts.isBinaryExpression(parent) &&
+    parent.right === value &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  ) {
+    let target: ts.Node = parent.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
+      return false;
+    root = target.expression;
+    while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+      root = root.expression;
+    while (ts.isParenthesizedExpression(root)) root = root.expression;
+  } else return false;
+  if (!ts.isIdentifier(root)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(root);
+  return symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);
 }
 
 /** Whether `node` is the callback of a promise's `finally` and may return a

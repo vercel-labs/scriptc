@@ -3,7 +3,8 @@
 // compatibility ledger cites this program for marking the rows a verified
 // absence instead of an unverified registry gap.
 
-// The global MessageChannel and its ports.
-const channel = new MessageChannel();
-channel.port1.postMessage("x");
-channel.port2.close();
+// Readable.toWeb's byte-stream form: the option is typed, and a byte stream
+// has no lowering (the default ReadableStream does).
+import { Readable } from "node:stream";
+const web = Readable.toWeb(Readable.from(["a"]), { type: "bytes" });
+console.log(typeof web);

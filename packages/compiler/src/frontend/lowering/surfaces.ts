@@ -1754,6 +1754,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       privateEncrypt: { fn: "crypto.privateEncrypt", params: [], result: DYN },
       publicDecrypt: { fn: "crypto.publicDecrypt", params: [], result: DYN },
       diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
+      encapsulate: { fn: "crypto.encapsulate", params: [], result: DYN },
+      decapsulate: { fn: "crypto.decapsulate", params: [], result: DYN },
       pbkdf2Sync: {
         fn: "crypto.pbkdf2",
         params: [BYTES_U8, BYTES_U8, F64, F64, STRING],

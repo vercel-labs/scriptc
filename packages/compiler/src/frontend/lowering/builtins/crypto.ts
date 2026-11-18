@@ -1851,6 +1851,8 @@ function lowerPkiCall(
     privateEncrypt: ["crypto.privateEncrypt", 2, 2, "privateEncrypt(key, buffer)"],
     publicDecrypt: ["crypto.publicDecrypt", 2, 2, "publicDecrypt(key, buffer)"],
     diffieHellman: ["crypto.diffieHellman", 1, 2, "diffieHellman(options[, callback])"],
+    encapsulate: ["crypto.encapsulate", 0, 2, "encapsulate(key[, callback])"],
+    decapsulate: ["crypto.decapsulate", 0, 3, "decapsulate(key, ciphertext[, callback])"],
     createSign: ["crypto.createSign", 0, 2, "createSign(algorithm[, options])"],
     createVerify: ["crypto.createVerify", 0, 2, "createVerify(algorithm[, options])"],
     setEngine: ["crypto.setEngine", 1, 2, "setEngine(engine[, flags])"],

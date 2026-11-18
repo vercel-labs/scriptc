@@ -108,6 +108,10 @@ static bool scr_tty_env_has(ScrTtyEnv *e, const char *name, bool own) {
     ScrStr *value = scr_env_get(key);
     found = value != NULL;
     scr_str_release(value);
+  } else if (e->env->kind != SCR_DYN_OBJ && e->env->kind != SCR_DYN_PROXY) {
+    /* An array, a Map or a function holds none of the environment's own
+     * variables; Node's `in`/hasOwn answer false for them too. */
+    found = false;
   } else {
     found = own ? scr_dyn_has_own(e->env, key) : scr_dyn_in(e->env, key);
     if (scr_exc_pending()) {
@@ -387,12 +391,8 @@ static ScrDyn *scr_tty_colors(bool has, ScrDyn *const *args, size_t argc) {
     /* A statically typed record arrives as a view: read its plain form. */
     held = env->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(env) : scr_dyn_retain((ScrDyn *)env);
     if (!held) return NULL;
-    if (held->kind != SCR_DYN_OBJ && held->kind != SCR_DYN_PROXY && held->kind != SCR_DYN_STR &&
-        held->kind != SCR_DYN_NUM && held->kind != SCR_DYN_BOOL) {
-      scr_dyn_release(held);
-      return scr_tty_refusal(has ? "hasColors with an environment that is not a plain object"
-                                 : "getColorDepth with an environment that is not a plain object");
-    }
+    /* Node reads the variables off whatever object it is given: an array,
+     * a Map or a function has none of them and answers the default depth. */
     e.env = held;
   }
   double depth = scr_tty_color_depth(&e);

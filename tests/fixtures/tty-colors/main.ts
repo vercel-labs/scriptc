@@ -27,6 +27,13 @@ const colorterm = { COLORTERM: "truecolor" };
 say("colorterm " + String(out.getColorDepth(colorterm)));
 const empty = {};
 say("empty " + String(out.getColorDepth(empty)));
+const list: unknown[] = [];
+const table = new Map<string, string>();
+const fn = (): number => 1;
+say("list " + String(out.getColorDepth(list as unknown as object)));
+say("table " + String(out.getColorDepth(table as unknown as object)));
+say("fn " + String(out.getColorDepth(fn as unknown as object)));
+say("listHas " + String(out.hasColors(16, list as unknown as object)));
 try {
   out.hasColors(0);
   say("zero pass");

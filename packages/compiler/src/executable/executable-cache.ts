@@ -65,6 +65,7 @@ export interface EarlyExecutableNativeFeatures {
   bigintBytes: boolean;
   fileHandle: boolean;
   fetch: boolean;
+  urlPattern?: boolean;
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;

@@ -81,6 +81,8 @@ export interface CcOptions {
    * target the socket units reach: hosts, linux cross, win32 cross.
    * Fetch-free builds keep their exact link line. */
   fetch?: boolean;
+  /** The URLPattern global (scr_urlpattern.c). */
+  urlPattern?: boolean;
   /** The program uses zlib (index.ts detects zlib.* libCalls on the IR):
    * compiles scr_zlib.c — the regex gating precedent, so zlib-free
    * binaries keep their exact link line. Every driver compiles the vendored

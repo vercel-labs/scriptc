@@ -1,4 +1,5 @@
 import { isBuiltinClassInstance } from "./receiver-types.js";
+import { withIgnoredArguments } from "./call-arguments.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -15,13 +16,43 @@ import {
   canConvertToDyn,
 } from "../../../ir/ir.js";
 
-/** The channel-name argument of the diagnostics_channel surface: a
- * string (dyn names ride the validated extraction — Node's non-string
- * names would throw ERR_INVALID_ARG_TYPE where the dynCheck throws its
- * annotated TypeError; symbol names have no lowering and fence through
- * the coercion's own rejection). */
+/** The channel-name argument of the diagnostics_channel surface: a dyn
+ * value, so the runtime applies Node's own validateChannelName — a
+ * non-string name raises ERR_INVALID_ARG_TYPE ("must be one of type string
+ * or symbol"), and a symbol (which the string-keyed registry does not model
+ * yet) fences with SC2020 there. */
 export function diagnosticsChannelNameArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
-  return lowerer.lowerExprExpecting(node, STRING);
+  return lowerDiagnosticsMessage(lowerer, node);
+}
+
+/** A subscriber, handler or traced function argument: box a function the
+ * way lowerDiagnosticsSubscriber does, and cross anything else (a number, a
+ * null) as a plain dyn value so the runtime answers Node's own error — the
+ * "subscription" TypeError from subscribe, the false from unsubscribe, or
+ * V8's apply TypeError from a traced call. */
+export function lowerDiagnosticsSubscriberLenient(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "dyn") return value;
+  if (
+    value.type.kind === "func" &&
+    canBoxFuncIntoDyn(
+      value.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
+  }
+  if (
+    canConvertToDyn(
+      value.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
+  }
+  return lowerDiagnosticsSubscriber(lowerer, node);
 }
 
 /** A diagnostics_channel subscriber as a dyn value: dyn callables pass
@@ -61,6 +92,41 @@ export function lowerDiagnosticsSubscriber(lowerer: Lowerer, node: ts.Expression
     "SC1090",
     node,
     `channel subscribers of type '${lowerer.fmt(cb.type)}' (subscribers cross as dyn functions — parameters must be dyn-representable)`,
+  );
+}
+
+/** A call argument an API runs program code from, where Node itself checks
+ * the callable at run time (AsyncResource's runInAsyncScope/bind members and
+ * static bind): box the function like a subscriber, and any other value as a
+ * plain dyn value so the runtime answers Node's own TypeError. A declared
+ * program passing a number where the types require a function still fails
+ * its own check; a JavaScript one reaches Node's error instead of a fence. */
+function lowerAsyncResourceCallable(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "dyn") return value;
+  if (
+    value.type.kind === "func" &&
+    canBoxFuncIntoDyn(
+      value.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
+  }
+  if (
+    canConvertToDyn(
+      value.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
+  }
+  lowerer.unsupported(
+    "SC1090",
+    node,
+    `AsyncResource call arguments of type '${lowerer.fmt(value.type)}' (the function crosses as a dyn value — a callable, or a value Node's own check rejects)`,
   );
 }
 
@@ -106,14 +172,31 @@ export function lowerDiagnosticsChannelMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if (name === "publish" && call.arguments.nodes.length === 1) {
+  if (name === "publish") {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const msg = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
-    return { kind: "libCall", fn: "dc.publish", args: [receiver, msg], type: VOID, loc };
+    const msg =
+      call.arguments.nodes[0] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!)
+        : dynUndefinedExpr(loc);
+    // Surplus arguments are evaluated and ignored, as Node's publish(…) is;
+    // JavaScript evaluates the receiver, then the arguments left to right,
+    // so their side effects run after the receiver and message and before
+    // the call itself. withIgnoredArguments stages the used values and
+    // drops an ignored `null`/`undefined` (a bare unitLit is not a valid
+    // statement) and refuses a spread the way the other builtin calls do.
+    return withIgnoredArguments(
+      lowerer,
+      [receiver, msg],
+      call.arguments.nodes.slice(1),
+      (args): IrExpr => ({ kind: "libCall", fn: "dc.publish", args, type: VOID, loc }),
+    );
   }
-  if ((name === "subscribe" || name === "unsubscribe") && call.arguments.nodes.length === 1) {
+  if ((name === "subscribe" || name === "unsubscribe") && call.arguments.nodes.length <= 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[0]!);
+    const cb =
+      call.arguments.nodes[0] !== undefined
+        ? lowerDiagnosticsSubscriberLenient(lowerer, call.arguments.nodes[0]!)
+        : dynUndefinedExpr(loc);
     return name === "subscribe"
       ? { kind: "libCall", fn: "dc.chanSubscribe", args: [receiver, cb], type: VOID, loc }
       : { kind: "libCall", fn: "dc.chanUnsubscribe", args: [receiver, cb], type: BOOL, loc };
@@ -149,7 +232,7 @@ export function lowerDiagnosticsChannelMethodCall(
     }
     const transform: IrExpr =
       call.arguments.nodes[1] !== undefined
-        ? lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!)
+        ? lowerDiagnosticsSubscriberLenient(lowerer, call.arguments.nodes[1]!)
         : dynUndefinedExpr(loc);
     return {
       kind: "libCall",
@@ -162,7 +245,7 @@ export function lowerDiagnosticsChannelMethodCall(
   if (name === "runStores" && call.arguments.nodes.length >= 2) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
     const data = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
-    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
+    const fn = lowerDiagnosticsSubscriberLenient(lowerer, call.arguments.nodes[1]!);
     const thisArg: IrExpr =
       call.arguments.nodes[2] !== undefined
         ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[2]!)
@@ -192,6 +275,152 @@ function isAsyncLocalStorageClass(lowerer: Lowerer, node: ts.Expression): boolea
     symbol !== null &&
     lowerer.isStdlibSymbol(symbol) &&
     ts.symbolName(symbol) === "AsyncLocalStorage"
+  );
+}
+
+/** Whether `node` names the AsyncResource class itself. */
+function isAsyncResourceClass(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isIdentifier(node)) return false;
+  const symbol = lowerer.resolveValueSymbol(node);
+  return (
+    symbol !== null && lowerer.isStdlibSymbol(symbol) && ts.symbolName(symbol) === "AsyncResource"
+  );
+}
+
+/** new AsyncResource(type[, opts]): the ar.new libCall over the f64
+ * resource handle. Both arguments cross as dyn values so the runtime
+ * applies Node's own checks — the type string (including `new String(…)`
+ * refused as an instance), triggerAsyncId's safe-integer ladder and
+ * requireManualDestroy's truthiness — in Node's order. */
+export function lowerAsyncResourceConstruction(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments?.nodes ?? [];
+  if (args.some(ts.isSpreadElement))
+    lowerer.noLowering("AsyncResource construction with spread arguments", expr);
+  return {
+    kind: "libCall",
+    fn: "ar.new",
+    args: [
+      // An omitted type is the undefined value: Node's own validateString
+      // then answers ERR_INVALID_ARG_TYPE at run time (a program that never
+      // builds the resource runs exactly as before).
+      args[0] !== undefined ? lowerDiagnosticsMessage(lowerer, args[0]) : dynUndefinedExpr(loc),
+      args[1] !== undefined ? lowerDiagnosticsMessage(lowerer, args[1]) : dynUndefinedExpr(loc),
+    ],
+    type: DYN,
+    loc,
+  };
+}
+
+/** The static AsyncResource.bind(fn[, type[, thisArg]]) member: Node's
+ * `type ||= fn.name` (a falsy name still falsy takes
+ * 'bound-anonymous-fn') and the fn check all run in the runtime, so the
+ * three arguments cross as dyn values. */
+function lowerAsyncResourceStaticCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr {
+  const name = access.name.text;
+  const loc = locOf(call);
+  if (name === "bind" && call.arguments.nodes.length >= 1 && call.arguments.nodes.length <= 3) {
+    const fn = lowerAsyncResourceCallable(lowerer, call.arguments.nodes[0]!);
+    const type: IrExpr =
+      call.arguments.nodes[1] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[1]!)
+        : dynUndefinedExpr(loc);
+    const thisArg: IrExpr =
+      call.arguments.nodes[2] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[2]!)
+        : dynUndefinedExpr(loc);
+    return asyncLocalStorageResult(lowerer, call, {
+      kind: "libCall",
+      fn: "ar.bindStatic",
+      args: [fn, type, thisArg],
+      type: DYN,
+      loc,
+    });
+  }
+  lowerer.noLowering(
+    `AsyncResource.${name}`,
+    call,
+    "AsyncResource.bind(fn[, type[, thisArg]]) is the supported static member",
+    lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** Method calls on AsyncResource receivers: runInAsyncScope(fn[, thisArg[,
+ * ...args]]), bind(fn), emitDestroy(), asyncId() and triggerAsyncId() over
+ * the f64 resource handle (ar.* libCalls). Null for other receivers. */
+export function lowerAsyncResourceMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  if (isAsyncResourceClass(lowerer, access.expression)) {
+    if (!lowerer.isStdlibMember(access)) return null;
+    return lowerAsyncResourceStaticCall(lowerer, call, access);
+  }
+  if (!isBuiltinClassInstance(lowerer, access.expression, "AsyncResource")) return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  const name = access.name.text;
+  const loc = locOf(call);
+  if (name === "runInAsyncScope" && call.arguments.nodes.length >= 1) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+    const fn = lowerAsyncResourceCallable(lowerer, call.arguments.nodes[0]!);
+    const thisArg: IrExpr =
+      call.arguments.nodes[1] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[1]!)
+        : dynUndefinedExpr(loc);
+    const rest = lowerTracingArguments(lowerer, call.arguments.nodes.slice(2), loc);
+    return asyncLocalStorageResult(lowerer, call, {
+      kind: "libCall",
+      fn: "ar.runInScope",
+      args: [receiver, fn, thisArg, rest],
+      type: DYN,
+      loc,
+    });
+  }
+  if (name === "bind" && call.arguments.nodes.length >= 1 && call.arguments.nodes.length <= 2) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+    const fn = lowerAsyncResourceCallable(lowerer, call.arguments.nodes[0]!);
+    // The instance form takes the same optional receiver Node's does (it
+    // binds runInAsyncScope with it when given).
+    const thisArg: IrExpr =
+      call.arguments.nodes[1] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[1]!)
+        : dynUndefinedExpr(loc);
+    return asyncLocalStorageResult(lowerer, call, {
+      kind: "libCall",
+      fn: "ar.bind",
+      args: [receiver, fn, thisArg],
+      type: DYN,
+      loc,
+    });
+  }
+  if (name === "emitDestroy" && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+    return { kind: "libCall", fn: "ar.emitDestroy", args: [receiver], type: DYN, loc };
+  }
+  if ((name === "asyncId" || name === "triggerAsyncId") && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+    return {
+      kind: "libCall",
+      fn: name === "asyncId" ? "ar.asyncId" : "ar.triggerAsyncId",
+      args: [receiver],
+      type: F64,
+      loc,
+    };
+  }
+  lowerer.noLowering(
+    `AsyncResource.${name}`,
+    call,
+    "runInAsyncScope(fn, ...), bind(fn), emitDestroy(), asyncId() and triggerAsyncId() are the supported AsyncResource members",
+    lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
 
@@ -315,10 +544,15 @@ export function lowerAsyncLocalStorageMethodCall(
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
     return { kind: "libCall", fn: "als.disable", args: [receiver], type: VOID, loc };
   }
+  if (name === "withScope" && call.arguments.nodes.length === 1) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+    const value = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
+    return { kind: "libCall", fn: "als.withScope", args: [receiver, value], type: DYN, loc };
+  }
   lowerer.noLowering(
     `AsyncLocalStorage.${name}`,
     call,
-    "run(store, fn, ...args), exit(fn, ...args), getStore(), enterWith(store), and disable() are the supported AsyncLocalStorage members",
+    "run(store, fn, ...args), exit(fn, ...args), getStore(), enterWith(store), disable() and withScope(store) are the supported AsyncLocalStorage members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
@@ -355,9 +589,16 @@ export function lowerDiagnosticsChannelProperty(
   if (!lowerer.isStdlibMember(access)) return null;
   const loc = locOf(access);
   const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-  return name === "name"
-    ? { kind: "libCall", fn: "dc.chanName", args: [receiver], type: STRING, loc }
-    : { kind: "libCall", fn: "dc.chanHasSubscribers", args: [receiver], type: BOOL, loc };
+  if (name !== "name")
+    return { kind: "libCall", fn: "dc.chanHasSubscribers", args: [receiver], type: BOOL, loc };
+  // The name the channel was interned by: a string, or the symbol a
+  // JavaScript program named the channel with. A declared (string) read
+  // converts as every other dyn-to-typed boundary does; a JavaScript read
+  // keeps the value, so a symbol name prints and compares as one.
+  const value: IrExpr = { kind: "libCall", fn: "dc.chanName", args: [receiver], type: DYN, loc };
+  if (isJsSourceFile(ts.getSourceFileOfNode(access))) return value;
+  const expected = lowerer.mapTypeOf(lowerer.typeOf(access));
+  return !expected || expected.kind === "dyn" ? value : lowerer.coerceInto(access, value, expected);
 }
 
 export const DC_TRACE_EVENTS = ["start", "end", "asyncStart", "asyncEnd", "error"] as const;
@@ -439,19 +680,22 @@ export function lowerTracingChannelMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if ((name === "subscribe" || name === "unsubscribe") && call.arguments.nodes.length === 1) {
+  if ((name === "subscribe" || name === "unsubscribe") && call.arguments.nodes.length <= 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const handlers = lowerTracingHandlers(lowerer, call.arguments.nodes[0]!);
+    const handlers =
+      call.arguments.nodes[0] !== undefined
+        ? lowerTracingHandlers(lowerer, call.arguments.nodes[0]!)
+        : dynUndefinedExpr(loc);
     return name === "subscribe"
       ? { kind: "libCall", fn: "dc.tcSubscribe", args: [receiver, handlers], type: VOID, loc }
       : { kind: "libCall", fn: "dc.tcUnsubscribe", args: [receiver, handlers], type: BOOL, loc };
   }
-  if (
-    (name === "traceSync" || name === "traceCallback" || name === "tracePromise") &&
-    call.arguments.nodes.length >= 1
-  ) {
+  if (name === "traceSync" || name === "traceCallback" || name === "tracePromise") {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[0]!);
+    const fn =
+      call.arguments.nodes[0] !== undefined
+        ? lowerDiagnosticsSubscriberLenient(lowerer, call.arguments.nodes[0]!)
+        : dynUndefinedExpr(loc);
     // traceSync(fn, context?, thisArg?, ...args) /
     // tracePromise(fn, context?, thisArg?, ...args) /
     // traceCallback(fn, position?, context?, thisArg?, ...args)
@@ -546,29 +790,55 @@ export function lowerDiagnosticsChannelCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr | null {
-  if (bi.member === "channel" && expr.arguments.nodes.length === 1) {
-    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0]!);
+  // Every name and subscriber slot crosses as a dyn value: an omitted one
+  // is the undefined value, so Node's own validation answers channel(),
+  // subscribe()'s "subscription" TypeError, and hasSubscribers'/unsubscribe's
+  // false for a name that is not a string.
+  if (bi.member === "channel" && expr.arguments.nodes.length <= 1) {
+    const name =
+      expr.arguments.nodes[0] !== undefined
+        ? diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0])
+        : dynUndefinedExpr(loc);
     return { kind: "libCall", fn: "dc.channel", args: [name], type: F64, loc };
   }
   if (
     (bi.member === "subscribe" || bi.member === "unsubscribe") &&
-    expr.arguments.nodes.length === 2
+    expr.arguments.nodes.length <= 2
   ) {
-    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0]!);
-    const cb = lowerDiagnosticsSubscriber(lowerer, expr.arguments.nodes[1]!);
+    const nameNode = expr.arguments.nodes[0];
+    const name =
+      nameNode !== undefined
+        ? diagnosticsChannelNameArgument(lowerer, nameNode)
+        : dynUndefinedExpr(loc);
+    const fnNode = expr.arguments.nodes[1];
+    const cb =
+      fnNode !== undefined
+        ? lowerDiagnosticsSubscriberLenient(lowerer, fnNode)
+        : dynUndefinedExpr(loc);
     return bi.member === "subscribe"
       ? { kind: "libCall", fn: "dc.subscribe", args: [name, cb], type: VOID, loc }
       : { kind: "libCall", fn: "dc.unsubscribe", args: [name, cb], type: BOOL, loc };
   }
-  if (bi.member === "hasSubscribers" && expr.arguments.nodes.length === 1) {
-    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0]!);
+  if (bi.member === "hasSubscribers" && expr.arguments.nodes.length <= 1) {
+    const name =
+      expr.arguments.nodes[0] !== undefined
+        ? diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0])
+        : dynUndefinedExpr(loc);
     return { kind: "libCall", fn: "dc.hasSubscribers", args: [name], type: BOOL, loc };
   }
   // tracingChannel: the string form interns the five tracing:<name>:*
   // channels; the collection form takes an object literal whose five
   // event members are Channel-typed values (Node's TracingChannelCollection).
-  if (bi.member === "tracingChannel" && expr.arguments.nodes.length === 1) {
-    const a = expr.arguments.nodes[0]!;
+  if (bi.member === "tracingChannel" && expr.arguments.nodes.length <= 1) {
+    const a = expr.arguments.nodes[0];
+    if (a === undefined)
+      return {
+        kind: "libCall",
+        fn: "dc.tracingChannel",
+        args: [dynUndefinedExpr(loc)],
+        type: F64,
+        loc,
+      };
     if (ts.isObjectLiteralExpression(a)) {
       const byEvent = new Map<string, IrExpr>();
       for (const p of a.properties.nodes) {
@@ -581,6 +851,17 @@ export function lowerDiagnosticsChannelCall(
             "tracingChannel with this collection shape",
             p,
             "the supported collection form assigns each of start/end/asyncStart/asyncEnd/error a Channel value inline",
+          );
+        }
+        // Each member is one of the five event channels, and a Channel is
+        // the only value Node accepts: a number (or a missing member's
+        // undefined) would otherwise be read as a channel handle and index
+        // the table with a value that never was one.
+        if (!isBuiltinClassInstance(lowerer, p.initializer, "Channel")) {
+          lowerer.noLowering(
+            "tracingChannel with a non-Channel collection member",
+            p.initializer,
+            "assign each event a Channel from diagnostics_channel.channel() or another Channel value",
           );
         }
         byEvent.set(p.name.text, lowerer.lowerExprExpecting(p.initializer, F64));

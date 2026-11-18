@@ -83,7 +83,11 @@ import {
   locOf,
   orderedImportsOf,
 } from "../program.js";
-import { cjsExportChangesAfterInit, cjsNamespaceTargetOf } from "./cjs-inline-require.js";
+import {
+  cjsExportChangesAfterInit,
+  cjsNamespaceTargetOf,
+  cjsRuntimeOptionalExportStorage,
+} from "./cjs-inline-require.js";
 import { npmStaticLexerVisibleNames } from "../npm-static.js";
 import {
   ARRAY_CALLBACK_METHODS,
@@ -2741,6 +2745,25 @@ export function runtimeOptionalStorageOperand(
 ): IrExpr | null {
   let expr = node;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  // A CommonJS module member whose export the module may leave unassigned:
+  // its slot holds the undefined arm even though the checker's type for the
+  // import names none.
+  if (
+    ts.isPropertyAccessExpression(expr) &&
+    expr.questionDotToken === undefined &&
+    ts.isIdentifier(expr.name)
+  ) {
+    const storage = cjsRuntimeOptionalExportStorage(lowerer, expr);
+    if (storage !== null) {
+      const checked = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (
+        checked === null ||
+        (checked.kind === "union" && lowerer.armTag(checked.unionId, UNDEFINED_T) >= 0)
+      )
+        return null;
+      return storage;
+    }
+  }
   if (!ts.isIdentifier(expr)) return null;
   // Only storage that can actually receive an absent value without the
   // checker seeing it qualifies; other declared-optional bindings keep the
@@ -3096,6 +3119,7 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "AbortSignal",
   "Blob",
   "BroadcastChannel",
+  "CloseEvent",
   "CustomEvent",
   "DOMException",
   "Event",
@@ -3414,6 +3438,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "httpClientReq":
     case "secureCtx":
     case "fsWatcher":
+    case "statWatcher":
     case "cryptoHash":
     case "cryptoHmac":
     case "childStream":

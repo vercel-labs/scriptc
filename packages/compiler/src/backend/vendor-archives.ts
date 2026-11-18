@@ -64,9 +64,11 @@ async function presentFile(path: string): Promise<boolean> {
 import {
   QJS_COMMIT,
   MBEDTLS_VERSION,
+  MLKEM_VERSION,
   ZLIB_VERSION,
   BROTLI_VERSION,
   ZSTD_VERSION,
+  SQLITE_VERSION,
   ICU_VERSION,
   ICU_SOURCE_URL,
   ICU_SOURCE_SHA256,
@@ -76,15 +78,18 @@ import {
   ZLIB_SOURCES,
   ZSTD_SOURCES,
   icuSourceList,
+  sqliteInputs,
   zlibInputs,
   zstdInputs,
 } from "./vendor-inputs.js";
 export {
   QJS_COMMIT,
   MBEDTLS_VERSION,
+  MLKEM_VERSION,
   ZLIB_VERSION,
   BROTLI_VERSION,
   ZSTD_VERSION,
+  SQLITE_VERSION,
   ICU_VERSION,
   LRE_SOURCES,
   ZLIB_SOURCES,
@@ -550,6 +555,78 @@ export function createVendorArchives(context: VendorArchiveContext) {
     return archive;
   }
 
+  function vendorMlkemDir(): string {
+    return join(runtimeSrcDir(), "..", "vendor", "mlkem-native");
+  }
+
+  function mlkemArchivePath(
+    sanitize: boolean,
+    driver: CcDriver,
+    buildIdentity: string,
+    cacheRoot: string = vendorBuildCacheRoot(),
+  ): string {
+    const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    return join(cacheRoot, `mlkem-${MLKEM_VERSION}-${flavor}`, "libmlkem.a");
+  }
+
+  /** The vendored ML-KEM archive: mlkem_native.c compiled once per
+   * parameter set (multilevel build), packed with ar. */
+  async function ensureMlkemArchive(
+    sanitize: boolean,
+    driver: CcDriver,
+    buildIdentity: string,
+    cacheRoot: string = vendorBuildCacheRoot(),
+  ): Promise<string> {
+    const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    const compileArgv = isZigDriver(driver) ? driver.argv : ["clang"];
+    const arArgv = isZigDriver(driver) ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
+    const vendor = vendorMlkemDir();
+    const archive = mlkemArchivePath(sanitize, driver, buildIdentity, cacheRoot);
+    if (await validVendorArtifact(archive)) return archive;
+
+    await mkdir(cacheRoot, { recursive: true });
+    const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-mlkem-${flavor}-`));
+    try {
+      const levels = [
+        [512, "mlkem512", "MLK_CONFIG_MULTILEVEL_NO_SHARED"],
+        [768, "mlkem768", "MLK_CONFIG_MULTILEVEL_WITH_SHARED"],
+        [1024, "mlkem1024", "MLK_CONFIG_MULTILEVEL_NO_SHARED"],
+      ] as const;
+      const cflags = [
+        "-std=c11",
+        ...driver.targetArgs,
+        ...(sanitize ? ["-O1", "-fsanitize=address"] : ["-O2"]),
+        "-I",
+        vendor,
+        "-I",
+        join(vendor, "src"),
+      ];
+      for (const [set, name, shared] of levels) {
+        await execFileAsync(compileArgv[0] ?? "clang", [
+          ...compileArgv.slice(1),
+          ...cflags,
+          `-DMLK_CONFIG_PARAMETER_SET=${set}`,
+          "-DMLK_CONFIG_MULTILEVEL_BUILD",
+          `-D${shared}`,
+          "-c",
+          join(vendor, "mlkem_native.c"),
+          "-o",
+          join(buildDir, `${name}.o`),
+        ]);
+      }
+      await execFileAsync(arArgv[0] ?? "ar", [
+        ...arArgv.slice(1),
+        "rcs",
+        join(buildDir, "libmlkem.a"),
+        ...levels.map(([, name]) => join(buildDir, `${name}.o`)),
+      ]);
+      await publishVendorArtifact(join(buildDir, "libmlkem.a"), archive);
+    } finally {
+      await rm(buildDir, { recursive: true, force: true });
+    }
+    return archive;
+  }
+
   function vendorBrotliDir(): string {
     return join(runtimeSrcDir(), "..", "vendor", "brotli", "c");
   }
@@ -630,6 +707,79 @@ export function createVendorArchives(context: VendorArchiveContext) {
         ...sources.map(object),
       ]);
       await publishVendorArtifact(join(buildDir, "libbrotli.a"), archive);
+    } finally {
+      await rm(buildDir, { recursive: true, force: true });
+    }
+    return archive;
+  }
+
+  function vendorSqliteDir(): string {
+    return join(runtimeSrcDir(), "..", "vendor", "sqlite");
+  }
+
+  function sqliteArchivePath(
+    sanitize: boolean,
+    driver: CcDriver,
+    buildIdentity: string,
+    cacheRoot: string = vendorBuildCacheRoot(),
+  ): string {
+    const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    return join(cacheRoot, `sqlite-${SQLITE_VERSION}-${flavor}`, "libsqlite.a");
+  }
+
+  /** The SQLite archive for one flavor, compiled lazily on the first
+   * sqlite-using build and cached under
+   * <build-cache>/vendor/sqlite-<version>-<flavor>-<target>-<toolchain>/libsqlite.a,
+   * with the brotli archive's recipe: one compile of the amalgamation with
+   * Node's deps/sqlite/sqlite.gyp defines, then one `ar rcs`. Only a
+   * program that imports node:sqlite links it. */
+  async function ensureSqliteArchive(
+    sanitize: boolean,
+    driver: CcDriver,
+    buildIdentity: string,
+    cacheRoot: string = vendorBuildCacheRoot(),
+  ): Promise<string> {
+    const flavor = `${sanitize ? "asan" : "plain"}-${vendorCacheTargetFlavor(driver)}-${buildIdentity}`;
+    const compileArgv = isZigDriver(driver) ? driver.argv : ["clang"];
+    const arArgv = isZigDriver(driver) ? [...driver.argv.slice(0, 1), "ar"] : ["ar"];
+    const vendor = vendorSqliteDir();
+    const archive = sqliteArchivePath(sanitize, driver, buildIdentity, cacheRoot);
+    if (await validVendorArtifact(archive)) return archive;
+
+    const build = sqliteInputs(vendorTriple(driver));
+    await mkdir(cacheRoot, { recursive: true });
+    const buildDir = await mkdtemp(join(tmpdir(), `scriptc-vendor-sqlite-${flavor}-`));
+    try {
+      const cflags = [
+        "-std=c11",
+        ...driver.targetArgs,
+        // Node builds the amalgamation at -O2.
+        ...(sanitize ? ["-O1", "-fsanitize=address"] : ["-O2"]),
+        ...build.defines.map((define) => `-D${define}`),
+        ...build.compileFlags,
+        "-I",
+        vendor,
+      ];
+      const objects: string[] = [];
+      for (const src of build.sources) {
+        const object = join(buildDir, `${src.replaceAll("/", "-").replace(/\.c$/, "")}.o`);
+        await execFileAsync(compileArgv[0] ?? "clang", [
+          ...compileArgv.slice(1),
+          ...cflags,
+          "-c",
+          join(vendor, src),
+          "-o",
+          object,
+        ]);
+        objects.push(object);
+      }
+      await execFileAsync(arArgv[0] ?? "ar", [
+        ...arArgv.slice(1),
+        "rcs",
+        join(buildDir, "libsqlite.a"),
+        ...objects,
+      ]);
+      await publishVendorArtifact(join(buildDir, "libsqlite.a"), archive);
     } finally {
       await rm(buildDir, { recursive: true, force: true });
     }
@@ -919,8 +1069,14 @@ export function createVendorArchives(context: VendorArchiveContext) {
     ensureZstdObjects,
     tlsArchivePath,
     ensureTlsArchive,
+    vendorMlkemDir,
+    mlkemArchivePath,
+    ensureMlkemArchive,
     LRE_SOURCES,
     ZLIB_SOURCES,
     ZSTD_SOURCES,
+    vendorSqliteDir,
+    sqliteArchivePath,
+    ensureSqliteArchive,
   };
 }

@@ -249,6 +249,84 @@ ScrStr *scr_stack_capture(void) {
   return scr_stack_capture_from(SCR_EXC_CUR()->stack);
 }
 
+/* Node's ERR_OUT_OF_RANGE for getCallSites' frameCount. */
+static void scr_call_sites_range(const char *must, double value) {
+  char shown[32];
+  scr_f64_to_str(value, shown);
+  char message[160];
+  int n = snprintf(message, sizeof message,
+                   "The value of \"frameCount\" is out of range. It must be %s. Received %s", must,
+                   shown);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+}
+
+ScrDyn *scr_util_call_sites(ScrDyn *frame_count, ScrDyn *options) {
+  double count = 10;
+  /* getCallSites(options): an object (or null) in the count slot is the
+   * options bag — Node dispatches on the value's type, so a string or
+   * other primitive there is still the frameCount and fails its number
+   * check, while null fails the options object check. */
+  if (frame_count != NULL && frame_count->kind != SCR_DYN_UNDEF &&
+      frame_count->kind != SCR_DYN_NUM &&
+      (frame_count->kind == SCR_DYN_NULL || scr_dyn_is_object(frame_count)) &&
+      (options == NULL || options->kind == SCR_DYN_UNDEF)) {
+    options = frame_count;
+    frame_count = NULL;
+  }
+  if (frame_count != NULL && frame_count->kind != SCR_DYN_UNDEF) {
+    if (frame_count->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("frameCount", "of type number", frame_count);
+      return NULL;
+    }
+    double value = frame_count->v.num;
+    if (!(value == trunc(value))) {
+      scr_call_sites_range("an integer", value);
+      return NULL;
+    }
+    if (!(value >= 1 && value <= 200)) {
+      scr_call_sites_range(">= 1 && <= 200", value);
+      return NULL;
+    }
+    count = value;
+  }
+  if (options != NULL && options->kind != SCR_DYN_UNDEF) {
+    if (options->kind != SCR_DYN_OBJ) {
+      scr_dyn_arg_type_fail("options", "of type object", options);
+      return NULL;
+    }
+    ScrDyn *source_map = scr_dyn_obj_read(options, "sourceMap", 9);
+    if (source_map->kind != SCR_DYN_UNDEF && source_map->kind != SCR_DYN_BOOL) {
+      scr_dyn_prop_type_fail("options.sourceMap", "of type boolean", source_map);
+      scr_dyn_release(source_map);
+      return NULL;
+    }
+    scr_dyn_release(source_map);
+  }
+  ScrDyn *out = scr_dyn_new_arr();
+  size_t made = 0;
+  for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame != NULL && (double)made < count;
+       frame = frame->previous) {
+    ScrDyn *entry = scr_dyn_new_obj();
+    ScrStr *name = scr_str_new(frame->fn != NULL ? frame->fn : "", frame->fn != NULL ? strlen(frame->fn) : 0);
+    scr_dyn_obj_set(entry, "functionName", 12, scr_dyn_new_str(name));
+    scr_str_release(name);
+    ScrStr *script_id = scr_str_new("0", 1);
+    scr_dyn_obj_set(entry, "scriptId", 8, scr_dyn_new_str(script_id));
+    scr_str_release(script_id);
+    ScrStr *script = scr_str_new(frame->script != NULL ? frame->script : "",
+                                 frame->script != NULL ? strlen(frame->script) : 0);
+    scr_dyn_obj_set(entry, "scriptName", 10, scr_dyn_new_str(script));
+    scr_str_release(script);
+    scr_dyn_obj_set(entry, "lineNumber", 10, scr_dyn_new_num((double)frame->line));
+    scr_dyn_obj_set(entry, "columnNumber", 12, scr_dyn_new_num((double)frame->column));
+    scr_dyn_obj_set(entry, "column", 6, scr_dyn_new_num((double)frame->column));
+    /* push moves its ownership in. */
+    scr_dyn_arr_push(out, entry);
+    made++;
+  }
+  return out;
+}
+
 /* The frames below the topmost frame whose text is `through` (a function's
  * "    at name (file)" line), as Error.captureStackTrace's constructorOpt
  * leaves them; NULL when no such frame is on the stack. */

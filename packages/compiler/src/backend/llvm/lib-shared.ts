@@ -121,6 +121,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "arrayBuffer.viewDV": "scr_array_buffer_view_dv",
 
   "util.parseArgs": "scr_util_parse_args",
+  "util.getCallSites": "scr_util_call_sites",
   "util.parseEnv": "scr_util_parse_env",
   "util.getSystemErrorName": "scr_util_system_error_name",
   "util.getSystemErrorMessage": "scr_util_system_error_message",

@@ -1691,6 +1691,7 @@ function buildLibFnSignatures() {
      * validate their values when leaving that tree. The native parser may
      * throw Node's coded validation/grammar TypeErrors. */
     "util.parseArgs": { argTypes: [DYN], result: DYN },
+    "util.getCallSites": { argTypes: [DYN, DYN], result: DYN },
     "util.parseEnv": { argTypes: [DYN], result: DYN },
     "util.getSystemErrorName": { argTypes: [DYN], result: STRING },
     "util.getSystemErrorMessage": { argTypes: [DYN], result: STRING },

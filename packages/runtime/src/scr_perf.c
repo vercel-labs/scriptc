@@ -776,19 +776,19 @@ double scr_perf_resource_mark(ScrDyn *args) {
   r->response_status = status->kind == SCR_DYN_NUM ? status->v.num : 0;
   r->content_type = scr_perf_str_member(body, "contentType");
   r->content_encoding = scr_perf_str_member(body, "contentEncoding");
-  /* deliveryType defaults to '' (the 8th argument is optional). */
+  /* deliveryType defaults to '' (the 8th argument is optional); a value
+   * that cannot convert takes that default too, like the metadata fields
+   * below, so the call still buffers its entry instead of returning with no
+   * entry and letting the entry build read an empty timeline (which
+   * aborted the process). */
   r->delivery_type = scr_perf_nullish(delivery) ? scr_str_new("", 0) : scr_perf_string(delivery);
   scr_str_release(cache_mode);
+  if (!r->delivery_type) r->delivery_type = scr_str_new("", 0);
   /* A timing, connection or body value that cannot convert (a Symbol, a
    * getter that throws) recorded its field's default: the entry is buffered
    * intact rather than left half-built, which used to poison the timeline
    * and make later reads abort the process. Node buffers the call too. */
   if (scr_exc_pending()) scr_exc_clear();
-  if (!r->delivery_type) {
-    scr_str_release(name);
-    scr_perf_resource_release(r);
-    return 0;
-  }
   scr_perf_arm();
   ScrPerfEntry entry = {name, NULL, NULL, r->start, r->end - r->start, false, 0, r};
   scr_perf_push_resource(entry);

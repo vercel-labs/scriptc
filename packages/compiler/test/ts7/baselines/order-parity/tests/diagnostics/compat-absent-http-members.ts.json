@@ -8,26 +8,8 @@
    "message": "Property 'createConnection' does not exist on type 'Agent'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 764,
-    "end": 780
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'keepSocketAlive' does not exist on type 'Agent'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 795,
-    "end": 810
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'reuseSocket' does not exist on type 'Agent'. Did you mean 'freeSockets'?",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 825,
-    "end": 836
+    "start": 769,
+    "end": 785
    }
   },
   {
@@ -35,8 +17,8 @@
    "message": "Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import(\"node:http\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-http-members.ts",
-    "start": 1153,
-    "end": 1174
+    "start": 1102,
+    "end": 1123
    }
   }
  ]

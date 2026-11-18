@@ -55658,6 +55658,7 @@
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/9917-structured-clone-errors.ts",
           "tests/corpus/9989-message-close-events.js",
+          "tests/corpus/9991-global-channels.ts",
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
@@ -56016,10 +56017,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.BroadcastChannel",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/9991-global-channels.ts"
         ]
       },
       "anchorSource": "exact"
@@ -116236,12 +116237,14 @@
           "tests/corpus/webcrypto-algorithm-parameters.ts",
           "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/webcrypto-chacha20-poly1305.ts",
+          "tests/corpus/webcrypto-cshake.ts",
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/webcrypto-get-public-key.ts",
           "tests/corpus/webcrypto-kmac.ts",
           "tests/corpus/webcrypto-rsa-oaep.ts",
           "tests/corpus/webcrypto-sha3-digest.ts",
+          "tests/corpus/webcrypto-turboshake.ts",
           "tests/corpus/webcrypto-x25519-key-agreement.ts",
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/fixtures/node-types/webcrypto-keys.ts",
@@ -117702,8 +117705,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.CShakeParams",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117725,8 +117731,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117748,8 +117757,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.outputLength",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117771,8 +117783,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.functionName",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117794,8 +117809,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.customization",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -120167,8 +120185,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.TurboShakeParams",
+        "tests": [
+          "tests/corpus/webcrypto-turboshake.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -120190,8 +120211,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.domainSeparation",
+        "tests": [
+          "tests/corpus/webcrypto-turboshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -120213,8 +120237,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/webcrypto-turboshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -120236,8 +120263,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.outputLength",
+        "tests": [
+          "tests/corpus/webcrypto-turboshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

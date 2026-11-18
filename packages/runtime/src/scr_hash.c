@@ -22,12 +22,13 @@ static const uint64_t scr_keccak_rc[24] = {
 
 static uint64_t scr_rotl64(uint64_t x, unsigned n) { return (x << n) | (x >> (64 - n)); }
 
-SCR_DIGEST_ALIGNED static void scr_keccak_f(uint64_t s[25]) {
+SCR_DIGEST_ALIGNED static void scr_keccak_f_rounds(uint64_t s[25], int first) {
   /* Theta, rho, pi, chi and iota with the lanes in locals; the
-   * compiler keeps the unrolled round in registers. */
+   * compiler keeps the unrolled round in registers. `first` skips to a
+   * later round for Keccak-p[1600, n] (TurboSHAKE starts at round 12). */
   uint64_t a[25], b[25], c[5], d[5];
   memcpy(a, s, sizeof a);
-  for (int round = 0; round < 24; round++) {
+  for (int round = first; round < 24; round++) {
     c[0] = a[0] ^ a[5] ^ a[10] ^ a[15] ^ a[20];
     c[1] = a[1] ^ a[6] ^ a[11] ^ a[16] ^ a[21];
     c[2] = a[2] ^ a[7] ^ a[12] ^ a[17] ^ a[22];
@@ -93,13 +94,20 @@ SCR_DIGEST_ALIGNED static void scr_keccak_f(uint64_t s[25]) {
   memcpy(s, a, sizeof a);
 }
 
-static void scr_keccak_absorb_block(uint64_t s[25], const unsigned char *block, size_t rate) {
+static void scr_keccak_f(uint64_t s[25]) { scr_keccak_f_rounds(s, 0); }
+
+static void scr_keccak_absorb_block_rounds(uint64_t s[25], const unsigned char *block,
+                                           size_t rate, int first) {
   for (size_t i = 0; i < rate / 8; i++) {
     uint64_t lane = 0;
     for (int b = 7; b >= 0; b--) lane = (lane << 8) | block[i * 8 + (size_t)b];
     s[i] ^= lane;
   }
-  scr_keccak_f(s);
+  scr_keccak_f_rounds(s, first);
+}
+
+static void scr_keccak_absorb_block(uint64_t s[25], const unsigned char *block, size_t rate) {
+  scr_keccak_absorb_block_rounds(s, block, rate, 0);
 }
 
 void scr_keccak_init(ScrKeccakCtx *ctx, size_t rate, unsigned char pad) {
@@ -228,6 +236,60 @@ void scr_kmac_final(const ScrKeccakCtx *source, size_t out_bytes, size_t bits,
   size_t extra = bits % 8;
   if (extra != 0 && out_bytes != 0)
     out[out_bytes - 1] &= (unsigned char)(0xffu << (8 - extra));
+}
+
+/* cSHAKE (SP 800-185): SHAKE's sponge with the byte-padded
+ * encode_string(N) || encode_string(S) prefix and domain 0x04. With both
+ * empty it is plain SHAKE. */
+void scr_cshake_hash(bool cshake256, const unsigned char *func, size_t func_len,
+                     const unsigned char *custom, size_t custom_len, const unsigned char *data,
+                     size_t data_len, unsigned char *out, size_t out_bytes, size_t bits) {
+  ScrKeccakCtx ctx;
+  size_t rate = cshake256 ? 136 : 168;
+  if (func_len == 0 && custom_len == 0) {
+    scr_keccak_init(&ctx, rate, 0x1f);
+  } else {
+    scr_keccak_init(&ctx, rate, 0x04);
+    unsigned char head[9];
+    size_t n = scr_kmac_left_encode(head, rate);
+    scr_keccak_update(&ctx, head, n);
+    size_t absorbed = n;
+    absorbed += scr_kmac_encode_string(&ctx, func, func_len);
+    absorbed += scr_kmac_encode_string(&ctx, custom, custom_len);
+    scr_kmac_pad_to_rate(&ctx, absorbed);
+  }
+  if (data_len != 0) scr_keccak_update(&ctx, data, data_len);
+  scr_keccak_final(&ctx, out, out_bytes);
+  size_t extra = bits % 8;
+  if (extra != 0 && out_bytes != 0)
+    out[out_bytes - 1] &= (unsigned char)(0xffu << (8 - extra));
+}
+
+/* TurboSHAKE (RFC 9861): the Keccak-p[1600, 12] sponge with the caller's
+ * domain separation byte (0x01..0x7f). */
+void scr_turboshake_hash(bool t256, unsigned char domain, const unsigned char *data, size_t len,
+                         unsigned char *out, size_t out_bytes) {
+  size_t rate = t256 ? 136 : 168;
+  uint64_t s[25] = {0};
+  while (len >= rate) {
+    scr_keccak_absorb_block_rounds(s, data, rate, 12);
+    data += rate;
+    len -= rate;
+  }
+  unsigned char block[168];
+  memset(block, 0, rate);
+  if (len != 0) memcpy(block, data, len);
+  block[len] ^= domain;
+  block[rate - 1] ^= 0x80;
+  scr_keccak_absorb_block_rounds(s, block, rate, 12);
+  unsigned char *out_bytes_end = out + out_bytes;
+  for (size_t off = 0; out + off < out_bytes_end;) {
+    size_t n = (size_t)(out_bytes_end - (out + off));
+    if (n > rate) n = rate;
+    for (size_t i = 0; i < n; i++) out[off + i] = (unsigned char)(s[i / 8] >> (8 * (i % 8)));
+    off += n;
+    if (out + off < out_bytes_end) scr_keccak_f_rounds(s, 12);
+  }
 }
 
 /* ── RIPEMD-160 ─────────────────────────────────────────────────────── */

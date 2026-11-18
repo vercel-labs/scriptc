@@ -8,7 +8,7 @@ import {
   workerSourcePath,
 } from "../../worker-target.js";
 import { boundLoadValues } from "../../specifier-bounds.js";
-import { tsgoPath } from "../../dts-paths.js";
+import { isFallbackDtsPath, tsgoPath } from "../../dts-paths.js";
 import { isIslandProgramModule } from "../../../node-islands/boundary.js";
 import { varRef } from "../../../ir/build.js";
 import {
@@ -389,7 +389,10 @@ export function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name
         return up.name.text === "worker_threads" || up.name.text === "node:worker_threads";
       up = up.parent;
     }
-    return false;
+    /* The fallback also declares the global BroadcastChannel at the top
+     * level: its module file loads only when the program imports it, and
+     * the global is the same class. */
+    return name === "BroadcastChannel" && isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName);
   });
 }
 

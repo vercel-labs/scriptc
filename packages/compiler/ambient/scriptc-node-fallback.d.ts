@@ -1011,7 +1011,10 @@ interface SubtleCrypto {
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
-  digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
+  digest(
+    algorithm: AlgorithmIdentifier | CShakeParams | TurboShakeParams,
+    data: BufferSource,
+  ): Promise<ArrayBuffer>;
   encrypt(
     algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
@@ -1395,6 +1398,27 @@ declare var EventTarget: {
   readonly prototype: EventTarget;
 };
 
+/* Node's BroadcastChannel global is the worker_threads class itself: the
+ * global value is declared here so the global form is typed without the
+ * program importing node:worker_threads, and the lowering recognises it as
+ * that class (a fallback global of that name). The members mirror
+ * node-fallback/worker_threads.d.ts, whose file loads only when the program
+ * imports the module; ref()/unref() answer the channel, as Node's do.
+ * MessageChannel and MessagePort stay the global interfaces above: their
+ * event-side members still refuse, so their rows remain unimplemented. */
+interface BroadcastChannel extends EventTarget {
+  readonly name: string;
+  postMessage(message: unknown): void;
+  close(): void;
+  ref(): this;
+  unref(): this;
+  onmessage: ((event: MessageEvent) => void) | null;
+  onmessageerror: ((event: MessageEvent) => void) | null;
+}
+declare var BroadcastChannel: {
+  new (name: string): BroadcastChannel;
+  readonly prototype: BroadcastChannel;
+};
 interface MessagePort extends EventTarget {
   postMessage(value: unknown, transferOrOptions?: unknown): void;
   start(): void;
@@ -1405,13 +1429,13 @@ interface MessagePort extends EventTarget {
   onmessageerror: ((event: MessageEvent) => void) | null;
   onclose: ((event: Event) => void) | null;
 }
-declare var MessagePort: {
-  readonly prototype: MessagePort;
-};
 interface MessageChannel {
   readonly port1: MessagePort;
   readonly port2: MessagePort;
 }
+declare var MessagePort: {
+  readonly prototype: MessagePort;
+};
 declare var MessageChannel: {
   new (): MessageChannel;
   readonly prototype: MessageChannel;

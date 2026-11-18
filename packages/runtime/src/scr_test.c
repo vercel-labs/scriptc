@@ -3817,6 +3817,42 @@ static ScrStr *scr_test_caught_message(const ScrCaught *err) {
   return out;
 }
 
+/* ── the module's assert.register registry ─────────────────────────────
+ * Node's test_runner/assert.js keeps a name→function map that every
+ * TestContext.assert reads. The registry lives for the process; a
+ * registered name is called with the assertion's arguments. */
+static SCR_TL ScrDyn *scr_test_custom_asserts; /* owned; a dyn object name→fn */
+
+void scr_test_assert_register(ScrStr *name /*borrowed*/, ScrDyn *fn /*borrowed*/) {
+  if (fn->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("fn", "of type function", fn);
+    return;
+  }
+  if (!scr_test_custom_asserts) scr_test_custom_asserts = scr_dyn_new_obj();
+  scr_dyn_obj_set(scr_test_custom_asserts, name->data, name->len, scr_dyn_retain(fn));
+}
+
+/* t.assert.<registered>(...): the registered function runs with the call's
+ * arguments. Node binds the TestContext as `this`; a compiled closure has
+ * no receiver, so `this` is not bound here (the limitations page records
+ * it). Answering false leaves an exception pending. */
+void scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name /*borrowed*/,
+                                ScrDyn *args /*borrowed*/) {
+  (void)t;
+  ScrDyn *fn = scr_test_custom_asserts
+                   ? scr_dyn_obj_get(scr_test_custom_asserts, name->data, name->len)
+                   : NULL;
+  if (!fn) {
+    char msg[192];
+    int len = snprintf(msg, sizeof msg, "t.assert.%.*s is not a function", (int)name->len,
+                       name->data);
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    return;
+  }
+  ScrDyn *result = scr_dyn_apply(fn, args, "assertion");
+  scr_dyn_release(result);
+}
+
 /* t.error: Node's ERR_TEST_FAILURE wrapper over the test's failure, or
  * null. Its `cause` is the value the test threw (an Error, a string, or
  * whatever else), which is how the documented surface reads the original
@@ -3871,6 +3907,8 @@ int scr_test_exit_code(void) {
     scr_test_hooks_free(&scr_test_mocks);
     scr_mt_free_all();
     scr_snap_free_all();
+    scr_dyn_release(scr_test_custom_asserts);
+    scr_test_custom_asserts = NULL;
   }
   /* The runner never finished: a test awaited a promise nobody settles
    * and the loop exhausted (Node cancels the test and exits 1 — the

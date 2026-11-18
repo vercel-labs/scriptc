@@ -54,6 +54,11 @@ void scr_test_ctx_log(ScrTestCtx *t, ScrStr *msg);
  * t.error: Node's ERR_TEST_FAILURE wrapper over the failure (+1), or null. */
 ScrDyn *scr_test_ctx_signal(ScrTestCtx *t);
 ScrDyn *scr_test_ctx_error(ScrTestCtx *t);
+/* node:test's assert.register(name, fn): the assertion every TestContext
+ * reads by name, and the call of one (the arguments a dyn array). The
+ * function is called without a bound `this`. */
+void scr_test_assert_register(ScrStr *name, ScrDyn *fn);
+void scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name, ScrDyn *args);
 /* snapshot.setDefaultSnapshotSerializers(serializers): the list every later
  * snapshot assertion without its own serializers runs through. */
 void scr_test_snapshot_set_default_serializers(ScrDyn *serializers);

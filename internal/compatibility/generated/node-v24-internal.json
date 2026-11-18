@@ -98093,12 +98093,6 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
-          "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
@@ -98107,6 +98101,7 @@
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
           "tests/fixtures/node-test/cases/assert-integration.ts",
+          "tests/fixtures/node-test/cases/assert-register.ts",
           "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
@@ -98840,14 +98835,10 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:assert",
+        "evidence": "compiler-feature:test.assert",
         "tests": [
-          "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
-          "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/fixtures/node-test/cases/assert-register.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"

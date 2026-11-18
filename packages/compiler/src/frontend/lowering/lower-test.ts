@@ -16,6 +16,7 @@ import * as ts from "../ts7/adapter.js";
 import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
+import { BUILTIN_MODULE_MEMBERS } from "./builtin-module-members.generated.js";
 import {
   type IrExpr,
   type IrStmt,
@@ -40,6 +41,13 @@ import {
   lowerMockTrackerCall,
   type MockTracker,
 } from "./lower-mock.js";
+
+/** The assert module's members: an unknown name on a TestContext's
+ * `assert` is a custom assertion registered through node:test's
+ * `assert.register`. */
+const ASSERT_MODULE_MEMBERS: ReadonlySet<string> = new Set(
+  BUILTIN_MODULE_MEMBERS["assert"]?.keys ?? [],
+);
 
 const MOCK_HINT =
   "mock.fn, mock.method, mock.restoreAll, mock.reset and mock.timers are the supported mock members";
@@ -750,6 +758,48 @@ const HOOK_WHICH: Record<string, number | undefined> = {
   afterEach: 3,
 };
 
+/** node:test's assert.register(name, fn): adds the assertion to every
+ * TestContext (the runtime registry), so a use in any module of the program
+ * resolves. The name is a string literal; the function crosses as a
+ * checked-dynamic function value. */
+function lowerAssertRegister(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  requireStatementPosition(lowerer, expr, "assert.register(...)");
+  const args = expr.arguments.nodes;
+  if (args.length !== 2) {
+    lowerer.noLowering(
+      `assert.register with ${args.length} arguments`,
+      expr,
+      "the supported form is assert.register(name, fn)",
+    );
+  }
+  const nameNode = args[0]!;
+  if (!ts.isStringLiteralLike(nameNode)) {
+    lowerer.noLowering(
+      "assert.register with a computed name",
+      nameNode,
+      "pass the assertion's name as a string literal",
+    );
+  }
+  const fnNode = args[1]!;
+  if (lowerer.checker.getCallSignatures(lowerer.typeOf(fnNode)).length === 0) {
+    lowerer.noLowering(
+      "assert.register with a non-function",
+      fnNode,
+      "pass the assertion function as the second argument",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: "test.assertRegister",
+    args: [
+      strLit((nameNode as ts.StringLiteralLike).text, loc),
+      lowerer.coerceToExpected(lowerer.lowerExpr(fnNode), DYN),
+    ],
+    type: VOID,
+    loc,
+  };
+}
+
 /** Module-function calls on node:test import bindings (named imports AND
  * namespace/default-import members — both funnel here). Null for other
  * modules; every node:test member lands here — unlowered ones fence with
@@ -829,6 +879,8 @@ export function lowerNodeTestModuleCall(
         loc,
       };
     }
+    case "assert.register":
+      return lowerAssertRegister(lowerer, expr, loc);
     case "snapshot.setResolveSnapshotPath": {
       requireStatementPosition(lowerer, expr, "snapshot.setResolveSnapshotPath(...)");
       const fn = expr.arguments.nodes[0];
@@ -1201,6 +1253,9 @@ export function lowerTestMethodCall(
           lowerer.checker.getSymbolAtLocation(access.name),
         );
       }
+      if (bi.member === "assert" && member === "register") {
+        return lowerAssertRegister(lowerer, call, loc);
+      }
       lowerer.noLowering(
         `test.${bi.member}.${member}`,
         call,
@@ -1266,6 +1321,52 @@ export function lowerTestMethodCall(
         type: served.type,
         loc,
       };
+    if (!ASSERT_MODULE_MEMBERS.has(member)) {
+      /* Not an assert-module member: a custom assertion registered through
+       * node:test's assert.register(name, fn). The lookup is the runtime
+       * registry, so a registration in another module of the program
+       * applies; an unregistered name throws Node's TypeError at the
+       * call, like a missing method on Node's assertion object. */
+      if (call.arguments.nodes.some(ts.isSpreadElement)) {
+        lowerer.noLowering(
+          `t.assert.${member} with spread arguments`,
+          call,
+          "pass the assertion's arguments explicitly",
+        );
+      }
+      const receiver = lowerer.lowerExpr(access.expression.expression);
+      const ctxLocal = lowerer.declareHiddenLocal("%assertCtx", receiver.type);
+      const ctxRef = varRef(ctxLocal.id, receiver.type, loc);
+      const elems = call.arguments.nodes.map((arg) =>
+        lowerer.coerceToExpected(lowerer.lowerExpr(arg), DYN),
+      );
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: ctxLocal.id, init: receiver, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "test.ctxCount",
+              args: [ctxRef],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: {
+          kind: "libCall",
+          fn: "test.ctxCustomAssert",
+          args: [ctxRef, strLit(member, loc), { kind: "dynArrLit", elems, type: DYN, loc }],
+          type: VOID,
+          loc,
+        },
+        type: VOID,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `t.assert.${member}`,
       call,

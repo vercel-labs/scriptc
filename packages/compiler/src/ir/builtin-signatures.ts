@@ -2680,6 +2680,10 @@ function buildLibFnSignatures() {
      * Node's check that it carries the mocked accessor. */
     "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
+    /** node:test's assert.register(name, fn) and the call of a registered
+     * assertion on a TestContext (its arguments a dyn array). */
+    "test.assertRegister": { argTypes: [STRING, DYN], result: VOID },
+    "test.ctxCustomAssert": { argTypes: [TESTCTX_T, STRING, DYN], result: VOID },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for

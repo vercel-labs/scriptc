@@ -52,6 +52,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Installed by scr_stream_iterator.c's constructor (the units stay separable). */
+ScrDyn *(*scr_stream_iterator_hook)(ScrStream *, ScrDyn *const *, size_t) = NULL;
+
 static void scr_stream_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
   abort();
@@ -170,6 +173,9 @@ struct ScrStreamState {
     ScrPromise *next_waiter;
     bool next_dyn;
     bool next_result;
+    /* The adapter's read: take ONE buffered chunk (Node's toWeb enqueues
+     * each 'data' chunk), not the whole buffer the async iterator returns. */
+    bool next_single;
     /* The iterator's own read() is calling _read: synchronous pushes
      * buffer, and the waiter takes the whole buffer afterwards (Node's
      * read() returns everything _read pushed). */
@@ -282,6 +288,9 @@ struct ScrStreamState {
   struct {
     ScrClosure **cb;
     ScrStreamErrInv *inv;
+    /* The watcher must also report at the stream's close step when the
+     * stream does not emit 'close' (an adapter that has to let go). */
+    bool *close_step;
     size_t n, cap;
   } fin;
 
@@ -486,6 +495,7 @@ static void scr_stream_state_drop(ScrStreamState *st, bool gc) {
   free(st->w.end_cbs);
   free(st->fin.cb);
   free(st->fin.inv);
+  free(st->fin.close_step);
   free(st->pipes.dst);
   free(st->pipes.end);
   free(st->drain_srcs.src);
@@ -1553,7 +1563,41 @@ static void scr_stream_iter_step(ScrStream *s) {
   if (!st->destroyed && !st->errored) {
     st->r.next_reading = true;
     ScrEntryKind kind;
-    void *chunk = scr_stream_read_n_kind(s, -1, &kind);
+    /* The adapter's read takes one buffered chunk (Node's toWeb enqueues
+     * each 'data' chunk); the iterator's own read takes the whole buffer.
+     * An empty buffer first runs the stream's _read through a zero-size
+     * read, so the chunks it pushes synchronously buffer as entries of
+     * their own instead of arriving as one merged read. */
+    double want = -1;
+    if (st->r.next_single && !st->r.object_entries && st->r.n == 0 && !st->r.ended &&
+        !st->r.reading && !st->destroyed && !st->errored && !st->constructing &&
+        st->r.read_cb != NULL) {
+      /* Run the stream's _read once, the way read(0) does, so its synchronous
+       * pushes buffer as entries of their own; read(0) itself can return
+       * before _read when the highWaterMark is 0. */
+      st->r.reading = true;
+      st->r.in_read_sync = true;
+      st->r.in_read_call = true;
+      st->r.read_inv(st->r.read_cb, s, (double)st->r.hwm);
+      st->r.in_read_call = false;
+      st->r.in_read_sync = false;
+    }
+    if (st->r.next_single && !st->r.object_entries && st->r.n > 0) {
+      /* Take the head entry directly: an explicit read size would grow the
+       * stream's highWaterMark (Node's read(n)), which a zero-mark stream
+       * cannot do (the growth loop would never terminate). */
+      ScrEntryKind single_kind = scr_stream_rkind(st);
+      size_t take = scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off;
+      void *single = scr_stream_rbuf_take(st, take);
+      st->r.next_reading = false;
+      if (!st->error_emitted && !st->close_emitted) st->r.data_emitted = true;
+      ScrPromise *single_waiter = st->r.next_waiter;
+      st->r.next_waiter = NULL;
+      scr_stream_next_fulfill(st, single_waiter, single, single_kind);
+      if (st->r.ended && st->r.length == 0) scr_stream_end_readable(s);
+      return;
+    }
+    void *chunk = scr_stream_read_n_kind(s, want, &kind);
     st->r.next_reading = false;
     if (scr_exc_pending()) {
       if (chunk) scr_stream_entry_release_kind(st, chunk, kind);
@@ -1620,7 +1664,10 @@ static void scr_stream_settle_next_waiter(ScrStream *s) {
     ScrPromise *w = st->r.next_waiter;
     st->r.next_waiter = NULL;
     ScrEntryKind kind = scr_stream_rkind(st);
-    void *chunk = scr_stream_rbuf_take(st, st->r.object_entries ? 1 : st->r.length);
+    size_t take = st->r.object_entries ? 1 : st->r.length;
+    if (st->r.next_single && !st->r.object_entries && st->r.n > 0)
+      take = scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off;
+    void *chunk = scr_stream_rbuf_take(st, take);
     /* the iterator's read() returned a chunk */
     if (!st->error_emitted && !st->close_emitted) st->r.data_emitted = true;
     scr_stream_next_fulfill(st, w, chunk, kind);
@@ -1647,7 +1694,7 @@ static void scr_stream_settle_next_waiter(ScrStream *s) {
   }
 }
 
-static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool result) {
+static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool result, bool single) {
   ScrStreamState *st = s->st;
   ScrPromise *p = scr_promise_new();
   if (!st->has_r) {
@@ -1665,6 +1712,7 @@ static ScrPromise *scr_stream_next_chunk_impl(ScrStream *s, bool dyn, bool resul
   }
   st->r.next_dyn = dyn;
   st->r.next_result = result;
+  st->r.next_single = single;
   st->r.next_waiter = scr_promise_retain(p);
   st->r.next_parked = false;
   if (!st->r.next_started) {
@@ -1688,15 +1736,25 @@ ScrPromise *scr_stream_next_chunk(ScrStream *s) {
     scr_promise_reject_pending(p);
     return p;
   }
-  return scr_stream_next_chunk_impl(s, false, false);
+  return scr_stream_next_chunk_impl(s, false, false, false);
 }
 
 ScrPromise *scr_stream_next_chunk_dyn(ScrStream *s) {
-  return scr_stream_next_chunk_impl(s, true, false);
+  return scr_stream_next_chunk_impl(s, true, false, false);
+}
+
+/* The web adapters' read: one buffered chunk per call, Node's 'data'
+ * granularity (Readable.toWeb enqueues each chunk as the readable emits it). */
+ScrPromise *scr_stream_next_chunk_dyn_single(ScrStream *s) {
+  return scr_stream_next_chunk_impl(s, true, false, true);
+}
+
+bool scr_stream_readable_object_entries(ScrStream *s) {
+  return s->st->has_r && s->st->r.object_entries;
 }
 
 ScrPromise *scr_stream_next_result_dyn(ScrStream *s) {
-  return scr_stream_next_chunk_impl(s, true, true);
+  return scr_stream_next_chunk_impl(s, true, true, false);
 }
 
 /* ── Readable.from (array, string and Buffer sources) ─────────────────── */
@@ -3645,16 +3703,34 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, ScrDyn *opts,
  *   - both register 'error' handlers, so an otherwise-unhandled stream
  *     error no longer crashes (the SCR_ST_ERROR suppression above). */
 
-static void scr_stream_fin_add(ScrStreamState *st, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
+static void scr_stream_fin_add(ScrStreamState *st, ScrClosure *cb /*moves*/, ScrStreamErrInv inv,
+                               bool close_step) {
   if (st->fin.n == st->fin.cap) {
     st->fin.cap = st->fin.cap ? st->fin.cap * 2 : 2;
     st->fin.cb = realloc(st->fin.cb, st->fin.cap * sizeof *st->fin.cb);
     st->fin.inv = realloc(st->fin.inv, st->fin.cap * sizeof *st->fin.inv);
-    if (!st->fin.cb || !st->fin.inv) scr_stream_oom();
+    st->fin.close_step = realloc(st->fin.close_step, st->fin.cap * sizeof *st->fin.close_step);
+    if (!st->fin.cb || !st->fin.inv || !st->fin.close_step) scr_stream_oom();
   }
   st->fin.cb[st->fin.n] = cb;
   st->fin.inv[st->fin.n] = inv;
+  st->fin.close_step[st->fin.n] = close_step;
   st->fin.n++;
+}
+
+/* Node's willEmitClose: the autoDestroy lifecycle emits 'close'. */
+static bool scr_stream_will_emit_close(const ScrStreamState *st) {
+  return st->auto_destroy && st->emit_close;
+}
+
+/* A half is finished for eos's non-strict check (isWritableFinished and
+ * isReadableFinished with strict false): its ended state with nothing
+ * buffered counts, even before 'finish'/'end' was emitted. */
+static bool scr_stream_w_finished_eos(const ScrStreamState *st) {
+  return st->w.finished || (st->w.ending && st->w.length == 0);
+}
+static bool scr_stream_r_finished_eos(const ScrStreamState *st) {
+  return st->r.end_emitted || (st->r.ended && st->r.length == 0);
 }
 
 /* The stream's finish status: +1 error (the recorded one, or premature
@@ -3662,32 +3738,58 @@ static void scr_stream_fin_add(ScrStreamState *st, ScrClosure *cb /*moves*/, Scr
 static ScrError *scr_stream_finish_status(ScrStream *s) {
   ScrStreamState *st = s->st;
   if (st->errored) return scr_error_retain(st->errored);
-  if ((st->has_r && !st->r.end_emitted) || (st->has_w && !st->w.finished)) {
+  if ((st->has_r && !scr_stream_r_finished_eos(st)) ||
+      (st->has_w && !scr_stream_w_finished_eos(st))) {
     return scr_stream_mkerr("ERR_STREAM_PREMATURE_CLOSE", "Premature close");
   }
   return NULL;
 }
 
-static void scr_stream_notify_finished(ScrStream *s) {
+/* Report the watchers. `close_step_only` is the close-step notification of a
+ * stream that does not emit 'close': only the watchers that asked for it fire,
+ * and the others stay registered (Node's finished() stays pending there). */
+static void scr_stream_notify_finished_mode(ScrStream *s, bool close_step_only) {
   ScrStreamState *st = s->st;
   if (st->fin.n == 0) return;
-  /* Take the list out first: a watcher may register another finished()
-   * or run cleanup reentrantly. */
   ScrClosure **cbs = st->fin.cb;
   ScrStreamErrInv *invs = st->fin.inv;
+  bool *close_steps = st->fin.close_step;
   size_t n = st->fin.n;
   st->fin.cb = NULL;
   st->fin.inv = NULL;
+  st->fin.close_step = NULL;
   st->fin.n = 0;
   st->fin.cap = 0;
   ScrError *err = scr_stream_finish_status(s);
+  size_t kept = 0;
   for (size_t i = 0; i < n; i++) {
+    if (close_step_only && !close_steps[i]) {
+      /* Still waiting for a report Node would not give at the close step. */
+      cbs[kept] = cbs[i];
+      invs[kept] = invs[i];
+      close_steps[kept] = close_steps[i];
+      kept++;
+      continue;
+    }
     if (!scr_exc_pending()) invs[i](cbs[i], s, err);
     scr_closure_release(cbs[i]);
   }
   if (err) scr_error_release(err);
-  free(cbs);
-  free(invs);
+  if (kept == 0) {
+    free(cbs);
+    free(invs);
+    free(close_steps);
+    return;
+  }
+  st->fin.cb = cbs;
+  st->fin.inv = invs;
+  st->fin.close_step = close_steps;
+  st->fin.n = kept;
+  st->fin.cap = n;
+}
+
+static void scr_stream_notify_finished(ScrStream *s) {
+  scr_stream_notify_finished_mode(s, false);
 }
 
 static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
@@ -3699,6 +3801,8 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
       scr_closure_release(st->fin.cb[i]);
       memmove(&st->fin.cb[i], &st->fin.cb[i + 1], (st->fin.n - i - 1) * sizeof *st->fin.cb);
       memmove(&st->fin.inv[i], &st->fin.inv[i + 1], (st->fin.n - i - 1) * sizeof *st->fin.inv);
+      memmove(&st->fin.close_step[i], &st->fin.close_step[i + 1],
+              (st->fin.n - i - 1) * sizeof *st->fin.close_step);
       st->fin.n--;
       break;
     }
@@ -3707,10 +3811,13 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
   scr_stream_release(s);
 }
 
-ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
+static ScrClosure *scr_stream_finish_register(ScrStream *s, ScrClosure *cb /*moves*/,
+                                               ScrStreamErrInv inv, bool close_step) {
   ScrStreamState *st = s->st;
-  scr_stream_fin_add(st, scr_closure_retain(cb), inv);
-  if (st->close_emitted) {
+  scr_stream_fin_add(st, scr_closure_retain(cb), inv, close_step);
+  bool will_close = scr_stream_will_emit_close(st);
+  if ((close_step && st->close_emitted) || (st->emit_close && st->close_emitted) ||
+      st->destroyed || (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
     /* Already terminal: Node's eos still calls back asynchronously. */
     scr_st_tick(s, SCR_ST_FIN, NULL, NULL);
   }
@@ -3720,6 +3827,14 @@ ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb /*moves*/, ScrStrea
   cleanup->caps[1] = scr_box_new_obj(&scr_closure_retain_v, &scr_closure_release_v, &scr_closure_trace_v);
   scr_box_set_ref(cleanup->caps[1], cb); /* the move lands here */
   return cleanup;
+}
+
+ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
+  return scr_stream_finish_register(s, cb, inv, false);
+}
+
+ScrClosure *scr_stream_finished_always(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
+  return scr_stream_finish_register(s, cb, inv, true);
 }
 
 /* The dyn-valued finished/pipeline callback (a mustCall wrapper): success
@@ -7450,6 +7565,8 @@ ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc) {
   return scr_stream_retain(s);
 }
 
+bool scr_stream_emits_close(ScrStream *s) { return s != NULL && s->st != NULL && s->st->emit_close; }
+
 ScrStream *scr_stream_pause(ScrStream *s) {
   ScrStreamState *st = s->st;
   if (st->has_r && st->r.flowing != 0) {
@@ -8094,6 +8211,8 @@ ScrStream *scr_stream_iterator_close(ScrStream *s) {
   return scr_stream_retain(s);
 }
 
+void scr_stream_next_error_consumed(ScrStream *s) { s->st->next_err_consumed = true; }
+
 ScrError *scr_stream_errored(ScrStream *s) {
   return s->st->errored ? scr_error_retain(s->st->errored) : NULL;
 }
@@ -8413,6 +8532,10 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       st->r.end_emitted = true;
       scr_stream_emit0(s, "end");
       if (scr_exc_pending()) break;
+      /* eos: a readable end reports the watchers of a stream that will not
+       * emit 'close' once its writable half has finished (Node's onend). */
+      if (!scr_stream_will_emit_close(st) && (!st->has_w || st->w.finished))
+        scr_stream_notify_finished(s);
       /* pipe end propagation */
       for (size_t i = 0; i < st->pipes.n; i++) {
         if (st->pipes.end[i]) {
@@ -8488,6 +8611,11 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       if (scr_exc_pending()) break;
       scr_stream_emit0(s, "finish");
       if (scr_exc_pending()) break;
+      /* Node's eos fires at 'finish' for a stream that will not emit
+       * 'close' (autoDestroy or emitClose is off), once the readable half
+       * is done; a stream that will emit close reports at the close. */
+      if (!scr_stream_will_emit_close(st) && (!st->has_r || st->r.end_emitted))
+        scr_stream_notify_finished(s);
       if (st->auto_destroy && (!st->has_r || st->r.end_emitted || !st->r.readable_listening)) {
         /* Node: autoDestroy after finish once the readable half is done
          * (a half-open duplex with a live readable side stays up) */
@@ -8507,12 +8635,16 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
         }
         if (st->fin.n > 0 && !scr_emitter_has((ScrEmitter *)s, "error")) {
           /* a finished()/pipeline watcher consumes it (Node's eos and
-           * pipeline register their own 'error' handlers) — the watcher
-           * reports it at the terminal point instead of crashing */
+           * pipeline register their own 'error' handlers): it reports the
+           * error now, as Node's eos 'error' handler does */
+          scr_stream_notify_finished(s);
           break;
         }
         scr_stream_emit_error(s, t->err);
         if (!scr_exc_pending()) scr_stream_settle_next(s);
+        /* Node's eos reports an emitted error from its own 'error'
+         * handler. */
+        if (!scr_exc_pending()) scr_stream_notify_finished(s);
       }
       break;
     }
@@ -8529,8 +8661,14 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
           if (w) scr_stream_next_fulfill(st, w, NULL, SCR_ENTRY_BYTES);
         }
         /* eos ordering: the finished()/pipeline watchers fire right after
-         * 'close' (Node's willEmitClose stance). */
-        scr_stream_notify_finished(s);
+         * 'close' (Node's willEmitClose stance); a stream without the
+         * 'close' event reports at 'finish' or, for a destroy before it,
+         * not at all (Node leaves that watcher pending). */
+        if (st->emit_close) {
+          scr_stream_notify_finished(s);
+        } else {
+          scr_stream_notify_finished_mode(s, true);
+        }
         /* Fully closed: nothing calls the option callbacks again (Node's
          * contract), so drop them here — this breaks the reference cycle
          * a callback capturing its own stream forms, including the dyn-
@@ -9045,6 +9183,15 @@ static ScrDyn *scr_stream_dyn_call(ScrStream *stream, ScrDyn *self, const char *
     ScrStream *returned = !strcmp(method, "pause") ? scr_stream_pause(stream) : scr_stream_resume(stream);
     scr_stream_release(returned);
   } else if (!strcmp(method, "isPaused")) result = scr_dyn_new_bool(scr_stream_is_paused(stream));
+  else if (!strcmp(method, "iterator")) {
+    /* The iterator unit installs the hook; a program that links no unit
+     * answers Node's not-supported error instead of a link failure. */
+    if (scr_stream_iterator_hook) result = scr_stream_iterator_hook(stream, args, argc);
+    else {
+      static const char message[] = "'readable.iterator' has no native lowering in this program";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    }
+  }
   else if (!strcmp(method, "setEncoding")) {
     if (first->kind != SCR_DYN_STR) scr_dyn_arg_type_fail("encoding", "of type string", first);
     else scr_stream_release(scr_stream_set_encoding(stream, first->v.str));
@@ -10507,3 +10654,4 @@ const ScrStreamPipeOps scr_stream_pipe_events_ops = {
     &scr_pl_listen,
     &scr_stream_unpipe_events,
 };
+

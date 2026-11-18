@@ -99,6 +99,8 @@ ScrStr *scr_http_req_http_version(ScrHttpReq *r); /* +1 — "1.0"/"1.1"/"2.0" */
 double scr_http_req_http_version_major(ScrHttpReq *r);
 double scr_http_req_http_version_minor(ScrHttpReq *r);
 bool scr_http_req_aborted_flag(ScrHttpReq *r);
+/* message.signal: the request's AbortSignal (+1), created on first read. */
+ScrDyn *scr_http_req_signal(ScrHttpReq *r);
 bool scr_http_req_complete(ScrHttpReq *r);
 
 /* Registers the httpReq/httpRes handle-dispatch ops (SCR_DYNH_HTTP_REQ /
@@ -175,6 +177,9 @@ void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names /*bor
 void scr_http_res_write_continue(ScrHttpRes *r);
 void scr_http_res_write_processing(ScrHttpRes *r);
 void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
+/* writeInformation(status[, headers]): the generic informational response,
+ * status 100..199 but never 101; answers write()'s backpressure boolean. */
+bool scr_http_res_write_information(ScrHttpRes *r, double status, ScrArr *pairs /*borrowed, nullable*/);
 /* The callback forms: the callback fires once the message is written. */
 void scr_http_res_write_continue_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
 void scr_http_res_write_processing_cb(ScrHttpRes *r, ScrClosure *cb /*moves, nullable*/);
@@ -229,9 +234,9 @@ void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* response.writeInformation(statusCode[, headers][, callback]) — an
  * arbitrary 1xx response (100..199, 101 refused). */
-void scr_http_res_write_information(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
-                                    const ScrDyn *headers /*borrowed*/,
-                                    ScrClosure *cb /*moves, nullable*/);
+void scr_http_res_write_information_dyn(ScrHttpRes *r, const ScrDyn *status /*borrowed*/,
+                                        const ScrDyn *headers /*borrowed*/,
+                                        ScrClosure *cb /*moves, nullable*/);
 /* createServer({ joinDuplicateHeaders: true }): repeated request-header
  * names read back joined ", " (Node's option; the default keeps first). */
 void scr_http_server_join_duplicate_headers(ScrNetServer *s);
@@ -271,6 +276,14 @@ void scr_http_server_on_check(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttp
 /* The maxHeaderSize option of createServer / http.request; throws Node's
  * ERR_OUT_OF_RANGE for a negative or non-integer value. */
 void scr_http_server_max_header_size(ScrNetServer *s, double value);
+/* createServer's option checks, run as Node's constructor reads each option
+ * (before the next one is read); each leaves Node's error pending. */
+bool scr_http_server_max_header_size_check(double value);
+void scr_http_server_timeout_option_check(double field, const ScrDyn *value /*borrowed*/);
+void scr_http_server_headers_timeout_check(const ScrDyn *request_timeout /*borrowed, nullable*/,
+                                           const ScrDyn *headers_timeout /*borrowed, nullable*/);
+void scr_http_server_boolean_option_check(const char *name, const ScrDyn *value /*borrowed*/);
+void scr_http_server_connections_checking_interval_check(const ScrDyn *value /*borrowed*/);
 ScrArr *scr_http_req_raw_headers(ScrHttpReq *r); /* +1 — [name, value, ...], arrival order/case */
 ScrArr *scr_http_req_header_pairs(ScrHttpReq *r); /* +1 — lowercased names, the headers snapshot */
 ScrArr *scr_http_req_header_lines(ScrHttpReq *r); /* +1 — every line, lowercased names */

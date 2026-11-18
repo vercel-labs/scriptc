@@ -50,6 +50,9 @@ declare module "node:test" {
     only?: boolean;
     concurrency?: number | boolean;
     timeout?: number;
+    /* Aborts the run: the test (or the suite and the tests in it) is
+     * cancelled with the signal's reason. */
+    signal?: AbortSignal;
     plan?: number;
     /* The test passes only if it throws; a reason string behaves as true.
      * Node's matcher forms (RegExp, function, object, Error, { label, match })

@@ -1101,6 +1101,30 @@ export function lowerConsoleMethodCall(
 ): IrExpr {
   const args = expr.arguments.nodes;
   switch (member) {
+    case "createTask": {
+      // Node's console.createTask: the runtime console member builds the
+      // task object (one plain object whose `run` calls the callback it is
+      // given and answers the callback's result). The arguments evaluate
+      // in order at the call, as any call's do.
+      if (args.some((arg) => ts.isSpreadElement(arg))) {
+        lowerer.unsupported("SC1090", expr, "console.createTask with a spread argument");
+      }
+      const callee: IrExpr = {
+        kind: "dynKeyGet",
+        value: { kind: "libCall", fn: "console.native", args: [], type: DYN, loc },
+        key: { kind: "strLit", value: "createTask", type: STRING, loc },
+        type: DYN,
+        loc,
+      };
+      return {
+        kind: "dynCall",
+        callee,
+        calleeName: "console.createTask",
+        args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      };
+    }
     case "trace":
       // Node's console.trace: the stderr line "Trace[: args]", then the
       // captured frames (scriptc's own frames; SEMANTICS divergence 11).

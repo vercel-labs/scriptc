@@ -86,6 +86,7 @@ void scr_tls_sock_disable_renegotiation(ScrNetSocket *s);
 /* The checked-dynamic pair: which == 0 answers servername, 1 getSession
  * (each +1, as above). */
 ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which);
+bool scr_tls_server_is_dyn(const struct ScrDyn *v);
 void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
 /* The 'secure' event: fires when the handshake completes (after the
  * secureConnect listeners on a client); released unread on a plain socket

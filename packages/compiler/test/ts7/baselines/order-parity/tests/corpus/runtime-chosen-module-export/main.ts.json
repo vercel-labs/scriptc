@@ -1,0 +1,19 @@
+{
+ "order": [
+  "<repo>/tests/corpus/runtime-chosen-module-export/pick-prod.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/pick-dev.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/pick-cjs.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/always-prod.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/always-dev.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/umd-wrapper.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/umd-factory.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/class-prod.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/class-dev.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/classes.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/not-a-function.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/always-number.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/require-side.cjs",
+  "<repo>/tests/corpus/runtime-chosen-module-export/main.ts"
+ ],
+ "diags": []
+}

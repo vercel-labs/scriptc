@@ -1,7 +1,7 @@
 // Writable.toWeb: a web WritableStream over a native Writable. A writer's
 // write() completes when the native write does, close() ends the writable,
 // and abort() destroys it with the reason.
-import { Writable } from "node:stream";
+import { Duplex, Writable, finished } from "node:stream";
 
 const log: string[] = [];
 const encoder = new TextEncoder();
@@ -253,6 +253,161 @@ async function main(): Promise<void> {
     (error: Error & { code?: string }) =>
       log.push(`finished close rejected ${error.name} ${error.code} ${error.message}`),
   );
+
+  // A native writable ended while its web stream is open ends the adapter
+  // that way too: Node errors the web stream with an AbortError, so a later
+  // write rejects with it.
+  const endedLater = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const endedWeb = Writable.toWeb(endedLater);
+  const endedWriter = endedWeb.getWriter();
+  endedLater.end();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await endedWriter.write(encoder.encode("x")).then(
+    () => log.push("write after end resolved"),
+    (error: Error & { code?: string }) =>
+      log.push(`write after end rejected ${error.name} ${error.code ?? "-"}`),
+  );
+
+  // An accepted write that fails later leaves the adapter errored: the next
+  // write rejects with the stream's error instead of being accepted.
+  const failingOnce = new Writable({
+    write(chunk, encoding, done): void {
+      setTimeout(() => done(new Error("first")), 5);
+    },
+  });
+  failingOnce.on("error", () => {});
+  const onceWriter = Writable.toWeb(failingOnce).getWriter();
+  await onceWriter.write(encoder.encode("a")).then(
+    () => log.push("accepted write resolved"),
+    (error: Error) => log.push(`accepted write rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await onceWriter.write(encoder.encode("b")).then(
+    () => log.push("write after failure resolved"),
+    (error: Error) => log.push(`write after failure rejected ${error.message}`),
+  );
+
+  // A Duplex adapts like a Writable: its writer's close settles at the
+  // stream's end-of-stream, which waits for the readable half too (here it
+  // ends after the writable side finished).
+  const duplex = new Duplex({
+    autoDestroy: false,
+    read(): void {
+      setTimeout(() => this.push(null), 10);
+    },
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  duplex.resume();
+  const duplexWeb = Writable.toWeb(duplex);
+  const duplexWriter = duplexWeb.getWriter();
+  await duplexWriter.write(encoder.encode("d"));
+  await duplexWriter.close().then(
+    () => log.push("duplex close resolved"),
+    (error: Error) => log.push(`duplex close rejected ${error.message}`),
+  );
+  log.push(`duplex finished ${duplex.writableFinished} destroyed ${duplex.destroyed}`);
+
+  // An error the writable emits itself is consumed by the adapter and fails
+  // the writer instead of escaping as an unhandled error.
+  const emitting = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const emittingWriter = Writable.toWeb(emitting).getWriter();
+  emitting.emit("error", new Error("emitted"));
+  await emittingWriter.write(encoder.encode("e")).then(
+    () => log.push("write after emitted error resolved"),
+    (error: Error) => log.push(`write after emitted error rejected ${error.message}`),
+  );
+  emitting.destroy();
+
+  // A write still waiting on backpressure when the writable ends cleanly
+  // settles (the drain it waited for happens as the queue empties).
+  const endingBp = new Writable({
+    highWaterMark: 1,
+    write(chunk, encoding, done): void {
+      setTimeout(done, 5);
+    },
+  });
+  const endingBpWriter = Writable.toWeb(endingBp).getWriter();
+  const endingWrite = endingBpWriter.write(encoder.encode("xy"));
+  endingBp.end();
+  await endingWrite.then(
+    () => log.push("backpressured end resolved"),
+    (error: Error) => log.push(`backpressured end rejected ${error.message}`),
+  );
+
+  // abort() with no reason errors the writable with an AbortError, which the
+  // adapter consumes and retires on even though this writable never emits
+  // 'close'.
+  const quiet = new Writable({
+    emitClose: false,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const quietWriter = Writable.toWeb(quiet).getWriter();
+  await quietWriter.abort().then(
+    () => log.push("quiet abort resolved"),
+    (error: Error) => log.push(`quiet abort rejected ${error.message}`),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  log.push(`quiet destroyed ${quiet.destroyed} errored ${quiet.errored?.message ?? "-"}`);
+  await quietWriter.write(encoder.encode("z")).then(
+    () => log.push("write after quiet abort resolved"),
+    (error: (Error & { name: string }) | undefined) =>
+      log.push(`write after quiet abort rejected ${error ? error.name : "undefined"}`),
+  );
+
+  // A destroy with no error on a writable that never emits 'close': a later
+  // write resolves and a later close stays pending, as Node leaves them.
+  const quietDestroy = new Writable({
+    emitClose: false,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const quietDestroyWriter = Writable.toWeb(quietDestroy).getWriter();
+  await quietDestroyWriter.write(encoder.encode("q"));
+  quietDestroy.destroy();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await quietDestroyWriter.write(encoder.encode("r")).then(
+    () => log.push("write after quiet destroy resolved"),
+    (error: Error) => log.push(`write after quiet destroy rejected ${error.message}`),
+  );
+  const quietClose = await Promise.race([
+    quietDestroyWriter.close().then(
+      () => "resolved",
+      (error: Error) => `rejected ${error.message}`,
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 25)),
+  ]);
+  log.push(`close after quiet destroy ${quietClose}`);
+
+  // A user finished() watcher on that silent destroy stays pending, as Node
+  // leaves it, even with an adapter attached to the same writable.
+  const watchQuiet = new Writable({
+    emitClose: false,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const watchQuietWriter = Writable.toWeb(watchQuiet).getWriter();
+  await watchQuietWriter.write(encoder.encode("s"));
+  let watchCalled = false;
+  finished(watchQuiet, () => {
+    watchCalled = true;
+  });
+  watchQuiet.destroy();
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  log.push(`finished after quiet destroy called ${watchCalled}`);
 }
 
 main().then(() => {

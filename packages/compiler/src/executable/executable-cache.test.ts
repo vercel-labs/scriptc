@@ -47,6 +47,7 @@ const native: EarlyExecutableNativeFeatures = {
   bigintBytes: false,
   mutableBuffers: false,
   argon2: false,
+  mlkem: false,
   fileHandle: false,
   fetch: true,
   zlib: false,

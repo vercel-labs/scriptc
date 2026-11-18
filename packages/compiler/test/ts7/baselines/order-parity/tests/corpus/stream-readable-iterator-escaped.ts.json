@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-readable-iterator-escaped.ts"
+ ],
+ "diags": []
+}

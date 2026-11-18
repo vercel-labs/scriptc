@@ -2459,13 +2459,24 @@ function lowerWritableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       "the supported form is Writable.toWeb(writable)",
     );
   }
+  /* A Duplex's writable half is the same stream object, so a Duplex value
+   * adapts as well as a Writable (Node accepts any Writable). */
+  const value = lowerer.lowerExpr(args[0]!);
+  const valueType = value.type;
+  if (
+    valueType.kind !== "object" ||
+    (valueType.className !== "%Writable" && valueType.className !== "%Duplex")
+  ) {
+    lowerer.noLowering(
+      `Writable.toWeb on '${lowerer.fmt(valueType)}' values`,
+      args[0]!,
+      "the supported form is Writable.toWeb(writable)",
+    );
+  }
   return {
     kind: "libCall",
     fn: "webstream.writableToWeb",
-    args: [
-      lowerer.lowerExprExpecting(args[0]!, { kind: "object", className: "%Writable" }),
-      numLit(0, loc),
-    ],
+    args: [value, numLit(0, loc)],
     type: DYN,
     loc,
   };

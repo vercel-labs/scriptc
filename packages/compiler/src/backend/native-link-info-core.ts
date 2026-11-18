@@ -313,6 +313,9 @@ export interface NativeLinkFeatures {
   dh: boolean;
   /** crypto.argon2 and crypto.argon2Sync: scr_argon2.c. */
   argon2: boolean;
+  /** crypto.encapsulate/decapsulate and the WebCrypto ML-KEM algorithms:
+   * scr_mlkem.c plus the vendored mlkem-native archive. */
+  mlkem: boolean;
   /** Asymmetric KeyObjects, crypto.sign/verify and Sign/Verify: scr_pki.c
    * plus the mbedTLS archive. */
   pki: boolean;
@@ -401,6 +404,7 @@ const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   ecdh: false,
   dh: false,
   argon2: false,
+  mlkem: false,
   pki: false,
   ed25519: false,
   x509: false,

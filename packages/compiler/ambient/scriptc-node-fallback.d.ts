@@ -1030,7 +1030,9 @@ interface SubtleCrypto {
       | "Ed25519"
       | { name: "Ed25519" }
       | "X25519"
-      | { name: "X25519" },
+      | { name: "X25519" }
+      | "X448"
+      | { name: "X448" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;
@@ -1342,9 +1344,37 @@ interface MessageEvent<T = unknown> extends Event {
 declare var MessageEvent: {
   new <T = unknown>(
     type: string,
-    eventInitDict?: { data?: T; origin?: string; lastEventId?: string },
+    eventInitDict?: {
+      data?: T;
+      origin?: string;
+      lastEventId?: string;
+      source?: unknown;
+      ports?: readonly MessagePort[];
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+    },
   ): MessageEvent<T>;
   readonly prototype: MessageEvent;
+};
+interface CloseEvent extends Event {
+  readonly code: number;
+  readonly reason: string;
+  readonly wasClean: boolean;
+}
+declare var CloseEvent: {
+  new (
+    type: string,
+    eventInitDict?: {
+      code?: number;
+      reason?: string;
+      wasClean?: boolean;
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+    },
+  ): CloseEvent;
+  readonly prototype: CloseEvent;
 };
 interface AddEventListenerOptions {
   capture?: boolean;
@@ -1376,8 +1406,7 @@ declare var EventTarget: {
  * that class (a fallback global of that name). The members mirror
  * node-fallback/worker_threads.d.ts, whose file loads only when the program
  * imports the module; ref()/unref() answer the channel, as Node's do.
- * MessageChannel and MessagePort stay the global interfaces above: their
- * event-side members still refuse, so their rows remain unimplemented. */
+ * MessageChannel and MessagePort below are the module classes too. */
 interface BroadcastChannel extends EventTarget {
   readonly name: string;
   postMessage(message: unknown): void;
@@ -1406,6 +1435,8 @@ interface MessageChannel {
   readonly port2: MessagePort;
 }
 declare var MessagePort: {
+  /* Node's constructor exists but throws ERR_CONSTRUCT_CALL_INVALID. */
+  new (): MessagePort;
   readonly prototype: MessagePort;
 };
 declare var MessageChannel: {
@@ -1942,6 +1973,35 @@ declare module "node:perf_hooks" {
     ): void;
     takeRecords(): PerformanceEntry[];
   }
+  export class PerformanceResourceTiming extends PerformanceEntry {
+    readonly entryType: "resource";
+    protected constructor();
+    readonly initiatorType: string;
+    readonly nextHopProtocol: string;
+    readonly workerStart: number;
+    readonly redirectStart: number;
+    readonly redirectEnd: number;
+    readonly fetchStart: number;
+    readonly domainLookupStart: number;
+    readonly domainLookupEnd: number;
+    readonly connectStart: number;
+    readonly connectEnd: number;
+    readonly secureConnectionStart: number;
+    readonly requestStart: number;
+    readonly finalResponseHeadersStart: number;
+    readonly firstInterimResponseStart: number;
+    readonly responseStart: number;
+    readonly responseEnd: number;
+    readonly transferSize: number;
+    readonly encodedBodySize: number;
+    readonly decodedBodySize: number;
+    readonly deliveryType: string;
+    readonly responseStatus: number;
+    readonly renderBlockingStatus: string;
+    readonly contentType: string;
+    readonly contentEncoding: string;
+    toJSON(): any;
+  }
   export interface MarkOptions {
     detail?: unknown | undefined;
     startTime?: number | undefined;
@@ -1964,6 +2024,22 @@ declare module "node:perf_hooks" {
     getEntriesByType(type: EntryType): PerformanceEntry[];
     clearMarks(name?: string): void;
     clearMeasures(name?: string): void;
+    /* The resource timeline: markResourceTiming builds a
+     * PerformanceResourceTiming from fetch timing info and buffers it;
+     * clearResourceTimings removes all entries (or one name), and
+     * setResourceTimingBufferSize sets the buffer limit (250 by default). */
+    clearResourceTimings(name?: string): void;
+    markResourceTiming(
+      timingInfo: object,
+      requestedUrl: string,
+      initiatorType: string,
+      global: object,
+      cacheMode: "" | "local",
+      bodyInfo: object,
+      responseStatus: number,
+      deliveryType?: string,
+    ): PerformanceResourceTiming;
+    setResourceTimingBufferSize(maxSize: number): void;
     /* performance.toJSON(): nodeTiming, timeOrigin and the event-loop
      * utilization, in that key order. */
     toJSON(): any;
@@ -2051,6 +2127,7 @@ declare var PerformanceMark: typeof import("node:perf_hooks").PerformanceMark;
 declare var PerformanceMeasure: typeof import("node:perf_hooks").PerformanceMeasure;
 declare var PerformanceObserver: typeof import("node:perf_hooks").PerformanceObserver;
 declare var PerformanceObserverEntryList: typeof import("node:perf_hooks").PerformanceObserverEntryList;
+declare var PerformanceResourceTiming: typeof import("node:perf_hooks").PerformanceResourceTiming;
 
 /* Node 24's navigator global (no import needed): the platform facts a
  * browser exposes, over Node's own values. hardwareConcurrency is

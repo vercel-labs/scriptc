@@ -15,7 +15,9 @@ typedef struct SdiCtx SdiCtx;
 struct SdiCtx {
   size_t rc;
   ScrStream *s;  /* +1 */
-  ScrDyn *self;  /* borrowed: the iterator object owns this context */
+  /* return() or throw() ran: every later next()/return() answers
+   * { value: undefined, done: true }, as Node's iterator does. */
+  bool finished;
   bool destroy_on_return;
 };
 
@@ -63,7 +65,7 @@ static ScrDyn *sdi_next(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   SdiCtx *c = sdi_of(cl);
-  ScrPromise *p = c->s ? scr_stream_next_result_dyn(c->s) : NULL;
+  ScrPromise *p = c->s && !c->finished ? scr_stream_next_result_dyn(c->s) : NULL;
   if (!p) p = sdi_done_promise();
   ScrDyn *out = sdi_promise_dyn(p);
   if (scr_exc_pending()) scr_exc_clear();
@@ -77,7 +79,9 @@ static ScrDyn *sdi_return(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   SdiCtx *c = sdi_of(cl);
-  if (c->s && c->destroy_on_return && scr_stream_prop(c->s, "destroyed") == 0) {
+  bool first = !c->finished;
+  c->finished = true;
+  if (first && c->s && c->destroy_on_return && scr_stream_prop(c->s, "destroyed") == 0) {
     scr_stream_release(scr_stream_destroy(c->s, NULL));
     if (scr_exc_pending()) scr_exc_clear();
   }
@@ -90,7 +94,9 @@ static ScrDyn *sdi_return(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
 static ScrDyn *sdi_throw(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   SdiCtx *c = sdi_of(cl);
   ScrDyn *reason = argc > 0 ? args[0] : scr_dyn_undefined();
-  if (c->s && scr_stream_prop(c->s, "destroyed") == 0) {
+  bool first = !c->finished;
+  c->finished = true;
+  if (first && c->s && scr_stream_prop(c->s, "destroyed") == 0) {
     ScrError *err = scr_error_from_dyn(reason);
     /* The iterator's own error listener consumes the destroy's 'error', as
      * Node's does: the rejection carries it instead. */
@@ -107,14 +113,15 @@ static ScrDyn *sdi_throw(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   return out;
 }
 
-/* [Symbol.asyncIterator](): the iterator itself. */
+/* [Symbol.asyncIterator](): the receiver, as %AsyncIteratorPrototype%'s
+ * method answers `this`. The context holds no pointer back to the iterator
+ * object: a method saved off the object outlives it, and the context (which
+ * every member closure retains) only owns the readable. */
 static ScrDyn *sdi_async_iter(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
+  (void)cl;
   (void)args;
   (void)argc;
-  SdiCtx *c = sdi_of(cl);
-  ScrDyn *out = c->self ? scr_dyn_retain(c->self) : scr_dyn_retain(scr_dyn_undefined());
-  sdi_unref(c);
-  return out;
+  return scr_dyn_this_get();
 }
 
 static ScrDyn *sdi_member(void *fn, ScrDynThunk thunk, uint32_t arity, const char *sig,
@@ -148,7 +155,6 @@ ScrDyn *scr_stream_iterator(ScrStream *s, bool destroy_on_return) {
     scr_dyn_release(key);
     scr_sym_release(async_sym);
   }
-  c->self = it; /* borrowed; see the field comment */
   sdi_unref(c);
   return it;
 }

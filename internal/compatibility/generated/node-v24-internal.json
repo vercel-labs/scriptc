@@ -105966,9 +105966,11 @@
           "tests/corpus/1448-stream-columns.ts",
           "tests/corpus/2992-stream-rows.ts",
           "tests/corpus/terminal-stream-properties.ts",
+          "tests/corpus/tty-write-stream-color-methods.ts",
           "tests/corpus/tty-write-stream-cursor-methods.ts",
           "tests/fixtures/node-types/terminal-error-fields.ts",
           "tests/harness/terminal-geometry.test.ts",
+          "tests/harness/tty-color-methods.test.ts",
           "tests/harness/tty-cursor-methods.test.ts"
         ]
       },
@@ -106218,8 +106220,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "partial",
+        "evidence": "compiler-dedicated:writeStream.getColorDepth",
+        "tests": [
+          "tests/corpus/tty-write-stream-color-methods.ts",
+          "tests/harness/tty-color-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106271,8 +106277,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tty"
+        "status": "partial",
+        "evidence": "compiler-dedicated:writeStream.hasColors",
+        "tests": [
+          "tests/corpus/tty-write-stream-color-methods.ts",
+          "tests/harness/tty-color-methods.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

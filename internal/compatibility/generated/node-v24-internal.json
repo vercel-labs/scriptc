@@ -82635,6 +82635,7 @@
         "evidence": "compiler-feature:perf_hooks.Histogram",
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9990-histogram-comparison.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
           "tests/corpus/9994-histogram-short-lived.ts",

@@ -1461,6 +1461,8 @@ const HISTOGRAM_STATS: ReadonlyMap<string, number> = new Map([
   ["stddev", 3],
   ["count", 4],
   ["exceeds", 5],
+  ["skewness", 6],
+  ["kurtosis", 7],
 ]);
 
 /** `h.min`, `h.max`, … on an IntervalHistogram: the runtime's current
@@ -1790,6 +1792,8 @@ const HISTO_STATS: ReadonlyMap<string, number> = new Map([
   ["mean", 3],
   ["stddev", 4],
   ["exceeds", 5],
+  ["skewness", 6],
+  ["kurtosis", 7],
 ]);
 
 /** The BigInt readings, as perf.histoStatBig selectors. */

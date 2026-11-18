@@ -1057,6 +1057,28 @@ static double scr_histo_eld_selector(int which) {
   }
 }
 
+/* hdr_mean: the buckets as int64 (count * median), divided once. */
+static double scr_histo_mean_of(const ScrHisto *h) {
+  int64_t sum = 0;
+  for (int64_t i = 0; i < h->counts_len; i++) {
+    if (h->counts[i] == 0) continue;
+    sum += h->counts[i] * scr_histo_median_equivalent(h, scr_histo_value_at_index(h, i));
+  }
+  return (double)sum / (double)h->total;
+}
+
+/* hdr_stddev: each bucket's median measured against the mean, divided by the
+ * population count. */
+static double scr_histo_stddev_of(const ScrHisto *h, double mean) {
+  double geo = 0;
+  for (int64_t i = 0; i < h->counts_len; i++) {
+    if (h->counts[i] == 0) continue;
+    double dev = (double)scr_histo_median_equivalent(h, scr_histo_value_at_index(h, i)) - mean;
+    geo += dev * dev * (double)h->counts[i];
+  }
+  return sqrt(geo / (double)h->total);
+}
+
 double scr_histo_stat(ScrDyn *handle, double which) {
   if (scr_eld_of(handle) != NULL)
     return scr_eld_stat(handle, scr_histo_eld_selector((int)which));
@@ -1075,23 +1097,9 @@ double scr_histo_stat(ScrDyn *handle, double which) {
     case 3:
     case 4: {
       if (h->total == 0) return NAN;
-      /* hdr_mean accumulates the buckets as int64 (count * median), then
-       * divides once; stddev measures each bucket's median against it. */
-      int64_t sum = 0;
-      for (int64_t i = 0; i < h->counts_len; i++) {
-        if (h->counts[i] == 0) continue;
-        sum += h->counts[i] * scr_histo_median_equivalent(h, scr_histo_value_at_index(h, i));
-      }
-      double mean = (double)sum / (double)h->total;
+      double mean = scr_histo_mean_of(h);
       if (w == 3) return mean;
-      double geo = 0;
-      for (int64_t i = 0; i < h->counts_len; i++) {
-        if (h->counts[i] == 0) continue;
-        double dev =
-            (double)scr_histo_median_equivalent(h, scr_histo_value_at_index(h, i)) - mean;
-        geo += dev * dev * (double)h->counts[i];
-      }
-      return sqrt(geo / (double)h->total);
+      return scr_histo_stddev_of(h, mean);
     }
     default:
       return (double)h->exceeds;
@@ -1243,6 +1251,156 @@ double scr_histo_cdf(ScrDyn *handle, double value) {
 }
 
 double scr_histo_ccdf(ScrDyn *handle, double value) { return 1.0 - scr_histo_cdf(handle, value); }
+
+/* The comparison methods take another Histogram: either histogram table is
+ * one (the event-loop histogram extends the base interface), and anything
+ * else is Node's ERR_INVALID_ARG_TYPE. */
+static bool scr_histo_pair(ScrDyn *handle, ScrDyn *other_handle, ScrHisto *self_tmp,
+                           ScrHisto *other_tmp, ScrHisto **self, ScrHisto **other) {
+  *self = scr_histo_lookup(handle, self_tmp);
+  *other = scr_histo_lookup(other_handle, other_tmp);
+  if (*self != NULL && *other != NULL) return true;
+  static const char msg[] = "The \"other\" argument must be an instance of Histogram";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+  return false;
+}
+
+/* Node's Histogram::KsTest: the largest distance between the two empirical
+ * CDFs, bucket index by bucket index. Comparing a histogram with itself and
+ * an empty side answer 0. */
+double scr_histo_ks_test(ScrDyn *handle, ScrDyn *other_handle) {
+  ScrHisto self_tmp, other_tmp, *self, *other;
+  if (!scr_histo_pair(handle, other_handle, &self_tmp, &other_tmp, &self, &other)) return 0.0;
+  if (handle == other_handle || self == other) return 0.0;
+  int64_t n1 = self->total, n2 = other->total;
+  if (n1 == 0 || n2 == 0) return 0.0;
+  int64_t len = self->counts_len > other->counts_len ? self->counts_len : other->counts_len;
+  double max_d = 0.0;
+  int64_t cum1 = 0, cum2 = 0;
+  for (int64_t i = 0; i < len; i++) {
+    if (i < self->counts_len) cum1 += self->counts[i];
+    if (i < other->counts_len) cum2 += other->counts[i];
+    double cdf1 = (double)cum1 / (double)n1;
+    double cdf2 = (double)cum2 / (double)n2;
+    double d = cdf1 > cdf2 ? cdf1 - cdf2 : cdf2 - cdf1;
+    if (d > max_d) max_d = d;
+  }
+  return max_d;
+}
+
+/* Node's Histogram::CohensD: the mean difference over the pooled sample
+ * standard deviation. Fewer than two samples on either side answer 0. */
+double scr_histo_cohens_d(ScrDyn *handle, ScrDyn *other_handle) {
+  ScrHisto self_tmp, other_tmp, *self, *other;
+  if (!scr_histo_pair(handle, other_handle, &self_tmp, &other_tmp, &self, &other)) return 0.0;
+  if (handle == other_handle || self == other) return 0.0;
+  int64_t n1 = self->total, n2 = other->total;
+  if (n1 < 2 || n2 < 2) return 0.0;
+  double mean1 = scr_histo_mean_of(self);
+  double mean2 = scr_histo_mean_of(other);
+  double sd1 = scr_histo_stddev_of(self, mean1);
+  double sd2 = scr_histo_stddev_of(other, mean2);
+  /* hdr_stddev is the population deviation; Bessel's correction turns it
+   * into the sample variance. */
+  double var1 = sd1 * sd1 * (double)n1 / (double)(n1 - 1);
+  double var2 = sd2 * sd2 * (double)n2 / (double)(n2 - 1);
+  double pooled = sqrt(((double)(n1 - 1) * var1 + (double)(n2 - 1) * var2) /
+                       (double)(n1 + n2 - 2));
+  if (pooled == 0.0) return 0.0;
+  return (mean1 - mean2) / pooled;
+}
+
+/* Node's Histogram::CliffsD: the share of concordant pairs minus the share
+ * of discordant pairs, ties counting for neither. */
+double scr_histo_cliffs_d(ScrDyn *handle, ScrDyn *other_handle) {
+  ScrHisto self_tmp, other_tmp, *self, *other;
+  if (!scr_histo_pair(handle, other_handle, &self_tmp, &other_tmp, &self, &other)) return 0.0;
+  if (handle == other_handle || self == other) return 0.0;
+  int64_t n1 = self->total, n2 = other->total;
+  if (n1 == 0 || n2 == 0) return 0.0;
+  int64_t len = self->counts_len > other->counts_len ? self->counts_len : other->counts_len;
+  int64_t cum2 = 0;
+  double concordant = 0.0, tied = 0.0;
+  for (int64_t i = 0; i < len; i++) {
+    int64_t c1 = i < self->counts_len ? self->counts[i] : 0;
+    int64_t c2 = i < other->counts_len ? other->counts[i] : 0;
+    concordant += (double)c1 * (double)cum2;
+    tied += (double)c1 * (double)c2;
+    cum2 += c2;
+  }
+  double discordant = (double)n1 * (double)n2 - concordant - tied;
+  return (concordant - discordant) / ((double)n1 * (double)n2);
+}
+
+typedef struct {
+  double u;
+  double z;
+  double p;
+} ScrMannWhitney;
+
+/* Node's Histogram::MannWhitneyTest: the U statistic (concordant pairs plus
+ * half the ties), the tie-corrected z score and the two-tailed normal
+ * approximation for p. An empty or self comparison answers {0, 0, 1}. */
+static ScrMannWhitney scr_histo_mann_whitney(const ScrHisto *self, const ScrHisto *other) {
+  ScrMannWhitney out = {0.0, 0.0, 1.0};
+  int64_t n1 = self->total, n2 = other->total;
+  if (n1 == 0 || n2 == 0 || self == other) return out;
+  int64_t len = self->counts_len > other->counts_len ? self->counts_len : other->counts_len;
+  int64_t cum2 = 0;
+  double concordant = 0.0, tied = 0.0;
+  for (int64_t i = 0; i < len; i++) {
+    int64_t c1 = i < self->counts_len ? self->counts[i] : 0;
+    int64_t c2 = i < other->counts_len ? other->counts[i] : 0;
+    concordant += (double)c1 * (double)cum2;
+    tied += (double)c1 * (double)c2;
+    cum2 += c2;
+  }
+  double u = concordant + 0.5 * tied;
+  double dn1 = (double)n1, dn2 = (double)n2;
+  double mu = dn1 * dn2 / 2.0;
+  double n_total = dn1 + dn2;
+  double tie_correction = 0.0;
+  for (int64_t i = 0; i < len; i++) {
+    int64_t c1 = i < self->counts_len ? self->counts[i] : 0;
+    int64_t c2 = i < other->counts_len ? other->counts[i] : 0;
+    double tk = (double)(c1 + c2);
+    if (tk > 1) tie_correction += tk * tk * tk - tk;
+  }
+  double sigma_sq = (dn1 * dn2 / 12.0) *
+                    (n_total + 1.0 - tie_correction / (n_total * (n_total - 1.0)));
+  if (sigma_sq <= 0.0) {
+    out.u = u;
+    return out;
+  }
+  double z = (u - mu) / sqrt(sigma_sq);
+  /* 2 * NormalCdf(-|z|), Node's two-tailed normal approximation. */
+  double p = 2.0 * (0.5 * erfc(fabs(z) * (1.4142135623730951 / 2.0)));
+  out.u = u;
+  out.z = z;
+  out.p = p;
+  return out;
+}
+
+double scr_histo_mann_whitney_u(ScrDyn *handle, ScrDyn *other_handle) {
+  ScrHisto self_tmp, other_tmp, *self, *other;
+  if (!scr_histo_pair(handle, other_handle, &self_tmp, &other_tmp, &self, &other)) return 0.0;
+  if (handle == other_handle || self == other) return 0.0;
+  return scr_histo_mann_whitney(self, other).u;
+}
+
+double scr_histo_mann_whitney_z(ScrDyn *handle, ScrDyn *other_handle) {
+  ScrHisto self_tmp, other_tmp, *self, *other;
+  if (!scr_histo_pair(handle, other_handle, &self_tmp, &other_tmp, &self, &other)) return 0.0;
+  if (handle == other_handle || self == other) return 0.0;
+  return scr_histo_mann_whitney(self, other).z;
+}
+
+double scr_histo_mann_whitney_p(ScrDyn *handle, ScrDyn *other_handle) {
+  ScrHisto self_tmp, other_tmp, *self, *other;
+  if (!scr_histo_pair(handle, other_handle, &self_tmp, &other_tmp, &self, &other)) return 1.0;
+  if (handle == other_handle || self == other) return 1.0;
+  return scr_histo_mann_whitney(self, other).p;
+}
 
 /* hdr_iter_percentile's ticks: the percentile thresholds 0, 50, 75, ...,
  * each emitted once the running cumulative reaches it, and 100 for the

@@ -766,6 +766,14 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // add/subtract reject a non-RecordableHistogram argument.
   "perf.histoAdd",
   "perf.histoSubtract",
+  // The comparisons reject an `other` that is not a Histogram with Node's
+  // ERR_INVALID_ARG_TYPE.
+  "perf.histoKsTest",
+  "perf.histoCohensD",
+  "perf.histoCliffsD",
+  "perf.histoMannWhitneyU",
+  "perf.histoMannWhitneyZ",
+  "perf.histoMannWhitneyP",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",

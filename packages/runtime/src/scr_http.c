@@ -800,11 +800,16 @@ void scr_http_req_destroy(ScrHttpReq *r) {
    * this call still reads its fields. */
   scr_http_req_retain(r);
   r->destroyed = true;
-  /* Node aborts the request's signal when an incomplete message is
-   * destroyed, before the socket teardown runs; the request reads as
-   * aborted from that moment. */
+  /* Node's _destroy: an unfinished message is reported 'aborted' and has
+   * its signal aborted before destroy() returns, in that order — the
+   * 'aborted' listeners run with the signal still unaborted, then the
+   * signal's abort listeners run. The socket teardown follows. */
   if (!r->received || !r->ended) {
-    r->aborted = true;
+    if (!r->aborted) {
+      r->aborted = true;
+      scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
+      scr_net_ls_drop(&r->aborted_ls);
+    }
     scr_http_req_abort_signal(r);
   }
   if (r->h2_stream != NULL) {
@@ -3463,6 +3468,7 @@ static void scr_http_proto_sweep(void) {
       if (!req->close_emitted) {
         req->close_emitted = true;
         req->destroyed = true; /* Node: destroyed reads true inside 'close' */
+        if (!req->ended) scr_http_req_abort_signal(req);
         scr_net_fire0_this(&req->close_ls, req, SCR_DYNH_HTTP_REQ);
         scr_net_ls_drop(&req->err_ls);
         scr_net_ls_drop(&req->close_ls);
@@ -3506,6 +3512,8 @@ static void scr_http_proto_sweep(void) {
         scr_net_fire_err_this(&req->err_ls, msg, req, SCR_DYNH_HTTP_REQ);
         scr_str_release(msg);
       }
+      /* the message's signal follows 'aborted', as Node's does */
+      scr_http_req_abort_signal(req);
       break;
     }
     case SCR_HTTP_EMIT_CLIENT_CLOSE:
@@ -5311,10 +5319,12 @@ static void scr_http_conn_abort_request(ScrHttpConn *conn) {
   }
   scr_http_queue_req_aborted(req);
   scr_http_req_retain(req);
-  /* the signal's abort listeners are user code: run them under the retain */
-  scr_http_req_abort_signal(req);
+  /* 'aborted' first, then the signal's abort listeners — both are user code:
+   * they run under the retain, and the abort listeners see the signal
+   * aborted, the 'aborted' listeners do not (Node's _destroy order). */
   scr_net_fire0_this(&req->aborted_ls, req, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&req->aborted_ls);
+  scr_http_req_abort_signal(req);
   if (res != NULL) scr_http_res_release(res);
   scr_http_req_release(req);
 }
@@ -5811,6 +5821,7 @@ double scr_http_req_http_version_minor(ScrHttpReq *r) {
   return text[2] - '0';
 }
 bool scr_http_req_aborted_flag(ScrHttpReq *r) { return r->aborted; }
+
 /* An HTTP/1 message is complete once all of it arrived, aborted or not, as
  * Node's IncomingMessage.complete is. */
 bool scr_http_req_complete(ScrHttpReq *r) {
@@ -5827,9 +5838,9 @@ bool scr_http_req_complete(ScrHttpReq *r) {
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
   if (r->close_emitted) return;
   r->aborted = true;
-  scr_http_req_abort_signal(r);
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->aborted_ls);
+  scr_http_req_abort_signal(r);
 }
 
 void scr_http_h2_req_close(ScrHttpReq *r) { scr_http_queue_req_close(r); }
@@ -8925,6 +8936,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
     scr_str_release(v);
     return d;
   }
+  if (strcmp(key, "signal") == 0) return scr_http_req_signal(r);
   if (strcmp(key, "httpVersionMajor") == 0) return scr_dyn_new_num(scr_http_req_http_version_major(r));
   if (strcmp(key, "httpVersionMinor") == 0) return scr_dyn_new_num(scr_http_req_http_version_minor(r));
   if (strcmp(key, "method") == 0) {
@@ -9002,7 +9014,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
     /* Real instance properties without a modeled read throw "not supported
      * yet" instead of answering undefined where Node has a value. */
     static const char *const known[] = {
-      "trailers", "rawTrailers", "signal", NULL };
+      "trailers", "rawTrailers", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("IncomingMessage", key, NULL);
       return NULL;

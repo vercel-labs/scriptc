@@ -82,7 +82,9 @@ ScrStr *scr_http_req_http_version(ScrHttpReq *r); /* +1 — "1.0"/"1.1"/"2.0" */
 double scr_http_req_http_version_major(ScrHttpReq *r);
 double scr_http_req_http_version_minor(ScrHttpReq *r);
 bool scr_http_req_aborted_flag(ScrHttpReq *r);
-/* message.signal: the request's AbortSignal (+1), created on first read. */
+/* req.signal: the message's AbortSignal (+1) — an AbortController built on
+ * the first read that aborts when the message is destroyed or closes
+ * unfinished. */
 ScrDyn *scr_http_req_signal(ScrHttpReq *r);
 bool scr_http_req_complete(ScrHttpReq *r);
 

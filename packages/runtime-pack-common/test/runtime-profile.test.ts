@@ -105,6 +105,10 @@ test.skipIf(helper?.features.includes("profile-functions") !== true)(
       if (/[/\\]/.test(name)) return true;
       const local = /^([\w-]+\.c);(.+)$/.exec(name);
       if (local !== null) return !sources.has(local[1]!);
+      // The link-contract marker is a runtime function whose name carries the
+      // ABI version; the committed profile keeps the spelling it was collected
+      // under, which the current sources no longer declare after a bump.
+      if (/^scr_runtime_abi_v\d+$/.test(name)) return false;
       return name === "main" || name.startsWith("sc_") || !identifiers.has(name);
     });
     expect(foreign, "records that are not runtime functions").toEqual([]);

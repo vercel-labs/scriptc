@@ -9,7 +9,7 @@ import { isErrorFirstErrorType } from "./builtins/arguments.js";
 import { InternalCompilerError } from "../../errors.js";
 import { noteCrashSite } from "../../diagnostics/crash-site.js";
 import * as ts from "../ts7/adapter.js";
-import { isRebindableFunctionSymbol } from "./rebindable-functions.js";
+import { isRebindableFunction, isRebindableFunctionSymbol } from "./rebindable-functions.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -52,6 +52,7 @@ import { slotSignatureAdoption } from "./slot-signatures.js";
 import { isStrictCode } from "./strict-mode.js";
 import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
 import { noteObjectMethodName } from "./function-names.js";
+import { noteFunctionSourceNode } from "./function-source-text.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -86,6 +87,32 @@ function declareCallReceiver(
       : bound,
     loc,
   };
+}
+
+/** Whether a non-arrow function's own body (or a nested arrow's) reads
+ * `this` or `super`: nested plain functions and classes bind their own, so
+ * their uses are not this function's. */
+function readsOwnReceiver(node: ts.FunctionLikeDeclaration): boolean {
+  const reads = (child: ts.Node): boolean => {
+    if (child.kind === ts.SyntaxKind.ThisKeyword || child.kind === ts.SyntaxKind.SuperKeyword)
+      return true;
+    if (
+      (ts.isFunctionLike(child) && !ts.isArrowFunction(child)) ||
+      ts.isClassDeclaration(child) ||
+      ts.isClassExpression(child)
+    )
+      return false;
+    return ts.forEachChild(child, (next) => (reads(next) ? true : undefined)) === true;
+  };
+  for (const parameter of node.parameters.nodes) if (reads(parameter)) return true;
+  return node.body !== undefined && reads(node.body);
+}
+
+/** A class member's `this` is the instance (or the class value) its own
+ * lowering binds; lowerLambda must not shadow it with a call receiver. */
+function isClassMember(node: ts.FunctionLikeDeclaration): boolean {
+  const parent = node.parent;
+  return parent !== undefined && (ts.isClassDeclaration(parent) || ts.isClassExpression(parent));
 }
 
 /** Remove the receiver declaration when no lookup of `this` reached it:
@@ -131,12 +158,16 @@ export function isTopLevelFnSymbol(lowerer: Lowerer, ident: ts.Identifier): bool
 export function lowerNestedFunctionDecl(lowerer: Lowerer, stmt: ts.FunctionDeclaration): IrStmt {
   if (!stmt.name) lowerer.unsupported("SC1090", stmt, "anonymous function declarations");
   const { funcType } = lowerer.lambdaSignature(stmt);
+  // A declaration the enclosing code reassigns is an ordinary mutable
+  // binding the assignment can replace with any function: its storage is
+  // checked-dynamic, and every call goes through that storage.
+  const rebindable = isRebindableFunction(lowerer, stmt);
   // Function declaration bindings are mutable in JavaScript. More
   // importantly, putting the empty slot into the owning statement list
   // BEFORE lowerLambda lets a sibling lowered from that body capture this
   // local's eventual box. The local object may become boxed while either
   // body lowers; backends inspect its final shape when emitting varDecl.
-  const local = lowerer.declareLocal(stmt.name, stmt.name.text, funcType, true);
+  const local = lowerer.declareLocal(stmt.name, stmt.name.text, rebindable ? DYN : funcType, true);
   let declared = false;
   for (let i = lowerer.activeStmtLists.length - 1; i >= 0; i--) {
     const entry = lowerer.activeStmtLists[i]!;
@@ -150,7 +181,8 @@ export function lowerNestedFunctionDecl(lowerer: Lowerer, stmt: ts.FunctionDecla
       "lowerer bug: nested function declaration has no active statement list",
     );
   }
-  const init = lowerer.lowerLambda(stmt);
+  const lowered = lowerer.lowerLambda(stmt);
+  const init = rebindable ? lowerer.coerceInto(stmt, lowered, DYN) : lowered;
   // Body inference may settle a JS return differently from the initial
   // checker signature. Publish that same ABI on the hoisted binding and
   // every mutable capture of it before callers are lowered.
@@ -295,6 +327,7 @@ export function lowerLambda(
     | ts.GetAccessorDeclaration
     | ts.SetAccessorDeclaration,
   checkedReceiver = false,
+  intoDynamicValue = false,
 ): IrExpr {
   // A generic lambda used as a value has no per-call instantiation: it
   // lowers once with its type parameters bound to `unknown`, the erased
@@ -310,7 +343,7 @@ export function lowerLambda(
     lowerer.erasingLambdas.add(node);
     lowerer.erasingDepth++;
     try {
-      return lowerLambda(lowerer, node, checkedReceiver);
+      return lowerLambda(lowerer, node, checkedReceiver, intoDynamicValue);
     } finally {
       lowerer.erasingDepth--;
       lowerer.erasingLambdas.delete(node);
@@ -334,7 +367,7 @@ export function lowerLambda(
       lowerer.erasingLambdas.add(node);
       lowerer.erasingDepth++;
       try {
-        return lowerLambda(lowerer, node, checkedReceiver);
+        return lowerLambda(lowerer, node, checkedReceiver, intoDynamicValue);
       } finally {
         lowerer.erasingDepth--;
         lowerer.erasingLambdas.delete(node);
@@ -396,9 +429,15 @@ export function lowerLambda(
   // the length Node reports for it, and that box completes omitted
   // arguments with undefined like any other checked-dynamic function, so a
   // boxable signature passes as it does under an 'any' slot.
+  // A class member lowered for a checked-dynamic value (a class value's
+  // property table holds every entry as one) is boxed at that store too, so
+  // the same rule admits a signature whose optional or defaulted parameters
+  // the box completes: the table holds the function Node holds, not a
+  // refusal that would keep the whole class's statics fenced.
   const boxedAtBirth =
     ((ts.isMethodDeclaration(node) && isJsSourceFile(ts.getSourceFileOfNode(node))) ||
-      isIslandSubclassDecl(node.parent)) &&
+      isIslandSubclassDecl(node.parent) ||
+      (intoDynamicValue && (ts.isMethodDeclaration(node) || ts.isAccessor(node)))) &&
     canBoxFuncIntoDyn(
       funcType,
       (id) => lowerer.shapes.get(id),
@@ -523,7 +562,14 @@ export function lowerLambda(
     const receiver =
       (checkedReceiver ||
         isJsSourceFile(ts.getSourceFileOfNode(node)) ||
-        node.parameters.nodes.some(isThisParameter)) &&
+        node.parameters.nodes.some(isThisParameter) ||
+        // A function with its own `this` (a function expression or
+        // declaration, an object-literal method) reads the receiver of the
+        // call that runs it, as Node does: `o.m()`, `f.call(o)`,
+        // `f.apply(o, …)` and `Reflect.apply(f, o, …)` bind it, and a bare
+        // call leaves it undefined. A class member's `this` is its own
+        // lowering's instance.
+        (!isClassMember(node) && readsOwnReceiver(node))) &&
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
         : null;
@@ -747,6 +793,9 @@ export function lowerLambda(
     }
     lowerer.liftedFns.push(lifted);
     noteObjectMethodName(lowerer, node, fnName);
+    // What the function prints as when the module boxes it into a checked
+    // value (function-source-text.ts).
+    noteFunctionSourceNode(lowerer, lifted, node);
     // In TypeScript a parameter default, an object-assignment shorthand and
     // an assignment to an identifier name an anonymous definition as in
     // JavaScript, but its stack-frame name (sourceName) stays as it was, so
@@ -822,7 +871,7 @@ export function lowerLambda(
   } finally {
     lowerer.fnStack.pop();
   }
-  return lowerLambdaTyped(lowerer, node, checkedReceiver);
+  return lowerLambdaTyped(lowerer, node, checkedReceiver, intoDynamicValue);
 }
 
 /** The first lowering's diagnostics of a lambda that is lowering a second
@@ -833,10 +882,11 @@ function lowerLambdaTyped(
   lowerer: Lowerer,
   node: Parameters<typeof lowerLambda>[1],
   checkedReceiver: boolean,
+  intoDynamicValue: boolean,
 ): IrExpr {
   lowerer.setBindingTypedRetry(true);
   try {
-    return lowerLambda(lowerer, node, checkedReceiver);
+    return lowerLambda(lowerer, node, checkedReceiver, intoDynamicValue);
   } finally {
     lowerer.setBindingTypedRetry(false);
     typedRetryFirstAttempts.delete(node);
@@ -925,6 +975,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     if (sig.isAsync) fn.async = true;
     if (sig.generator !== undefined)
       fn.generator = bindsAtCall ? { ...sig.generator, bindAtCall: true } : sig.generator;
+    noteFunctionSourceNode(lowerer, fn, decl);
     return fn;
   } catch (e) {
     // A poison OUTSIDE the per-statement catches (a parameter DEFAULT

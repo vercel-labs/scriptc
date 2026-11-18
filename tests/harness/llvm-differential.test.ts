@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
+import { icuAvailable } from "./icu.js";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
@@ -107,10 +108,6 @@ function programEnv(file: string): Record<string, string> {
  * in this slice; other lanes skip instead of hitting the refusal. */
 function requiresIcu(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @requires-icu\s*$/.test(l));
-}
-
-function icuAvailable(): boolean {
-  return process.platform === "linux" && process.arch === "x64";
 }
 
 /** `// @skip-darwin` (differential.test.ts's twin): the Node oracle itself

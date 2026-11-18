@@ -760,6 +760,19 @@ void scr_cyc_set_nursery_threshold(long threshold) {
  * appends (scr_rc.h) compare against the window scr_cyc_window_update
  * derives from these, so the slow path sums the buffers when it needs the
  * total. */
+
+/* Exit teardown releases structures in an order a collection pass must not
+ * observe (a snapshot's entries are released one by one while the resources
+ * that captured it are still reachable). A suspend keeps passes out of that
+ * window; candidates released there wait for the next pass. */
+static SCR_TL int scr_cyc_suspend_depth = 0;
+
+void scr_cyc_suspend(void) { scr_cyc_suspend_depth++; }
+
+void scr_cyc_resume(void) {
+  if (scr_cyc_suspend_depth > 0) scr_cyc_suspend_depth--;
+}
+
 #ifndef SCR_WORKERS
 static SCR_TL size_t scr_cyc_trigger = 0;
 #endif
@@ -1551,7 +1564,8 @@ void scr_cyc_on_release(void *obj) {
   if (gen != SCR_CYC_NURSERY) scr_cyc_window_shrink();
   /* Never re-entered: a teardown's releases of untraced children can buffer
    * new candidates mid-collection, but they only wait for the next pass. */
-  if (!scr_collecting && (scr_cyc_buffered() >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger))
+  if (!scr_collecting && scr_cyc_suspend_depth == 0 &&
+      (scr_cyc_buffered() >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger))
     scr_cyc_collect_due(false);
 }
 

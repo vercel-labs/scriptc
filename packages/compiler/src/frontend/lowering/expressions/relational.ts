@@ -1,4 +1,7 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { withoutParentheses } from "../../outer-expressions.js";
+import { reprototypedGuard, reprototypedReceiver } from "../reprototyped-reads.js";
+import { mayReplacePrototype } from "../class-method-mutations.js";
 import { consoleHasKey, isConsoleExpression } from "../coercions/console-records.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
@@ -37,7 +40,9 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
-import { lowerSocketInstanceOf } from "../lower-server.js";
+import { lowerSocketInstanceOf, lowerTlsServerInstanceOf } from "../lower-server.js";
+import { lowerDgramSocketInstanceOf } from "../lower-dgram.js";
+import { lowerDnsResolverInstanceOf } from "../lower-dgram.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
 import { builtinModuleHasMember } from "../builtin-module-members.js";
@@ -47,22 +52,27 @@ import {
 } from "../builtin-namespace-probe.js";
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
+import { lowerAbortSignalInstanceOf } from "../builtins/abort-signal.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { lowerMimeInstanceof } from "../builtins/mime.js";
+import { lowerSqliteInstanceof } from "../builtins/sqlite.js";
+import { lowerPerfInstanceof } from "../builtins/performance.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { stringPropertyKey } from "../lower-exprs.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
 import { partialFieldPresence } from "../partial-assertions.js";
 import {
   classDeclaresHasInstanceHook,
+  classValueRef,
   findGenericMethodOn,
   parameterPropertiesFirst,
   type ClassInfo,
@@ -83,6 +93,7 @@ import { builtinGlobalHasKey } from "../builtins/global-namespace-keys.js";
 import { foldedStringKeyOf } from "./object-literals.js";
 import { NARROW_FIRST, sideEffectFreeOptionValue, stdlibGlobalNameOf } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
+import { isX509Type } from "../builtins/x509.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { recordMayKeepSource } from "../record-sources.js";
@@ -104,6 +115,273 @@ function operandClass(lowerer: Lowerer, className: string, expr: ts.Node, test: 
     expr,
     `${test} on a value whose type names '${lowerer.fmt({ kind: "object", className })}', a class that has no lowering (the class declaration itself was rejected — see its own diagnostic)`,
   );
+}
+
+/** The class above (or at) `info` whose heritage was a conditional, with the
+ * arms that conditional could select (`arms[0]` when the condition held) and
+ * the global that holds the selection. Null when every class in the chain
+ * extends one fixed class. */
+function heritageArmsOf(
+  lowerer: Lowerer,
+  info: ClassInfo,
+): { arms: readonly [string, string]; condGlobal?: string } | null {
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    const arms = lowerer.computedHeritageArms.get(current.def.name);
+    if (arms) return arms;
+  }
+  return null;
+}
+
+/** An `instanceof` answer that depends on WHICH arm a class's conditional
+ * heritage selected, or null when the static class chain already answers it.
+ *
+ * A class that extended a conditional is laid out as the class its type
+ * names, but the class it actually extends is the arm the conditional
+ * selected at the class statement. The static chain cannot see that: for
+ * `Sub extends Base` and `class C extends (flag ? Sub : Base) {}`, a C
+ * instance IS a Sub instance on the arm's path (its prototype chain runs
+ * through Sub.prototype), and Node answers true there. The class statement
+ * evaluated the condition once, so the test reads that selection
+ * (`%g.<C>.heritageArm`) rather than the class chain.
+ *
+ * Only the false answers can change: every class the static chain holds is
+ * on every arm's path, because each arm is the typed class or a class below
+ * it, so a static true stays true. */
+function conditionalHeritageTest(
+  lowerer: Lowerer,
+  left: IrExpr,
+  lhsInfo: ClassInfo,
+  target: ClassInfo,
+  right: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const inherited = heritageArmsOf(lowerer, lhsInfo);
+  if (!inherited) return null;
+  if (
+    lhsInfo.def.name === target.def.name ||
+    lowerer.isSubclassOf(lhsInfo.def.name, target.def.name)
+  )
+    return null;
+  const isInstance = (className: string): boolean =>
+    className === target.def.name || lowerer.isSubclassOf(className, target.def.name);
+  const whenTrue = isInstance(inherited.arms[0]);
+  const whenFalse = isInstance(inherited.arms[1]);
+  if (!whenTrue && !whenFalse) return null;
+  let result: IrExpr;
+  if (whenTrue === whenFalse) result = { kind: "boolLit", value: whenTrue, type: BOOL, loc };
+  else if (inherited.condGlobal === undefined)
+    lowerer.unsupported(
+      "SC1090",
+      right,
+      "'instanceof' against a class whose conditional heritage is evaluated again at each class expression",
+      "the test reads the arm the conditional selected, which one evaluation of the class expression owns: evaluate the class expression once (a module-level class declaration) and test against that class",
+    );
+  else
+    result = {
+      kind: "ternary",
+      cond: varRef(inherited.condGlobal, BOOL, loc),
+      then: { kind: "boolLit", value: whenTrue, type: BOOL, loc },
+      else_: { kind: "boolLit", value: whenFalse, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+  // Node evaluates the operand before testing it; the answer comes from the
+  // class's heritage selection, so only the operand's side effects remain.
+  const stmts: IrStmt[] = left.kind === "varRef" ? [] : [{ kind: "exprStmt", expr: left, loc }];
+  return readsClassAfter(lowerer, target, right, stmts, result);
+}
+
+/** Whether `right` names a class declaration directly, so the class it
+ * holds is the declared class itself rather than whatever a slot typed
+ * with it holds at run time. */
+function namesClassDeclaration(lowerer: Lowerer, right: ts.Expression): boolean {
+  let expression = right;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (!ts.isIdentifier(expression)) return false;
+  const declaration = lowerer.resolveValueSymbol(expression)?.valueDeclaration;
+  return declaration !== undefined && ts.isClassDeclaration(declaration);
+}
+
+/** The classes a conditional heritage's arm adds to a class's prototype
+ * chain: the arm and its ancestors strictly below the class's typed base.
+ * The static chain holds every class from the typed base up. */
+function armOnlyClasses(lowerer: Lowerer, arm: string, typedBase: string): string[] {
+  const classes: string[] = [];
+  for (
+    let current: ClassInfo | null = lowerer.classes.get(arm) ?? null;
+    current && current.def.name !== typedBase;
+    current = current.base
+  )
+    classes.push(current.def.name);
+  return classes;
+}
+
+/** Whether a value whose class is `className` can be an instance of
+ * `target` only through a conditional heritage's selected arm: some class
+ * at, below or above `className` extends a conditional whose arm adds
+ * `target` to its prototype chain. Such a value is not laid out as a
+ * `target` instance, so narrowing it to `target` is refused. */
+export function heritageArmReaches(lowerer: Lowerer, className: string, target: string): boolean {
+  for (const [conditional, recorded] of lowerer.computedHeritageArms) {
+    const info = lowerer.classes.get(conditional);
+    if (!info?.base) continue;
+    if (
+      conditional !== className &&
+      !lowerer.isSubclassOf(conditional, className) &&
+      !lowerer.isSubclassOf(className, conditional)
+    )
+      continue;
+    if (
+      recorded.arms.some((arm) =>
+        armOnlyClasses(lowerer, arm, info.base!.def.name).includes(target),
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
+/** `x instanceof T` where x's run-time class may extend a conditional
+ * heritage whose selected arm puts T on the class's prototype chain while
+ * the static chain does not: a class C below x's static class (a slot typed
+ * as the common base can hold a C instance), or above it when the right
+ * side is a class value the slot can fill with an arm.
+ *
+ * The answer is the static test, or, for each such C, the operand is a C
+ * instance AND C's class statement selected the arm that holds T. A class
+ * value on the right holds T only at run time, so that arm also has to
+ * name the class the value holds. Null when no conditional heritage can
+ * change the static answer. `base` builds the static test over the bound
+ * operand (and class value). */
+function heritageSelectionInstanceOf(
+  lowerer: Lowerer,
+  left: IrExpr,
+  lhsInfo: ClassInfo,
+  target: { className: string } | { classValue: IrExpr; slotClass: ClassInfo },
+  right: ts.Expression,
+  loc: SrcLoc,
+  base: (value: IrExpr, classValue: IrExpr | null) => IrExpr,
+): IrExpr | null {
+  if (lowerer.computedHeritageArms.size === 0) return null;
+  const lhs = lhsInfo.def.name;
+  const holds = (className: string): boolean =>
+    "className" in target
+      ? className === target.className
+      : className === target.slotClass.def.name ||
+        lowerer.isSubclassOf(className, target.slotClass.def.name);
+  const candidates: { className: string; condGlobal: string; arm: 0 | 1; held: string[] }[] = [];
+  for (const [className, recorded] of lowerer.computedHeritageArms) {
+    const info = lowerer.classes.get(className);
+    if (!info?.base) continue;
+    if (
+      className !== lhs &&
+      !lowerer.isSubclassOf(className, lhs) &&
+      !lowerer.isSubclassOf(lhs, className)
+    )
+      continue;
+    for (const arm of [0, 1] as const) {
+      const added = armOnlyClasses(lowerer, recorded.arms[arm], info.base.def.name);
+      const held = added.filter(holds);
+      if (held.length === 0) continue;
+      if (recorded.condGlobal === undefined)
+        lowerer.unsupported(
+          "SC1090",
+          right,
+          "'instanceof' against a class whose conditional heritage is evaluated again at each class expression",
+          "the test reads the arm the conditional selected, which one evaluation of the class expression owns: evaluate the class expression once (a module-level class declaration) and test against that class",
+        );
+      // An arm whose own heritage is a conditional has a selection of its
+      // own that this test would also have to read.
+      if (added.some((name) => lowerer.computedHeritageArms.has(name)))
+        lowerer.unsupported(
+          "SC1090",
+          right,
+          "'instanceof' through a conditional heritage whose arm itself extends a conditional heritage",
+        );
+      candidates.push({ className, condGlobal: recorded.condGlobal, arm, held });
+    }
+  }
+  if (candidates.length === 0) return null;
+  const operand = lowerer.declareHiddenLocal("%heritageOperand", left.type);
+  const value = varRef(operand.id, left.type, loc);
+  const stmts: IrStmt[] = [{ kind: "varDecl", localId: operand.id, init: left, loc }];
+  let classValue: IrExpr | null = null;
+  if ("classValue" in target) {
+    const local = lowerer.declareHiddenLocal("%heritageClass", target.classValue.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: target.classValue, loc });
+    classValue = varRef(local.id, target.classValue.type, loc);
+  }
+  const and = (a: IrExpr, b: IrExpr): IrExpr => ({
+    kind: "logical",
+    op: "&&",
+    left: a,
+    right: b,
+    type: BOOL,
+    loc,
+  });
+  const or = (a: IrExpr, b: IrExpr): IrExpr => ({
+    kind: "logical",
+    op: "||",
+    left: a,
+    right: b,
+    type: BOOL,
+    loc,
+  });
+  let result = base(value, classValue);
+  for (const candidate of candidates) {
+    const selection = varRef(candidate.condGlobal, BOOL, loc);
+    let term = and(
+      { kind: "instanceOf", value, className: candidate.className, type: BOOL, loc },
+      candidate.arm === 0
+        ? selection
+        : { kind: "unary", op: "!", operand: selection, type: BOOL, loc },
+    );
+    if (classValue !== null) {
+      const conditional = lowerer.classes.get(candidate.className)!;
+      const arm = lowerer.computedHeritageArms.get(candidate.className)!.arms[candidate.arm];
+      const selectedBaseId = conditional.def.baseValueGlobal;
+      const selectedBaseType = lowerer.globalsList.find(
+        (global) => global.id === selectedBaseId,
+      )?.type;
+      const selectedBase =
+        selectedBaseId !== undefined && selectedBaseType?.kind === "classval"
+          ? varRef(selectedBaseId, selectedBaseType, loc)
+          : undefined;
+      const names = candidate.held.map((className): IrExpr => {
+        const info = lowerer.classes.get(className)!;
+        // The selected arm itself is the base value the class statement
+        // stored, whatever class object its evaluation built.
+        if (className === arm && selectedBase !== undefined)
+          return {
+            kind: "bin",
+            op: "===",
+            left: classValue!,
+            right: selectedBase,
+            type: BOOL,
+            loc,
+          };
+        // A class evaluated once per call has no one class object to
+        // compare the value against.
+        if (info.localClass)
+          lowerer.unsupported(
+            "SC1090",
+            right,
+            "'instanceof' through a class value where a conditional heritage's arm is a function-local class",
+          );
+        return {
+          kind: "bin",
+          op: "===",
+          left: classValue!,
+          right: classValueRef(lowerer, info, info.decl ?? right),
+          type: BOOL,
+          loc,
+        };
+      });
+      term = and(term, names.reduce(or));
+    }
+    result = or(result, term);
+  }
+  return { kind: "seqExpr", stmts, result, type: BOOL, loc };
 }
 
 /** The class value an `instanceof` right-hand side holds. A JavaScript
@@ -177,6 +455,10 @@ function hostGlobalInstanceOfAnswer(
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
   const iteratorTest = lowerIteratorInstanceOf(lowerer, expr, loc);
   if (iteratorTest !== null) return iteratorTest;
+  // `value instanceof AbortSignal`: the runtime's signal handles are the
+  // instances, and the handle's tag answers the test (abort-signal.ts).
+  const abortSignalTest = lowerAbortSignalInstanceOf(lowerer, expr);
+  if (abortSignalTest !== null) return abortSignalTest;
   // A listed Node global's value is a constructor native code never created
   // an instance from, so `x instanceof X` is false for every value — an
   // ordinary function's [[Prototype]] included, which the generic walk
@@ -206,6 +488,18 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
   if (sockTest !== null) return sockTest;
+  // `x instanceof dgram.Socket`: the native socket handle (an always-true
+  // answer for a statically-typed socket, the handle tag for an untyped
+  // value).
+  const dgramTest = lowerDgramSocketInstanceOf(lowerer, expr, loc);
+  if (dgramTest !== null) return dgramTest;
+  // `x instanceof dns.Resolver` / `dns.promises.Resolver`: the stub
+  // resolver's own handle tag (scr_dns_resolve.c).
+  const resolverTest = lowerDnsResolverInstanceOf(lowerer, expr, loc);
+  if (resolverTest !== null) return resolverTest;
+  // `x instanceof tls.Server`: the server handle's TLS marker.
+  const tlsServerTest = lowerTlsServerInstanceOf(lowerer, expr, loc);
+  if (tlsServerTest !== null) return tlsServerTest;
   const rightClass = builtinClassRefOf(lowerer, expr.right);
   if (rightClass?.kind === "zlib") return lowerZlibInstanceOf(lowerer, expr, rightClass.mode, loc);
 
@@ -315,6 +609,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "finalizationRegistry.is", args: [value], type: BOOL, loc };
   }
+  if (lowerer.isStdlibGlobal(expr.right, "WeakRef")) {
+    const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
+    return { kind: "libCall", fn: "weakRef.is", args: [value], type: BOOL, loc };
+  }
   const rhsBuiltin = ts.isIdentifier(expr.right)
     ? lowerer.builtinImportOf(expr.right)
     : ts.isPropertyAccessExpression(expr.right)
@@ -357,9 +655,13 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     return { kind: "libCall", fn: "dyn.dataViewIs", args: [value], type: BOOL, loc };
   }
   {
-    const eventKind = ["Event", "CustomEvent", "EventTarget"].findIndex((name) =>
-      lowerer.isStdlibGlobal(expr.right, name),
-    );
+    const eventKind = [
+      "Event",
+      "CustomEvent",
+      "EventTarget",
+      "MessageEvent",
+      "CloseEvent",
+    ].findIndex((name) => lowerer.isStdlibGlobal(expr.right, name));
     if (eventKind >= 0) {
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       const kind: IrExpr = { kind: "numLit", value: eventKind, type: F64, loc };
@@ -377,6 +679,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (netAddress) return netAddress;
     const mime = lowerMimeInstanceof(lowerer, expr);
     if (mime) return mime;
+    const sqlite = lowerSqliteInstanceof(lowerer, expr);
+    if (sqlite) return sqlite;
+    const perfClass = lowerPerfInstanceof(lowerer, expr);
+    if (perfClass) return perfClass;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
     if (readlineInterface) return readlineInterface;
   }
@@ -806,6 +1112,21 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         );
       }
       const lhsInfo = operandClass(lowerer, left.type.className, expr, "'instanceof'");
+      // The recorded heritage selection answers for the class the right side
+      // names only when the right side IS that class: a slot typed with it
+      // can hold one of its subclasses at run time.
+      const namesClass = namesClassDeclaration(lowerer, expr.right);
+      if (namesClass) {
+        const inherited = conditionalHeritageTest(
+          lowerer,
+          left,
+          lhsInfo,
+          targetInfo,
+          expr.right,
+          loc,
+        );
+        if (inherited) return inherited;
+      }
       if (
         (lowerer.inHierarchy(targetInfo) && lowerer.inHierarchy(lhsInfo)) ||
         (targetInfo.localClass !== undefined && lhsInfo.localClass !== undefined)
@@ -813,16 +1134,25 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
         if (classValue.type.kind !== "classval")
           lowerer.badType(expr.right, lowerer.typeOf(expr.right));
-        const writableTest = writableClassValueTest(
+        const valueTest = (value: IrExpr, held: IrExpr): IrExpr =>
+          writableClassValueTest(lowerer, value, held, targetInfo, lhsInfo, loc) ?? {
+            kind: "instanceOfValue",
+            value,
+            classValue: held,
+            type: BOOL,
+            loc,
+          };
+        const selected = heritageSelectionInstanceOf(
           lowerer,
           left,
-          classValue,
-          targetInfo,
           lhsInfo,
+          namesClass ? { className: targetInfo.def.name } : { classValue, slotClass: targetInfo },
+          expr.right,
           loc,
+          (value, held) => valueTest(value, held ?? classValue),
         );
-        if (writableTest) return writableTest;
-        return { kind: "instanceOfValue", value: left, classValue, type: BOOL, loc };
+        if (selected) return selected;
+        return valueTest(left, classValue);
       }
       // A standalone side: the answer is static (the target slot can
       // only hold the named class; a standalone operand's runtime class
@@ -858,7 +1188,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       };
     }
     // A builtin global function value read off the global (`parseInt`,
-    // `Symbol`, `WeakRef`, ...) is not a class value: the boxed value has
+    // `Symbol`, ...) is not a class value: the boxed value has
     // no prototype to test against, so the test is refused.
     if (
       isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
@@ -1032,6 +1362,36 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   ) {
     return classInstanceOf(lowerer, left, target, loc);
   }
+  // An instance of a class a setPrototypeOf call may reprototype answers
+  // through its prototype chain, which the class test of the checked view
+  // reads (and answers natively for an instance whose prototype is its
+  // class's).
+  if (
+    left.type.kind === "object" &&
+    !target.def.runtime &&
+    !target.builtinError &&
+    !target.builtinEmitter &&
+    !target.builtinStream &&
+    !target.localClass
+  ) {
+    const lhs = lowerer.classes.get(left.type.className);
+    if (lhs && mayReplacePrototype(lowerer, lhs))
+      return classInstanceOf(lowerer, lowerer.coerceToExpected(left, DYN), target, loc);
+  }
+  if (
+    left.type.kind === "union" &&
+    !target.def.runtime &&
+    !target.builtinError &&
+    !target.builtinEmitter &&
+    !target.builtinStream &&
+    !target.localClass &&
+    lowerer.dynConvertible(left.type) &&
+    lowerer.unions.get(left.type.unionId)?.arms.some((arm) => {
+      const armClass = arm.kind === "object" ? lowerer.classes.get(arm.className) : undefined;
+      return armClass !== undefined && mayReplacePrototype(lowerer, armClass);
+    })
+  )
+    return classInstanceOf(lowerer, lowerer.coerceToExpected(left, DYN), target, loc);
   if (left.type.kind === "dyn" && target.def.name === "%Error" && !lowerer.errorPrototypeValues) {
     return { kind: "dynTest", test: "error", value: left, type: BOOL, loc };
   }
@@ -1199,10 +1559,36 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     });
   }
   const lhsInfo = operandClass(lowerer, left.type.className, expr, "'instanceof'");
+  if (duplex === undefined) {
+    const inherited = conditionalHeritageTest(lowerer, left, lhsInfo, target, expr.right, loc);
+    if (inherited) return inherited;
+  }
   if (lowerer.inHierarchy(lhsInfo) && lowerer.inHierarchy(target)) {
     const tests = runtimeTests(left.type.className);
     if (tests.length === 1) {
-      return { kind: "instanceOf", value: left, className: tests[0]!.def.name, type: BOOL, loc };
+      const className = tests[0]!.def.name;
+      const instance = (value: IrExpr): IrExpr => ({
+        kind: "instanceOf",
+        value,
+        className,
+        type: BOOL,
+        loc,
+      });
+      // A subclass of the operand's class may extend a conditional whose
+      // selected arm is the target.
+      const selected =
+        duplex === undefined
+          ? heritageSelectionInstanceOf(
+              lowerer,
+              left,
+              lhsInfo,
+              { className },
+              expr.right,
+              loc,
+              instance,
+            )
+          : null;
+      return selected ?? instance(left);
     }
     const local = lowerer.declareHiddenLocal("%writableTest", left.type);
     const ref = varRef(local.id, left.type, loc);
@@ -1637,7 +2023,7 @@ function lowerPrivateIn(
     }
     const typedRefIs = (className: string): IrExpr => ({
       kind: "libCall",
-      fn: "dyn.typedRefIs",
+      fn: "dyn.typedRefBrandIs",
       args: [
         recv,
         { kind: "strLit", value: typeKey({ kind: "object", className }), type: STRING, loc },
@@ -2329,6 +2715,68 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  // A mutable-buffer member name on the left of `in` in a JavaScript source
+  // is the mutableBuffers fact as well: `"transfer" in ab` asks for the
+  // buffer classes' method values, which only the fact's object-model build
+  // models (`"resize" in ab` must not answer false). Same name match and
+  // same bargain as a read of the member: a false positive costs only the
+  // invariant metadata of that one program.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const probe = lowerer.foldedStringKeyOf(expr.left);
+    if (probe !== null && MUTABLE_BUFFER_MEMBERS.has(probe)) lowerer.buffersMutable = true;
+  }
+  // `key in value` on an instance whose prototype may have been replaced
+  // (reprototyped-reads.ts). The key is evaluated first: one that can run
+  // code is held in a local, and the dynamic `in` answers for every
+  // instance; a literal or a name is read where the guard needs it.
+  const keyNode = withoutParentheses(expr.left);
+  const keyType = lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind;
+  if (keyType === "string" && !ts.isStringLiteralLike(keyNode) && !ts.isIdentifier(keyNode)) {
+    const receiver = reprototypedReceiver(lowerer, expr.right);
+    if (receiver !== null) {
+      const key = lowerer.declareHiddenLocal("%inKey", STRING);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: key.id,
+            init: lowerer.lowerExprExpecting(expr.left, STRING),
+            loc,
+          },
+        ],
+        result: {
+          kind: "libCall",
+          fn: "dyn.in",
+          args: [
+            lowerer.coerceToExpected(lowerer.lowerExpr(receiver), DYN),
+            varRef(key.id, STRING, loc),
+          ],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+  }
+  if (keyType === "string") {
+    const answer = reprototypedGuard(
+      lowerer,
+      expr,
+      expr.right,
+      loc,
+      (boxed) => ({
+        kind: "libCall",
+        fn: "dyn.in",
+        args: [boxed, lowerer.lowerExprExpecting(expr.left, STRING)],
+        type: BOOL,
+        loc,
+      }),
+      () => lowerInExpression(lowerer, expr, loc),
+    );
+    if (answer !== null) return answer;
   }
   {
     const inGlobal = lowerInGlobalObject(lowerer, expr.left, expr.right, loc);
@@ -3185,6 +3633,16 @@ export function lowerInExpression(
   if (shape.fields.some((f) => f.name === `%get:${key}` || f.name === `%set:${key}`)) {
     return staticAnswerAfter(recv, true, loc);
   }
+  // An X509Certificate's record holds the values its fields compute, but
+  // Node's certificate exposes every declared member through the
+  // prototype — the field getters, the issuerCertificate getter and the
+  // methods — so `"checkHost" in cert` and `"issuerCertificate" in cert`
+  // answer true.
+  if (
+    isX509Type(lowerer, recv.type) &&
+    nodeDeclaredMember(lowerer, lowerer.typeOf(expr.right), key)
+  )
+    return staticAnswerAfter(recv, true, loc);
   // Records are ordinary objects: Object.prototype's members are in them.
   const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
   if (shape.indexValue && !inherited) {

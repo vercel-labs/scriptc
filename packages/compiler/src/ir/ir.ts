@@ -194,6 +194,11 @@ export type IrType =
    * close() closes it for every alias, and the final release closes a
    * still-open stream. Holds no references and cannot be part of a cycle. */
   | { kind: "dir" }
+  /** The object fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync
+   * answers (scr_lib.c): the created path, its removal and the disposal
+   * hooks. Heap, refcounted, IMMUTABLE — it holds the full path so a later
+   * process.chdir cannot change what remove() deletes. */
+  | { kind: "mkdtempResult" }
   /** A child_process.spawnSync result (scr_child.c): heap, refcounted,
    * IMMUTABLE — the reaped child's status plus its captured utf8 stdout/
    * stderr. Holds only strings — never part of a cycle, no trace. Same
@@ -278,6 +283,15 @@ export type IrType =
    * header. Same container rules as child: union arms fine (the
    * `FSWatcher | null` polling-fallback local), arrays/maps/JSON fenced. */
   | { kind: "fsWatcher" }
+  /** An fsPromises.watch iterator (scr_watch_async.c — linked only when the
+   * IR uses it): the queue over an fs.watch handle that the `for await`
+   * lowering awaits and drains. Heap, refcounted; consumed only as a
+   * for-await source, so it stays out of unions, arrays, maps and JSON. */
+  | { kind: "watchEvents" }
+  /** An fs.StatWatcher handle (scr_watch_file.c): what fs.watchFile returns.
+   * Heap, refcounted; ref()/unref() move its loop liveness and close() stops
+   * its own listener registration. */
+  | { kind: "statWatcher" }
   /** A tls.SecureContext handle (scr_tls.c): heap, refcounted, IMMUTABLE —
    * a parsed cert/key pair (tls.createSecureContext({ cert, key })) that
    * an SNI callback answers per-servername. Holds no references — never
@@ -426,6 +440,7 @@ const POINTER_HANDLE_KINDS = [
   "bigintStats",
   "fileHandle",
   "dir",
+  "mkdtempResult",
   "spawnRes",
   "child",
   "netServer",
@@ -441,6 +456,8 @@ const POINTER_HANDLE_KINDS = [
   "cryptoHash",
   "cryptoHmac",
   "fsWatcher",
+  "watchEvents",
+  "statWatcher",
   "childStream",
   "childWriter",
 ] as const satisfies readonly IrType["kind"][];
@@ -511,6 +528,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   bigintStats: "scr_stats",
   fileHandle: "scr_file_handle",
   dir: "scr_dir",
+  mkdtempResult: "scr_mkdtemp_result",
   spawnRes: "scr_spawn_res",
   child: "scr_child",
   netServer: "scr_net_server",
@@ -526,6 +544,8 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   childWriter: "scr_child_writer",
   procStream: "",
   fsWatcher: "scr_watcher",
+  watchEvents: "scr_watch_events",
+  statWatcher: "scr_stat_watcher",
   secureCtx: "scr_secure_ctx",
   cryptoHash: "scr_crypto_hash",
   cryptoHmac: "scr_crypto_hash",
@@ -579,6 +599,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "bigintStats",
   "fileHandle",
   "dir",
+  "mkdtempResult",
   "spawnRes",
   "child",
   "netServer",
@@ -594,6 +615,8 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "cryptoHash",
   "cryptoHmac",
   "fsWatcher",
+  "watchEvents",
+  "statWatcher",
   "childStream",
   "childWriter",
   "procStream",
@@ -624,6 +647,7 @@ export const STATS_T: IrType = { kind: "stats" };
 export const BIGINT_STATS_T: IrType = { kind: "bigintStats" };
 export const FILEHANDLE_T: IrType = { kind: "fileHandle" };
 export const DIR_T: IrType = { kind: "dir" };
+export const MKDTEMPRESULT_T: IrType = { kind: "mkdtempResult" };
 export const SPAWNRES_T: IrType = { kind: "spawnRes" };
 export const CHILD_T: IrType = { kind: "child" };
 export const NETSERVER_T: IrType = { kind: "netServer" };
@@ -639,6 +663,8 @@ export const SECURECTX_T: IrType = { kind: "secureCtx" };
 export const CRYPTOHASH_T: IrType = { kind: "cryptoHash" };
 export const CRYPTOHMAC_T: IrType = { kind: "cryptoHmac" };
 export const FSWATCHER_T: IrType = { kind: "fsWatcher" };
+export const WATCHEVENTS_T: IrType = { kind: "watchEvents" };
+export const STATWATCHER_T: IrType = { kind: "statWatcher" };
 export const CHILDSTREAM_T: IrType = { kind: "childStream" };
 export const CHILDWRITER_T: IrType = { kind: "childWriter" };
 export const PROCSTREAM_T: IrType = { kind: "procStream" };
@@ -740,7 +766,16 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // JS promise identity; the runtime's scr_promise_{retain,release,trace}_v
     // adapters already serve Map values and boxed captures.
     t.kind === "promise" ||
-    t.kind === "date"
+    t.kind === "date" ||
+    // A Map, a Set and a typed array are one object each for their whole
+    // life, so pointer identity is JS identity here too (JavaScript compares
+    // every object key by identity). Their runtime families already carry
+    // the ref-slot adapters this table needs: scr_map_retain/release/trace_v
+    // serve Maps and Sets, and a typed array is a leaf
+    // (scr_bytes_retain/release_v, no trace).
+    t.kind === "map" ||
+    t.kind === "set" ||
+    t.kind === "bytes"
   );
 }
 
@@ -2031,6 +2066,67 @@ export function isDirentShape(shape: IrRecordShape): boolean {
   );
 }
 
+/** The hidden field that marks the perf_hooks entry row (type-mapper's
+ * perfEntryShape). */
+export const PERF_ENTRY_MARKER = "%perfEntry";
+
+/** PerformanceEntry's toJSON field order (the entry row's shape also
+ * carries the resource-timing fields; JSON.stringify runs the entry's
+ * toJSON, so only these serialize). */
+export const PERF_ENTRY_JSON_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "detail",
+] as const;
+
+/** perf_hooks entry rows: the marker field names the shape (nothing else
+ * interns a '%perfEntry' field; user object literals with a '%' key get a
+ * shape of their own, as the spread fence assumes). A dyn conversion of
+ * this row takes the entry class prototype its entryType field names. */
+export function isPerfEntryShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.some((f) => f.name === PERF_ENTRY_MARKER)
+  );
+}
+
+/** The hidden field that marks performance.nodeTiming's row (type-mapper's
+ * perfNodeTimingShape). Unlike an entry, Node keeps its fields as own
+ * enumerable properties, so key walks and spreads see them; only the class
+ * (inspect, the dyn prototype, toJSON's dropped uvMetricsInfo) is special. */
+export const PERF_NODE_TIMING_MARKER = "%perfNodeTiming";
+
+/** performance.nodeTiming's row: the marker names the shape, and a dyn
+ * conversion takes the PerformanceNodeTiming prototype. */
+export function isPerfNodeTimingShape(shape: IrRecordShape): boolean {
+  return (
+    !shape.tuple &&
+    shape.indexValue === undefined &&
+    shape.fields.some((f) => f.name === PERF_NODE_TIMING_MARKER)
+  );
+}
+
+/** PerformanceNodeTiming.prototype.toJSON's fields, in toJSON's order.
+ * `JSON.stringify` of the value serializes this list (the runtime's
+ * scr_dyn_perf_node_timing_to_json writes the same one, and uvMetricsInfo
+ * is in neither): Node's toJSON answers an object without the metrics. */
+export const PERF_NODE_TIMING_JSON_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "nodeStart",
+  "v8Start",
+  "bootstrapComplete",
+  "environment",
+  "loopStart",
+  "loopExit",
+  "idleTime",
+];
+
 /** Codec records have private native state, not a structurally checkable
  * data surface. Reserve the same '%' namespace as other internal slots. */
 export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "TextDecoder" | null {
@@ -2187,6 +2283,11 @@ export interface IrFunction {
    * object literal's method. Present only in modules that box function
    * values into checked values (function-names.ts). */
   displayName?: string;
+  /** The function's source text with its TypeScript syntax erased, as
+   * Function.prototype.toString prints it. Present only for a function a
+   * module boxes into a checked value while the module converts dynamic
+   * values to text (function-source-text.ts). */
+  sourceText?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
   params: IrParam[];
@@ -3118,8 +3219,13 @@ export type IrExpr =
    * for every program that held its numbers. */
   | { kind: "numLit"; value: number; spelling?: string; type: IrType; loc: SrcLoc }
   | { kind: "strLit"; value: string; type: IrType; loc: SrcLoc }
-  /** The singleton namespace token for one compiled or builtin module. */
-  | { kind: "moduleNsRef"; moduleId: string; type: IrType; loc: SrcLoc }
+  /** The singleton namespace token for one compiled or builtin module.
+   * `esmNamespace` marks a builtin namespace that the ES module spelling
+   * (`import * as ns`, `await import("node:path")`) answers: the value is a
+   * module namespace OBJECT, while a require()/default-import/named-import
+   * value of the same module is its CommonJS exports object. Node brands
+   * only the former as a module namespace (util.types.isModuleNamespaceObject). */
+  | { kind: "moduleNsRef"; moduleId: string; type: IrType; loc: SrcLoc; esmNamespace?: true }
   | { kind: "boolLit"; value: boolean; type: IrType; loc: SrcLoc }
   /** An `undefined` or `null` literal; `type` is the matching unit kind.
    * Valid ONLY as the immediate value of a `unionWrap` (the frontend's slot
@@ -4322,6 +4428,10 @@ export type IrExpr =
       name:
         | "console.log"
         | "console.error"
+        /* console.trace: the stderr line "Trace[: args]" and then the
+         * captured frames, through the same ScrLogArg protocol as
+         * console.error. Never throws; a write failure is discarded. */
+        | "console.trace"
         | "promise.race"
         | "promise.all"
         | "promise.allSettled"
@@ -4370,7 +4480,27 @@ export type IrExpr =
         | "slots.get"
         | "slots.has"
         | "slots.set"
-        | "slots.delete";
+        | "slots.delete"
+        /* Parallel loops (@scriptc/experimental; scr_parallel.c). The
+         * callbacks are closures of the calling module that the runtime
+         * calls once per chunk with the closure pointer as their
+         * environment: (env, part, start, end), (env, start, end) and
+         * (env, left, right), all of them doubles except `part`.
+         * par.into (target bytes, stride f64, grainGiven f64, grain f64,
+         * parallel f64, body func, …reads bytes) → void fills the target;
+         * par.reduce (count, grainGiven, grain, initial, parallel, part,
+         * combine) → f64 folds one value per chunk left to right in chunk
+         * order; par.for (count, grainGiven, grain, parallel, body) → void
+         * calls the body once per chunk. `grainGiven` is 1 when the source
+         * passed `grain` (the runtime tells an absent option from 0), and
+         * `parallel` is 0 when the compiler resolved the call to the
+         * sequential loop. The chunk views `par.into` builds carry no
+         * owner and are only ever passed to the body. Entry checks throw
+         * the RangeError the Node.js implementation throws, before the
+         * first chunk. */
+        | "par.into"
+        | "par.reduce"
+        | "par.for";
       args: IrExpr[];
       type: IrType;
       loc: SrcLoc;
@@ -4831,6 +4961,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["spawnRes", { tag: "SCR_DYNH_SPAWN_RES", cls: "SpawnSyncReturns" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
+  ["statWatcher", { tag: "SCR_DYNH_STAT_WATCHER", cls: "StatWatcher" }],
 ]);
 
 /** How a Node island's own instance of a native platform class comes to sit in

@@ -163,12 +163,19 @@ ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
 /* new BroadcastChannel(...args) (scr_worker_events.c): args is the argument
  * vector as one array (borrowed); may throw. */
 ScrDyn *scr_worker_broadcast_channel(ScrDyn *args);
+/* new MessagePort(...args) (scr_worker_events.c): Node's constructor always
+ * throws ERR_CONSTRUCT_CALL_INVALID; args is the argument vector as one
+ * array (borrowed). */
+ScrDyn *scr_worker_port_construct(ScrDyn *args);
 /* setEnvironmentData(key, value) and getEnvironmentData(key) (+1); both
  * borrow their arguments. */
 void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
 ScrDyn *scr_worker_get_environment_data(ScrDyn *key);
 ScrDyn *scr_worker_resource_limits(void);
 ScrDyn *scr_worker_thread_name_current(void);
+/* worker.performance over a Worker handle: its { eventLoopUtilization }
+ * object (scr_worker_events.c; the value borrowed, the result +1). */
+ScrDyn *scr_worker_performance(ScrDyn *value);
 /* worker_threads.SHARE_ENV (+1): the symbol the Worker env option
  * compares against (scr_worker_events.c). */
 ScrSym *scr_worker_share_env(void);
@@ -330,6 +337,20 @@ double scr_bytes_byte_offset(const ScrBytes *b);
  * this unit the program links. */
 bool scr_bytes_storage_movable(const ScrBytes *owner);
 
+/* Whether Node's code may use `b` as it stands: false for a view whose owner
+ * was detached, or that a resize left out of bounds. Always true in a build
+ * without the JavaScript object model. A function, so a unit that is built
+ * once (the descriptor I/O unit) asks the build of this unit the program
+ * links. */
+bool scr_bytes_view_usable(const ScrBytes *b);
+
+/* `view.byteLength` at the points Node reads it: a DataView whose owner is
+ * detached or out of bounds throws its byteLength getter's TypeError, which
+ * leaves the exception pending and answers false; a typed array answers 0
+ * without one. The caller subtracts the offset. Always the plain byte length
+ * in a build without the JavaScript object model. */
+bool scr_bytes_view_byte_length(const ScrBytes *b, double *length);
+
 #ifdef SCR_JS_OBJECT_MODEL
 /* ── mutable buffers (t262-dc) ────────────────────────────────────────
  * A JavaScript program with the `mutableBuffers` fact may resize, grow or
@@ -391,6 +412,18 @@ void scr_js_buffers_arm(void);
  * Answers true when the view is usable. */
 bool scr_js_bytes_live(const ScrBytes *b);
 void scr_js_bytes_throw_detached(const char *label);
+/* The typed-array callback methods' entry guard (t262-dc2): Node's
+ * ValidateTypedArray runs once before a forEach/map/... visit, so a
+ * detached or out-of-bounds receiver throws even when the visit would run
+ * no iterations. `method` names the method in the message. */
+void scr_js_bytes_require_live(const ScrBytes *b, const ScrStr *method);
+/* The element at `i` as a JavaScript value (+1) for a visit whose bound was
+ * captured before the buffer could shrink: undefined past the live length
+ * (Node's IntegerIndexedElementGet). */
+ScrDyn *scr_bytes_item_dyn(const ScrBytes *b, double i);
+/** The %TypedArray%.prototype method name Node prints in a detached-receiver
+ * TypeError (findLastIndex reports V8's own "findIndexLast" label). */
+const char *scr_js_typed_detached_method(const char *method);
 /* Whether `b` is a length-tracking view. */
 bool scr_js_bytes_tracking(const ScrBytes *b);
 /* `.byteLength` / `.byteOffset` for a view whose owner may move: a DataView
@@ -657,6 +690,13 @@ void scr_buffer_pool_reset(void);
 /* A pooled copy of an unpooled u8 Buffer below the pool threshold; others
  * are returned as they are. Consumes `b`. */
 ScrBytes *scr_buffer_pool_adopt(ScrBytes *b);
+/* Buffer.copyBytesFrom(view[, offset[, length]]): a pooled copy of the
+ * view's underlying bytes over the element window [offset, offset+length).
+ * `mask` bit 0 marks a supplied offset and bit 1 a supplied length; a
+ * supplied position takes Node's validateInteger, and an empty view answers
+ * an empty Buffer. NULL with the exception pending. */
+ScrBytes *scr_buffer_copy_bytes_from(const ScrBytes *view, double offset, double length,
+                                     double mask);
 ScrBytes *scr_bytes_from_str_checked(const ScrStr *s, const ScrStr *enc);
 
 /* Buffer.byteLength(string, enc) — enc NORMALIZED like from_str — and
@@ -727,10 +767,36 @@ void scr_fs_watch_file_chk(const ScrDyn *path, const ScrDyn *listener, const Scr
 void scr_fs_lchmod_chk(const ScrDyn *path, const ScrDyn *mode, const ScrDyn *cb, const ScrStr *fence);
 ScrDyn *scr_fs_lchmod_sync_chk(const ScrDyn *path, const ScrDyn *mode);
 ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode);
+/* The sync fs entry points whose mode or options argument the compiler
+ * could not pin to a static shape: Node's own validation ladder over the
+ * dynamic value, then the same runtime operation. */
+void scr_fs_chmod_dyn(ScrStr *path, const ScrDyn *mode);
+void scr_fs_fchmod_dyn(const ScrDyn *fd, const ScrDyn *mode);
+ScrStr *scr_fs_mkdir_dyn(ScrStr *path, const ScrDyn *options);
+void scr_fs_mkdir_dyn_void(ScrStr *path, const ScrDyn *options);
+double scr_fs_open_dyn(ScrStr *path, const ScrDyn *flags, const ScrDyn *mode);
+double scr_fs_open_mode_dyn(ScrStr *path, ScrStr *flags, const ScrDyn *mode);
+double scr_fs_open_numeric_str(ScrStr *path, double flags, ScrStr *mode);
+double scr_fs_open_numeric_dyn(ScrStr *path, double flags, const ScrDyn *mode);
+double scr_fs_open_native_str(ScrStr *path, double flags, ScrStr *mode);
+double scr_fs_open_native_dyn(ScrStr *path, double flags, const ScrDyn *mode);
 void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                      const ScrDyn *length, const ScrDyn *position, const ScrStr *fence);
-double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
-                            const ScrDyn *length, const ScrDyn *position);
+/* The fd primitives whose arguments the compiler could not pin down: Node's
+ * own checks over the dynamic values in Node's own order, then the same
+ * typed operation. `argc` is the call's argument count (the readSync options
+ * form's discriminator). */
+double scr_fs_read_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                             const ScrDyn *length, const ScrDyn *position, double argc);
+double scr_fs_write_sync_args(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                              const ScrDyn *length, const ScrDyn *position);
+double scr_fs_readv_sync_dyn(const ScrDyn *fd, const ScrDyn *buffers, const ScrDyn *position);
+double scr_fs_writev_sync_dyn(const ScrDyn *fd, const ScrDyn *buffers, const ScrDyn *position);
+void scr_fs_close_sync_dyn(const ScrDyn *fd);
+void scr_fs_fsync_sync_dyn(const ScrDyn *fd);
+void scr_fs_fdatasync_sync_dyn(const ScrDyn *fd);
+void scr_fs_ftruncate_sync_dyn(const ScrDyn *fd, const ScrDyn *len);
+void scr_fs_fchown_sync_dyn(const ScrDyn *fd, const ScrDyn *uid, const ScrDyn *gid);
 void scr_fs_stream_opts_chk(const ScrDyn *path, const ScrDyn *opts, const ScrStr *fence);
 /* The fs streams' option pieces (scr_fs_stream.c): the getOptions,
  * options.fd and path checks above without the fence; the checked path

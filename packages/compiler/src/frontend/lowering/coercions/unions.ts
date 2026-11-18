@@ -387,6 +387,7 @@ export function unionRetagHelper(
   trappable?: ReadonlySet<number>,
   classRoutes?: ReadonlyMap<number, readonly UnionClassRoute[]>,
   checked = false,
+  strandUnrouted = false,
 ): string | null {
   const from = lowerer.unions.get(fromId);
   const to = lowerer.unions.get(toId);
@@ -398,7 +399,7 @@ export function unionRetagHelper(
           .sort((a, b) => a[0] - b[0])
           .map(([tag, routes]) => `${tag}>${routes.map((route) => route.tag).join(".")}`)
           .join(";");
-  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}${checked ? ":checked" : ""}`;
+  const request = `${fromId}:${toId}:${trappable === undefined ? "" : [...trappable].sort((a, b) => a - b).join(".")}|${routeKey}${checked ? ":checked" : ""}${strandUnrouted ? ":stranded" : ""}`;
   const cached = lowerer.coercions.copyRetags.get(request);
   if (
     cached &&
@@ -418,8 +419,13 @@ export function unionRetagHelper(
     trappable,
     classRoutes,
     checked ? (src, dst) => lowerer.checkedWidthLift(src, dst) : undefined,
+    undefined,
+    strandUnrouted,
   );
   if (plan === null) return null;
+  // A source NONE of whose arms the destination holds has no conversion:
+  // every run would throw, and the SC2003 fence is the honest answer.
+  if (strandUnrouted && plan.every((arm) => arm.kind === "trap")) return null;
   // The registry pair determines every route; only checker-proven
   // stranded arms vary by site. Publish the name before building widths
   // so recursive records and arrays can call this same helper.

@@ -6029,6 +6029,47 @@ static bool ws_set_noop(void *h, const char *key, size_t len, const ScrDyn *valu
   return false;
 }
 
+/* stream.isDestroyed / isErrored / isDisturbed / isReadable / isWritable
+ * over the web stream classes: Node's kIs* symbol getters. A
+ * ReadableStream answers kIsDisturbed, kIsErrored and kIsReadable (its
+ * state is "readable" until the close is processed or an error occurs), a
+ * WritableStream kIsErrored and kIsWritable, and a TransformStream — or a
+ * TextEncoderStream/TextDecoderStream, which are one — none of them: its
+ * readable and writable sides are separate streams, so the pair answers as
+ * an object that carries no booleans. Every web stream is a non-Node
+ * stream, so isDestroyed answers null, and the side a class does not have
+ * answers null too. The readers, controllers and strategies also answer
+ * the pair's values, as Node's property reads do for them. */
+static ScrDyn *ws_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
+  int w = (int)which;
+  if (tag == SCR_DYNH_WS_READABLE) {
+    WsReadable *s = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(s->state == WS_STATE_ERRORED);
+      case 2: return scr_dyn_new_bool(s->disturbed);
+      case 3: return scr_dyn_new_bool(s->state == WS_STATE_READABLE);
+      default: return scr_dyn_new_null();
+    }
+  }
+  if (tag == SCR_DYNH_WS_WRITABLE) {
+    WsWritable *s = h;
+    switch (w) {
+      case 0: return scr_dyn_new_null();
+      case 1: return scr_dyn_new_bool(s->state == WS_W_ERRORED);
+      case 2: return scr_dyn_new_bool(false);
+      case 3: return scr_dyn_new_null();
+      default: return scr_dyn_new_bool(s->state == WS_W_WRITABLE);
+    }
+  }
+  switch (w) {
+    case 0:
+    case 3:
+    case 4: return scr_dyn_new_null();
+    default: return scr_dyn_new_bool(false);
+  }
+}
+
 #define WS_OPS(NAME, CLS, RETAIN, RELEASE, INVOKE, GET, SET, METHODS, INVALID) \
   static const ScrDynHandleOps NAME = {                                           \
       .cls = CLS,                                                                 \
@@ -6042,6 +6083,7 @@ static bool ws_set_noop(void *h, const char *key, size_t len, const ScrDyn *valu
       .methods = METHODS,                                                         \
       .invalid_this = INVALID,                                                    \
       .rejected = ws_rejected_value,                                              \
+      .stream_predicate = ws_stream_predicate,                                    \
   }
 
 static const ScrDynHandleOps ws_readable_ops = {
@@ -6057,6 +6099,7 @@ static const ScrDynHandleOps ws_readable_ops = {
     .methods = ws_readable_methods,
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
     .rejected = ws_rejected_value,
+    .stream_predicate = ws_stream_predicate,
 };
 
 WS_OPS(ws_reader_ops, "ReadableStreamDefaultReader", ws_retain, ws_release, ws_reader_invoke, ws_reader_get, ws_own_set, ws_reader_methods,
@@ -6088,6 +6131,7 @@ static const ScrDynHandleOps ws_text_encoder_ops = {
     .json_empty_object = true,
     .invalid_this = "Value of \"this\" must be of type TextEncoderStream",
     .rejected = ws_rejected_value,
+    .stream_predicate = ws_stream_predicate,
 };
 static const ScrDynHandleOps ws_text_decoder_ops = {
     .cls = "TextDecoderStream",
@@ -6099,6 +6143,7 @@ static const ScrDynHandleOps ws_text_decoder_ops = {
     .json_empty_object = true,
     .invalid_this = "Value of \"this\" must be of type TextDecoderStream",
     .rejected = ws_rejected_value,
+    .stream_predicate = ws_stream_predicate,
 };
 WS_OPS(ws_count_strategy_ops, "CountQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL, "Value of \"this\" must be of type CountQueuingStrategy");
 WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL,
@@ -6200,4 +6245,113 @@ bool scr_webstream_instanceof(ScrDyn *value, double kind) {
 ScrDyn *scr_webstream_from(ScrDyn *iterable) {
   ws_install();
   return ws_readable_from(iterable);
+}
+
+/* ── a native source as a type: "bytes" stream ──────────────────────
+ * Node's file streams are byte streams: a reader may hand the stream a view
+ * of its own (a BYOB reader), and the controller's auto-allocated reads park
+ * a destination view too. The default-type adapter above enqueues whole
+ * chunks; this one writes each chunk into the pending read's destination and
+ * answers through the BYOB request, which is what a bytes controller's pull
+ * waits for. EOF closes the stream once its queued bytes drain. */
+static void ws_bytes_over_chunk(void *ctx, ScrDyn *value) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) {
+    WsPullInto *d = c->into_head;
+    ScrBytes *bytes = scr_dyn_bytes_is(value, SCR_BYTES_U8)
+                          ? scr_dyn_bytes_unbox(value) /* +1 */
+                          : NULL;
+    if (bytes != NULL && d != NULL && c->byob != NULL) {
+      /* The read's view is filled where its fill stopped and answered
+       * through the BYOB request, whose respond advances the fill and
+       * commits the read; the adapter must not advance it itself. The
+       * source was asked for no more than the view holds, so the chunk
+       * fits whole. */
+      size_t take = ws_pull_into_remaining(d);
+      if (take > (size_t)scr_bytes_byte_len(bytes)) take = (size_t)scr_bytes_byte_len(bytes);
+      if (take > 0) {
+        ws_copy_bytes(d->view, d->filled, bytes, 0, take);
+        ScrDyn *count = scr_dyn_new_num((double)take);
+        ScrDyn *answer = ws_byob_respond(c->byob, count);
+        scr_dyn_release(count);
+        if (answer) scr_dyn_release(answer);
+      } else {
+        /* A chunk that fits nowhere (an empty one, or a filled read): the
+         * next pull takes it. */
+        ws_pull_fulfilled(c, NULL);
+      }
+    } else if (bytes != NULL && d == NULL) {
+      /* No parked destination: queue the bytes as a chunk, as the
+       * default-type adapter does. */
+      if (ws_rcontroller_enqueue(c, value)) ws_pull_fulfilled(c, NULL);
+      else {
+        ScrDyn *error = ws_take_pending();
+        ws_rcontroller_error(c, error);
+        scr_dyn_release(error);
+      }
+    }
+    scr_bytes_release(bytes);
+    /* The parked read is answered: let the controller start the next pull
+     * (a read issued meanwhile waits in pull_again for exactly this). */
+    ws_pull_fulfilled(c, NULL);
+  }
+  ws_release(o);
+}
+
+static void ws_bytes_over_close(void *ctx) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) {
+    ws_bytes_close(c);
+    ws_pull_fulfilled(c, NULL);
+  }
+  ws_release(o);
+}
+
+static void ws_bytes_over_error(void *ctx, ScrDyn *reason) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) ws_rcontroller_error(c, reason ? reason : scr_dyn_undefined());
+  ws_release(o);
+}
+
+static const ScrFetchReadSink ws_bytes_over_sink = {ws_bytes_over_chunk, ws_bytes_over_close,
+                                                    ws_bytes_over_error};
+
+static ScrDyn *ws_bytes_over_pull(void *ctx, WsRController *c) {
+  WsOver *o = ctx;
+  /* Ask the source for no more than the pending read's view still needs,
+   * so a view smaller than a whole chunk does not discard the rest. */
+  if (o->source->set_read_limit) {
+    WsPullInto *d = c->into_head;
+    o->source->set_read_limit(o->ctx, d ? ws_pull_into_remaining(d) : 0);
+  }
+  if (!o->source->read_into(o->ctx, &ws_bytes_over_sink, ws_retain(o))) {
+    ws_release(o);
+    return NULL;
+  }
+  return WS_PARKED;
+}
+
+static ScrPromise *ws_bytes_over_cancel(void *ctx, WsRController *c, ScrDyn *reason) {
+  (void)c;
+  WsOver *o = ctx;
+  return o->source->cancel(o->ctx, reason);
+}
+
+static const WsSourceOps ws_bytes_over_source_ops = {ws_bytes_over_pull, ws_bytes_over_cancel};
+
+ScrDyn *scr_webstream_bytes_over(const ScrWebStreamSource *source, void *ctx) {
+  ws_install();
+  WsOver *o = ws_obj_new(sizeof *o, &ws_over_type);
+  o->source = source;
+  o->ctx = ctx;
+  WsReadable *s = ws_readable_create_native(&ws_bytes_over_source_ops, o, 0, 0, true);
+  /* Node's auto-allocated byte reads are 16 KiB (its file stream's chunk). */
+  if (s->controller) s->controller->auto_allocate = 16384;
+  o->stream = ws_readable_retain(s);
+  ScrDyn *box = ws_stream_box(s);
+  ws_readable_release(s);
+  return box;
 }

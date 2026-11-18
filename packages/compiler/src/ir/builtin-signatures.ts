@@ -18,6 +18,9 @@ import {
   F64,
   FILEHANDLE_T,
   FSWATCHER_T,
+  MKDTEMPRESULT_T,
+  WATCHEVENTS_T,
+  STATWATCHER_T,
   HTTP2SESSION_T,
   HTTP2STREAM_T,
   HTTPCLIENTREQ_T,
@@ -72,6 +75,7 @@ function buildLibFnSignatures() {
     "fetch.responseLight": { argTypes: [DYN], result: arrayOf(STRING) },
     "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "abort.controllerNew": { argTypes: [], result: DYN },
+    "abort.signalIs": { argTypes: [DYN], result: BOOL },
     /** EventTarget / Event / CustomEvent construction (scr_event_target.c):
      * the Event constructors take the argument vector as one dyn array and
      * throw Node's validation errors; `event.is` is `v instanceof Event`
@@ -80,6 +84,8 @@ function buildLibFnSignatures() {
     "event.targetNew": { argTypes: [], result: DYN },
     "event.new": { argTypes: [DYN], result: DYN },
     "event.customNew": { argTypes: [DYN], result: DYN },
+    "event.messageNew": { argTypes: [DYN], result: DYN },
+    "event.closeNew": { argTypes: [DYN], result: DYN },
     "event.is": { argTypes: [DYN, F64], result: BOOL },
     /** Compiled EventTarget and Event subclasses: the receiver is the
      * instance (an object rooted at %EventTarget / %Event). targetInit and
@@ -114,6 +120,42 @@ function buildLibFnSignatures() {
      * EventTarget: the target's limit, and its assignment. */
     "event.targetGetMax": { argTypes: [DYN], result: F64 },
     "event.targetSetMax": { argTypes: [DYN, F64], result: VOID },
+    /** events.once over an EventTarget (scr_event_target.c): [target,
+     * name] → a pending promise of the event's arguments, and the options
+     * form with the checked-dynamic options value last. Never throws: a
+     * receiver that is not an EventTarget, invalid options or a bad or
+     * aborted options.signal reject it. */
+    "event.onceTarget": {
+      argTypes: [DYN, STRING],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
+    "event.onceTargetSignal": {
+      argTypes: [DYN, STRING, DYN],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
+    /** events.on (scr_event_target.c): the async iterator over a
+     * receiver's events. `event.on` resolves the protocol at runtime
+     * (receiver, name and options as checked-dynamic values: the name
+     * crosses as the value the receiver's `on` receives, a symbol keeping
+     * its identity, and the options ladder runs in the runtime);
+     * `event.onEmitter` is the same for a receiver compiled as an emitter,
+     * whose registry it registers in directly; both take the receiver's
+     * pause() and resume() as values (undefined when the static class has
+     * none) because a compiled class's methods are not reachable through
+     * its checked-dynamic view. */
+    "event.on": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "event.onEmitter": {
+      argTypes: [null, DYN, DYN, DYN, DYN, DYN],
+      result: DYN,
+    },
+    /** events.on over a receiver compiled as an emitter: [emitter, receiver,
+     * pauseFn, resumeFn, name, boxer, errorBoxer, listenForError, options] —
+     * the boxers turn the event's tuple and 'error''s into the iterator's
+     * arguments array (scr_events_on_typed, beside scr_events_on). */
+    "events.onTyped": {
+      argTypes: [null, DYN, DYN, DYN, DYN, null, null, BOOL, DYN],
+      result: DYN,
+    },
     "event.call": { argTypes: [null, STRING, DYN], result: DYN },
     "event.get": { argTypes: [null, STRING], result: DYN },
     "event.set": { argTypes: [null, STRING, DYN], result: VOID },
@@ -320,8 +362,19 @@ function buildLibFnSignatures() {
     "dyn.globalSymbolSet": { argTypes: [SYMBOL_T, DYN], result: VOID },
     "dyn.globalSymbolHas": { argTypes: [SYMBOL_T], result: BOOL },
     "dyn.globalSymbolDelete": { argTypes: [SYMBOL_T], result: VOID },
-    /** Exact native class capsule identity, without materializing its fields. */
+    /** Exact native class capsule identity, without materializing its fields,
+     * for class dispatch: false for an instance Object.setPrototypeOf gave
+     * another prototype, which dispatches through it. */
     "dyn.typedRefIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** Exact native class capsule identity whatever the instance's prototype
+     * is: the brand a private member or a method's receiver checks. */
+    "dyn.typedRefBrandIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** Whether Object.setPrototypeOf has replaced a live class instance's
+     * prototype (scr_dyn_prototypes_replaced). */
+    "dyn.prototypesReplaced": { argTypes: [], result: BOOL },
+    /** Whether the value wraps a class instance whose prototype
+     * Object.setPrototypeOf replaced. */
+    "dyn.prototypeReplaced": { argTypes: [DYN], result: BOOL },
     /** A capsule boxed by this program from exactly this class: one key
      * pointer test, false for equal keys boxed elsewhere. Guards fast paths
      * whose fallback handles every other value. The key is a literal. */
@@ -351,6 +404,11 @@ function buildLibFnSignatures() {
      * may-throw seed set. */
     "dyn.iterPack": { argTypes: [DYN, STRING], result: DYN },
     "dyn.mathFold": { argTypes: [DYN, BOOL, STRING], result: F64 },
+    /** Math.max/Math.min/Math.hypot over an argument list whose spread
+     * operands are only known at run time: the values a call's argument
+     * pack holds, each through ToNumber, folded in the pack's order (mode
+     * 0 max, 1 min, 2 hypot). May throw: ToNumber can run valueOf. */
+    "dyn.mathFoldMany": { argTypes: [DYN, F64], result: F64 },
     "dyn.destructureRest": { argTypes: [DYN, STRING], result: DYN },
     "dyn.arrayFromIterator": { argTypes: [DYN], result: DYN },
     "dyn.iterator": { argTypes: [DYN, STRING], result: DYN },
@@ -581,6 +639,18 @@ function buildLibFnSignatures() {
       result: F64,
     },
     "timers.clearTimeout": { argTypes: [F64], result: VOID },
+    /** Timeout.close() — clearTimeout(this) that returns the handle for
+     * chaining. Node's legacy cancel; mock-aware like clearTimeout. */
+    "timers.close": { argTypes: [F64], result: F64 },
+    /** Immediate.prototype[Symbol.dispose]() — clearImmediate(this), which
+     * acts on the handle itself rather than through the global clearTimeout
+     * and clearImmediate that mock.timers replaces. */
+    "timers.immediateClose": { argTypes: [F64], result: F64 },
+    /** Timeout.prototype[Symbol.dispose]() and Immediate.prototype
+     * [Symbol.dispose]() — the same handle-owned clears as close(), whose
+     * result Node discards: the call answers undefined, not the handle. */
+    "timers.dispose": { argTypes: [F64], result: VOID },
+    "timers.immediateDispose": { argTypes: [F64], result: VOID },
     /** Timeout.unref()/ref()/hasRef() — loop-liveness bookkeeping over the
      * handle id. unref/ref RETURN the handle (f64) for chaining; hasRef
      * returns bool. */
@@ -662,22 +732,95 @@ function buildLibFnSignatures() {
     "perf.entryStart": { argTypes: [F64], result: F64 },
     "perf.entryDuration": { argTypes: [F64], result: F64 },
     "perf.entryDetail": { argTypes: [F64], result: DYN },
+    /** performance.markResourceTiming: the call's dyn argument vector in,
+     * the resource entry (view index 0) out (MAY THROW). clearResourceTimings
+     * and setResourceTimingBufferSize take their argument vector too.
+     * entryResourceNum/Str read a view entry's resource fields by the
+     * selector order builtins/performance.ts defines. */
+    "perf.resourceMark": { argTypes: [DYN], result: F64 },
+    "perf.resourceClear": { argTypes: [DYN], result: VOID },
+    "perf.resourceBufferSize": { argTypes: [DYN], result: VOID },
+    "perf.entryResourceNum": { argTypes: [F64, F64], result: F64 },
+    "perf.entryResourceStr": { argTypes: [F64, F64], result: STRING },
     "perf.entryKeep": { argTypes: [DYN], result: VOID },
     "perf.entryRef": { argTypes: [F64], result: DYN },
+    /** new PerformanceMark(name, options?): Node's constructor (MAY
+     * THROW) — the mark timings update, the marks buffer does not; the
+     * new entry is view index 0. observerNew(args) constructs a
+     * PerformanceObserver from the call's argument vector and answers the
+     * handle (MAY THROW). The observer methods take the receiver handle:
+     * observe(obs, args) takes observe's argument vector, take(obs) moves
+     * the buffered entries into the view (both answer a count for the
+     * scr_perf_entry_* accessors), disconnect(obs) stops it. listEntries
+     * (list, args, which) selects from a PerformanceObserverEntryList
+     * (which: 0 getEntries, 1 getEntriesByName, 2 getEntriesByType).
+     * observerIs(value, which) and entryIs(value, which) are the
+     * `instanceof` tests for values whose static type is not the class:
+     * observer/list classes 0 and 1, and PerformanceEntry 0,
+     * PerformanceMark 1, PerformanceMeasure 2. */
+    "perf.markNew": { argTypes: [DYN], result: F64 },
+    "perf.observerNew": { argTypes: [DYN], result: DYN },
+    "perf.observerObserve": { argTypes: [DYN, DYN], result: VOID },
+    "perf.observerDisconnect": { argTypes: [DYN], result: VOID },
+    "perf.observerTake": { argTypes: [DYN], result: F64 },
+    "perf.listEntries": { argTypes: [DYN, DYN, F64], result: F64 },
+    "perf.observerIs": { argTypes: [DYN, F64], result: BOOL },
+    "perf.entryIs": { argTypes: [DYN, F64], result: BOOL },
     /** perf_hooks event-loop metrics (scr_perf_loop.c): loopStart is the
      * loop's start in performance.now() ms (0 before it), idleTime the idle
      * ms since. eldNew(resolution ms) creates a monitorEventLoopDelay
      * histogram handle (MAY THROW Node's resolution RangeError); enable/disable answer whether the state changed;
      * eldPercentile expects Node's validated range; eldStat(which) reads
-     * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. */
+     * 0 min, 1 max, 2 mean, 3 stddev, 4 count, 5 exceeds. loopExit is when
+     * the loop ended (-1 until then, Node's PerformanceNodeTiming.loopExit),
+     * loopCount the number of loop turns taken. */
     "perf.loopStart": { argTypes: [], result: F64 },
+    "perf.loopExit": { argTypes: [], result: F64 },
+    "perf.loopCount": { argTypes: [], result: F64 },
     "perf.idleTime": { argTypes: [], result: F64 },
-    "perf.eldNew": { argTypes: [F64], result: F64 },
-    "perf.eldEnable": { argTypes: [F64], result: BOOL },
-    "perf.eldDisable": { argTypes: [F64], result: BOOL },
-    "perf.eldReset": { argTypes: [F64], result: VOID },
-    "perf.eldPercentile": { argTypes: [F64, F64], result: F64 },
-    "perf.eldStat": { argTypes: [F64, F64], result: F64 },
+    "perf.eldNew": { argTypes: [F64], result: DYN },
+    "perf.eldEnable": { argTypes: [DYN], result: BOOL },
+    "perf.eldDisable": { argTypes: [DYN], result: BOOL },
+    "perf.eldReset": { argTypes: [DYN], result: VOID },
+    "perf.eldPercentile": { argTypes: [DYN, F64], result: F64 },
+    "perf.eldStat": { argTypes: [DYN, F64], result: F64 },
+    /** perf_hooks createHistogram (scr_perf_loop.c): a negative handle into
+     * a refcounted checked-dynamic runtime object (its release frees the
+     * buckets); the base Histogram interface accepts either this object or
+     * an event-loop histogram, and the runtime dispatches on the handle.
+     * histoNew(options dyn, the dyn undefined
+     * when absent) validates the options as Node does (MAY THROW);
+     * histoRecord/RecordCorrected validate an integer >= 1 (MAY THROW) and
+     * histoRecordBig takes the bigint form (MAY THROW for an out-of-range
+     * bigint); histoStat(which) reads 0 count, 1 min, 2 max, 3 mean,
+     * 4 stddev, 5 exceeds and histoStatBig answers the integer readings as a
+     * bigint. percentile expects Node's validated (0, 100]. The percentiles
+     * getter's Map is built from the view histoPercentilesCount rebuilds. */
+    "perf.histoNew": { argTypes: [DYN], result: DYN },
+    "perf.histoRecord": { argTypes: [DYN, F64], result: VOID },
+    "perf.histoRecordBig": { argTypes: [DYN, BIGINT_T], result: VOID },
+    "perf.histoRecordCorrected": { argTypes: [DYN, F64, F64], result: VOID },
+    "perf.histoRecordDelta": { argTypes: [DYN], result: VOID },
+    "perf.histoReset": { argTypes: [DYN], result: VOID },
+    "perf.histoAdd": { argTypes: [DYN, DYN], result: VOID },
+    "perf.histoSubtract": { argTypes: [DYN, DYN], result: VOID },
+    "perf.histoStat": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoStatBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoPercentile": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentileBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoCountAt": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoCdf": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoCcdf": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentilesCount": { argTypes: [DYN], result: F64 },
+    "perf.histoPercentilesKey": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentilesValue": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoDispose": { argTypes: [DYN], result: VOID },
+    "perf.histoKsTest": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoCohensD": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoCliffsD": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyU": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyZ": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyP": { argTypes: [DYN, DYN], result: F64 },
     /** process.memoryUsage(): memoryUsageTake samples the resident set and
      * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
      * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2
@@ -696,6 +839,13 @@ function buildLibFnSignatures() {
     "process.threadCpuUserDiff": { argTypes: [F64], result: F64 },
     "process.threadCpuSystemDiff": { argTypes: [F64], result: F64 },
     "process.cpuPrevValidate": { argTypes: [F64, F64], result: VOID },
+    /** cpuUsage(prev) / threadCpuUsage(prev) for a prev the frontend cannot
+     * type as { user, system }: Node's validation of a truthy prev (the
+     * object and field TypeErrors, the non-negative finite ERR_INVALID_ARG_VALUE
+     * RangeError) followed by one clock sample (thread != 0 picks the thread
+     * clock), then cpuDynField(0/1) reads the user/system difference. */
+    "process.cpuDynPrepare": { argTypes: [DYN, F64], result: VOID },
+    "process.cpuDynField": { argTypes: [F64], result: F64 },
     "process.rusage": { argTypes: [F64], result: F64 },
     "process.activeResources": { argTypes: [], result: arrayOf(STRING) },
     "timers.immediateUnref": { argTypes: [F64], result: F64 },
@@ -731,6 +881,15 @@ function buildLibFnSignatures() {
     /** process.prependListener("exit", cb): the same listener in front of
      * the exit registry's existing entries. */
     "process.prependExit": { argTypes: [null], result: VOID },
+    /** The process 'beforeExit' event — process.on/once/off/removeListener/
+     * prependListener("beforeExit"). Same callback shapes and adapters as
+     * 'exit', but a registry of its own: listeners run each time the loop
+     * runs out of ref'd work (main thread only) with process.exitCode, and
+     * work they schedule re-enters the loop (Node re-emits at the next
+     * exhaustion). Never throw. */
+    "process.onBeforeExit": { argTypes: [null, BOOL], result: VOID },
+    "process.offBeforeExit": { argTypes: [null], result: VOID },
+    "process.prependBeforeExit": { argTypes: [null], result: VOID },
     /** process.stdin listener registration — stdin.on/once("data" | "end" |
      * "error", cb). args: [cb, once bool]. data callbacks: () => void or
      * (chunk: Uint8Array) => void; end: () => void; error: () => void or
@@ -783,6 +942,11 @@ function buildLibFnSignatures() {
      * encodings throw the "not supported yet" Error, unknown names throw
      * ERR_UNKNOWN_ENCODING. */
     "fs.readFileSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    /** readFileSync(path, { encoding, flag }) answering a string or a
+     * Buffer: the options ladder (getOptions, stringToFlags, open(2)) runs
+     * at run time; the call site's type selected the arm. */
+    "fs.readFileSyncStrOpts": { argTypes: [STRING, DYN], result: STRING },
+    "fs.readFileSyncBytesOpts": { argTypes: [STRING, DYN], result: BYTES_U8 },
     "fs.writeFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.appendFileSync": { argTypes: [STRING, STRING], result: VOID },
     "fs.existsSync": { argTypes: [STRING], result: BOOL },
@@ -800,6 +964,8 @@ function buildLibFnSignatures() {
     /** `fs.readdirSync(path, { recursive: true })`: every entry below the
      * path, relative to it, in Node's queue order. */
     "fs.readdirRecursiveSync": { argTypes: [STRING], result: arrayOf(STRING) },
+    "fs.readdirBytesSync": { argTypes: [STRING], result: arrayOf(BYTES_U8) },
+    "fs.readdirEncodedSync": { argTypes: [STRING, STRING], result: arrayOf(STRING) },
     // Result is the call site's Dirent record array (VOID is the
     // structure-checked sentinel, the os.networkInterfaces pattern).
     /** `fs.readdirSync(path, { withFileTypes: true })` — Dirent rows over
@@ -811,6 +977,7 @@ function buildLibFnSignatures() {
      * sorts), the directory's order on Windows; no "."/"..". Throws
      * Node's scandir errno error (may-throw seed set); fresh +1 array. */
     "fs.readdirTypesSync": { argTypes: [STRING], result: VOID },
+    "fs.readdirTypesRecursiveSync": { argTypes: [STRING], result: VOID },
     /** fs.globSync / fs.glob / fs/promises glob (scr_glob.c, Node's
      * lib/internal/fs/glob.js walk): pattern and options are dyn values the
      * runtime validates in Node's order. The string forms answer string[];
@@ -919,6 +1086,14 @@ function buildLibFnSignatures() {
      * -20..19, RangeError ERR_OUT_OF_RANGE), then the priority; a failure
      * throws Node's SystemError. */
     "os.setPriority": { argTypes: [F64, F64], result: VOID },
+    /** The checked-dynamic forms, for arguments untyped JavaScript supplies
+     * (a string, a boolean, an object, a value only the runtime knows):
+     * Node's whole argument ladder runs in the runtime — getPriority's
+     * default pid, setPriority's one-argument shift, validateInteger's
+     * ERR_INVALID_ARG_TYPE rendered from the value, then the range checks
+     * and the call. May throw. */
+    "os.getPriorityChk": { argTypes: [DYN], result: F64 },
+    "os.setPriorityChk": { argTypes: [DYN, DYN], result: VOID },
     /** os.cpus(): cpusTake snapshots every CPU and answers the count;
      * cpusModel(i) and cpusField(i, k) (k: 0 speed, 1 user, 2 nice, 3 sys,
      * 4 idle, 5 irq) read the snapshot. Never throw. */
@@ -938,9 +1113,21 @@ function buildLibFnSignatures() {
      * — set 0, restore); otherwise sets and answers the PREVIOUS mask.
      * Never throws. */
     "process.umask": { argTypes: [F64], result: F64 },
+    /** The umask argument validators Node runs before the call: an integer
+     * in [0, 4294967295] (ERR_OUT_OF_RANGE RangeErrors, catchable). */
+    "process.umaskChk": { argTypes: [F64], result: F64 },
+    /** umask(expr) for a non-number expr: Node's parseFileMode — a string
+     * must be octal ([0-7]+, else ERR_INVALID_ARG_VALUE), other types are
+     * the ERR_INVALID_ARG_TYPE TypeError. */
+    "process.umaskDyn": { argTypes: [DYN], result: F64 },
     /** chdir(2) — throws Node's fs-shaped error (ENOENT/EACCES/ENOTDIR,
      * syscall "chdir") on failure. */
     "process.chdir": { argTypes: [STRING], result: VOID },
+    /** chdir(expr) for a non-string expr: Node's validateString rejects it
+     * with the ERR_INVALID_ARG_TYPE "directory" message (no ToString — an
+     * object, array, null and a symbol all throw), and a string takes the
+     * same call. */
+    "process.chdirDyn": { argTypes: [DYN], result: VOID },
     "process.loadEnvFile": { argTypes: [DYN], result: VOID },
     /** process._exiting: true once the exit sequence began (exit listeners
      * running) — the runtime flag scr_run_exit_listeners/process.exit set.
@@ -948,9 +1135,19 @@ function buildLibFnSignatures() {
     "process.exiting": { argTypes: [], result: BOOL },
     /** net's process-wide happy-eyeballs attempt budget (Node's default
      * 250ms): one runtime double in the core unit, so reading/writing it
-     * never forces the net unit into the link. Never throw. */
+     * never forces the net unit into the link. setDefaultAutoSelectFamily
+     * throws Node's ERR_INVALID_ARG_TYPE for a non-boolean value. */
     "net.getAutoSelTimeout": { argTypes: [], result: F64 },
-    "net.setAutoSelTimeout": { argTypes: [F64], result: VOID },
+    /** setDefaultAutoSelectFamilyAttemptTimeout(value): Node's
+     * validateInt32 ladder runs over the checked-dynamic value, so a
+     * non-number throws ERR_INVALID_ARG_TYPE instead of a lowering
+     * refusal (the validateBoolean twin above). */
+    "net.setAutoSelTimeout": { argTypes: [DYN], result: VOID },
+    /** net.getDefaultAutoSelectFamily()/setDefaultAutoSelectFamily(value):
+     * Node's process-wide boolean (true by default). The value crosses as a
+     * dyn so the runtime can raise the same TypeError Node does. */
+    "net.getDefaultAutoSel": { argTypes: [], result: BOOL },
+    "net.setDefaultAutoSel": { argTypes: [DYN], result: VOID },
     /** realpath(3) with Node's error shape (syscall "lstat" in the message,
      * Node's own spelling for realpathSync failures). +1 fresh string. */
     "fs.realpathSync": { argTypes: [STRING], result: STRING },
@@ -1311,9 +1508,21 @@ function buildLibFnSignatures() {
     "url.canParseBase": { argTypes: [STRING, STRING], result: BOOL },
     "url.parse": { argTypes: [STRING], result: DYN },
     "url.parseBase": { argTypes: [STRING, STRING], result: DYN },
-    /** URL.revokeObjectURL(id): the id arrives already converted. A
-     * compiled program registers no blob URLs, so Node's registry lookup
-     * always misses and the call answers undefined. Never throws. */
+    /** URL.createObjectURL(blob): the argument arrives as a checked
+     * dynamic value and must be a Blob or File handle — any other value
+     * THROWS Node's ERR_INVALID_ARG_TYPE naming `obj`. A registered blob
+     * answers a fresh "blob:nodedata:<uuid v4>" id. */
+    "url.createObjectURL": { argTypes: [DYN], result: STRING },
+    /** buffer.resolveObjectURL(id): the id arrives as a checked value and
+     * the runtime applies Node's ToString (a symbol throws), then answers
+     * the registered Blob as a handle, or undefined when it names nothing. */
+    "buffer.resolveObjectURL": { argTypes: [DYN], result: DYN },
+    /** URL.revokeObjectURL(id): the id arrives already converted. The
+     * runtime parses it as a URL and drops the registration whose id is
+     * the pathname text between its first and second colon, so a query or
+     * fragment on the id still revokes it. Unparsable input, a pathname
+     * with no colon or a second colon, and ids that were never registered
+     * (or were revoked) miss. Never throws. */
     "url.revokeObjectURL": { argTypes: [STRING], result: VOID },
     "url.protocol": { argTypes: [URL_T], result: STRING },
     "url.origin": { argTypes: [URL_T], result: STRING },
@@ -1501,8 +1710,24 @@ function buildLibFnSignatures() {
     "util.signalExitCode": { argTypes: [DYN], result: F64 },
     "util.aborted": { argTypes: [DYN, DYN], result: DYN },
     "util.diff": { argTypes: [DYN, DYN], result: DYN },
+    "util.markPromiseAsHandled": { argTypes: [DYN], result: VOID },
+    "util.transferableAbortSignal": { argTypes: [DYN], result: DYN },
+    "util.transferableAbortController": { argTypes: [], result: DYN },
+    "util.setTraceSigInt": { argTypes: [DYN], result: VOID },
     "util.debounce": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.throttle": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    /** Readable.toWeb (scr_stream_to_web.c): the readable and the option
+     * flags (< 0: none); a web ReadableStream. */
+    "webstream.toWebReadable": { argTypes: [null, F64], result: DYN },
+    /** Readable.toWeb over a checked-dynamic value: a boxed native stream
+     * unwraps, anything else throws the not-supported Error. */
+    "webstream.toWebReadableDyn": { argTypes: [DYN, F64], result: DYN },
+    /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
+     * WritableStream and the option flags; a Writable. */
+    "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
+     * option flags; a web WritableStream. */
+    "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
@@ -1511,10 +1736,19 @@ function buildLibFnSignatures() {
     "mime.typeParse": { argTypes: [DYN], result: DYN },
     "mime.paramsNew": { argTypes: [], result: DYN },
     "mime.is": { argTypes: [DYN, F64], result: BOOL },
+    "sqlite.dbNew": { argTypes: [DYN, DYN], result: DYN },
+    "sqlite.is": { argTypes: [DYN, F64], result: BOOL },
+    "sqlite.backup": { argTypes: [DYN, DYN, DYN], result: DYN },
     "util.callbackify": { argTypes: [DYN], result: DYN },
     /** util.promisify over an untyped function value: a native dyn function
      * whose calls answer a dyn promise the appended callback settles. */
     "util.promisifyDyn": { argTypes: [DYN], result: DYN },
+    /** The custom-function protocol the typed promisify lowering runs over
+     * the boxed original: the custom function (+1), or the undefined value
+     * (+1) when absent or falsy; the static wrapper's marking by the same
+     * key takes the wrapper and the original (+1, the same wrapper). */
+    "util.promisifyCustom": { argTypes: [DYN], result: DYN },
+    "util.promisifyMark": { argTypes: [DYN, DYN], result: DYN },
     "util.debuglog": { argTypes: [DYN, DYN], result: DYN },
     "util.typeIs": { argTypes: [DYN, STRING], result: BOOL },
     "util.typeValue": { argTypes: [DYN, STRING], result: DYN },
@@ -1527,8 +1761,24 @@ function buildLibFnSignatures() {
     // +1-or-NULL; the backend builds the arms).
     "fs.statProbeSync": { argTypes: [STRING, BOOL], result: VOID },
     "fs.lstatProbeSync": { argTypes: [STRING, BOOL], result: VOID },
+    // statSync/lstatSync(path, options) and fstatSync(fd, options) with an
+    // options value only the runtime knows: Node's member ladder over the
+    // value (bigint selects the member table, throwIfNoEntry the missing-
+    // entry answer) answers Stats, BigIntStats or undefined as a checked-
+    // dynamic object, so no static stats type can name it.
+    "fs.statSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    "fs.lstatSyncDyn": { argTypes: [STRING, DYN], result: DYN },
+    "fs.fstatSyncDyn": { argTypes: [DYN, DYN], result: DYN },
+    // A checked-dynamic Stats object back into the snapshot the typed
+    // members read (the ladder's answer at a typed slot). `statsFromDynOpt`
+    // answers NULL for the dynamic undefined, so its call site builds the
+    // `Stats | undefined` union (the runtime's +1-or-NULL answer).
+    "fs.statsFromDyn": { argTypes: [DYN], result: STATS_T },
+    "fs.statsFromDynOpt": { argTypes: [DYN], result: VOID },
     "fs.fstatSync": { argTypes: [F64], result: STATS_T },
     "fs.fchmodSync": { argTypes: [F64, F64], result: VOID },
+    "fs.fchmodSyncStr": { argTypes: [F64, STRING], result: VOID },
+    "fs.fchmodSyncDyn": { argTypes: [DYN, DYN], result: VOID },
     "fs.fsyncSync": { argTypes: [F64], result: VOID },
     "fs.fdatasyncSync": { argTypes: [F64], result: VOID },
     "fs.ftruncateSync": { argTypes: [F64, F64], result: VOID },
@@ -1559,10 +1809,30 @@ function buildLibFnSignatures() {
      * ENOENT/EACCES..., readSync EBADF/range errors, closeSync EBADF). */
     "fs.openSync": { argTypes: [STRING, STRING, F64], result: F64 },
     "fs.openNumericSync": { argTypes: [STRING, F64, F64], result: F64 },
+    "fs.openNumericStrSync": { argTypes: [STRING, F64, STRING], result: F64 },
+    "fs.openNumericDynSync": { argTypes: [STRING, F64, DYN], result: F64 },
+    "fs.openStrModeSync": { argTypes: [STRING, STRING, STRING], result: F64 },
+    "fs.openNativeSync": { argTypes: [STRING, F64, F64], result: F64 },
+    "fs.openDynSync": { argTypes: [STRING, DYN, DYN], result: F64 },
+    "fs.openModeDynSync": { argTypes: [STRING, STRING, DYN], result: F64 },
+    "fs.openNativeStrSync": { argTypes: [STRING, F64, STRING], result: F64 },
+    "fs.openNativeDynSync": { argTypes: [STRING, F64, DYN], result: F64 },
     "fs.readSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
-    "fs.readSyncDyn": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
     "fs.writeSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
     "fs.writeStrSync": { argTypes: [F64, STRING, F64, STRING], result: F64 },
+    /** The fd primitives' checked-dynamic lane: the argument kinds the call
+     * site did not pin down take Node's own run-time ladder (readSync also
+     * needs the call's argument count for its options form), then the typed
+     * operation. */
+    "fs.readSyncArgs": { argTypes: [DYN, DYN, DYN, DYN, DYN, F64], result: F64 },
+    "fs.writeSyncArgs": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
+    "fs.readvSyncDyn": { argTypes: [DYN, DYN, DYN], result: F64 },
+    "fs.writevSyncDyn": { argTypes: [DYN, DYN, DYN], result: F64 },
+    "fs.ftruncateSyncDyn": { argTypes: [DYN, DYN], result: VOID },
+    "fs.closeSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fsyncSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fdatasyncSyncDyn": { argTypes: [DYN], result: VOID },
+    "fs.fchownSyncDyn": { argTypes: [DYN, DYN, DYN], result: VOID },
     // fs.watch's callback func type is program-dependent (zero params, or
     // the eventType string) — the slot pins arity and the path/receiver.
     /** fs.watch(path, listener?) → an FSWatcher handle (scr_watch.c —
@@ -1575,9 +1845,11 @@ function buildLibFnSignatures() {
      * shape (zero-param, or the (eventType: string) form — runtime-
      * provided); an open watcher keeps the loop alive until watcher.close()
      * (idempotent, receiver borrowed, statement position only). */
-    "fs.watch": { argTypes: [STRING], result: FSWATCHER_T },
-    "fs.watchCb": { argTypes: [STRING, null], result: FSWATCHER_T },
+    "fs.watch": { argTypes: [STRING, BOOL], result: FSWATCHER_T },
+    "fs.watchCb": { argTypes: [STRING, null, BOOL], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
+    "watcher.ref": { argTypes: [FSWATCHER_T], result: VOID },
+    "watcher.unref": { argTypes: [FSWATCHER_T], result: VOID },
     // FSWatcher's EventEmitter surface: (receiver, event code, once|prepend
     // flags, listener) for on/once/addListener/prependListener/
     // prependOnceListener, and (receiver, event code, listener) for
@@ -1593,8 +1865,21 @@ function buildLibFnSignatures() {
      * program-dependent, so the slot pins the arity. Statement position
      * only (Node returns a StatWatcher). fs.unwatchFile(path[, listener])
      * takes a borrowed listener; the null slot is the absent one. */
-    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: VOID },
+    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: STATWATCHER_T },
+    "statWatcher.ref": { argTypes: [STATWATCHER_T], result: VOID },
+    "statWatcher.unref": { argTypes: [STATWATCHER_T], result: VOID },
     "fs.unwatchFile": { argTypes: [STRING, null], result: VOID },
+    /** fsPromises.watch(path, persistent) → the async iterator
+     * (scr_watch_async.c — its own gated unit over scr_watch.c's watcher;
+     * moduleUsesFsWatchEvents is the switch, and scr_watch_events_install()
+     * is emitted with it). Consumed only as a `for await` source: the loop
+     * awaits watchEvents.wait and pops one entry with watchEvents.take,
+     * whose `{ eventType, filename } | null` result the lowering types.
+     * close() is the loop's finally. */
+    "fsp.watch": { argTypes: [STRING, BOOL, F64, BOOL], result: WATCHEVENTS_T },
+    "watchEvents.wait": { argTypes: [WATCHEVENTS_T], result: { kind: "promise", inner: BOOL } },
+    "watchEvents.take": { argTypes: [WATCHEVENTS_T], result: DYN },
+    "watchEvents.close": { argTypes: [WATCHEVENTS_T], result: VOID },
     /** The composed `new crypto.X509Certificate(data).fingerprint` read
      * (scr_lib.c — no certificate handle exists): the SHA-1 of the DER,
      * uppercase colon-separated, over PEM or raw-DER Buffer input; other
@@ -1624,6 +1909,9 @@ function buildLibFnSignatures() {
     "crypto.x509Issuer": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509SubjectAltName": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509InfoAccess": { argTypes: [BYTES_U8], result: STRING },
+    /** keyUsage: the extended key usage OIDs as a dynamic array, or
+     * undefined when the extension is absent. */
+    "crypto.x509KeyUsage": { argTypes: [BYTES_U8], result: DYN },
     "crypto.x509SerialNumber": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509Fingerprint256": { argTypes: [BYTES_U8], result: STRING },
     "crypto.x509Fingerprint512": { argTypes: [BYTES_U8], result: STRING },
@@ -1643,6 +1931,17 @@ function buildLibFnSignatures() {
     "crypto.x509PublicKey": { argTypes: [BYTES_U8], result: DYN },
     "crypto.x509Verify": { argTypes: [BYTES_U8, DYN], result: BOOL },
     "crypto.x509CheckPrivateKey": { argTypes: [BYTES_U8, DYN], result: BOOL },
+    /** crypto.Certificate's SPKAC methods (scr_pki.c), over the spkac
+     * argument and its optional encoding: the base64 text decodes as
+     * NETSCAPE_SPKI_b64_decode does (EVP_DecodeBlock, then d2i), and a
+     * string decodes as Buffer.from does. verifySpkac checks the signature
+     * against the key the SPKAC itself carries; exportChallenge copies the
+     * challenge, exportPublicKey writes the key's PEM. Input no decoder
+     * accepts answers false or an empty Buffer (Node answers an empty
+     * string). */
+    "crypto.spkacVerify": { argTypes: [DYN, DYN], result: BOOL },
+    "crypto.spkacChallenge": { argTypes: [DYN, DYN], result: BYTES_U8 },
+    "crypto.spkacPublicKey": { argTypes: [DYN, DYN], result: BYTES_U8 },
     "fs.closeSync": { argTypes: [F64], result: VOID },
     "stats.isFile": { argTypes: [STATS_T], result: BOOL },
     "stats.isDirectory": { argTypes: [STATS_T], result: BOOL },
@@ -1724,6 +2023,8 @@ function buildLibFnSignatures() {
      * creates, like Node's). */
     "fs.unlinkSync": { argTypes: [STRING], result: VOID },
     "fs.chmodSync": { argTypes: [STRING, F64], result: VOID },
+    "fs.chmodSyncStr": { argTypes: [STRING, STRING], result: VOID },
+    "fs.chmodSyncDyn": { argTypes: [STRING, DYN], result: VOID },
     "fs.chownSync": { argTypes: [STRING, F64, F64], result: VOID },
     "fs.lchownSync": { argTypes: [STRING, F64, F64], result: VOID },
     "fs.fchownSync": { argTypes: [F64, F64, F64], result: VOID },
@@ -1776,8 +2077,49 @@ function buildLibFnSignatures() {
       argTypes: [STRING, DYN, STRING, F64, STRING],
       result: VOID,
     },
+    /** The same option writes with a `mode` whose static type is not a
+     * number (an octal string, or a value the call site did not pin down)
+     * and/or a `flag` whose static type is not a string (open(2) bits, or a
+     * value the call site did not pin down): the runtime runs parseFileMode's
+     * mode ladder and stringToFlags on the dynamic slots, keeping Node's
+     * encoding, flag, mode, path validation order. */
+    "fs.writeFileOptionsDynModeSync": {
+      argTypes: [STRING, STRING, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileOptionsDynModeSync": {
+      argTypes: [STRING, STRING, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.writeFileBytesOptionsDynModeSync": {
+      argTypes: [STRING, BYTES_U8, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileBytesOptionsDynModeSync": {
+      argTypes: [STRING, BYTES_U8, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.writeFileDataOptionsDynModeSync": {
+      argTypes: [STRING, DYN, STRING, DYN, DYN],
+      result: VOID,
+    },
+    "fs.appendFileDataOptionsDynModeSync": {
+      argTypes: [STRING, DYN, STRING, DYN, DYN],
+      result: VOID,
+    },
     "fs.mkdirModeSync": { argTypes: [STRING, F64], result: VOID },
     "fs.mkdirRecursiveModeSync": { argTypes: [STRING, F64], result: VOID },
+    "fs.mkdirModeStrSync": { argTypes: [STRING, STRING], result: VOID },
+    // Results are program-dependent unions (string | undefined); the
+    // lowering fills the real type from the call site, like envGet.
+    "fs.mkdirObjSync": { argTypes: [STRING, F64, BOOL], result: VOID },
+    "fs.mkdirObjStrSync": { argTypes: [STRING, STRING, BOOL], result: VOID },
+    "fs.mkdirDynSync": { argTypes: [STRING, DYN], result: VOID },
+    "fs.mkdirDynVoidSync": { argTypes: [STRING, DYN], result: VOID },
+    "fs.mkdirModeValueSync": { argTypes: [STRING, F64], result: VOID },
+    "fs.mkdirModeStrValueSync": { argTypes: [STRING, STRING], result: VOID },
+    "fs.mkdirObjVoidSync": { argTypes: [STRING, F64, BOOL], result: VOID },
+    "fs.mkdirObjStrVoidSync": { argTypes: [STRING, STRING, BOOL], result: VOID },
     "atomics.wait": { argTypes: [bytesOf("i32"), F64, F64, F64], result: STRING },
     "atomics.notify": { argTypes: [bytesOf("i32"), F64, F64], result: F64 },
     "atomics.op": { argTypes: [null, F64, F64, F64, F64], result: F64 },
@@ -1799,9 +2141,13 @@ function buildLibFnSignatures() {
     /** worker_threads.threadName: the Worker's name in a worker, "" in the
      * main thread (scr_worker.c). */
     "worker.threadName": { argTypes: [], result: DYN },
+    /** worker.performance: the Worker's { eventLoopUtilization } object
+     * (scr_worker_events.c; the receiver is its Worker handle). */
+    "worker.performance": { argTypes: [DYN], result: DYN },
     /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
      * (scr_worker_events.c; the latter may throw). */
     "worker.channel": { argTypes: [], result: DYN },
+    "worker.portConstruct": { argTypes: [DYN], result: DYN },
     "worker.receiveMessageOnPort": { argTypes: [DYN], result: DYN },
     /** setEnvironmentData(key, value) and getEnvironmentData(key)
      * (scr_worker_events.c; arguments borrowed). */
@@ -1830,7 +2176,7 @@ function buildLibFnSignatures() {
      * union (null = spawn failure or signal death, type-directed
      * construction in the backend like process.envGet); stdout/stderr are
      * +1 strings. */
-    "cp.spawnSync": { argTypes: [STRING, arrayOf(STRING)], result: SPAWNRES_T },
+    "cp.spawnSync": { argTypes: [STRING, arrayOf(STRING), STRING], result: SPAWNRES_T },
     // spawnSync's options form: timeout, killSignal name ("" = SIGTERM),
     // and the three stdio modes.
     /** spawnSync with options (scr_child.c): the cp.spawnSync core plus the
@@ -1844,13 +2190,13 @@ function buildLibFnSignatures() {
      * call site's `Signals | null` union (null = exited normally or spawn
      * failure), constructed type-directedly like spawnRes.status. */
     "cp.spawnSyncOpts": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncOpts with the `env` option: the trailing [k,v,...]
      * pairs replace the child's environment (recordToEnvPairs). */
     "cp.spawnSyncEnv": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING)],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, arrayOf(STRING), STRING],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncOpts with the stdio carried as a RUNTIME string —
@@ -1859,7 +2205,7 @@ function buildLibFnSignatures() {
      * maps the value to the three modes. Args (cmd, argv, timeout,
      * killSignal, stdio). Never throws, like the other spawnSync forms. */
     "cp.spawnSyncStdioStr": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING],
+      argTypes: [STRING, arrayOf(STRING), F64, STRING, STRING, STRING],
       result: SPAWNRES_T,
     },
     /** spawnSync with the `cwd`, `input`, and `shell` options (the
@@ -1874,7 +2220,20 @@ function buildLibFnSignatures() {
      * cwd, input, hasInput, shell). Never throws, like every spawnSync
      * form. */
     "cp.spawnSyncExt": {
-      argTypes: [STRING, arrayOf(STRING), F64, STRING, F64, F64, F64, STRING, STRING, BOOL, BOOL],
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        STRING,
+        F64,
+        F64,
+        F64,
+        STRING,
+        STRING,
+        BOOL,
+        BOOL,
+        STRING,
+      ],
       result: SPAWNRES_T,
     },
     /** cp.spawnSyncExt with the `env` option: the trailing [k,v,...] pairs
@@ -1893,6 +2252,7 @@ function buildLibFnSignatures() {
         BOOL,
         BOOL,
         arrayOf(STRING),
+        STRING,
       ],
       result: SPAWNRES_T,
     },
@@ -1954,6 +2314,20 @@ function buildLibFnSignatures() {
       argTypes: [NETSERVER_T, F64, STRING, BOOL, BOOL, null],
       result: VOID,
     },
+    /** Server.prototype.listen over dynamic arguments: args [server, arg0,
+     * arg1, arg2, fence]. The runtime runs Node's normalizeArgs (a function,
+     * null or undefined port binds an unused one; a pipe-name string is the
+     * path; an object is the option bag), the already-listening check, the
+     * callback registration, the bound-socket adoption, then the bag's
+     * signal, fd, port and path in Node's order (with backlog, ipv6Only and
+     * reusePort). An adopted TCP handle or an unmodeled form reaches the
+     * compiler-rendered fence after its validation. May-throw seed. */
+    "net.listenDyn": { argTypes: [NETSERVER_T, DYN, DYN, DYN, STRING], result: VOID },
+    // The same with a statically function-typed listen callback peeled off.
+    "net.listenDynCb": {
+      argTypes: [NETSERVER_T, DYN, DYN, DYN, { kind: "func", params: [], ret: VOID }, STRING],
+      result: VOID,
+    },
     "net.serverPort": { argTypes: [NETSERVER_T], result: F64 },
     "net.serverListening": { argTypes: [NETSERVER_T], result: BOOL },
     /** socket.ref()/unref() and server.ref()/unref(): whether the handle
@@ -2012,13 +2386,21 @@ function buildLibFnSignatures() {
      * budget runs Node's validateInt32-from-1 ladder and is then inert —
      * the single dial has nothing to time). May-throw. */
     "net.connectAttempt": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
-    /** net.connect/createConnection over a RUNTIME option bag (computed
-     * keys — the invalid-input probes): Node-order validation (the
-     * objectMode trio's ERR_INVALID_ARG_VALUE, validatePort, host string,
-     * autoSelectFamily boolean, the attempt budget), then the trailing
-     * compiler-rendered fence — ALWAYS THROWS (the error.nodeThrow
-     * polymorphic-result carve-out). May-throw seed. */
-    "net.connectOptsChk": { argTypes: [DYN, STRING], result: VOID },
+    /** net.connect/createConnection over dynamic arguments (a runtime
+     * option bag, or positional values whose kinds only the run decides):
+     * args [arg0, arg1, arg2, fence]. The runtime runs Node's normalizeArgs
+     * — the Socket constructor's option ladder, net.connect's timeout, the
+     * missing-argument check and lookupAndConnect's validation — then dials
+     * with the options it models; a caller-supplied lookup or an adopted
+     * handle reaches the compiler-rendered fence after its validation.
+     * May-throw seed. */
+    "net.connectDyn": { argTypes: [DYN, DYN, DYN, STRING], result: NETSOCKET_T },
+    // The same with a statically function-typed connect listener peeled off
+    // (Node's normalizeArgs takes the last argument as the callback).
+    "net.connectDynCb": {
+      argTypes: [DYN, DYN, DYN, { kind: "func", params: [], ret: VOID }, STRING],
+      result: NETSOCKET_T,
+    },
     "net.listenPortDyn": { argTypes: [DYN, STRING], result: F64 },
     "net.connectCb": {
       argTypes: [F64, STRING, { kind: "func", params: [], ret: VOID }],
@@ -2047,12 +2429,12 @@ function buildLibFnSignatures() {
      * divergence), and a lookup error surfaces as the deferred socket
      * 'error'. A synchronous throw INSIDE the lookup propagates out of the
      * connect call (may-throw seed). */
-    "net.connectLookup": { argTypes: [F64, STRING, null], result: NETSOCKET_T },
+    "net.connectLookup": { argTypes: [F64, STRING, null, DYN], result: NETSOCKET_T },
     /** connect({ host, port, lookup }) with a lookup of Node's own type, as
      * a checked-dynamic function: the runtime calls it with { hints, all:
      * true } and a callback taking an address string or list, then dials
      * the answers in order. MAY THROW (host validation, a lookup throw). */
-    "net.connectLookupDyn": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
+    "net.connectLookupDyn": { argTypes: [F64, STRING, DYN, DYN], result: NETSOCKET_T },
     /** socket.write: Node's Writable answer — false when the writes not yet
      * completely sent, each counted in full, reach the 65536-byte
      * high-water mark ('drain' follows), and on an ended or closed socket. */
@@ -2111,7 +2493,39 @@ function buildLibFnSignatures() {
      * defers the callback to the next turn (SEMANTICS.md documents the
      * blocking divergence); its per-union adapter builds the
      * `Error | null` first argument. */
-    "dgram.createSocket": { argTypes: [BOOL], result: DGRAMSOCK_T },
+    "dgram.createSocket": { argTypes: [DYN], result: DGRAMSOCK_T },
+    /** createSocket's listener form: the callback registers as on('message'). */
+    "dgram.createSocketCb": { argTypes: [DYN, null], result: DGRAMSOCK_T },
+    /** bind(options[, callback]) — the untyped options object. */
+    "dgram.bindOpts": { argTypes: [DGRAMSOCK_T, DYN], result: VOID },
+    "dgram.bindOptsCb": {
+      argTypes: [DGRAMSOCK_T, DYN, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    /** bindSync(options): binds synchronously; the address record the
+     * frontend pins is read back through the address() parts. */
+    "dgram.bindSync": { argTypes: [DGRAMSOCK_T, DYN], result: VOID },
+    /** connectSync(port[, address]): the synchronous connect. */
+    "dgram.connectSync": { argTypes: [DGRAMSOCK_T, F64, STRING, BOOL], result: VOID },
+    /** The source-specific multicast joins, interface given flag last. */
+    "dgram.addSourceMembership": {
+      argTypes: [DGRAMSOCK_T, STRING, STRING, STRING, BOOL],
+      result: VOID,
+    },
+    "dgram.dropSourceMembership": {
+      argTypes: [DGRAMSOCK_T, STRING, STRING, STRING, BOOL],
+      result: VOID,
+    },
+    /** socket.type: "udp4" or "udp6". */
+    "dgram.type": { argTypes: [DGRAMSOCK_T], result: STRING },
+    /** `x instanceof dgram.Socket` over a checked-dynamic value: the
+     * socket handle's tag. */
+    "dgram.isSocket": { argTypes: [DYN], result: BOOL },
+    /** remoteAddress(): the remote AddressInfo record (the frontend pins
+     * its {address, family, port} shape, built from the runtime parts). */
+    "dgram.remoteAddress": { argTypes: [DGRAMSOCK_T], result: VOID },
+    /** socket[Symbol.asyncDispose](): a promise of 'close'. */
+    "dgram.asyncDispose": { argTypes: [DGRAMSOCK_T], result: { kind: "promise", inner: VOID } },
     "dgram.bind": { argTypes: [DGRAMSOCK_T, F64, STRING], result: VOID },
     "dgram.bindCb": {
       argTypes: [DGRAMSOCK_T, F64, STRING, { kind: "func", params: [], ret: VOID }],
@@ -2190,6 +2604,27 @@ function buildLibFnSignatures() {
     "dns.getServers": { argTypes: [], result: DYN },
     "dns.getDefaultResultOrder": { argTypes: [], result: STRING },
     "dns.setDefaultResultOrder": { argTypes: [DYN], result: VOID },
+    /** The stub resolver (scr_dns_resolve.c): the binding names the c-ares
+     * query ("queryA", "getHostByAddr", …), `typed` says the callback's
+     * result parameter cannot take the undefined Node passes on an error,
+     * and the promise forms fulfill with the dyn result. Argument errors
+     * throw synchronously in both forms (Node validates before it queues
+     * the query). */
+    "dns.resolveChk": { argTypes: [STRING, DYN, DYN, DYN, BOOL], result: VOID },
+    "dns.resolvePromise": { argTypes: [STRING, DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** resolve(hostname, rrtype[, callback]): the rrtype picks the binding
+     * at run time (Node's resolveMap). */
+    "dns.resolveRrChk": { argTypes: [DYN, DYN, DYN, BOOL], result: VOID },
+    "dns.resolveRrPromise": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
+    /** The Resolver handle (SCR_DYNH_DNS_RESOLVER): the constructor's
+     * options, the instanceof test, and the servers of the module defaults.
+     * A handle's own methods are dyn calls on the handle value, so they need
+     * no entry here. */
+    "dns.resolverNew": { argTypes: [DYN, BOOL], result: DYN },
+    "dns.resolverIs": { argTypes: [DYN, BOOL], result: BOOL },
+    "dns.setServers": { argTypes: [DYN], result: VOID },
+    "dns.promisesSetServers": { argTypes: [DYN], result: VOID },
+    "dns.promisesGetServers": { argTypes: [BOOL], result: DYN },
     // node:test (scr_test.c). Bodies are program-dependent closures (0 or
     // 1 testCtx param, void or Promise<void> result — the spoke pinned the
     // shape): null slots. sub's result is the settled Promise<void> the
@@ -2200,7 +2635,7 @@ function buildLibFnSignatures() {
      * BORROWED, callbacks MOVE. register/suite/hook attach to the runner
      * tree (register: name, mode 0|1|2 run/skip/todo, directive message ""
      * = none, cb or absent via registerEmpty, flags 1 async | 2 takes-ctx
-     * | 4 only, "file:line:col"); suite runs its body AT registration
+     * | 4 only | 32 an explicit only: false, "file:line:col"); suite runs its body AT registration
      * (Node's collection phase). sub is t.test — runs the subtest INLINE
      * on the runner fiber and returns the settled promise the await
      * consumes. ctxSkip/ctxTodo mark the running test; ctxDiagnostic
@@ -2210,28 +2645,37 @@ function buildLibFnSignatures() {
     // -1 without one; timeout read under flag 8; concurrency read under flag
     // 16, -1 for true). An out-of-range timeout or concurrency throws.
     "test.register": {
-      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
+      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
       result: VOID,
     },
     "test.registerEmpty": {
-      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64],
+      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
       result: VOID,
     },
     // The suite body takes no parameters or its SuiteContext (flag 2).
-    "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64], result: VOID },
+    "test.suite": {
+      argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64, DYN],
+      result: VOID,
+    },
     // The trailing string is the hook call's "file:line:col".
     "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
     "test.sub": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
       result: { kind: "promise", inner: VOID },
     },
     "test.subEmpty": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
       result: VOID,
     },
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxTodo": { argTypes: [TESTCTX_T, STRING], result: VOID },
     "test.ctxDiagnostic": { argTypes: [TESTCTX_T, STRING], result: VOID },
+    "test.ctxLog": { argTypes: [TESTCTX_T, STRING], result: VOID },
+    // t.signal: the test's AbortSignal handle (created on first read; the
+    // abortSignal runtime feature links the unit), and t.error: Node's
+    // ERR_TEST_FAILURE wrapper over the failure, or null.
+    "test.ctxSignal": { argTypes: [TESTCTX_T], result: DYN },
+    "test.ctxError": { argTypes: [TESTCTX_T], result: DYN },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
@@ -2245,13 +2689,17 @@ function buildLibFnSignatures() {
     // t.before/t.after/t.beforeEach/t.afterEach (which: 0 before, 1 after,
     // 2 beforeEach, 3 afterEach); a throwing t.before is captured on the test.
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
-    // t.plan(count), and the count of one t.assert call.
-    "test.ctxPlan": { argTypes: [TESTCTX_T, F64], result: VOID },
+    // t.plan(count[, { wait }]) — hasWait says whether the options object
+    // carried the property; the count of one t.assert call follows.
+    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64], result: VOID },
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
+    // mock.fn's and mock.method's { times }: Node's non-negative-integer
+    // validation, which throws ERR_OUT_OF_RANGE and answers the count.
+    "test.mockTimes": { argTypes: [F64], result: F64 },
     "test.mockTrack": { argTypes: [{ kind: "func", params: [], ret: VOID }], result: VOID },
     "test.mockRestoreAll": { argTypes: [], result: VOID },
     "test.mockReset": { argTypes: [], result: VOID },
@@ -2277,6 +2725,13 @@ function buildLibFnSignatures() {
     // the default JSON.stringify(value, null, 2)); a throw becomes Node's
     // "The provided serializers did not generate a string." ERR_INVALID_STATE.
     "test.snapshotSerialize": { argTypes: [DYN, DYN], result: DYN },
+    // snapshot.setDefaultSnapshotSerializers(serializers): the list is a
+    // checked-dynamic array of serializer functions.
+    "test.snapshotSetDefaultSerializers": { argTypes: [DYN], result: VOID },
+    // snapshot.setResolveSnapshotPath(fn): a (path: string) => string closure
+    // moves in; test.snapshotPath asks a test file's snapshot path (+1).
+    "test.snapshotSetResolvePath": { argTypes: [null], result: VOID },
+    "test.snapshotPath": { argTypes: [STRING], result: STRING },
     "test.mockTimersEnable": { argTypes: [STRING, F64, F64], result: VOID },
     "test.mockTimersTick": { argTypes: [F64], result: VOID },
     "test.mockTimersRunAll": { argTypes: [], result: VOID },
@@ -2333,6 +2788,15 @@ function buildLibFnSignatures() {
     "net.serverMaxRequestsPerSocketGet": { argTypes: [NETSERVER_T], result: DYN },
     "net.serverMaxRequestsPerSocketSet": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "http.serverTimeoutOptionSet": { argTypes: [NETSERVER_T, F64, DYN], result: VOID },
+    /** headersTimeout's constructor default (min(60000, requestTimeout))
+     * and Node's headersTimeout <= requestTimeout check. MAY THROW. */
+    "http.serverHeadersTimeoutDefault": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    /** createServer({ connectionsCheckingInterval }): Node's validateInteger
+     * and the stored check interval. MAY THROW. */
+    "http.serverConnectionsCheckingInterval": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    /** createServer({ rejectNonStandardBodyWrites }): body writes on HEAD,
+     * 204 and 304 responses throw ERR_HTTP_BODY_NOT_ALLOWED. */
+    "http.serverRejectNonStandardBodyWrites": { argTypes: [NETSERVER_T, DYN], result: VOID },
     /** server.on("listening", cb) — the deferred listen-callback list. */
     "net.serverOnListening": {
       argTypes: [NETSERVER_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2382,6 +2846,8 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "http.reqUrl": { argTypes: [HTTPREQ_T], result: STRING },
+    /** message.signal: the request's AbortSignal handle (checked-dynamic). */
+    "http.reqSignal": { argTypes: [HTTPREQ_T], result: DYN },
     "http.reqMethod": { argTypes: [HTTPREQ_T], result: STRING },
     "http.reqHeader": { argTypes: [HTTPREQ_T, STRING], result: VOID },
     "http.reqTrailer": { argTypes: [HTTPREQ_T, STRING], result: VOID },
@@ -2407,13 +2873,29 @@ function buildLibFnSignatures() {
     "http.resWriteContinue": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteProcessing": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWriteEarlyHints": { argTypes: [HTTPRES_T, arrayOf(STRING)], result: VOID },
-    "http.resWrite": { argTypes: [HTTPRES_T, STRING], result: VOID },
-    "http.resWriteBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: VOID },
+    /* writeInformation(status[, headers]): the generic informational
+     * response, answering write()'s backpressure boolean. */
+    "http.resWriteInformation": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: BOOL },
+    /** The callback forms: the callback fires once the head is written. */
+    "http.resWriteContinueCb": {
+      argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    "http.resWriteProcessingCb": {
+      argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    "http.resWriteEarlyHintsCb": {
+      argTypes: [HTTPRES_T, arrayOf(STRING), { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    "http.resWrite": { argTypes: [HTTPRES_T, STRING], result: BOOL },
+    "http.resWriteBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: BOOL },
     "http.resEnd": { argTypes: [HTTPRES_T], result: VOID },
     "http.resEndStr": { argTypes: [HTTPRES_T, STRING], result: VOID },
     "http.resEndBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: VOID },
     /** The checked-dynamic chunk twins (the net.sockWriteDyn story). */
-    "http.resWriteDyn": { argTypes: [HTTPRES_T, DYN], result: VOID },
+    "http.resWriteDyn": { argTypes: [HTTPRES_T, DYN], result: BOOL },
     "http.resEndDyn": { argTypes: [HTTPRES_T, DYN], result: VOID },
     "http.resHeadersSent": { argTypes: [HTTPRES_T], result: BOOL },
     "http.resWritableEnded": { argTypes: [HTTPRES_T], result: BOOL },
@@ -2422,6 +2904,15 @@ function buildLibFnSignatures() {
     "http.resCork": { argTypes: [HTTPRES_T], result: VOID },
     "http.resUncork": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWritableCorked": { argTypes: [HTTPRES_T], result: F64 },
+    /* write()'s answer and the OutgoingMessage state behind it: Node's
+     * writableLength (corked bytes + chunk framing + held head + the
+     * socket's unsent bytes), writableNeedDrain, the 'drain' event, and
+     * setHeaders/pipe. */
+    "http.resWritableLength": { argTypes: [HTTPRES_T], result: F64 },
+    "http.resWritableNeedDrain": { argTypes: [HTTPRES_T], result: BOOL },
+    "http.resOnDrain": { argTypes: [HTTPRES_T, null, BOOL], result: VOID },
+    "http.resSetHeaders": { argTypes: [HTTPRES_T, DYN], result: VOID },
+    "http.resPipe": { argTypes: [HTTPRES_T], result: VOID },
     "http.resWritableHighWaterMark": { argTypes: [HTTPRES_T], result: F64 },
     "http.resWritableObjectMode": { argTypes: [HTTPRES_T], result: BOOL },
     /** res.on("prefinish", cb): fires inside end(). Throws for the HTTP/2
@@ -2533,6 +3024,7 @@ function buildLibFnSignatures() {
     "http.reqHttpVersionMajor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqHttpVersionMinor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqAborted": { argTypes: [HTTPREQ_T], result: BOOL },
+    /* req.signal: the message's AbortSignal (built on first read). */
     "http.reqDestroyed": { argTypes: [HTTPREQ_T], result: BOOL },
     "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
     "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
@@ -2542,6 +3034,12 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "http.resWriteHeadPairs": { argTypes: [HTTPRES_T, F64, arrayOf(STRING)], result: VOID },
+    /** writeHead(status, object): parallel names and dyn values, Node's
+     * fast and progressive paths. MAY THROW. */
+    "http.resWriteHeadObject": {
+      argTypes: [HTTPRES_T, F64, arrayOf(STRING), arrayOf(DYN)],
+      result: VOID,
+    },
     /** writeHead(status, headers) with a checked-dynamic headers value —
      * the runtime OBJ walk (string/number values; other values throw
      * Node's invalid-argument TypeError; may throw). */
@@ -2549,6 +3047,9 @@ function buildLibFnSignatures() {
     "net.sockSetTimeout": { argTypes: [NETSOCKET_T, F64], result: VOID },
     /** setEncoding('utf8') — 'data' delivers strings inside the chunk-encoding window; other real encodings throw the "not supported yet" Error, unknown names throw ERR_UNKNOWN_ENCODING (may throw). */
     "net.sockSetEncoding": { argTypes: [NETSOCKET_T, STRING], result: VOID },
+    /** The untyped argument: a missing or undefined encoding means utf8, a
+     * non-string throws Node's argument TypeError (may throw). */
+    "net.sockSetEncodingDyn": { argTypes: [NETSOCKET_T, DYN], result: VOID },
     "http.reqSetEncoding": { argTypes: [HTTPREQ_T, STRING], result: VOID },
     "net.sockOnTimeout": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2601,7 +3102,10 @@ function buildLibFnSignatures() {
      * socket POOLING is not modeled (one dial per request); maxSockets
      * accounting is real: over-limit requests defer their dial and queue.
      * MAY THROW. */
-    "http.agentNew": { argTypes: [BOOL, BOOL, F64, F64, F64, F64, F64, DYN], result: DYN },
+    "http.agentNew": {
+      argTypes: [BOOL, BOOL, F64, F64, F64, BOOL, F64, F64, F64, DYN],
+      result: DYN,
+    },
     /** http.globalAgent / https.globalAgent (true): Node's keepAlive global
      * agent, the one requests without an agent option use. */
     "http.globalAgent": { argTypes: [BOOL], result: DYN },
@@ -2694,7 +3198,9 @@ function buildLibFnSignatures() {
      * the read half ends. */
     "net.sockPause": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
     "net.sockResume": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
-    "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, BOOL], result: NETSOCKET_T },
+    /** setNoDelay(enable): the argument as written (undefined means true);
+     * answers the socket. */
+    "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, DYN], result: NETSOCKET_T },
     "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
     /** RST close, answers the socket; throws ERR_INVALID_HANDLE_TYPE on TLS. */
     "net.sockResetAndDestroy": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
@@ -2714,7 +3220,13 @@ function buildLibFnSignatures() {
     "net.sockConnecting": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockPending": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockReadyState": { argTypes: [NETSOCKET_T], result: STRING },
-    "net.sockSetKeepAlive": { argTypes: [NETSOCKET_T, BOOL, F64], result: NETSOCKET_T },
+    /** setKeepAlive(enable, initialDelay, interval, count): the arguments
+     * as written (a missing one is the dyn undefined value); answers the
+     * socket. */
+    "net.sockSetKeepAlive": {
+      argTypes: [NETSOCKET_T, DYN, DYN, DYN, DYN],
+      result: NETSOCKET_T,
+    },
     "net.sockOnReady": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
       result: VOID,
@@ -2726,6 +3238,17 @@ function buildLibFnSignatures() {
      * gets (err, address, family, host) once per resolved address, or once
      * with the lookup error, before the connect. */
     "net.sockOnLookup": { argTypes: [NETSOCKET_T, DYN, BOOL], result: VOID },
+    /** socket.on/once of the happy-eyeballs attempt events: the dyn
+     * listener gets (ip, port, family), plus the error for Failed. `which`
+     * is 0 (connectionAttempt), 1 (Failed) or 2 (Timeout). */
+    "net.sockOnAttempt": { argTypes: [NETSOCKET_T, DYN, F64, BOOL], result: VOID },
+    /** socket.bufferSize: the unsent bytes, or a dyn undefined before the
+     * socket has a handle (Node's deprecated writableLength alias). */
+    "net.sockBufferSize": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.autoSelectFamilyAttemptedAddresses: the "$ip:$port" strings
+     * of a multi-address dial, a dyn undefined when the dial took the
+     * single-address path. */
+    "net.sockAttemptedAddresses": { argTypes: [NETSOCKET_T], result: DYN },
     "net.sockOnWriteFlush": {
       argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
@@ -2751,7 +3274,22 @@ function buildLibFnSignatures() {
     "net.blockListNew": { argTypes: [DYN], result: DYN },
     "net.isBlockList": { argTypes: [DYN], result: BOOL },
     "net.blockListPrivateRanges": { argTypes: [], result: DYN },
+    /** net.BoundSocket: construction validates its options and binds;
+     * server.listen(bound[, cb]) adopts the bound descriptor. */
+    "net.boundSocketNew": { argTypes: [DYN], result: DYN },
+    "net.isBoundSocket": { argTypes: [DYN], result: BOOL },
+    "net.listenBound": { argTypes: [NETSERVER_T, DYN], result: VOID },
+    "net.listenBoundCb": {
+      argTypes: [NETSERVER_T, DYN, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "net.serverOnDrop": { argTypes: [NETSERVER_T, DYN, BOOL], result: VOID },
+    /** server[Symbol.asyncDispose](): a void promise that fulfills at
+     * 'close' (at once for a server that never listened). */
+    "net.serverAsyncDispose": {
+      argTypes: [NETSERVER_T],
+      result: { kind: "promise", inner: VOID },
+    },
     "net.serverGetConnections": { argTypes: [NETSERVER_T, DYN], result: VOID },
     "net.sockReadable": { argTypes: [NETSOCKET_T], result: BOOL },
     /** socket.on('finish', cb) / end(cb): fires once when the FIN goes out
@@ -2824,6 +3362,8 @@ function buildLibFnSignatures() {
      * callback fires post-handshake — Node's secureConnect timing. */
     "tls.connect": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
     "tls.connectCb": { argTypes: [F64, STRING, DYN, null], result: NETSOCKET_T },
+    /** tls.connect(path[, options][, callback]): the Unix-socket client. */
+    "tls.connectPath": { argTypes: [STRING, DYN, null], result: NETSOCKET_T },
     // The TLSSocket member surface (authError's `string | null` union is
     // shape-checked in the special cases in validate.ts — the reqHeader pattern).
     /** The TLSSocket member surface on the socket kind: authorized (bool —
@@ -2836,6 +3376,16 @@ function buildLibFnSignatures() {
     /** getProtocol() (string | null), getCipher() (CipherNameAndProtocol,
      * undefined before the handshake, null after close) and alpnProtocol
      * (string | false | null), as dyn values. */
+    /** tlsSocket.servername (string or false) and getSession() (a Buffer
+     * or null) as dyn values, and disableRenegotiation's no-op. */
+    "tls.sockDynMember": { argTypes: [NETSOCKET_T, F64], result: DYN },
+    /** `x instanceof tls.Server`: the server handle's TLS marker. */
+    "tls.serverIs": { argTypes: [NETSERVER_T], result: BOOL },
+    /** The same test over a checked-dynamic value (a union operand). */
+    "tls.serverIsDyn": { argTypes: [DYN], result: BOOL },
+    /** disableRenegotiation(): a no-op call, so the receiver is still
+     * evaluated (and its exceptions still surface). */
+    "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
     "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
     "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
     "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
@@ -2981,7 +3531,7 @@ function buildLibFnSignatures() {
     /** session.request(pairs?, endStream) — endStream is a tri-state f64:
      * -1 the method's payload-meaningless default, 0/1 explicit. */
     "http2.sessionRequest": {
-      argTypes: [HTTP2SESSION_T, arrayOf(STRING), F64],
+      argTypes: [HTTP2SESSION_T, arrayOf(STRING), F64, BOOL],
       result: HTTP2STREAM_T,
     },
     "http2.sessionClose": { argTypes: [HTTP2SESSION_T], result: VOID },
@@ -3006,6 +3556,23 @@ function buildLibFnSignatures() {
     "http2.sessionSocket": { argTypes: [HTTP2SESSION_T], result: NETSOCKET_T },
     /** stream.respond(pairs?, endStream) — the server answer. */
     "http2.streamRespond": { argTypes: [HTTP2STREAM_T, arrayOf(STRING), BOOL], result: VOID },
+    /** respond(headers, { endStream, waitForTrailers }). */
+    "http2.streamRespondWait": {
+      argTypes: [HTTP2STREAM_T, arrayOf(STRING), BOOL, BOOL],
+      result: VOID,
+    },
+    /** sendTrailers(headers) and additionalHeaders(headers). */
+    "http2.streamSendTrailers": { argTypes: [HTTP2STREAM_T, arrayOf(STRING)], result: VOID },
+    "http2.streamAdditionalHeaders": { argTypes: [HTTP2STREAM_T, arrayOf(STRING)], result: VOID },
+    "http2.streamOnTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnHeaders": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnWantTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnContinue": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    /** res.writeInformation(statusCode[, headers]) on a compat response. */
+    "http2.responseWriteInformation": {
+      argTypes: [HTTPRES_T, F64, arrayOf(STRING)],
+      result: BOOL,
+    },
     "http2.streamWrite": { argTypes: [HTTP2STREAM_T, STRING], result: VOID },
     "http2.streamWriteBytes": { argTypes: [HTTP2STREAM_T, BYTES_U8], result: VOID },
     "http2.streamEnd": { argTypes: [HTTP2STREAM_T], result: VOID },
@@ -3123,7 +3690,7 @@ function buildLibFnSignatures() {
       argTypes: [BOOL, DYN, BOOL, null],
       result: HTTPCLIENTREQ_T,
     },
-    "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
+    "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
     "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
     "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientHasHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
@@ -3131,18 +3698,22 @@ function buildLibFnSignatures() {
     "http.clientGetHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
     "http.clientGetRawHeaderNames": { argTypes: [HTTPCLIENTREQ_T], result: arrayOf(STRING) },
     "http.clientGetHeaders": { argTypes: [HTTPCLIENTREQ_T], result: DYN },
-    "http.clientWriteBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: VOID },
+    "http.clientWriteBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: BOOL },
     "http.clientEnd": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientEndStr": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientEndBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: VOID },
     /** The checked-dynamic chunk twins (the net.sockWriteDyn story). */
-    "http.clientWriteDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
+    "http.clientWriteDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: BOOL },
     "http.clientEndDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     "http.clientFlushHeaders": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientAddTrailers": { argTypes: [HTTPCLIENTREQ_T, arrayOf(STRING)], result: VOID },
     "http.clientCork": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientUncork": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientWritableCorked": { argTypes: [HTTPCLIENTREQ_T], result: F64 },
+    "http.clientWritableLength": { argTypes: [HTTPCLIENTREQ_T], result: F64 },
+    "http.clientWritableNeedDrain": { argTypes: [HTTPCLIENTREQ_T], result: BOOL },
+    "http.clientOnDrain": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
+    "http.clientPipe": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientMethod": { argTypes: [HTTPCLIENTREQ_T], result: STRING },
     "http.clientPath": { argTypes: [HTTPCLIENTREQ_T], result: STRING },
     "http.clientHost": { argTypes: [HTTPCLIENTREQ_T], result: STRING },
@@ -3198,13 +3769,13 @@ function buildLibFnSignatures() {
      * parameter, Node's event object. */
     "http.clientOnInformation": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
     /** execFileSync/execSync as ONE entry (args: cmd, argv, shell, input,
-     * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, buffers —
+     * cwd, hasEnv, envPairs, timeoutMs, stdoutMode, stderrMode, encoding —
      * see scr_child.h). Throws Node's exact errors: "Command failed: <cmd>"
      * (+ captured stderr) on non-zero exit or signal death, "spawnSync
      * <file> ENOENT" on spawn failure, "spawnSync <file> ETIMEDOUT" after
      * the SIGTERM timeout, with Node's status, signal, output, pid, stdout
-     * and stderr properties (Buffer outputs when buffers is set: no
-     * encoding option). Result is the captured utf8 stdout (+1). */
+     * and stderr properties (decoded strings: the encoding option's name).
+     * Result is the captured stdout decoded with that encoding (+1). */
     "cp.execSync": {
       argTypes: [
         STRING,
@@ -3218,9 +3789,30 @@ function buildLibFnSignatures() {
         F64,
         F64,
         F64,
-        BOOL,
+        STRING,
       ],
       result: STRING,
+    },
+    /** The unencoded execFileSync/execSync form (cp.execSyncBytes): the
+     * same call with Node's Buffer result and Buffer error outputs. Args:
+     * cmd, argv, shell, input, hasInput, cwd, hasEnv, envPairs, timeoutMs,
+     * stdoutMode, stderrMode. THROWS Node's exact errors, with the
+     * status/signal/output/pid/stdout/stderr properties. */
+    "cp.execSyncBytes": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        BOOL,
+        STRING,
+        BOOL,
+        STRING,
+        BOOL,
+        arrayOf(STRING),
+        F64,
+        F64,
+        F64,
+      ],
+      result: BYTES_U8,
     },
     /** The promisified-execFile/exec capture (args: cmd, argv, shell, cwd,
      * hasEnv, envPairs, timeoutMs; shell marks exec's /bin/sh -c argv, as
@@ -3278,6 +3870,15 @@ function buildLibFnSignatures() {
       result: CHILD_T,
     },
     "child.connected": { argTypes: [CHILD_T], result: BOOL },
+    /** child.stdio's length: the child's stdio slot count (3, or 4 for a
+     * fork's IPC slot). A plain read of the child's fixed slot count. */
+    "child.stdioLen": { argTypes: [CHILD_T], result: F64 },
+    /** child.stdio's one array per child: the first read stores the built
+     * array (stdioStore) and every read answers it (stdioCached /
+     * stdioArray, whose result is the call site's array type). */
+    "child.stdioCached": { argTypes: [CHILD_T], result: BOOL },
+    "child.stdioArray": { argTypes: [CHILD_T], result: VOID },
+    "child.stdioStore": { argTypes: [CHILD_T, null], result: VOID },
     "child.hasChannel": { argTypes: [CHILD_T], result: BOOL },
     "child.send": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.sendCb": { argTypes: [CHILD_T, STRING, null], result: BOOL },
@@ -3302,6 +3903,10 @@ function buildLibFnSignatures() {
     "child.propsResolve": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "child.propsOnDyn": { argTypes: [CHILD_T, STRING, DYN], result: VOID },
     "process.connected": { argTypes: [], result: BOOL },
+    /** process.channel: the fork IPC channel (undefined without one, null
+     * once disconnected, else the cached Control object with ref()/
+     * unref()). +1. Never throws. */
+    "process.channel": { argTypes: [], result: DYN },
     /** Whether this fork child opened its channel; part of process.send's
      * presence in programs with fork targets. Never throws. */
     "process.ipcOpen": { argTypes: [], result: BOOL },
@@ -3321,6 +3926,19 @@ function buildLibFnSignatures() {
      * (cmd, argv, callback, shell, cwd). */
     "cp.execFileCwd": {
       argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING],
+      result: CHILD_T,
+    },
+    /** The callback slice with `env`, `timeout` and `killSignal` (the
+     * SCR_CHILD_CP_OPTIONS build): (cmd, argv, callback, shell, cwd,
+     * hasEnv, envPairs, timeoutMs, killSignal). cwd "" = inherit;
+     * envPairs REPLACES the environment when hasEnv (an empty list with
+     * hasEnv is Node's `env: {}`); timeoutMs 0 = no deadline; killSignal
+     * "" = the SIGTERM default, otherwise a signal name resolved by the
+     * runtime. Throws Node's option errors synchronously (validateTimeout's
+     * ERR_OUT_OF_RANGE, sanitizeKillSignal's ERR_UNKNOWN_SIGNAL) before the
+     * child starts. The callback contract is cp.execFile's. */
+    "cp.execFileOpts": {
+      argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING, BOOL, arrayOf(STRING), F64, STRING],
       result: CHILD_T,
     },
     // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /
@@ -3349,6 +3967,34 @@ function buildLibFnSignatures() {
         BOOL,
         arrayOf(STRING),
         STRING,
+      ],
+      result: CHILD_T,
+    },
+    /** spawn's options form with `timeout`, `killSignal` and `signal`
+     * (the SCR_CHILD_CP_OPTIONS build): cp.spawnOpts' arguments, then
+     * timeoutMs (0 = no timer), killSignal and signal as checked-dynamic
+     * values (undefined = absent; killSignal may be a name, matched
+     * without case, or a signal number). Node's launch checks run in its
+     * order — validateTimeout, validateAbortSignal, sanitizeKillSignal —
+     * before the child starts, so unlike cp.spawnOpts this call can throw
+     * synchronously. */
+    "cp.spawnArmed": {
+      argTypes: [
+        STRING,
+        arrayOf(STRING),
+        F64,
+        F64,
+        F64,
+        F64,
+        F64,
+        BOOL,
+        BOOL,
+        BOOL,
+        arrayOf(STRING),
+        STRING,
+        F64,
+        DYN,
+        DYN,
       ],
       result: CHILD_T,
     },
@@ -3570,8 +4216,15 @@ function buildLibFnSignatures() {
     "child.spawnargs": { argTypes: [CHILD_T], result: arrayOf(STRING) },
     "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
     "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
+    /** ChildProcess[Symbol.dispose](): Node's dispose sends SIGTERM only
+     * while `killed` is false. */
+    "child.dispose": { argTypes: [CHILD_T], result: VOID },
     "child.unref": { argTypes: [CHILD_T], result: VOID },
     "child.ref": { argTypes: [CHILD_T], result: VOID },
+    /** subprocess.channel: the checked-dynamic Control handle (undefined
+     * without an IPC channel, null after a disconnect); the lowering
+     * supplies its DYN type. */
+    "child.channel": { argTypes: [CHILD_T], result: VOID },
     "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
     "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
     /* The Buffer captures (spawnSync without an encoding option): the same
@@ -3660,6 +4313,10 @@ function buildLibFnSignatures() {
      * either one by its outputEncoding. */
     "crypto.hashNewOpts": { argTypes: [STRING, DYN], result: CRYPTOHASH_T },
     "crypto.hmacNewDyn": { argTypes: [STRING, DYN, DYN], result: CRYPTOHMAC_T },
+    /** createMac(algorithm, key[, options]) answers a Mac native handle. */
+    "crypto.macNewDyn": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** crypto.secureHeapUsed() answers Node's no-secure-heap object. */
+    "crypto.secureHeapUsed": { argTypes: [], result: DYN },
     "crypto.hashCopyOpts": { argTypes: [CRYPTOHASH_T, DYN], result: CRYPTOHASH_T },
     "crypto.hashUpdateEnc": { argTypes: [CRYPTOHASH_T, STRING, STRING], result: CRYPTOHASH_T },
     "crypto.hmacUpdateEnc": { argTypes: [CRYPTOHMAC_T, STRING, STRING], result: CRYPTOHMAC_T },
@@ -3668,6 +4325,18 @@ function buildLibFnSignatures() {
     "crypto.hashDigestDyn": { argTypes: [CRYPTOHASH_T, DYN], result: DYN },
     "crypto.hmacDigestDyn": { argTypes: [CRYPTOHMAC_T, DYN], result: DYN },
     "crypto.hashOneshot": { argTypes: [STRING, DYN, DYN], result: DYN },
+    /** The any-argument forms: Node's argument types are checked at run
+     * time, in its order, for calls whose arguments do not fit the typed
+     * signatures (missing ones read as undefined). */
+    "crypto.hashNewAny": { argTypes: [DYN, DYN], result: CRYPTOHASH_T },
+    "crypto.hmacNewAny": { argTypes: [DYN, DYN, DYN], result: CRYPTOHMAC_T },
+    "crypto.hashOneshotAny": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "crypto.pbkdf2Any": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: BYTES_U8 },
+    "crypto.pbkdf2AnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.hkdfAny": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.hkdfAnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.scryptAny": { argTypes: [DYN, DYN, DYN, DYN], result: BYTES_U8 },
+    "crypto.scryptAnyCb": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
     /** Views of any element kind (the validator checks both are views). */
     "crypto.timingSafeEqual": { argTypes: [null, null], result: BOOL },
     "crypto.timingSafeEqualDyn": { argTypes: [DYN, DYN], result: BOOL },
@@ -3697,6 +4366,10 @@ function buildLibFnSignatures() {
     "crypto.createSecretKey": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeySync": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeyCb": { argTypes: [DYN, DYN, null], result: VOID },
+    /** Node's synchronous callback gate, for a callback only the dynamic
+     * checker can see: a non-function throws ERR_INVALID_ARG_TYPE before
+     * generateKey's type and options checks, where Node validates it. */
+    "crypto.checkCallback": { argTypes: [DYN], result: VOID },
     "crypto.keyObjectInput": { argTypes: [DYN], result: BYTES_U8 },
     "crypto.isKeyObject": { argTypes: [DYN], result: BOOL },
     /** WebCrypto (scr_webcrypto.c): each method takes its argument vector as
@@ -3711,6 +4384,11 @@ function buildLibFnSignatures() {
     "webcrypto.unwrapKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.deriveBits": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.deriveKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "webcrypto.getPublicKey": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+    "crypto.argon2Sync": { argTypes: [DYN], result: DYN },
+    "crypto.argon2Cb": { argTypes: [DYN], result: VOID },
+    "webcrypto.keyObjectToCryptoKey": { argTypes: [DYN], result: DYN },
+    "webcrypto.keyObjectFrom": { argTypes: [DYN], result: DYN },
     "webcrypto.sign": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "webcrypto.verify": { argTypes: [DYN], result: { kind: "promise", inner: BOOL } },
     "webcrypto.digest": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
@@ -3719,6 +4397,13 @@ function buildLibFnSignatures() {
     "crypto.randomUUIDv7": { argTypes: [DYN], result: STRING },
     "crypto.pbkdf2": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING], result: BYTES_U8 },
     "crypto.randomBytesCb": { argTypes: [F64, null], result: VOID },
+    "crypto.randomBytesAny": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.randomIntAny": { argTypes: [DYN, DYN, DYN], result: DYN },
+    /** The checked-dynamic entries a call takes when its callback position
+     * can hold a function: same checks, and the callback in a later
+     * macrotask (the synchronous spellings above never schedule). */
+    "crypto.randomBytesAnyCb": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.randomIntAnyCb": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.pbkdf2Cb": { argTypes: [BYTES_U8, BYTES_U8, F64, F64, STRING, null], result: VOID },
     "crypto.hkdf": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64], result: DYN },
     "crypto.hkdfCb": { argTypes: [STRING, BYTES_U8, BYTES_U8, BYTES_U8, F64, null], result: VOID },
@@ -3788,6 +4473,14 @@ function buildLibFnSignatures() {
     /** Buffer.from(value, byteOffset, length): an ArrayBuffer's range with
      * Node's fromArrayBuffer checks; other values as poolFromDynOffset. */
     "buffer.poolFromDynRange": { argTypes: [DYN, DYN, DYN], result: BYTES_U8 },
+    /** Buffer.copyBytesFrom(view[, offset[, length]]): a pooled Buffer
+     * holding a copy of the view's underlying bytes over the element window
+     * [offset, offset + length). The view is any typed array — its element
+     * kind travels in the ScrBytes header and decides the byte count, so the
+     * slot takes a program-dependent type. `mask` bit 0 marks a supplied
+     * offset and bit 1 a supplied length; the runtime runs Node's
+     * validation. */
+    "buffer.copyBytesFrom": { argTypes: [null, F64, F64, F64], result: BYTES_U8 },
     "buffer.poolSize": { argTypes: [], result: F64 },
     "buffer.setPoolSize": { argTypes: [F64], result: VOID },
     /** Buffer.byteLength(string, enc) — enc a NORMALIZED literal like
@@ -3994,6 +4687,17 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: BYTES_U8 },
     },
     "zlib.promiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: BYTES_U8 } },
+    /** Node's `info: true` results: the same one-shot runs, answering the
+     * { buffer, engine } checked object instead of the Buffer. The Cb form
+     * hands its (Error | null, { buffer, engine }) callback the checked
+     * value; the promise form settles with it. The Dyn twins take the JS
+     * lane's untyped data. */
+    "zlib.infoSync": { argTypes: [F64, BYTES_U8, DYN], result: DYN },
+    "zlib.infoCb": { argTypes: [F64, BYTES_U8, DYN, null], result: VOID },
+    "zlib.infoSyncDyn": { argTypes: [F64, DYN, DYN], result: DYN },
+    "zlib.infoCbDyn": { argTypes: [F64, DYN, DYN, null], result: VOID },
+    "zlib.infoPromise": { argTypes: [F64, BYTES_U8, DYN], result: { kind: "promise", inner: DYN } },
+    "zlib.infoPromiseDyn": { argTypes: [F64, DYN, DYN], result: { kind: "promise", inner: DYN } },
     /** The stream classes (scr_zlib_stream.c, linked with the stream unit):
      * streamNew takes Node's node_zlib_mode number and the options value
      * (undefined when absent), validates it with Node's ladder, and answers
@@ -4113,6 +4817,30 @@ function buildLibFnSignatures() {
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    /** fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync: the temp
+     * directory plus its removal and disposal hooks (scr_lib.c). The
+     * options record crosses as one dyn value for the runtime's Node-order
+     * encoding check. */
+    "fsp.mkdtempDisposable": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: MKDTEMPRESULT_T },
+    },
+    "fs.mkdtempDisposableSync": { argTypes: [STRING], result: MKDTEMPRESULT_T },
+    /** The handle's content as Node's type: "bytes" web stream (a checked-
+     * dynamic stream: the stdlib ReadableStream interface has no static
+     * representation). */
+    "fileHandle.readableWebStream": { argTypes: [FILEHANDLE_T, DYN], result: DYN },
+    "mkdtempResult.path": { argTypes: [MKDTEMPRESULT_T], result: STRING },
+    "mkdtempResult.remove": {
+      argTypes: [MKDTEMPRESULT_T],
+      result: { kind: "promise", inner: VOID },
+    },
+    "mkdtempResult.removeSync": { argTypes: [MKDTEMPRESULT_T], result: VOID },
+    "mkdtempResult.asyncDispose": {
+      argTypes: [MKDTEMPRESULT_T],
+      result: { kind: "promise", inner: VOID },
+    },
+    "mkdtempResult.dispose": { argTypes: [MKDTEMPRESULT_T], result: VOID },
     /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
     "fsp.readFileEncoded": {
       argTypes: [STRING, STRING],
@@ -4130,6 +4858,18 @@ function buildLibFnSignatures() {
     "fsp.lutimes": { argTypes: [DYN, DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.rename": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.readdir": { argTypes: [STRING], result: { kind: "promise", inner: arrayOf(STRING) } },
+    "fsp.readdirRecursive": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: arrayOf(STRING) },
+    },
+    "fsp.readdirBytes": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: arrayOf(BYTES_U8) },
+    },
+    "fsp.readdirEncoded": {
+      argTypes: [STRING, STRING],
+      result: { kind: "promise", inner: arrayOf(STRING) },
+    },
     // Result is promise<call-site Dirent record array>; the libCall case
     // validates the program-dependent record shape in validate.ts.
     /** `fs.promises.readdir(path, { withFileTypes: true })` — the settled-
@@ -4137,6 +4877,10 @@ function buildLibFnSignatures() {
      * call-site-shaped Dirent rows, then move the array into a promise;
      * scandir failure becomes its rejection. */
     "fsp.readdirTypes": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
+    "fsp.readdirTypesRecursive": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: VOID },
+    },
     "fsp.rm": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },
     /** `fs.promises.rm(path, options)`: fs.rmOptsSync and fs.rmRetrySync
      * behind a settled promise; their errors become its rejection. */
@@ -4166,6 +4910,10 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: VOID },
     },
     "fileHandle.chmod": { argTypes: [FILEHANDLE_T, F64], result: { kind: "promise", inner: VOID } },
+    "fileHandle.chown": {
+      argTypes: [FILEHANDLE_T, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
     "fileHandle.utimes": {
       argTypes: [FILEHANDLE_T, DYN, DYN],
       result: { kind: "promise", inner: VOID },
@@ -4214,8 +4962,9 @@ function buildLibFnSignatures() {
     },
     "fileHandle.stat": { argTypes: [FILEHANDLE_T], result: { kind: "promise", inner: STATS_T } },
     "process.argv": { argTypes: [], result: arrayOf(STRING) },
-    // The Node runtime flag a node:test binary took out of process.argv
-    // (--test-update-snapshots), or [] — a fresh array per read.
+    // The Node runtime flags a node:test binary took out of process.argv
+    // (--test-update-snapshots and the reporter options), or []; a fresh
+    // array per read.
     "process.execArgv": { argTypes: [], result: arrayOf(STRING) },
     /** process.allowedNodeEnvironmentFlags: the interned set of option
      * names the compatibility target accepts in NODE_OPTIONS (+1 read of
@@ -4231,15 +4980,32 @@ function buildLibFnSignatures() {
      * interned undefined-arm instance). BOTH source forms — `process.env.FOO`
      * and `process.env[expr]` — lower here. Purely static; never throws. */
     "process.envGet": { argTypes: [STRING], result: VOID },
+    /** `process.env[expr]` with a key the frontend cannot fence to a string:
+     * Node's proxy ToStrings the key (a Symbol reads undefined rather than
+     * throwing — the runtime's envGetDyn does the same) and answers the
+     * same interned `string | undefined` union as process.envGet. A key
+     * object whose toString throws propagates that throw. */
+    "process.envGetDyn": { argTypes: [DYN], result: VOID },
+    /** `process.env[k] = v` for a non-string value: Node's proxy ToStrings
+     * the value (a Symbol value throws the toString TypeError). */
+    "process.envSetDyn": { argTypes: [STRING, DYN], result: VOID },
+    /** Both sides dynamic: the key is ToString'd first, then the value —
+     * Node's proxy order — so a key or value that throws throws in that
+     * order. */
+    "process.envSetKeyDyn": { argTypes: [DYN, DYN], result: VOID },
     /** setenv(3): (name, value) string args → void. Later envGet reads and
-     * spawned children observe the write, like Node (values are strings —
-     * the frontend fences non-string RHS). Never throws. */
+     * spawned children observe the write, like Node (a non-string RHS takes
+     * the checked-dynamic envSetDyn, whose ToString Node's proxy runs).
+     * The frontend rejects writes when --define fixes the variable. */
     "process.envSet": { argTypes: [STRING, STRING], result: VOID },
     /** `delete process.env[NAME]` — unsetenv(3): the mutation is visible to
      * every later read (process.envGet asks getenv fresh) and inherited by
      * spawned children, exactly Node. Statement position only (JS's boolean
      * result is constant true there). Borrows the name; never throws. */
     "process.envUnset": { argTypes: [STRING], result: VOID },
+    /** `delete process.env[expr]`: the same unsetenv, with Node's proxy
+     * ToString of the key (a Symbol key is a no-op answering true). */
+    "process.envUnsetDyn": { argTypes: [DYN], result: VOID },
     /** The whole environment as alternating [k0, v0, k1, v1, ...] strings in
      * environ order — the raw material of the process.env SNAPSHOT record
      * (the frontend's interned %env.snapshot helper keyed-writes the pairs
@@ -4247,11 +5013,27 @@ function buildLibFnSignatures() {
      * array; never throws. */
     "process.envPairs": { argTypes: [], result: arrayOf(STRING) },
     "process.exit": { argTypes: [F64], result: VOID },
+    /** process.abort(): settles stdout, then raises SIGABRT with the default
+     * disposition (Node's dump names its own frames, so the compiled binary
+     * raises the signal without it). Never returns. */
+    "process.abort": { argTypes: [], result: VOID },
+    /** process.finalization: the stable register/registerBeforeExit/
+     * unregister object (fresh +1 reference to one cached value). */
+    "process.finalization": { argTypes: [], result: DYN },
+    /** process.exit(expr) for a non-number expr: Node's exitCode setter
+     * converts ('' is a TypeError, ' ' is 0, '0x10' is 16, null and
+     * undefined clear) before exiting with the resulting status. */
+    "process.exitDyn": { argTypes: [DYN], result: VOID },
     /** Numeric process.exitCode write (integer validation, implicit exit status). */
     "process.setExitCode": { argTypes: [F64], result: VOID },
     /** The process.exitCode write of a program that also reads the
      * property: the same validation, and the code counts as assigned. */
     "process.setExitCodeTracked": { argTypes: [F64], result: VOID },
+    /** Dyn process.exitCode writes: Node's conversion (' ' → 0, '0x10' →
+     * 16, null/undefined clear, '' and non-numeric text are the TypeError)
+     * then the integer validation. */
+    "process.setExitCodeDyn": { argTypes: [DYN], result: VOID },
+    "process.setExitCodeDynTracked": { argTypes: [DYN], result: VOID },
     /** The code for process.exit() with no argument, or zero when unset. */
     "process.currentExitCode": { argTypes: [], result: F64 },
     /** Whether process.exitCode reads a code rather than undefined. Never throws. */
@@ -4273,6 +5055,34 @@ function buildLibFnSignatures() {
     "process.geteuid": { argTypes: [], result: F64 },
     "process.getegid": { argTypes: [], result: F64 },
     "process.getgroups": { argTypes: [], result: arrayOf(F64) },
+    /** setuid(2) / seteuid(2) / setgid(2) / setegid(2), setgroups(2) and
+     * initgroups(3): Node's JS wrappers validate the id (a uint32 number or
+     * a name string) and the runtime answers Node's ERR_UNKNOWN_CREDENTIAL,
+     * ErrnoException and ERR_INVALID_ARG_TYPE errors (MAY THROW). */
+    "process.setuid": { argTypes: [DYN], result: VOID },
+    "process.seteuid": { argTypes: [DYN], result: VOID },
+    "process.setgid": { argTypes: [DYN], result: VOID },
+    "process.setegid": { argTypes: [DYN], result: VOID },
+    "process.setgroups": { argTypes: [DYN], result: VOID },
+    "process.initgroups": { argTypes: [DYN, DYN], result: VOID },
+    /** process.hasUncaughtExceptionCaptureCallback() and its setter: the
+     * setter takes a function or null, and a second callback throws Node's
+     * ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET. */
+    "process.hasUncaughtCapture": { argTypes: [], result: BOOL },
+    "process.setUncaughtCapture": { argTypes: [DYN], result: VOID },
+    /** process.debugPort: 9229 until written; the setter keeps the previous
+     * value when Node's range check refuses the write (ERR_OUT_OF_RANGE). */
+    "process.debugPort": { argTypes: [], result: F64 },
+    "process.setDebugPort": { argTypes: [DYN], result: VOID },
+    /** process.sourceMapsEnabled: false until setSourceMapsEnabled(true);
+     * the setter validates a boolean (ERR_INVALID_ARG_TYPE). */
+    "process.sourceMapsEnabled": { argTypes: [], result: BOOL },
+    "process.setSourceMapsEnabled": { argTypes: [DYN], result: VOID },
+    /** process.ref(maybeRefable) / process.unref(maybeRefable): read the
+     * nodejs.ref / nodejs.unref symbol (else the ref / unref member) and
+     * call it with the receiver. */
+    "process.ref": { argTypes: [DYN], result: VOID },
+    "process.unref": { argTypes: [DYN], result: VOID },
     /** process.ppid: the parent's pid at the read. Never throws. */
     "process.ppid": { argTypes: [], result: F64 },
     /** process.title: libuv's process title (argv[0] until set); setTitle
@@ -4280,6 +5090,9 @@ function buildLibFnSignatures() {
      * console title on Windows). Never throw. */
     "process.title": { argTypes: [], result: STRING },
     "process.setTitle": { argTypes: [STRING], result: VOID },
+    /** process.title = expr for a non-string expr: Node ToStrings the value
+     * (a Symbol throws; arrays join with ",") and writes the result. */
+    "process.setTitleDyn": { argTypes: [DYN], result: VOID },
     /** process.argv0: the original argv[0]. Never throws. */
     "process.argv0": { argTypes: [], result: STRING },
     /** process.release: the compatibility target's stable release object
@@ -4313,6 +5126,11 @@ function buildLibFnSignatures() {
      * names, the compiled getter, and the Symbol.toStringTag key. Draws
      * Node's frozen null-prototype object, one per module. Never throws. */
     "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
+    /** A module namespace built from its export values as a JavaScript
+     * source takes one (scr_module_namespace_copy_value): the module id and
+     * the object holding the values. One marked object per module, so the
+     * namespace keeps its identity. Never throws. */
+    "module.namespaceCopy": { argTypes: [STRING, DYN], result: DYN },
     /** A primitive wrapper object (scr_js_wrapper_new): the kind
      * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
      * constructor values for the prototypes' `constructor`. */
@@ -4372,6 +5190,14 @@ function buildLibFnSignatures() {
      * constant true. */
     "process.kill": { argTypes: [F64, STRING], result: BOOL },
     "process.killNum": { argTypes: [F64, F64], result: BOOL },
+    /** kill(pid, expr) and kill(expr, signal) for expressions outside the
+     * fast paths: Node's loose `pid != (pid | 0)` guard (null and undefined
+     * are the type error; "1", [], true and the empty string convert), its
+     * signal grammar (a number that is not an int32 is ERR_UNKNOWN_SIGNAL
+     * with util.format's text; falsy signals mean SIGTERM), and the
+     * ToNumber/ToString conversions with their TypeError texts. */
+    "process.killSigDyn": { argTypes: [F64, DYN], result: BOOL },
+    "process.killDyn": { argTypes: [DYN, DYN], result: BOOL },
     /** The raw byte writes: one borrowed string arg → bool (constantly true
      * — this synchronous runtime never queues backpressure). stdoutWrite
      * shares console.log's stream, each call is submitted promptly, and
@@ -4379,6 +5205,9 @@ function buildLibFnSignatures() {
      * never throws. */
     "process.stdoutWrite": { argTypes: [STRING], result: BOOL },
     "process.stdio": { argTypes: [F64], result: DYN },
+    /** The same stream object for a procStream VALUE (the cursor methods'
+     * receiver): its scalar representation IS the descriptor. */
+    "process.stdioOf": { argTypes: [PROCSTREAM_T], result: DYN },
     /** The same stream object, reached by the typed write-slot lowering
      * (the write method as a value, its replacement, a patched program's
      * typed writes): identical at run time. */
@@ -4463,6 +5292,10 @@ function buildLibFnSignatures() {
      * (URLSearchParams names/values). Borrowed dyn; +1 string. May-throw. */
     "dyn.toStringCoerce": { argTypes: [DYN], result: STRING },
     "dyn.stringConstructor": { argTypes: [DYN], result: STRING },
+    /** Registers a class's compiled String(instance) (the conversion method
+     * its instances run) under the class's instance-capsule type key, for
+     * the untyped conversion. */
+    "dyn.registerClassToString": { argTypes: [STRING, DYN], result: VOID },
     "dyn.propertyKey": { argTypes: [DYN], result: DYN },
     "dyn.toNumeric": { argTypes: [DYN], result: DYN },
     "dyn.increment": { argTypes: [DYN, BOOL], result: DYN },
@@ -4514,11 +5347,13 @@ function buildLibFnSignatures() {
     "global.undefRead": { argTypes: [STRING], result: VOID },
     "console.native": { argTypes: [], result: DYN },
     /** node:console Console instances (scr_console_native.c): new mints the
-     * handle over the stdout/stderr fds (1/2; 0 = a stream binds next) and
-     * the ignoreErrors flag; bind attaches a borrowed writable stream to
-     * target 0 (stdout) or 1 (stderr); write prints `text\n` to the
-     * selected target of an instance or the global console handle. */
-    "console.new": { argTypes: [F64, F64, BOOL], result: DYN },
+     * handle over the stdout/stderr fds (1/2; 0 = a stream binds next), the
+     * ignoreErrors flag and the groupIndentation (a number, or null for
+     * undefined: Node's validateInteger runs here); bind attaches a borrowed
+     * writable stream to target 0 (stdout) or 1 (stderr); write prints
+     * `text\n` to the selected target of an instance or the global console
+     * handle. */
+    "console.new": { argTypes: [F64, F64, BOOL, DYN], result: DYN },
     "console.bind": { argTypes: [DYN, F64, null], result: VOID },
     "console.write": { argTypes: [DYN, STRING, BOOL], result: VOID },
     /** The global console's remaining members (scr_console_native.c; the
@@ -4548,6 +5383,27 @@ function buildLibFnSignatures() {
     "console.table": { argTypes: [DYN, DYN], result: VOID },
     "console.dirDyn": { argTypes: [DYN, F64], result: STRING },
     "console.dirHidden": { argTypes: [DYN, F64], result: STRING },
+    /** The same members on a Console instance (scr_console_native.c), which
+     * keeps its own counters, timers and group indentation and writes to
+     * its own stdout/stderr targets. count prints "label: n"; countReset
+     * answers the warning text for an unknown (or non-string) label, ""
+     * otherwise; time answers the duplicate-label warning text or "";
+     * timeEnd/timeLog answer the formatted elapsed time, or "" for an
+     * unknown label (timeEnd drops the timer). group adds (+1) or removes
+     * (-1) one indentation step of the instance's groupIndentationWidth.
+     * clear writes the cursor-home and erase-down sequences when the
+     * instance's stdout is a terminal. table renders and prints Node's
+     * table; trace prints "Trace[: text]" and the captured frames to the
+     * instance's stderr. */
+    "console.instCount": { argTypes: [DYN, STRING], result: VOID },
+    "console.instCountReset": { argTypes: [DYN, DYN], result: STRING },
+    "console.instTime": { argTypes: [DYN, STRING], result: STRING },
+    "console.instTimeEnd": { argTypes: [DYN, STRING], result: STRING },
+    "console.instTimeLog": { argTypes: [DYN, STRING], result: STRING },
+    "console.instGroup": { argTypes: [DYN, F64], result: VOID },
+    "console.instClear": { argTypes: [DYN], result: VOID },
+    "console.instTable": { argTypes: [DYN, DYN, DYN], result: VOID },
+    "console.instTrace": { argTypes: [DYN, STRING], result: VOID },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Arms the runtime check for the Node globals the native runtime does not
@@ -4674,6 +5530,8 @@ function buildLibFnSignatures() {
     "weakSet.new": { argTypes: [DYN], result: DYN },
     "finalizationRegistry.new": { argTypes: [DYN], result: DYN },
     "finalizationRegistry.is": { argTypes: [DYN], result: BOOL },
+    "weakRef.new": { argTypes: [DYN], result: DYN },
+    "weakRef.is": { argTypes: [DYN], result: BOOL },
     "dyn.fromEntries": { argTypes: [DYN], result: DYN },
     "bytes.constructor": { argTypes: [STRING], result: DYN },
     "bytes.instanceOf": { argTypes: [DYN, DYN, STRING], result: BOOL },
@@ -4743,6 +5601,11 @@ function buildLibFnSignatures() {
     "dyn.objEntryPairs": { argTypes: [DYN], result: VOID },
     "dyn.hasOwn": { argTypes: [DYN, STRING], result: BOOL },
     "dyn.propertyIsEnumerable": { argTypes: [DYN, STRING], result: BOOL },
+    /** Object.prototype.isPrototypeOf(receiver, value) over checked-dynamic
+     * operands: ToObject throws on a nullish receiver, and the argument's
+     * prototype chain is walked comparing each link with the receiver by
+     * identity. */
+    "dyn.isPrototypeOf": { argTypes: [DYN, DYN], result: BOOL },
     "dyn.assign": { argTypes: [DYN, DYN], result: DYN },
     "dyn.copyDataProperties": { argTypes: [DYN, DYN], result: DYN },
     "dyn.objectRest": { argTypes: [DYN, DYN], result: DYN },
@@ -4789,6 +5652,9 @@ function buildLibFnSignatures() {
     "dyn.arrayPrototype": { argTypes: [], result: DYN },
     "dyn.arrayConstructor": { argTypes: [], result: DYN },
     "dyn.objectPrototype": { argTypes: [], result: DYN },
+    /** Function.prototype as a value: an anonymous function answering
+     * undefined, length 0 and name "", one value per program. */
+    "dyn.functionPrototype": { argTypes: [], result: DYN },
     "dyn.errorPrototype": { argTypes: [], result: DYN },
     "dyn.inheritsErrorPrototype": { argTypes: [DYN], result: BOOL },
     "dyn.errorCaptureStackTraceFunction": { argTypes: [], result: DYN },
@@ -4932,6 +5798,7 @@ function buildLibFnSignatures() {
     "regex.new": { argTypes: [STRING, STRING], result: REGEX },
     "regex.resetLastIndex": { argTypes: [REGEX, F64], result: VOID },
     "regex.newChecked": { argTypes: [DYN, DYN], result: REGEX },
+    "regex.callChecked": { argTypes: [DYN, DYN], result: REGEX },
     "regex.replaceCallback": { argTypes: [STRING, REGEX, DYN, BOOL], result: STRING },
     // Reads of capture args[1] of an execSpans/matchGroups result:
     // `capture === args[2]`, Number(capture) and parseInt(capture,
@@ -5180,6 +6047,10 @@ function buildLibFnSignatures() {
      * stream). Both answer the stream (+1) and throw ERR_INVALID_ARG_TYPE
      * for a value that is not an AbortSignal; they link the event-target
      * unit (addAbortListener). */
+    /** stream.getDefaultHighWaterMark(objectMode) (scr_stream_get_default_hwm): the default new streams take. */
+    "stream.getDefaultHwm": { argTypes: [BOOL], result: F64 },
+    /** stream.setDefaultHighWaterMark(objectMode, value): ERR_OUT_OF_RANGE for a negative or fractional value. */
+    "stream.setDefaultHwm": { argTypes: [BOOL, F64], result: VOID },
     "stream.addAbortSignal": { argTypes: [null, DYN], result: VOID },
     "stream.addAbortSignalFn": { argTypes: [DYN, null], result: VOID },
     "stream.finished": { argTypes: [null, null], result: VOID },
@@ -5343,6 +6214,9 @@ function buildLibFnSignatures() {
      * readable.fromIter is Readable.from over a class iterator, already
      * opened: [checked-dynamic { next } object, flags, highWaterMark];
      * readable.fromAsyncIter is the async class iterator's twin. */
+    /** readable.iterator (scr_stream_iterator.c): the readable and the
+     * destroyOnReturn flag; the async iterator object. */
+    "readable.iterator": { argTypes: [null, BOOL], result: DYN },
     "readable.nextChunk": { argTypes: [null], result: VOID },
     "readable.nextChunkDyn": { argTypes: [null], result: VOID },
     "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },
@@ -5537,6 +6411,10 @@ function buildLibFnSignatures() {
     "assert.deqEnter": { argTypes: [null, null], result: BOOL },
     "assert.deqLeave": { argTypes: [], result: VOID },
     "assert.match": { argTypes: [STRING, REGEX, BOOL, STRING, BOOL], result: VOID },
+    /* expectsError's string-matcher check: a thrown object whose `message`
+     * is the matcher string, or the string itself, throws
+     * ERR_AMBIGUOUS_ARGUMENT; otherwise returns. */
+    "assert.throwsAmbiguous": { argTypes: [DYN, STRING], result: VOID },
     "assert.throwsNone": { argTypes: [BOOL, STRING, BOOL, STRING, BOOL], result: VOID },
     "assert.throwsMismatch": {
       argTypes: [STRING, { kind: "object", className: "%Error" }, STRING, BOOL, BOOL],
@@ -5644,6 +6522,7 @@ function buildLibFnSignatures() {
      * count: the runtime reads the options and renders the checked-dynamic
      * view. */
     "insp.inspect": { argTypes: [DYN, DYN, DYN, DYN, F64], result: STRING },
+    "insp.inspectDir": { argTypes: [DYN, DYN, F64], result: STRING },
     /** A [util.inspect.custom] method's call: whether ctx.customInspect is
      * set, its depth argument (the remaining depth at recursion r of depth
      * d), its options object and util.inspect, then its result rendered: a
@@ -5867,6 +6746,10 @@ function buildLibFnSignatures() {
     "rl.setPrompt": { argTypes: [F64, STRING], result: VOID },
     "rl.setPromptDyn": { argTypes: [F64, DYN], result: VOID },
     "rl.getPrompt": { argTypes: [F64], result: STRING },
+    /** getPrompt() for a checked-dynamic use: the stored prompt value
+     * itself (a number or object set through an untyped setPrompt keeps its
+     * identity). */
+    "rl.getPromptDyn": { argTypes: [F64], result: DYN },
     "rl.write": { argTypes: [F64, STRING], result: VOID },
     /** write(data, key): [handle, hasData, data, hasKey, hasName, name,
      * ctrl, meta, shift] */
@@ -5958,10 +6841,22 @@ function buildLibFnSignatures() {
      * errorBoxer, listenForError] → a pending promise of any[]; the boxers
      * turn the event's and the 'error' tuple into that array. */
     "events.once": { argTypes: [null, STRING, null, null, BOOL], result: VOID },
-    /** events.once(emitter, name, { signal }) (scr_events_once_signal.c):
-     * events.once's arguments plus the checked-dynamic signal (an
-     * AbortSignal or undefined). */
+    /** events.once(emitter, name, options) (scr_events_once_signal.c):
+     * events.once's arguments plus the checked-dynamic options value, whose
+     * `signal` the runtime validates as Node does. */
     "events.onceSignal": { argTypes: [null, STRING, null, null, BOOL, DYN], result: VOID },
+    /** events.once over a name the program does not resolve to one of its
+     * typed tuples (scr_events_once_signal.c): [emitter, name, options] → a
+     * pending promise of the event's arguments. The listeners are
+     * checked-dynamic function values, so the name crosses as the value the
+     * receiver's once() receives and the promise carries the emit's
+     * arguments as the emit provides them. Never throws: invalid options, a
+     * name that cannot key the registry, an aborted signal, a throwing
+     * 'newListener' listener and every event failure reject it. */
+    "events.onceAny": {
+      argTypes: [null, DYN, DYN],
+      result: { kind: "promise", inner: arrayOf(DYN) },
+    },
     /** The resolve-value forms: [ms?, value, ref] → a pending promise of the
      * value's type that copies the borrowed already-resolved `value` promise
      * when the timer (or immediate) fires; ref false unrefs it. The result
@@ -5980,23 +6875,27 @@ function buildLibFnSignatures() {
     /** node:diagnostics_channel (scr_dc.c, linked when any dc.* appears —
      * the zlib gating precedent): a process-global name→channel registry;
      * channel values are f64 handles (type-mapper.ts maps Channel to F64, the
-     * readline.Interface pattern). Subscribers are dyn function values —
-     * identity-compared by unsubscribe, called (message, name) by publish
-     * over a SNAPSHOT of the list (a subscriber unsubscribing itself
-     * mid-publish still lets its siblings fire, Node's behavior). dc.publish
-     * MAY THROW: a subscriber's throw propagates out of publish (catchable
-     * there) where Node routes it to triggerUncaughtException — the
-     * documented divergence. subscribe/unsubscribe throw Node's
-     * ERR_INVALID_ARG_TYPE TypeError for non-function subscribers. */
-    "dc.channel": { argTypes: [STRING], result: F64 },
-    "dc.subscribe": { argTypes: [STRING, DYN], result: VOID },
-    "dc.unsubscribe": { argTypes: [STRING, DYN], result: BOOL },
-    "dc.hasSubscribers": { argTypes: [STRING], result: BOOL },
+     * readline.Interface pattern). Names and subscribers cross as dyn values
+     * so the runtime applies Node's own checks: channel()/subscribe() raise
+     * ERR_INVALID_ARG_TYPE for a name that is not a string, subscribe raises
+     * the "subscription" TypeError for a non-function, and
+     * unsubscribe/hasSubscribers answer false there (a symbol name fences
+     * with SC2020). Subscribers are identity-compared by unsubscribe and
+     * called (message, name) by publish over a SNAPSHOT of the list (a
+     * subscriber unsubscribing itself mid-publish still lets its siblings
+     * fire, Node's behavior). A subscriber throw does not stop the dispatch
+     * and does not leave publish: like Node's
+     * process.nextTick(triggerUncaughtException), it surfaces as an uncaught
+     * exception on a later tick. */
+    "dc.channel": { argTypes: [DYN], result: F64 },
+    "dc.subscribe": { argTypes: [DYN, DYN], result: VOID },
+    "dc.unsubscribe": { argTypes: [DYN, DYN], result: BOOL },
+    "dc.hasSubscribers": { argTypes: [DYN], result: BOOL },
     "dc.publish": { argTypes: [F64, DYN], result: VOID },
     "dc.chanSubscribe": { argTypes: [F64, DYN], result: VOID },
     "dc.chanUnsubscribe": { argTypes: [F64, DYN], result: BOOL },
     "dc.chanHasSubscribers": { argTypes: [F64], result: BOOL },
-    "dc.chanName": { argTypes: [F64], result: STRING },
+    "dc.chanName": { argTypes: [F64], result: DYN },
     /** TracingChannel (dc.tracingChannel): a registry entry of the five
      * event channels, an f64 handle like Channel (type-mapper.ts). tcSubscribe/
      * tcUnsubscribe walk a dyn handlers object's five event keys (truthy
@@ -6019,7 +6918,14 @@ function buildLibFnSignatures() {
      * the executor IS setImmediate, so resolve rides the immediate queue
      * (scr_async.c). Never throws. */
     "timers.immediatePromise": { argTypes: [], result: { kind: "promise", inner: DYN } },
-    "dc.tracingChannel": { argTypes: [STRING], result: F64 },
+    "dc.tracingChannel": { argTypes: [DYN], result: F64 },
+    /** node:trace_events (scr_async_dyn.c): createTracing(options) validates
+     * the options object and its categories array (Node's ERR_INVALID_ARG_TYPE
+     * and ERR_TRACE_EVENTS_CATEGORY_REQUIRED — MAY THROW) and answers a
+     * Tracing handle; getEnabledCategories answers the sorted, de-duplicated
+     * categories of the enabled Tracing objects, or the undefined value. */
+    "te.createTracing": { argTypes: [DYN], result: DYN },
+    "te.getEnabledCategories": { argTypes: [], result: DYN },
     "dc.tracingChannelOf": { argTypes: [F64, F64, F64, F64, F64], result: F64 },
     "dc.tcChannel": { argTypes: [F64, F64], result: F64 },
     "dc.tcHasSubscribers": { argTypes: [F64], result: BOOL },
@@ -6058,6 +6964,13 @@ function buildLibFnSignatures() {
      * Node's payload. */
     "process.onRejectionHandled": { argTypes: [DYN, BOOL], result: VOID },
     "process.offRejectionHandled": { argTypes: [DYN], result: VOID },
+    /** process.on/once/off('multipleResolves', fn): the third rejection-event
+     * registry. A resolve/reject that reaches an already-resolved promise
+     * delivers ('resolve' | 'reject', promise, value) on a nextTick queued
+     * at that settle, once per settle in settle order, and the first
+     * delivery that reaches a listener warns DEP0160 once per process. */
+    "process.onMultipleResolves": { argTypes: [DYN, BOOL], result: VOID },
+    "process.offMultipleResolves": { argTypes: [DYN], result: VOID },
     /** process warnings (scr_async_dyn.c): onWarning/offWarning register
      * dyn listeners; emitWarning applies Node's full argument grammar over
      * the call's dyn argument vector (ERR_INVALID_ARG_TYPE TypeErrors — MAY
@@ -6065,6 +6978,14 @@ function buildLibFnSignatures() {
      * then the listeners. */
     "process.onWarning": { argTypes: [DYN], result: VOID },
     "process.offWarning": { argTypes: [DYN], result: VOID },
+    /** process.emit(event, ...args): Node's EventEmitter emit on process,
+     * for the events whose listeners cross as checked-dynamic callbacks. The
+     * event name and its argument vector arrive as checked values; the
+     * result is whether any listener existed. */
+    "process.emit": { argTypes: [DYN, DYN], result: BOOL },
+    /** process.emit('error', ...): no listener can be registered for it, so
+     * the runtime throws Node's unhandled-error contract. */
+    "process.emitError": { argTypes: [DYN], result: VOID },
     "process.emitWarning": { argTypes: [DYN], result: VOID },
     /** A Warning-typed process warning with this message (the console
      * members' warnings), emitted on the next tick as Node's emitWarning
@@ -6119,6 +7040,30 @@ function buildLibFnSignatures() {
     /** AsyncLocalStorage.snapshot(): a dyn function (cb, ...args) that runs
      * cb in the context active at the snapshot. */
     "als.snapshot": { argTypes: [], result: DYN },
+    /** AsyncLocalStorage.withScope(store): enters the store now and answers
+     * the native RunScope handle whose dispose()/[Symbol.dispose] installs
+     * the value getStore() answered before it again. */
+    "als.withScope": { argTypes: [F64, DYN], result: DYN },
+    /** AsyncResource (node:async_hooks — scr_async_dyn.c): a resource is a
+     * checked-dynamic handle whose payload (its type, its captured store
+     * context and its ids) lives exactly as long as the value does. ar.new
+     * [type, options] applies Node's checks (MAY THROW: ERR_INVALID_ARG_TYPE
+     * for a non-string type or a non-object options read,
+     * ERR_INVALID_ASYNC_ID for a bad triggerAsyncId); ar.runInScope
+     * [handle, fn, thisArg, args-array] runs the function in the resource's
+     * store context and ids (MAY THROW: the call itself); ar.bind
+     * [handle, fn, thisArg] answers Node's bound function (MAY THROW:
+     * ERR_INVALID_ARG_TYPE for a non-function); ar.bindStatic
+     * [fn, type, thisArg] applies the same checks plus the type defaulting
+     * (MAY THROW); ar.emitDestroy answers the handle; asyncId/triggerAsyncId
+     * are the ids the resource was given. */
+    "ar.new": { argTypes: [DYN, DYN], result: DYN },
+    "ar.runInScope": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "ar.bind": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "ar.bindStatic": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "ar.emitDestroy": { argTypes: [DYN], result: DYN },
+    "ar.asyncId": { argTypes: [DYN], result: F64 },
+    "ar.triggerAsyncId": { argTypes: [DYN], result: F64 },
     /** Channel.bindStore/unbindStore/runStores (scr_dc.c): the
      * AsyncLocalStorage integration — set-semantics bindings per store,
      * runStores entering every bound store with transform(data) around the
@@ -6246,13 +7191,35 @@ function buildLibFnSignatures() {
     "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
     "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
     "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "crypto.signOneshotCb": { argTypes: [DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.signOneshotMaybe": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
     "crypto.diffieHellman": { argTypes: [DYN, DYN], result: DYN },
     "crypto.verifyOneshot": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
-    "crypto.createSign": { argTypes: [DYN], result: DYN },
-    "crypto.createVerify": { argTypes: [DYN], result: DYN },
+    "crypto.verifyOneshotCb": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
+    "crypto.verifyOneshotMaybe": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: DYN },
+    "crypto.publicEncrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.privateDecrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.privateEncrypt": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.publicDecrypt": { argTypes: [DYN, DYN], result: DYN },
+    /** setEngine's checked-dynamic (engine[, flags]) form and the deprecated
+     * crypto.fips read, which reports DEP0093 once per process. */
+    "crypto.setEngine": { argTypes: [DYN, DYN], result: VOID },
+    "crypto.fipsGet": { argTypes: [], result: F64 },
+    "crypto.createSign": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.createVerify": { argTypes: [DYN, DYN], result: DYN },
     /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array
      * result (map and filter of a Buffer return a Buffer). */
     "bytes.copyBrand": { argTypes: [BYTES_U8, BYTES_U8], result: VOID },
+    /** The typed-array callback methods' entry guard (t262-dc2), for a
+     * mutableBuffers program: Node's ValidateTypedArray throws for a
+     * detached or out-of-bounds receiver before the visit starts. The
+     * second argument names the method in Node's message (%TypedArray%.prototype.<name>).
+     * Borrowed args; VOID, may throw. */
+    "bytes.requireLive": { argTypes: [null, STRING], result: VOID },
+    /** The element at an index as a JavaScript value (t262-dc2): undefined
+     * past the live length, where a visit's captured bound can run past a
+     * shrink. Owned (+1) checked-dynamic result; never throws. */
+    "bytes.itemDyn": { argTypes: [null, F64], result: DYN },
     "text.decodeBufferSource": { argTypes: [DYN], result: STRING },
     "text.decodeOptions": { argTypes: [BYTES_U8, BOOL, BOOL], result: STRING },
     "text.decodeStream": { argTypes: [DYN, BYTES_U8, F64, BOOL, BOOL, BOOL], result: STRING },

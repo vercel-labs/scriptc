@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dgram-close-suppresses-pending.ts"
+ ],
+ "diags": []
+}

@@ -1329,11 +1329,23 @@ export function emitClassShapes(
     // An instance that keeps its class id in the rc word counts in the
     // low half (CLASS_ID_OFFSET).
     const count = meta.idInRc ? "i32" : host.sizeType;
+    // A lifetime-region instance has no header word to test immortality in,
+    // so a class that is the arm of a `C | null | undefined` union must skip
+    // the null sentinel explicitly; it reaches retain and release as an
+    // owned value of that union, whose unit arm the sentinel encodes.
+    const nullSentinel = lifetime && host.nullableUnions.classMayBeNullSentinel(cls.name);
     // A tree class's retain is the no-op the tree branch below emits: a
     // tree value has one owner, so nothing ever raises its count.
     if (!meta.tree)
       defs.push(
-        ...retainBody(host, mangleClassRetain(cls.name), `retain ${cls.name}`, lifetime, count),
+        ...retainBody(
+          host,
+          mangleClassRetain(cls.name),
+          `retain ${cls.name}`,
+          lifetime,
+          count,
+          nullSentinel,
+        ),
         ``,
       );
 
@@ -1668,6 +1680,7 @@ export function emitClassShapes(
               )
             : null,
           count,
+          nullSentinel,
         ),
         ``,
       );

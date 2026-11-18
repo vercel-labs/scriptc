@@ -40,8 +40,14 @@ typedef struct ScrEvent {
   ScrStr *type;
   ScrDyn *target;  /* +1, NULL until dispatched */
   ScrDyn *detail;  /* CustomEvent's detail, MessageEvent's data (+1); NULL for Event */
+  ScrStr *origin;       /* MessageEvent: owned */
+  ScrStr *last_event_id; /* MessageEvent: owned */
+  ScrDyn *ports;        /* MessageEvent: owned array, or NULL */
+  ScrDyn *source;       /* MessageEvent: the init dictionary's MessagePort, owned */
+  ScrStr *reason;       /* CloseEvent: owned */
+  int64_t code;         /* CloseEvent */
   double time_stamp;
-  bool custom, message, bubbles, cancelable, composed, trusted;
+  bool custom, message, close, was_clean, bubbles, cancelable, composed, trusted;
   bool default_prevented, propagation_stopped, stop, dispatching, in_passive;
   bool tracked;
   struct ScrEvent *tracked_prev, *tracked_next;
@@ -75,7 +81,10 @@ ScrDyn *scr_event_new_trusted(const char *type);
 ScrDyn *scr_event_target_new(void);
 ScrDyn *scr_event_new(ScrDyn *args);
 ScrDyn *scr_custom_event_new(ScrDyn *args);
-/* `v instanceof Event` (kind 0), `CustomEvent` (1), `EventTarget` (2). */
+ScrDyn *scr_message_event_new(ScrDyn *args);
+ScrDyn *scr_close_event_new(ScrDyn *args);
+/* `v instanceof Event` (kind 0), `CustomEvent` (1), `EventTarget` (2),
+ * `MessageEvent` (3), `CloseEvent` (4). */
 bool scr_event_is(const ScrDyn *v, double kind);
 /* The node:events helpers over EventTarget receivers: Node's
  * getEventListeners(target, type) answers +1, an array of the type's
@@ -110,16 +119,22 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool
  * which reaches the class's compiled methods. Without it a capsule's own
  * view answers. */
 void scr_event_handle_event_reader(ScrDyn *reader);
-/* BroadcastChannel's EventTarget side, which the worker events unit
- * reaches through this table (that unit links without this one): a core
- * of its own, dispatching a 'message' MessageEvent with the data, the
- * EventTarget methods (false: not one of them), and the on<type>
- * attributes. scr_et_broadcast_install sets the table (defined in
- * scr_json.c, which every program links). */
+/* BroadcastChannel's and MessagePort's EventTarget side, which the worker
+ * events unit reaches through this table (that unit links without this
+ * one): a core of its own, dispatching a 'message' MessageEvent with the
+ * data or another event value, the EventTarget methods (false: not one of
+ * them), and the on<type> attributes. scr_et_broadcast_install sets the
+ * table (defined in scr_json.c, which every program links). */
 typedef struct {
   ScrEventTargetCore *(*core_new)(const char *cls);
   void (*core_free)(ScrEventTargetCore *core);
   void (*dispatch_message)(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *data);
+  /* a plain (untrusted) Event of the given type, as Node's MessagePort
+   * sends for 'close' */
+  void (*dispatch_type)(ScrEventTargetCore *core, ScrDyn *self, const char *type);
+  /* the type's listener count on the core (the on<type> attribute counts
+   * as one, as Node's port bookkeeping expects) */
+  double (*listener_count)(ScrEventTargetCore *core, const char *type);
   bool (*method)(ScrEventTargetCore *core, ScrDyn *self, const char *method, ScrDyn *const *args,
                  size_t argc, ScrDyn **out);
   ScrDyn *(*method_value)(const char *name, size_t length);
@@ -136,6 +151,49 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_broadcast_core_fn)(const ScrDyn *d);
 ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
+/* events.once(target, name) and events.once(target, name, options) over a
+ * receiver resolved at runtime: an EventTarget, an EventEmitter (a
+ * NodeEventTarget handle, through its own once()) or any other value.
+ * Never throw; +1, and every failure rejects the promise. */
+ScrPromise *scr_events_once_target(ScrDyn *target, ScrStr *name);
+ScrPromise *scr_events_once_target_signal(ScrDyn *target, ScrStr *name, ScrDyn *options);
+/* events.once's options argument: Node's validateObject(options, 'options')
+ * and validateAbortSignal(options.signal, 'options.signal'), in that order,
+ * with the signal property read between them. `options` NULL or undefined
+ * is the default (no options). Answers the signal +1 (undefined for the
+ * plain form), or NULL with the exception pending. */
+ScrDyn *scr_events_once_options(ScrDyn *options);
+/* events.on(emitter, name, options): the async iterator over a receiver's
+ * events, resolved at runtime (`recv`: any value, with `options` undefined
+ * when not passed) or from a receiver compiled as an emitter (`em`, its
+ * registry, with `recv` for the protocol's other members and pause()/
+ * resume()). Both validate Node's options ladder and throw on a bad
+ * option, signal, watermark or receiver; +1.
+ *
+ * `pause_fn`/`resume_fn` are the receiver's own methods as callable values
+ * (NULL when it has none): a compiled emitter's methods are not reachable
+ * through `recv`'s checked-dynamic view, which holds fields only, so the
+ * compiler hands them over and the watermark control calls them with the
+ * receiver as `this`. Without them the runtime reads the members from
+ * `recv` as Node does. */
+ScrDyn *scr_events_on(ScrDyn *recv, ScrDyn *name, ScrDyn *options);
+ScrDyn *scr_events_on_emitter(ScrEmitter *em, ScrDyn *recv, ScrDyn *pause_fn, ScrDyn *resume_fn,
+                              ScrDyn *name, ScrDyn *options);
+/* The same over a receiver compiled as an emitter whose typed emits invoke
+ * adapter closures: `boxer`/`error_boxer` are the compiler's conversions of
+ * the event's tuple and of 'error''s to a checked-dynamic argument array
+ * (+1, consumed), `adapter`/`inv` and `error_adapter`/`error_inv` the
+ * entries built from them (the closure's function pointer and its va_list
+ * shim). The close and abort listeners ignore the event's arguments. */
+ScrDyn *scr_events_on_typed(ScrEmitter *em, ScrDyn *recv, ScrDyn *pause_fn, ScrDyn *resume_fn,
+                            ScrDyn *name, ScrClosure *boxer, ScrClosure *error_boxer,
+                            void *adapter, ScrEeInvoke inv, void *error_adapter,
+                            ScrEeInvoke error_inv, ScrDyn *options);
+/* The fire entries the compiler's adapter declarations reach: the boxed
+ * event arguments (moves in) become the iterator's next value, or reject
+ * it for 'error'. */
+void scr_events_on_fire(ScrClosure *cb, ScrArr *args);
+void scr_events_on_error_fire(ScrClosure *cb, ScrArr *args);
 /* timers/promises setTimeout(delay, value, options) and setImmediate(value,
  * options) with options.signal (an undefined signal takes the plain form):
  * `value` is the already-resolved promise of the resolve value, borrowed.

@@ -29,6 +29,7 @@ import {
   throughBundledShimForwarder,
 } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
+import { SCRIPTC_CONDITION, scriptcConditionFirst } from "./scriptc-condition.js";
 import {
   trackedAccessibleEntries,
   trackedDirectoryExists,
@@ -447,23 +448,27 @@ function loadAsJsDirectory(base: string): string | null {
  * declaration twins only. */
 
 /** The conditions 5.9.3's bundler resolution enables for import sites
- * (probed: "module"/"node"/"browser"/"bundler" keys are NOT matched). */
-const EXPORT_CONDITIONS = new Set(["types", "import", "default"]);
+ * (probed: "module"/"node"/"browser"/"bundler" keys are NOT matched), and
+ * scriptc's own: the checker's host serves each manifest with the scriptc
+ * branch under those keys (scriptc-condition.ts), so the declarations and
+ * sources this world finds are the ones the checker types. */
+const EXPORT_CONDITIONS = new Set(["types", "import", "default", SCRIPTC_CONDITION]);
 
 /** The bundler condition set minus "types" — what an opted-in --npm-static
  * package resolves with (its declarations are hidden from resolution; the
  * runtime JS is the compile target). Mirrors the types-stripped
  * package.json the tsgo host serves for the same package. */
-const JS_ONLY_CONDITIONS = new Set(["import", "default"]);
-const JS_REQUIRE_CONDITIONS = new Set(["require", "default"]);
+const JS_ONLY_CONDITIONS = new Set(["import", "default", SCRIPTC_CONDITION]);
+const JS_REQUIRE_CONDITIONS = new Set(["require", "default", SCRIPTC_CONDITION]);
 
 /** Node's ESM runtime conditions. Source-only workspace detection follows
  * the executable branch rather than the checker-only "types" branch. */
-const RUNTIME_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
+const RUNTIME_IMPORT_CONDITIONS = new Set(["import", "node", "default", SCRIPTC_CONDITION]);
 
 /** package.json "exports" lookup: exact subpath keys, then '*' patterns
  * (longest literal prefix wins), condition objects matched against the
- * supplied set in object-key order, arrays first-resolvable. Returns the
+ * supplied set in object-key order (a scriptc entry first, behind a types
+ * entry the set matches), arrays first-resolvable. Returns the
  * target path relative to the package directory, or null. */
 export function resolveExports(
   exports: unknown,
@@ -482,7 +487,11 @@ export function resolveExports(
       return null;
     }
     if (target && typeof target === "object") {
-      for (const [key, value] of Object.entries(target)) {
+      const entries = Object.entries(target);
+      const ordered = conditions.has(SCRIPTC_CONDITION)
+        ? scriptcConditionFirst(entries, conditions.has("types"))
+        : entries;
+      for (const [key, value] of ordered) {
         if (key.startsWith(".")) continue;
         if (conditions.has(key)) {
           const r = resolveTarget(value, wildcard);

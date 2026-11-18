@@ -245,8 +245,8 @@ test("the body of a signature-blocked function reports its diagnostics", () => {
     "SC2004 uses of 'extra' inherit the blocker on its declaration",
     "SC2004 uses of 'measure' inherit the blocker on its declaration",
     "SC2004 uses of 'target' inherit the blocker on its declaration",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new BigInt64Array' is part of the standard library types but has no scriptc lowering yet",
   ]);
   // Nothing calls unused or described: their signatures and bodies report
   // as unreached. described's declared `this` is its receiver, so
@@ -254,9 +254,9 @@ test("the body of a signature-blocked function reports its diagnostics", () => {
   expect(sites(coverage.unreached?.diagnostics ?? [])).toEqual([
     "SC2004 uses of 'extra' inherit the blocker on its declaration",
     "SC2004 uses of 'target' inherit the blocker on its declaration",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new BigInt64Array' is part of the standard library types but has no scriptc lowering yet",
   ]);
   // The bodies' statements still count once each, as not static.
   const un = coverage.unreached?.stats;
@@ -697,7 +697,7 @@ test("--explain-dynamic lists the type failures localized failure would turn int
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;
   // Locals, fields and parameters degrade (stages L1 and L2), and the
-  // 'any' field compiles; only the refused WeakRef field and its
+  // 'any' field compiles; only the refused BigInt64Array field and its
   // construction remain.
   expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name])).toEqual([
     ["field", "tools"],
@@ -1286,8 +1286,9 @@ test("a cycle whose top level calls a builtin with a builtin function value is a
 
 test("Node islands (report-only): one package per class, gap islands first", async () => {
   // ni-gap (a fence inside the native subset), ni-eval (new Function),
-  // ni-ctor (a constructor function, carrying ni-dep), ni-bundled (not
-  // compilable as shipped), ni-typed (native, also reached from ni-ctor).
+  // ni-ctor (a class prototype grown at run time, carrying ni-dep),
+  // ni-bundled (not compilable as shipped), ni-typed (native, also reached
+  // from ni-ctor).
   const entry = fixture("node-islands/main.ts");
   await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-node-islands.txt");
   const { coverage, sourceTexts } = analyze(entry);
@@ -1314,7 +1315,7 @@ test("Node islands (report-only): one package per class, gap islands first", asy
   expect(envelope.nodeIslands?.islands.map((i) => [i.package, i.class, i.at?.line])).toEqual([
     ["ni-gap", "gap", 7],
     ["ni-eval", "runtime", 4],
-    ["ni-ctor", "object-model", 9],
+    ["ni-ctor", "object-model", 26],
     ["ni-bundled", "packaging", undefined],
   ]);
   // The gates: the blocker gate is today's build (which refuses
@@ -1490,12 +1491,11 @@ test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC81
   expect(analyze(entry).coverage.nodeIslands).toBeUndefined();
   const { coverage } = analyze(entry, { nodeIslands: { strictUserJs: true } });
   expect(coverage.diagnostics.map((d) => d.code).filter((c) => c.startsWith("SC81"))).toEqual([
+    "SC8103",
     "SC8101",
     "SC8102",
-    "SC8103",
     "SC8104",
     "SC8105",
-    "SC8101",
   ]);
   await expect(
     renderCoverage(

@@ -50,6 +50,8 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_arena.c",
   "scr_itable.c",
   "scr_slots.c",
+  // Parallel loops (@scriptc/experimental); it links only into programs that call them.
+  "scr_parallel.c",
   "scr_alloc.c",
   // crypto.getCipherInfo's table; it links only into programs that call it.
   "scr_cipher_info.c",
@@ -95,6 +97,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
+  // crypto.argon2 and crypto.argon2Sync.
+  ["scr_argon2.c", "argon2"],
   // The worker unit's SHARE_ENV symbol reaches the symbol unit
   // (scr_worker_events.c), which assembles symbol equality messages here.
   ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
@@ -139,7 +143,17 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
   [
     "scr_async_dyn.c",
-    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland", "nodeTest"),
+    any(
+      "dynAsync",
+      "dynInvoke",
+      "dc",
+      "fileHandle",
+      "nativeFetch",
+      "nodeIsland",
+      "nodeTest",
+      // The stub resolver settles its promise results through the unit.
+      "dnsResolve",
+    ),
   ],
   // Promise statics with a foreign constructor (Promise.all.call(C, ...)):
   // the specification's algorithms over the checked-dynamic tier. Its
@@ -180,11 +194,20 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // events.once with options registers through the emitter and event-target units.
   ["scr_events_once_signal.c", "eventsOnceSignal"],
   ["scr_mime.c", "mime"],
+  // node:sqlite over the vendored SQLite archive (see vendorArchives).
+  ["scr_sqlite.c", "sqlite"],
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
-  ["scr_dyn_handle_class.c", "webStreams"],
+  ["scr_fs_web_stream.c", "fsWebStream"],
+  // The class installs (scr_dyn_handle_class_install) that web streams and
+  // the stub resolver's Resolver classes need.
+  ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve")],
   ["scr_util_timing.c", "utilTiming"],
+  // util.markPromiseAsHandled boxes and describes its argument through the
+  // checked-dynamic units.
+  ["scr_util_mark_handled.c", all("utilMarkPromiseAsHandled", "dynAsync")],
+  ["scr_util_trace_sigint.c", "utilTraceSigInt"],
   ["scr_dyn_handle.c", any("emitter", "netEffective")],
   // Worker programs link the symbol unit even without symbols of their own:
   // the Worker env option compares against worker_threads.SHARE_ENV.
@@ -197,10 +220,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_util.c", "parseArgs"],
   // Utility objects must only reference runtime families selected with them.
   ["scr_util_compare.c", all("parseArgs", "symbol")],
-  ["scr_util_style.c", all("parseArgs", "inspect", "dynAsync")],
+  // The inspect unit reads inspect.colors from the style unit's table, so
+  // any program that renders a colored value links it; styleText itself
+  // sets the inspect fact too.
+  ["scr_util_style.c", "inspect"],
   ["scr_util_callable.c", all("parseArgs", "inspect", "dynAsync", "dynInvoke", "regex")],
   // util.promisify over an untyped function creates dyn promises and calls.
   ["scr_util_promisify.c", all("utilPromisify", "dynAsync", "dynInvoke")],
+  // The custom-function protocol both promisify lowerings share.
+  ["scr_util_promisify_custom.c", "utilPromisify"],
   // Untyped EventEmitter and stream constructor values call listeners
   // through the dyn-invoke unit, inspect unhandled 'error' payloads and
   // create EventEmitter's private symbols.
@@ -225,6 +253,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
+  ["scr_stream_iterator.c", all("stream", "dynAsync", "symbol")],
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
   ["scr_stream_dyn.c", "streamDyn"],
@@ -271,18 +300,25 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],
   ["scr_loop_wsapoll.c", any("netEffective", "dgram")],
+  // The stream defaults the net and http units read at construction.
+  ["scr_stream_defaults.c", any("stream", "netEffective", "httpEffective")],
   ["scr_net.c", "netEffective"],
   ["scr_http.c", "httpEffective"],
   ["scr_http2.c", "http2"],
   ["scr_dgram.c", "dgram"],
   // The dns promise forms run over the dgram unit's callback forms.
   ["scr_dns_promises.c", all("dgram", "dnsPromises")],
+  // The stub resolver's queries (resolve/reverse/setServers, Resolver
+  // handles): the dgram unit's poller, and scr_idna.c's ToASCII for the
+  // query names (the link requirements pair dnsResolve with regex).
+  ["scr_dns_resolve.c", all("dgram", "dnsResolve")],
   // Sockets as untyped values run over the dgram unit.
   ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
   // TextEncoder and TextDecoder records boxed as untyped values.
   ["scr_text_codec_dyn.c", "textCodecDyn"],
-  ["scr_watch.c", "watch"],
+  ["scr_watch.c", any("watch", "watchEvents")],
   ["scr_watch_file.c", "watchFile"],
+  ["scr_watch_async.c", "watchEvents"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
@@ -323,6 +359,12 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // its file symbol in the executable, so no other program gets it.
   ["scr_node_island_child.c", "islandChild"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // Readable.toWeb pulls a Node readable into a web stream.
+  ["scr_stream_to_web.c", all("stream", "webStreams", "dynAsync")],
+  // Writable.fromWeb wraps a web WritableStream's writer.
+  ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
+  // Writable.toWeb wraps a native writable in a web WritableStream.
+  ["scr_stream_writable_to_web.c", all("stream", "webStreams", "dynAsync")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
@@ -423,6 +465,14 @@ export function variantsFor(source) {
     // default object, byte for byte.
     withJsObjectModel(variants);
   }
+  // util.isDeepStrictEqual's ArrayBuffer and SharedArrayBuffer arm asks the
+  // mutable-buffers registry whether either side is detached, and Node throws
+  // V8's construct TypeError when both report length 0 (scr_util_compare.c).
+  // The registry's ScrJsBufferOps table exists only in the object model build,
+  // so the unit's check needs that build: a program with the object model
+  // links this twin, and every other program keeps the default object, byte
+  // for byte.
+  if (source === "scr_util_compare.c") withJsObjectModel(variants);
   // The mutable-buffers registry (t262-dc C1/C2) is part of the JavaScript
   // object model build: its tables and the ScrJsBufferOps contract it fills
   // exist only there (SCR_JS_OBJECT_MODEL), so the unit selects that build
@@ -479,6 +529,13 @@ export function variantsFor(source) {
   // program's JavaScript object model build carries it (a program whose
   // JavaScript adds own properties to handles).
   if (source === "scr_dyn_integrity.c") {
+    withJsObjectModel(variants);
+  }
+  // A parallel loop's entry checks run the `subarray` semantics the Node
+  // implementation has: a detached target throws through the object model
+  // build's buffer registry. Every other program keeps the default object,
+  // byte for byte.
+  if (source === "scr_parallel.c") {
     withJsObjectModel(variants);
   }
   // Programs that assign process.emitWarning link the replacement-aware
@@ -775,6 +832,10 @@ export function createRuntimePackMatrix({
     { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
+    // ML-KEM (mlkem-native): the post-quantum KEM surfaces of node:crypto
+    // and WebCrypto.
+    { id: "mlkem", predicate: "mlkem" },
+    { id: "sqlite", predicate: "sqlite" },
   ];
   const matrix = withLibraryRuntimeFlavors(
     withWorkerRuntimeVariants({

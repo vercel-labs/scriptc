@@ -6,12 +6,3 @@ node-fallback-fence.ts:17:13 - error SC2020: 'Buffer<ArrayBufferLike>.reverse' i
   18 | const enc = new TextEncoder().encode("x");
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
-node-fallback-fence.ts:30:28 - error SC2020: 'timers/promises.setInterval with 3 arguments' is part of the standard library types but has no scriptc lowering yet
-
-  29 | const raw = readFileSync("/etc/hosts").toString(tty ? "hex" : "latin1"); // runtime BufferEncoding selection lowers too
-  30 | const intervalWithSignal = promiseInterval(1, "tick", {}); // AbortSignal options stay fenced
-     |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  31 | const sleepWithSignal = promiseSleep(1, "tick", { signal: AbortSignal.timeout(5) }); // resolve values and AbortSignal options lower
-
-  hint: the lowered form is setInterval(delay, value) with an explicit yielded value; AbortSignal options are not supported yet

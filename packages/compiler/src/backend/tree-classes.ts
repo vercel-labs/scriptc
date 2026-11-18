@@ -384,6 +384,8 @@ class LinearUse {
   private readonly treeLocals = new Map<string, IrLocal>();
   private readonly moved: IrExpr[] = [];
   private readonly borrowed = new Map<string, Set<string>>();
+  /** The constructor's `this` local, while that constructor is analyzed. */
+  private ctorThis: string | undefined;
   private fn: IrFunction | null = null;
 
   constructor(
@@ -422,6 +424,12 @@ class LinearUse {
     return provenance === "borrowed" || provenance === "view";
   }
 
+  /** Whether `e` is the constructor's `this`, whose fields the new object
+   * owns: a read through it is a view of its own storage, not a borrow. */
+  private throughThis(e: IrExpr): boolean {
+    return e.kind === "varRef" && e.localId === this.ctorThis;
+  }
+
   private fail(what: string): null {
     if (this.found.length < MAX_REASONS) {
       this.found.push(`${this.fn?.name ?? "module"}: ${what}`);
@@ -435,6 +443,7 @@ class LinearUse {
 
   function(fn: IrFunction): void {
     this.fn = fn;
+    this.ctorThis = undefined;
     this.treeLocals.clear();
     for (const local of fn.locals) if (this.tree(local.type)) this.treeLocals.set(local.id, local);
     // A function with no tree local and no tree result can still build or
@@ -459,6 +468,7 @@ class LinearUse {
       if (this.tree(capture.type)) this.fail("a closure captures it");
     const params = new Set(fn.params.map((param) => param.localId));
     const ctorThis = fn.name === `%${this.cls}.constructor` ? fn.params[0]?.localId : undefined;
+    this.ctorThis = ctorThis;
     // A tree local that a later assignment could rebind needs the store
     // path the lowering does not have; parameters are the exception, since
     // their binding never changes.
@@ -736,8 +746,12 @@ class LinearUse {
         } else if (!this.borrowOnly(expr.obj, state)) return null;
         if (!this.tree(expr.type)) return "none";
         // A field of a borrowed node is a borrow too; a field of an owner
-        // this function holds is only a view of it.
-        return through === "borrowed" ? "borrowed" : "view";
+        // this function holds is only a view of it. The constructor's `this`
+        // is borrowed from its caller, but its fields are the new object's
+        // own: overwriting one frees the child, so an alias read through
+        // `this` is a view that must not be copied (a later store could
+        // release the node it names).
+        return through === "borrowed" && !this.throughThis(expr.obj) ? "borrowed" : "view";
       }
       // Wrappers that move no ownership: unboxing, narrowing, upcasts and
       // the tag test of a nullable slot.

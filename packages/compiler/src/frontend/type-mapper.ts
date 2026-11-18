@@ -1,9 +1,11 @@
 import { InternalCompilerError } from "../errors.js";
 import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
 import { contentDigest, type HeldContents, type JournalTable } from "./lowering/unit-journal.js";
+import { CRYPTO_CONSTANTS } from "./lowering/crypto-tables.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
+import { isFallbackDtsPath } from "./dts-paths.js";
 import type { EnumObjectEntry } from "./enum-object-layout.js";
 import type {
   IrRecordField,
@@ -55,7 +57,19 @@ import {
   UNDEFINED_T,
   VOID,
 } from "../ir/ir.js";
-import { BIGINT_T, KEY_ORDER_FIELD } from "../ir/ir.js";
+import {
+  BIGINT_T,
+  KEY_ORDER_FIELD,
+  PERF_ENTRY_JSON_FIELDS,
+  PERF_ENTRY_MARKER,
+  PERF_NODE_TIMING_JSON_FIELDS,
+  PERF_NODE_TIMING_MARKER,
+} from "../ir/ir.js";
+
+/** Both lists live in ir/ir.ts (the backend's JSON writer and dyn
+ * conversion read them): the nodeTiming marker and the fields
+ * PerformanceNodeTiming.prototype.toJSON answers, in its order. */
+export { PERF_NODE_TIMING_JSON_FIELDS, PERF_NODE_TIMING_MARKER };
 import type { SrcLoc } from "../ir/ir.js";
 import { literalValues } from "./literal-values.js";
 import { remapUnionDiscriminant } from "./union-discriminants.js";
@@ -107,6 +121,20 @@ export function jsOpenObjectType(
     !parameter.dotDotDotToken &&
     present?.length === 1 &&
     present[0]!.kind === "bytes"
+  )
+    return DYN;
+  // A Map or Set parameter whose type arguments are all `any` (a bare
+  // JSDoc `{Map}` or `{Set}`, `{Set<*>}`) accepts a collection of any
+  // element types, and Node passes the caller's collection itself: keep
+  // its runtime storage at the boundary, like an array parameter's.
+  if (
+    parameter &&
+    !parameter.dotDotDotToken &&
+    present?.length === 1 &&
+    ((present[0]!.kind === "map" &&
+      present[0]!.key.kind === "dyn" &&
+      present[0]!.value.kind === "dyn") ||
+      (present[0]!.kind === "set" && present[0]!.elem.kind === "dyn"))
   )
     return DYN;
   // An unannotated JavaScript parameter's object default is a fallback,
@@ -180,6 +208,17 @@ export const WEBCRYPTO_DYN_TYPES: ReadonlySet<string> = new Set([
   "Pbkdf2Params",
   "HkdfParams",
   "AesDerivedKeyParams",
+  "Argon2Params",
+  "CShakeParams",
+  "ContextParams",
+  "EcdhKeyDeriveParams",
+  "KangarooTwelveParams",
+  "KmacImportParams",
+  "KmacKeyAlgorithm",
+  "KmacKeyGenParams",
+  "KmacParams",
+  "RsaOaepParams",
+  "TurboShakeParams",
 ]);
 
 /** node:crypto's key, signature and X509Certificate check option
@@ -215,6 +254,7 @@ export const FETCH_AMBIENT_TYPES = [
   "Event",
   "CustomEvent",
   "MessageEvent",
+  "CloseEvent",
   "EventTarget",
   "AddEventListenerOptions",
   "EventListenerOptions",
@@ -222,6 +262,8 @@ export const FETCH_AMBIENT_TYPES = [
   "CustomEventInit",
   "AbortController",
   "AbortSignal",
+  "PerformanceObserver",
+  "PerformanceObserverEntryList",
   "Headers",
   "ReadableStream",
   "ReadableStreamDefaultReader",
@@ -1162,6 +1204,8 @@ export function formatIrType(
         return append("FileHandle");
       case "dir":
         return append("Dir");
+      case "mkdtempResult":
+        return append("DisposableTempDir");
       case "spawnRes":
         return append("SpawnSyncReturns");
       case "child":
@@ -1192,6 +1236,10 @@ export function formatIrType(
         return append("Hmac");
       case "fsWatcher":
         return append("FSWatcher");
+      case "watchEvents":
+        return append("FSWatchEvents");
+      case "statWatcher":
+        return append("StatWatcher");
       case "childStream":
         return append("Readable");
       case "childWriter":
@@ -1239,11 +1287,78 @@ function esOwnKeyOrder(names: string[]): string[] {
   return indices.length === 0 ? names : [...indices, ...names.filter((n) => !isArrayIndex(n))];
 }
 
-/** The hidden field that marks the perf_hooks entry record shape. */
-export const PERF_ENTRY_MARKER = "%perfEntry";
+/** The hidden field that marks the perf_hooks entry record shape
+ * (ir/ir.ts defines it: the backend's dyn conversion needs it too);
+ * re-exported here so frontend call sites keep their import path. */
+export { PERF_ENTRY_MARKER };
 
 /** PerformanceEntry's toJSON fields, in toJSON's order. */
-export const PERF_ENTRY_FIELDS = ["name", "entryType", "startTime", "duration", "detail"];
+export const PERF_ENTRY_FIELDS: string[] = [...PERF_ENTRY_JSON_FIELDS];
+
+/** PerformanceResourceTiming's toJSON fields, in toJSON's order (Node's
+ * internal/perf/resource_timing.js). The class extends PerformanceEntry but
+ * its toJSON carries the resource fields instead of `detail`. */
+export const PERF_RESOURCE_TIMING_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "initiatorType",
+  "nextHopProtocol",
+  "workerStart",
+  "redirectStart",
+  "redirectEnd",
+  "fetchStart",
+  "domainLookupStart",
+  "domainLookupEnd",
+  "connectStart",
+  "connectEnd",
+  "secureConnectionStart",
+  "requestStart",
+  "finalResponseHeadersStart",
+  "firstInterimResponseStart",
+  "responseStart",
+  "responseEnd",
+  "transferSize",
+  "encodedBodySize",
+  "decodedBodySize",
+  "deliveryType",
+  "responseStatus",
+  "renderBlockingStatus",
+  "contentType",
+  "contentEncoding",
+] as const;
+
+/** The PerformanceResourceTiming members the entry record also carries:
+ * every resource field except the four base entry fields and the resource
+ * toJSON. Node's resource timings extend PerformanceEntry, so the fields
+ * live on the same record shape the entry classes share. */
+export const PERF_RESOURCE_FIELDS: readonly { name: string; type: "number" | "string" }[] = [
+  { name: "initiatorType", type: "string" },
+  { name: "nextHopProtocol", type: "string" },
+  { name: "workerStart", type: "number" },
+  { name: "redirectStart", type: "number" },
+  { name: "redirectEnd", type: "number" },
+  { name: "fetchStart", type: "number" },
+  { name: "domainLookupStart", type: "number" },
+  { name: "domainLookupEnd", type: "number" },
+  { name: "connectStart", type: "number" },
+  { name: "connectEnd", type: "number" },
+  { name: "secureConnectionStart", type: "number" },
+  { name: "requestStart", type: "number" },
+  { name: "finalResponseHeadersStart", type: "number" },
+  { name: "firstInterimResponseStart", type: "number" },
+  { name: "responseStart", type: "number" },
+  { name: "responseEnd", type: "number" },
+  { name: "transferSize", type: "number" },
+  { name: "encodedBodySize", type: "number" },
+  { name: "decodedBodySize", type: "number" },
+  { name: "deliveryType", type: "string" },
+  { name: "responseStatus", type: "number" },
+  { name: "renderBlockingStatus", type: "string" },
+  { name: "contentType", type: "string" },
+  { name: "contentEncoding", type: "string" },
+];
 
 /** The record shape behind PerformanceEntry, PerformanceMark and
  * PerformanceMeasure values (see mapType). The marker is an always-absent
@@ -1257,7 +1372,11 @@ export function perfEntryShape(shapes: ShapeRegistry, unions: UnionRegistry): st
       { name: "entryType", type: STRING },
       { name: "name", type: STRING },
       { name: "startTime", type: F64 },
-    ],
+      ...PERF_RESOURCE_FIELDS.map((field) => ({
+        name: field.name,
+        type: field.type === "number" ? F64 : STRING,
+      })),
+    ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     false,
     undefined,
     PERF_ENTRY_FIELDS,
@@ -1295,7 +1414,107 @@ export function perfEntryJsonShape(shapes: ShapeRegistry): string {
   );
 }
 
-function isDeclaredInAmbientModule(d: ts.Declaration, name: string): boolean {
+/** The fields of performance.nodeTiming's uvMetricsInfo object, in Node's
+ * key order. */
+export const UV_METRICS_FIELDS = ["loopCount", "events", "eventsWaiting"];
+
+/** The record behind uv_metrics_info: the three counters Node's
+ * uvMetricsInfo getter reads off libuv. */
+export function uvMetricsShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "events", type: F64 },
+      { name: "eventsWaiting", type: F64 },
+      { name: "loopCount", type: F64 },
+    ],
+    false,
+    undefined,
+    UV_METRICS_FIELDS,
+  );
+}
+
+/** performance.nodeTiming's own properties, in Node's key order. */
+export const PERF_NODE_TIMING_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "nodeStart",
+  "v8Start",
+  "environment",
+  "loopStart",
+  "loopExit",
+  "bootstrapComplete",
+  "idleTime",
+  "uvMetricsInfo",
+];
+
+/** The record behind performance.nodeTiming (mapType): the timing
+ * milestones as f64 fields in Node's key order, plus the uvMetricsInfo
+ * record. The marker keeps the shape distinct from a structurally equal
+ * user record and gives a dyn conversion the PerformanceNodeTiming
+ * prototype. */
+export function perfNodeTimingShape(shapes: ShapeRegistry, unions: UnionRegistry): string {
+  return shapes.intern(
+    [
+      { name: PERF_NODE_TIMING_MARKER, type: withUndefinedArm(F64, unions)! },
+      { name: "bootstrapComplete", type: F64 },
+      { name: "duration", type: F64 },
+      { name: "entryType", type: STRING },
+      { name: "environment", type: F64 },
+      { name: "idleTime", type: F64 },
+      { name: "loopExit", type: F64 },
+      { name: "loopStart", type: F64 },
+      { name: "name", type: STRING },
+      { name: "nodeStart", type: F64 },
+      { name: "startTime", type: F64 },
+      { name: "uvMetricsInfo", type: { kind: "record", shapeId: uvMetricsShape(shapes) } },
+      { name: "v8Start", type: F64 },
+    ],
+    false,
+    undefined,
+    PERF_NODE_TIMING_FIELDS,
+  );
+}
+
+/** toJSON()'s plain object over performance.nodeTiming: its fields without
+ * uvMetricsInfo. */
+export function perfNodeTimingJsonShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "bootstrapComplete", type: F64 },
+      { name: "duration", type: F64 },
+      { name: "entryType", type: STRING },
+      { name: "environment", type: F64 },
+      { name: "idleTime", type: F64 },
+      { name: "loopExit", type: F64 },
+      { name: "loopStart", type: F64 },
+      { name: "name", type: STRING },
+      { name: "nodeStart", type: F64 },
+      { name: "startTime", type: F64 },
+      { name: "v8Start", type: F64 },
+    ],
+    false,
+    undefined,
+    PERF_NODE_TIMING_JSON_FIELDS,
+  );
+}
+
+/** performance.eventLoopUtilization()'s record, in Node's key order. */
+export function eventLoopUtilizationShape(shapes: ShapeRegistry): string {
+  return shapes.intern(
+    [
+      { name: "active", type: F64 },
+      { name: "idle", type: F64 },
+      { name: "utilization", type: F64 },
+    ],
+    false,
+    undefined,
+    ["idle", "active", "utilization"],
+  );
+}
+
+export function isDeclaredInAmbientModule(d: ts.Declaration, name: string): boolean {
   let node: ts.Node | undefined = d.parent;
   while (node) {
     if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name)) {
@@ -1617,6 +1836,12 @@ export interface TypeMapperCtx {
    * table of constructors before the function form existed. The value in
    * it is the same function. */
   untypedConstructors?: boolean;
+  /** Whether the class values of the program class `className` are held
+   * as checked-dynamic values (LowererMode.dynamicClassValues): a slot of
+   * its class value type may hold a descendant whose constructor takes
+   * other arguments, so construction through it picks the constructor by
+   * the class the value holds at run time. */
+  dynamicClassValue?: (className: string) => boolean;
   /** Called each time a primitive constructor type maps to the
    * constructor's own function type (never under untypedConstructors). */
   onConstructorFunctionType?: () => void;
@@ -1668,6 +1893,12 @@ export interface TypeMapperCtx {
   /** Live class protocols retain identity and receiver dispatch rather than
    * copying an instance into an unrelated record layout. */
   classImplementedProtocol?: (type: ts.Type) => boolean;
+  /** The implementation's class declaration for a class the checker declares
+   * in a project declaration that has a runtime sibling (`lib.d.ts` beside
+   * `lib.js`): the lowering compiles that JavaScript class, so its instance
+   * and static types name the compiled class rather than a structural
+   * copy. */
+  classTwinDeclaration?: (decl: ts.ClassLikeDeclaration) => ts.ClassLikeDeclaration | null;
   /** MIXIN instance INTERSECTIONS (`Tagged.C & Derived` — values built
    * through a mixin result): resolved by chain structure to the unique
    * pinned instantiation they describe; null when ambiguous or when no
@@ -2582,9 +2813,33 @@ function isWorkerHandleSymbol(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-        isDeclaredInAmbientModule(d, "worker_threads"),
+        (isDeclaredInAmbientModule(d, "worker_threads") ||
+          ((ts.symbolName(symbol) === "MessagePort" ||
+            ts.symbolName(symbol) === "MessageChannel" ||
+            ts.symbolName(symbol) === "BroadcastChannel") &&
+            isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName))),
     )
   );
+}
+
+/** The process IPC channel (`process.channel`): an owned runtime handle
+ * whose live object is a checked-dynamic value, so a binding or parameter
+ * carrying one stays DYN and its ref/unref dispatch dynamically. The
+ * fallback declares it globally as ProcessChannel; @types/node declares
+ * the same shape as Channel in "child_process". */
+function isProcessChannelSymbol(
+  symbol: ts.Symbol | undefined,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  if (symbol === undefined) return false;
+  const name = ts.symbolName(symbol);
+  if (name !== "Channel" && name !== "ProcessChannel") return false;
+  return symbol.declarations.some((d) => {
+    if (!ts.isInterfaceDeclaration(d) && !ts.isClassDeclaration(d)) return false;
+    const sf = ts.getSourceFileOfNode(d);
+    if (!ctx.isStdlibFile(sf)) return false;
+    return name === "ProcessChannel" || isDeclaredInAmbientModule(d, "child_process");
+  });
 }
 
 /** The `{ message: any }` object type (or its union with undefined) that
@@ -2907,6 +3162,36 @@ function isReceiveMessageResult(
   return found;
 }
 
+/** events.on's iterator result (`{ value, done }`): the fallback
+ * declaration spells next/return/throw's answer as a type literal inside
+ * `Promise<...>` on EventEmitterAsyncIterator, and the runtime builds that
+ * object, so the result is a checked-dynamic value like the iterator
+ * itself (its `value` holds the event's argument array). */
+function isEventsIteratorResult(
+  type: ts.Type,
+  ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
+): boolean {
+  const sym = type.getSymbol();
+  if (sym === undefined) return false;
+  return sym.declarations.some((decl) => {
+    if (!ts.isTypeLiteralNode(decl)) return false;
+    const promise = decl.parent;
+    if (!ts.isTypeReferenceNode(promise)) return false;
+    const method = promise.parent;
+    const cls = method?.parent;
+    return (
+      method !== undefined &&
+      (method.kind === ts.SyntaxKind.MethodDeclaration ||
+        method.kind === ts.SyntaxKind.MethodSignature) &&
+      cls !== undefined &&
+      ts.isClassDeclaration(cls) &&
+      cls.name?.text === "EventEmitterAsyncIterator" &&
+      ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
+      isDeclaredInAmbientModule(cls, "events")
+    );
+  });
+}
+
 /** True for a type built only from worker handles, null/undefined, and
  * arrays of those: values that keep the live DYN representation. */
 export function isWorkerHandleType(
@@ -2960,6 +3245,8 @@ const FETCH_HANDLE_NAMES: ReadonlySet<string> = new Set([
   "Response",
   "AbortController",
   "AbortSignal",
+  "PerformanceObserver",
+  "PerformanceObserverEntryList",
 ]);
 
 /** The native fetch handles (Headers, Request, Response, AbortController,
@@ -3051,6 +3338,13 @@ function mapTypeEntry(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) return BOOL;
   }
   if (ctx.foreignType !== undefined && ctx.foreignType(type)) return FOREIGN;
+  // A class the checker declares in a project declaration beside its
+  // runtime implementation (lib.d.ts beside lib.js): the value is the
+  // compiled JavaScript class, so its instance type names that class.
+  {
+    const twinClass = mapTwinClassInstance(type, ctx);
+    if (twinClass !== null) return twinClass;
+  }
   const localValue = ctx.localClassValue?.(type);
   if (localValue) {
     contextResolutions++;
@@ -3418,6 +3712,31 @@ const CHILD_WRITER_MEMBERS: ReadonlySet<string> = new Set([
   "removeListener",
 ]);
 
+/** The compiled class a project declaration's class type names (`lib.d.ts`
+ * beside `lib.js`): the implementation class the lowering compiles, as the
+ * class value for its static side or its instance object type. Null for
+ * every other type. */
+function mapTwinClassInstance(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  if (ctx.classTwinDeclaration === undefined) return null;
+  const symbol = type.getSymbol();
+  const decl = symbol ? symbol.valueDeclaration : undefined;
+  if (
+    decl === undefined ||
+    !(ts.isClassDeclaration(decl) || ts.isClassExpression(decl)) ||
+    !ts.getSourceFileOfNode(decl).isDeclarationFile
+  )
+    return null;
+  const implementation = ctx.classTwinDeclaration(decl);
+  if (implementation === null) return null;
+  const file = ts.getSourceFileOfNode(implementation);
+  if (!ctx.isProgramFile(file)) return null;
+  // The STATIC side (`typeof Point`) has construct signatures and is the
+  // class value; the instance side is the class's object type.
+  return ctx.checker.getConstructSignatures(type).length > 0
+    ? { kind: "classval", className: ctx.classNamer(implementation) }
+    : { kind: "object", className: ctx.classNamer(implementation) };
+}
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
@@ -3465,6 +3784,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // worker_threads.receiveMessageOnPort's `{ message: any } | undefined`:
   // the runtime's { message } object, a checked-dynamic value.
   if (isReceiveMessageResult(type, ctx)) return DYN;
+  // events.on's iterator result: the runtime's { value, done } object.
+  if (isEventsIteratorResult(type, ctx)) return DYN;
   if (isFetchBodyUnion(type, ctx) || isFetchHeadersUnion(type, ctx)) return DYN;
   // Omit/Pick/Partial of a stdlib interface that rides checked-dynamic
   // storage (`Omit<RequestInit, "body" | "headers">`): every member comes
@@ -4199,7 +4520,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       const inst = mapType(checker.getReturnTypeOfSignature(ctorSigs[0]!), ctx);
       return inst?.kind === "object" ? { kind: "classval", className: inst.className } : null;
     }
-    return { kind: "classval", className: classNamer(classDecl) };
+    const className = classNamer(classDecl);
+    if (ctx.dynamicClassValue?.(className) === true) return DYN;
+    return { kind: "classval", className };
   }
   // Constructor-signature TYPES (`new (…) => T`, an interface with one
   // construct signature): slots typed as constructables hold class
@@ -4219,6 +4542,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         inst.className !== RUNTIME_EMITTER_CLASS &&
         !RUNTIME_STREAM_CLASSES.has(inst.className)
       ) {
+        if (ctx.dynamicClassValue?.(inst.className) === true) return DYN;
         return { kind: "classval", className: inst.className };
       }
     }
@@ -4339,6 +4663,42 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: RUNTIME_EMITTER_CLASS };
   }
+  // events.on's iterator: a checked-dynamic object the runtime builds
+  // with native next/return/throw methods and its own
+  // [Symbol.asyncIterator], so `for await` over it takes the generic
+  // dynamic path and property reads see the real object (its
+  // `Symbol(nodejs.watermarkData)` included). Both type layers are
+  // covered: @types/node returns `NodeJS.AsyncIterator<any[], undefined,
+  // any>`, whose one class of values this is, and the shipped fallback
+  // declares its own class. Only the `any[]` instantiation maps: the
+  // lib's AsyncIterator protocol and the other NodeJS.AsyncIterator
+  // instantiations (readline's string, fs's Dirent, a stream's any) keep
+  // their own lowerings and fences.
+  if (
+    psym !== undefined &&
+    ((psymName === "EventEmitterAsyncIterator" &&
+      psym.declarations.some(
+        (d) =>
+          ts.isClassDeclaration(d) &&
+          ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+          isDeclaredInAmbientModule(d, "events"),
+      )) ||
+      (psymName === "AsyncIterator" &&
+        psym.declarations.some(
+          (d) =>
+            ts.isInterfaceDeclaration(d) &&
+            ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+            isDeclaredInAmbientNamespace(d, "NodeJS"),
+        ) &&
+        (() => {
+          const arg = checker.getTypeArguments(widened as ts.TypeReference)[0];
+          if (arg === undefined) return false;
+          const mapped = mapType(arg, ctx);
+          return mapped?.kind === "array" && mapped.elem.kind === "dyn";
+        })()))
+  ) {
+    return DYN;
+  }
   // readline.Interface and readline/promises.Interface: the interface
   // value is an f64 handle into the runtime's registry (the Timeout-id
   // precedent). The NAME is generic, so the provenance check adds the
@@ -4417,6 +4777,50 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return F64;
+  }
+  // async_hooks.AsyncResource: a checked-dynamic handle whose payload lives
+  // exactly as long as the value does, so a resource the program drops is
+  // reclaimed with everything it captured.
+  if (
+    psym !== undefined &&
+    psymName === "AsyncResource" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return DYN;
+  }
+  // trace_events.Tracing: a native handle the runtime builds for
+  // createTracing, so the value is checked-dynamic and its member reads and
+  // enable()/disable() calls ride the dyn tree.
+  if (
+    psym !== undefined &&
+    psymName === "Tracing" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "trace_events"),
+    )
+  ) {
+    return DYN;
+  }
+  // async_hooks.RunScope (AsyncLocalStorage.withScope): a checked-dynamic
+  // object carrying dispose and [Symbol.dispose] — the runtime builds it.
+  if (
+    psym !== undefined &&
+    psymName === "RunScope" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return DYN;
   }
   // diagnostics_channel.TracingChannel: the same f64-handle story over the
   // runtime's tracing registry (five event channels per entry).
@@ -4661,14 +5065,27 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!elem) return null;
     return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
   }
-  // node:net's SocketAddress and BlockList (scr_net.c) and node:util's
-  // MIMEType and MIMEParams (scr_mime.c): native handles whose getters and
-  // methods dispatch through the handle.
+  // node:net's SocketAddress, BlockList and BoundSocket (scr_net.c) and
+  // node:util's MIMEType and MIMEParams (scr_mime.c): native handles whose
+  // getters and methods dispatch through the handle.
   if (
     ((psym !== undefined && psymName === "SocketAddress") ||
       (psym !== undefined && psymName === "BlockList") ||
+      (psym !== undefined && psymName === "BoundSocket") ||
       (psym !== undefined && psymName === "MIMEType") ||
-      (psym !== undefined && psymName === "MIMEParams")) &&
+      (psym !== undefined && psymName === "MIMEParams") ||
+      // node:sqlite's DatabaseSync and StatementSync (scr_sqlite.c):
+      // native handles whose getters and methods dispatch through the
+      // handle, like the classes above.
+      (psym !== undefined && psymName === "DatabaseSync") ||
+      (psym !== undefined && psymName === "StatementSync") ||
+      (psym !== undefined && psymName === "StatementSyncIterator") ||
+      (psym !== undefined && psymName === "Session") ||
+      (psym !== undefined && psymName === "SQLTagStore") ||
+      (psym !== undefined && psymName === "DatabaseSyncLimits") ||
+      // sqlite.backup's progress record, read through the callback's
+      // checked-dynamic parameter.
+      (psym !== undefined && psymName === "BackupProgressInfo")) &&
     psym.declarations.some(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
@@ -4850,6 +5267,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (isStdlibInterface("WeakMap") || isStdlibInterface("WeakSet")) return DYN;
   // FinalizationRegistry is a native handle with register and unregister.
   if (isStdlibInterface("FinalizationRegistry")) return DYN;
+  // WeakRef is a native handle with deref.
+  if (isStdlibInterface("WeakRef")) return DYN;
   // Set<T>: Map's sibling — same provenance rule and key domain.
   // Anything else stays unmapped;
   // the `new Set` lowering names the offending element type specifically.
@@ -5064,6 +5483,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   )
     return DYN;
+  // The stat family's option records: the runtime reads bigint and
+  // throwIfNoEntry off the value at the call, so a binding of one keeps the
+  // live object representation.
+  if (
+    psym !== undefined &&
+    (psymName === "StatOptions" || psymName === "StatSyncOptions") &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  )
+    return DYN;
   // Capacity snapshots and options keep their live object representation
   // across numeric/BigInt overloads, runtime options, and callbacks.
   if (
@@ -5079,6 +5512,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   )
     return DYN;
   if (isWorkerHandleSymbol(psym, ctx)) return DYN;
+  if (isProcessChannelSymbol(psym, ctx)) return DYN;
   // fs/promises.FileHandle: an owned descriptor object. Module provenance
   // distinguishes it from user interfaces with the same name; both the
   // fallback and @types/node declare it in "fs/promises".
@@ -5140,6 +5574,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "child" };
   }
+  // child_process.Control (@types/node's interface, or the fallback
+  // declarations' copy): subprocess.channel's object. It is a checked-dynamic
+  // value — a stable-identity handle whose ref()/unref() reach the channel's
+  // keep-alive state — so `Control | null | undefined` collapses to DYN.
+  if (
+    psym !== undefined &&
+    psymName === "Control" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "child_process"),
+    )
+  ) {
+    return DYN;
+  }
   // net.Server / net.Socket: @types/node's classes or the fallback
   // declarations' interfaces. The NAME is ambiguous across builtin
   // modules (http.Server, tls.Socket share it), so the provenance check
@@ -5187,6 +5637,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "secureCtx" };
   }
+  // The object mkdtempDisposable answers: @types/node declares
+  // `interface DisposableTempDir` in both node:fs and node:fs/promises, and
+  // the shipped fallback mirrors it. It is the created path plus the removal
+  // and disposal hooks, so it maps to one handle.
+  if (
+    psym !== undefined &&
+    psymName === "DisposableTempDir" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        (isDeclaredInAmbientModule(d, "fs") || isDeclaredInAmbientModule(d, "fs/promises")),
+    )
+  ) {
+    return { kind: "mkdtempResult" };
+  }
   // Scrypt's runtime options retain property accessors and aliases. Use
   // checked values so presence probes and repeated getter reads match Node.
   if (
@@ -5214,6 +5680,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return psymName === "Hash" ? CRYPTOHASH_T : CRYPTOHMAC_T;
   }
+  // crypto.Mac (createMac): the HMAC-only native Mac handle (scr_lib.c).
+  // Module-checked like Hash and Hmac, so a user class named Mac keeps its
+  // own representation.
+  if (
+    psym !== undefined &&
+    psymName === "Mac" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return DYN;
+  }
   // fs.FSWatcher: the fs.watch handle (scr_watch.c). Module-checked like
   // net.Server — @types/node declares `interface FSWatcher extends
   // EventEmitter` inside `declare module "fs"`, and the shipped fallback
@@ -5229,6 +5710,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "fsWatcher" };
+  }
+  // fs.StatWatcher: the fs.watchFile handle (scr_watch_file.c), declared
+  // beside FSWatcher in the same ambient module.
+  if (
+    psym !== undefined &&
+    psymName === "StatWatcher" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "fs"),
+    )
+  ) {
+    return { kind: "statWatcher" };
   }
   // The piped child-output stream, under BOTH spellings @types/node uses
   // for it: stream.Readable (ChildProcess.stdout's declared type — the
@@ -5457,6 +5952,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "dgramSocket" };
+  }
+  // dns.Resolver / dns/promises.Resolver: one stub-resolver handle, a
+  // checked-dynamic value whose methods are dyn calls (scr_dns_resolve.c).
+  // Each module declares its own class, so the ambient module names it.
+  if (
+    psym !== undefined &&
+    psymName === "Resolver" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        (isDeclaredInAmbientModule(d, "dns") || isDeclaredInAmbientModule(d, "dns/promises")),
+    )
+  ) {
+    return DYN;
   }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
   // ...)`) — and SuiteContext, the describe-body and suite-hook parameter:
@@ -5947,6 +6457,53 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, order) };
   }
+  // crypto.CryptoConstants (the crypto.constants object): the zlib stance
+  // over a table whose values are numbers and the two cipher-list strings.
+  // Node builds the object from this list, so the declaration's order is
+  // its runtime insertion order; cryptoConstantsValue interns the same
+  // fields for the value, so the shapes are one.
+  if (isStdlibInterface("CryptoConstants")) {
+    const fields: IrRecordField[] = [];
+    for (const property of checker.getPropertiesOfType(widened)) {
+      const memberType = mapType(checker.getTypeOfSymbol(property), ctx);
+      if (!memberType || (memberType.kind !== "f64" && memberType.kind !== "string")) return null;
+      fields.push({ name: ts.symbolName(property), type: memberType });
+    }
+    const order = fields.map((field) => field.name);
+    fields.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { kind: "record", shapeId: ctx.shapes.intern(fields, false, undefined, order) };
+  }
+  // @types/node declares crypto.constants as a namespace of number
+  // constants, so the object's type there is the namespace itself
+  // (`typeof constants`), not an interface. Node builds that object from
+  // the full table (the pinned @types omits the four TLS1_* names), so the
+  // shape comes from the table cryptoConstantsValue builds the value from.
+  if (
+    psym !== undefined &&
+    psymName === "constants" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isModuleDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    const keys = Object.keys(CRYPTO_CONSTANTS);
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        keys
+          .map((name) => ({
+            name,
+            type: (typeof CRYPTO_CONSTANTS[name] === "string" ? STRING : F64) as IrType,
+          }))
+          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+        false,
+        undefined,
+        keys,
+      ),
+    };
+  }
   // net's 'drop' payload: the record the runtime's address object checks
   // into, each optional field with its declared type.
   if (isStdlibInterface("DropArgument")) {
@@ -5975,6 +6532,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // every result.
   if (
     isStdlibInterface("CipherInfo") &&
+    psym!.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
+    )
+  )
+    return DYN;
+  // crypto.secureHeapUsed()'s report: the runtime builds Node's object as a
+  // checked-dynamic value (its utilization is NaN), so the declared interface
+  // reads dynamically.
+  if (
+    isStdlibInterface("SecureHeapUsage") &&
     psym!.declarations.some(
       (d) => ts.isInterfaceDeclaration(d) && isDeclaredInAmbientModule(d, "crypto"),
     )
@@ -6331,10 +6898,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     const optionalString = withUndefinedArm(STRING, ctx.unions);
-    if (!optionalString) return null;
+    const optionalStrings = withUndefinedArm(arrayOf(STRING), ctx.unions);
+    if (!optionalString || !optionalStrings) return null;
     const fields = X509_FIELDS.map(([name, type]) => ({
       name,
-      type: type === "string?" ? optionalString : type,
+      type: type === "string?" ? optionalString : type === "string[]?" ? optionalStrings : type,
     }));
     return {
       kind: "record",
@@ -6345,6 +6913,24 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         fields.map((f) => f.name),
       ),
     };
+  }
+  // crypto.Certificate — the SPKAC class. Node's instance holds no state
+  // (every method reads its argument and ignores the receiver), so the
+  // class lowers to the empty record: String(), typeof, Object.keys(),
+  // spread and JSON.stringify see what Node's object shows (Node's
+  // inspect prints "Certificate {}", which an empty record does not).
+  // Module-checked like X509Certificate.
+  if (
+    psym !== undefined &&
+    psymName === "Certificate" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    return { kind: "record", shapeId: ctx.shapes.intern([], false, undefined, []) };
   }
   // perf_hooks' PerformanceEntry, PerformanceMark and PerformanceMeasure
   // (performance.mark/measure and the getEntries family): ONE record shape
@@ -6357,7 +6943,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     ((psym !== undefined && psymName === "PerformanceEntry") ||
       (psym !== undefined && psymName === "PerformanceMark") ||
-      (psym !== undefined && psymName === "PerformanceMeasure")) &&
+      (psym !== undefined && psymName === "PerformanceMeasure") ||
+      (psym !== undefined && psymName === "PerformanceResourceTiming")) &&
     psym.declarations.some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
@@ -6370,24 +6957,38 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // perf_hooks' EventLoopUtilization (performance.eventLoopUtilization's
   // result): a plain data record in Node's key order.
   if (isStdlibInterface("EventLoopUtilization")) {
-    return {
-      kind: "record",
-      shapeId: ctx.shapes.intern(
-        [
-          { name: "active", type: F64 },
-          { name: "idle", type: F64 },
-          { name: "utilization", type: F64 },
-        ],
-        false,
-        undefined,
-        ["idle", "active", "utilization"],
-      ),
-    };
+    return { kind: "record", shapeId: eventLoopUtilizationShape(ctx.shapes) };
+  }
+  // perf_hooks' PerformanceNodeTiming (performance.nodeTiming): the timing
+  // milestones and uvMetricsInfo as one record (see perfNodeTimingShape).
+  // @types/node declares it as a class; the shipped fallback declares the
+  // interface performance.nodeTiming is typed with.
+  if (
+    provenance !== null &&
+    psymName === "PerformanceNodeTiming" &&
+    (provenance.stdlibInterface || provenance.stdlibClass)
+  ) {
+    return { kind: "record", shapeId: perfNodeTimingShape(ctx.shapes, ctx.unions) };
+  }
+  // uv_metrics_info()'s record: the three counters, in Node's key order.
+  if (isStdlibInterface("UVMetrics")) {
+    return { kind: "record", shapeId: uvMetricsShape(ctx.shapes) };
   }
   // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
   // runtime's histogram table, like a timer handle. Its members lower over
   // the handle (builtins/performance.ts).
-  if (isStdlibInterface("IntervalHistogram")) return F64;
+  // Histogram values are refcounted runtime handle objects: an
+  // IntervalHistogram (monitorEventLoopDelay) and a RecordableHistogram
+  // (createHistogram) are both checked-dynamic handles whose release frees
+  // the buckets when the value dies, so a short-lived histogram does not
+  // stay in a thread table until exit. The members lower over the handle,
+  // which carries the class its fields come from.
+  if (
+    isStdlibInterface("IntervalHistogram") ||
+    isStdlibInterface("Histogram") ||
+    isStdlibInterface("RecordableHistogram")
+  )
+    return DYN;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",
@@ -8431,7 +9032,17 @@ function mapGenericAwaitedAlias(type: ts.Type, ctx: TypeMapperCtx): IrType | nul
     (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
   );
   if (!isLibAlias) return null;
-  const bound = viaSignature ? mapBoundSignatureAlias(arg, ctx) : resolveTypeParam(arg);
+  // `Awaited<this>` (`Promise.resolve(this)` in a method: the checker infers
+  // `Promise<Awaited<this>>`): the polymorphic `this` type is a type
+  // parameter no signature binds, but it names one checker type, the class
+  // instance the member belongs to. Awaited over a non-promise is the type
+  // itself, which the loop below answers.
+  const isThis = (arg as { isThisType?: boolean }).isThisType === true;
+  const bound = viaSignature
+    ? mapBoundSignatureAlias(arg, ctx)
+    : isThis
+      ? mapType(arg, ctx)
+      : resolveTypeParam(arg);
   if (!bound) return null;
   let r = bound;
   while (r.kind === "promise") r = r.inner;
@@ -9347,7 +9958,7 @@ export const X509_DER_FIELD = "%der";
 /** The X509Certificate record's fields in @types/node's declaration order
  * ("string?" is string | undefined), then the hidden publicKey and DER
  * slots. */
-export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
+export const X509_FIELDS: readonly (readonly [string, IrType | "string?" | "string[]?"])[] = [
   ["ca", BOOL],
   ["fingerprint", STRING],
   ["fingerprint256", STRING],
@@ -9355,6 +9966,7 @@ export const X509_FIELDS: readonly (readonly [string, IrType | "string?"])[] = [
   ["subject", STRING],
   ["subjectAltName", "string?"],
   ["infoAccess", "string?"],
+  ["keyUsage", "string[]?"],
   ["issuer", STRING],
   ["raw", { kind: "bytes", elem: "u8" }],
   ["serialNumber", STRING],

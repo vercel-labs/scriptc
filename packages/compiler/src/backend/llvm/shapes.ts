@@ -263,7 +263,7 @@ export function youngEntryLines(host: ShapeHost): string[] {
  * llvm/regions.ts): the retain and release bodies, the allocation lines of
  * `new` (the instance in `%o`), and a class's region definitions. */
 export interface RegionHooks {
-  rcBody(fnName: string, ret: "ptr" | "void", comment: string): string[];
+  rcBody(fnName: string, ret: "ptr" | "void", comment: string, nullSentinel?: boolean): string[];
   newAlloc(className: string, sizeOf: string): string[];
   classDefinitions(cls: IrClassDef, sizeOf: string): string[];
 }
@@ -1604,9 +1604,10 @@ export function retainBody(
   comment = "",
   immortal = false,
   count: RcCount = host.sizeType,
+  nullSentinel = false,
 ): string[] {
   const S = count;
-  if (immortal) return immortalRcBody(host, fnName, "ptr", comment);
+  if (immortal) return immortalRcBody(host, fnName, "ptr", comment, nullSentinel);
   return [
     `define internal ptr @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
     `entry:`,
@@ -1636,9 +1637,10 @@ function immortalRcBody(
   fnName: string,
   ret: "ptr" | "void",
   comment: string,
+  nullSentinel = false,
 ): string[] {
   const regions: RegionHooks | null = host.regions ?? null;
-  if (regions !== null) return regions.rcBody(fnName, ret, comment);
+  if (regions !== null) return regions.rcBody(fnName, ret, comment, nullSentinel);
   return [
     `define internal ${ret} @${fnName}(ptr %o) ${FN_ATTRS} {${comment ? ` ; ${comment} (immortal)` : ""}`,
     `entry:`,
@@ -2302,6 +2304,7 @@ export function releaseBody(
   frozen = false,
   destroyDefs: readonly string[] | null = null,
   count: RcCount = host.sizeType,
+  nullSentinel = false,
 ): string[] {
   const S = count;
   if (bounded) host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
@@ -2312,7 +2315,17 @@ export function releaseBody(
     ...(bounded
       ? (destroyDefs ?? destroyDefinitions(destroy, freeBody, chained, segmented ? host : null))
       : []),
-    ...releaseFastPath(host, fnName, `${fnName}_slow`, traced, comment, immortal, S, frozen),
+    ...releaseFastPath(
+      host,
+      fnName,
+      `${fnName}_slow`,
+      traced,
+      comment,
+      immortal,
+      S,
+      frozen,
+      nullSentinel,
+    ),
     `define internal void @${fnName}_slow(ptr %o) noinline ${FN_ATTRS} {${comment ? ` ; ${comment}` : ""}`,
     `entry:`,
     `  %isnull = icmp eq ptr %o, null`,
@@ -2357,9 +2370,10 @@ export function releaseFastPath(
   immortal = false,
   count: RcCount = host.sizeType,
   frozen = false,
+  nullSentinel = false,
 ): string[] {
   const S = count;
-  if (immortal) return immortalRcBody(host, fnName, "void", comment);
+  if (immortal) return immortalRcBody(host, fnName, "void", comment, nullSentinel);
   // A freezable record compares its count without the frozen bit: an
   // immortal word's count is then ~FROZEN, which the same compare sends to
   // `slow`.

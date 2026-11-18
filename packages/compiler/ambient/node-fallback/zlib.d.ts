@@ -14,15 +14,38 @@ declare module "zlib" {
     [option: string]: unknown;
   }
   export type ZlibCallback = (error: NodeJS.ErrnoException | null, result: Buffer) => void;
+  /* The result of an `info: true` convenience call: Node answers a plain
+   * { buffer, engine } object, and the engine is the stream the call used.
+   * Its type is left open (unknown) as Node's own declaration does; cast it
+   * to a zlib stream class to read the engine. */
+  export type ZlibInfoCallback = (error: NodeJS.ErrnoException | null, result: unknown) => void;
   export function deflate(
     data: string | ScriptcBufferView | ArrayBufferLike,
     callback: ZlibCallback,
+  ): void;
+  export function deflate(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function deflate(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+    callback: ZlibInfoCallback,
   ): void;
   export function deflate(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
+  export function deflateSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+  ): Buffer;
+  export function deflateSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+  ): unknown;
   export function deflateSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZlibOptions,
@@ -33,9 +56,27 @@ declare module "zlib" {
   ): void;
   export function inflate(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function inflate(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function inflate(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
+  export function inflateSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+  ): Buffer;
+  export function inflateSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+  ): unknown;
   export function inflateSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZlibOptions,
@@ -46,9 +87,27 @@ declare module "zlib" {
   ): void;
   export function deflateRaw(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function deflateRaw(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function deflateRaw(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
+  export function deflateRawSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+  ): Buffer;
+  export function deflateRawSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+  ): unknown;
   export function deflateRawSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZlibOptions,
@@ -59,9 +118,27 @@ declare module "zlib" {
   ): void;
   export function inflateRaw(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function inflateRaw(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function inflateRaw(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
+  export function inflateRawSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+  ): Buffer;
+  export function inflateRawSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+  ): unknown;
   export function inflateRawSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZlibOptions,
@@ -72,9 +149,27 @@ declare module "zlib" {
   ): void;
   export function gzip(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function gzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function gzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
+  export function gzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+  ): Buffer;
+  export function gzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+  ): unknown;
   export function gzipSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZlibOptions,
@@ -85,9 +180,27 @@ declare module "zlib" {
   ): void;
   export function gunzip(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function gunzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function gunzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
+  export function gunzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+  ): Buffer;
+  export function gunzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+  ): unknown;
   export function gunzipSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZlibOptions,
@@ -98,9 +211,27 @@ declare module "zlib" {
   ): void;
   export function unzip(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function unzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function unzip(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZlibOptions,
     callback: ZlibCallback,
   ): void;
+  export function unzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info?: false },
+  ): Buffer;
+  export function unzipSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZlibOptions & { info: true },
+  ): unknown;
   export function unzipSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZlibOptions,
@@ -117,9 +248,27 @@ declare module "zlib" {
   ): void;
   export function brotliCompress(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: BrotliOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function brotliCompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: BrotliOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function brotliCompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: BrotliOptions,
     callback: ZlibCallback,
   ): void;
+  export function brotliCompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: BrotliOptions & { info?: false },
+  ): Buffer;
+  export function brotliCompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: BrotliOptions & { info: true },
+  ): unknown;
   export function brotliCompressSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: BrotliOptions,
@@ -130,9 +279,27 @@ declare module "zlib" {
   ): void;
   export function brotliDecompress(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: BrotliOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function brotliDecompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: BrotliOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function brotliDecompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: BrotliOptions,
     callback: ZlibCallback,
   ): void;
+  export function brotliDecompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: BrotliOptions & { info?: false },
+  ): Buffer;
+  export function brotliDecompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: BrotliOptions & { info: true },
+  ): unknown;
   export function brotliDecompressSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: BrotliOptions,
@@ -149,9 +316,27 @@ declare module "zlib" {
   ): void;
   export function zstdCompress(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZstdOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function zstdCompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZstdOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function zstdCompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZstdOptions,
     callback: ZlibCallback,
   ): void;
+  export function zstdCompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZstdOptions & { info?: false },
+  ): Buffer;
+  export function zstdCompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZstdOptions & { info: true },
+  ): unknown;
   export function zstdCompressSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZstdOptions,
@@ -162,9 +347,27 @@ declare module "zlib" {
   ): void;
   export function zstdDecompress(
     data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZstdOptions & { info?: false },
+    callback: ZlibCallback,
+  ): void;
+  export function zstdDecompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZstdOptions & { info: true },
+    callback: ZlibInfoCallback,
+  ): void;
+  export function zstdDecompress(
+    data: string | ScriptcBufferView | ArrayBufferLike,
     options: ZstdOptions,
     callback: ZlibCallback,
   ): void;
+  export function zstdDecompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZstdOptions & { info?: false },
+  ): Buffer;
+  export function zstdDecompressSync(
+    data: string | ScriptcBufferView | ArrayBufferLike,
+    options: ZstdOptions & { info: true },
+  ): unknown;
   export function zstdDecompressSync(
     data: string | ScriptcBufferView | ArrayBufferLike,
     options?: ZstdOptions,

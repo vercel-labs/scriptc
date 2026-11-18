@@ -21,7 +21,11 @@ import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
-import { classDeclaresHasInstanceHook, inheritedBuiltinCtorFence } from "./lower-classes.js";
+import {
+  classDeclaresHasInstanceHook,
+  erasedGenericFamily,
+  inheritedBuiltinCtorFence,
+} from "./lower-classes.js";
 import { throwTypeError } from "./primitive-throws.js";
 
 const PREFIX = "%class.construct:";
@@ -234,20 +238,30 @@ export function primitiveCheckedConstruction(
   };
 }
 
-/** Runtime-length constructor spreads keep argument evaluation before defaults. */
+/** True for every lifted construction helper that takes one argument pack;
+ * `calleeText`, when a site names the callee, follows the packed prefix. */
+function packedConstructionName(name: string): boolean {
+  return name === PACKED || name.startsWith(`${PACKED}:`);
+}
+
+/** Runtime-length constructor spreads keep argument evaluation before defaults.
+ * `calleeText` is the callee as V8 spells it in "<callee> is not a
+ * constructor", as for the fixed-arity helper. */
 export function checkedClassConstructionPacked(
   lowerer: Lowerer,
   callee: IrExpr,
   packed: IrExpr,
   loc: SrcLoc,
+  calleeText?: string,
 ): IrExpr {
-  if (lowerer.liftedFnNamed(PACKED) === undefined) {
+  const name = calleeText === undefined ? PACKED : `${PACKED}:${calleeText}`;
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const params = [
       { localId: "p.0", name: "callee", type: DYN },
       { localId: "p.1", name: "arguments", type: DYN },
     ];
     lowerer.liftedFns.push({
-      name: PACKED,
+      name,
       params,
       locals: params.map((param) => ({
         id: param.localId,
@@ -266,7 +280,7 @@ export function checkedClassConstructionPacked(
             args: [
               varRef("p.0", DYN, loc),
               varRef("p.1", DYN, loc),
-              { kind: "strLit", value: "constructor", type: STRING, loc },
+              { kind: "strLit", value: calleeText ?? "constructor", type: STRING, loc },
             ],
             type: DYN,
             loc,
@@ -277,7 +291,7 @@ export function checkedClassConstructionPacked(
       loc,
     });
   }
-  return { kind: "call", callee: PACKED, args: [callee, packed], type: DYN, loc };
+  return { kind: "call", callee: name, args: [callee, packed], type: DYN, loc };
 }
 
 function constructorArguments(
@@ -504,12 +518,28 @@ export class ClassConstructionDispatch {
           if (classDeclaresHasInstanceHook(info)) continue;
           const type: IrType = { kind: "classval", className: name };
           const callee = varRef("callee", DYN, loc);
-          const result = classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {
-            kind: "dynCheck",
-            value: callee,
-            type,
-            loc,
-          });
+          // A generic class taken as a value is its erased instantiation,
+          // and JavaScript's one class answers for every instantiation: an
+          // instance of any of them (or of their subclasses) passes.
+          const family = erasedGenericFamily(lowerer, name);
+          const result =
+            family !== null && family.length > 1
+              ? family
+                  .map((member) => classInstanceOf(lowerer, varRef("value", DYN, loc), member, loc))
+                  .reduce((left, right): IrExpr => ({
+                    kind: "logical",
+                    op: "||",
+                    left,
+                    right,
+                    type: BOOL,
+                    loc,
+                  }))
+              : classInstanceOf(lowerer, varRef("value", DYN, loc), info, loc, {
+                  kind: "dynCheck",
+                  value: callee,
+                  type,
+                  loc,
+                });
           fn.body.unshift({
             kind: "if",
             cond: {
@@ -532,7 +562,7 @@ export class ClassConstructionDispatch {
         // takes no arguments here: arguments report at run time, as they do
         // at compile time for typed construction.
         const fence = inheritedBuiltinCtorFence(lowerer, info, loc);
-        if (fence !== null && fn.name !== PACKED && fn.params.length > 1) {
+        if (fence !== null && !packedConstructionName(fn.name) && fn.params.length > 1) {
           fn.body.unshift({
             kind: "if",
             cond: {
@@ -554,7 +584,7 @@ export class ClassConstructionDispatch {
           info.ctorParams,
           fn.params.slice(1).map((param) => varRef(param.localId, DYN, loc)),
           loc,
-          fn.name === PACKED ? varRef("p.1", DYN, loc) : undefined,
+          packedConstructionName(fn.name) ? varRef("p.1", DYN, loc) : undefined,
         );
         if (!args) continue;
         // The result is an untyped value, so a constructor that returns an
@@ -568,7 +598,7 @@ export class ClassConstructionDispatch {
         });
         const body: IrStmt[] = [{ kind: "return", value, loc }];
         // A spread call's argument count is known only at run time.
-        if (fence !== null && fn.name === PACKED)
+        if (fence !== null && packedConstructionName(fn.name))
           body.unshift({
             kind: "if",
             cond: {

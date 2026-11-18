@@ -28,6 +28,7 @@ import {
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
+import { typedRefRecipe } from "./expr-calls.js";
 import { CLASS_KEY_LEN_MIX, CLASS_VALUE_SLOT_MIX } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
@@ -197,6 +198,7 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
     const once = host.emitExpr(e.args[3]!);
     host.toHeap(cb);
     let adapter = "null";
+    let box = "null";
     if (evArg.value === 0 || evArg.value === 4) {
       const param = cbT.params[0];
       const kind =
@@ -205,15 +207,21 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
       host.declare(`declare void @${name}(ptr, ptr)`);
       adapter = `@${name}`;
     } else if (evArg.value === 5 && cbT.params.length === 1) {
-      const name =
-        cbT.params[0]!.kind === "dyn" ? "scr_rl_history_thunk_dyn" : "scr_rl_history_thunk_arr";
-      host.declare(`declare void @${name}(ptr, ptr)`);
-      adapter = `@${name}`;
+      if (cbT.params[0]!.kind === "dyn") {
+        // A checked-dynamic listener receives the interface's history array
+        // itself: the runtime boxes it with the same interned live capsule a
+        // typed `rl.history` read yields, so `h === rl.history` holds and the
+        // listener's writes land in the array.
+        box = typedRefRecipe(host, { kind: "array", elem: { kind: "string" } });
+      } else {
+        host.declare(`declare void @scr_rl_history_thunk_arr(ptr, ptr)`);
+        adapter = "@scr_rl_history_thunk_arr";
+      }
     }
     const target = e.fn === "rl.on" ? "scr_rl_on" : "scr_rl_on_first";
-    host.declare(`declare void @${target}(double, double, ptr, ptr, i1)`);
+    host.declare(`declare void @${target}(double, double, ptr, ptr, ptr, i1)`);
     B.line(
-      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, i1 ${once.name})`,
+      `call void @${target}(double ${id.name}, double ${ev.name}, ptr ${cb.name}, ptr ${adapter}, ptr ${box}, i1 ${once.name})`,
     );
     return { name: "", type: e.type };
   }
@@ -593,14 +601,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return value;
   }
-  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
+  if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefBrandIs" || e.fn === "dyn.typedRefKeyIs") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
     if (e.fn === "dyn.typedRefKeyIs" && literal === null)
       throw new InternalCompilerError("llvm emitter bug: dyn.typedRefKeyIs needs a literal key");
     // A literal brand cannot replace the receiver while being evaluated.
     // Generated class dispatch uses these probes repeatedly on one local.
     const value = literal !== null ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
-    const key = e.fn === "dyn.typedRefIs" ? host.emitExpr(e.args[1]!) : null;
+    const keyed = e.fn !== "dyn.typedRefKeyIs";
+    const key = keyed ? host.emitExpr(e.args[1]!) : null;
     // Expose the capsule tag to LLVM so class dispatch can skip the whole
     // chain of brand comparisons for ordinary checked-dynamic values.
     // Keep the runtime's null handling and evaluate both operands once.
@@ -672,12 +681,14 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         B.startBlock(full);
       }
     }
-    if (e.fn === "dyn.typedRefIs") {
-      host.declare("declare zeroext i1 @scr_dyn_typed_ref_is_key(ptr, ptr) memory(read)");
+    if (keyed) {
+      const test =
+        e.fn === "dyn.typedRefBrandIs"
+          ? "scr_dyn_typed_ref_brand_is_key"
+          : "scr_dyn_typed_ref_is_key";
+      host.declare(`declare zeroext i1 @${test}(ptr, ptr) memory(read)`);
       const matches = B.tmp();
-      B.line(
-        `${matches} = call zeroext i1 @scr_dyn_typed_ref_is_key(ptr ${value.name}, ptr ${key!.name})`,
-      );
+      B.line(`${matches} = call zeroext i1 @${test}(ptr ${value.name}, ptr ${key!.name})`);
       B.line(`store i1 ${matches}, ptr ${slot}`);
       B.br(done);
     }
@@ -1131,6 +1142,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (MAY_THROW_LIB_FNS.has(e.fn)) host.emitPendingCheck();
     return out;
   }
+  // events.on over a compiled emitter builds its typed listener adapters
+  // beside the emitter calls (lib-process.ts), like events.once: the
+  // dedicated arm below the generic table, and a call that may throw.
+  if (e.fn === "events.onTyped") return host.emitErrorsEventsLibCall(e);
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
@@ -1615,6 +1630,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "fileHandle":
     case "dir":
     case "watcher":
+    case "statWatcher":
     case "stats":
     case "bigstats":
     case "zlib":
@@ -1654,6 +1670,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "timers":
     case "async":
     case "als":
+    case "ar":
+    case "te":
       return host.emitAsyncContextLibCall(e);
     case "process":
     case "stdin":
@@ -1694,6 +1712,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "weakMap":
     case "weakSet":
     case "finalizationRegistry":
+    case "weakRef":
     case "ffi":
     case "sharedArrayBuffer":
     case "arrayBuffer":
@@ -1722,6 +1741,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "promise":
     case "navigator":
     case "mime":
+    case "sqlite":
       return host.emitGenericLibCall(e);
     case "nodeIsland":
       return host.emitGenericLibCall(e);
@@ -1741,6 +1761,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
+    case "watchEvents":
+      return host.emitFilesystemLibCall(e);
+    case "mkdtempResult":
+      return host.emitFilesystemLibCall(e);
     case "tls":
       return emitTlsLibCall(host, e);
     case "http2":

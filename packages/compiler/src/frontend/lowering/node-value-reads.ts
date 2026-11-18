@@ -13,7 +13,7 @@
  *     (`process.debugPort`, `performance.timeOrigin`), else the named
  *     refusal of the read. */
 import * as ts from "../ts7/adapter.js";
-import { BOOL, DYN, F64, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
+import { BOOL, DYN, type IrExpr, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { nodeObjectMemberWriteDiag, nodeValueDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
@@ -32,6 +32,7 @@ import {
   processFunctionMemberValue,
   processHasIpc,
 } from "./builtins/process.js";
+import { perfNodeTimingValue, performanceTimeOrigin } from "./builtins/performance.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { hostGlobalValue } from "./host-global-values.js";
 import {
@@ -63,6 +64,8 @@ export function unloweredGlobalValue(
   if (kind.kind === "function") {
     if (NODE_GLOBALS_WITHOUT_NATIVE.has(name)) return hostGlobalValue(lowerer, name, node);
     refuseUnmodeledMember(lowerer, name, node);
+    const constructible = constructibleGlobalValue(lowerer, name, loc);
+    if (constructible !== null) return constructible;
     return globalFunctionFenceValue(lowerer, name, loc);
   }
   if (kind.type === "undefined") return dynUndefinedExpr(loc);
@@ -84,6 +87,44 @@ export function unloweredGlobalValue(
     return nodeObjectValue(lowerer, name, node, loc);
   }
   lowerer.nodeValueFence(name, node);
+}
+
+/** The Node global classes whose value native code constructs the same
+ * object the direct `new` builds. A read answers the interned constructor
+ * the checked-dynamic construction dispatches by name, so a value stored,
+ * compared or passed on is that constructor and `new` through it builds a
+ * real instance. Each implementing unit (the abort, event-target and error
+ * units) links through the runtime-feature scan of this value
+ * (runtime-features.ts); MessageChannel's worker unit has no libCall of its
+ * own there, so the frontend requests it here. */
+const CONSTRUCTIBLE_GLOBAL_CLASSES: ReadonlySet<string> = new Set([
+  "MessageChannel",
+  "AbortController",
+  "Event",
+  "CustomEvent",
+  "EventTarget",
+  "DOMException",
+]);
+
+/** Whether `name` is a global class whose value constructs (lower-classes.ts
+ * reads this to let a JavaScript `new` reach that value). */
+export function isConstructibleGlobalClass(name: string): boolean {
+  return CONSTRUCTIBLE_GLOBAL_CLASSES.has(name);
+}
+
+/** The constructible value of the global class `name`, or null. The wasi
+ * target has no worker threads, so there the value keeps the direct
+ * construction's refusal (the SC2020 the read's refusing value throws). */
+function constructibleGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+  if (!CONSTRUCTIBLE_GLOBAL_CLASSES.has(name) || lowerer.targetPlatform === "wasi") return null;
+  if (name === "MessageChannel") lowerer.usesWorkers = true;
+  return {
+    kind: "libCall",
+    fn: "dyn.globalConstructor",
+    args: [strLit(name, loc)],
+    type: DYN,
+    loc,
+  };
 }
 
 /** The member `node` is the receiver of (`node.member`, `node["member"]`,
@@ -117,7 +158,10 @@ export function storedGlobalValue(
 ): IrExpr | null {
   const kind = nodeGlobalKind(name);
   if (kind === null) return null;
-  if (kind.kind === "function") return globalFunctionFenceValue(lowerer, name, loc);
+  if (kind.kind === "function")
+    return (
+      constructibleGlobalValue(lowerer, name, loc) ?? globalFunctionFenceValue(lowerer, name, loc)
+    );
   // The object of `process` or `performance` is held only by a program that
   // reads it as a value somewhere: its bare spelling then answers the same
   // object, and identity across the spellings is what the stored read is
@@ -339,7 +383,8 @@ function defineNodeObject(lowerer: Lowerer, name: string, helper: string, node: 
  * exactly, as an expression that needs no local of its own (it becomes the
  * body of a getter): the process members a destructuring reads
  * (processDataMemberValue), the two process constants, and
- * `performance.timeOrigin`. Null for the others. */
+ * `performance.timeOrigin` and `performance.nodeTiming`. Null for the
+ * others. */
 function exactObjectMember(
   lowerer: Lowerer,
   object: string,
@@ -347,8 +392,14 @@ function exactObjectMember(
   node: ts.Node,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (object === "performance")
-    return member === "timeOrigin" ? performanceTimeOrigin(lowerer, loc) : null;
+  if (object === "performance") {
+    if (member === "timeOrigin") return performanceTimeOrigin(lowerer, loc);
+    // performance.nodeTiming: the milestone record, as a checked-dynamic
+    // object (its class carries the prototype's toJSON and inspect).
+    if (member === "nodeTiming")
+      return { kind: "dynFrom", value: perfNodeTimingValue(lowerer, loc), type: DYN, loc };
+    return null;
+  }
   if (object !== "process") return null;
   if (member === "debugPort") return numLit(9229, loc);
   if (member === "sourceMapsEnabled") return boolLit(false, loc);
@@ -603,51 +654,6 @@ function refusalCall(lowerer: Lowerer, display: string, node: ts.Node, loc: SrcL
   defineRefusingFunction(lowerer, lifted, diag, locatedFenceMessage(diag, node), loc);
   lowerer.noteEdge(lifted);
   return { kind: "call", callee: lifted, args: [], type: DYN, loc };
-}
-
-/** `performance.timeOrigin`: the Unix time, in fractional milliseconds, at
- * which `performance.now()` read zero. The runtime's clock is anchored at
- * process start, so the origin is the wall clock minus that clock, taken
- * once and kept: every read answers the same number, and
- * `timeOrigin + now()` is the wall clock, as in Node. */
-function performanceTimeOrigin(lowerer: Lowerer, loc: SrcLoc): IrExpr {
-  const helper = "%perf.timeOrigin";
-  if (lowerer.liftedFnNamed(helper) === undefined) {
-    const storage = `%g.${helper}`;
-    const ready = `${storage}%ready`;
-    lowerer.globalsList.push(
-      { id: storage, name: "performance.timeOrigin", type: F64, mutable: true },
-      { id: ready, name: "%ready", type: BOOL, mutable: true },
-    );
-    const body: IrStmt[] = [
-      {
-        kind: "if",
-        cond: varRef(ready, BOOL, loc),
-        then: [{ kind: "return", value: varRef(storage, F64, loc), loc }],
-        else_: null,
-        loc,
-      },
-      {
-        kind: "assign",
-        localId: storage,
-        value: {
-          kind: "bin",
-          op: "-",
-          left: { kind: "libCall", fn: "date.now", args: [], type: F64, loc },
-          right: { kind: "libCall", fn: "perf.now", args: [], type: F64, loc },
-          type: F64,
-          loc,
-        },
-        loc,
-      },
-      { kind: "assign", localId: ready, value: boolLit(true, loc), loc },
-      { kind: "return", value: varRef(storage, F64, loc), loc },
-    ];
-    lowerer.liftedFns.push({ name: helper, params: [], locals: [], returnType: F64, body, loc });
-    lowerer.shareHelper(helper);
-  }
-  lowerer.noteEdge(helper);
-  return { kind: "call", callee: helper, args: [], type: F64, loc };
 }
 
 /** Node's `typeof` for the Node value `expr` names (a builtin import

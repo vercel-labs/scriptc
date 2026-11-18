@@ -3207,6 +3207,84 @@ export function plain(x) { return x + 1; }
     );
   });
 
+  test("a require binding through a conditional whole export is the same named fence", async () => {
+    // `pick.cjs` chooses its whole export when it runs (react/index.js), so
+    // `pick.hello()` reads the member off that module; Node passes the
+    // exports object the branch chose as `this`. The call through the
+    // module's slot has none to pass, so it refuses like a direct call
+    // through the table's own module binding does.
+    const r = await compileAndRun(
+      "conditional-export-require-this",
+      `'use strict';
+const pick = require('./pick.cjs');
+console.log(pick.plain(21));
+console.log(pick.hello());
+`,
+      "cjs",
+      {
+        "pick.cjs": `'use strict';
+if (process.env.PICK_MODE === 'one') {
+  module.exports = require('./one.cjs');
+} else {
+  module.exports = require('./two.cjs');
+}
+`,
+        "one.cjs": `'use strict';
+exports.name = 'one';
+exports.hello = function () { return 'hi from ' + this.name; };
+exports.plain = function (x) { return x * 2; };
+`,
+        "two.cjs": `'use strict';
+exports.name = 'two';
+exports.hello = function () { return 'hi from ' + this.name; };
+exports.plain = function (x) { return x * 2; };
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("42\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding \('hello': .*\) is not supported yet \[SC1090 at .*conditional-export-require-this\.cjs:4\]\n$/,
+    );
+  });
+
+  test("a conditional module alias used other than as a member read keeps its named fence", async () => {
+    // `l` holds whichever table's exports object the branch required. A call
+    // `l.setMode()` passes that object as `this`, which the alias's member
+    // slots cannot provide, so the variable keeps its ordinary treatment and
+    // refuses where it runs instead of reading `l` as undefined.
+    const r = await compileAndRun(
+      "conditional-alias-member-call",
+      `'use strict';
+var l;
+if (process.env.CJS_ALIAS_CALL_MODE === 'one') {
+  l = require('./one.cjs');
+} else {
+  l = require('./two.cjs');
+}
+console.log(l.mode);
+l.setMode('late');
+console.log(l.mode);
+`,
+      "cjs",
+      {
+        "one.cjs": `'use strict';
+exports.mode = 'one';
+exports.setMode = function (mode) { exports.mode = mode; };
+`,
+        "two.cjs": `'use strict';
+exports.mode = 'two';
+exports.setMode = function (mode) { exports.mode = mode; };
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: the exports object of '\.\/two\.cjs' as a value .* is not supported yet \[SC1090 at .*conditional-alias-member-call\.cjs:6\]\n$/,
+    );
+  });
+
   test("a namespace import's export that passes this on with apply or call compiles", async () => {
     // Effect 4's provideService: `dual(...).apply(this, arguments)` hands the
     // receiver to a function that `dual` returns, which reads it only to
@@ -3730,12 +3808,9 @@ async function attempt(label, run) {
 const key = await crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 await attempt("ed448", () => crypto.subtle.sign({ name: "Ed448" }, key, bytes));
 await attempt("ecdsa with an hmac key", () => crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes));
-await attempt("sha3", () => crypto.subtle.digest("SHA3-256", bytes));
-await attempt("sha3 hmac", () =>
-  crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA3-256" }, false, ["sign"]),
-);
+await attempt("cshake", () => crypto.subtle.digest("cSHAKE128", bytes));
 const aes = await crypto.subtle.generateKey({ name: "AES-GCM", length: 128 }, false, ["encrypt"]);
-await attempt("aes-ocb", () => crypto.subtle.encrypt({ name: "AES-OCB", iv: new Uint8Array(12) }, aes, bytes));
+await attempt("x448 bits", () => crypto.subtle.deriveBits({ name: "X448" }, key, 256));
 await attempt("ecdh bits", () => crypto.subtle.deriveBits({ name: "ECDH" }, key, 256));
 await attempt("rsa-oaep wrap", () => crypto.subtle.wrapKey("raw", key, key, { name: "RSA-OAEP" }));
 const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -3755,10 +3830,9 @@ await attempt("unwrap an ecdsa key", () =>
     expect(r.stdout).toBe(
       "ed448 Error SC2020 crypto.subtle.sign with the Ed448 algorithm is not supported yet\n" +
         "ecdsa with an hmac key InvalidAccessError 15 Key algorithm mismatch\n" +
-        "sha3 Error SC2020 crypto.subtle.digest with the SHA3-256 algorithm is not supported yet\n" +
-        "sha3 hmac Error SC2020 crypto.subtle.importKey with the SHA3-256 algorithm is not supported yet\n" +
-        "aes-ocb Error SC2020 crypto.subtle.encrypt with the AES-OCB algorithm is not supported yet\n" +
-        "ecdh bits Error SC2020 crypto.subtle.deriveBits with the ECDH algorithm is not supported yet\n" +
+        "cshake TypeError ERR_MISSING_OPTION Failed to normalize algorithm: passed algorithm cannot be converted to 'CShakeParams' because 'outputLength' is required in 'CShakeParams'.\n" +
+        "x448 bits Error SC2020 crypto.subtle.deriveBits with the X448 algorithm is not supported yet\n" +
+        "ecdh bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +
         "wrap an ecdsa key Error SC2020 crypto.subtle.wrapKey with an ECDSA, Ed25519 or RSA key is not supported yet\n" +
         "wrap with an ecdsa key InvalidAccessError 15 Key algorithm mismatch\n" +
@@ -3768,17 +3842,17 @@ await attempt("unwrap an ecdsa key", () =>
 
   test("a method outside the slice is a named fence where it runs", async () => {
     const r = await compileAndRun(
-      "webcrypto-get-public-key",
+      "webcrypto-encapsulate-bits",
       `console.log("before");
 const key = await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign"]);
-await crypto.subtle.getPublicKey(key, ["verify"]);
+await crypto.subtle.encapsulateBits("ML-KEM-768", key);
 `,
       "mjs",
     );
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("before\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'crypto\.subtle\.getPublicKey' is part of the standard library types but has no scriptc lowering yet.*\n$/,
+      /^Uncaught Error: 'crypto\.subtle\.encapsulateBits' is part of the standard library types but has no scriptc lowering yet.*\n$/,
     );
   });
 });
@@ -3899,11 +3973,10 @@ server.listen(0, () => {
 });
 
 describe("inspecting error subclasses with properties created at run time (JS lane)", () => {
-  test("an instance whose constructor created a property is a named fence", async () => {
-    // Node prints `[Conditional [Error]: m] { extra: 'x' }`. The property
-    // lives in the instance's property bag, which the error rendering does
-    // not read, so the instance refuses instead of printing a partial
-    // object. One without such a property prints as Node prints it.
+  test("an instance whose constructor created a property prints it", async () => {
+    // Node prints `[Conditional [Error]: m] { extra: 'x' }`: the error's
+    // own properties follow the message, as they do for any other object.
+    // The rendering reads the instance's property bag for them.
     const r = await compileAndRun(
       "error-subclass-runtime-properties",
       `import * as util from "node:util";
@@ -3922,10 +3995,10 @@ console.log(util.inspect(extra));
 `,
       "mjs",
     );
-    expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("[Conditional [Error]: plain]\n");
-    expect(r.stderr).toMatch(
-      /^Uncaught Error: inspecting a 'Conditional' error with properties created at run time is not supported yet \[SC2020[^\]]*\]\n$/,
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "[Conditional [Error]: plain]\n[Conditional [Error]: extra] { extra: 'x' }\n",
     );
   });
 });
@@ -3996,10 +4069,12 @@ class Named {
 }
 const s: string = process.argv.length > 99 ? "" : "%s";
 const o: string = process.argv.length > 99 ? "" : "%o";
+const colored = new Error("e");
+colored.stack = "Error: e\\n    at thrower (node:fs:1:1)";
 const attempts: Array<() => string> = [
   () => util.format(s, new Named()),
   () => util.format(o, { a: 1 }),
-  () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
+  () => util.formatWithOptions({ colors: true }, s, "x", colored),
   () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
   () => util.formatWithOptions({ maxArrayLength: 1.5 }, [1, 2]),
   () => util.formatWithOptions({ compact: true }, [1, 2]),
@@ -4017,9 +4092,9 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
+      "n\n" +
         "{ a: 1 }\n" +
-        "Error SC2020 colored inspect output of Error values has no lowering\n" +
+        "x Error: e\n\u001b[90m    at thrower (node:fs:1:1)\u001b[39m\n" +
         "[ 1, ... 1 more item ]\n" +
         "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
         "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +

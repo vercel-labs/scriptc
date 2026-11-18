@@ -360,7 +360,7 @@ A class can be both `ProgramLifetime` and `Acyclic`. `Acyclic` is still checked 
 
 Instances can be published to other threads with `@scriptc/threads` like other class instances: `publish()` makes them immutable and shares them by reference, writes to a published instance throw the same `TypeError` as under Node.js, and instances that were not published stay writable and are cloned by `postMessage` and `workerData`.
 
-Static code has no `WeakRef`, a `FinalizationRegistry` never runs its cleanup callbacks, and a `WeakMap` or `WeakSet` entry whose key is never freed is never observable as removed, so nothing else can tell the difference.
+Static code has no weak-reference cleanup: a `WeakRef` keeps its target alive and `deref()` always answers it, a `FinalizationRegistry` never runs its cleanup callbacks, and a `WeakMap` or `WeakSet` entry whose key is never freed is never observable as removed, so nothing else can tell the difference.
 
 ### Lifetime regions
 

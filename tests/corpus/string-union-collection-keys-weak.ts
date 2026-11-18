@@ -1,5 +1,5 @@
-// A Set and a Map that hold a unit key, reached through a WeakRef, as a
-// WeakMap key and as a WeakMap value.
+// A Set and a Map that hold a unit key, as a WeakMap key, a WeakMap value
+// and WeakSet members.
 const s = new Set<string | null>(["a", null]);
 const m = new Map<string | undefined, number>([[undefined, 1], ["k", 2]]);
 

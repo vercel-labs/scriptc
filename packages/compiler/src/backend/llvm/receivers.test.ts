@@ -1,5 +1,7 @@
 import { expect, test } from "vitest";
-import { emitLlvmModule } from "./emitter.js";
+import { emitLlvmModule, type LlEmitter } from "./emitter.js";
+import { type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
+import { emitReadReceiver } from "./receivers.js";
 
 /** A checked element read hands its value to a call through the hidden local
  * the lowering stabilizes it in (`runtimeOptionalPropertyReceiver`). The local
@@ -55,4 +57,57 @@ test("a stabilized receiver lends its element to the call", async () => {
   // Nothing in the borrowed body counts the element down and up per loop.
   expect(body.match(/@sc_retain_P\b/g) ?? []).toHaveLength(0);
   expect(body.match(/@sc_release_P\b/g) ?? []).toHaveLength(0);
+});
+
+/** The stabilized local is a sequence's, not the enclosing block's. A checked
+ * read lends its projection to a call, and the call may sit in a lazy branch
+ * (`a && get().b === c`): a block-scoped local's owner would be released at a
+ * scope exit that a path skipping the read also reaches, releasing a stale
+ * pointer from an earlier loop iteration. The statements therefore emit in a
+ * sequence scope, whose locals transfer to the current statement frame — the
+ * frame that releases them on the path that stored them. */
+test("a borrowed stabilized read emits its statements in a sequence scope", () => {
+  const steps: string[] = [];
+  const emitter = {
+    stableCallBindings: new Set(["%propertyRecv"]),
+    beginSequenceScope(): void {
+      steps.push("scope");
+    },
+    endSequenceScope(): void {
+      steps.push("end");
+    },
+    emitStmt(s: IrStmt): void {
+      steps.push(`stmt:${s.kind}`);
+    },
+    emitReadReceiver(e: IrExpr) {
+      steps.push(`read:${e.kind}`);
+      return { name: "%lent", type: e.type };
+    },
+  } as unknown as LlEmitter;
+  const loc = { file: "probe.ts", start: 0, end: 0 };
+  const text: IrType = { kind: "string" };
+  const read: IrExpr = {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: "%propertyRecv",
+        init: { kind: "varRef", localId: "source", type: text, loc },
+        loc,
+      },
+    ],
+    result: {
+      kind: "unionNarrow",
+      unionId: "u1",
+      tag: 0,
+      value: { kind: "varRef", localId: "%propertyRecv", type: text, loc },
+      type: text,
+      loc,
+    },
+    type: text,
+    loc,
+  };
+  const value = emitReadReceiver(emitter, read);
+  expect(value.name).toBe("%lent");
+  expect(steps).toEqual(["scope", "stmt:varDecl", "read:unionNarrow", "end"]);
 });

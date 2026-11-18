@@ -24,7 +24,7 @@ import {
 import { runCiTestPlan } from "../../scripts/ci-test.mjs";
 import { parseShardLoads, parseShardSpec, skipUnownedTest } from "./shard.js";
 
-test.for([1, 3, 5, 10, 20])(
+test.for([1, 3, 5, 10, 20, 30])(
   "CI retains every suite with %i shards without mixing partition axes",
   (count) => {
     for (const flavor of ["plain", "san"]) {
@@ -192,46 +192,49 @@ test("the sanitized native frontend builds run in a dedicated required job", () 
   expect(jobs["test"]!.needs).toContain("native_frontend_san");
 });
 
-test("the side queue is balanced across the twenty Linux shards by measured cost", () => {
-  for (const flavor of ["plain", "san"] as const) {
-    const { loads, placed, owners } = sidePlan(flavor, 20, "linux");
-    // The plan accounts for every whole file it owns and every measured test
-    // of the suites that split their own tests, each on one shard.
-    const items = placed.flatMap((shard) => shard.map(([file, test]) => `${file} > ${test}`));
-    expect(new Set(items).size).toBe(items.length);
-    expect(items.toSorted()).toEqual(
-      [
-        ...[...owners.keys()].map((file) => `${file} > undefined`),
-        ...caseShardedSideFiles.flatMap(([, file]) =>
-          Object.keys(caseCosts[file]![flavor]).map((test) => `${file} > ${test}`),
-        ),
-      ].toSorted(),
-    );
-    placed.forEach((shard, index) =>
-      expect(
-        shard.reduce((sum, [, , ms]) => sum + ms, 0),
-        `${flavor} ${index + 1}`,
-      ).toBe(loads[index]),
-    );
-    // No shard's side queue is planned past 1.3 times the mean, unless one
-    // test or file holds the shard alone but for a tenth of the mean: an item
-    // longer than an even share cannot be divided.
-    const mean = loads.reduce((sum, load) => sum + load, 0) / loads.length;
-    loads.forEach((load, index) => {
-      const longest = Math.max(...placed[index]!.map(([, , ms]) => ms));
-      if (load - longest > mean * 0.1)
-        expect(load, `${flavor} ${index + 1}`).toBeLessThanOrEqual(mean * 1.3);
-    });
-    // The two longest items of the whole side queue, whichever suites or
-    // files they belong to, are on different shards.
-    const [first, second] = placed
-      .flatMap((shard, index) => shard.map(([, , ms]) => ({ ms, index })))
-      .sort((a, b) => b.ms - a.ms);
-    expect(first!.index).not.toBe(second!.index);
-  }
-});
+test.for([20, 30])(
+  "the side queue is balanced across %i Linux shards by measured cost",
+  (count) => {
+    for (const flavor of ["plain", "san"] as const) {
+      const { loads, placed, owners } = sidePlan(flavor, count, "linux");
+      // The plan accounts for every whole file it owns and every measured test
+      // of the suites that split their own tests, each on one shard.
+      const items = placed.flatMap((shard) => shard.map(([file, test]) => `${file} > ${test}`));
+      expect(new Set(items).size).toBe(items.length);
+      expect(items.toSorted()).toEqual(
+        [
+          ...[...owners.keys()].map((file) => `${file} > undefined`),
+          ...caseShardedSideFiles.flatMap(([, file]) =>
+            Object.keys(caseCosts[file]![flavor]).map((test) => `${file} > ${test}`),
+          ),
+        ].toSorted(),
+      );
+      placed.forEach((shard, index) =>
+        expect(
+          shard.reduce((sum, [, , ms]) => sum + ms, 0),
+          `${flavor} ${index + 1}`,
+        ).toBe(loads[index]),
+      );
+      // No shard's side queue is planned past 1.3 times the mean, unless one
+      // test or file holds the shard alone but for a tenth of the mean: an item
+      // longer than an even share cannot be divided.
+      const mean = loads.reduce((sum, load) => sum + load, 0) / loads.length;
+      loads.forEach((load, index) => {
+        const longest = Math.max(...placed[index]!.map(([, , ms]) => ms));
+        if (load - longest > mean * 0.1)
+          expect(load, `${flavor} ${index + 1}`).toBeLessThanOrEqual(mean * 1.3);
+      });
+      // The two longest items of the whole side queue, whichever suites or
+      // files they belong to, are on different shards.
+      const [first, second] = placed
+        .flatMap((shard, index) => shard.map(([, , ms]) => ({ ms, index })))
+        .sort((a, b) => b.ms - a.ms);
+      expect(first!.index).not.toBe(second!.index);
+    }
+  },
+);
 
-test.for([1, 3, 5, 10, 20])(
+test.for([1, 3, 5, 10, 20, 30])(
   "every one of %i shards starts each self-splitting suite from the same planned loads",
   (count) => {
     for (const flavor of ["plain", "san"] as const) {
@@ -257,7 +260,7 @@ test.for([1, 3, 5, 10, 20])(
   },
 );
 
-test.for([3, 10, 20])(
+test.for([3, 10, 20, 30])(
   "the planned loads keep every test of a self-splitting suite on exactly one of %i shards",
   (count) => {
     for (const flavor of ["plain", "san"] as const)
@@ -450,7 +453,13 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   type Job = {
     "runs-on": string;
     needs: string[];
-    strategy: { matrix: { flavor: string[]; shard: number[] | string } };
+    strategy: {
+      matrix: {
+        flavor: string[];
+        shard: number[] | string;
+        exclude?: { flavor: string; shard: number }[];
+      };
+    };
     env: Record<string, string>;
     steps: { run?: string; uses?: string; with?: { name?: string } }[];
   };
@@ -461,8 +470,24 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   const macos = jobs["tests_macos"]!;
   expect(linux["runs-on"]).toBe("ubuntu-24.04");
   expect(linux.needs).toContain("native_linux");
-  expect(linux.strategy.matrix.shard).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
-  expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe("${{ matrix.shard }}/20");
+  // The sanitized shards are the lane's long pole, so they run thirty slices
+  // while the plain lane keeps twenty; the exclusions leave exactly that.
+  expect(linux.strategy.matrix.shard).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+  expect(linux.strategy.matrix.exclude).toEqual(
+    Array.from({ length: 10 }, (_, index) => ({ flavor: "plain", shard: 21 + index })),
+  );
+  const shardsOf = (flavor: string): number[] =>
+    linux.strategy.matrix.shard.filter(
+      (shard) =>
+        !linux.strategy.matrix.exclude!.some(
+          (entry) => entry.flavor === flavor && entry.shard === shard,
+        ),
+    );
+  expect(shardsOf("plain")).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+  expect(shardsOf("san")).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+  expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe(
+    "${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }}",
+  );
   expect(linux.env["SCRIPTC_CI_SUITE"]).toBeUndefined();
   expect(linux.steps.some((step) => step.uses === "./.github/actions/llvm-linux")).toBe(true);
   expect(

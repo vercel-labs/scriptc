@@ -118,6 +118,10 @@
                   // only its generated table, never the lowering graph:
                   // program.ts links a builtin's named imports against it.
                   "builtinModuleHasMember",
+                  // The type mapper's crypto.constants record shape comes
+                  // from the same baked table the value lowering builds the
+                  // singleton from; crypto-tables.ts is data with no imports.
+                  "CRYPTO_CONSTANTS",
                 ],
                 "message": "a frontend module outside lowering may import lowering only with `import type`; a value import pulls the lowering module graph into every program that loads program.ts.",
               },

@@ -117,11 +117,14 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   arrJoinStr: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
+  sqlite: boolean;
   largePages: boolean;
   webStreams: boolean;
   webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
+  utilMarkPromiseAsHandled: boolean;
+  utilTraceSigInt: boolean;
   dynBuffer: boolean;
   fsPathValue: boolean;
   builtinValues: boolean;
@@ -415,11 +418,14 @@ export function effectiveRuntimeFeatures(
     arrJoinStr: features.arrJoinStr === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
+    sqlite: features.sqlite === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
     webBodies: features.webBodies === true,
     abortSignal,
     utilTiming: features.utilTiming === true,
+    utilMarkPromiseAsHandled: features.utilMarkPromiseAsHandled === true,
+    utilTraceSigInt: features.utilTraceSigInt === true,
     dynBuffer: features.dynBuffer === true,
     fsPathValue: features.fsPathValue === true,
     builtinValues: features.builtinValues === true,
@@ -457,7 +463,9 @@ export function effectiveRuntimeFeatures(
       features.fileHandle ||
       nativeFetch ||
       features.nodeIsland === true ||
-      features.nodeTest,
+      features.nodeTest ||
+      // The stub resolver settles its promise results through the unit.
+      features.dnsResolve,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
     abortSignalOnly: abortSignal && !nativeFetch,

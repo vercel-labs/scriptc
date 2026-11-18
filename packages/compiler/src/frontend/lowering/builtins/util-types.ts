@@ -1,5 +1,7 @@
 import { dynUndefinedExpr, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { utilTypesArgumentsAnswer } from "../arguments-object.js";
+import { utilTypesNamespaceAnswer } from "../module-namespace-elements.js";
 import { type Lowerer } from "../lowerer.js";
 import { BOOL, DYN, type IrExpr, type IrStmt, type SrcLoc } from "../../../ir/ir.js";
 
@@ -12,6 +14,13 @@ export function lowerUtilTypeCall(
 ): IrExpr {
   if (expr.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with spread arguments`, expr);
+  // The two values the compiler knows better than the checked-dynamic form:
+  // the arguments object and ESM namespace values answer every brand at the
+  // call site.
+  const known =
+    utilTypesArgumentsAnswer(lowerer, expr, bi.member, loc) ??
+    utilTypesNamespaceAnswer(lowerer, expr, bi.member, loc);
+  if (known) return known;
   const first = expr.arguments.nodes[0];
   if (first !== undefined && lowerer.mapTypeOf(lowerer.typeOf(first))?.kind === "date") {
     // A Date value has no checked-dynamic form; its static type decides

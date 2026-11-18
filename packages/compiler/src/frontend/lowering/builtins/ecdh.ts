@@ -6,6 +6,7 @@ import { DYN, type IrExpr, type IrStmt } from "../../../ir/ir.js";
 import { builtinImportOf } from "./module-bindings.js";
 import { v8CalleeText } from "./crypto.js";
 import { CRYPTO_CURVES } from "../crypto-tables.js";
+import { isFallbackDtsPath } from "../../dts-paths.js";
 
 /* node:crypto's ECDH is a native checked-dynamic handle (scr_ecdh.c): the
  * ECDH type maps to dyn, its methods dispatch through the handle, and
@@ -113,15 +114,27 @@ const ECDH_METHODS = new Set([
   "setPublicKey",
 ]);
 
+/** Whether the checker resolved the call to a declaration the shipped
+ * fallback owns (rather than @types/node's). The fallback declares Node's
+ * own argument reading, so a call it accepts needs no further guard. */
+function resolvedFromFallback(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
+  return (
+    declaration !== undefined && isFallbackDtsPath(ts.getSourceFileOfNode(declaration).fileName)
+  );
+}
+
 /** computeSecret(view, encoding): Node reads the second argument as the
  * input encoding, which a view key ignores, so the call answers a Buffer
  * where @types/node declares the string of an output encoding. The
  * form is refused at compile time rather than failing the string check
- * at run time. */
+ * at run time. The fallback declares the Buffer answer, so a call
+ * resolved to it is left alone. */
 function refuseViewKeyWithEncoding(lowerer: Lowerer, call: ts.CallExpression, name: string): void {
   if (name !== "computeSecret") return;
   const args = call.arguments.nodes;
   if (args.length !== 2) return;
+  if (resolvedFromFallback(lowerer, call)) return;
   const encoding = lowerer.typeOf(args[1]!);
   if ((encoding.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) !== 0) return;
   if ((lowerer.typeOf(args[0]!).flags & ts.TypeFlags.StringLike) !== 0) return;
@@ -133,11 +146,11 @@ function refuseViewKeyWithEncoding(lowerer: Lowerer, call: ts.CallExpression, na
   );
 }
 
-/** A call whose arguments the checker's chosen @types/node overload does
- * not accept: the checker then types the result by an overload Node may
- * not follow (getPublicKey("HEX") answers a string where the encoding-less
- * overload declares a Buffer), so the call is refused rather than checked
- * against that type at run time. Arguments typed any are accepted. */
+/** A call whose arguments the checker's chosen overload does not accept:
+ * the checker then types the result by an overload Node may not follow
+ * (getPublicKey("HEX") answers a string where the encoding-less overload
+ * declares a Buffer), so the call is refused rather than checked against
+ * that type at run time. Arguments typed any are accepted. */
 export function refuseUnmatchedOverload(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -155,7 +168,7 @@ export function refuseUnmatchedOverload(
     lowerer.noLowering(
       `${what} with an argument its declared overloads do not accept`,
       args[i]!,
-      `pass ${lowerer.checker.typeToString(paramType)} here, as @types/node declares`,
+      `pass ${lowerer.checker.typeToString(paramType)} here, as its overload declares`,
     );
   }
 }

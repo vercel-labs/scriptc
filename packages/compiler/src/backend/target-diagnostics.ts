@@ -138,6 +138,8 @@ const WASI_UNAVAILABLE_HOST_FACTS: ReadonlyMap<IrLibFn, string> = new Map([
   ["os.uptime", "system uptime (WASI Preview 1 has no boot-time API)"],
   ["os.getPriority", "process scheduling priority (WASI Preview 1 has no priority API)"],
   ["os.setPriority", "process scheduling priority (WASI Preview 1 has no priority API)"],
+  ["os.getPriorityChk", "process scheduling priority (WASI Preview 1 has no priority API)"],
+  ["os.setPriorityChk", "process scheduling priority (WASI Preview 1 has no priority API)"],
   ["process.memoryUsageTake", "process memory statistics (WASI Preview 1 has no memory API)"],
   ["process.rss", "process memory statistics (WASI Preview 1 has no memory API)"],
   ["process.ppid", "the parent process id (WASI Preview 1 has no process API)"],
@@ -173,6 +175,7 @@ export function moduleWasiUnavailableSurface(
     ["http2Stream", "network sockets (WASI Preview 1 has no socket API)"],
     ["dgramSocket", "network sockets (WASI Preview 1 has no socket API)"],
     ["fsWatcher", "filesystem watching (WASI Preview 1 has no notification API)"],
+    ["statWatcher", "filesystem watching (WASI Preview 1 has no notification API)"],
     ["httpReq", "network sockets (WASI Preview 1 has no socket API)"],
     ["httpRes", "network sockets (WASI Preview 1 has no socket API)"],
     ["httpClientReq", "network sockets (WASI Preview 1 has no socket API)"],
@@ -282,7 +285,7 @@ export function moduleWasiUnavailableSurface(
   if (moduleUsesWebCryptoAsymmetric(mod)) {
     return {
       surface:
-        "WebCrypto ECDSA and RSA (the wasm32-wasi runtime does not include the mbedTLS library)",
+        "WebCrypto's asymmetric algorithms (the wasm32-wasi runtime does not include the mbedTLS library)",
       loc: entryLoc,
     };
   }

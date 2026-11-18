@@ -128,6 +128,30 @@ test("the diagnostic names a local as the source writes it", async () => {
   expect(result.messages[0]).toContain("in head, local 'first' aliases a node it does not own");
 });
 
+test("a constructor cannot alias a field it then overwrites", async () => {
+  // The field holds the child; reading `this.child` into an alias makes a
+  // second reference the overwrite does not see, so the child would be
+  // freed while the alias still names it.
+  const result = await build(`
+import type { SingleOwner } from "@scriptc/experimental";
+
+class Node implements SingleOwner {
+  child: Node | null;
+  constructor(child: Node | null) {
+    this.child = child;
+    const held = this.child;
+    this.child = null;
+    if (held !== null) console.log(held.child === null);
+  }
+}
+
+new Node(new Node(null));
+`);
+  expect(result.ok).toBe(false);
+  expect(result.codes).toEqual(["SC7010"]);
+  expect(result.messages[0]).toContain("local 'held' aliases a node it does not own");
+});
+
 test("the marker outside an implements clause is refused", async () => {
   const result = await build(
     `import type { SingleOwner } from "@scriptc/experimental";\ntype Point = SingleOwner<{ x: number }>;\nconst p: Point = { x: 1 };\nconsole.log(p.x);\n`,

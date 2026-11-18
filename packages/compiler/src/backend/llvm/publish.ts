@@ -1,7 +1,7 @@
 /* Per-type publication walkers (@scriptc/threads publish).
  *
  * publish(root) hands the root and its static type's walker to the
- * runtime's scr_publish (scr_cycle.c), which runs a worklist. A walker
+ * runtime's scr_publish (scr_publish.c), which runs a worklist. A walker
  * marks its object immortal (scr_pub_mark answers false when it already
  * was: the walk's visited test, so shared and cyclic structure is walked
  * once) and pushes every reference it holds, each with the walker of its

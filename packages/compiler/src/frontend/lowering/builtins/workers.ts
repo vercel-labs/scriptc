@@ -406,8 +406,10 @@ export function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name
     }
     /* The globals are the same classes: the fallback declares them beside
      * the module files, which load only when the program imports them. */
-    return (name === "MessageChannel" || name === "MessagePort" || name === "BroadcastChannel") &&
-           isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName);
+    return (
+      (name === "MessageChannel" || name === "MessagePort" || name === "BroadcastChannel") &&
+      isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName)
+    );
   });
 }
 

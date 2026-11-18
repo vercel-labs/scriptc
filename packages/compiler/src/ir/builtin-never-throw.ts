@@ -34,6 +34,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "test.ctxSignal",
   // scr_test_ctx_log writes the ℹ line at once; printing cannot raise.
   "test.ctxLog",
+  // scr_test_ctx_tags answers the cached frozen tag array; building it on the
+  // first read copies the tag strings and allocates, running no program code.
+  "test.ctxTags",
   // Console instance state that answers text: the timer labels are already
   // strings, the stores are the instance's own tables, and no program code
   // runs. (The counters and the table can throw, so they are not here.)

@@ -137,7 +137,7 @@ struct ScrTestCtx {
   size_t nchildren, ccap;
   ScrTestHooks hooks[4]; /* suites and root; tests through t.after/t.beforeEach/t.afterEach */
   ScrCaught *before_err; /* owned; a throwing t.before, which fails the test and later subtests */
-  int plan;              /* t.plan count, -1 without a plan */
+  double plan;           /* t.plan count, -1 without a plan */
   int plan_count;        /* t.assert calls and subtests counted against the plan */
   ScrTestHooks mocks;    /* t.mock: the restore closure of each mock, in creation order */
   double timeout;        /* { timeout } in ms, INFINITY without one */
@@ -187,6 +187,12 @@ struct ScrTestCtx {
   double plan_wait;
   bool plan_set;
   ScrPromise *plan_met; /* owned */
+  /* { tags }: the flattened, lowercased, de-duplicated tag set — the
+   * test's own tags unioned with every ancestor suite's, in Node's Set
+   * order — and the frozen array t.tags answers, made on the first read. */
+  ScrStr **tags; /* owned */
+  size_t ntags;
+  ScrArr *tags_arr; /* owned; the frozen array t.tags hands out */
 };
 
 /* t.signal's abort unit face (scr_abort.c). The compiler links that unit
@@ -301,6 +307,9 @@ void scr_testctx_release(ScrTestCtx *t) {
   scr_test_watch_free(t);
   scr_dyn_release(t->signal_dyn);
   scr_str_release(t->fail_msg);
+  for (size_t i = 0; i < t->ntags; i++) scr_str_release(t->tags[i]);
+  free(t->tags);
+  scr_arr_release(t->tags_arr);
   scr_promise_release(t->plan_met);
   scr_promise_release(t->abort_promise);
   for (size_t i = 0; i < t->ndiags; i++) scr_str_release(t->diags[i]);
@@ -759,6 +768,14 @@ static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *sco
  * plan. */
 static void scr_test_await_plan(ScrTestCtx *t) {
   t->plan_met = scr_promise_new();
+  if (t->plan_wait < 0) {
+    /* `wait: true`: Node waits indefinitely for the remaining assertions
+     * and subtests — the runner parks until the plan is met. */
+    scr_await_void(t->plan_met);
+    scr_promise_release(t->plan_met);
+    t->plan_met = NULL;
+    return;
+  }
   ScrPromise *timer = scr_promise_new();
   double handle = scr_set_timeout_handle(scr_make_resolve(timer, 3 /* void */), t->plan_wait);
   ScrPromise *race = scr_promise_new();
@@ -1534,21 +1551,25 @@ static void scr_test_run_node(ScrTestCtx *t) {
   if (!failed && t->plan >= 0 && t->plan_count != t->plan) {
     /* A shortfall waits out { wait } first, as Node holds the test open
      * for assertions its timers still run. */
-    if (t->plan_wait >= 0 && t->plan_count < t->plan) scr_test_await_plan(t);
+    if (t->plan_wait != -1 && t->plan_count < t->plan) scr_test_await_plan(t);
     if (t->plan_count != t->plan) {
       char buf[128];
       int n;
       if (t->plan_wait >= 0 && t->plan_count < t->plan) {
         char num[32];
         size_t wl = scr_f64_to_str(t->plan_wait, num);
+        char expected[32];
+        size_t el = scr_f64_to_str(t->plan, expected);
         n = snprintf(buf, sizeof buf,
-                     "plan timed out after %.*sms with %d assertions when expecting %d", (int)wl,
-                     num, t->plan_count, t->plan);
+                     "plan timed out after %.*sms with %d assertions when expecting %.*s", (int)wl,
+                     num, t->plan_count, (int)el, expected);
         /* Node cancels the test and its pending subtests, as a timeout. */
         t->timed_out = true;
       } else {
-        n = snprintf(buf, sizeof buf, "plan expected %d assertions but received %d", t->plan,
-                     t->plan_count);
+        char expected[32];
+        size_t el = scr_f64_to_str(t->plan, expected);
+        n = snprintf(buf, sizeof buf, "plan expected %.*s assertions but received %d", (int)el,
+                     expected, t->plan_count);
       }
       scr_throw_str(scr_str_new(buf, (size_t)n));
       t->err = scr_exc_take();
@@ -1911,6 +1932,14 @@ static void scr_snap_put_escaped(ScrJsonBuf *b, const char *s, size_t n) {
  * Node's ERR_INVALID_STATE. Returns +1, or NULL after a throw. */
 ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers) {
   ScrDyn *v;
+  /* A serializers value held in an array-typed expression arrives as a
+   * checked identity view; read it as the plain array Node's assertion
+   * iterates. */
+  ScrDyn *materialized = NULL;
+  if (serializers->kind == SCR_DYN_TYPED_REF) {
+    materialized = scr_dyn_typed_ref_materialize(serializers);
+    if (materialized) serializers = materialized;
+  }
   /* A snapshot with no serializers of its own uses the module's default
    * list when one is set (snapshot.setDefaultSnapshotSerializers). */
   if (serializers->kind != SCR_DYN_ARR && scr_snap_default_serializers)
@@ -1935,7 +1964,11 @@ ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers) {
     }
     scr_dyn_release(list);
   }
-  if (v && !scr_exc_pending()) return v;
+  if (v && !scr_exc_pending()) {
+    scr_dyn_release(materialized);
+    return v;
+  }
+  scr_dyn_release(materialized);
   scr_dyn_release(v);
   scr_exc_clear();
   static const char msg[] = "The provided serializers did not generate a string.";
@@ -1947,10 +1980,18 @@ ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers) {
  * array of functions, naming the first entry that is not one, and every
  * later serialization without its own list runs through it. */
 void scr_test_snapshot_set_default_serializers(ScrDyn *serializers /*borrowed*/) {
+  /* An array-typed serializers value arrives as a checked identity view;
+   * Node validates and stores the array itself. */
+  ScrDyn *materialized = NULL;
+  if (serializers != NULL && serializers->kind == SCR_DYN_TYPED_REF) {
+    materialized = scr_dyn_typed_ref_materialize(serializers);
+    if (materialized) serializers = materialized;
+  }
   if (serializers == NULL || serializers->kind != SCR_DYN_ARR) {
     ScrDyn *undef = scr_dyn_undefined();
     scr_dyn_arg_type_fail("serializers", "an instance of Array",
                           serializers ? serializers : undef);
+    scr_dyn_release(materialized);
     return;
   }
   for (size_t i = 0; i < serializers->v.arr.len; i++) {
@@ -1960,10 +2001,12 @@ void scr_test_snapshot_set_default_serializers(ScrDyn *serializers /*borrowed*/)
     snprintf(name, sizeof name, "serializers[%zu]", i);
     ScrDyn *undef = scr_dyn_undefined();
     scr_dyn_arg_type_fail(name, "of type function", item ? item : undef);
+    scr_dyn_release(materialized);
     return;
   }
   scr_dyn_release(scr_snap_default_serializers);
   scr_snap_default_serializers = scr_dyn_retain(serializers);
+  scr_dyn_release(materialized);
 }
 
 /* snapshot.setResolveSnapshotPath(fn): Node stores a (path: string) => string
@@ -2598,6 +2641,18 @@ static void scr_test_out_of_range(const char *option, const char *range, double 
   scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
 }
 
+/* Node's validateInteger/validateNumber out-of-range text for a bare
+ * option name ("The value of \"count\" is out of range. ..."). */
+static void scr_test_value_out_of_range(const char *name, const char *range, double value) {
+  char recv[48];
+  size_t n = scr_num_received(value, recv);
+  char msg[192];
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"%s\" is out of range. It must be %s. Received %.*s", name,
+                     range, (int)n, recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+}
+
 /* Node checks concurrency (a positive uint32; -1 stands for `true`) and
  * then the timeout's range when the test is created. */
 static bool scr_test_options_ok(double flags, double timeout, double concurrency) {
@@ -2621,7 +2676,13 @@ static bool scr_test_options_ok(double flags, double timeout, double concurrency
 
 static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, double timeout,
                                    double concurrency) {
-  if (plan >= 0) t->plan = (int)plan;
+  if (plan > 0) {
+    /* Node installs the option through ctx.plan() when the test starts, so a
+     * body or hook calling t.plan again throws Node's "cannot set plan more
+     * than once"; `{ plan: 0 }` is falsy in Node and installs no plan. */
+    t->plan = plan;
+    t->plan_set = true;
+  }
   if ((int)flags & SCR_TEST_F_TIMEOUT) t->timeout = timeout;
   if ((int)flags & SCR_TEST_F_EXPECT_FAILURE) t->expect_failure = true;
   if (((int)flags & SCR_TEST_F_ONLY_FALSE) && !((int)flags & SCR_TEST_F_ONLY)) {
@@ -2638,11 +2699,123 @@ static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, dou
   }
 }
 
+/* ── { tags } ───────────────────────────────────────────────────────────
+ * Node's validateAndCanonicalizeTagValues (tag_filter.js): the option is an
+ * array whose values must be non-empty strings, lowercased (by the lowering,
+ * through String.prototype.toLowerCase) and de-duplicated in declaration
+ * order. A bad value throws at the
+ * registration site, before the test is created. The node's set is its own
+ * canonical list unioned onto its parent's (a suite's tags reach every
+ * descendant). */
+
+/* Canonicalizes one { tags } value into a newly allocated, owned list.
+ * Answers false (with Node's error pending) for an invalid value. */
+static bool scr_test_tags_canonical(ScrDyn *tags, ScrStr ***out, size_t *out_n) {
+  *out = NULL;
+  *out_n = 0;
+  if (!tags || tags->kind == SCR_DYN_UNDEF) return true;
+  if (tags->kind != SCR_DYN_ARR) {
+    scr_dyn_prop_type_fail("options.tags", "an instance of Array", tags);
+    return false;
+  }
+  size_t n = (size_t)scr_dyn_arr_len(tags);
+  ScrStr **list = n ? malloc(n * sizeof *list) : NULL;
+  if (n && !list) scr_test_oom();
+  size_t count = 0;
+  for (size_t i = 0; i < n; i++) {
+    ScrDyn *value = scr_dyn_arr_at(tags, (double)i);
+    char name[40];
+    snprintf(name, sizeof name, "options.tags[%zu]", i);
+    if (!value || value->kind != SCR_DYN_STR) {
+      scr_dyn_prop_type_fail(name, "of type string", value ? value : scr_dyn_undefined());
+      scr_dyn_release(value);
+      for (size_t j = 0; j < count; j++) scr_str_release(list[j]);
+      free(list);
+      return false;
+    }
+    /* The lowering lowercases each value through String.prototype
+     * .toLowerCase (libunicode, the regex unit), as Node's canonicalization
+     * does, so the list arriving here is already canonical. */
+    ScrStr *tag = scr_str_retain(value->v.str);
+    scr_dyn_release(value);
+    if (tag->len == 0) {
+      ScrDyn *empty = scr_dyn_new_str(tag);
+      scr_dyn_arg_value_fail(name, "must not be empty", empty);
+      scr_dyn_release(empty);
+      scr_str_release(tag);
+      for (size_t j = 0; j < count; j++) scr_str_release(list[j]);
+      free(list);
+      return false;
+    }
+    bool seen = false;
+    for (size_t j = 0; j < count; j++)
+      if (scr_str_eq(list[j], tag)) {
+        seen = true;
+        break;
+      }
+    if (seen) scr_str_release(tag);
+    else list[count++] = tag;
+  }
+  *out = list;
+  *out_n = count;
+  return true;
+}
+
+/* The node's flattened tag set: the parent's tags first, then the own
+ * ones it does not already carry. Moves `own`. */
+static void scr_test_tags_apply(ScrTestCtx *t, ScrStr **own, size_t nown,
+                                const ScrTestCtx *parent) {
+  size_t inherited = parent ? parent->ntags : 0;
+  size_t cap = inherited + nown;
+  t->tags = cap ? malloc(cap * sizeof *t->tags) : NULL;
+  if (cap && !t->tags) scr_test_oom();
+  for (size_t i = 0; i < inherited; i++) t->tags[i] = scr_str_retain(parent->tags[i]);
+  size_t n = inherited;
+  for (size_t i = 0; i < nown; i++) {
+    bool seen = false;
+    for (size_t j = 0; j < n; j++)
+      if (scr_str_eq(t->tags[j], own[i])) {
+        seen = true;
+        break;
+      }
+    if (seen) scr_str_release(own[i]);
+    else t->tags[n++] = own[i]; /* moves */
+  }
+  t->ntags = n;
+  free(own);
+}
+
+static void scr_test_tags_free(ScrStr **own, size_t n) {
+  for (size_t i = 0; i < n; i++) scr_str_release(own[i]);
+  free(own);
+}
+
+/* t.tags: the frozen string array of the flattened tag set, made on the
+ * first read and cached (Node caches #tagsArray), so every read answers the
+ * same array. +1. */
+ScrArr *scr_test_ctx_tags(ScrTestCtx *t) {
+  if (!t->tags_arr) {
+    ScrArr *arr = scr_arr_new(SCR_ELEM_STR, t->ntags);
+    for (size_t i = 0; i < t->ntags; i++)
+      scr_arr_push_ref(arr, scr_str_retain(t->tags[i]));
+    scr_arr_freeze(arr);
+    t->tags_arr = arr;
+  }
+  return scr_arr_retain(t->tags_arr);
+}
+
 void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
                         ScrClosure *cb /*moves, may be NULL*/, double flags,
                         ScrStr *at /*borrowed*/, double plan, double timeout,
-                        double concurrency, ScrDyn *signal) {
+                        double concurrency, ScrDyn *signal, ScrDyn *tags) {
+  ScrStr **own_tags = NULL;
+  size_t nown_tags = 0;
+  if (!scr_test_tags_canonical(tags, &own_tags, &nown_tags)) {
+    scr_closure_release(cb);
+    return;
+  }
   if (!scr_test_options_ok(flags, timeout, concurrency)) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
@@ -2651,6 +2824,7 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
   if (scr_test_run_done) {
     /* Registration after the run completed (a late timer callback):
      * Node throws ERR_TEST_FAILURE; this runtime drops it (SEMANTICS). */
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
@@ -2660,13 +2834,16 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
   ScrTestCtx *parent = scr_test_parent_get();
   if (!parent) {
     /* A task that outlived the run: there is no tree left to register in. */
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
   if (parent->finished && parent != scr_test_root) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_test_late_failure(t);
     return;
   }
+  scr_test_tags_apply(t, own_tags, nown_tags, parent);
   /* t.runOnly(true) on the test that registers this one: only subtests
    * marked { only } survive (Node drops the rest silently). */
   if (parent->run_only && !((int)flags & SCR_TEST_F_ONLY)) t->only_filtered = true;
@@ -2680,14 +2857,23 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
 
 void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
                      ScrClosure *cb /*moves, may be NULL*/, ScrStr *at /*borrowed*/,
-                     double flags, double concurrency, double timeout, ScrDyn *signal) {
+                     double flags, double concurrency, double timeout, ScrDyn *signal,
+                     ScrDyn *tags) {
+  ScrStr **own_tags = NULL;
+  size_t nown_tags = 0;
+  if (!scr_test_tags_canonical(tags, &own_tags, &nown_tags)) {
+    scr_closure_release(cb);
+    return;
+  }
   if (!scr_test_options_ok(flags, timeout, concurrency)) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
   scr_test_ensure_root();
   scr_test_ensure_runner();
   if (scr_test_run_done) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
@@ -2696,15 +2882,18 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
   scr_test_take_signal(t, signal);
   ScrTestCtx *parent = scr_test_parent_get();
   if (!parent) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_testctx_release(t);
     scr_closure_release(cb);
     return;
   }
   if (parent->finished && parent != scr_test_root) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_test_late_failure(t);
     scr_closure_release(cb);
     return;
   }
+  scr_test_tags_apply(t, own_tags, nown_tags, parent);
   scr_test_child_add(parent, t);
   /* The suite body runs NOW (Node's collection phase) — its test()/it()
    * calls attach here. Skipped suites keep their bodies unrun. A body that
@@ -2795,14 +2984,22 @@ static void scr_test_plan_bump(ScrTestCtx *t) {
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
                           ScrStr *msg /*borrowed*/, ScrClosure *cb /*moves, may be NULL*/,
                           double flags, ScrStr *at /*borrowed*/, double plan, double timeout,
-                          double concurrency, ScrDyn *signal) {
+                          double concurrency, ScrDyn *signal, ScrDyn *tags) {
+  ScrStr **own_tags = NULL;
+  size_t nown_tags = 0;
+  if (!scr_test_tags_canonical(tags, &own_tags, &nown_tags)) {
+    scr_closure_release(cb);
+    return NULL;
+  }
   if (!scr_test_options_ok(flags, timeout, concurrency)) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return NULL;
   }
   ScrTestCtx *sub = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
   scr_test_options_apply(sub, flags, plan, timeout, concurrency);
   scr_test_take_signal(sub, signal);
+  scr_test_tags_apply(sub, own_tags, nown_tags, t);
   /* Node's t.test() counts the subtest against the parent plan before it
    * creates it, so one dropped by t.runOnly(true) counts too. */
   scr_test_plan_bump(t);
@@ -3477,19 +3674,31 @@ void scr_test_ctx_mock_reset(ScrTestCtx *t) {
  * wait's range (a non-negative number up to the timer maximum) and keeps
  * the count. A test that ends short of its plan waits up to `wait` for
  * the assertions still running (see scr_test_await_plan). */
-void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait) {
+void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait,
+                       bool indefinite) {
   if (t->plan_set) {
     static const char msg[] = "cannot set plan more than once";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TEST_FAILURE");
+    return;
+  }
+  /* Node's validateUint32(count, 'count'), then the options' wait. */
+  if (isnan(count) || count != floor(count)) {
+    scr_test_value_out_of_range("count", "an integer", count);
+    return;
+  }
+  if (count < 0 || count > 4294967295.0) {
+    scr_test_value_out_of_range("count", ">= 0 && <= 4294967295", count);
     return;
   }
   if (has_wait && !(wait >= 0 && wait <= 2147483647)) {
     scr_test_out_of_range("wait", ">= 0 && <= 2147483647", wait);
     return;
   }
-  t->plan = (int)count;
+  t->plan = count;
   t->plan_set = true;
-  if (has_wait) t->plan_wait = wait;
+  /* -1: no wait; -2: `wait: true`, Node waits indefinitely. */
+  if (indefinite) t->plan_wait = -2;
+  else if (has_wait) t->plan_wait = wait;
 }
 
 void scr_test_ctx_count(ScrTestCtx *t) { scr_test_plan_bump(t); }

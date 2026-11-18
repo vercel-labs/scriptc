@@ -36,7 +36,6 @@ struct ScrFileHandle {
    * more. close() resolves once the count reaches zero. */
   size_t refs;
   bool locked; /* readableWebStream opened a stream on it */
-  bool close_pending; /* a stream asked for the handle to close when last */
   ScrFileHandleHook *hooks; /* 'close' listeners (the streams' close()) */
   ScrPromise *close_wait;   /* close() waiting for the streams, or NULL */
 };
@@ -342,24 +341,6 @@ int scr_file_handle_stream_unref(ScrFileHandle *h) {
   return fd;
 }
 
-void scr_file_handle_stream_detach(ScrFileHandle *h, bool close_when_unused) {
-  /* A stream that asks to close the handle leaves the request on it: the
-   * descriptor closes when the last stream lets go, not now. */
-  if (close_when_unused) h->close_pending = true;
-  if (h->refs > 0) h->refs--;
-  /* The handle's own reference is one of the count: with at most that one
-   * left, no stream holds the handle any more. */
-  if (h->refs > 1) return;
-  ScrPromise *waiting = h->close_wait;
-  bool close = h->close_pending || waiting != NULL;
-  h->close_wait = NULL;
-  h->close_pending = false;
-  if (close && h->fd >= 0) scr_file_handle_close(h);
-  if (waiting != NULL) {
-    scr_promise_fulfill_void(waiting);
-    scr_promise_release(waiting);
-  }
-}
 
 bool scr_file_handle_is_locked(const ScrFileHandle *h) { return h->locked; }
 void scr_file_handle_lock(ScrFileHandle *h) { h->locked = true; }

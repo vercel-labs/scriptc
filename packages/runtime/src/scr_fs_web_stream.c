@@ -39,11 +39,15 @@ typedef struct ScrFsWebStream {
 static void scr_fs_web_stream_drop_handle(ScrFsWebStream *st) {
   if (!st->handle_ref) return;
   st->handle_ref = false;
-  /* autoClose asks for the descriptor to close; either way it closes only
-   * when this was the handle's last stream, so a live read stream on the
-   * same handle keeps the descriptor it is reading from. */
-  scr_file_handle_stream_detach(st->handle, st->auto_close);
-  if (scr_exc_pending()) scr_exc_clear();
+  /* autoClose ends the handle the way Node's close() does: the stream drops
+   * its own reference and asks for the close, the attached streams are closed
+   * through their hooks (a paused read stream included), and the descriptor
+   * closes when the last reference goes. */
+  int fd = scr_file_handle_stream_unref(st->handle);
+  if (fd >= 0) {
+    scr_fs_close((double)fd);
+    if (scr_exc_pending()) scr_exc_clear();
+  }
 }
 
 /* One read in flight: the chunk copied out of the handle (or the EOF / error

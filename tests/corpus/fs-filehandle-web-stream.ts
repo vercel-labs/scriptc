@@ -90,4 +90,17 @@ try {
   console.log("after cancel", (err as Error).name, (err as { code?: string }).code);
 }
 
+// 8. autoClose runs close()'s steps: a paused read stream on the same
+// handle is closed with it, and the descriptor follows.
+const eighth = await fs.promises.open(file, "r");
+const paused = eighth.createReadStream({ start: 0, end: 3 });
+let pausedClosed = false;
+paused.on("close", () => {
+  pausedClosed = true;
+});
+const autoSecond = eighth.readableWebStream({ autoClose: true });
+await autoSecond.cancel();
+await new Promise((resolve) => setTimeout(resolve, 50));
+console.log("paused", pausedClosed, eighth.fd >= 0, paused.destroyed);
+
 fs.rmSync(dir, { recursive: true, force: true });

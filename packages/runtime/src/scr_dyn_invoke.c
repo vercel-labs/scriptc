@@ -2580,11 +2580,40 @@ extern ScrDyn *scr_event_new(ScrDyn *args) __attribute__((weak));
 extern ScrDyn *scr_custom_event_new(ScrDyn *args) __attribute__((weak));
 extern ScrError *scr_domex_new(const ScrDyn *message, const ScrDyn *name_or_options)
     __attribute__((weak));
+/* Mach-O refuses an undefined weak *reference* in an executable, so the
+ * regex entries get weak definitions there: a program that links no regex
+ * unit still links, and the unit's strong definitions replace them. The
+ * linked flag answers the capability test the NULL check gives on the other
+ * formats — a defined stub can no longer be told apart by its address. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_regex_unit_linked = 0;
+__attribute__((weak)) ScrRegex *scr_regex_new_checked(const ScrDyn *pattern,
+                                                      const ScrDyn *flags) {
+  (void)pattern;
+  (void)flags;
+  return NULL;
+}
+__attribute__((weak)) ScrDyn *scr_dyn_native_regex(ScrRegex *value) {
+  (void)value;
+  return NULL;
+}
+__attribute__((weak)) bool scr_dyn_native_regex_is(const ScrDyn *value) {
+  (void)value;
+  return false;
+}
+__attribute__((weak)) void scr_regex_release(ScrRegex *value) { (void)value; }
+static bool dyn_regex_available(void) { return scr_dyn_regex_unit_linked != 0; }
+#else
 extern ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags)
     __attribute__((weak));
 extern ScrDyn *scr_dyn_native_regex(ScrRegex *value) __attribute__((weak));
 extern bool scr_dyn_native_regex_is(const ScrDyn *value) __attribute__((weak));
 extern void scr_regex_release(ScrRegex *value) __attribute__((weak));
+static bool dyn_regex_available(void) {
+  return scr_regex_new_checked != NULL && scr_dyn_native_regex != NULL &&
+         scr_dyn_native_regex_is != NULL && scr_regex_release != NULL;
+}
+#endif
 
 /* `new RegExp(pattern, flags)` and `RegExp(pattern, flags)` through the
  * interned constructor: the same native engine the regex literals and the
@@ -2594,8 +2623,7 @@ extern void scr_regex_release(ScrRegex *value) __attribute__((weak));
  * `constructor` that step compares, since a write of that member is
  * refused); `new` always builds a copy. */
 static ScrDyn *dyn_regex_construct(const ScrDyn *pattern, const ScrDyn *flags, bool identity) {
-  if (scr_regex_new_checked == NULL || scr_dyn_native_regex == NULL ||
-      scr_dyn_native_regex_is == NULL || scr_regex_release == NULL) {
+  if (!dyn_regex_available()) {
     char message[128];
     int length = snprintf(message, sizeof message, identity ? dyn_s0 : dyn_s33, dyn_s25, dyn_s32);
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);

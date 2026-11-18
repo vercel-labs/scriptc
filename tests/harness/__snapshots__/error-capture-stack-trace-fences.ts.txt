@@ -5,7 +5,7 @@ error-capture-stack-trace-fences.ts:9:25 - error SC2020: 'Error.captureStackTrac
      |                         ^~~~~~
   10 | 
 
-  hint: pass an Error instance, or an untyped object in JavaScript
+  hint: pass an Error instance, a function, or an untyped object in JavaScript
 
 error-capture-stack-trace-fences.ts:12:45 - error SC2020: 'Error.captureStackTrace with this constructor argument' is part of the standard library types but has no scriptc lowering yet
 

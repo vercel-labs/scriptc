@@ -525,7 +525,7 @@ import {
   isStackUnionSource,
 } from "./receivers.js";
 import { emitClassMembership } from "./narrow-guards.js";
-import { findLoopCallees } from "./loop-callees.js";
+import { findLoopCallees, type LoopInlining } from "./loop-callees.js";
 
 export { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -1942,9 +1942,10 @@ export class LlEmitter {
   /** Functions that check the native stack guard on entry
    * (stackCheckedFunctions); null where the runtime has no guard. */
   readonly stackChecks: ReadonlySet<string> | null;
-  /** Small leaf functions called only from loops, whose direct calls are
-   * `alwaysinline` (loop-callees.ts). */
-  readonly loopCallees: ReadonlySet<string>;
+  /** Small functions called only from loops, whose direct calls are
+   * `alwaysinline`, and the bodies those functions call, marked inside
+   * their bodies (loop-callees.ts). */
+  readonly loopInlining: LoopInlining;
   /** Static types whose values can be published (@scriptc/threads): their
    * stores carry the frozen-object guard. Null without publish calls. */
   readonly publishedTypes: PublishedTypes | null;
@@ -2699,7 +2700,7 @@ export class LlEmitter {
         : new Set();
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
-    this.loopCallees = findLoopCallees(mod);
+    this.loopInlining = findLoopCallees(mod);
     // A stackless call's eager prefix borrows its caller's stack; the
     // runtime moves deep prefix nests to a fresh stack using the guard,
     // which Windows lacks.
@@ -5184,11 +5185,17 @@ export class LlEmitter {
    * calls (unwindAbiFunctions excludes their callees). */
   emitDirectCall(line: string, callee: string): boolean {
     const B = this.B;
-    // A small leaf called only from loops inlines into each of them, past
-    // LLVM's cost threshold (loop-callees.ts), and so does a function called
-    // only from a loop's entry-range version (loop-entry-versions.ts).
-    // Debug builds keep the call.
-    if (this.debug === null && (this.loopCallees.has(callee) || loopEntryInlines(this, callee))) {
+    // A small function called only from loops inlines into each of them,
+    // past LLVM's cost threshold (loop-callees.ts) — along with the bodies
+    // it calls, which ride into the loop with it — and so does a function
+    // called only from a loop's entry-range version
+    // (loop-entry-versions.ts). Debug builds keep the call.
+    if (
+      this.debug === null &&
+      (this.loopInlining.callees.has(callee) ||
+        this.loopInlining.bodyCalls.get(this.currentFunctionName)?.has(callee) === true ||
+        loopEntryInlines(this, callee))
+    ) {
       line = withCallAttribute(line, "alwaysinline");
     } else if (this.debug === null && this.entryChainCall(callee)) {
       // The entry chain: `main` calls %main, %main calls each file
@@ -5652,6 +5659,7 @@ export class LlEmitter {
       case "childWriter":
       case "generator":
       case "fsWatcher":
+      case "statWatcher":
       case "cryptoHash":
       case "cryptoHmac":
       case "netSocket":
@@ -7825,6 +7833,8 @@ export class LlEmitter {
             node.fn === "perf.loopExit" ||
             node.fn === "perf.loopCount" ||
             node.fn === "perf.idleTime" ||
+            // worker.performance reports a worker's loop metrics.
+            node.fn === "worker.performance" ||
             // performance.measure('x', 'loopStart'): the milestone name is a
             // run-time string, so any measure may reach the loop metrics.
             node.fn === "perf.measure")

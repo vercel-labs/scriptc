@@ -73,21 +73,27 @@ describe("R1 runtime markers", () => {
 });
 
 describe("R2 object-model markers", () => {
-  test("R2.1 constructor functions", () => {
-    expect(markers("function F() {} const f = new F();")).toEqual(["R2.1 constructor-function"]);
-    expect(markers("function F() {} F.prototype.m = function () {};")).toEqual([
-      "R2.1 constructor-function",
-    ]);
-    expect(markers("const util = require('util'); util.inherits(A, B);")).toEqual([
-      "R2.1 constructor-function",
-    ]);
-    // `this` in a plain function is also the conservative sloppy-this marker
+  test("R2.1 constructor functions lower to the object model", () => {
+    // A constructor function is an ordinary object: `new F()` builds an
+    // instance whose prototype is `F.prototype`, a write reaches that
+    // prototype's property table, `util.inherits` retargets it, and
+    // `A.call(this, …)` runs the base constructor on the new object. The
+    // pre-scan marks none of them; the lowering's refusals decide what a
+    // constructor shape costs.
+    expect(markers("function F() {} const f = new F();")).toEqual([]);
+    expect(markers("function F() {} F.prototype.m = function () {};")).toEqual([]);
+    expect(markers("function F() {} F.prototype = { m() {} };")).toEqual([]);
+    expect(markers("const util = require('util'); util.inherits(A, B);")).toEqual([]);
+    // `this` in a plain function keeps the conservative sloppy-this marker
     // (decision S2): the file cannot see a call site in another module.
-    expect(markers("function Child() { Parent.call(this, 1); }")).toEqual([
-      "R2.1 constructor-function",
-      "R2.4 sloppy-this",
-    ]);
+    expect(markers("function Child() { Parent.call(this, 1); }")).toEqual(["R2.4 sloppy-this"]);
     expect(markers("class C {} const c = new C();")).toEqual([]);
+    // Constructing a bound function is the one constructor shape left: the
+    // runtime constructs the function it was handed, not the target Node
+    // constructs with the bound arguments.
+    expect(markers("function F() {} const f = new (F.bind(null))(1);")).toEqual([
+      "R2.1 constructor-function",
+    ]);
     expect(
       markers("function wrap(fn) { return function () { return fn.apply(this, arguments); }; }"),
     ).toEqual(["R2.4 sloppy-this"]);
@@ -107,10 +113,26 @@ describe("R2 object-model markers", () => {
   });
 
   test("R2.3 shape mutation outside the checker's view", () => {
-    expect(markers("Object.defineProperty(o, 'k', { get() { return 1; } });")).toEqual([
+    // An object the program builds keeps a definition in its own property
+    // table (a literal passed here becomes a checked-dynamic object, and an
+    // instance keeps it in its property bag).
+    expect(markers("Object.defineProperty(o, 'k', { get() { return 1; } });")).toEqual([]);
+    expect(markers("Object.defineProperties(o, { k: { get() { return 1; } } });")).toEqual([]);
+    expect(markers("const o = {}; o.__defineGetter__('g', f);")).toEqual(["R2.3 define-property"]);
+    // A class's members are laid out at compile time: a write or a
+    // definition outside them still has no lowering.
+    expect(markers("class C {} C.prototype.extra = 1;")).toEqual(["R2.3 define-property"]);
+    expect(
+      markers("class C {} Object.defineProperty(C.prototype, k, { get() { return 1; } });"),
+    ).toEqual(["R2.3 define-property"]);
+    expect(markers("class C {} delete C.prototype.m;")).toEqual(["R2.3 define-property"]);
+    // A definition on a builtin patches the builtin every module shares.
+    expect(markers("Object.defineProperty(Array.prototype, 'last', { value: f });")).toEqual([
       "R2.3 define-property",
     ]);
-    expect(markers("class C {} C.prototype.extra = 1;")).toEqual(["R2.3 define-property"]);
+    expect(markers("Object.defineProperty(Math, 'trunc2', { value: f });")).toEqual([
+      "R2.3 define-property",
+    ]);
     // Module objects and interop helpers build module records.
     expect(markers("Object.defineProperty(exports, '__esModule', { value: true });")).toEqual([]);
     expect(

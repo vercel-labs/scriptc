@@ -33,7 +33,15 @@ bool scr_pki_ed25519_ready(void);
 ScrPkiKey *scr_pki_key_retain(ScrPkiKey *key);
 void scr_pki_key_release(ScrPkiKey *key);
 bool scr_pki_key_is_private(const ScrPkiKey *key);
+/* The key material of an asymmetric KeyObject, retained, or NULL. */
+ScrPkiKey *scr_crypto_key_object_material(const ScrDyn *value);
+/* An asymmetric KeyObject over retained `key` (a new reference). */
+ScrDyn *scr_crypto_key_object_from_material(ScrPkiKey *key);
+
 bool scr_pki_key_is_rsa(const ScrPkiKey *key);
+/* An id-RSASSA-PSS key (node:crypto's "rsa-pss" KeyObjects), which WebCrypto
+ * does not accept where a plain RSA key is required. */
+bool scr_pki_key_is_rsa_pss(const ScrPkiKey *key);
 bool scr_pki_key_is_ed25519(const ScrPkiKey *key);
 /* The EC key's JWK curve name ("P-256", ...), or NULL for RSA keys. */
 const char *scr_pki_key_curve(const ScrPkiKey *key);
@@ -58,6 +66,26 @@ ScrPkiKey *scr_pki_generate_ed25519(void);
 ScrPkiKey *scr_pki_key_from_ed25519_raw(const uint8_t *raw, size_t len);
 /* The Ed25519 public key's 32-byte encoding. */
 ScrBytes *scr_pki_export_ed25519_raw(ScrPkiKey *key);
+
+/* X25519 keys: generation, the raw 32-byte public encoding, and a public
+ * key from it. */
+ScrPkiKey *scr_pki_generate_x25519(void);
+bool scr_pki_key_is_x25519(const ScrPkiKey *key);
+ScrPkiKey *scr_pki_key_from_x25519_raw(const uint8_t *raw, size_t len);
+ScrBytes *scr_pki_export_x25519_raw(ScrPkiKey *key);
+ScrPkiKey *scr_pki_generate_x448(void);
+bool scr_pki_key_is_x448(const ScrPkiKey *key);
+ScrPkiKey *scr_pki_key_from_x448_raw(const uint8_t *raw, size_t len);
+ScrBytes *scr_pki_export_x448_raw(ScrPkiKey *key);
+/* The shared secret of an ECDH or X25519 key pair: X25519's 32 bytes or
+ * ECDH's x coordinate at the field's width. NULL on failure (a public key
+ * of another curve or type), with no error pending. */
+ScrBytes *scr_pki_shared_secret(ScrPkiKey *private_key, ScrPkiKey *public_key);
+/* RSA-OAEP (RFC 8017) with `hash` for both the digest and MGF1 and
+ * `label` (NULL for the empty label). NULL on failure, with no error
+ * pending. */
+ScrBytes *scr_pki_rsa_oaep(ScrPkiKey *key, const char *hash, const ScrBytes *label,
+                           const ScrBytes *input, bool decrypt);
 
 /* SubjectPublicKeyInfo (public keys) or PKCS#8 (private keys) DER. */
 ScrBytes *scr_pki_export_der(ScrPkiKey *key);

@@ -111,6 +111,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "worker.parentPort",
   "worker.resourceLimits",
   "worker.channel",
+  "worker.portConstruct",
   "worker.receiveMessageOnPort",
   "worker.setEnvironmentData",
   "worker.getEnvironmentData",

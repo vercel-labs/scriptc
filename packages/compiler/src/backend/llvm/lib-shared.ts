@@ -1652,6 +1652,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "worker.threadName": "scr_worker_thread_name_current",
   "worker.performance": "scr_worker_performance",
   "worker.channel": "scr_worker_message_channel",
+  "worker.portConstruct": "scr_worker_port_construct",
   "worker.receiveMessageOnPort": "scr_worker_receive_message_on_port",
   "worker.setEnvironmentData": "scr_worker_set_environment_data",
   "worker.getEnvironmentData": "scr_worker_get_environment_data",

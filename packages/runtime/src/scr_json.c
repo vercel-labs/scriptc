@@ -12882,6 +12882,8 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
   case SCR_DYN_ARR: tag = "[object Array]"; break;
   case SCR_DYN_OBJ: tag = "[object Object]"; break;
   case SCR_DYN_HANDLE:
+    /* Node's MessagePort inherits EventTarget's toStringTag. */
+    if (d->v.handle.tag == SCR_DYNH_MESSAGE_PORT) return scr_str_new("[object EventTarget]", sizeof "[object EventTarget]" - 1);
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
         d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
@@ -14097,6 +14099,8 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
       return text;
     }
   }
+    /* Node's MessagePort inherits EventTarget's toStringTag. */
+    if (d->v.handle.tag == SCR_DYNH_MESSAGE_PORT) return scr_str_new("[object EventTarget]", sizeof "[object EventTarget]" - 1);
     /* URLSearchParams.prototype.toString serializes the list, so
      * ToString(params) answers `a=1&b=2` as it does in Node. */
     if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE ||

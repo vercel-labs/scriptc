@@ -389,10 +389,10 @@ export function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name
         return up.name.text === "worker_threads" || up.name.text === "node:worker_threads";
       up = up.parent;
     }
-    /* The fallback also declares the global BroadcastChannel at the top
-     * level: its module file loads only when the program imports it, and
-     * the global is the same class. */
-    return name === "BroadcastChannel" && isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName);
+    /* The globals are the same classes: the fallback declares them beside
+     * the module files, which load only when the program imports them. */
+    return (name === "MessageChannel" || name === "MessagePort" || name === "BroadcastChannel") &&
+           isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName);
   });
 }
 
@@ -417,7 +417,45 @@ export function lowerMessageChannelNew(
     );
   }
   lowerer.usesWorkers = true;
-  return { kind: "libCall", fn: "worker.channel", args: [], type: DYN, loc: locOf(expression) };
+  const loc = locOf(expression);
+  /* The ports' EventTarget side dispatches through the event target unit's
+   * table, which the program installs before the channel opens. */
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "event.broadcastInstall", args: [], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: { kind: "libCall", fn: "worker.channel", args: [], type: DYN, loc },
+    type: DYN,
+    loc,
+  };
+}
+
+/** new MessagePort(): Node's constructor exists but throws
+ * ERR_CONSTRUCT_CALL_INVALID ("Constructor cannot be called") after its
+ * arguments evaluate. */
+export function lowerMessagePortNew(lowerer: Lowerer, expression: ts.NewExpression): IrExpr | null {
+  if (!isWorkerThreadsClass(lowerer, expression, "MessagePort")) return null;
+  const loc = locOf(expression);
+  const elems: IrExpr[] = [];
+  for (const arg of expression.arguments?.nodes ?? []) {
+    if (ts.isSpreadElement(arg)) {
+      lowerer.noLowering("MessagePort constructor with a spread argument", expression);
+      break;
+    }
+    elems.push(lowerer.lowerExprExpecting(arg, DYN));
+  }
+  return {
+    kind: "libCall",
+    fn: "worker.portConstruct",
+    args: [{ kind: "dynArrLit", elems, type: DYN, loc }],
+    type: DYN,
+    loc,
+  };
 }
 
 /** receiveMessageOnPort(port): { message } or undefined. */

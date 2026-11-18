@@ -565,6 +565,20 @@ static ScrDyn *scr_test_tr_roster(ScrTestCtx *t) {
   return scr_dyn_retain(t->tr_ctx);
 }
 
+/** The error event's payload: Node's `{ ...channelContext, error }`, a
+ * shallow copy of the shared context — a start subscriber may have attached
+ * its own fields there — plus the thrown value (+1). */
+static ScrDyn *scr_test_tr_error_ctx(ScrTestCtx *t, ScrDyn *ctx /*borrowed*/) {
+  ScrDyn *out = scr_dyn_new_obj();
+  /* Object.assign semantics: the own enumerable members of the shared
+   * context, in order (the spread Node writes). */
+  ScrDyn *target = scr_dyn_assign(out, ctx);
+  scr_dyn_release(out);
+  if (!target) return NULL;
+  scr_test_tr_put(target, "error", 5, scr_caught_to_dyn(t->err));
+  return target;
+}
+
 static void scr_test_tr_publish(int which, ScrTestCtx *t, bool with_error) {
   double handle = scr_test_tr_channel(which);
   if (isnan(handle)) return;
@@ -574,9 +588,12 @@ static void scr_test_tr_publish(int which, ScrTestCtx *t, bool with_error) {
   ScrDyn *msg;
   if (with_error && t->err) {
     /* Node's error event is `{ ...channelContext, error }`: a fresh object
-     * over the same fields, so start/end still share their ctx. */
-    msg = scr_test_tr_ctx(t);
-    scr_test_tr_put(msg, "error", 5, scr_caught_to_dyn(t->err));
+     * copying the shared context (including fields a start subscriber
+     * attached to it), so start/end still share their ctx. */
+    ScrDyn *ctx = scr_test_tr_roster(t);
+    msg = scr_test_tr_error_ctx(t, ctx);
+    scr_dyn_release(ctx);
+    if (!msg) return;
   } else {
     msg = scr_test_tr_roster(t);
   }

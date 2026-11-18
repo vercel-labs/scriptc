@@ -5,7 +5,8 @@
 // start/end for skipped, todo and fn-less tests too. Each message carries
 // the name, the nesting level, the entry file's path and "test" or "suite".
 // Start and end share one context object per test (Node publishes the same
-// object), while an error event is a fresh object over the same fields. The
+// object), while an error event is a shallow copy of it: fields a start
+// subscriber attached are carried over. The
 // implicit root reports its own start and end once the tests finish (after
 // this fixture's last test, so it is not part of the checked sequence).
 import { tracingChannel } from "node:diagnostics_channel";
@@ -34,6 +35,7 @@ const label = (value: object): string => {
 const channel = tracingChannel("node.test");
 channel.subscribe({
   start(ctx: object) {
+    (ctx as any).tag = "attached";
     starts.set(nameOf(ctx), ctx);
     events.push(`start ${label(ctx)}`);
   },
@@ -96,5 +98,9 @@ test("check", () => {
   }
   if (errors.get("fail") === starts.get("fail")) {
     throw new Error("the error event should carry a fresh context object");
+  }
+  const errorCtx = errors.get("fail") as any;
+  if (errorCtx === undefined || errorCtx.tag !== "attached") {
+    throw new Error("the error event lost the metadata a start subscriber attached");
   }
 });

@@ -58357,7 +58357,7 @@
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
-          "tests/corpus/http-client-max-headers-count.ts",
+          "tests/corpus/http-client-lifecycle.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-server-client-error.ts",
@@ -58998,14 +58998,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.flushHeaders",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-client-lifecycle.ts",
+          "tests/corpus/2978-http-static-client-timeout.ts"
         ]
       },
       "anchorSource": "exact"
@@ -59348,10 +59345,11 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.aborted",
         "tests": [
-          "tests/corpus/2988-http-static-client-abort.ts"
+          "tests/corpus/http-client-lifecycle.ts",
+          "tests/corpus/2978-http-static-client-timeout.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59426,10 +59424,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.maxHeadersCount",
         "tests": [
-          "tests/corpus/http-client-max-headers-count.ts"
+          "tests/corpus/http-client-lifecycle.ts",
+          "tests/corpus/2978-http-static-client-timeout.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -59556,10 +59555,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.reusedSocket",
         "tests": [
-          "tests/corpus/2975-http-static-client-controls.ts"
+          "tests/corpus/http-client-lifecycle.ts",
+          "tests/corpus/2978-http-static-client-timeout.ts"
         ]
       },
       "anchorSource": "ancestor"

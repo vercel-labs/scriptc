@@ -15,12 +15,20 @@ function show(label: string, values: (number | bigint | string)[]): void {
 
 const empty = createHistogram();
 show("empty", [empty.count, empty.min, empty.max, empty.mean, empty.stddev, empty.exceeds]);
+// This @types/node predates Node 24.22's shape moments; the runtime has them.
+show("empty moments", [(empty as any).skewness, (empty as any).kurtosis]);
 show("empty big", [empty.countBigInt, empty.minBigInt, empty.maxBigInt, empty.exceedsBigInt]);
 console.log("empty percentiles", JSON.stringify([...empty.percentiles]));
 
 const h = createHistogram();
 for (const value of [5, 10, 10, 100, 1000, 7]) h.record(value);
 show("recorded", [h.count, h.min, h.max, h.mean, h.stddev, h.exceeds]);
+show("recorded moments", [
+  Number(h.mean.toFixed(6)),
+  Number(h.stddev.toFixed(6)),
+  Number((h as any).skewness.toFixed(6)),
+  Number((h as any).kurtosis.toFixed(6)),
+]);
 show("recorded big", [h.countBigInt, h.minBigInt, h.maxBigInt, h.exceedsBigInt]);
 show("percentile", [h.percentile(1), h.percentile(50), h.percentile(90), h.percentile(100)]);
 show("percentile big", [h.percentileBigInt(50), h.percentileBigInt(100)]);
@@ -42,12 +50,18 @@ show("after add", [h.count, h.min, h.max, h.percentile(100)]);
 // reset clears every reading.
 h.reset();
 show("after reset", [h.count, h.min, h.max, h.mean, h.stddev, h.exceeds]);
+show("after reset moments", [(h as any).skewness, (h as any).kurtosis]);
 show("after reset big", [h.countBigInt, h.minBigInt, h.maxBigInt]);
 
 // An explicit bucket layout quantizes values, as Node's hdr histogram does.
 const custom = createHistogram({ lowest: 10, highest: 100400, figures: 2 });
 for (let i = 0; i < 100; i++) custom.record(1000 + i * 10);
 show("custom", [custom.count, custom.min, custom.max, custom.mean, custom.stddev]);
+show("custom moments", [
+  Number(custom.mean.toFixed(4)),
+  Number((custom as any).skewness.toFixed(6)),
+  Number((custom as any).kurtosis.toFixed(6)),
+]);
 show("custom percentiles", [
   custom.percentile(50),
   custom.percentile(75),

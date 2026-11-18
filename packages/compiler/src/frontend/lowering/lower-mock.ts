@@ -33,7 +33,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import { boolLit, countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { mockContextType } from "../mock-shapes.js";
 import { findMethodOn, type ClassInfo } from "./lower-classes.js";
@@ -1345,6 +1345,108 @@ function mockAccessorUnmockFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLo
   });
 }
 
+/** mock.getter/mock.setter on a typed object literal: the record stores the
+ * accessor in a %get:name / %set:name slot of a function type, and every
+ * read or write of the property calls that slot, so replacing it with the
+ * mock (and restore() writing the original back) intercepts the property. */
+function lowerMockAccessorRecord(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  what: string,
+  tracker: MockTracker,
+  objectValue: IrExpr,
+  objectNode: ts.Expression,
+  field: string,
+  implementationNode: ts.Expression,
+  timesOption: { times: IrExpr; check: IrStmt[] },
+  kind: "get" | "set",
+): IrExpr {
+  const loc = locOf(call);
+  const record = objectValue.type as IrType & { kind: "record" };
+  const slotName = kind === "get" ? `%get:${field}` : `%set:${field}`;
+  const shape = lowerer.shapes.get(record.shapeId);
+  const slot = shape?.fields.find((f) => f.name === slotName);
+  if (!slot || slot.type.kind !== "func") {
+    lowerer.noLowering(
+      `${what} of '${field}'`,
+      objectNode,
+      "the object's type declares no such accessor; Node throws ERR_INVALID_ARG_VALUE (\"The argument 'methodName' must be a method. Received undefined\") when the property is not an accessor",
+    );
+  }
+  const fn = slot.type;
+  const ctxType = mockContextType(fn, lowerer.typeCtx);
+  if (!ctxType || !isMockContextType(lowerer, ctxType)) {
+    lowerer.noLowering(
+      `${what} of a '${lowerer.fmt(fn)}' accessor`,
+      call,
+      "mock accessors lower for properties whose type has a function form with fixed parameters",
+    );
+  }
+  const fields = mockContextFields(lowerer, ctxType!)!;
+  if (kind === "get") requireUndefinedResultArm(lowerer, fields, call, what);
+  const stmts: IrStmt[] = [];
+  const objLocal = lowerer.declareHiddenLocal("%mockObject", record);
+  const obj = () => varRef(objLocal.id, record, loc);
+  stmts.push({ kind: "varDecl", localId: objLocal.id, init: objectValue, loc });
+  const originalLocal = lowerer.declareHiddenLocal("%mockOriginal", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: originalLocal.id,
+    init: recordGet(obj(), slotName, fn, loc),
+    loc,
+  });
+  const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: implLocal.id,
+    init: lowerer.lowerExprExpecting(implementationNode, fn),
+    loc,
+  });
+  stmts.push(...timesOption.check);
+  const unmock: IrExpr = {
+    kind: "call",
+    callee: mockUnmockFactory(lowerer, ctxType!, record, slotName, loc),
+    args: [obj(), varRef(originalLocal.id, fn, loc)],
+    type: RESTORE_FN,
+    loc,
+  };
+  const ctxLocal = lowerer.declareHiddenLocal("%mockContext", ctxType!);
+  const ctx = () => varRef(ctxLocal.id, ctxType!, loc);
+  stmts.push(
+    {
+      kind: "varDecl",
+      localId: ctxLocal.id,
+      init: mockContextLiteral(
+        ctxType!,
+        fields,
+        varRef(implLocal.id, fn, loc),
+        varRef(originalLocal.id, fn, loc),
+        [unmock],
+        timesOption.times,
+        loc,
+      ),
+      loc,
+    },
+    trackMock(lowerer, tracker, ctxType!, ctx(), loc),
+  );
+  const wrapperLocal = lowerer.declareHiddenLocal("%mockWrapper", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: wrapperLocal.id,
+    init: {
+      kind: "call",
+      callee: mockWrapperFactory(lowerer, ctxType!, loc),
+      args: [ctx()],
+      type: fn,
+      loc,
+    },
+    loc,
+  });
+  stmts.push(recordSet(obj(), slotName, varRef(wrapperLocal.id, fn, loc), loc));
+  defineMockProps(lowerer, stmts, call, varRef(wrapperLocal.id, fn, loc), ctx(), loc);
+  return { kind: "seqExpr", stmts, result: varRef(wrapperLocal.id, fn, loc), type: fn, loc };
+}
+
 /** mock.getter/mock.setter (and mock.method with { getter }/{ setter }) on
  * an object held as a checked-dynamic value: Node redefines the property
  * with the mock as its accessor, keeping the original descriptor for
@@ -1364,6 +1466,23 @@ function lowerMockAccessorCore(
 ): IrExpr {
   const loc = locOf(call);
   const objectValue = lowerer.lowerExpr(objectNode);
+  if (objectValue.type.kind === "record") {
+    /* A typed object literal inside a function is a record with accessor
+     * slots (%get:name / %set:name); the mock replaces the slot, which every
+     * read and write of the property calls. */
+    return lowerMockAccessorRecord(
+      lowerer,
+      call,
+      what,
+      tracker,
+      objectValue,
+      objectNode,
+      field,
+      implementationNode,
+      timesOption,
+      kind,
+    );
+  }
   if (objectValue.type.kind !== "dyn" && objectValue.type.kind !== "jsval") {
     lowerer.noLowering(
       `${what} on this object`,
@@ -1426,7 +1545,7 @@ function lowerMockAccessorCore(
       localId: slot.id,
       init: {
         kind: "libCall",
-        fn: "dyn.getOwnPropertyDescriptor",
+        fn: "test.accessorDescriptor",
         args: [obj(), key()],
         type: DYN,
         loc,
@@ -1434,6 +1553,20 @@ function lowerMockAccessorCore(
       loc,
     });
   }
+  /* Node finds the accessor on the prototype chain and requires it to be a
+   * function: a data property, or the opposite half of an accessor pair,
+   * throws ERR_INVALID_ARG_VALUE before the mock exists. */
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "test.accessorRequire",
+      args: [varRef(originalDesc.id, DYN, loc), boolLit(kind === "set", loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
   const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn!);
   stmts.push({
     kind: "varDecl",

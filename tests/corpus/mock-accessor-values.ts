@@ -30,3 +30,21 @@ console.log(holder._v);
 
 const once = mock.getter(holder, "v", () => 5, { times: 1 });
 console.log(holder.v, holder.v, once.mock.callCount());
+
+// The accessor is found along the prototype chain, as Node's
+// findMethodOnPrototypeChain does, and restore() reinstalls it.
+const proto: any = { get inherited(): number { return 5; } };
+const child: any = Object.create(proto);
+const inheritedSpy = mock.getter(child, "inherited", () => 7);
+console.log(child.inherited);
+inheritedSpy.mock.restore();
+console.log(child.inherited);
+
+// A property without the mocked accessor throws Node's ERR_INVALID_ARG_VALUE.
+const getterOnly: any = { get onlyGetter(): number { return 1; } };
+try {
+  mock.setter(getterOnly, "onlyGetter", () => {});
+} catch (error) {
+  const e = error as { name: string; code: string; message: string };
+  console.log(e.name, e.code, e.message);
+}

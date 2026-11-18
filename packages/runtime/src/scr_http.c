@@ -10112,6 +10112,96 @@ static ScrStr *scr_http_dynh_opt_str(const ScrDyn *opts, const char *key) {
   return NULL;
 }
 
+/* A hook's socket argument: the typed ref materialized first, then the net
+ * socket handle. NULL with `*view` untouched when the value is not one. */
+static ScrNetSocket *scr_http_agent_socket_arg(const ScrDyn *value, ScrDyn **view) {
+  ScrDyn *materialized =
+      value != NULL && value->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(value) : NULL;
+  const ScrDyn *d = materialized != NULL ? materialized : value;
+  ScrNetSocket *sock = d != NULL && d->kind == SCR_DYN_HANDLE &&
+          d->v.handle.tag == SCR_DYNH_NET_SOCKET
+      ? (ScrNetSocket *)d->v.handle.ptr
+      : NULL;
+  *view = materialized;
+  return sock;
+}
+
+/* agent.keepSocketAlive(socket): Node's defaults — keep-alive with the
+ * agent's keepAliveMsecs, the socket unref'd, the agent's timeout (0 when
+ * unset) — and true. */
+static ScrDyn *scr_http_agent_keep_socket_alive(ScrHttpAgent *a, ScrDyn *const *args, size_t argc) {
+  ScrDyn *view = NULL;
+  ScrNetSocket *sock = argc > 0 ? scr_http_agent_socket_arg(args[0], &view) : NULL;
+  if (sock == NULL) {
+    scr_dyn_arg_type_fail("socket", "an instance of net.Socket",
+                          argc > 0 ? args[0] : scr_dyn_undefined());
+    scr_dyn_release(view);
+    return NULL;
+  }
+  scr_dyn_release(view);
+  scr_net_sock_set_keepalive(sock, true, a->ka_msecs);
+  scr_net_sock_set_ref(sock, false);
+  scr_net_sock_set_timeout(sock, a->timeout_ms > 0 ? a->timeout_ms : 0);
+  return scr_dyn_new_bool(true);
+}
+
+/* agent.reuseSocket(socket, request): the socket is referenced again and
+ * carries the agent's timeout. */
+static ScrDyn *scr_http_agent_reuse_socket(ScrHttpAgent *a, ScrDyn *const *args, size_t argc) {
+  (void)a;
+  ScrDyn *view = NULL;
+  ScrNetSocket *sock = argc > 0 ? scr_http_agent_socket_arg(args[0], &view) : NULL;
+  if (sock == NULL) {
+    scr_dyn_arg_type_fail("socket", "an instance of net.Socket",
+                          argc > 0 ? args[0] : scr_dyn_undefined());
+    scr_dyn_release(view);
+    return NULL;
+  }
+  scr_dyn_release(view);
+  /* Node: the request learns its socket came from the free list, and the
+   * socket is referenced again. The timeout is left as it is — Node applies
+   * the request's own timeout next to the reuse, so the agent's timeout
+   * must not overwrite a request-specific one. */
+  if (argc > 1) {
+    ScrDyn *req_view = args[1] != NULL && args[1]->kind == SCR_DYN_TYPED_REF
+                           ? scr_dyn_typed_ref_materialize(args[1])
+                           : NULL;
+    const ScrDyn *req = req_view != NULL ? req_view : args[1];
+    if (req != NULL && req->kind == SCR_DYN_HANDLE && req->v.handle.tag == SCR_DYNH_HTTP_CLIENT)
+      ((ScrHttpClientReq *)req->v.handle.ptr)->reused = true;
+    scr_dyn_release(req_view);
+  }
+  scr_net_sock_set_ref(sock, true);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* The hooks as values: `const keep = agent.keepSocketAlive` keeps working
+ * after the program drops its agent — the closure holds it. */
+static ScrDyn *scr_http_agent_keep_alive_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  ScrHttpAgent *a = scr_box_get_ref(clo->caps[0]); /* +1 */
+  if (a == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *answer = scr_http_agent_keep_socket_alive(a, args, argc);
+  scr_http_agent_release(a);
+  return answer;
+}
+
+static ScrDyn *scr_http_agent_reuse_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  ScrHttpAgent *a = scr_box_get_ref(clo->caps[0]); /* +1 */
+  if (a == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *answer = scr_http_agent_reuse_socket(a, args, argc);
+  scr_http_agent_release(a);
+  return answer;
+}
+
+static ScrDyn *scr_http_agent_hook_value(ScrHttpAgent *a, bool keep) {
+  ScrDynThunk thunk = keep ? &scr_http_agent_keep_alive_thunk : &scr_http_agent_reuse_thunk;
+  ScrClosure *clo = scr_closure_new((void *)thunk, 1);
+  clo->caps[0] = scr_box_new_obj(&scr_http_agent_retain_v, &scr_http_agent_release_v, NULL);
+  scr_box_set_ref(clo->caps[0], scr_http_agent_retain(a));
+  return scr_dyn_new_func(clo, thunk, keep ? 1 : 2, keep ? "(socket)" : "(socket,request)",
+                          keep ? "keepSocketAlive" : "reuseSocket");
+}
+
 static ScrDyn *scr_http_dynh_agent_invoke(void *h, ScrDyn *self, const char *method,
                                           ScrDyn *const *args, size_t argc, const char *what) {
   ScrHttpAgent *a = (ScrHttpAgent *)h;
@@ -10162,9 +10252,12 @@ static ScrDyn *scr_http_dynh_agent_invoke(void *h, ScrDyn *self, const char *met
     scr_str_release(s);
     return d;
   }
+  if (strcmp(method, "keepSocketAlive") == 0)
+    return scr_http_agent_keep_socket_alive(a, args, argc);
+  if (strcmp(method, "reuseSocket") == 0) return scr_http_agent_reuse_socket(a, args, argc);
   {
-    static const char *const known[] = { "createConnection", "createSocket", "keepSocketAlive",
-      "reuseSocket", "addRequest", "removeSocket", "off", "removeListener",
+    static const char *const known[] = { "createConnection", "createSocket",
+      "addRequest", "removeSocket", "off", "removeListener",
       "removeAllListeners", "emit", "prependListener", "prependOnceListener",
       "listenerCount", "listeners", NULL };
     if (scr_http_dynh_in(method, known)) {
@@ -10247,11 +10340,15 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
     return obj;
   }
   if (strcmp(key, "totalSocketCount") == 0) return scr_dyn_new_num((double)a->sock_count->n);
+  /* the socket hooks are functions in Node: the two the runtime implements
+   * answer a bound function, the dial hook stays a named fence */
+  if (strcmp(key, "keepSocketAlive") == 0) return scr_http_agent_hook_value(a, true);
+  if (strcmp(key, "reuseSocket") == 0) return scr_http_agent_hook_value(a, false);
   {
-    /* the socket hooks are functions in Node: a read must not answer
+    /* the hooks are functions in Node: a read must not answer
      * undefined, and an assignment is refused in the setter below */
     static const char *const known[] = { "options", "maxTotalSockets", "createConnection",
-      "createSocket", "keepSocketAlive", "reuseSocket", NULL };
+      "createSocket", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("Agent", key, NULL);
       return NULL;

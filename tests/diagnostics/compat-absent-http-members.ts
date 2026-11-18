@@ -4,14 +4,15 @@
 // unverified registry gap. Implemented members leave this program:
 // net.Server's `[Symbol.asyncDispose]`, IncomingMessage's signal,
 // OutgoingMessage's setHeaders, writableLength and 'drain',
-// OutgoingMessage.pipe(), and the informational responses (writeInformation
-// and the three that delegate to it) have their own differential programs.
+// OutgoingMessage.pipe(), the informational responses (writeInformation
+// and the three that delegate to it), the agent's keepSocketAlive and
+// reuseSocket hooks, and maxTotalSockets have their own differential
+// programs.
 import * as http from "node:http";
 
-// Agent: the socket hooks. maxTotalSockets is implemented
-// (http-agent-max-total-sockets).
+// Agent: the dial hook.
 const agent = new http.Agent({ keepAlive: true });
-console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+console.log(typeof agent.createConnection);
 agent.destroy();
 
 // Server: the request and response members. `[Symbol.asyncDispose]` is

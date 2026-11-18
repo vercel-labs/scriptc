@@ -9542,7 +9542,7 @@ static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps 
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
   ScrDynHandleTag tag = d->v.handle.tag;
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
-  ScrDyn *r = ops->get(d->v.handle.ptr, k->data, k->len);
+  ScrDyn *r = ops->get ? ops->get(d->v.handle.ptr, k->data, k->len) : NULL;
   if (scr_exc_pending()) {
     scr_dyn_release(r);
     return NULL;
@@ -9563,12 +9563,11 @@ static bool scr_dyn_handle_in(const ScrDyn *d, const ScrStr *k) {
       scr_dyn_handle_class_ops && scr_dyn_handle_class_ops->accessors
           ? scr_dyn_handle_class_ops->accessors(d)
           : NULL;
-  if (!methods && !accessors) return false;
   for (size_t i = 0; methods && methods[i].name; i++)
     if (strlen(methods[i].name) == k->len && memcmp(methods[i].name, k->data, k->len) == 0) return true;
   for (size_t i = 0; accessors && accessors[i].name; i++)
     if (strlen(accessors[i].name) == k->len && memcmp(accessors[i].name, k->data, k->len) == 0) return true;
-  ScrDyn *value = ops->get(d->v.handle.ptr, k->data, k->len);
+  ScrDyn *value = ops->get ? ops->get(d->v.handle.ptr, k->data, k->len) : NULL;
   if (!value) return scr_dyn_object_proto_name(k);
   scr_dyn_release(value);
   return true;

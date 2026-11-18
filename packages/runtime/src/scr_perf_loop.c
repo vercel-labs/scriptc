@@ -215,6 +215,9 @@ static void scr_eld_clear(ScrEld *h) {
 /* ── monitorEventLoopDelay ──────────────────────────────────────────── */
 
 static void scr_histo_install(void);
+/* the checked-dynamic reads of both histogram classes (defined below) */
+static ScrDyn *scr_histo_get(void *ptr, const char *key, size_t length);
+static ScrDyn *scr_eld_get(void *ptr, const char *key, size_t length);
 
 static SCR_TL ScrEld **scr_elds;
 static SCR_TL size_t scr_elds_len;
@@ -261,6 +264,7 @@ static const ScrDynHandleOps scr_eld_ops = {
     .cls = "IntervalHistogram",
     .retain = scr_eld_retain_v,
     .release = scr_eld_release_v,
+    .get = scr_eld_get,
 };
 
 static void scr_eld_tick(ScrClosure *self) {
@@ -275,17 +279,24 @@ static void scr_eld_tick(ScrClosure *self) {
 }
 
 /* Histograms live for the thread's lifetime (Node frees them with their
- * JS object); release them when the script ends so their callbacks and
- * counts do not outlive it. */
+ * JS object); when the script ends, stop their timers and drop the timer's
+ * reference, leaving each object to its remaining holders (the box, a
+ * reference a callback kept). Freeing them here would hand a live holder a
+ * dangling pointer. */
 static void scr_eld_cleanup(void) {
-  while (scr_elds_len > 0) {
-    ScrEld *h = scr_elds[scr_elds_len - 1];
-    if (h->enabled) scr_clear_interval(h->timer);
-    scr_eld_free(h);
-  }
-  free(scr_elds);
+  ScrEld **entries = scr_elds;
+  size_t count = scr_elds_len;
   scr_elds = NULL;
   scr_elds_len = 0;
+  for (size_t i = 0; i < count; i++) {
+    ScrEld *h = entries[i];
+    if (!h->enabled) continue;
+    h->enabled = false;
+    scr_clear_interval(h->timer);
+    h->timer = 0;
+    scr_eld_release_v(h); /* the timer's reference */
+  }
+  free(entries);
 }
 
 /* Node's validateInteger(resolution, 'options.resolution', 1): a catchable
@@ -489,10 +500,47 @@ static void scr_histo_release_v(void *p) {
   scr_histo_free(h);
 }
 
+/* A checked-dynamic read (`(h: any).count`, `h["mean"]`) answers the same
+ * readings as the typed lowering: the six numeric properties and the four
+ * BigInt ones. Any other name is not modeled (the caller answers undefined
+ * for a miss, as for every handle). */
+static ScrDyn *scr_histo_reading(ScrDynHandleTag tag, void *ptr, const char *key, size_t length) {
+  static const char *const names[] = {"count", "min", "max", "mean", "stddev", "exceeds"};
+  static const int which[] = {0, 1, 2, 3, 4, 5};
+  static const char *const big_names[] = {"countBigInt", "minBigInt", "maxBigInt", "exceedsBigInt"};
+  static const int big_which[] = {0, 1, 2, 5};
+  ScrDyn probe;
+  memset(&probe, 0, sizeof probe);
+  probe.kind = SCR_DYN_HANDLE;
+  probe.v.handle.tag = tag;
+  probe.v.handle.ptr = ptr;
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+    if (strlen(names[i]) == length && memcmp(names[i], key, length) == 0)
+      return scr_dyn_new_num(scr_histo_stat(&probe, (double)which[i]));
+  for (size_t i = 0; i < sizeof big_names / sizeof big_names[0]; i++) {
+    if (strlen(big_names[i]) != length || memcmp(big_names[i], key, length) != 0) continue;
+    ScrBigInt *reading = scr_histo_stat_big(&probe, (double)big_which[i]);
+    if (reading == NULL) return NULL;
+    ScrDyn *out = scr_dyn_new_bigint(reading);
+    scr_bigint_release(reading);
+    return out;
+  }
+  return NULL;
+}
+
+static ScrDyn *scr_histo_get(void *ptr, const char *key, size_t length) {
+  return scr_histo_reading(SCR_DYNH_HISTOGRAM, ptr, key, length);
+}
+
+static ScrDyn *scr_eld_get(void *ptr, const char *key, size_t length) {
+  return scr_histo_reading(SCR_DYNH_ELD_HISTOGRAM, ptr, key, length);
+}
+
 static const ScrDynHandleOps scr_histo_ops = {
     .cls = "RecordableHistogram",
     .retain = scr_histo_retain_v,
     .release = scr_histo_release_v,
+    .get = scr_histo_get,
 };
 
 /* The dyn handle table needs each tag's ops before the first box is made

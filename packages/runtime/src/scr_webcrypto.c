@@ -1462,6 +1462,15 @@ static ScrDyn *scr_wc_key_object_to_crypto_key_values(const ScrDyn *key, ScrDyn 
                     (key->v.handle.tag == SCR_DYNH_PRIVATE_KEY ||
                      key->v.handle.tag == SCR_DYNH_PUBLIC_KEY);
   if (asymmetric) {
+    /* X448 reports its ExperimentalWarning when the algorithm normalizes,
+     * as importKey and generateKey do; peek at the name without disturbing
+     * the conversion's own error order. */
+    ScrStr *name = NULL;
+    if (algorithm->kind == SCR_DYN_STR) name = scr_str_retain(algorithm->v.str);
+    if (name) {
+      if (scr_wc_ascii_ieq(name, "X448")) scr_wc_warn_experimental_algorithm("X448");
+      scr_str_release(name);
+    }
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->to_crypto_key) {
       scr_wc_unsupported("toCryptoKey", "an asymmetric KeyObject");
       return NULL;

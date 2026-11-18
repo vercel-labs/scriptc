@@ -1167,7 +1167,7 @@ static ScrDyn *sw_to_crypto_key(const ScrDyn *key_value, const ScrDyn *const *ar
   if (!plain) goto done;
   const char *curve = NULL;
   const char *hash = NULL;
-  if (kind == SW_ED25519 || kind == SW_X25519) {
+  if (kind == SW_ED25519 || kind == SW_X25519 || kind == SW_X448) {
     /* no parameters */
   } else if (sw_is_ec_kind(kind)) {
     if (!scr_wc_is_object(plain)) {

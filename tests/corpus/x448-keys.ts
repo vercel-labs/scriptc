@@ -2,7 +2,7 @@
 // @normalize-pid
 // asymmetricKeyType/details, generation shapes, createPublicKey from a private key
 // and KeyObject.equals, against fixed Node-generated material.
-import { createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync } from "node:crypto";
+import { KeyObject, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync } from "node:crypto";
 const out: string[] = [];
 const log = (...a: unknown[]) => out.push(a.map(String).join(" | "));
 const seed = Buffer.from("20257b522fc46815e853aa8918751545bfe563580d7a28d014c55305e56e29edac03f6725bbb8e395c620b12aca09342aafd113738828bc9", "hex");
@@ -28,6 +28,12 @@ const privB = createPrivateKey({ key: Buffer.concat([Buffer.from("30460201003005
 const pubBk = createPublicKey({ key: Buffer.concat([Buffer.from("3042300506032b656f033900", "hex"), pubB]), format: "der", type: "spki" });
 log("dh", diffieHellman({ privateKey: priv, publicKey: pubBk }).toString("hex"));
 log("dh other", diffieHellman({ privateKey: privB, publicKey: pubk }).toString("hex"));
+const ck = priv.toCryptoKey("X448", true, ["deriveBits", "deriveKey"]);
+log("toCryptoKey", ck.type, ck.extractable, ck.usages.join(","), JSON.stringify(ck.algorithm));
+const back = KeyObject.from(ck);
+log("from", back.type, back.asymmetricKeyType, back.export({ type: "pkcs8", format: "der" }).length);
+const pubCk = pubk.toCryptoKey("X448", true, []);
+log("pub toCryptoKey", pubCk.type, pubCk.usages.length);
 for (const row of out) console.log(row);
 
 {

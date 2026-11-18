@@ -247,6 +247,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     ),
   ],
   ["scr_stream.c", "stream"],
+  // stream.duplexPair builds two Duplexes wired to each other.
+  ["scr_stream_pair.c", "stream"],
+  // readable.wrap reads a native source's chunks into the receiver.
+  ["scr_stream_wrap.c", "stream"],
+  ["scr_stream_wrap_dyn.c", "streamDyn"],
   // Node's pipe lifecycle, installed into the stream unit for programs
   // that pipe, unpipe or build a pipeline.
   ["scr_stream_pipe_events.c", all("stream", "streamPipeEvents")],
@@ -367,6 +372,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_writable_to_web.c", all("stream", "webStreams", "dynAsync")],
   // Duplex.fromWeb reads and writes the web pair directly.
   ["scr_stream_duplex_from_web.c", all("stream", "webStreams", "dynAsync")],
+  // Duplex.toWeb builds the readable and writable adapters over a duplex.
+  ["scr_stream_to_web_pair.c", all("stream", "webStreams", "dynAsync")],
+  ["scr_stream_to_web_pair_dyn.c", all("streamDyn", "webStreams", "dynAsync")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws

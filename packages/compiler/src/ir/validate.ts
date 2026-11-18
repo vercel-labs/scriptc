@@ -4723,6 +4723,41 @@ function validateFunction(
         err(`libCall ${e.fn} must take (writable, flags) and return a web stream`, e.loc);
       return true;
     }
+    if (e.fn === "webstream.toWebDuplex" || e.fn === "webstream.toWebDuplexDyn") {
+      // Duplex.toWeb: (duplex, flags) → the web { writable, readable } pair.
+      const argKind = e.fn === "webstream.toWebDuplex" ? "object" : "dyn";
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== argKind ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (duplex, flags) and return the web pair`, e.loc);
+      return true;
+    }
+    if (e.fn === "stream.duplexPair") {
+      // stream.duplexPair(options) → the array of the two connected Duplexes.
+      if (
+        e.args.length !== 1 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.type.kind !== "array" ||
+        e.type.elem.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (options) and return the two Duplexes`, e.loc);
+      return true;
+    }
+    if (e.fn === "stream.wrap" || e.fn === "stream.wrapDyn") {
+      // readable.wrap(source) → the readable.
+      const srcKind = e.fn === "stream.wrap" ? "object" : "dyn";
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== srcKind ||
+        e.type.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (readable, source) and return the readable`, e.loc);
+      return true;
+    }
     if (e.fn === "fetch.readerRead") {
       if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
         err(`libCall fetch.readerRead must return a promise of a read-result record`, e.loc);

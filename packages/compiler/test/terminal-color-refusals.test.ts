@@ -31,19 +31,14 @@ async function build(source: string) {
 const throws = (refusal: string): string =>
   `this statement throws when it runs (SC2020: Native process stream ${refusal} has no lowering), where it would have completed under Node; a program that never reaches it runs as it does under Node`;
 
-test("an environment that is no plain object is named at the call", async () => {
+test("an environment that is no plain object reads its variables like Node", async () => {
   const result = await build(`console.log(process.stdout.getColorDepth(["xterm"]));
 console.log(process.stdout.getColorDepth(new Map([["TERM", "xterm"]])));
 console.log(process.stderr.hasColors(16, ["xterm"]));
 `);
   expect(result.errors).toEqual([]);
-  expect(result.throwing).toEqual([
-    `process.stdout.getColorDepth(["xterm"]): ${throws("getColorDepth with an environment that is not a plain object")}`,
-    `process.stdout.getColorDepth(new Map([["TERM", "xterm"]])): ${throws("getColorDepth with an environment that is not a plain object")}`,
-    `process.stderr.hasColors(16, ["xterm"]): ${throws("hasColors with an environment that is not a plain object")}`,
-  ]);
+  expect(result.throwing).toEqual([]);
 });
-
 test("a literal TERM that names a member of Object.prototype is named at the call", async () => {
   const result = await build(`console.log(process.stdout.getColorDepth({ TERM: "constructor" }));
 console.log(process.stdout.getColorDepth({ TERM: "__proto__" }));

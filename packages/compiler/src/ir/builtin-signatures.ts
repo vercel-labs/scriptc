@@ -1731,6 +1731,24 @@ function buildLibFnSignatures() {
     /** Duplex.fromWeb (scr_stream_duplex_from_web.c): the { readable,
      * writable } pair and the option flags; a Duplex. */
     "webstream.duplexFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Duplex.toWeb (scr_stream_to_web_pair.c): the duplex and the option
+     * flags; the { writable, readable } pair. */
+    "webstream.toWebDuplex": { argTypes: [null, F64], result: DYN },
+    /** Duplex.toWeb over a checked-dynamic value: a boxed native duplex
+     * unwraps, anything else throws ERR_INVALID_ARG_TYPE. */
+    "webstream.toWebDuplexDyn": { argTypes: [DYN, F64], result: DYN },
+    /** stream.duplexPair (scr_stream_pair.c): the options value (borrowed;
+     * NULL means none) and the two connected Duplexes. */
+    "stream.duplexPair": {
+      argTypes: [DYN],
+      result: { kind: "array", elem: { kind: "object", className: "%Duplex" } },
+    },
+    /** readable.wrap(stream) (scr_stream_wrap.c): the readable and the
+     * native source; answers the readable. */
+    "stream.wrap": { argTypes: [null, null], result: VOID },
+    /** The same over a checked-dynamic source: a boxed native readable
+     * unwraps, anything else throws the not-supported Error. */
+    "stream.wrapDyn": { argTypes: [null, DYN], result: VOID },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
@@ -2679,6 +2697,10 @@ function buildLibFnSignatures() {
     // ERR_TEST_FAILURE wrapper over the failure, or null.
     "test.ctxSignal": { argTypes: [TESTCTX_T], result: DYN },
     "test.ctxError": { argTypes: [TESTCTX_T], result: DYN },
+    /** mock.getter/mock.setter's descriptor along the prototype chain, and
+     * Node's check that it carries the mocked accessor. */
+    "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
+    "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
@@ -3027,6 +3049,7 @@ function buildLibFnSignatures() {
     "http.reqHttpVersionMajor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqHttpVersionMinor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqAborted": { argTypes: [HTTPREQ_T], result: BOOL },
+    /* req.signal: the message's AbortSignal (built on first read). */
     "http.reqDestroyed": { argTypes: [HTTPREQ_T], result: BOOL },
     "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
     "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
@@ -3533,7 +3556,7 @@ function buildLibFnSignatures() {
     /** session.request(pairs?, endStream) — endStream is a tri-state f64:
      * -1 the method's payload-meaningless default, 0/1 explicit. */
     "http2.sessionRequest": {
-      argTypes: [HTTP2SESSION_T, arrayOf(STRING), F64],
+      argTypes: [HTTP2SESSION_T, arrayOf(STRING), F64, BOOL],
       result: HTTP2STREAM_T,
     },
     "http2.sessionClose": { argTypes: [HTTP2SESSION_T], result: VOID },
@@ -3558,6 +3581,23 @@ function buildLibFnSignatures() {
     "http2.sessionSocket": { argTypes: [HTTP2SESSION_T], result: NETSOCKET_T },
     /** stream.respond(pairs?, endStream) — the server answer. */
     "http2.streamRespond": { argTypes: [HTTP2STREAM_T, arrayOf(STRING), BOOL], result: VOID },
+    /** respond(headers, { endStream, waitForTrailers }). */
+    "http2.streamRespondWait": {
+      argTypes: [HTTP2STREAM_T, arrayOf(STRING), BOOL, BOOL],
+      result: VOID,
+    },
+    /** sendTrailers(headers) and additionalHeaders(headers). */
+    "http2.streamSendTrailers": { argTypes: [HTTP2STREAM_T, arrayOf(STRING)], result: VOID },
+    "http2.streamAdditionalHeaders": { argTypes: [HTTP2STREAM_T, arrayOf(STRING)], result: VOID },
+    "http2.streamOnTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnHeaders": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnWantTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnContinue": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    /** res.writeInformation(statusCode[, headers]) on a compat response. */
+    "http2.responseWriteInformation": {
+      argTypes: [HTTPRES_T, F64, arrayOf(STRING)],
+      result: BOOL,
+    },
     "http2.streamWrite": { argTypes: [HTTP2STREAM_T, STRING], result: VOID },
     "http2.streamWriteBytes": { argTypes: [HTTP2STREAM_T, BYTES_U8], result: VOID },
     "http2.streamEnd": { argTypes: [HTTP2STREAM_T], result: VOID },
@@ -6646,6 +6686,8 @@ function buildLibFnSignatures() {
      * The first is a record type, the second dyn (borrowed). Never throws. */
     "record.sourceNote": { argTypes: [null, DYN], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
+    "insp.property": { argTypes: [STRING, STRING, BOOL], result: STRING },
+    "insp.propChild": { argTypes: [BOOL], result: VOID },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },
     /** A nested inspect inside a custom rendering (PerformanceEntry's

@@ -22,6 +22,7 @@ import {
 import {
   failureText,
   nativeBuildPartitions,
+  nativeHelperFailureMessage,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "./native-codegen-core.js";
@@ -723,4 +724,36 @@ test("a native-helper diagnostic never reports an empty message", () => {
   expect(nativeCodegenDiag("SC3004", "the helper wrote no object", "entry.ts").message).toBe(
     "the helper wrote no object",
   );
+});
+
+test("a helper diagnostic with a blank reason reports how the helper ended", () => {
+  // A native panic can answer its structured diagnostic with a code and an
+  // empty message. The build must still name the failure instead of ending
+  // the message at its colon.
+  const structured = nativeHelperFailureMessage({
+    message: "Command failed: scriptc-llvm-codegen emit",
+    code: 1,
+    stderr: '{"code":"emit_failed","message":""}',
+  });
+  expect(structured.code).toBe("emit_failed");
+  expect(structured.message.trim()).not.toBe("");
+  expect(structured.message).toContain("exit status 1");
+  expect(structured.message).toContain("gave no reason");
+  const signal = nativeHelperFailureMessage({
+    message: "Command failed: scriptc-llvm-codegen emit",
+    signal: "SIGKILL",
+    stderr: '{"message":"   "}',
+  });
+  expect(signal.message).toContain("signal SIGKILL");
+  expect(signal.message.trim()).not.toBe("");
+  // A structured message is still reported verbatim.
+  expect(
+    nativeHelperFailureMessage({ message: "Command failed", stderr: '{"message":"boom"}' }).message,
+  ).toBe("boom");
+});
+
+test("a non-Error thrown without text still names the internal failure", () => {
+  expect(failureText("")).toBe("internal compiler error (a non-Error value was thrown)");
+  expect(failureText("   ")).toBe("internal compiler error (a non-Error value was thrown)");
+  expect(failureText("plain text")).toBe("plain text");
 });

@@ -18,3 +18,12 @@ describe("suite", () => {
     t.log("suite log");
   });
 });
+
+test("data payloads", (t) => {
+  t.log("null data", null);
+  t.log("undefined data", undefined);
+  let calls = 0;
+  const bump = (): number => ++calls;
+  t.log("bump", bump());
+  t.diagnostic(`calls ${calls}`);
+});

@@ -261,11 +261,20 @@ typedef struct ScrWebStreamSource {
   bool (*read_into)(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx);
   ScrPromise *(*cancel)(void *ctx, ScrDyn *reason);
   void (*release)(void *ctx);
+  /* Optional: the most bytes the next read_into may produce, so a
+   * type: "bytes" stream can ask the source for no more than the pending
+   * read's view holds instead of losing the rest of a larger chunk. */
+  void (*set_read_limit)(void *ctx, size_t bytes);
 } ScrWebStreamSource;
 /* A checked-dynamic ReadableStream (+1 handle) with a zero high-water mark
  * that reads one chunk of `source` per pull (scr_webstreams.c). ctx's
  * reference moves in; the stream releases it when it goes away. */
 ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx);
+/* The same source as Node's type: "bytes" stream: a BYOB reader hands the
+ * stream its own view and the source's chunks are written into it, with the
+ * controller's auto-allocated reads asked for 16 KiB at a time. ctx's
+ * reference moves in. */
+ScrDyn *scr_webstream_bytes_over(const ScrWebStreamSource *source, void *ctx);
 /* Installs the web stream classes (webstream.install): a program whose
  * JavaScript uses a ReadableStream member the fetch unit's streams lack
  * calls it at startup, which links the classes that fetch bodies then

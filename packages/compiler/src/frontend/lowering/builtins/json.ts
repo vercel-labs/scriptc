@@ -2,6 +2,7 @@ import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
+import { isPerfEntryType } from "./performance.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -114,6 +115,19 @@ export function lowerJsonMethodCall(
             : lowerer.narrowedArmHelper(value.type.unionId, narrowed, loc);
         if (helper) value = { kind: "call", callee: helper, args: [value], type: narrowed, loc };
       }
+    }
+    // A performance entry serializes through its toJSON, and the fields
+    // that answers depend on the entry's runtime class: a resource entry
+    // carries its timing fields and no detail, while a mark or measure
+    // carries detail. The static type does not say which class a value is
+    // (a PerformanceEntry-typed value can be either), so the record or the
+    // array crosses to the runtime walker, which runs the entry
+    // prototype's toJSON.
+    if (
+      (value.type.kind === "record" && isPerfEntryType(lowerer, value.type)) ||
+      (value.type.kind === "array" && isPerfEntryType(lowerer, value.type.elem))
+    ) {
+      value = { kind: "dynFrom", value, type: DYN, loc };
     }
     const replacer = call.arguments.nodes[1];
     if (replacer && !jsonNullishArgument(lowerer, replacer)) {

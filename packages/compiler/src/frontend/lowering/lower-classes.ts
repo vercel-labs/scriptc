@@ -4,7 +4,10 @@ import {
   lowerIteratorNew,
 } from "./iterator-prototype.js";
 import { lowerWrapperNew } from "./primitive-wrappers.js";
-import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
+import {
+  lowerAsyncLocalStorageOptions,
+  lowerAsyncResourceConstruction,
+} from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
   DATE_TIME_FIELD,
@@ -42,8 +45,13 @@ import {
   constructorForeignFlag,
   constructorPrimitiveFlag,
   superIntoResultSlot,
+  rebindingBase,
+  publishConstructorResult,
+  constructorEntrySlot,
+  constructorReturnPlan,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
+import { checkedIteratorPack } from "./expressions/array-literals.js";
 import { lowerReadlineInterfaceNew, lowerReadlineUiNew } from "./builtins/readline.js";
 import {
   builtinMemberBindingTarget,
@@ -185,6 +193,7 @@ import { lowerTextCodecNew } from "./builtins/text-codecs.js";
 import {
   lowerBroadcastChannelNew,
   lowerMessageChannelNew,
+  lowerMessagePortNew,
   lowerWorkerNew,
 } from "./builtins/workers.js";
 import {
@@ -225,9 +234,15 @@ import {
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
 } from "./symbol-fields.js";
-import { lowerHttpAgentNew, lowerHttpServerNew, lowerTlsSocketNew } from "./lower-server.js";
+import {
+  lowerHttpAgentNew,
+  lowerHttpServerNew,
+  lowerTlsServerNew,
+  lowerTlsSocketNew,
+} from "./lower-server.js";
 import {
   ambientNsRootOf,
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefReadType,
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
@@ -5602,11 +5617,22 @@ export function collectClassShapeInner(
         ? lowerer.paramShapes(abiCtor.parameters.nodes)
         : (base?.ctorParams ??
           (callableBase || extendsDate || extendsArray ? [{ type: DYN, mode: "dynRest" }] : []));
+    // A constructor that reads its actual argument list receives it: every
+    // untyped constructor (JS arity) without a rest parameter, which already
+    // owns that contract, and a typed one whose callers can pass a different
+    // number of arguments than the declaration names (an optional, defaulted
+    // or rest parameter, where a fixed-arity signature folds
+    // `arguments.length` to a constant). A typed rest array holds only the
+    // arguments after the named positions, so the array follows it.
+    const ctorTyped = ctor !== null && !isJsSourceFile(ts.getSourceFileOfNode(ctor));
     if (
       ctor &&
       !mixinForwarding &&
-      isJsSourceFile(ts.getSourceFileOfNode(ctor)) &&
-      !ctorParams.some((shape) => shape.mode === "rest" || shape.mode === "dynRest") &&
+      (ctorTyped
+        ? ctor.parameters.nodes.some(
+            (param) => param.questionToken || param.initializer || param.dotDotDotToken,
+          )
+        : !ctorParams.some((shape) => shape.mode === "rest" || shape.mode === "dynRest")) &&
       bodyReadsArguments(ctor)
     ) {
       ctorParams.push({ type: DYN, mode: "arguments" });
@@ -10209,6 +10235,23 @@ function classCaptureParams(info: ClassInfo, context: FnCtx): Pick<IrFunction, "
   };
 }
 
+/** Whether a constructor's own body (nested functions and classes excluded)
+ * has a `finally` block: the only site that reads the value-return flag. */
+function hasOwnFinallyBlock(ctor: ts.Node): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return;
+    if (ts.isTryStatement(node) && node.finallyBlock !== undefined) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(ctor, visit);
+  return found;
+}
+
 function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
   const className = info.def.name;
   const thisType: IrType = { kind: "object", className };
@@ -10219,6 +10262,85 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
     const thisLocal = lowerer.declareThis(thisType);
     const params: IrParam[] = [{ localId: thisLocal.id, name: "this", type: thisType }];
     const body: IrStmt[] = [];
+    // A base constructor that can return an existing instance rebinds this
+    // constructor's `this` (constructor-returns.ts superIntoResultSlot):
+    // `this` is a local the allocated instance initializes, and the
+    // instance the constructor ends with is published where it finishes.
+    // Every other constructor keeps `this` as its parameter.
+    // A function-local class constructs through its own environment, which
+    // has no result slot: its `super()` keeps the earlier contract.
+    const allocated: IrLocal | null =
+      info.localClass === undefined && rebindingBase(lowerer, info) !== null
+        ? { id: "%allocated.0", name: "%allocated", type: thisType, mutable: false }
+        : null;
+    if (allocated !== null) {
+      const loc = locOf(info.ctor ?? info.decl!);
+      lowerer.ctx.locals.push(allocated);
+      thisLocal.mutable = true;
+      params[0] = { localId: allocated.id, name: "this", type: thisType };
+      body.push({
+        kind: "varDecl",
+        localId: thisLocal.id,
+        init: varRef(allocated.id, thisType, loc),
+        loc,
+      });
+      const publish = () => [publishConstructorResult(lowerer, info, thisLocal, loc)];
+      // A value return publishes the instance it answers itself
+      // (constructor-returns.ts lowerConstructorReturn), so a `finally`
+      // republishes this constructor's `this` only when no value return of
+      // this construction did. A finalizer that constructs the same class
+      // consumes whatever the class's result slot held, so a constructor
+      // finishing on the path that answers its own `this` publishes it
+      // again afterwards, while a value return's answer is left as it is.
+      const returnsValue = (constructorReturnPlan(lowerer, info)?.returns.size ?? 0) !== 0;
+      const ctorBody = info.ctor?.body;
+      const needsValueFlag = returnsValue && ctorBody !== undefined && hasOwnFinallyBlock(ctorBody);
+      let valueReturn: IrLocal | null = null;
+      if (needsValueFlag) {
+        valueReturn = { id: "%valueReturn.0", name: "%valueReturn", type: BOOL, mutable: true };
+        lowerer.ctx.locals.push(valueReturn);
+        body.push({
+          kind: "varDecl",
+          localId: valueReturn.id,
+          init: { kind: "boolLit", value: false, type: BOOL, loc },
+          loc,
+        });
+        lowerer.ctx.constructorValueReturn = valueReturn;
+      }
+      lowerer.ctx.constructorEpilogue = (site) =>
+        site === "finally" && valueReturn !== null
+          ? [
+              {
+                kind: "if",
+                cond: {
+                  kind: "unary",
+                  op: "!",
+                  operand: varRef(valueReturn.id, BOOL, loc),
+                  type: BOOL,
+                  loc,
+                },
+                then: publish(),
+                else_: null,
+                loc,
+              },
+            ]
+          : publish();
+    }
+    // A construction nested in this constructor's argument evaluation can
+    // have been abandoned after publishing its instance (a `finally` that
+    // throws after its return): clear the class's result slot once this
+    // constructor runs, so the read that follows it cannot answer that
+    // instance (constructor-returns.ts constructorEntrySlot).
+    const entrySlot = constructorEntrySlot(lowerer, info);
+    if (entrySlot !== null) {
+      const clearLoc = locOf(info.ctor ?? info.decl!);
+      body.push({
+        kind: "assign",
+        localId: entrySlot.id,
+        value: lowerer.wrappedUndefined(entrySlot.type, clearLoc)!,
+        loc: clearLoc,
+      });
+    }
     // A derived constructor that can return a primitive records the pending
     // TypeError for the construction site to raise. Drop a stale record on
     // entry: a `finally` that throws after the return abandons the
@@ -10333,6 +10455,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
       }
       body.push(...lowerer.fieldInitStmts(info, thisLocal));
     }
+    if (allocated !== null) body.push(...lowerer.ctx.constructorEpilogue!("return"));
     return {
       name: `%${className}.constructor`,
       params,
@@ -11762,6 +11885,7 @@ export function superCallStmt(
     call,
     lowerer.upcastTo({ ...thisRef }, base.def.name),
     info.ctor ?? info.decl!,
+    thisLocal.mutable ? thisLocal : null,
   );
 }
 
@@ -12271,7 +12395,11 @@ function aggregateErrorConstructor(lowerer: Lowerer, loc: SrcLoc): string {
       type: DYN,
     }));
     const error = varRef("error", type, loc);
-    const list = checkedIterableSpread(lowerer, varRef("errors", DYN, loc), "", loc);
+    /* AggregateError iterates its errors like Array.from and for-of, so a
+     * non-iterable argument reports Node's kind wording ("number 5 is not
+     * iterable (cannot read property Symbol(Symbol.iterator))"), not the
+     * spread syntax text a user spread would throw. */
+    const list = checkedIteratorPack(lowerer, varRef("errors", DYN, loc), "", loc);
     lowerer.liftedFns.push({
       name,
       params,
@@ -12871,7 +12999,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
   if (readlineUi) return readlineUi;
-  const channel = lowerMessageChannelNew(lowerer, expr) ?? lowerBroadcastChannelNew(lowerer, expr);
+  const channel =
+    lowerMessageChannelNew(lowerer, expr) ??
+    lowerMessagePortNew(lowerer, expr) ??
+    lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
@@ -13038,6 +13169,19 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       };
     }
     return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
+  }
+  // `new XRWebGLLayer(...)` where the callee names a global only a
+  // types-only package declares: Node throws the ReferenceError at the
+  // callee read, before any argument runs (the ambient-namespace stance,
+  // one identifier deep).
+  if (ts.isIdentifier(expr.expression)) {
+    if (ambientTypesOnlyGlobalSymbolOf(lowerer, expr.expression) !== null) {
+      // The read throws before the construction runs; its value is typed for
+      // the slot it lands in, and the checked-dynamic value converts into a
+      // declared type where one names it (the conversion never runs).
+      const t = ambientUndefReadType(lowerer, expr) ?? DYN;
+      return nsUndefRead(lowerer, expr.expression.text, expr, t);
+    }
   }
   // A package declaration without a compiled constructor cannot provide
   // a runtime value. Report the package at the construction site.
@@ -13207,6 +13351,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // `new tls.TLSSocket(socket, options)` — the server-mode wrap of an open
   // socket (lower-server).
   {
+    const tlsServer = lowerTlsServerNew(lowerer, expr);
+    if (tlsServer !== null) return tlsServer;
     const tlsSocket = lowerTlsSocketNew(lowerer, expr);
     if (tlsSocket) return tlsSocket;
   }
@@ -14020,6 +14166,17 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         type: F64,
         loc,
       };
+    }
+    // `new AsyncResource(type[, opts])` (node:async_hooks): an f64 handle
+    // into the runtime's resource registry — the ambient class's constant
+    // options checks (type string, triggerAsyncId, requireManualDestroy)
+    // run in the runtime, which reads the options object as JavaScript does.
+    if (
+      symbol !== null &&
+      ts.symbolName(symbol) === "AsyncResource" &&
+      lowerer.isStdlibSymbol(symbol)
+    ) {
+      return lowerAsyncResourceConstruction(lowerer, expr, loc);
     }
     // `new Promise<T>((resolve) => ...)`: the ambient Promise constructor.
     if (symbol !== null && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)) {

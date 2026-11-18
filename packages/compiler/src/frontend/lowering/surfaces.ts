@@ -2931,6 +2931,21 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["fs.unwatchFile"],
       note: "removes one listener, or every listener, from a resolved path's poller",
     },
+    {
+      id: "node-builtin.fs.mkdtempDisposable",
+      kind: "node-builtin",
+      name: "fs.mkdtempDisposableSync / fsPromises.mkdtempDisposable",
+      fns: [
+        "fsp.mkdtempDisposable",
+        "fs.mkdtempDisposableSync",
+        "mkdtempResult.path",
+        "mkdtempResult.remove",
+        "mkdtempResult.removeSync",
+        "mkdtempResult.asyncDispose",
+        "mkdtempResult.dispose",
+      ],
+      note: "the created temp directory plus its path, remove() and disposal hooks; the path is a string, so only the utf8 encoding is accepted",
+    },
     // ── the Date slice (lowerDateCall/lowerNew): statics, construction,
     // stored read-only values, calendar getters, and ISO formatting.
     {
@@ -3199,6 +3214,26 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       note: "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes",
     },
     {
+      id: "node-builtin.perf_hooks.performance.markResourceTiming",
+      kind: "node-builtin",
+      name: "perf_hooks.performance.markResourceTiming",
+      fns: [
+        "perf.resourceMark",
+        "perf.resourceClear",
+        "perf.resourceBufferSize",
+        "perf.entryResourceNum",
+        "perf.entryResourceStr",
+        "perf.entryName",
+        "perf.entryType",
+        "perf.entryStart",
+        "perf.entryDuration",
+        "perf.entryDetail",
+        "perf.entryKeep",
+        "perf.entryRef",
+      ],
+      note: "the PerformanceResourceTiming entries markResourceTiming builds from fetch timing info, clearResourceTimings and setResourceTimingBufferSize; the resource fields and toJSON",
+    },
+    {
       id: "node-builtin.perf_hooks.performance.eventLoopUtilization",
       kind: "node-builtin",
       name: "perf_hooks.performance.eventLoopUtilization",
@@ -3218,6 +3253,39 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.eldStat",
       ],
       note: "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported",
+    },
+    {
+      id: "node-builtin.perf_hooks.createHistogram",
+      kind: "node-builtin",
+      name: "perf_hooks.createHistogram",
+      fns: [
+        "perf.histoNew",
+        "perf.histoRecord",
+        "perf.histoRecordBig",
+        "perf.histoRecordCorrected",
+        "perf.histoRecordDelta",
+        "perf.histoReset",
+        "perf.histoAdd",
+        "perf.histoSubtract",
+        "perf.histoStat",
+        "perf.histoStatBig",
+        "perf.histoPercentile",
+        "perf.histoPercentileBig",
+        "perf.histoCountAt",
+        "perf.histoCdf",
+        "perf.histoCcdf",
+        "perf.histoPercentilesCount",
+        "perf.histoPercentilesKey",
+        "perf.histoPercentilesValue",
+        "perf.histoDispose",
+        "perf.histoKsTest",
+        "perf.histoCohensD",
+        "perf.histoCliffsD",
+        "perf.histoMannWhitneyU",
+        "perf.histoMannWhitneyZ",
+        "perf.histoMannWhitneyP",
+      ],
+      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
     },
     // ── the process global's ambient reads and authority calls
     // (lowerProcessProperty/lowerProcessMethodCall — process is a
@@ -3880,11 +3948,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   util: {
     promisify:
       "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly",
-  },
-  "stream/consumers": {
-    blob:
-      "collecting a stream into a Blob is not supported yet — " +
-      "buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text",
   },
   module: {
     createRequire:

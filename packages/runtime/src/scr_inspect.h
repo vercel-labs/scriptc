@@ -175,6 +175,12 @@ ScrStr *scr_insp_circular(double id);
 ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s);
 ScrStr *scr_insp_more_items(double remaining); /* "... N more items" */
 ScrStr *scr_insp_key(ScrStr *k); /* bare-or-quoted property-name ladder; +1 */
+/* The property entry `key: value` (Node's formatProperty), with an object
+ * property's width/newline rule under compact: true. Borrows both; +1. */
+ScrStr *scr_insp_property(ScrStr *key, ScrStr *value, bool object_type);
+/* Marks the next composite rendered as an object property's value, whose
+ * frame indents one extra level under compact: true. */
+void scr_insp_prop_child(bool object_type);
 ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse,
                      bool array_extras, bool trailing_more);
 /* A nested util.inspect inside a custom rendering (PerformanceEntry's):

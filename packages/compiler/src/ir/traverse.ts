@@ -212,6 +212,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "bigintStats":
     case "fileHandle":
     case "dir":
+    case "mkdtempResult":
     case "spawnRes":
     case "child":
     case "netServer":

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/constructor-rebinding-abandoned-sibling-construction.ts"
+ ],
+ "diags": []
+}

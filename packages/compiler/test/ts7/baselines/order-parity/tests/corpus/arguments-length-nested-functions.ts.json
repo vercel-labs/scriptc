@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/arguments-length-nested-functions.ts"
+ ],
+ "diags": []
+}

@@ -1,30 +1,9 @@
-compat-absent-http-members.ts:13:26 - error SC0001: Property 'createConnection' does not exist on type 'Agent'.
+compat-absent-http-members.ts:15:26 - error SC0001: Property 'createConnection' does not exist on type 'Agent'.
 
-  12 | const agent = new http.Agent({ keepAlive: true });
-  13 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
+  14 | const agent = new http.Agent({ keepAlive: true });
+  15 | console.log(typeof agent.createConnection);
      |                          ^~~~~~~~~~~~~~~~
-  14 | agent.destroy();
-
-compat-absent-http-members.ts:13:57 - error SC0001: Property 'keepSocketAlive' does not exist on type 'Agent'.
-
-  12 | const agent = new http.Agent({ keepAlive: true });
-  13 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
-     |                                                         ^~~~~~~~~~~~~~~
-  14 | agent.destroy();
-
-compat-absent-http-members.ts:13:87 - error SC0001: Property 'reuseSocket' does not exist on type 'Agent'. Did you mean 'freeSockets'?
-
-  12 | const agent = new http.Agent({ keepAlive: true });
-  13 | console.log(typeof agent.createConnection, typeof agent.keepSocketAlive, typeof agent.reuseSocket);
-     |                                                                                       ^~~~~~~~~~~
-  14 | agent.destroy();
-
-compat-absent-http-members.ts:20:23 - error SC0001: Property 'signal' does not exist on type 'IncomingMessage'.
-
-  19 |   // IncomingMessage: the abort signal.
-  20 |   console.log(request.signal.aborted);
-     |                       ^~~~~~
-  21 |   response.end();
+  16 | agent.destroy();
 
 compat-absent-http-members.ts:25:6 - error SC0001: Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import("node:http")'.
 

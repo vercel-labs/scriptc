@@ -194,6 +194,11 @@ export type IrType =
    * close() closes it for every alias, and the final release closes a
    * still-open stream. Holds no references and cannot be part of a cycle. */
   | { kind: "dir" }
+  /** The object fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync
+   * answers (scr_lib.c): the created path, its removal and the disposal
+   * hooks. Heap, refcounted, IMMUTABLE — it holds the full path so a later
+   * process.chdir cannot change what remove() deletes. */
+  | { kind: "mkdtempResult" }
   /** A child_process.spawnSync result (scr_child.c): heap, refcounted,
    * IMMUTABLE — the reaped child's status plus its captured utf8 stdout/
    * stderr. Holds only strings — never part of a cycle, no trace. Same
@@ -309,8 +314,9 @@ export type IrType =
    * JS form: `params` stays the declared non-rest list and the lifted
    * function has one hidden trailing ScrDyn array filled by its boxed call
    * thunk. `argumentsAll` keeps that hidden ABI but fills it with every
-   * actual argument, including named positions. The backends therefore
-   * still see one fixed native closure ABI;
+   * actual argument, including named positions, and adds it after a typed
+   * rest array when the function declares both (`funcHiddenParamCount`).
+   * The backends therefore still see one fixed native closure ABI;
    * only the frontend's call completion observes variadic source arity.
    * `argumentsPresence` says of an `argumentsAll` function that it reads the
    * hidden array only to ask whether an argument was passed at all, and reads
@@ -435,6 +441,7 @@ const POINTER_HANDLE_KINDS = [
   "bigintStats",
   "fileHandle",
   "dir",
+  "mkdtempResult",
   "spawnRes",
   "child",
   "netServer",
@@ -522,6 +529,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   bigintStats: "scr_stats",
   fileHandle: "scr_file_handle",
   dir: "scr_dir",
+  mkdtempResult: "scr_mkdtemp_result",
   spawnRes: "scr_spawn_res",
   child: "scr_child",
   netServer: "scr_net_server",
@@ -592,6 +600,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "bigintStats",
   "fileHandle",
   "dir",
+  "mkdtempResult",
   "spawnRes",
   "child",
   "netServer",
@@ -639,6 +648,7 @@ export const STATS_T: IrType = { kind: "stats" };
 export const BIGINT_STATS_T: IrType = { kind: "bigintStats" };
 export const FILEHANDLE_T: IrType = { kind: "fileHandle" };
 export const DIR_T: IrType = { kind: "dir" };
+export const MKDTEMPRESULT_T: IrType = { kind: "mkdtempResult" };
 export const SPAWNRES_T: IrType = { kind: "spawnRes" };
 export const CHILD_T: IrType = { kind: "child" };
 export const NETSERVER_T: IrType = { kind: "netServer" };
@@ -996,8 +1006,25 @@ export function typeKey(t: IrType): string {
       return `map<${typeKey(t.key)},${typeKey(t.value)}>`;
     case "set":
       return `set<${typeKey(t.elem)}>`;
-    case "func":
-      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "typed" ? "...typed[]" : t.argumentsPresence ? "presence[]" : t.argumentsAll ? "arguments[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
+    case "func": {
+      const slots = t.params.map(typeKey);
+      if (t.rest === true) {
+        slots.push(
+          t.restAbi === "typed"
+            ? "...typed[]"
+            : t.argumentsPresence
+              ? "presence[]"
+              : t.argumentsAll
+                ? "arguments[]"
+                : "...dyn[]",
+        );
+        // A typed rest array is one of `params`, so the actual-argument
+        // array an `argumentsAll` value receives follows it
+        // (funcHiddenParamCount); the key names both.
+        if (t.restAbi === "typed" && t.argumentsAll === true) slots.push("arguments[]");
+      }
+      return `func(${slots.join(",")})=>${typeKey(t.ret)}`;
+    }
     case "object":
       return `object:${t.className}`;
     case "classval":
@@ -2055,6 +2082,17 @@ export function isDirentShape(shape: IrRecordShape): boolean {
 /** The hidden field that marks the perf_hooks entry row (type-mapper's
  * perfEntryShape). */
 export const PERF_ENTRY_MARKER = "%perfEntry";
+
+/** PerformanceEntry's toJSON field order (the entry row's shape also
+ * carries the resource-timing fields; JSON.stringify runs the entry's
+ * toJSON, so only these serialize). */
+export const PERF_ENTRY_JSON_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "detail",
+] as const;
 
 /** perf_hooks entry rows: the marker field names the shape (nothing else
  * interns a '%perfEntry' field; user object literals with a '%' key get a
@@ -5370,6 +5408,16 @@ function canDynCheckToAt(
     return result;
   }
   return false;
+}
+
+/** How many hidden trailing native parameters a function VALUE's lifted
+ * signature carries after the ones `params` spells: the checked-dynamic
+ * rest array, or the actual-argument array an `argumentsAll` value
+ * receives (one slot serves both when the type is checked-dynamic
+ * variadic), or the actual-argument array that follows a typed rest
+ * array. */
+export function funcHiddenParamCount(t: IrType & { kind: "func" }): number {
+  return t.argumentsAll === true || (t.rest === true && t.restAbi === undefined) ? 1 : 0;
 }
 
 /** A closure type that can BOX into the checked-dynamic tree's function kind (dynFrom):

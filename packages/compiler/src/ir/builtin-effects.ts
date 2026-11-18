@@ -396,6 +396,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "als.exitRun",
   "als.newOptions",
   "als.bindCallbackDyn",
+  // AsyncResource: the constructor's type/options checks, the traced call
+  // itself, and the bound function's argument check all throw.
+  "ar.new",
+  "ar.runInScope",
+  "ar.bind",
+  "ar.bindStatic",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",

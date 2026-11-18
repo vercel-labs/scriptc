@@ -1401,9 +1401,12 @@
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs",
+          "tests/corpus/async-local-storage-with-scope.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs",
+          "tests/corpus/async-resource.cjs",
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/compat-core-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -1449,7 +1452,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -1466,7 +1469,8 @@
           "tests/corpus/7387-als-http2-events.mjs",
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
-          "tests/corpus/7391-als-response-end-and-finished.mjs"
+          "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1535,7 +1539,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asyncLocalStorage.disable",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -1552,7 +1556,8 @@
           "tests/corpus/7387-als-http2-events.mjs",
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
-          "tests/corpus/7391-als-response-end-and-finished.mjs"
+          "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1575,7 +1580,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asyncLocalStorage.getStore",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -1592,7 +1597,8 @@
           "tests/corpus/7387-als-http2-events.mjs",
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
-          "tests/corpus/7391-als-response-end-and-finished.mjs"
+          "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1615,7 +1621,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asyncLocalStorage.enterWith",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -1632,7 +1638,8 @@
           "tests/corpus/7387-als-http2-events.mjs",
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
-          "tests/corpus/7391-als-response-end-and-finished.mjs"
+          "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1655,7 +1662,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asyncLocalStorage.run",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -1672,7 +1679,8 @@
           "tests/corpus/7387-als-http2-events.mjs",
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
-          "tests/corpus/7391-als-response-end-and-finished.mjs"
+          "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1695,7 +1703,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:asyncLocalStorage.exit",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -1712,7 +1720,8 @@
           "tests/corpus/7387-als-http2-events.mjs",
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
-          "tests/corpus/7391-als-response-end-and-finished.mjs"
+          "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1735,8 +1744,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_context"
+        "status": "supported",
+        "evidence": "compiler-feature:async_context.asyncLocalStorage.withScope",
+        "tests": [
+          "tests/corpus/async-local-storage-with-scope.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -1758,11 +1770,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:async_context.name",
         "tests": [
           "tests/corpus/compat-core-members.mjs",
-          "tests/corpus/compat-core-members.ts"
+          "tests/corpus/compat-core-members.ts",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -1785,8 +1798,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_context"
+        "status": "supported",
+        "evidence": "compiler-feature:async_context.RunScope",
+        "tests": [
+          "tests/corpus/async-local-storage-with-scope.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -1808,8 +1824,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_context"
+        "status": "supported",
+        "evidence": "compiler-feature:async_context.scope.dispose",
+        "tests": [
+          "tests/corpus/async-local-storage-with-scope.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -1831,10 +1850,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:async_context.AsyncResource",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/async-resource.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1903,10 +1923,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:async_context.asyncResource.bind",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/async-resource.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1929,10 +1950,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:async_context.asyncResource.runInAsyncScope",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/async-resource.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1955,10 +1977,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:async_context.asyncResource.emitDestroy",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/async-resource.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -1981,10 +2004,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:async_context.asyncResource.asyncId",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/async-resource.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2007,10 +2031,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:async_context.asyncResource.triggerAsyncId",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/async-resource.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2051,6 +2076,7 @@
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -2609,7 +2635,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:AsyncLocalStorage",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -2626,7 +2652,8 @@
           "tests/corpus/7387-als-http2-events.mjs",
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
-          "tests/corpus/7391-als-response-end-and-finished.mjs"
+          "tests/corpus/7391-als-response-end-and-finished.mjs",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "exact"

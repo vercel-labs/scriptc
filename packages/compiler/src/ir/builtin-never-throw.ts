@@ -104,11 +104,18 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // scr_als_with_scope reads the effective store, enters the new one and
+  // boxes the RunScope; no program code runs and nothing raises.
+  "als.withScope",
+  // The AsyncResource reads answer the registry's ids, and emitDestroy
+  // marks the entry; none runs program code or raises.
+  "ar.asyncId",
+  "ar.emitDestroy",
+  "ar.triggerAsyncId",
   // The resource-timing field accessors read a view entry's own numbers and
   // strings; no program code runs.
   "perf.entryResourceNum",
   "perf.entryResourceStr",
-
   // publish runs every subscriber and catches its throw: like Node's
   // process.nextTick(triggerUncaughtException), the exception is delivered
   // on a later tick instead of leaving the call, so publish itself raises

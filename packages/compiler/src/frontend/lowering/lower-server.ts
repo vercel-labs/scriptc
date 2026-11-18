@@ -9378,7 +9378,10 @@ function lowerHttpClientMethodCall(
     requireStatementPosition(lowerer, call, "request.destroy(err)");
     const receiver = lowerer.lowerExpr(access.expression);
     const arg = args[0]!;
-    if (arg.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(arg) && arg.text === "undefined")) {
+    if (
+      arg.kind === ts.SyntaxKind.NullKeyword ||
+      (ts.isIdentifier(arg) && arg.text === "undefined")
+    ) {
       return {
         kind: "libCall",
         fn: "http.clientDestroy",

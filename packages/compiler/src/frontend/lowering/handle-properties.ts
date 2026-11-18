@@ -404,6 +404,34 @@ function encodableGrantName(name: string): boolean {
   return true;
 }
 
+/** Calls `visit` for every assignment target inside a destructuring
+ * assignment's pattern (`[h.text] = …`, `({ key: h.text } = …)`): a program
+ * adds an own property to a handle that way without a direct `h.text = …`
+ * statement, and both censuses below must see it. */
+function destructuredTargets(
+  pattern: ts.Expression,
+  visit: (target: ts.PropertyAccessExpression | ts.ElementAccessExpression) => void,
+): void {
+  let node: ts.Expression = pattern;
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (ts.isArrayLiteralExpression(node)) {
+    for (const element of node.elements.nodes) {
+      if (ts.isOmittedExpression(element)) continue;
+      if (ts.isSpreadElement(element)) destructuredTargets(element.expression, visit);
+      else destructuredTargets(element, visit);
+    }
+    return;
+  }
+  if (ts.isObjectLiteralExpression(node)) {
+    for (const property of node.properties.nodes) {
+      if (ts.isPropertyAssignment(property)) destructuredTargets(property.initializer, visit);
+      else if (ts.isSpreadAssignment(property)) destructuredTargets(property.expression, visit);
+    }
+    return;
+  }
+  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) visit(node);
+}
+
 /** What the program's JavaScript adds to handles: per class, the member
  * names it writes or defines (their typed readers and calls reroute through
  * the checked-dynamic box), and whether it adds an own property at all — a
@@ -486,19 +514,22 @@ function handleAdditions(lowerer: Lowerer): HandleAdditions {
   lowerer.speculativeTypeQueries(() => {
     for (const sf of files) {
       walkFile(sf, (node) => {
-        if (
-          ts.isBinaryExpression(node) &&
-          ts.isAssignmentOperator(node.operatorToken.kind) &&
-          (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
-        ) {
-          const cls = handleClassOf(lowerer, node.left.expression);
-          const name = literalKeyOf(node.left);
-          if (cls)
-            record(
-              cls,
-              name,
-              name !== null && hasDeclaredProperty(lowerer, node.left.expression, name),
-            );
+        if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
+          const written = (
+            access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+          ): void => {
+            const cls = handleClassOf(lowerer, access.expression);
+            const name = literalKeyOf(access);
+            if (cls)
+              record(
+                cls,
+                name,
+                name !== null && hasDeclaredProperty(lowerer, access.expression, name),
+              );
+          };
+          if (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
+            written(node.left);
+          else destructuredTargets(node.left, written);
         } else if (
           ts.isDeleteExpression(node) &&
           (ts.isPropertyAccessExpression(node.expression) ||
@@ -627,12 +658,10 @@ function fetchAdditions(lowerer: Lowerer): FetchAdditions {
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile) continue;
     walkFile(sf, (node) => {
-      if (
-        ts.isBinaryExpression(node) &&
-        ts.isAssignmentOperator(node.operatorToken.kind) &&
-        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
-      ) {
-        target(node.left);
+      if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
+        if (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
+          target(node.left);
+        else destructuredTargets(node.left, target);
       } else if (
         ts.isDeleteExpression(node) &&
         (ts.isPropertyAccessExpression(node.expression) ||
@@ -695,13 +724,11 @@ export function handlePropertyScanRoots(sourceFiles: readonly ts.SourceFile[]): 
   for (const sf of sourceFiles) {
     if (sf.isDeclarationFile || !isJsSourceFile(sf)) continue;
     walkFile(sf, (node) => {
-      if (
-        ts.isBinaryExpression(node) &&
-        ts.isAssignmentOperator(node.operatorToken.kind) &&
-        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
-      )
-        receiver(node.left.expression);
-      else if (
+      if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
+        if (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
+          receiver(node.left.expression);
+        else destructuredTargets(node.left, (access) => receiver(access.expression));
+      } else if (
         ts.isDeleteExpression(node) &&
         (ts.isPropertyAccessExpression(node.expression) ||
           ts.isElementAccessExpression(node.expression))

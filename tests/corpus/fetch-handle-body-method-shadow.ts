@@ -47,6 +47,17 @@ async function main(): Promise<void> {
   Object.assign(assigned, { json: async () => ({ assigned: true }) });
   console.log("assigned", JSON.stringify(await assigned.json()), assigned.bodyUsed);
 
+  // A destructuring assignment adds the own property too, in both pattern
+  // shapes: the census that decides each call's lowering reads the target
+  // inside the pattern, so the call answers the own property as Node does.
+  const arrayPattern: any = new Response("native array pattern");
+  [arrayPattern.text] = [async () => "own array pattern"];
+  console.log("array pattern", await arrayPattern.text(), arrayPattern.bodyUsed);
+
+  const objectPattern: any = new Response("native object pattern");
+  ({ value: objectPattern.text } = { value: async () => "own object pattern" });
+  console.log("object pattern", await objectPattern.text(), objectPattern.bodyUsed);
+
   const untouched = new Response('{"native":3}');
   console.log("untouched", JSON.stringify(await untouched.json()), untouched.bodyUsed);
 }

@@ -34,8 +34,8 @@ class GenericOver extends PlainBase {
 }
 new GenericOver();
 
-// `this` in an object-literal generic method is the receiver object —
-// records don't model it.
+// A generic method lowers as a plain function; `this` in its body is the
+// receiver the call binds, so this form compiles.
 const withThis = {
   n: 1,
   m<T>(x: T): T {

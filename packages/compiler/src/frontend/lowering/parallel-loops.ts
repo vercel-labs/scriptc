@@ -19,7 +19,9 @@
  *
  * The compiler sets `parallel` only when it can show that running the chunks
  * at the same time is not observable:
- * - the callbacks are function expressions with an exact signature;
+ * - the callbacks are plain function expressions (not async, not
+ *   generators) with an exact signature, which lower to their own lifted
+ *   functions with no adapter between the call and the body;
  * - their bodies read numbers and captured typed arrays, write variables
  *   they declare themselves and the `part` they are given, and call only
  *   Math's pure functions. No allocation, no reference count update, no call
@@ -27,6 +29,9 @@
  *   cell, so a throw there would have nowhere to go;
  * - parallelReduce's result is a number, so partial values cross the runtime
  *   as doubles.
+ * The backend keeps the chunks on the calling thread as well in a program
+ * that reads stacks, since every framed function pushes onto the one shared
+ * exception cell's frame chain (backend/llvm/parallel-loops.ts).
  * Anything else compiles to the sequential loop — exact Node.js behavior —
  * and reports why as an SC6106 performance warning (never a build failure).
  * parallelFor always runs sequentially for now: the compiler cannot yet show
@@ -617,10 +622,8 @@ export function lowerParallelCall(lowerer: Lowerer, expr: ts.CallExpression): Ir
       bodyFn = raw.fnName;
       bodyCaptures = raw.captures;
     }
-    const value =
-      raw.type.kind === "func" && typesMatch(raw.type, expected)
-        ? stageValue(raw, name)
-        : stage(node, name, expected);
+    const exact = raw.type.kind === "func" && typesMatch(raw.type, expected);
+    const value = exact ? stageValue(raw, name) : stage(node, name, expected);
     if (value.type.kind !== "func" || !typesMatch(value.type, expected))
       lowerer.noLowering(
         `${member} with a callback of the wrong type`,
@@ -629,6 +632,30 @@ export function lowerParallelCall(lowerer: Lowerer, expr: ts.CallExpression): Ir
       );
     if (literal === null || literal.asteriskToken !== undefined) {
       refuse({ reason: "a callback that is not a plain function expression", node });
+      return value;
+    }
+    // An async body returns a promise, and the function it lowers to is a
+    // spawn wrapper that allocates the promise and updates the closure's
+    // reference count around the call: none of that may run on a helper.
+    if ((ts.getCombinedModifierFlags(literal) & ts.ModifierFlags.Async) !== 0) {
+      refuse({ reason: "an async callback", node });
+      return value;
+    }
+    // The checks below read the body as written, so the function the call
+    // receives must be that body's own: not an adapter to the documented
+    // type, and not a lifted function that is async or a generator.
+    const lifted =
+      raw.kind === "closure"
+        ? [...lowerer.liftedFns].reverse().find((fn) => fn.name === raw.fnName)
+        : undefined;
+    if (
+      !exact ||
+      raw.kind !== "closure" ||
+      lifted === undefined ||
+      lifted.async === true ||
+      lifted.generator !== undefined
+    ) {
+      refuse({ reason: "a callback the compiler adapts to its documented type", node });
       return value;
     }
     const scan = scanBody(lowerer, literal, written, hasPart);

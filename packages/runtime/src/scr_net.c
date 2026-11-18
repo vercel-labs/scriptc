@@ -1,6 +1,7 @@
 
 #include "scr_platform.h"
 #include "scr_runtime.h"
+#include "scr_stream.h"
 #include "scr_system_errors.h"
 
 #include <errno.h>
@@ -526,7 +527,7 @@ struct ScrNetServer {
   ScrStr *pending_err; /* deferred listen failure */
   ScrStr *unix_path;   /* listen(path): the bound socket file, removed at close */
   size_t nconns;
-  ScrNetLs conn_ls, err_ls, close_ls, listening_cbs, timeout_ls;
+  ScrNetLs conn_ls, secure_conn_ls, err_ls, close_ls, listening_cbs, timeout_ls;
   /* 'newListener' (event): Node's meta event, fired before every add */
   ScrNetLs new_listener_ls;
   /* tls/https servers: 'tlsClientError' (err, tlsSocket), fired by the
@@ -591,6 +592,12 @@ struct ScrNetSocket {
    * shutdown request). */
   ScrAlsCtx *als, *end_ctx;
   int fd; /* -1 once closed */
+  /* read/write highWaterMark: stream.getDefaultHighWaterMark(false) as it
+   * was when the socket was created (Node's getHighWaterMark at
+   * construction), and the read-ahead cap that follows it (Node reads ahead
+   * by the readable high-water mark). */
+  double hwm;
+  size_t read_ahead;
   bool unrefd; /* socket.unref(): does not keep the loop alive */
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
@@ -764,6 +771,9 @@ struct ScrNetSocket {
    * TLS defer target (+1; the socket's own `server` backref stays the
    * ACCEPTING server, which may be the demux wrapper) */
   ScrNetServer *conn_pending;
+  /* conn_pending names the handshake's secure list (TLS accept), not the
+   * plain 'connection' list of a demux emission. */
+  bool conn_pending_secure;
   /* the idle timer (setTimeout): a one-shot poller timer keyed by this
    * socket's pointer, re-armed on every read/write/connect activity —
    * 'timeout' fires once per idle period and never destroys the socket,
@@ -881,6 +891,7 @@ void scr_net_server_release(ScrNetServer *s) {
   if (--s->rc == 0) {
     if (s->native_ctx_free) s->native_ctx_free(s->native_ctx);
     scr_net_ls_drop(&s->conn_ls);
+    scr_net_ls_drop(&s->secure_conn_ls);
     scr_net_ls_drop(&s->err_ls);
     scr_net_ls_drop(&s->close_ls);
     scr_net_ls_drop(&s->listening_cbs);
@@ -1342,6 +1353,8 @@ static ScrNetSocket *scr_net_sock_new(void) {
   s->kind = SCR_NET_K_SOCKET;
   s->rc = 1;
   s->fd = -1;
+  s->hwm = scr_stream_get_default_hwm(false);
+  s->read_ahead = s->hwm >= (double)SIZE_MAX ? SIZE_MAX : (size_t)s->hwm;
   s->adopt_fd = -1;
   s->autosel = scr_net_get_default_autosel();
   s->attempt_ms = scr_net_get_autosel_timeout();
@@ -1358,8 +1371,8 @@ static ScrNetSocket *scr_net_sock_new(void) {
 /* Consumer-driven read arming (the stdin discipline: never read a byte
  * nobody consumes — the socket buffer is the backpressure). */
 /* Node's readableHighWaterMark for sockets: with no consumer the stream
- * still reads ahead this far, so a peer's close is seen. */
-#define SCR_NET_READ_AHEAD 65536u
+ * still reads ahead that far, so a peer's close is seen (the socket's
+ * captured read_ahead). */
 
 static void scr_net_sock_update_read(ScrNetSocket *s) {
   /* every consumer and flow change re-arms here: buffered bytes may now
@@ -1380,7 +1393,7 @@ static void scr_net_sock_update_read(ScrNetSocket *s) {
                s->wr_done /* FIN sent: drain to EOF so the peer's close is
                            * seen even with no consumer — Node resumes a
                            * finished socket the same way */ ||
-               (!s->eof_pending && s->rlen - s->rhead < SCR_NET_READ_AHEAD)
+               (!s->eof_pending && s->rlen - s->rhead < s->read_ahead)
                /* no consumer yet: read ahead into the buffer, as Node's
                 * stream does up to its high-water mark */) &&
               !(s->tunnel != NULL && s->tunnel->send_only);
@@ -1499,10 +1512,6 @@ static void scr_net_sock_buffer(ScrNetSocket *s, const char *data, size_t len, s
   s->wpending += counted;
 }
 
-/* Node's net.Socket writableHighWaterMark (the Writable default,
- * getDefaultHighWaterMark()). */
-#define SCR_NET_WRITE_HWM 65536
-
 /* 'drain' once a false write's bytes are all out: Node's afterWrite emits
  * it when needDrain is set and nothing is pending, unless the stream is
  * ending or destroyed. */
@@ -1569,7 +1578,7 @@ static bool scr_net_sock_user_write(ScrNetSocket *s, const char *data, size_t le
   }
   scr_net_sock_write_raw(s, data, len);
   if (!scr_net_sock_write_open(w)) return false;
-  bool ok = w->wpending < SCR_NET_WRITE_HWM;
+  bool ok = w->wpending < w->hwm;
   if (!ok) w->need_drain = true;
   return ok;
 }
@@ -1883,7 +1892,7 @@ static void scr_net_sock_read(ScrNetSocket *s) {
     bool read_ahead = !flowing && s->readable_ls.n == 0 && !s->wr_done &&
                       !(s->tops != NULL && s->t_est);
     if (read_ahead && (s->tops != NULL || s->eof_pending ||
-                       s->rlen - s->rhead >= SCR_NET_READ_AHEAD)) {
+                       s->rlen - s->rhead >= s->read_ahead)) {
       scr_net_sock_update_read(s);
       return;
     }
@@ -2207,10 +2216,13 @@ static void scr_net_sock_transport_pump(ScrNetSocket *s) {
      * for a plain TLS accept, the emit('connection') target after a
      * demux */
     ScrNetServer *target = s->conn_pending;
+    bool secure_list = s->conn_pending_secure;
     s->conn_pending = NULL;
+    s->conn_pending_secure = false;
     if (!target->close_emitted) {
+      ScrNetLs *list = secure_list ? &target->secure_conn_ls : &target->conn_ls;
       ScrNetL *snap;
-      size_t n = scr_net_ls_snapshot(&target->conn_ls, &snap);
+      size_t n = scr_net_ls_snapshot(list, &snap);
       scr_dyn_this_push(target, SCR_DYNH_NET_SERVER);
       for (size_t i = 0; i < n; i++) {
         if (!scr_exc_pending()) ((ScrNetConnFn)snap[i].fn)(snap[i].cb, scr_net_sock_retain(s));
@@ -2488,6 +2500,15 @@ double scr_net_server_timeout_get(ScrNetServer *s, double field) {
     scr_dyn_arg_type_fail(names[i], "of type number", s->http_timeout_dyn[i]);
     return 0; /* pending exception; typed reads validate an any-written value */
   }
+  return s->http_timeouts[i];
+}
+
+/* A timeout field as the HTTP timeout checker reads it: a non-number value
+ * reads 0 (Node's NumberIsFinite guard), never a pending exception. */
+double scr_net_server_timeout_raw(ScrNetServer *s, double field) {
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  if (s->http_timeout_dyn[i] != NULL) return 0;
   return s->http_timeouts[i];
 }
 
@@ -2909,6 +2930,7 @@ static ScrNetLs *scr_net_server_event_list(ScrNetServer *s, double kind) {
   case SCR_NET_OFF_DROP: return &s->drop_ls;
   case SCR_NET_OFF_NEW_LISTENER: return &s->new_listener_ls;
   case SCR_NET_OFF_CLIENT_ERROR: return &s->client_error_ls;
+  case SCR_NET_OFF_SECURE_CONNECTION: return &s->secure_conn_ls;
   default: return NULL;
   }
 }
@@ -2936,10 +2958,10 @@ void scr_net_server_on_listening(ScrNetServer *s, ScrClosure *cb /*moves*/, bool
   scr_net_ls_add(&s->listening_cbs, cb, NULL, once);
 }
 
-/* 'secureConnection': a TLS server's 'connection' list already fires at
- * handshake completion (defer_conn) — Node's secureConnection timing; on
- * a plain server the event never fires in Node, so the registration is
- * released unread. */
+/* 'secureConnection': a TLS server's handshake-complete event, its own
+ * list fired at establishment (Node's secureConnection timing) beside the
+ * route's handler; on a plain server the event never fires in Node, so
+ * the registration is released unread. */
 void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                           ScrNetConnFn fn, bool once) {
   if (s->close_emitted || scr_net_server_add_blocked(s, "secureConnection")) {
@@ -2950,7 +2972,7 @@ void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves
     scr_closure_release(cb);
     return;
   }
-  scr_net_ls_add(&s->conn_ls, cb, (void *)fn, once);
+  scr_net_ls_add(&s->secure_conn_ls, cb, (void *)fn, once);
 }
 
 void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn,
@@ -3053,10 +3075,13 @@ static void scr_net_server_accept(ScrNetServer *srv) {
       if (scr_exc_pending()) return;
     }
     if (srv->defer_conn) {
-      /* 'connection' waits for the handshake (secureConnection timing) */
+      /* the handshake's 'secureConnection'/handler wait for establishment */
       sock->conn_pending = scr_net_server_retain(srv);
+      sock->conn_pending_secure = true;
     }
-    if (!srv->defer_conn) {
+    /* Node's 'connection' fires when the TCP connection is accepted, with
+     * the raw socket, before the transport's handshake starts. */
+    {
       ScrNetL *snap;
       size_t n = scr_net_ls_snapshot(&srv->conn_ls, &snap);
       scr_dyn_this_push(srv, SCR_DYNH_NET_SERVER);
@@ -4043,9 +4068,14 @@ static ScrDyn *scr_net_sock_abort_thunk(ScrClosure *clo, ScrDyn *const *args, si
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
-static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
+/* Arms a connect() abort signal. Node's validateAbortSignal is duck-typed
+ * (an object with an `aborted` member passes), while addAbortListener needs
+ * a real AbortSignal; a value the first lets through and the second rejects
+ * leaves Node's ERR_INVALID_ARG_TYPE pending, and false here says nothing
+ * may be opened for it. */
+static bool scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
                                    ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *)) {
-  if (signal->kind == SCR_DYN_UNDEF) return;
+  if (signal->kind == SCR_DYN_UNDEF) return true;
   bool aborted = false;
   const ScrDyn *a = scr_dyn_obj_get(signal, "aborted", 7);
   if (a != NULL) aborted = scr_net_dyn_truthy(a);
@@ -4053,6 +4083,7 @@ static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
   listener->caps[0] = scr_box_new_obj(&scr_net_sock_retain_v, &scr_net_sock_release_v, NULL);
   scr_box_set_ref(listener->caps[0], scr_net_sock_retain(s));
   ScrDyn *fn = scr_dyn_new_func(listener, scr_net_sock_abort_thunk, 0, "()", "onAbort");
+  bool armed = true;
   if (aborted) {
     /* process.nextTick(onAbort): the destroy lands after the connect call */
     ScrClosure *job = scr_closure_new(scr_net_sock_abort_thunk, 1);
@@ -4061,8 +4092,20 @@ static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
     scr_next_tick(job);
   } else if (add_abort != NULL) {
     s->abort_dispose = add_abort((ScrDyn *)signal, fn);
+    if (s->abort_dispose == NULL) {
+      /* Node's validateAbortSignal is duck-typed (`'aborted' in signal`), and
+       * its listener install calls signal.addEventListener: a value that only
+       * looks like a signal fails with that TypeError. The install's own
+       * error is replaced by it, and nothing is opened for the value. */
+      if (scr_dyn_obj_get(signal, "aborted", 7) != NULL) {
+        scr_exc_clear();
+        scr_throw_error_msg(SCR_ERR_TYPE, "signal.addEventListener is not a function", 41);
+      }
+      armed = false;
+    }
   }
   scr_dyn_release(fn);
+  return armed;
 }
 
 /* net.connect/createConnection over dynamic arguments (the checked-
@@ -4071,6 +4114,9 @@ static void scr_net_sock_arm_abort(ScrNetSocket *s, const ScrDyn *signal,
  * the lowering. A last argument that only turns out to be a function at
  * run time becomes the listener here, as normalizeArgs would read it.
  * The result is +1, or NULL with an exception pending. */
+static ScrNetSocket *scr_net_connect_path_armed(ScrStr *path, const ScrDyn *signal,
+                                                ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *));
+
 ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrDyn *a2,
                                   ScrClosure *cb /*moves, nullable*/,
                                   ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *),
@@ -4239,9 +4285,14 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
       scr_dyn_prop_type_fail("options.path", "of type string", path);
       goto fail;
     }
-    ScrNetSocket *ps = scr_net_connect_path(path->v.str, false);
+    ScrNetSocket *ps = scr_net_connect_path_armed(path->v.str, signal, add_abort);
+    if (ps == NULL) {
+      /* the signal install threw: the socket was never dialed or registered */
+      scr_dyn_release(made);
+      if (cb != NULL) scr_closure_release(cb);
+      return NULL;
+    }
     if (timeout_ms > 0) ps->timeout_ms = timeout_ms;
-    if (signal != NULL) scr_net_sock_arm_abort(ps, signal, add_abort);
     if (cb != NULL) scr_net_ls_add(&ps->conn_ls, cb, NULL, true);
     scr_dyn_release(made);
     return ps;
@@ -4384,7 +4435,14 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
   }
-  if (signal != NULL) scr_net_sock_arm_abort(s, signal, add_abort);
+  if (signal != NULL && !scr_net_sock_arm_abort(s, signal, add_abort)) {
+    /* The signal install threw: nothing was opened, and the caller catches
+     * the exception instead of receiving a dialing socket. */
+    scr_net_sock_release(s);
+    scr_dyn_release(made);
+    if (cb != NULL) scr_closure_release(cb);
+    return NULL;
+  }
   scr_net_sock_dial_peer(s);
   scr_net_sock_register(s);
   if (cb != NULL) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
@@ -4492,6 +4550,16 @@ static bool scr_net_server_arm_abort(ScrNetServer *s, const ScrDyn *signal,
   ScrDyn *fn = scr_dyn_new_func(listener, scr_net_server_abort_thunk, 0, "()", "onAbort");
   s->abort_dispose = add_abort((ScrDyn *)signal, fn);
   scr_dyn_release(fn);
+  if (s->abort_dispose == NULL) {
+    /* The duck-typed check let the value through; the install's member call
+     * is what Node fails on, so its error carries that message instead and
+     * the listen does not go on. */
+    if (scr_dyn_obj_get(signal, "aborted", 7) != NULL) {
+      scr_exc_clear();
+      scr_throw_error_msg(SCR_ERR_TYPE, "signal.addEventListener is not a function", 41);
+    }
+    return false;
+  }
   return true;
 }
 
@@ -4938,6 +5006,27 @@ static void scr_net_sock_dial_unix(ScrNetSocket *s) {
 /* A client socket for the Unix socket at `path` (borrowed). `deferred`
  * creates it the way scr_net_connect_deferred does: registered and
  * buffering, dialed by scr_net_sock_dial_start. +1. */
+/* The Unix-socket connect with the abort signal armed before the dial: a
+ * signal the listener install rejects leaves nothing open and answers NULL
+ * with the exception pending. */
+static ScrNetSocket *scr_net_connect_path_armed(ScrStr *path, const ScrDyn *signal,
+                                                ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *)) {
+  ScrNetSocket *s = scr_net_sock_new();
+  s->unix_path = scr_str_retain(path);
+  s->dial_hook = &scr_net_sock_dial_unix;
+  if (!scr_net_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  if (signal != NULL && !scr_net_sock_arm_abort(s, signal, add_abort)) {
+    scr_net_sock_release(s);
+    return NULL;
+  }
+  scr_net_sock_dial_unix(s);
+  scr_net_sock_register(s);
+  return s;
+}
+
 ScrNetSocket *scr_net_connect_path(ScrStr *path, bool deferred) {
   ScrNetSocket *s = scr_net_sock_new();
   s->unix_path = scr_str_retain(path);
@@ -8196,10 +8285,15 @@ void scr_net_server_emit_connection(ScrNetServer *srv, ScrNetSocket *sock) {
     if (scr_exc_pending()) return;
   }
   if (srv->defer_conn) {
+    /* the handshake's 'secureConnection' listeners and the createServer
+     * handler wait for establishment */
     if (sock->conn_pending) scr_net_server_release(sock->conn_pending);
     sock->conn_pending = scr_net_server_retain(srv);
-    return;
+    sock->conn_pending_secure = true;
   }
+  /* Node dispatches the 'connection' event itself: the listeners see the
+   * raw socket before the transport's handshake starts, on a plain and a
+   * TLS server alike. */
   ScrNetL *snap;
   size_t n = scr_net_ls_snapshot(&srv->conn_ls, &snap);
   scr_dyn_this_push(srv, SCR_DYNH_NET_SERVER);
@@ -8645,6 +8739,11 @@ void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg) {
 
 void scr_net_server_defer_connections(ScrNetServer *s) { s->defer_conn = true; }
 
+/* Whether this server speaks TLS: the handshake-complete event is the
+ * marker (tls.createServer/tls.Server and https set it; a plain net
+ * server and http2's secure server do not). */
+bool scr_net_server_is_tls(const ScrNetServer *s) { return s->defer_conn; }
+
 void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, void **ctx,
                                      void (**ctx_free)(void *)) {
   *fn = s->native_conn;
@@ -8744,6 +8843,7 @@ static void scr_net_server_settle(ScrNetServer *srv) {
   srv->close_emitted = true;
   scr_net_fire0_this(&srv->close_ls, srv, SCR_DYNH_NET_SERVER);
   scr_net_ls_drop(&srv->conn_ls);
+  scr_net_ls_drop(&srv->secure_conn_ls);
   scr_net_ls_drop(&srv->err_ls);
   scr_net_ls_drop(&srv->close_ls);
   scr_net_ls_drop(&srv->listening_cbs);
@@ -9017,6 +9117,7 @@ static void scr_net_sweep(void) {
        * where Node's would survive (SEMANTICS.md divergence 48). */
       if (!srv->listening && !srv->closing) {
         scr_net_ls_drop(&srv->conn_ls);
+        scr_net_ls_drop(&srv->secure_conn_ls);
         scr_net_ls_drop(&srv->err_ls);
         scr_net_ls_drop(&srv->close_ls);
         scr_net_ls_drop(&srv->listening_cbs);
@@ -9291,6 +9392,7 @@ static void scr_net_cleanup_atexit(void) {
   while (scr_net_servers) {
     ScrNetServer *s = scr_net_servers;
     scr_net_ls_drop(&s->conn_ls);
+    scr_net_ls_drop(&s->secure_conn_ls);
     scr_net_ls_drop(&s->err_ls);
     scr_net_ls_drop(&s->close_ls);
     scr_net_ls_drop(&s->listening_cbs);
@@ -9691,8 +9793,8 @@ static ScrDyn *scr_net_dynh_sock_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "writableNeedDrain") == 0)
     return scr_dyn_new_bool(scr_net_sock_writable_need_drain(s));
   if (strcmp(key, "writableHighWaterMark") == 0 || strcmp(key, "readableHighWaterMark") == 0) {
-    /* Node's default stream highWaterMark (getDefaultHighWaterMark()) */
-    return scr_dyn_new_num(SCR_NET_WRITE_HWM);
+    /* The stream default the socket took at construction. */
+    return scr_dyn_new_num(s->hwm);
   }
   if (scr_net_dynh_tls != NULL) {
     ScrDyn *out = NULL;
@@ -9808,11 +9910,12 @@ static ScrDyn *scr_net_dynh_srv_invoke(void *h, ScrDyn *self, const char *method
       /* a connection past maxConnections: the local/remote address object */
       scr_net_server_on_drop(s, cb, once);
     } else if (scr_net_dynh_name_is(name, "secureConnection") && s->defer_conn) {
-      /* a TLS server's 'connection' list IS post-handshake (deferred) —
-       * exactly Node's secureConnection timing; on a plain server the
-       * name falls through to the fence below */
-      scr_net_server_on_connection(s, scr_dyn_listener_closure_fn(cb, (void *)&scr_net_dynh_fire_conn),
-                                   (ScrNetConnFn)&scr_net_dynh_fire_conn, once);
+      /* a TLS server's handshake-complete list, which fires at
+       * establishment — exactly Node's secureConnection timing; on a plain
+       * server the name falls through to the fence below */
+      scr_net_server_on_secure_connection(
+        s, scr_dyn_listener_closure_fn(cb, (void *)&scr_net_dynh_fire_conn),
+        (ScrNetConnFn)&scr_net_dynh_fire_conn, once);
     } else if (name->kind == SCR_DYN_STR && scr_net_dynh_http_on &&
                scr_net_dynh_http_on(s, name->v.str->data, cb, once)) {
       /* the http layer accepted the event ('request') */

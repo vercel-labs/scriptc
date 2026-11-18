@@ -4,7 +4,10 @@ import {
   lowerIteratorNew,
 } from "./iterator-prototype.js";
 import { lowerWrapperNew } from "./primitive-wrappers.js";
-import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
+import {
+  lowerAsyncLocalStorageOptions,
+  lowerAsyncResourceConstruction,
+} from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
   DATE_TIME_FIELD,
@@ -185,6 +188,7 @@ import { lowerTextCodecNew } from "./builtins/text-codecs.js";
 import {
   lowerBroadcastChannelNew,
   lowerMessageChannelNew,
+  lowerMessagePortNew,
   lowerWorkerNew,
 } from "./builtins/workers.js";
 import {
@@ -225,9 +229,15 @@ import {
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
 } from "./symbol-fields.js";
-import { lowerHttpAgentNew, lowerHttpServerNew, lowerTlsSocketNew } from "./lower-server.js";
+import {
+  lowerHttpAgentNew,
+  lowerHttpServerNew,
+  lowerTlsServerNew,
+  lowerTlsSocketNew,
+} from "./lower-server.js";
 import {
   ambientNsRootOf,
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefReadType,
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
@@ -239,6 +249,8 @@ import {
   isNodeUndefinedGlobalRoot,
 } from "./lower-namespaces.js";
 import { refusingFunctionNameOf } from "./builtin-function-fences.js";
+import { isGlobalMember } from "./global-values.js";
+import { isConstructibleGlobalClass } from "./node-value-reads.js";
 import { hostGlobalNameOfRead } from "./host-globals.js";
 import { mixinResultBindingClassOf, type MixinInstanceInfo } from "./lower-mixins.js";
 import {
@@ -248,7 +260,7 @@ import {
   usesStaticReceiver,
 } from "./static-this.js";
 import { lowerUrlNew } from "./lower-url.js";
-import { lowerDnsResolverNew } from "./lower-dgram.js";
+import { lowerDgramSocketNew, lowerDnsResolverNew } from "./lower-dgram.js";
 import { isNativeProxyInitializer, lowerNativeProxy } from "./expressions/native-proxy.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import {
@@ -477,22 +489,29 @@ function constructorReachesInstance(
   return ctor.parameters.nodes.some(parameterReaches) || visit(ctor.body);
 }
 
-/** Whether an instance index signature is `[key: string]: any` or
- * `[key: string]: unknown`: a string key, and a value the checked-dynamic
- * read answers as it is, an absent property included. */
-function indexSignatureReadsDynamic(
-  lowerer: Lowerer,
-  member: ts.IndexSignatureDeclaration,
-): boolean {
+/** Whether an instance index signature compiles: a `string` or `number`
+ * key (a JavaScript property key either way, so both name the instance's
+ * checked-dynamic properties), and a value type that is `any`, `unknown`
+ * or one the compiler maps. A typed value's read answers undefined for a
+ * missing property (Lowerer.classIndexSignatureRead). */
+/** Whether the union `unionId` has an arm for `type`, or for every arm of
+ * `type` when it is a union itself: a value of `type` converts into the
+ * union by its tag. */
+function unionHoldsEveryArm(lowerer: Lowerer, unionId: string, type: IrType): boolean {
+  const arms = type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [type];
+  return arms.length > 0 && arms.every((arm) => lowerer.armTag(unionId, arm) >= 0);
+}
+
+function indexSignatureLowers(lowerer: Lowerer, member: ts.IndexSignatureDeclaration): boolean {
   if (!isInstanceIndexSignature(member)) return false;
   const parameter = member.parameters.nodes.length === 1 ? member.parameters.nodes[0] : undefined;
   if (!parameter?.type || !member.type) return false;
   const key = lowerer.checker.getTypeFromTypeNode(parameter.type);
+  if ((key.flags & (ts.TypeFlags.String | ts.TypeFlags.Number)) === 0) return false;
   const value = lowerer.checker.getTypeFromTypeNode(member.type);
-  return (
-    (key.flags & ts.TypeFlags.String) !== 0 &&
-    (value.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
-  );
+  if ((value.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+  const mapped = lowerer.mapTypeOf(value);
+  return mapped !== null && mapped.kind !== "void";
 }
 
 /** `Symbol.hasInstance` over the standard global. */
@@ -1061,6 +1080,10 @@ export interface ClassInfo {
     type: IrType;
     /** Indexed sources can be absent despite the declared static type. */
     runtimeOptional?: true;
+    /** The field's JSDoc annotation does not describe every value the
+     * program writes to it (analyzeJsWidenedFields), so a read answers the
+     * stored value as it is. */
+    widened?: true;
     initializer: ts.Expression;
     globalId: string;
     readonly: boolean;
@@ -3238,7 +3261,13 @@ export function collectClassShapeInner(
             !lowerer.enumObjects.has(initializerSymbol)
           )
             continue;
-          const type = lowerer.irTypeOf(member.name);
+          let type = lowerer.irTypeOf(member.name);
+          // A JSDoc-typed static field the program writes values outside
+          // the annotation to holds them (analyzeJsWidenedFields), like an
+          // instance field of the same class.
+          const widened =
+            ts.isIdentifier(member.name) && lowerer.jsFieldWidened(decl, member.name.text);
+          if (widened) type = DYN;
           if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
           if (
             type.kind === "dyn" &&
@@ -3256,6 +3285,7 @@ export function collectClassShapeInner(
           staticFields.push({
             name: member.name.text,
             type,
+            ...(widened ? { widened: true as const } : {}),
             initializer: member.initializer,
             globalId: `%g.s.${lowerer.classNamer(decl)}.${member.name.text}`,
             readonly: modifiers.some((m) => m.kind === ts.SyntaxKind.ReadonlyKeyword),
@@ -3326,25 +3356,20 @@ export function collectClassShapeInner(
           !isJsSourceFile(ts.getSourceFileOfNode(member))
         ) {
           const isGet = ts.isGetAccessorDeclaration(member);
-          const type = lowerer.mapTypeOf(lowerer.typeOf(member.name));
-          const twin = staticMethods.get(`${isGet ? "set" : "get"}:${member.name.text}`);
-          const twinType = twin ? (isGet ? twin.params[0]!.type : twin.ret) : null;
-          if (
-            type &&
-            type.kind !== "void" &&
-            (isGet || member.parameters.nodes.length === 1) &&
-            (twinType === null || typeEquals(twinType, type))
-          ) {
+          // A setter takes its parameter's type, which may differ from the
+          // getter's (tsc 5.1+ admits unrelated annotated halves): a write
+          // converts into it and a read answers the getter's type.
+          const parameter = isGet ? undefined : member.parameters.nodes[0];
+          const type = lowerer.mapTypeOf(
+            parameter ? lowerer.typeOf(parameter.name) : lowerer.typeOf(member.name),
+          );
+          if (type && type.kind !== "void" && (isGet || member.parameters.nodes.length === 1)) {
             staticMethods.set(
               `${isGet ? "get" : "set"}:${member.name.text}`,
               isGet
                 ? { params: [], ret: type, member }
                 : { params: [{ type, mode: "required" }], ret: VOID, member },
             );
-          } else if (twin && twinType !== null) {
-            // One property, one type: a pair whose halves disagree has no
-            // single storage type, so neither half lowers.
-            staticMethods.delete(`${isGet ? "set" : "get"}:${member.name.text}`);
           }
         }
         // GENERIC static methods monomorphize like top-level generic
@@ -3823,6 +3848,11 @@ export function collectClassShapeInner(
           type = inheritedJsFieldType(lowerer, decl, member.name.text, type);
           if (base?.fields.get(member.name.text)?.kind === "dyn") type = DYN;
           if (base && !fields.has(member.name.text) && lowerer.dynConvertible(type)) type = DYN;
+          // A JSDoc-typed field the program writes values outside the
+          // annotation to holds them (analyzeJsWidenedFields), exactly like
+          // an unannotated one.
+          if (ts.isIdentifier(member.name) && lowerer.jsFieldWidened(decl, member.name.text))
+            type = DYN;
         }
         if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
         // Bundled JS declares fields without annotations before assigning
@@ -4789,23 +4819,36 @@ export function collectClassShapeInner(
           if (isGet) sig.ret = DYN;
           else for (const parameter of sig.params) parameter.type = DYN;
         }
-        // One property, ONE type: tsc (5.1+) admits get/set pairs with
-        // unrelated annotated types; a property slot here has a single
-        // IR type, so the pair must agree exactly.
-        const twin = methods.get(`${isGet ? "set" : "get"}:${prop}`);
-        const twinType = twin ? (isGet ? twin.params[0]!.type : twin.ret) : null;
-        const ownType = isGet ? sig.ret : sig.params[0]!.type;
-        if (twinType && !typeEquals(twinType, ownType)) {
-          const message = `getter/setter pairs with different types (the property '${prop}' must have one type)`;
-          if (confinesAccessor && !(inheritedAccessor && inheritedAccessor.declarer.decl == null)) {
-            refuseAccessor(twinType, unsupportedDiag("SC1090", locOf(member.name), message));
-            continue;
-          }
-          lowerer.unsupported("SC1090", member.name, message);
-        }
+        // A get/set pair may declare different types (tsc 5.1+ admits
+        // unrelated annotated halves, as WebIDL attributes whose setter
+        // converts its input do): each half keeps its own signature, a read
+        // calls the getter and a write converts its value into the setter's
+        // parameter type (classFieldTarget picks the type by the access).
         // Same exactness rule as methods — an accessor override keeps
         // the overridden accessor's type (getter return / setter param).
         const overridden = lowerer.findMethodOn(base, mName);
+        // A getter narrowed to part of its base's union return (`get
+        // ownerDocument(): Document` over `Document | null`), which tsc
+        // admits because the property type only narrows: it returns
+        // through the base's union ABI, as a method override narrowed the
+        // same way does, and a read the checker types as the narrower type
+        // narrows the value back. A setter whose parameter narrows keeps the
+        // refusal: the base's slot can hand it a value its type excludes.
+        // A getter narrowed to a subclass of its base's class return (`get
+        // pet(): Dog` over `Animal`) shares the base's pointer ABI, as a
+        // nominal covariant method return does.
+        if (
+          isGet &&
+          overridden &&
+          overridden.sig.params.length === 0 &&
+          !typeEquals(overridden.sig.ret, sig.ret) &&
+          ((overridden.sig.ret.kind === "union" &&
+            unionHoldsEveryArm(lowerer, overridden.sig.ret.unionId, sig.ret)) ||
+            (overridden.sig.ret.kind === "object" &&
+              sig.ret.kind === "object" &&
+              lowerer.isSubclassOf(sig.ret.className, overridden.sig.ret.className)))
+        )
+          sig.ret = overridden.sig.ret;
         if (
           overridden &&
           (overridden.sig.params.length !== sig.params.length ||
@@ -4813,7 +4856,7 @@ export function collectClassShapeInner(
             !typeEquals(overridden.sig.ret, sig.ret))
         ) {
           const message =
-            "overriding an accessor with a different type (the property type must match the base declaration exactly)";
+            "overriding an accessor with a different type (a getter may narrow its base getter's type; a setter's parameter must match the base declaration exactly)";
           if (confinesAccessor && overridden.declarer.decl != null) {
             refuseAccessor(
               isGet ? overridden.sig.ret : overridden.sig.params[0]!.type,
@@ -4836,14 +4879,15 @@ export function collectClassShapeInner(
         // a name is read and written where every undeclared property of a
         // class instance already lives, the instance's checked-dynamic view
         // (the member read's and write's own fallbacks; `(x as any).name`
-        // reaches the same property). The value type must be `any` or
-        // `unknown`: a read through any other type would have to convert an
-        // absent property into a type that has no `undefined`.
-        if (!indexSignatureReadsDynamic(lowerer, member)) {
+        // reaches the same property). A `number` key names the same
+        // properties (JavaScript keys are strings). A read through a typed
+        // value keeps the undefined of an absent property as the value type
+        // armed with undefined, as a record index-signature read does.
+        if (!indexSignatureLowers(lowerer, member)) {
           lowerer.unsupported(
             "SC1090",
             member,
-            "a class index signature other than '[key: string]: any' or '[key: string]: unknown' (a string key, and a value type that admits an absent property)",
+            "a class index signature whose key is not 'string' or 'number', or whose value type does not compile",
           );
         }
       } else if (!ts.isSemicolonClassElement(member)) {
@@ -5195,6 +5239,16 @@ export function collectClassShapeInner(
           ? declSymbolOf(lowerer, decl)
           : undefined;
       const instType = classSym ? lowerer.checker.getDeclaredTypeOfSymbol(classSym) : undefined;
+      // A runtime-provided base (`extends Array`, a builtin with no program
+      // declaration, so no ClassInfo base): an assignment to a name its
+      // instance type declares (`this.length = 0`) writes the inherited
+      // property, as in Node, instead of declaring an own field over it.
+      const builtinBaseTypes =
+        base === null && instType && (instType.flags & ts.TypeFlags.Object) !== 0
+          ? lowerer.checker.getBaseTypes(instType as ts.InterfaceType)
+          : [];
+      const builtinBaseDeclares = (name: string): boolean =>
+        builtinBaseTypes.some((t) => lowerer.checker.getPropertyOfType(t, name) !== undefined);
       // LATE-BOUND properties (the checker's `__@name@id` spelling —
       // `this[kLimit] = v` where kLimit is a unique symbol const) by
       // their KEY symbol: the scan below needs the checker's property
@@ -5239,7 +5293,7 @@ export function collectClassShapeInner(
             if (errorRooted && name === "cause") continue;
             // Later assignments to an already-declared field (own or
             // inherited) are writes, not declarations.
-            if (fields.has(name) || hasAccessor(name)) continue;
+            if (fields.has(name) || hasAccessor(name) || builtinBaseDeclares(name)) continue;
             if (methods.has(name) || lowerer.findMethodOn(base, name)) {
               // An own JS callable shadows its prototype declaration.
               // Keep the method in the prototype and store the assigned
@@ -5292,6 +5346,11 @@ export function collectClassShapeInner(
               }
             }
             type = inheritedJsFieldType(lowerer, decl, name, type);
+            // A JSDoc-typed field the program writes values outside the
+            // annotation to holds them (analyzeJsWidenedFields). The scan
+            // keys fields by their name, so ask for the property symbol the
+            // same way.
+            if (lowerer.jsFieldWidened(decl, name)) type = DYN;
             // super() can invoke a subclass setter or method before its
             // constructor assignments run. These slots start undefined.
             if (base && lowerer.dynConvertible(type) && !sealedPrefix?.created.has(name))
@@ -5416,6 +5475,7 @@ export function collectClassShapeInner(
         if (errorRooted && ts.symbolName(p) === "cause") continue;
         if (fields.has(ts.symbolName(p)) || methods.has(ts.symbolName(p))) continue;
         if (hasAccessor(ts.symbolName(p))) continue;
+        if (builtinBaseDeclares(ts.symbolName(p))) continue;
         if (
           base &&
           (base.fields.has(ts.symbolName(p)) || lowerer.findMethodOn(base, ts.symbolName(p)))
@@ -5785,6 +5845,48 @@ export function collectClassShapeInner(
       });
     }
   }
+}
+
+/** The ERASED instantiation of a generic class: every one of its own type
+ * parameters bound to the checked-dynamic value, the class JavaScript runs
+ * for any type arguments (erasedGenericInstance is the same for generic
+ * functions). A generic class taken as a value (`{ Box }`, `readonly
+ * CustomEvent = CustomEvent`) is this class, and so is its static side
+ * `typeof Box`: a `new` through the value that infers nothing binds an
+ * unconstrained parameter to `unknown` (or an `any` default), which is the
+ * same instantiation. */
+export function erasedGenericClassType(
+  lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
+): IrType | null {
+  const symbol = decl.name ? lowerer.checker.getSymbolAtLocation(decl.name) : undefined;
+  const declared = symbol ? lowerer.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
+  if (!declared) return null;
+  const own = new Set(
+    (decl.typeParameters?.nodes ?? []).map((tp) => lowerer.checker.getSymbolAtLocation(tp.name)),
+  );
+  const erased = genericClassInstanceType(lowerer, decl, declared, (type) =>
+    (type.flags & ts.TypeFlags.TypeParameter) !== 0 && own.has(type.getSymbol())
+      ? DYN
+      : lowerer.mapTypeOf(type),
+  );
+  if (erased?.kind === "object") lowerer.erasedGenericClasses.set(erased.className, decl);
+  return erased;
+}
+
+/** Every registered instantiation of the generic family whose erased
+ * instantiation is `className`, or null when `className` is not one. */
+export function erasedGenericFamily(lowerer: Lowerer, className: string): ClassInfo[] | null {
+  const decl = lowerer.erasedGenericClasses.get(className);
+  const family = decl ? lowerer.genericClassByDecl.get(decl) : undefined;
+  if (!family) return null;
+  const members: ClassInfo[] = [];
+  for (const instance of family.instances.values()) {
+    if (instance.poisoned) continue;
+    const info = instance.info ?? lowerer.classes.get(instance.name);
+    if (info) members.push(info);
+  }
+  return members;
 }
 
 /** mapType's generic-class hook: the INSTANTIATION a concrete type
@@ -6573,6 +6675,10 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: locOf(d) });
       temps.push({ localId: local.id, funcType: shape.funcType, replaces: shape.replaces });
     }
+    // 1b. The heritage is read after every decorator factory evaluated and
+    // before the class exists: a cycle class read there throws its
+    // ReferenceError at this point, exactly where Node throws it.
+    stmts.push(...lowerer.heritageChecksFor(info.decl, loc));
     // 2. Applications, reverse order, over the accumulating class value.
     let current: IrExpr = classValueRef(lowerer, info, info.decl);
     for (let i = temps.length - 1; i >= 0; i--) {
@@ -6954,9 +7060,18 @@ export function classValueRef(lowerer: Lowerer, info: ClassInfo, blame: ts.Node)
     lowerer.unsupported("SC1090", blame, "named self references inside function-local classes");
   }
   if (info.generic) {
-    // `typeof Box` — the uninstantiated FAMILY as a value: no thunk, no
-    // single constructor ABI. INSTANTIATIONS have class objects
-    // (`const B = Box<number>`, `new (v: number) => Box<number>` slots).
+    // `Box` as a value, the uninstantiated FAMILY: its erased
+    // instantiation's class object (erasedGenericClassType), the one class
+    // JavaScript holds whatever the type arguments. Instantiation
+    // expressions (`Box<number>`) keep their own instantiation.
+    const erased = info.decl ? erasedGenericClassType(lowerer, info.decl) : null;
+    const erasedInfo =
+      erased?.kind === "object"
+        ? (lowerer.classes.get(erased.className) ??
+          lowerer.flushDeferredClass(erased.className) ??
+          undefined)
+        : undefined;
+    if (erasedInfo && !erasedInfo.generic) return classValueRef(lowerer, erasedInfo, blame);
     lowerer.unsupported(
       "SC1090",
       blame,
@@ -7252,7 +7367,12 @@ export function lowerClassStaticRead(
       type: found.field.type,
       loc,
     };
-    return found.field.runtimeOptional || !ts.isPropertyAccessExpression(site)
+    // A widened field holds the value the program wrote, which the
+    // annotation does not describe; narrowing to the annotation would
+    // convert it back.
+    return found.field.runtimeOptional ||
+      found.field.widened ||
+      !ts.isPropertyAccessExpression(site)
       ? value
       : lowerer.maybeNarrow(value, site);
   }
@@ -12533,6 +12653,118 @@ function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
  * alias) resolves to the stdlib class symbol the named import binds, so the
  * construction takes the same lowering. A binding that holds the class
  * (`const U = url.URL`) follows its initializer to the same symbol. */
+/** `new RegExp(pattern, flags?)` and, with `what` naming the bare call form,
+ * `RegExp(pattern, flags?)`: Node runs the same constructor, so both lower to
+ * the same runtime construction (scr_regex.c's libregexp engine). The pattern
+ * compiles EAGERLY, so bad input throws Node's catchable SyntaxError at
+ * construction. Checked arguments retain native regexes and perform runtime
+ * coercion. */
+export function lowerRegExpConstruction(
+  lowerer: Lowerer,
+  at: ts.Node,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+  what: string,
+): IrExpr {
+  if (args.length > 2) {
+    lowerer.noLowering(`${what} with ${args.length} arguments`, at);
+  }
+  if (args.some(ts.isSpreadElement)) lowerer.noLowering(`${what} with spread arguments`, at);
+  return regExpFromValues(
+    lowerer,
+    args.map((arg) => lowerer.lowerExpr(arg)),
+    args,
+    loc,
+  );
+}
+
+/** The construction Node's RegExp builtin performs over already-lowered
+ * pattern/flags values, in that order. `nodes` names the source each value
+ * came from (a synthesized value leaves its slot undefined). */
+function regExpFromValues(
+  lowerer: Lowerer,
+  values: readonly (IrExpr | undefined)[],
+  nodes: readonly (ts.Expression | undefined)[],
+  loc: SrcLoc,
+): IrExpr {
+  // The statically spelled form below needs a string or undefined in
+  // each slot. Every other value — a `dyn` or `regex` argument, and
+  // any primitive or object the static form cannot spell, such as a
+  // boolean, number or null flags argument — reaches the runtime's
+  // JavaScript ToString, exactly the coercion the spec's RegExp
+  // builtin performs, so an invalid flags string throws Node's
+  // SyntaxError at construction instead of refusing the build.
+  const stringSlot = (value: IrExpr): boolean =>
+    value.type.kind === "string" ||
+    value.type.kind === "undefinedT" ||
+    (value.type.kind === "union" &&
+      (lowerer.unions
+        .get(value.type.unionId)
+        ?.arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT") ??
+        false));
+  if (
+    values.some(
+      (value) =>
+        value !== undefined &&
+        (value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value)),
+    )
+  ) {
+    const checked = [0, 1].map((index): IrExpr => {
+      const value = values[index];
+      const node = nodes[index];
+      if (value === undefined) return dynUndefinedExpr(loc);
+      return node === undefined
+        ? lowerer.coerceToExpected(value, DYN)
+        : lowerer.coerceInto(node, value, DYN);
+    });
+    return {
+      kind: "libCall",
+      fn: "regex.newChecked",
+      args: checked,
+      type: { kind: "regex" },
+      loc,
+    };
+  }
+  // Every slot reaches here as a string or a nullish cover of one: the
+  // checked path above took every other value.
+  const strArg = (index: number): IrExpr => {
+    const v = values[index];
+    const node = nodes[index];
+    const at = node === undefined ? loc : locOf(node);
+    if (v === undefined) return { kind: "strLit", value: "", type: STRING, loc };
+    const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+    if (v.type.kind === "undefinedT") {
+      if (v.kind === "unitLit") return empty;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: lowerer.coerceToExpected(v, DYN), loc: at }],
+        result: empty,
+        type: STRING,
+        loc,
+      };
+    }
+    if (v.type.kind === "union") {
+      return { kind: "nullish", left: v, right: empty, type: STRING, loc: at };
+    }
+    return v;
+  };
+  const pattern = strArg(0);
+  const flags = strArg(1);
+  // Node accepts the 'd' flag the engine does not have; a literal
+  // flags string refuses here like the literal regex form.
+  const flagNode = nodes[1];
+  if (flags.kind === "strLit" && flagNode !== undefined && flags.value.includes("d")) {
+    lowerer.unsupported("SC1120", flagNode, "the regex 'd' flag (match indices)");
+  }
+  return {
+    kind: "libCall",
+    fn: "regex.new",
+    args: [pattern, flags],
+    type: { kind: "regex" },
+    loc,
+  };
+}
+
 function stdlibUrlClassOf(
   lowerer: Lowerer,
   callee: ts.Expression,
@@ -12606,6 +12838,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
   }
+  // `new dgram.Socket(type | options[, listener])`: Node's own Socket
+  // constructor — the same native socket createSocket builds.
+  {
+    const socket = lowerDgramSocketNew(lowerer, expr);
+    if (socket) return socket;
+  }
   // `new dns.Resolver(options?)` / `new dns.promises.Resolver(options?)`:
   // the module's Resolver class builds a stub-resolver handle value.
   {
@@ -12620,6 +12858,19 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (urlClass === "URL") return lowerUrlNew(lowerer, expr);
     if (urlClass === "URLSearchParams") return lowerSearchParamsNew(lowerer, expr, loc);
   }
+  // `new util.TextEncoder()` / `new util.TextDecoder()`: the util module's
+  // members are the global classes of the same name in Node
+  // (global-values.ts GLOBAL_MEMBERS), so they take the global
+  // construction's lowering.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const member = lowerer.builtinMemberOf(expr.expression);
+    if (
+      member !== null &&
+      isGlobalMember(member) &&
+      (member.member === "TextEncoder" || member.member === "TextDecoder")
+    )
+      return lowerTextCodecNew(lowerer, expr, member.member);
+  }
   const wrapper = lowerWrapperNew(lowerer, expr);
   if (wrapper) return wrapper;
   const abstractIterator = lowerIteratorNew(lowerer, expr);
@@ -12630,7 +12881,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
   if (readlineUi) return readlineUi;
-  const channel = lowerMessageChannelNew(lowerer, expr) ?? lowerBroadcastChannelNew(lowerer, expr);
+  const channel =
+    lowerMessageChannelNew(lowerer, expr) ??
+    lowerMessagePortNew(lowerer, expr) ??
+    lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
@@ -12797,6 +13051,19 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       };
     }
     return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
+  }
+  // `new XRWebGLLayer(...)` where the callee names a global only a
+  // types-only package declares: Node throws the ReferenceError at the
+  // callee read, before any argument runs (the ambient-namespace stance,
+  // one identifier deep).
+  if (ts.isIdentifier(expr.expression)) {
+    if (ambientTypesOnlyGlobalSymbolOf(lowerer, expr.expression) !== null) {
+      // The read throws before the construction runs; its value is typed for
+      // the slot it lands in, and the checked-dynamic value converts into a
+      // declared type where one names it (the conversion never runs).
+      const t = ambientUndefReadType(lowerer, expr) ?? DYN;
+      return nsUndefRead(lowerer, expr.expression.text, expr, t);
+    }
   }
   // A package declaration without a compiled constructor cannot provide
   // a runtime value. Report the package at the construction site.
@@ -12966,6 +13233,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // `new tls.TLSSocket(socket, options)` — the server-mode wrap of an open
   // socket (lower-server).
   {
+    const tlsServer = lowerTlsServerNew(lowerer, expr);
+    if (tlsServer !== null) return tlsServer;
     const tlsSocket = lowerTlsSocketNew(lowerer, expr);
     if (tlsSocket) return tlsSocket;
   }
@@ -13219,81 +13488,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // so bad input throws Node's catchable SyntaxError at construction.
     // Checked arguments retain native regexes and perform runtime coercion.
     if (symbol && ts.symbolName(symbol) === "RegExp" && lowerer.isStdlibSymbol(symbol)) {
-      const args = expr.arguments?.nodes ?? [];
-      if (args.length > 2) {
-        lowerer.noLowering(`new RegExp with ${args.length} arguments`, expr);
-      }
-      if (args.some(ts.isSpreadElement))
-        lowerer.noLowering("new RegExp with spread arguments", expr);
-      const values = args.map((arg) => lowerer.lowerExpr(arg));
-      // The statically spelled form below needs a string or undefined in
-      // each slot. Every other value — a `dyn` or `regex` argument, and
-      // any primitive or object the static form cannot spell, such as a
-      // boolean, number or null flags argument — reaches the runtime's
-      // JavaScript ToString, exactly the coercion the spec's RegExp
-      // builtin performs, so an invalid flags string throws Node's
-      // SyntaxError at construction instead of refusing the build.
-      const stringSlot = (value: IrExpr): boolean =>
-        value.type.kind === "string" ||
-        value.type.kind === "undefinedT" ||
-        (value.type.kind === "union" &&
-          (lowerer.unions
-            .get(value.type.unionId)
-            ?.arms.every((arm) => arm.kind === "string" || arm.kind === "undefinedT") ??
-            false));
-      if (
-        values.some(
-          (value) => value.type.kind === "dyn" || value.type.kind === "regex" || !stringSlot(value),
-        )
-      ) {
-        const checked = [0, 1].map((index): IrExpr =>
-          values[index]
-            ? lowerer.coerceInto(args[index]!, values[index]!, DYN)
-            : dynUndefinedExpr(loc),
-        );
-        return {
-          kind: "libCall",
-          fn: "regex.newChecked",
-          args: checked,
-          type: { kind: "regex" },
-          loc,
-        };
-      }
-      // Every slot reaches here as a string or a nullish cover of one: the
-      // checked path above took every other value.
-      const strArg = (a: ts.Expression | undefined): IrExpr => {
-        if (!a) return { kind: "strLit", value: "", type: STRING, loc };
-        const v = values[args.indexOf(a)]!;
-        const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
-        if (v.type.kind === "undefinedT") {
-          if (v.kind === "unitLit") return empty;
-          return {
-            kind: "seqExpr",
-            stmts: [{ kind: "exprStmt", expr: lowerer.coerceToExpected(v, DYN), loc: locOf(a) }],
-            result: empty,
-            type: STRING,
-            loc,
-          };
-        }
-        if (v.type.kind === "union") {
-          return { kind: "nullish", left: v, right: empty, type: STRING, loc: locOf(a) };
-        }
-        return v;
-      };
-      const pattern = strArg(args[0]);
-      const flags = strArg(args[1]);
-      // Node accepts the 'd' flag the engine does not have; a literal
-      // flags string refuses here like the literal regex form.
-      if (flags.kind === "strLit" && args[1] !== undefined && flags.value.includes("d")) {
-        lowerer.unsupported("SC1120", args[1], "the regex 'd' flag (match indices)");
-      }
-      return {
-        kind: "libCall",
-        fn: "regex.new",
-        args: [pattern, flags],
-        type: { kind: "regex" },
-        loc,
-      };
+      return lowerRegExpConstruction(lowerer, expr, expr.arguments?.nodes ?? [], loc, "new RegExp");
     }
     if (symbol && ts.symbolName(symbol) === "URL" && lowerer.isStdlibSymbol(symbol)) {
       return lowerUrlNew(lowerer, expr);
@@ -13854,6 +14049,17 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         loc,
       };
     }
+    // `new AsyncResource(type[, opts])` (node:async_hooks): an f64 handle
+    // into the runtime's resource registry — the ambient class's constant
+    // options checks (type string, triggerAsyncId, requireManualDestroy)
+    // run in the runtime, which reads the options object as JavaScript does.
+    if (
+      symbol !== null &&
+      ts.symbolName(symbol) === "AsyncResource" &&
+      lowerer.isStdlibSymbol(symbol)
+    ) {
+      return lowerAsyncResourceConstruction(lowerer, expr, loc);
+    }
     // `new Promise<T>((resolve) => ...)`: the ambient Promise constructor.
     if (symbol !== null && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)) {
       const type = lowerer.irTypeOf(expr);
@@ -13972,7 +14178,16 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       symbol != null &&
       BIGINT_BYTES_NAMES.has(ts.symbolName(symbol)) &&
       isJsSourceFile(ts.getSourceFileOfNode(expr));
-    if (!bigintBytesCtor && lowerer.isStdlibSymbol(symbol ?? undefined)) {
+    // A global class whose value constructs in a JavaScript source
+    // (MessageChannel; node-value-reads.ts) is not fenced here: the callee
+    // reads as that constructor and the checked-dynamic construction below
+    // runs it.
+    const constructibleGlobal =
+      ts.isIdentifier(identifier) &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      isConstructibleGlobalClass(identifier.text) &&
+      lowerer.isStdlibGlobal(identifier, identifier.text);
+    if (!bigintBytesCtor && !constructibleGlobal && lowerer.isStdlibSymbol(symbol ?? undefined)) {
       const ctorHints: Record<string, string | undefined> = {
         RegExp: "use a regex literal (/pattern/flags) — constructed regexes have no lowering",
         String:

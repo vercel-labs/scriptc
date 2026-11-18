@@ -809,10 +809,13 @@ function matchVersion(
     used.add(group.check.receiver);
     for (const { node, access } of group.nodes) {
       bounds.add(node);
-      // A descending index is at its largest at counter 0.
+      // A descending index is at its largest at counter 0. A bound derived
+      // from a scaled counter (`2 * i < k`) also needs the counter itself to
+      // be non-negative: the guard then requires that at the loop's entry.
       const descending = access.base !== undefined;
       const min = descending ? 0 : 0 - access.offset;
-      counterMins.set(access.counter, Math.max(counterMins.get(access.counter) ?? -SAFE, min));
+      const required = access.scaled === true ? Math.max(0, min) : min;
+      counterMins.set(access.counter, Math.max(counterMins.get(access.counter) ?? -SAFE, required));
       narrow(access.ref, { min: descending ? 0 : -MAX_OFFSET, max: SAFE });
       if (access.index !== access.ref) narrow(access.index, { min: 0, max: SAFE });
     }
@@ -935,6 +938,9 @@ interface WhileAccess {
   offset: number;
   /** The invariant minuend of a descending index (`base - counter`). */
   base?: IrExpr;
+  /** The bound came from a scaled counter (`2 * i < k`), whose implication
+   * also needs the counter to be non-negative. */
+  scaled?: boolean;
 }
 
 interface WhileCounter {
@@ -1039,7 +1045,7 @@ function findWhileCounterAccesses(
   const counter = (id: string): boolean =>
     steps.has(id) && !refused.has(id) && host.counterLocal(id);
 
-  type Fact = { bound: IrExpr; key: string; adj: number };
+  type Fact = { bound: IrExpr; key: string; adj: number; scaled?: true };
   type Clean = ReadonlyMap<string, Fact>;
   // The bounds a condition puts on counters while it holds.
   const facts = (cond: IrExpr, into: Map<string, Fact>): void => {
@@ -1052,12 +1058,30 @@ function findWhileCounterAccesses(
     if (cond.kind !== "bin") return;
     const below = cond.op === "<" || cond.op === "<=",
       above = cond.op === ">" || cond.op === ">=";
-    const c = below ? cond.left : above ? cond.right : null,
+    const operand = below ? cond.left : above ? cond.right : null,
       bound = below ? cond.right : cond.left;
+    // A counter multiplied by a positive integer is bounded by the same
+    // value: while the guard holds, `2*i < k` keeps i below k. The version's
+    // guard requires the counter's entry value to be at least the access
+    // offsets (0 here), and a counter only steps in its recorded direction,
+    // so the counter is non-negative in the body and the implication holds.
+    const scaled = (e: IrExpr): IrExpr | null => {
+      if (e.kind !== "bin" || e.op !== "*") return null;
+      const positive = (x: IrExpr): boolean =>
+        x.kind === "numLit" && Number.isSafeInteger(x.value) && x.value >= 1;
+      return positive(e.left) ? e.right : positive(e.right) ? e.left : null;
+    };
+    const direct = operand?.kind === "varRef" ? operand : null;
+    const c = direct ?? (operand === null ? null : scaled(operand));
     if (c?.kind !== "varRef" || !counter(c.localId) || into.has(c.localId)) return;
     const key = host.boundKey(bound);
     if (key === null) return;
-    into.set(c.localId, { bound, key, adj: cond.op === "<=" || cond.op === ">=" ? 1 : 0 });
+    into.set(c.localId, {
+      bound,
+      key,
+      adj: cond.op === "<=" || cond.op === ">=" ? 1 : 0,
+      ...(direct === null ? { scaled: true } : {}),
+    });
   };
   // The facts that hold after either of two paths.
   const meet = (a: Clean | null, b: Clean | null): Clean | null => {

@@ -8360,21 +8360,35 @@ static bool scr_spawn_kill_signal(const ScrDyn *value, int *signo) {
 
 /* emit('error', err) on a running child (spawn's abort path). Node's
  * emit throws when nothing listens, and the runtime's event dispatch
- * reports that on a next tick, as Node's EventTarget does. */
+ * reports that on a next tick, as Node's EventTarget does. Like Node's
+ * emit, the call hands out a snapshot of the listeners registered when it
+ * began: one that removes itself or a sibling from inside the emit still
+ * gets its call, and a listener added now belongs to the next emit. Each
+ * entry is retained for the snapshot, so removing it from the live
+ * registry cannot end its lifetime before the call returns. */
 static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
   if (scr_exc_pending()) return;
-  if (c->n_err == 0) {
+  size_t held = c->n_err;
+  if (held == 0) {
     scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
                   scr_error_trace_arg());
     return;
   }
+  ScrChildErrEntry *snapshot = malloc(held * sizeof *snapshot);
+  if (snapshot == NULL) scr_child_oom();
+  for (size_t i = 0; i < held; i++) {
+    snapshot[i].cb = scr_closure_retain(c->err_cbs[i].cb);
+    snapshot[i].fn = c->err_cbs[i].fn;
+  }
   ScrError *outer = scr_event_error_payload;
   scr_event_error_payload = err;
-  for (size_t i = 0; i < c->n_err; i++) {
-    c->err_cbs[i].fn(c->err_cbs[i].cb, err->message);
+  for (size_t i = 0; i < held; i++) {
+    snapshot[i].fn(snapshot[i].cb, err->message);
     if (scr_exc_pending()) break;
   }
   scr_event_error_payload = outer;
+  for (size_t i = 0; i < held; i++) scr_closure_release(snapshot[i].cb);
+  free(snapshot);
 }
 
 /* abortChildProcess: child.kill(killSignal), then 'error' with Node's

@@ -117,6 +117,10 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.sessionDestroy": "scr_http2_session_destroy",
     "http2.sessionSettingsDynCb": "scr_http2_session_settings_dyncb",
     "http2.sessionOnSettingsDyn": "scr_http2_session_on_settings_dyn",
+    "http2.streamRespondWait": "scr_http2_stream_respond_wait",
+    "http2.streamSendTrailers": "scr_http2_stream_send_trailers",
+    "http2.streamAdditionalHeaders": "scr_http2_stream_additional_headers",
+    "http2.responseWriteInformation": "scr_http_h2_res_write_information",
     "http2.sessionPingPayload": "scr_http2_session_ping",
     "http2.sessionConnecting": "scr_http2_session_connecting",
     "http2.getPackedSettings": "scr_http2_get_packed_settings",
@@ -292,7 +296,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.streamOnError":
       runtime = "scr_http2_stream_on_error";
-      thunk = arity === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
+      thunk = arity === 0 ? "scr_child_err_thunk0" : "scr_http2_stream_err_thunk";
       break;
     case "http2.sessionOnSettings0":
       runtime = "scr_http2_session_on_settings";
@@ -327,6 +331,19 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.sessionOnClose":
       runtime = "scr_http2_session_on_close";
+      break;
+    case "http2.streamOnTrailers":
+      // The header-record adapter is already the runtime ABI (pairs, flags).
+      runtime = "scr_http2_stream_on_trailers";
+      break;
+    case "http2.streamOnHeaders":
+      runtime = "scr_http2_stream_on_headers";
+      break;
+    case "http2.streamOnWantTrailers":
+      runtime = "scr_http2_stream_on_want_trailers";
+      break;
+    case "http2.streamOnContinue":
+      runtime = "scr_http2_stream_on_continue";
       break;
     case "http2.streamOnEnd":
       runtime = "scr_http2_stream_on_end";

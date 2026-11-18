@@ -1,4 +1,7 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { withoutParentheses } from "../../outer-expressions.js";
+import { reprototypedGuard, reprototypedReceiver } from "../reprototyped-reads.js";
+import { mayReplacePrototype } from "../class-method-mutations.js";
 import { consoleHasKey, isConsoleExpression } from "../coercions/console-records.js";
 import { lowerIteratorInstanceOf } from "../iterator-prototype.js";
 import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
@@ -37,7 +40,8 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
-import { lowerSocketInstanceOf } from "../lower-server.js";
+import { lowerSocketInstanceOf, lowerTlsServerInstanceOf } from "../lower-server.js";
+import { lowerDgramSocketInstanceOf } from "../lower-dgram.js";
 import { lowerDnsResolverInstanceOf } from "../lower-dgram.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
@@ -48,17 +52,20 @@ import {
 } from "../builtin-namespace-probe.js";
 import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
+import { lowerAbortSignalInstanceOf } from "../builtins/abort-signal.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { lowerMimeInstanceof } from "../builtins/mime.js";
+import { lowerSqliteInstanceof } from "../builtins/sqlite.js";
 import { lowerPerfInstanceof } from "../builtins/performance.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { lowerGlobalObjectValue } from "../lower-global-value.js";
+import { MUTABLE_BUFFER_MEMBERS } from "../buffers.js";
 import { stringPropertyKey } from "../lower-exprs.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
 import { inOperatorTypeError, isPrimitiveValueType, throwAfterEach } from "../primitive-throws.js";
@@ -448,6 +455,10 @@ function hostGlobalInstanceOfAnswer(
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
   const iteratorTest = lowerIteratorInstanceOf(lowerer, expr, loc);
   if (iteratorTest !== null) return iteratorTest;
+  // `value instanceof AbortSignal`: the runtime's signal handles are the
+  // instances, and the handle's tag answers the test (abort-signal.ts).
+  const abortSignalTest = lowerAbortSignalInstanceOf(lowerer, expr);
+  if (abortSignalTest !== null) return abortSignalTest;
   // A listed Node global's value is a constructor native code never created
   // an instance from, so `x instanceof X` is false for every value — an
   // ordinary function's [[Prototype]] included, which the generic walk
@@ -477,10 +488,18 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // h2 compat 'connect' narrowing (lower-server.ts): a union tag test.
   const sockTest = lowerSocketInstanceOf(lowerer, expr, loc);
   if (sockTest !== null) return sockTest;
+  // `x instanceof dgram.Socket`: the native socket handle (an always-true
+  // answer for a statically-typed socket, the handle tag for an untyped
+  // value).
+  const dgramTest = lowerDgramSocketInstanceOf(lowerer, expr, loc);
+  if (dgramTest !== null) return dgramTest;
   // `x instanceof dns.Resolver` / `dns.promises.Resolver`: the stub
   // resolver's own handle tag (scr_dns_resolve.c).
   const resolverTest = lowerDnsResolverInstanceOf(lowerer, expr, loc);
   if (resolverTest !== null) return resolverTest;
+  // `x instanceof tls.Server`: the server handle's TLS marker.
+  const tlsServerTest = lowerTlsServerInstanceOf(lowerer, expr, loc);
+  if (tlsServerTest !== null) return tlsServerTest;
   const rightClass = builtinClassRefOf(lowerer, expr.right);
   if (rightClass?.kind === "zlib") return lowerZlibInstanceOf(lowerer, expr, rightClass.mode, loc);
 
@@ -636,9 +655,13 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     return { kind: "libCall", fn: "dyn.dataViewIs", args: [value], type: BOOL, loc };
   }
   {
-    const eventKind = ["Event", "CustomEvent", "EventTarget"].findIndex((name) =>
-      lowerer.isStdlibGlobal(expr.right, name),
-    );
+    const eventKind = [
+      "Event",
+      "CustomEvent",
+      "EventTarget",
+      "MessageEvent",
+      "CloseEvent",
+    ].findIndex((name) => lowerer.isStdlibGlobal(expr.right, name));
     if (eventKind >= 0) {
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       const kind: IrExpr = { kind: "numLit", value: eventKind, type: F64, loc };
@@ -656,6 +679,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (netAddress) return netAddress;
     const mime = lowerMimeInstanceof(lowerer, expr);
     if (mime) return mime;
+    const sqlite = lowerSqliteInstanceof(lowerer, expr);
+    if (sqlite) return sqlite;
     const perfClass = lowerPerfInstanceof(lowerer, expr);
     if (perfClass) return perfClass;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
@@ -1337,6 +1362,36 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   ) {
     return classInstanceOf(lowerer, left, target, loc);
   }
+  // An instance of a class a setPrototypeOf call may reprototype answers
+  // through its prototype chain, which the class test of the checked view
+  // reads (and answers natively for an instance whose prototype is its
+  // class's).
+  if (
+    left.type.kind === "object" &&
+    !target.def.runtime &&
+    !target.builtinError &&
+    !target.builtinEmitter &&
+    !target.builtinStream &&
+    !target.localClass
+  ) {
+    const lhs = lowerer.classes.get(left.type.className);
+    if (lhs && mayReplacePrototype(lowerer, lhs))
+      return classInstanceOf(lowerer, lowerer.coerceToExpected(left, DYN), target, loc);
+  }
+  if (
+    left.type.kind === "union" &&
+    !target.def.runtime &&
+    !target.builtinError &&
+    !target.builtinEmitter &&
+    !target.builtinStream &&
+    !target.localClass &&
+    lowerer.dynConvertible(left.type) &&
+    lowerer.unions.get(left.type.unionId)?.arms.some((arm) => {
+      const armClass = arm.kind === "object" ? lowerer.classes.get(arm.className) : undefined;
+      return armClass !== undefined && mayReplacePrototype(lowerer, armClass);
+    })
+  )
+    return classInstanceOf(lowerer, lowerer.coerceToExpected(left, DYN), target, loc);
   if (left.type.kind === "dyn" && target.def.name === "%Error" && !lowerer.errorPrototypeValues) {
     return { kind: "dynTest", test: "error", value: left, type: BOOL, loc };
   }
@@ -1968,7 +2023,7 @@ function lowerPrivateIn(
     }
     const typedRefIs = (className: string): IrExpr => ({
       kind: "libCall",
-      fn: "dyn.typedRefIs",
+      fn: "dyn.typedRefBrandIs",
       args: [
         recv,
         { kind: "strLit", value: typeKey({ kind: "object", className }), type: STRING, loc },
@@ -2660,6 +2715,68 @@ export function lowerInExpression(
   // NAME, not a value.
   if (ts.isPrivateIdentifier(expr.left)) {
     return lowerPrivateIn(lowerer, expr, expr.left, loc);
+  }
+  // A mutable-buffer member name on the left of `in` in a JavaScript source
+  // is the mutableBuffers fact as well: `"transfer" in ab` asks for the
+  // buffer classes' method values, which only the fact's object-model build
+  // models (`"resize" in ab` must not answer false). Same name match and
+  // same bargain as a read of the member: a false positive costs only the
+  // invariant metadata of that one program.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const probe = lowerer.foldedStringKeyOf(expr.left);
+    if (probe !== null && MUTABLE_BUFFER_MEMBERS.has(probe)) lowerer.buffersMutable = true;
+  }
+  // `key in value` on an instance whose prototype may have been replaced
+  // (reprototyped-reads.ts). The key is evaluated first: one that can run
+  // code is held in a local, and the dynamic `in` answers for every
+  // instance; a literal or a name is read where the guard needs it.
+  const keyNode = withoutParentheses(expr.left);
+  const keyType = lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind;
+  if (keyType === "string" && !ts.isStringLiteralLike(keyNode) && !ts.isIdentifier(keyNode)) {
+    const receiver = reprototypedReceiver(lowerer, expr.right);
+    if (receiver !== null) {
+      const key = lowerer.declareHiddenLocal("%inKey", STRING);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: key.id,
+            init: lowerer.lowerExprExpecting(expr.left, STRING),
+            loc,
+          },
+        ],
+        result: {
+          kind: "libCall",
+          fn: "dyn.in",
+          args: [
+            lowerer.coerceToExpected(lowerer.lowerExpr(receiver), DYN),
+            varRef(key.id, STRING, loc),
+          ],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+  }
+  if (keyType === "string") {
+    const answer = reprototypedGuard(
+      lowerer,
+      expr,
+      expr.right,
+      loc,
+      (boxed) => ({
+        kind: "libCall",
+        fn: "dyn.in",
+        args: [boxed, lowerer.lowerExprExpecting(expr.left, STRING)],
+        type: BOOL,
+        loc,
+      }),
+      () => lowerInExpression(lowerer, expr, loc),
+    );
+    if (answer !== null) return answer;
   }
   {
     const inGlobal = lowerInGlobalObject(lowerer, expr.left, expr.right, loc);

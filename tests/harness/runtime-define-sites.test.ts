@@ -164,3 +164,13 @@ test("a stored MessageChannel is constructed once per construction", () => {
   const branch = text.slice(start, end);
   expect(branch.match(/dyn_worker_channel\(\)/g)?.length).toBe(1);
 });
+
+test("a MessageChannel with no worker build reports the unsupported-construction error", () => {
+  // Returning without a value made every stored construction through the dynamic path a silent
+  // NULL; without a worker build it must raise what any unbuilt constructor raises.
+  const text = readFileSync(join(sourceDir, "scr_dyn_invoke.c"), "utf8");
+  const start = text.indexOf("dyn_s50) == 0");
+  const end = text.indexOf("dyn_s52) == 0");
+  const branch = text.slice(start, end);
+  expect(branch).toContain("dyn_unsupported_constructor(name, result)");
+});

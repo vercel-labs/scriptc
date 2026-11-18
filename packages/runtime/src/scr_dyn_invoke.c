@@ -2655,6 +2655,16 @@ static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, si
  * EventTarget or DOMException builds what the `new` expression builds. The
  * other constructors, Object over a primitive (a wrapper object), and a
  * class whose implementing unit the program did not link, are fenced. */
+/* The error a constructor the runtime has no build for raises. MessageChannel takes it when no
+ * worker build supplied the channel, as it did before the branch stopped probing the symbol. */
+static void dyn_unsupported_constructor(const char *name, ScrDyn **result) {
+  char message[128];
+  int length = snprintf(message, sizeof message, dyn_s33, name,
+                        strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
+  *result = NULL;
+}
+
 static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) {
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != dyn_global_ctor_call) return false;
   const char *name = callee->v.fn.clo->fn;
@@ -2677,9 +2687,11 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
   else if (strcmp(name, dyn_s49) == 0) *result = scr_weak_ref_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s50) == 0) {
     /* One construction: a probe call in the condition built a second channel, and the first
-     * was never released. */
+     * was never released. Without a worker build there is no channel, and the construction is
+     * unsupported like any other the runtime has no build for. */
     ScrDyn *channel = dyn_worker_channel();
     if (channel != NULL) *result = channel;
+    else dyn_unsupported_constructor(name, result);
   } else if (strcmp(name, dyn_s52) == 0 && scr_fetch_abort_controller_new != NULL) {
     *result = scr_fetch_abort_controller_new();
   } else if (strcmp(name, dyn_s53) == 0 && scr_event_new != NULL) {
@@ -2695,10 +2707,7 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
       scr_error_release(error);
     }
   } else {
-    char message[128];
-    int length = snprintf(message, sizeof message, dyn_s33, name, strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
-    *result = NULL;
+    dyn_unsupported_constructor(name, result);
   }
   return true;
 }

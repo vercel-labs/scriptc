@@ -244,6 +244,7 @@ import {
   fencePerfEntryKeyWalk,
   isPerfEntryType,
   lowerHistogramMethodCall,
+  lowerRecordableHistogramMethodCall,
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
@@ -2183,6 +2184,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // process-start-anchored monotonic clock.
       lowerPerfHooksCall(lowerer, expr, expr.expression) ??
       lowerHistogramMethodCall(lowerer, expr, expr.expression) ??
+      lowerRecordableHistogramMethodCall(lowerer, expr, expr.expression) ??
       // The composed crypto pattern (randomBytes(n).toString(enc))
       // — its receiver is a Buffer-typed CALL no other lowering claims.
       lowerer.lowerCryptoComposedCall(expr, expr.expression) ??

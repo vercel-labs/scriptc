@@ -589,6 +589,7 @@ describe("library profile fences", () => {
     expect(r.profile.fences[2]!.surfaces.map((s) => s.id)).toEqual([
       "node-builtin.perf_hooks.PerformanceMark",
       "node-builtin.perf_hooks.PerformanceObserver",
+      "node-builtin.perf_hooks.createHistogram",
       "node-builtin.perf_hooks.monitorEventLoopDelay",
       "node-builtin.perf_hooks.performance.clearMarks",
       "node-builtin.perf_hooks.performance.clearMeasures",

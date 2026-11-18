@@ -3234,6 +3234,33 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       ],
       note: "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported",
     },
+    {
+      id: "node-builtin.perf_hooks.createHistogram",
+      kind: "node-builtin",
+      name: "perf_hooks.createHistogram",
+      fns: [
+        "perf.histoNew",
+        "perf.histoRecord",
+        "perf.histoRecordBig",
+        "perf.histoRecordCorrected",
+        "perf.histoRecordDelta",
+        "perf.histoReset",
+        "perf.histoAdd",
+        "perf.histoSubtract",
+        "perf.histoStat",
+        "perf.histoStatBig",
+        "perf.histoPercentile",
+        "perf.histoPercentileBig",
+        "perf.histoCountAt",
+        "perf.histoCdf",
+        "perf.histoCcdf",
+        "perf.histoPercentilesCount",
+        "perf.histoPercentilesKey",
+        "perf.histoPercentilesValue",
+        "perf.histoDispose",
+      ],
+      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf and the percentiles Map",
+    },
     // ── the process global's ambient reads and authority calls
     // (lowerProcessProperty/lowerProcessMethodCall — process is a
     // provenance-checked global here, not an importable module).

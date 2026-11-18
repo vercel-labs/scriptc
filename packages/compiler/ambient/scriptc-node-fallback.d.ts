@@ -1991,12 +1991,21 @@ declare module "node:perf_hooks" {
   }
   export interface Histogram {
     readonly count: number;
+    readonly countBigInt: bigint;
     readonly exceeds: number;
+    readonly exceedsBigInt: bigint;
     readonly max: number;
+    readonly maxBigInt: bigint;
     readonly mean: number;
     readonly min: number;
+    readonly minBigInt: bigint;
+    readonly percentiles: Map<number, number>;
     readonly stddev: number;
     percentile(percentile: number): number;
+    percentileBigInt(percentile: number): bigint;
+    countAt(value: number): number;
+    cdf(value: number): number;
+    ccdf(value: number): number;
     reset(): void;
   }
   export interface IntervalHistogram extends Histogram {
@@ -2004,6 +2013,22 @@ declare module "node:perf_hooks" {
     disable(): boolean;
   }
   export function monitorEventLoopDelay(options?: EventLoopMonitorOptions): IntervalHistogram;
+  /* createHistogram's options and the RecordableHistogram its histograms
+   * add recording to (record, recordDelta, recordCorrected, add and
+   * subtract); the readings are the Histogram interface's. */
+  export interface CreateHistogramOptions {
+    lowest?: number | bigint | undefined;
+    highest?: number | bigint | undefined;
+    figures?: number | undefined;
+  }
+  export interface RecordableHistogram extends Histogram {
+    record(val: number | bigint): void;
+    recordDelta(): void;
+    recordCorrected(val: number | bigint, expectedInterval: number | bigint): void;
+    add(other: RecordableHistogram): void;
+    subtract(other: RecordableHistogram): void;
+  }
+  export function createHistogram(options?: CreateHistogramOptions): RecordableHistogram;
 }
 declare module "perf_hooks" {
   export * from "node:perf_hooks";

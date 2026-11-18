@@ -80566,6 +80566,10 @@
           "tests/corpus/5214-perf-entry-inspect.ts",
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/compat-js-value-reads-require.cjs",
           "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/net-paused-socket-exit.cjs",
@@ -82495,6 +82499,10 @@
         "status": "partial",
         "evidence": "compiler-feature:perf_hooks.Histogram",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -82519,8 +82527,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.ccdf",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82542,8 +82556,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.cdf",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82611,8 +82631,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.countAt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82823,8 +82849,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.percentileBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82966,9 +82998,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.count",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -82993,8 +83029,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.countBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83016,9 +83060,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.exceeds",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83043,8 +83091,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.exceedsBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83158,9 +83214,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.max",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83185,8 +83245,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.maxBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83208,9 +83276,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.mean",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83235,9 +83307,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.min",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83262,8 +83338,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.minBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83285,8 +83369,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.percentiles",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83354,9 +83446,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.stddev",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83511,8 +83607,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.RecordableHistogram extends Histogram",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83534,8 +83636,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.add",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83557,8 +83665,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.record",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83580,8 +83694,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.recordDelta",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83603,8 +83723,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.recordCorrected",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83626,8 +83752,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.subtract",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83741,8 +83873,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.perf_hooks.createHistogram",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },

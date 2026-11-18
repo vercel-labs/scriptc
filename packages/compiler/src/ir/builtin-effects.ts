@@ -749,6 +749,15 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
+  // createHistogram's options and RecordableHistogram's record forms: Node's
+  // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
+  "perf.histoNew",
+  "perf.histoRecord",
+  "perf.histoRecordBig",
+  "perf.histoRecordCorrected",
+  // add/subtract reject a non-RecordableHistogram argument.
+  "perf.histoAdd",
+  "perf.histoSubtract",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",

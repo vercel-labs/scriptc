@@ -2314,7 +2314,7 @@ const RUNTIME_FEATURE_RULES = {
    * monitorEventLoopDelay): scr_perf_loop.c. */
   perfLoop: rule({
     fns: ["perf.idleTime", "worker.performance"],
-    prefixes: ["perf.loop", "perf.eld"],
+    prefixes: ["perf.loop", "perf.eld", "perf.histo"],
   }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */

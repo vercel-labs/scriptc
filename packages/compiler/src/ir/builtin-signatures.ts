@@ -766,12 +766,43 @@ function buildLibFnSignatures() {
     "perf.loopExit": { argTypes: [], result: F64 },
     "perf.loopCount": { argTypes: [], result: F64 },
     "perf.idleTime": { argTypes: [], result: F64 },
-    "perf.eldNew": { argTypes: [F64], result: F64 },
-    "perf.eldEnable": { argTypes: [F64], result: BOOL },
-    "perf.eldDisable": { argTypes: [F64], result: BOOL },
-    "perf.eldReset": { argTypes: [F64], result: VOID },
-    "perf.eldPercentile": { argTypes: [F64, F64], result: F64 },
-    "perf.eldStat": { argTypes: [F64, F64], result: F64 },
+    "perf.eldNew": { argTypes: [F64], result: DYN },
+    "perf.eldEnable": { argTypes: [DYN], result: BOOL },
+    "perf.eldDisable": { argTypes: [DYN], result: BOOL },
+    "perf.eldReset": { argTypes: [DYN], result: VOID },
+    "perf.eldPercentile": { argTypes: [DYN, F64], result: F64 },
+    "perf.eldStat": { argTypes: [DYN, F64], result: F64 },
+    /** perf_hooks createHistogram (scr_perf_loop.c): a negative handle into
+     * a refcounted checked-dynamic runtime object (its release frees the
+     * buckets); the base Histogram interface accepts either this object or
+     * an event-loop histogram, and the runtime dispatches on the handle.
+     * histoNew(options dyn, the dyn undefined
+     * when absent) validates the options as Node does (MAY THROW);
+     * histoRecord/RecordCorrected validate an integer >= 1 (MAY THROW) and
+     * histoRecordBig takes the bigint form (MAY THROW for an out-of-range
+     * bigint); histoStat(which) reads 0 count, 1 min, 2 max, 3 mean,
+     * 4 stddev, 5 exceeds and histoStatBig answers the integer readings as a
+     * bigint. percentile expects Node's validated (0, 100]. The percentiles
+     * getter's Map is built from the view histoPercentilesCount rebuilds. */
+    "perf.histoNew": { argTypes: [DYN], result: DYN },
+    "perf.histoRecord": { argTypes: [DYN, F64], result: VOID },
+    "perf.histoRecordBig": { argTypes: [DYN, BIGINT_T], result: VOID },
+    "perf.histoRecordCorrected": { argTypes: [DYN, F64, F64], result: VOID },
+    "perf.histoRecordDelta": { argTypes: [DYN], result: VOID },
+    "perf.histoReset": { argTypes: [DYN], result: VOID },
+    "perf.histoAdd": { argTypes: [DYN, DYN], result: VOID },
+    "perf.histoSubtract": { argTypes: [DYN, DYN], result: VOID },
+    "perf.histoStat": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoStatBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoPercentile": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentileBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoCountAt": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoCdf": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoCcdf": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentilesCount": { argTypes: [DYN], result: F64 },
+    "perf.histoPercentilesKey": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentilesValue": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoDispose": { argTypes: [DYN], result: VOID },
     /** process.memoryUsage(): memoryUsageTake samples the resident set and
      * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
      * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2

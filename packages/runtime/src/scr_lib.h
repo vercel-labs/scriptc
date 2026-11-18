@@ -6,6 +6,8 @@
 
 #include "scr_exception.h"
 
+typedef struct ScrBigInt ScrBigInt;
+
 /* ── standard library: process + node:fs (scr_lib.c) ─────────────────
  * Called once at the top of main, right after scr_init: stashes argc/argv
  * (the interned process.argv array is built lazily on first read) and
@@ -260,12 +262,40 @@ double scr_perf_node_loop_start(void);
 double scr_perf_loop_exit(void);
 double scr_perf_loop_count(void);
 double scr_perf_idle_time(void);
-double scr_eld_new(double resolution);
-bool scr_eld_enable(double handle);
-bool scr_eld_disable(double handle);
-void scr_eld_reset(double handle);
-double scr_eld_percentile(double handle, double percentile);
-double scr_eld_stat(double handle, double which);
+/* Histogram handles are refcounted checked-dynamic runtime objects (the
+ * release frees the buckets), shared by monitorEventLoopDelay and
+ * createHistogram, so a Histogram-typed value can be either. */
+ScrDyn *scr_eld_new(double resolution);
+bool scr_eld_enable(ScrDyn *handle);
+bool scr_eld_disable(ScrDyn *handle);
+void scr_eld_reset(ScrDyn *handle);
+double scr_eld_percentile(ScrDyn *handle, double percentile);
+double scr_eld_stat(ScrDyn *handle, double which);
+/* perf_hooks histograms (createHistogram), scr_perf_loop.c. A histogram is
+ * a handle; the options object is borrowed and validated as Node does. The
+ * stat selectors are the same as the ELD ones (0 count, 1 min, 2 max,
+ * 3 mean, 4 stddev, 5 exceeds); stat_big answers them as BigInt (count,
+ * min, max, exceeds). Percentiles are 0 < p <= 100. The percentiles view
+ * is rebuilt by scr_histo_percentiles_count and read by index. */
+ScrDyn *scr_histo_new(ScrDyn *options);
+void scr_histo_record_checked(ScrDyn *handle, double value);
+void scr_histo_record_big(ScrDyn *handle, ScrBigInt *value);
+void scr_histo_record_corrected_checked(ScrDyn *handle, double value, double expected);
+void scr_histo_record_delta(ScrDyn *handle);
+void scr_histo_reset(ScrDyn *handle);
+void scr_histo_add(ScrDyn *handle, ScrDyn *other);
+void scr_histo_subtract(ScrDyn *handle, ScrDyn *other);
+double scr_histo_stat(ScrDyn *handle, double which);
+ScrBigInt *scr_histo_stat_big(ScrDyn *handle, double which);
+double scr_histo_percentile(ScrDyn *handle, double percentile);
+ScrBigInt *scr_histo_percentile_big(ScrDyn *handle, double percentile);
+double scr_histo_count_at(ScrDyn *handle, double value);
+double scr_histo_cdf(ScrDyn *handle, double value);
+double scr_histo_ccdf(ScrDyn *handle, double value);
+double scr_histo_percentiles_count(ScrDyn *handle);
+double scr_histo_percentiles_key(ScrDyn *handle, double index);
+double scr_histo_percentiles_value(ScrDyn *handle, double index);
+void scr_histo_dispose(ScrDyn *handle);
 /* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
  * family and the clears take the call's dyn argument vector (borrowed)
  * and apply Node's validation and errors. mark and measure answer 1 and
@@ -736,7 +766,6 @@ double scr_stats_birthtime(ScrStats *s);
 /* BigIntStats members (scr_stats_bigint.c): every number member of Stats
  * as a bigint (+1), the `*Ns` nanosecond members, and the Date fields'
  * time values from the truncated `*Ms` member. */
-typedef struct ScrBigInt ScrBigInt;
 ScrBigInt *scr_stats_big_dev(ScrStats *s);
 ScrBigInt *scr_stats_big_mode(ScrStats *s);
 ScrBigInt *scr_stats_big_nlink(ScrStats *s);

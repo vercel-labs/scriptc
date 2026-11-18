@@ -6874,7 +6874,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
   // runtime's histogram table, like a timer handle. Its members lower over
   // the handle (builtins/performance.ts).
-  if (isStdlibInterface("IntervalHistogram")) return F64;
+  // Histogram values are refcounted runtime handle objects: an
+  // IntervalHistogram (monitorEventLoopDelay) and a RecordableHistogram
+  // (createHistogram) are both checked-dynamic handles whose release frees
+  // the buckets when the value dies, so a short-lived histogram does not
+  // stay in a thread table until exit. The members lower over the handle,
+  // which carries the class its fields come from.
+  if (
+    isStdlibInterface("IntervalHistogram") ||
+    isStdlibInterface("Histogram") ||
+    isStdlibInterface("RecordableHistogram")
+  )
+    return DYN;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",

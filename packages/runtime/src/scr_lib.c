@@ -545,7 +545,16 @@ void scr_module_link(double parent_id, double child_id) {
   if (!child->is_main && child->parent < 0) child->parent = parent_id;
   if (!scr_arr_includes_f64(parent->children, child_id)) {
     scr_arr_push_f64(parent->children, child_id);
-    scr_module_dyn_refresh(parent);
+    /* Node's Module keeps one `children` array for its life: an array a
+     * program already holds must see the new child, so the view's array is
+     * appended to, not replaced. */
+    ScrDyn *live = parent->dyn_self ? scr_dyn_obj_read(parent->dyn_self, "children", 8) : NULL;
+    if (live && live->kind == SCR_DYN_ARR) {
+      scr_dyn_arr_push(live, scr_module_dyn_object(child_id));
+      scr_dyn_release(live);
+    } else {
+      scr_module_dyn_refresh(parent);
+    }
   }
 }
 
@@ -655,16 +664,25 @@ ScrDyn *scr_module_dyn_object(double module_id) {
   return o;
 }
 
+/* module.parent as a checked-dynamic value: the registry's -1 marker is
+ * the entry (Node's null) and any other absent marker is a module with no
+ * CommonJS parent (Node's undefined, an ES-module entry's import). +1. */
+ScrDyn *scr_module_dyn_parent(double module_id) {
+  ScrModuleRecord *m = scr_module_record(module_id);
+  if (m->parent >= 0) return scr_module_dyn_object(m->parent);
+  return m->parent == -1 ? scr_dyn_new_null() : scr_dyn_retain(scr_dyn_undefined());
+}
+
 /* module.children as checked-dynamic values: a fresh array of the
  * children's Module objects (Node's array is live and per parent; the
  * compiled form reads it at the call, as the static array does). +1. */
 ScrDyn *scr_module_dyn_children(double module_id) {
-  ScrModuleRecord *m = scr_module_record(module_id);
-  ScrDyn *out = scr_dyn_new_arr();
-  for (size_t i = 0; i < (size_t)scr_arr_len(m->children); i++) {
-    scr_dyn_arr_push(out, scr_module_dyn_object(scr_arr_get_f64(m->children, (double)i)));
-  }
-  return out;
+  /* Node's `children` is one array for the module's life: the read answers
+   * the view's own array, so a program that kept it sees later children. */
+  ScrDyn *view = scr_module_dyn_object(module_id);
+  ScrDyn *kids = scr_dyn_obj_read(view, "children", 8);
+  scr_dyn_release(view);
+  return kids;
 }
 
 double scr_module_parent(double module_id) {

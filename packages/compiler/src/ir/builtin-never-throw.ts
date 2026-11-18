@@ -223,6 +223,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // built on first use from fields the registry already holds.
   "module.dynObject",
   "module.dynChildren",
+  "module.dynParent",
   "module.setExportsDyn",
   // The stream object a descriptor the program already holds names: a cache
   // lookup and a retain, with no allocation, coercion or program code. The

@@ -778,22 +778,9 @@ export function lowerNodeModuleProperty(
       return boolLit(false, loc);
     case "parent": {
       if (isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) {
-        const slot = lowerer.declareHiddenLocal("%moduleParent", F64);
-        const ref: IrExpr = { kind: "varRef", localId: slot.id, type: F64, loc };
-        return {
-          kind: "seqExpr",
-          stmts: [{ kind: "varDecl", localId: slot.id, init: call("module.parent", F64), loc }],
-          result: {
-            kind: "ternary",
-            cond: { kind: "bin", op: ">=", left: ref, right: numLit(0, loc), type: BOOL, loc },
-            then: { kind: "libCall", fn: "module.dynObject", args: [ref], type: DYN, loc },
-            else_: dynUndefined(loc),
-            type: DYN,
-            loc,
-          },
-          type: DYN,
-          loc,
-        };
+        // The runtime keeps Node's two absent cases apart: the entry is
+        // `null` and a module with no CommonJS parent is `undefined`.
+        return { kind: "libCall", fn: "module.dynParent", args: [moduleRef], type: DYN, loc };
       }
       return lowerer.maybeNarrow(
         optionalModule(lowerer, expr, call("module.parent", F64), "parent"),

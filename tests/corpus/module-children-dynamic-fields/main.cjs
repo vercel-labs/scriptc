@@ -17,6 +17,12 @@ console.log("eqMain", c.parent === require.main, c.parent === module, module ===
 const heldParent = c.parent;
 require("./other.cjs");
 console.log("live", heldParent.children.length, module.children.length, heldParent.loaded);
+const heldChildren = module.children;
+const heldCount = heldChildren.length;
+require("./other.cjs");
+console.log("liveChildren", heldCount, heldChildren.length, module.children.length);
+const moduleAlias = module;
+console.log("alias", moduleAlias === require.main);
 console.log("hasParent", "parent" in c);
 console.log("exitTag", child.tag);
 console.log("iter", module.children.map((m) => m.id.endsWith("child.cjs")).join(","));

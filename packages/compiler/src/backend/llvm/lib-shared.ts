@@ -423,6 +423,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "module.children": "scr_module_children",
   "module.dynObject": "scr_module_dyn_object",
   "module.dynChildren": "scr_module_dyn_children",
+  "module.dynParent": "scr_module_dyn_parent",
   "module.setExportsDyn": "scr_module_set_exports_dyn",
   "module.parent": "scr_module_parent",
   "module.loaded": "scr_module_loaded",

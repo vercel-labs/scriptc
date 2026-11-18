@@ -45,12 +45,21 @@ typedef struct {
   ScrDyn *ref;    /* owned: the program's entry object, once kept */
   double start;
   double duration;
-  bool measure;
+  /* 0 mark, 1 measure, 2 function (timerify): the entry type the timeline
+   * selectors and the observers answer. */
+  int kind;
   /* The producing call's serial: buffers and observer copies of the same
    * mark or measure share it, so the compiler's entryKeep finds them. */
   size_t id;
   ScrPerfResource *resource; /* owned (refcounted); NULL for mark/measure */
 } ScrPerfEntry;
+
+/* The entry type name for `kind`. */
+static ScrStr *scr_perf_kind_name(int kind) {
+  if (kind == 1) return scr_str_new("measure", 7);
+  if (kind == 2) return scr_str_new("function", 8);
+  return scr_str_new("mark", 4);
+}
 
 typedef struct {
   ScrPerfEntry *items; /* owned */
@@ -220,12 +229,12 @@ static void scr_perf_push(ScrPerfBuffer *b, ScrPerfEntry entry) {
   scr_perf_view_len = 1;
   if (b->len > SCR_PERF_WARN_SIZE && !b->warned) {
     b->warned = true;
-    const char *type = entry.measure ? "measure" : "mark";
+    const char *type = entry.kind == 1 ? "measure" : "mark";
     char msg[256];
     int n = snprintf(msg, sizeof msg,
                      "Possible perf_hooks memory leak detected. %zu %s entries added to the global "
                      "performance entry buffer. Use performance.%s to clear the buffer.",
-                     b->len, type, entry.measure ? "clearMeasures" : "clearMarks");
+                     b->len, type, entry.kind == 1 ? "clearMeasures" : "clearMarks");
     ScrStr *text = scr_str_new(msg, (size_t)n);
     scr_emit_warning("MaxPerformanceEntryBufferExceededWarning", NULL, text);
     scr_str_release(text);
@@ -510,7 +519,7 @@ double scr_perf_measure(ScrDyn *args) {
   if (!cloned) return 0;
   scr_perf_arm();
   ScrStr *name = scr_str_retain(name_arg->v.str);
-  scr_perf_push(&scr_perf_measures, (ScrPerfEntry){name, cloned, NULL, start, duration, true, 0});
+  scr_perf_push(&scr_perf_measures, (ScrPerfEntry){name, cloned, NULL, start, duration, 1, 0});
   return 1;
 }
 
@@ -887,7 +896,7 @@ ScrStr *scr_perf_entry_name(double i) { return scr_str_retain(scr_perf_at(i)->na
 ScrStr *scr_perf_entry_type(double i) {
   const ScrPerfEntry *e = scr_perf_at(i);
   if (e->resource != NULL) return scr_str_new("resource", 8);
-  return e->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+  return scr_perf_kind_name(e->kind);
 }
 
 double scr_perf_entry_start(double i) { return scr_perf_at(i)->start; }
@@ -950,7 +959,7 @@ static ScrPerfEntry scr_perf_entry_copy(const ScrPerfEntry *e) {
                         e->ref ? scr_dyn_retain(e->ref) : NULL,
                         e->start,
                         e->duration,
-                        e->measure,
+                        e->kind,
                         e->id,
                         scr_perf_resource_retain(e->resource)};
 }
@@ -1119,9 +1128,8 @@ static void scr_perf_observers_cleanup(void) {
 /* observe.js's enqueue, over the buffered entry the timeline just took. */
 static void scr_perf_observers_enqueue(const ScrPerfEntry *entry) {
   if (scr_perf_nobservers == 0) return;
-  ScrStr *name = entry->resource != NULL
-                     ? scr_str_new("resource", 8)
-                     : entry->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+  ScrStr *name = entry->resource != NULL ? scr_str_new("resource", 8)
+                                         : scr_perf_kind_name(entry->kind);
   for (size_t i = 0; i < scr_perf_nobservers; i++) {
     ScrPerfObserver *o = scr_perf_observers[i];
     if (!scr_perf_observer_has_type(o, name)) continue;
@@ -1243,13 +1251,13 @@ static double scr_perf_list_select(const ScrPerfEntries *l, ScrDyn *args, double
     const ScrPerfEntry *e = &l->items[i];
     if (name && !scr_str_eq(e->name, name)) continue;
     if (which == 1 && have_type) {
-      ScrStr *own = e->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+      ScrStr *own = scr_perf_kind_name(e->kind);
       bool equal = type_value->kind == SCR_DYN_STR && scr_str_eq(own, type_value->v.str);
       scr_str_release(own);
       if (!equal) continue;
     }
     if (which == 2) {
-      ScrStr *own = e->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+      ScrStr *own = scr_perf_kind_name(e->kind);
       bool equal = scr_str_eq(own, type);
       scr_str_release(own);
       if (!equal) continue;
@@ -1271,7 +1279,7 @@ static ScrDyn *scr_perf_entry_object(const ScrPerfEntry *e) {
   if (e->ref) return scr_dyn_retain(e->ref);
   ScrDyn *object = scr_dyn_new_obj();
   scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(e->name));
-  ScrStr *type = e->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+  ScrStr *type = scr_perf_kind_name(e->kind);
   scr_dyn_obj_set(object, "entryType", 9, scr_dyn_new_str(type));
   scr_str_release(type);
   scr_dyn_obj_set(object, "startTime", 9, scr_dyn_new_num(e->start));
@@ -1567,4 +1575,137 @@ double scr_perf_list_entries(ScrDyn *list, ScrDyn *args, double which) {
     return 0;
   }
   return scr_perf_list_select(&((ScrPerfList *)list->v.handle.ptr)->entries, args, which);
+}
+
+/* ── performance.timerify (perf_hooks.timerify) ───────────────────────────
+ * The wrapper times each call and hands the observers a 'function' entry
+ * whose detail is the argument list; Node records these for observers only
+ * (the global timeline does not hold them). */
+
+/* One timerified call's entry, delivered to the observers watching
+ * 'function'. The call's program object is built from the copy the list
+ * answers (a function entry keeps no producing record). */
+static void scr_perf_observe_function(const ScrStr *name, double start, double duration,
+                                      ScrDyn *detail) {
+  /* The entry the list answers: a plain object with the argument list as
+   * its detail, kept so a typed read of the list answers this object. */
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(scr_str_retain((ScrStr *)name)));
+  ScrStr *type = scr_str_new("function", 8);
+  scr_dyn_obj_set(object, "entryType", 9, scr_dyn_new_str(type));
+  scr_str_release(type);
+  scr_dyn_obj_set(object, "startTime", 9, scr_dyn_new_num(start));
+  scr_dyn_obj_set(object, "duration", 8, scr_dyn_new_num(duration));
+  scr_dyn_obj_set(object, "detail", 6, scr_dyn_retain(detail));
+  /* The entry record carries a resource timing's fields too (the entry
+   * classes share one checked shape); a function entry answers their zero
+   * values, as a mark or measure's record does. */
+  static const char *const zero_numbers[] = {
+      "workerStart",     "redirectStart", "redirectEnd",     "fetchStart",
+      "domainLookupStart", "domainLookupEnd", "connectStart", "connectEnd",
+      "secureConnectionStart", "requestStart", "finalResponseHeadersStart",
+      "firstInterimResponseStart", "responseStart", "responseEnd", "transferSize",
+      "encodedBodySize", "decodedBodySize", "responseStatus",
+  };
+  static const char *const empty_strings[] = {
+      "initiatorType", "nextHopProtocol", "deliveryType",
+      "renderBlockingStatus", "contentType", "contentEncoding",
+  };
+  for (size_t i = 0; i < sizeof zero_numbers / sizeof zero_numbers[0]; i++)
+    scr_dyn_obj_set(object, zero_numbers[i], strlen(zero_numbers[i]), scr_dyn_new_num(0));
+  for (size_t i = 0; i < sizeof empty_strings / sizeof empty_strings[0]; i++) {
+    ScrStr *empty = scr_str_new("", 0);
+    scr_dyn_obj_set(object, empty_strings[i], strlen(empty_strings[i]), scr_dyn_new_str(empty));
+  }
+  ScrPerfEntry entry;
+  memset(&entry, 0, sizeof entry);
+  entry.name = scr_str_retain((ScrStr *)name);
+  entry.detail = scr_dyn_retain(detail);
+  entry.ref = object; /* moves */
+  entry.start = start;
+  entry.duration = duration;
+  entry.kind = 2;
+  entry.id = ++scr_perf_next_id;
+  scr_perf_arm();
+  scr_perf_observers_enqueue(&entry);
+  scr_perf_entry_release(&entry);
+}
+
+/* The wrapper: caps[0] the original function (+1), caps[1] the wrapper's
+ * display name (the function box borrows its bytes), caps[2] the original's
+ * name (the entry's). */
+static ScrDyn *scr_perf_timerified_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  ScrDyn *fn = scr_box_get_ref(closure->caps[0]);
+  ScrStr *name = scr_box_get_ref(closure->caps[2]);
+  ScrDyn *self = scr_dyn_this_get();
+  double start = scr_perf_now();
+  scr_dyn_this_push_dyn(self);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, "timerified function");
+  scr_dyn_this_pop();
+  scr_dyn_release(self);
+  double duration = scr_perf_now() - start;
+  /* A call that threw records nothing (Node's wrapper only enqueues the
+   * entry of a returned call). */
+  if (!scr_exc_pending()) {
+    ScrDyn *detail = scr_dyn_new_arr();
+    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(detail, scr_dyn_retain(args[i]));
+    scr_perf_observe_function(name, start, duration, detail);
+    scr_dyn_release(detail);
+  }
+  return result;
+}
+
+/* `performance.timerify(fn)` / `perf_hooks.timerify(fn, options?)` (+1):
+ * Node validates the callable and the options object, then wraps the call.
+ * The arguments arrive as one dyn array. */
+ScrDyn *scr_perf_timerify(ScrDyn *args) {
+  if (!scr_perf_args_ok(args, "timerify")) return NULL;
+  ScrDyn *fn = scr_perf_arg(args, 0);
+  if (!scr_dyn_is_callable(fn)) {
+    char detail[128];
+    char msg[224];
+    int n = snprintf(msg, sizeof msg, "The \"fn\" argument must be of type function. Received %s",
+                     scr_dyn_specific_type(fn, detail, sizeof detail));
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  ScrDyn *options = scr_perf_arg(args, 1);
+  if (options->kind != SCR_DYN_UNDEF) {
+    bool object = options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_TYPED_REF;
+    if (!object) {
+      char detail[128];
+      char msg[224];
+      int n = snprintf(msg, sizeof msg,
+                       "The \"options\" argument must be of type object. Received %s",
+                       scr_dyn_specific_type(options, detail, sizeof detail));
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+      return NULL;
+    }
+  }
+  ScrStr *raw_name = scr_str_new("", 0);
+  ScrDyn *name_value = scr_dyn_obj_read(fn, "name", 4);
+  if (name_value && name_value->kind == SCR_DYN_STR && name_value->v.str->len > 0) {
+    scr_str_release(raw_name);
+    raw_name = scr_str_retain(name_value->v.str);
+  }
+  scr_dyn_release(name_value);
+  double arity = 0;
+  ScrDyn *length_value = scr_dyn_obj_read(fn, "length", 6);
+  if (length_value && length_value->kind == SCR_DYN_NUM) arity = length_value->v.num;
+  scr_dyn_release(length_value);
+  scr_perf_arm();
+  ScrClosure *closure = scr_closure_new(NULL, 3);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_dyn_retain(fn));
+  ScrStr *display = scr_str_new("timerified ", 11);
+  ScrStr *joined = scr_str_concat(display, raw_name);
+  scr_str_release(display);
+  closure->caps[1] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(closure->caps[1], scr_str_retain(joined));
+  closure->caps[2] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(closure->caps[2], raw_name); /* moves */
+  ScrDyn *wrapper =
+      scr_dyn_new_func(closure, scr_perf_timerified_call, (uint32_t)arity, "", joined->data);
+  scr_str_release(joined);
+  return wrapper;
 }

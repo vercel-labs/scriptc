@@ -213,16 +213,18 @@ setTimeout(() => {
     destroy(err, cb) { log("destroy-hook", err && err.message); cb(err); },
   });
   w.on("finish", () => log("construct-finish"));
-  w.on("close", () => log("construct-close"));
+  w.on("close", () => {
+    log("construct-close");
+    // The next block starts from this close, not from an absolute timer: a
+    // delayed timer can then never interleave the two blocks' lines.
+    allowHalfOpenBlock();
+  });
   w.write("x");
   w.end();
 }, 120);
 
-// allowHalfOpen duplex. The delay leaves the preceding block's nested 5 ms
-// timer a wide margin: a loaded runner can delay a timer by more than the
-// 10 ms that had separated these two blocks, which reorders their lines in
-// Node itself.
-setTimeout(() => {
+// allowHalfOpen duplex, started by the construct block above.
+function allowHalfOpenBlock(): void {
   const d = new Duplex({
     read() { this.push(null); },
     write(c: any, e: any, cb: any) { cb(); },
@@ -233,4 +235,4 @@ setTimeout(() => {
   d.on("close", () => log("aho-close"));
   d.resume();
   d.end();
-}, 250);
+}

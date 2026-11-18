@@ -72,4 +72,22 @@ try {
   console.log("after autoClose", (err as Error).name, (err as { code?: string }).code);
 }
 
+// 7. One stream per handle, as Node's lock: a second readableWebStream is
+// the locked error, and the lock outlives the stream.
+const seventh = await fs.promises.open(file, "r");
+const lockedStream = seventh.readableWebStream();
+try {
+  seventh.readableWebStream();
+  console.log("second", "opened");
+} catch (err) {
+  console.log("second", (err as Error).name, (err as { code?: string }).code, (err as Error).message);
+}
+await lockedStream.cancel();
+try {
+  seventh.readableWebStream();
+  console.log("after cancel", "opened");
+} catch (err) {
+  console.log("after cancel", (err as Error).name, (err as { code?: string }).code);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });

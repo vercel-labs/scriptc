@@ -194,6 +194,13 @@ ScrDyn *scr_file_handle_readable_web_stream(ScrFileHandle *h, ScrDyn *options) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_INVALID_STATE");
     return NULL;
   }
+  if (scr_file_handle_is_locked(h)) {
+    /* One stream per handle, as Node's lock: a second stream would split
+     * the file's contents between competing readers. */
+    static const char message[] = "Invalid state: The FileHandle is locked";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_INVALID_STATE");
+    return NULL;
+  }
   bool auto_close = false;
   if (options != NULL && options->kind != SCR_DYN_UNDEF && options->kind != SCR_DYN_NULL &&
       options->kind != SCR_DYN_FUNC) {
@@ -226,6 +233,7 @@ ScrDyn *scr_file_handle_readable_web_stream(ScrFileHandle *h, ScrDyn *options) {
     scr_file_handle_ref(h);
     st->handle_ref = true;
   }
+  scr_file_handle_lock(h);
   ScrDyn *stream = scr_webstream_bytes_over(&scr_fs_web_stream_source, st);
   return stream;
 }

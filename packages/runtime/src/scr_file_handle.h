@@ -49,6 +49,11 @@ int scr_file_handle_stream_unref(ScrFileHandle *h);
  * waiting for it) only when it was the last reference and `close_when_unused`
  * asks for it. A live stream on the same handle keeps its descriptor. */
 void scr_file_handle_stream_detach(ScrFileHandle *h, bool close_when_unused);
+/* readableWebStream's lock: a handle can open one stream, and its later calls
+ * answer Node's "The FileHandle is locked" instead of splitting the file
+ * between competing streams. */
+bool scr_file_handle_is_locked(const ScrFileHandle *h);
+void scr_file_handle_lock(ScrFileHandle *h);
 ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx);
 void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
 /* FileHandle.createReadStream / createWriteStream(options): +1 runtime

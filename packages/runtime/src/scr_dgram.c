@@ -831,9 +831,10 @@ static void *scr_dgram_dyn_retain_v(void *p) { return scr_dyn_retain((ScrDyn *)p
 static void scr_dgram_dyn_release_v(void *p) { scr_dyn_release((ScrDyn *)p); }
 
 static void scr_dgram_dyn_connect_fire(ScrClosure *cb) {
-  ScrDyn *fn = scr_box_get_ref(cb->caps[0]);
+  ScrDyn *fn = scr_box_get_ref(cb->caps[0]); /* +1 */
   ScrDyn *result = scr_dyn_call(fn, NULL, 0, "callback");
   scr_dyn_release(result);
+  scr_dyn_release(fn);
 }
 
 static ScrClosure *scr_dgram_dyn_connect_job(const ScrDyn *fn) {
@@ -843,11 +844,28 @@ static ScrClosure *scr_dgram_dyn_connect_job(const ScrDyn *fn) {
   return job;
 }
 
-/* Hands a refusal to the dynamic callback (Node's nextTick(callback, ex));
- * a typed callback has its own deferred invocation below. */
-static void scr_dgram_connect_fail_dyn(const ScrDyn *dyn_cb, char *msg) {
-  ScrDyn *arg = scr_dgram_send_error(msg);
-  scr_dns_call_later(dyn_cb, &arg, 1, false);
+/* Delivers a refusal to the dynamic callback with Node's
+ * nextTick(callback, ex): the job carries the callback and the error and
+ * releases both after the call. */
+static void scr_dgram_dyn_fail_fire(ScrClosure *job) {
+  ScrDyn *fn = scr_box_get_ref(job->caps[0]);  /* +1 */
+  ScrDyn *err = scr_box_get_ref(job->caps[1]); /* +1 */
+  ScrDyn *args[1] = {err};
+  ScrDyn *result = scr_dyn_call(fn, args, 1, "callback");
+  scr_dyn_release(result);
+  scr_dyn_release(err);
+  scr_dyn_release(fn);
+}
+
+/* Hands a refusal to the dynamic callback; the typed callback has its own
+ * deferred invocation below. `err` moves. */
+static void scr_dgram_connect_fail_dyn(const ScrDyn *dyn_cb, ScrDyn *err) {
+  ScrClosure *job = scr_closure_new((void *)&scr_dgram_dyn_fail_fire, 2);
+  job->caps[0] = scr_box_new_obj(&scr_dgram_dyn_retain_v, &scr_dgram_dyn_release_v, NULL);
+  scr_box_set_ref(job->caps[0], scr_dyn_retain((ScrDyn *)dyn_cb));
+  job->caps[1] = scr_box_new_obj(&scr_dgram_dyn_retain_v, &scr_dgram_dyn_release_v, NULL);
+  scr_box_set_ref(job->caps[1], err);
+  scr_next_tick(job);
 }
 
 static bool scr_dgram_connect_has_dyn(const ScrDyn *dyn_cb) {
@@ -886,7 +904,7 @@ static void scr_dgram_connect_impl(ScrDgramSocket *s, double port, ScrStr *host,
   if (!scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     char msg[160];
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
-    if (scr_dgram_connect_has_dyn(dyn_cb)) scr_dgram_connect_fail_dyn(dyn_cb, msg);
+    if (scr_dgram_connect_has_dyn(dyn_cb)) scr_dgram_connect_fail_dyn(dyn_cb, scr_dgram_send_error(msg));
     else scr_dgram_defer_err(s, msg);
     return;
   }
@@ -904,15 +922,15 @@ static void scr_dgram_connect_impl(ScrDgramSocket *s, double port, ScrStr *host,
      * receives the error object itself — otherwise the failure is the
      * deferred 'error'; 'connect' never emits. The implicit bind above
      * stands, as in Node, so the socket stays usable. */
-    ScrClosure *failed =
-        (cb != NULL || dyn_cb != NULL) ? scr_dgram_ls_pop_last(&s->conn_ls) : NULL;
+    /* Only a completion that was actually registered leaves the 'connect'
+     * list here: a falsy dynamic callback registered nothing (Node's
+     * `if (callback)`), so a user's own 'connect' listener stays put and the
+     * refusal is the deferred 'error'. */
+    bool registered = cb != NULL || scr_dgram_connect_has_dyn(dyn_cb);
+    ScrClosure *failed = registered ? scr_dgram_ls_pop_last(&s->conn_ls) : NULL;
     if (scr_dgram_connect_has_dyn(dyn_cb)) {
-      char msg[160];
-      int n = snprintf(msg, sizeof msg, "IP(%s) is blocked by net.BlockList", peer_ip);
       scr_closure_release(failed);
-      ScrDyn *arg = scr_dgram_blocked_error(peer_ip);
-      (void)n;
-      scr_dns_call_later(dyn_cb, &arg, 1, false);
+      scr_dgram_connect_fail_dyn(dyn_cb, scr_dgram_blocked_error(peer_ip));
     } else if (failed != NULL) {
       scr_next_tick(failed);
     } else {
@@ -931,7 +949,7 @@ static void scr_dgram_connect_impl(ScrDgramSocket *s, double port, ScrStr *host,
     char ip[64];
     scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
     snprintf(msg, sizeof msg, "connect %s %s:%d", scr_dgram_errname(errno), ip, (int)port);
-    if (scr_dgram_connect_has_dyn(dyn_cb)) scr_dgram_connect_fail_dyn(dyn_cb, msg);
+    if (scr_dgram_connect_has_dyn(dyn_cb)) scr_dgram_connect_fail_dyn(dyn_cb, scr_dgram_send_error(msg));
     else scr_dgram_defer_err(s, msg);
     return;
   }
@@ -947,6 +965,9 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
 
 void scr_dgram_connect_dyn(ScrDgramSocket *s, double port, ScrStr *host, const ScrDyn *cb) {
   scr_dgram_connect_impl(s, port, host, NULL, cb);
+  /* The dynamic argument's owned reference (the runtime retains whatever it
+   * defers). */
+  scr_dyn_release((ScrDyn *)cb);
 }
 
 /* bindSync([options]): Node's synchronous bind. numeric host only; the

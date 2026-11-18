@@ -443,6 +443,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // (~~), which calls a value's valueOf/toString.
   "net.sockSetKeepAlive",
   "http.reqSetEncoding",
+  // req.signal builds the message's AbortController on first read and aborts
+  // it when the message is already gone; both go through the signal unit.
+  "http.reqSignal",
   "fs.readFileSyncBuf",
   "fs.readFileSyncDyn",
   "fs.statSyncDyn",
@@ -596,10 +599,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.sessionPingPayload",
   "http2.getPackedSettings",
   "http2.getUnpackedSettings",
-  "http2.streamRespond",
   "http2.streamRespondWait",
   "http2.streamSendTrailers",
   "http2.streamAdditionalHeaders",
+
+  "http2.responseWriteInformation",
+  "http2.streamRespond",
   "http2.streamPriority",
   "http2.sessionGoaway",
   "http2.sessionGoawayOpaque",

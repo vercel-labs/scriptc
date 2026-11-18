@@ -23,12 +23,12 @@ typedef void (*ScrH2SessionErrorFn)(ScrClosure *cb, ScrStr *msg,
 
 typedef void (*ScrH2StreamFn)(ScrClosure *cb, ScrH2Stream *st, ScrArr *pairs, double flags); /* st, pairs +1 */
 typedef void (*ScrH2RespFn)(ScrClosure *cb, ScrArr *pairs, double status, double flags);     /* pairs +1 */
+typedef void (*ScrH2PairsFn)(ScrClosure *cb, ScrArr *pairs, double flags);                  /* pairs +1 */
 typedef void (*ScrH2SessionFn)(ScrClosure *cb, ScrH2Session *sess);                          /* sess +1 */
 typedef void (*ScrH2ConnectFn)(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);      /* both +1; sock nullable */
 typedef void (*ScrH2GoawayFn)(ScrClosure *cb, double code, double last,
                               ScrBytes *opaque /*borrowed, NULL = none*/);
 typedef void (*ScrH2SettingsFn)(ScrClosure *cb, ScrDyn *settings /*+1*/);
-typedef void (*ScrH2HeadersFn)(ScrClosure *cb, ScrArr *pairs /*+1*/, double flags);
 
 ScrH2Session *scr_http2_session_retain(ScrH2Session *s);
 void scr_http2_session_release(ScrH2Session *s);
@@ -83,7 +83,7 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
                                  ScrH2ConnectFn fn); /* +1 */
 /* end_stream: -1 = the method's payload-meaningless default, 0/1 explicit */
 ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed, nullable*/,
-                                        double end_stream); /* +1; may throw */
+                                        double end_stream, bool wait_trailers); /* +1; may throw */
 
 /* session */
 void scr_http2_session_close(ScrH2Session *s, ScrClosure *cb /*moves, nullable*/);
@@ -94,7 +94,7 @@ void scr_http2_session_destroy(ScrH2Session *s);
 void scr_http2_session_goaway(ScrH2Session *s, double code, double last_stream_id,
                                ScrBytes *opaque /*borrowed, nullable*/);
 /* setTimeout(msecs, callback): the session's unref'd idle timer; callback
- * joins 'timeout' as a one-shot listener. Answers the session (chaining). */
+ * joins 'timeout' as a one-shot listener. */
 void scr_http2_session_set_timeout(ScrH2Session *s, double ms,
                                     ScrClosure *cb /*moves, nullable*/, bool once);
 void scr_http2_session_on_timeout(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
@@ -146,28 +146,20 @@ ScrNetSocket *scr_http2_session_socket(ScrH2Session *s); /* +1, NULL after teard
 
 /* stream */
 void scr_http2_stream_respond(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/, bool end_stream);
-/* respond(headers, { waitForTrailers: true }): the END_STREAM waits for a
- * trailing HEADERS block ('wantTrailers' fires when the last DATA left). */
+/* respond(headers, { endStream, waitForTrailers }): a waiting response's
+ * HEADERS carries no END_STREAM; the trailer block ends the stream after
+ * 'wantTrailers'. */
 void scr_http2_stream_respond_wait(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/,
                                     bool end_stream, bool wait_trailers);
-/* sendTrailers(headers): the trailing block, after 'wantTrailers'. Throws
- * ERR_HTTP2_INVALID_STREAM / _TRAILERS_ALREADY_SENT / _TRAILERS_NOT_READY. */
+/* additionalHeaders(headers): a 1xx informational block (no END_STREAM);
+ * sendTrailers(headers): the trailer block, which ends the stream. Both
+ * throw Node's errors when the stream or the response state forbids them. */
+void scr_http2_stream_additional_headers(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/);
 void scr_http2_stream_send_trailers(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/);
-/* additionalHeaders(headers): an informational HEADERS block before the
- * response. Throws Node's 101 / invalid-status / after-respond errors. */
-void scr_http2_stream_additional_headers(ScrH2Stream *st, ScrArr *pairs /*borrowed*/);
-/* priority(options): deprecated in Node 24 — warns once, no frame. */
-void scr_http2_stream_priority(ScrH2Stream *st);
-bool scr_http2_stream_push_allowed(ScrH2Stream *st);
-void scr_http2_stream_set_timeout(ScrH2Stream *st, double ms,
-                                   ScrClosure *cb /*moves, nullable*/, bool once);
-void scr_http2_stream_on_timeout(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
-void scr_http2_stream_on_ready(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
-void scr_http2_stream_on_trailers(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrH2HeadersFn fn,
-                                   bool once);
-void scr_http2_stream_on_headers(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrH2HeadersFn fn,
-                                  bool once);
+void scr_http2_stream_on_trailers(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_stream_on_want_trailers(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_on_headers(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_on_continue(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_stream_write_str(ScrH2Stream *st, ScrStr *data /*borrowed*/);
 void scr_http2_stream_write_bytes(ScrH2Stream *st, ScrBytes *data /*borrowed*/);
 void scr_http2_stream_end(ScrH2Stream *st);
@@ -191,6 +183,13 @@ bool scr_http2_stream_destroyed(ScrH2Stream *st);
 bool scr_http2_stream_closed(ScrH2Stream *st);
 bool scr_http2_stream_aborted(ScrH2Stream *st);
 bool scr_http2_stream_pending(ScrH2Stream *st);
+/* priority(options): deprecated in Node 24 — warns once, sends no frame. */
+void scr_http2_stream_priority(ScrH2Stream *st);
+bool scr_http2_stream_push_allowed(ScrH2Stream *st);
+void scr_http2_stream_set_timeout(ScrH2Stream *st, double ms,
+                                   ScrClosure *cb /*moves, nullable*/, bool once);
+void scr_http2_stream_on_timeout(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_on_ready(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 bool scr_http2_stream_headers_sent(ScrH2Stream *st);
 bool scr_http2_req_complete(ScrHttpReq *r);
 /* Every value `name` has in a received pairs array, in order (the array a
@@ -201,7 +200,9 @@ ScrH2Session *scr_http2_stream_session(ScrH2Stream *st); /* +1 */
 /* the emitted-adapter thunks (arity + record-building live program-side) */
 void scr_http2_stream_thunk(ScrClosure *cb, ScrH2Stream *st, ScrArr *pairs, double flags);
 void scr_http2_resp_thunk(ScrClosure *cb, ScrArr *pairs, double status, double flags);
-void scr_http2_headers_thunk(ScrClosure *cb, ScrArr *pairs, double flags);
+/* The 'error' listener adapter for a stream that closed with a nonzero
+ * RST_STREAM code: Node's ERR_HTTP2_STREAM_ERROR, message unchanged. */
+void scr_http2_stream_err_thunk(ScrClosure *cb, ScrStr *msg);
 void scr_http2_session_thunk(ScrClosure *cb, ScrH2Session *sess);
 void scr_http2_session_thunk0(ScrClosure *cb, ScrH2Session *sess);
 void scr_http2_connect_thunk2(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);

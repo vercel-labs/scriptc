@@ -5,7 +5,7 @@ compat-absent-http2-members.ts:7:3 - error SC2020: 'stream.respondWithFile' is p
     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   8 |   stream.respondWithFD(0);
 
-  hint: respond/write/end/close/destroy/setEncoding/resume/pause/sendTrailers/additionalHeaders/priority/setTimeout and on(...) are the lowered stream members
+  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
 
 compat-absent-http2-members.ts:8:3 - error SC2020: 'stream.respondWithFD' is part of the standard library types but has no scriptc lowering yet
 
@@ -14,7 +14,7 @@ compat-absent-http2-members.ts:8:3 - error SC2020: 'stream.respondWithFD' is par
     |   ^~~~~~~~~~~~~~~~~~~~~~~
   9 |   stream.pushStream({ ":path": "/pushed" }, () => {});
 
-  hint: respond/write/end/close/destroy/setEncoding/resume/pause/sendTrailers/additionalHeaders/priority/setTimeout and on(...) are the lowered stream members
+  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
 
 compat-absent-http2-members.ts:9:3 - error SC2020: 'stream.pushStream' is part of the standard library types but has no scriptc lowering yet
 
@@ -23,7 +23,7 @@ compat-absent-http2-members.ts:9:3 - error SC2020: 'stream.pushStream' is part o
      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   10 |   console.log(stream.state, stream.sentHeaders);
 
-  hint: respond/write/end/close/destroy/setEncoding/resume/pause/sendTrailers/additionalHeaders/priority/setTimeout and on(...) are the lowered stream members
+  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
 
 compat-absent-http2-members.ts:10:15 - error SC2020: 'ServerHttp2Stream.state' is part of the standard library types but has no scriptc lowering yet
 
@@ -41,4 +41,4 @@ compat-absent-http2-members.ts:14:12 - error SC2020: 'stream.on("push", ...)' is
      |            ^~~~~~
   15 | 
 
-  hint: "data", "end", "close", "aborted", "error", "response", "headers", "trailers", "ready", "timeout", and "wantTrailers" are the supported stream events
+  hint: "data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events

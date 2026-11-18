@@ -63332,9 +63332,13 @@
           "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-http2-settings.mjs",
           "tests/corpus/compat-http2-state.mjs",
+          "tests/corpus/http2-compat-trailers.ts",
+          "tests/corpus/http2-informational.ts",
           "tests/corpus/http2-session-lifecycle.ts",
-          "tests/corpus/http2-stream-trailers.ts",
-          "tests/corpus/http2-timeouts.ts"
+          "tests/corpus/http2-stream-controls.ts",
+          "tests/corpus/http2-timeouts.ts",
+          "tests/corpus/http2-trailers.ts",
+          "tests/diagnostics/compat-absent-http2-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -64813,7 +64817,7 @@
         "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.priority",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts",
+          "tests/corpus/http2-stream-controls.ts",
           "tests/corpus/http2-timeouts.ts"
         ]
       },
@@ -64840,7 +64844,7 @@
         "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.setTimeout",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts",
+          "tests/corpus/http2-stream-controls.ts",
           "tests/corpus/http2-timeouts.ts"
         ]
       },
@@ -64864,11 +64868,10 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:http2.http2stream.sendTrailers",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts",
-          "tests/corpus/http2-timeouts.ts"
+          "tests/corpus/http2-trailers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65313,7 +65316,7 @@
         "status": "supported",
         "evidence": "compiler-feature:http2.'ready'",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts",
+          "tests/corpus/http2-stream-controls.ts",
           "tests/corpus/http2-timeouts.ts"
         ]
       },
@@ -65340,7 +65343,6 @@
         "status": "supported",
         "evidence": "compiler-feature:http2.'timeout'",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts",
           "tests/corpus/http2-timeouts.ts"
         ]
       },
@@ -65364,11 +65366,10 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:http2.'trailers'",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts",
-          "tests/corpus/http2-timeouts.ts"
+          "tests/corpus/http2-trailers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65391,11 +65392,10 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:http2.'wantTrailers'",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts",
-          "tests/corpus/http2-timeouts.ts"
+          "tests/corpus/http2-trailers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65441,8 +65441,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.'continue'",
+        "tests": [
+          "tests/corpus/http2-informational.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65464,10 +65467,10 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:http2.'headers'",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts"
+          "tests/corpus/http2-informational.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65491,7 +65494,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.'push'"
+        "evidence": "compiler-feature:http2.'push'",
+        "tests": [
+          "tests/diagnostics/compat-absent-http2-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65562,10 +65568,10 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:http2.http2stream.additionalHeaders",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts"
+          "tests/corpus/http2-informational.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65589,7 +65595,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.http2stream.pushStream"
+        "evidence": "compiler-feature:http2.http2stream.pushStream",
+        "tests": [
+          "tests/diagnostics/compat-absent-http2-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65639,7 +65648,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.http2stream.respondWithFD"
+        "evidence": "compiler-feature:http2.http2stream.respondWithFD",
+        "tests": [
+          "tests/diagnostics/compat-absent-http2-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65662,7 +65674,10 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.http2stream.respondWithFile"
+        "evidence": "compiler-feature:http2.http2stream.respondWithFile",
+        "tests": [
+          "tests/diagnostics/compat-absent-http2-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65714,7 +65729,7 @@
         "status": "supported",
         "evidence": "compiler-feature:http2.pushAllowed",
         "tests": [
-          "tests/corpus/http2-stream-trailers.ts"
+          "tests/corpus/http2-stream-controls.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -65858,11 +65873,8 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
-        "evidence": "compiler-feature:http2.timeout",
-        "tests": [
-          "tests/corpus/http2-timeouts.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-feature:http2.timeout"
       },
       "anchorSource": "ancestor"
     },
@@ -66158,11 +66170,8 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
-        "evidence": "compiler-feature:http2.timeout",
-        "tests": [
-          "tests/corpus/http2-timeouts.ts"
-        ]
+        "status": "not-implemented",
+        "evidence": "compiler-feature:http2.timeout"
       },
       "anchorSource": "ancestor"
     },
@@ -67026,8 +67035,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.rawTrailers",
+        "tests": [
+          "tests/corpus/http2-compat-trailers.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -67121,8 +67133,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.trailers",
+        "tests": [
+          "tests/corpus/http2-compat-trailers.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -67246,8 +67261,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.response.addTrailers",
+        "tests": [
+          "tests/corpus/http2-compat-trailers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -67555,8 +67573,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.response.writeContinue",
+        "tests": [
+          "tests/corpus/http2-compat-trailers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -67578,8 +67599,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.response.writeEarlyHints",
+        "tests": [
+          "tests/corpus/http2-compat-trailers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -67601,8 +67625,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "partial",
+        "evidence": "compiler-feature:http2.response.writeInformation",
+        "tests": [
+          "tests/corpus/http2-compat-trailers.ts"
+        ]
       },
       "anchorSource": "exact"
     },

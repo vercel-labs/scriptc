@@ -989,6 +989,49 @@ function staticHeaderKeyOf(lowerer: Lowerer, prop: ts.PropertyAssignment): strin
   return null;
 }
 
+/** The header pairs an object literal or a `Record<string, string>` value
+ * holds — the informational-response argument shape (writeEarlyHints,
+ * writeInformation). */
+function h2HeaderPairsArg(lowerer: Lowerer, node: ts.Expression, what: string): IrExpr {
+  const loc = locOf(node);
+  if (ts.isObjectLiteralExpression(node)) {
+    const elems: IrExpr[] = [];
+    for (const prop of node.properties.nodes) {
+      const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
+      if (!ts.isPropertyAssignment(prop) || key === null) {
+        lowerer.noLowering(
+          `${what} with dynamic keys, spreads, or shorthand entries`,
+          prop,
+          "use literal header keys and string values",
+        );
+      }
+      const value = lowerer.lowerExpr(prop.initializer);
+      if (value.type.kind !== "string") {
+        lowerer.noLowering(
+          `${what} of type '${lowerer.fmt(value.type)}'`,
+          prop.initializer,
+          "header values must be strings here",
+        );
+      }
+      elems.push({ kind: "strLit", value: key, type: STRING, loc }, value);
+    }
+    return { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
+  }
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind !== "record") {
+    lowerer.noLowering(
+      `${what} of '${lowerer.fmt(value.type)}'`,
+      node,
+      "pass an object literal or a Record<string, string>",
+    );
+  }
+  const helper = lowerer.envToPairsHelper(value.type.shapeId, loc);
+  if (helper === null) {
+    lowerer.noLowering(`${what} values`, node, "use a Record<string, string> with string values");
+  }
+  return { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+}
+
 /** Module-function calls on net import bindings: createServer(handler?),
  * connect/createConnection(port[, host][, cb]). Null for other modules
  * (the caller falls through to the ordinary builtin tables); every net
@@ -1957,9 +2000,9 @@ function lowerNetServerMethodCall(
       // (each accepted session arms its idle timer with it) and the
       // callback joins the server's 'timeout' listeners, which receive
       // the session (not a socket).
-      const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
-      const ms = lowerer.lowerExprExpecting(args[0]!, F64);
-      const cb =
+      const h2Receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+      const h2Ms = lowerer.lowerExprExpecting(args[0]!, F64);
+      const h2Cb =
         args.length === 2
           ? lowerCallbackArg(
               lowerer,
@@ -1971,11 +2014,11 @@ function lowerNetServerMethodCall(
               [HTTP2SESSION_T],
             ).cb
           : null;
-      const fn: IrLibFn = cb === null ? "http2.serverSetTimeout" : "http2.serverSetTimeoutCb";
-      const callArgs = cb === null ? [receiver, ms] : [receiver, ms, cb];
+      const h2Fn: IrLibFn = h2Cb === null ? "http2.serverSetTimeout" : "http2.serverSetTimeoutCb";
+      const h2Args = h2Cb === null ? [h2Receiver, h2Ms] : [h2Receiver, h2Ms, h2Cb];
       if (chainingResultDiscarded(lowerer, call))
-        return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
-      return receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
+        return { kind: "libCall", fn: h2Fn, args: h2Args, type: VOID, loc };
+      return receiverReturningCall(lowerer, h2Fn, h2Args, NETSERVER_T, loc);
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
     const ms = lowerer.lowerExprExpecting(args[0]!, F64);
@@ -4268,29 +4311,30 @@ function h2EndStreamOption(lowerer: Lowerer, node: ts.Expression | undefined): b
           "spell it true or false",
         );
     }
-    // Other keys (waitForTrailers, exclusive, parent, weight) are accepted
-    // and ignored — the honest-defaults stance (they tune framing this
-    // core does not model; a use that DEPENDS on them fails downstream).
+    // Other keys (exclusive, parent, weight) are accepted and ignored —
+    // the honest-defaults stance (they tune framing this core does not
+    // model; a use that DEPENDS on them fails downstream).
   }
   return end;
 }
 
-/** The `waitForTrailers` boolean of an h2 options object literal, as a
- * literal bool. Returns undefined when absent (or the arg is absent). */
-function h2WaitForTrailersOption(
+/** A literal boolean member of an h2 options object (`waitForTrailers`):
+ * null when the object omits it, or when there is no options argument. */
+function h2BoolOption(
   lowerer: Lowerer,
   node: ts.Expression | undefined,
-): boolean | undefined {
-  if (node === undefined) return undefined;
+  key: string,
+): boolean | null {
+  if (node === undefined) return null;
   if (!ts.isObjectLiteralExpression(node)) {
     lowerer.noLowering(
       "h2 options argument",
       node,
-      "pass the options as an object literal ({ waitForTrailers: true })",
+      "pass the options as an object literal ({ endStream: true, waitForTrailers: true })",
     );
   }
-  let wait: boolean | undefined;
-  for (const prop of (node as ts.ObjectLiteralExpression).properties.nodes) {
+  let value: boolean | null = null;
+  for (const prop of node.properties.nodes) {
     if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
       lowerer.noLowering(
         "h2 options with spreads or computed keys",
@@ -4298,13 +4342,13 @@ function h2WaitForTrailersOption(
         "use plain `name: value` entries",
       );
     }
-    if ((prop.name as ts.Identifier).text !== "waitForTrailers") continue;
-    const init = (prop as ts.PropertyAssignment).initializer;
-    if (init.kind === ts.SyntaxKind.TrueKeyword) wait = true;
-    else if (init.kind === ts.SyntaxKind.FalseKeyword) wait = false;
-    else lowerer.noLowering("a non-literal waitForTrailers option", init, "spell it true or false");
+    if (prop.name.text !== key) continue;
+    if (prop.initializer.kind === ts.SyntaxKind.TrueKeyword) value = true;
+    else if (prop.initializer.kind === ts.SyntaxKind.FalseKeyword) value = false;
+    else
+      lowerer.noLowering(`a non-literal ${key} option`, prop.initializer, "spell it true or false");
   }
-  return wait;
+  return value;
 }
 
 /** A settings listener or settings() callback as lowered. The runtime
@@ -4359,10 +4403,13 @@ function lowerH2SessionMethodCall(
       type: F64,
       loc,
     };
+    // { waitForTrailers: true }: the request body may be followed by a
+    // trailer block ('wantTrailers' fires once it is out).
+    const wait = h2BoolOption(lowerer, args[1], "waitForTrailers");
     return {
       kind: "libCall",
       fn: "http2.sessionRequest",
-      args: [receiver(), headersArg, endF64],
+      args: [receiver(), headersArg, endF64, boolLit(wait ?? false, loc)],
       type: HTTP2STREAM_T,
       loc,
     };
@@ -4739,13 +4786,13 @@ function lowerH2SessionMethodCall(
     lowerer.noLowering(
       `session.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"close", "error", "connect", "stream", "goaway", "ping", "timeout", "localSettings", and "remoteSettings" are the supported session events',
+      '"close", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events',
     );
   }
   lowerer.noLowering(
     `session.${name}`,
     call,
-    "close/destroy/request/settings/ping/goaway/ref/unref/setTimeout/setLocalWindowSize and on(...) are the lowered session members",
+    "close/destroy/request/settings/ping and on(...) are the lowered session members",
   );
 }
 
@@ -4778,12 +4825,14 @@ function lowerH2StreamMethodCall(
         ? lowerH2HeadersArg(lowerer, args[0]!)
         : ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } as IrExpr);
     const end = h2EndStreamOption(lowerer, args[1]);
-    const wait = h2WaitForTrailersOption(lowerer, args[1]);
-    if (wait === true) {
+    // { waitForTrailers: true }: the HEADERS carries no END_STREAM and the
+    // trailer block ends the stream after 'wantTrailers'.
+    const wait = h2BoolOption(lowerer, args[1], "waitForTrailers");
+    if (wait !== null) {
       return {
         kind: "libCall",
         fn: "http2.streamRespondWait",
-        args: [receiver(), headersArg, boolLit(end ?? false, loc), boolLit(true, loc)],
+        args: [receiver(), headersArg, boolLit(end ?? false, loc), boolLit(wait, loc)],
         type: VOID,
         loc,
       };
@@ -4805,11 +4854,10 @@ function lowerH2StreamMethodCall(
         "use sendTrailers(headers)",
       );
     }
-    const headersArg = lowerH2HeadersArg(lowerer, args[0]!);
     return {
       kind: "libCall",
       fn: "http2.streamSendTrailers",
-      args: [receiver(), headersArg],
+      args: [receiver(), lowerH2HeadersArg(lowerer, args[0]!)],
       type: VOID,
       loc,
     };
@@ -4823,14 +4871,50 @@ function lowerH2StreamMethodCall(
         "use additionalHeaders(headers)",
       );
     }
-    const headersArg = lowerH2HeadersArg(lowerer, args[0]!);
     return {
       kind: "libCall",
       fn: "http2.streamAdditionalHeaders",
-      args: [receiver(), headersArg],
+      args: [receiver(), lowerH2HeadersArg(lowerer, args[0]!)],
       type: VOID,
       loc,
     };
+  }
+  if (name === "write" || name === "end") {
+    requireStatementPosition(lowerer, call, `stream.${name}(...)`);
+    const minArgs = name === "write" ? 1 : 0;
+    if (args.length < minArgs || args.length > 1) {
+      // end() with a trailing callback is common; accept (data?, cb?) by
+      // dropping a trailing closure arg (fire-and-forget — the finish
+      // callback is not modeled here).
+      if (!(name === "end" && args.length === 2)) {
+        lowerer.noLowering(
+          `${name} with ${args.length} arguments`,
+          call,
+          `use ${name}(data${name === "write" ? "" : "?"})`,
+        );
+      }
+    }
+    if (args.length === 0) {
+      return { kind: "libCall", fn: "http2.streamEnd", args: [receiver()], type: VOID, loc };
+    }
+    const data = lowerer.lowerExpr(args[0]!);
+    const isBytes = data.type.kind === "bytes";
+    if (data.type.kind !== "string" && !isBytes) {
+      lowerer.noLowering(
+        `${name} with '${lowerer.fmt(data.type)}' data`,
+        args[0]!,
+        "the chunk is a string or a Uint8Array here",
+      );
+    }
+    const fn: IrLibFn =
+      name === "write"
+        ? isBytes
+          ? "http2.streamWriteBytes"
+          : "http2.streamWrite"
+        : isBytes
+          ? "http2.streamEndBytes"
+          : "http2.streamEndStr";
+    return { kind: "libCall", fn, args: [receiver(), data], type: VOID, loc };
   }
   if (name === "priority") {
     requireStatementPosition(lowerer, call, "stream.priority(...)");
@@ -4990,7 +5074,7 @@ function lowerH2StreamMethodCall(
     const once = boolLit(name === "once", loc);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
-    if (event === "timeout" || event === "ready" || event === "wantTrailers") {
+    if (event === "timeout" || event === "ready") {
       const { cb } = lowerCallbackArg(
         lowerer,
         args[1]!,
@@ -5000,28 +5084,41 @@ function lowerH2StreamMethodCall(
         "use ()",
         [],
       );
-      const fn: IrLibFn =
-        event === "timeout"
-          ? "http2.streamOnTimeout"
-          : event === "ready"
-            ? "http2.streamOnReady"
-            : "http2.streamOnWantTrailers";
+      const fn: IrLibFn = event === "timeout" ? "http2.streamOnTimeout" : "http2.streamOnReady";
       return { kind: "libCall", fn, args: [receiver(), cb, once], type: VOID, loc };
     }
     if (event === "trailers" || event === "headers") {
-      // (headers, flags) — the trailing block a peer sent, or an
-      // informational/additional HEADERS block on a client stream.
+      // (headers, flags) for a trailer block; the informational 'headers'
+      // record carries :status as a number, so its ABI adds the status.
       const cb = h2HeadersCallbackAdapter(
         lowerer,
         args[1]!,
         `${event} listeners`,
         null,
-        false,
+        event === "headers",
         loc,
       );
       return {
         kind: "libCall",
         fn: event === "trailers" ? "http2.streamOnTrailers" : "http2.streamOnHeaders",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
+    if (event === "wantTrailers" || event === "continue") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        `${event} listeners`,
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: event === "wantTrailers" ? "http2.streamOnWantTrailers" : "http2.streamOnContinue",
         args: [receiver(), cb, once],
         type: VOID,
         loc,
@@ -5094,13 +5191,13 @@ function lowerH2StreamMethodCall(
     lowerer.noLowering(
       `stream.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"data", "end", "close", "aborted", "error", "response", "headers", "trailers", "ready", "timeout", and "wantTrailers" are the supported stream events',
+      '"data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events',
     );
   }
   lowerer.noLowering(
     `stream.${name}`,
     call,
-    "respond/write/end/close/destroy/setEncoding/resume/pause/sendTrailers/additionalHeaders/priority/setTimeout and on(...) are the lowered stream members",
+    "respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members",
   );
 }
 
@@ -10359,14 +10456,76 @@ function lowerHttpResMethodCall(
     name === "writeInformation"
   ) {
     // writeInformation answers write()'s boolean, so it may stand in an
-    // expression; the three delegating forms are statements.
-    if (name !== "writeInformation") requireStatementPosition(lowerer, call, `res.${name}(...)`);
-    if (ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse") {
-      lowerer.noLowering(
-        `Http2ServerResponse.${name}`,
-        call,
-        "HTTP/2 informational responses are not supported by the static runtime yet",
-      );
+    // expression; the three delegating forms are statements (an
+    // Http2ServerResponse's informational sends answer a boolean too).
+    const h2Compat =
+      ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse";
+    if (!h2Compat && name !== "writeInformation")
+      requireStatementPosition(lowerer, call, `res.${name}(...)`);
+    if (h2Compat) {
+      // The compat response's informational blocks ride the stream's
+      // additionalHeaders: 100 (writeContinue), 103 (writeEarlyHints) or
+      // the caller's status, sent only before the response starts.
+      if (name === "writeProcessing") {
+        lowerer.noLowering(
+          "Http2ServerResponse.writeProcessing",
+          call,
+          "use writeContinue() or writeInformation(statusCode, headers)",
+        );
+      }
+      const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+      if (name === "writeContinue") {
+        if (args.length !== 0)
+          lowerer.noLowering(
+            "res.writeContinue arguments",
+            call,
+            "writeContinue() takes no arguments",
+          );
+        return {
+          kind: "libCall",
+          fn: "http2.responseWriteInformation",
+          args: [
+            receiver,
+            numLit(100, loc),
+            { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } as IrExpr,
+          ],
+          type: BOOL,
+          loc,
+        };
+      }
+      if (name === "writeEarlyHints") {
+        if (args.length !== 1)
+          lowerer.noLowering("res.writeEarlyHints arguments", call, "pass one header object");
+        return {
+          kind: "libCall",
+          fn: "http2.responseWriteInformation",
+          args: [
+            receiver,
+            numLit(103, loc),
+            h2HeaderPairsArg(lowerer, args[0]!, "writeEarlyHints headers"),
+          ],
+          type: BOOL,
+          loc,
+        };
+      }
+      if (args.length < 1 || args.length > 2)
+        lowerer.noLowering(
+          `res.writeInformation with ${args.length} arguments`,
+          call,
+          "use writeInformation(statusCode[, headers])",
+        );
+      const status = lowerer.lowerExprExpecting(args[0]!, F64);
+      const pairs =
+        args.length === 2
+          ? h2HeaderPairsArg(lowerer, args[1]!, "writeInformation headers")
+          : ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } as IrExpr);
+      return {
+        kind: "libCall",
+        fn: "http2.responseWriteInformation",
+        args: [receiver, status, pairs],
+        type: BOOL,
+        loc,
+      };
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     if (name === "writeContinue" || name === "writeProcessing") {
@@ -10592,13 +10751,6 @@ function lowerHttpResMethodCall(
   }
   if (name === "addTrailers") {
     requireStatementPosition(lowerer, call, "res.addTrailers(...)");
-    if (ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse") {
-      lowerer.noLowering(
-        "Http2ServerResponse.addTrailers",
-        call,
-        "HTTP/2 response trailers are not supported by the static runtime yet",
-      );
-    }
     if (args.length !== 1)
       lowerer.noLowering(
         "res.addTrailers argument count",

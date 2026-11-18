@@ -3024,6 +3024,7 @@ function buildLibFnSignatures() {
     "http.reqHttpVersionMajor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqHttpVersionMinor": { argTypes: [HTTPREQ_T], result: F64 },
     "http.reqAborted": { argTypes: [HTTPREQ_T], result: BOOL },
+    /* req.signal: the message's AbortSignal (built on first read). */
     "http.reqDestroyed": { argTypes: [HTTPREQ_T], result: BOOL },
     "http.resDestroyed": { argTypes: [HTTPRES_T], result: BOOL },
     "http.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
@@ -3530,7 +3531,7 @@ function buildLibFnSignatures() {
     /** session.request(pairs?, endStream) — endStream is a tri-state f64:
      * -1 the method's payload-meaningless default, 0/1 explicit. */
     "http2.sessionRequest": {
-      argTypes: [HTTP2SESSION_T, arrayOf(STRING), F64],
+      argTypes: [HTTP2SESSION_T, arrayOf(STRING), F64, BOOL],
       result: HTTP2STREAM_T,
     },
     "http2.sessionClose": { argTypes: [HTTP2SESSION_T], result: VOID },
@@ -3555,6 +3556,23 @@ function buildLibFnSignatures() {
     "http2.sessionSocket": { argTypes: [HTTP2SESSION_T], result: NETSOCKET_T },
     /** stream.respond(pairs?, endStream) — the server answer. */
     "http2.streamRespond": { argTypes: [HTTP2STREAM_T, arrayOf(STRING), BOOL], result: VOID },
+    /** respond(headers, { endStream, waitForTrailers }). */
+    "http2.streamRespondWait": {
+      argTypes: [HTTP2STREAM_T, arrayOf(STRING), BOOL, BOOL],
+      result: VOID,
+    },
+    /** sendTrailers(headers) and additionalHeaders(headers). */
+    "http2.streamSendTrailers": { argTypes: [HTTP2STREAM_T, arrayOf(STRING)], result: VOID },
+    "http2.streamAdditionalHeaders": { argTypes: [HTTP2STREAM_T, arrayOf(STRING)], result: VOID },
+    "http2.streamOnTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnHeaders": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnWantTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    "http2.streamOnContinue": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+    /** res.writeInformation(statusCode[, headers]) on a compat response. */
+    "http2.responseWriteInformation": {
+      argTypes: [HTTPRES_T, F64, arrayOf(STRING)],
+      result: BOOL,
+    },
     "http2.streamWrite": { argTypes: [HTTP2STREAM_T, STRING], result: VOID },
     "http2.streamWriteBytes": { argTypes: [HTTP2STREAM_T, BYTES_U8], result: VOID },
     "http2.streamEnd": { argTypes: [HTTP2STREAM_T], result: VOID },
@@ -3604,22 +3622,13 @@ function buildLibFnSignatures() {
     "http2.serverSetTimeout": { argTypes: [NETSERVER_T, F64], result: VOID },
     "http2.serverSetTimeoutCb": { argTypes: [NETSERVER_T, F64, null], result: VOID },
     "http2.serverOnTimeout": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
-    // The (headers, flags) events and the trailer/informational surface.
-    "http2.streamRespondWait": {
-      argTypes: [HTTP2STREAM_T, arrayOf(STRING), BOOL, BOOL],
-      result: VOID,
-    },
-    "http2.streamSendTrailers": { argTypes: [HTTP2STREAM_T, arrayOf(STRING)], result: VOID },
-    "http2.streamAdditionalHeaders": { argTypes: [HTTP2STREAM_T, arrayOf(STRING)], result: VOID },
+    // The idle-timer, priority and push controls.
     "http2.streamPriority": { argTypes: [HTTP2STREAM_T], result: VOID },
     "http2.streamPushAllowed": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamSetTimeout": { argTypes: [HTTP2STREAM_T, F64, BOOL], result: VOID },
     "http2.streamSetTimeoutCb": { argTypes: [HTTP2STREAM_T, F64, null, BOOL], result: VOID },
     "http2.streamOnTimeout": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
     "http2.streamOnReady": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
-    "http2.streamOnWantTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
-    "http2.streamOnTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
-    "http2.streamOnHeaders": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
     "http2.streamId": { argTypes: [HTTP2STREAM_T], result: F64 },
     "http2.streamRstCode": { argTypes: [HTTP2STREAM_T], result: F64 },
     "http2.streamDestroyed": { argTypes: [HTTP2STREAM_T], result: BOOL },

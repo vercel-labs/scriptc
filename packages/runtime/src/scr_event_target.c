@@ -809,7 +809,7 @@ static ScrEventObj *scr_event_obj_of(const ScrDyn *d);
 static ScrEvent *scr_event_of(const ScrDyn *d) {
   if (d && d->kind == SCR_DYN_HANDLE &&
       (d->v.handle.tag == SCR_DYNH_EVENT || d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT ||
-       d->v.handle.tag == SCR_DYNH_MESSAGE_EVENT)) {
+       d->v.handle.tag == SCR_DYNH_MESSAGE_EVENT || d->v.handle.tag == SCR_DYNH_CLOSE_EVENT)) {
     return (ScrEvent *)d->v.handle.ptr;
   }
   ScrEventObj *obj = scr_event_obj_of(d);
@@ -1141,7 +1141,16 @@ static ScrDyn *scr_event_get(void *ptr, const char *key, size_t len) {
     if (scr_et_key(key, len, "origin")) return scr_et_str_value(ev->origin);
     if (scr_et_key(key, len, "lastEventId")) return scr_et_str_value(ev->last_event_id);
     if (scr_et_key(key, len, "source")) return scr_dyn_new_null();
-    if (scr_et_key(key, len, "ports")) return ev->ports ? scr_dyn_retain(ev->ports) : scr_dyn_new_arr();
+    if (scr_et_key(key, len, "ports")) {
+      /* Node answers one frozen array, the same one on every read. */
+      if (!ev->ports) {
+        ScrDyn *empty = scr_dyn_new_arr();
+        ev->ports = scr_dyn_freeze_data(empty);
+        scr_dyn_release(empty);
+        if (!ev->ports) return NULL;
+      }
+      return scr_dyn_retain(ev->ports);
+    }
   }
   if (ev->close) {
     if (scr_et_key(key, len, "code")) return scr_dyn_new_num((double)ev->code);
@@ -1987,9 +1996,7 @@ static void scr_et_render_plain(const ScrDyn *v, char *out, size_t cap) {
 static ScrStr *scr_et_option_string(const ScrDyn *options, const char *key) {
   ScrDyn *value = scr_et_prop(options, key);
   if (value == NULL) return NULL;
-  ScrStr *out = value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL
-                    ? scr_str_new("", 0)
-                    : scr_dyn_string_coerce_js(value);
+  ScrStr *out = value->kind == SCR_DYN_UNDEF ? scr_str_new("", 0) : scr_dyn_string_coerce_js(value);
   scr_dyn_release(value);
   return out;
 }
@@ -2063,7 +2070,14 @@ ScrDyn *scr_message_event_new(ScrDyn *args) {
         scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
         goto fail;
       }
-      ev->ports = ports; /* transfer */
+      ScrDyn *copy = scr_dyn_new_arr();
+      for (size_t i = 0; i < ports->v.arr.len; i++)
+        scr_dyn_arr_push(copy, scr_dyn_retain(ports->v.arr.items[i]));
+      scr_dyn_release(ports);
+      ScrDyn *frozen = scr_dyn_freeze_data(copy);
+      scr_dyn_release(copy);
+      if (!frozen) goto fail;
+      ev->ports = frozen; /* transfer */
     } else if (ports) {
       scr_dyn_release(ports);
     }

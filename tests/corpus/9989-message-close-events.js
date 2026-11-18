@@ -58,6 +58,38 @@ console.log(
   new CloseEvent("x").code,
 );
 
+console.log(
+  "nulls",
+  JSON.stringify(new MessageEvent("x", { origin: null }).origin),
+  JSON.stringify(new MessageEvent("x", { lastEventId: null }).lastEventId),
+  JSON.stringify(new MessageEvent("x", {}).origin),
+  JSON.stringify(new CloseEvent("x", { reason: null }).reason),
+  JSON.stringify(new CloseEvent("x").reason),
+);
+
+const target = new EventTarget();
+target.addEventListener("x", (event) => {
+  console.log("dispatched", event.type, event instanceof CloseEvent);
+});
+console.log("dispatch", target.dispatchEvent(new CloseEvent("x")));
+
+const channel = new MessageChannel();
+const initPorts = [channel.port1];
+const holder = new MessageEvent("ports", { ports: initPorts });
+initPorts.push(channel.port2);
+const plain = new MessageEvent("empty");
+console.log(
+  "ports",
+  holder.ports.length,
+  holder.ports === holder.ports,
+  Object.isFrozen(holder.ports),
+  plain.ports.length,
+  plain.ports === plain.ports,
+  Object.isFrozen(plain.ports),
+);
+channel.port1.close();
+channel.port2.close();
+
 const failures = [
   ["message missing", () => new MessageEvent()],
   ["close missing", () => new CloseEvent()],

@@ -208,15 +208,6 @@
     },
     {
       "binding": {
-        "module": "node:trace_events",
-        "access": "import"
-      },
-      "code": "SC1010",
-      "message": "the 'node:trace_events' module is not supported yet",
-      "layer": "load"
-    },
-    {
-      "binding": {
         "module": "node:vm",
         "access": "import"
       },

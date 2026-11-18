@@ -752,6 +752,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "where the program requires or imports one module whose export object is an accessor",
   ),
   scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsRuntimeWholeExportValueWritesOf",
+    1,
+    "prefilter",
+    "a module whose whole export is chosen at run time has to spell `module.exports`; every write it finds is decided from its target's symbol and its value's type",
+  ),
+  scan(
     "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
     1,
     "prefilter",
@@ -774,12 +780,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "a file that never spells `extends` declares no derived class",
-  ),
-  scan(
-    "frontend/lowering/cycle-initialization.ts#earlyHeritageReference",
-    1,
-    "closed-world",
-    "references to one class of an import cycle",
   ),
   scan(
     "frontend/lowering/cycle-initialization.ts#classLocalNames",
@@ -977,6 +977,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots named by createRequire calls",
+  ),
+  scan(
+    "frontend/lowering/cycle-initialization.ts#earlyHeritageReferences",
+    1,
+    "closed-world",
+    "the `extends` clauses that read a class of an import cycle before its declaration, each of which carries the class's initialization check at its own statement",
   ),
   scan(
     "frontend/program.ts#boundedDynamicImportRoots7",

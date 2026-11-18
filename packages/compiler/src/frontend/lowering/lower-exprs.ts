@@ -3119,6 +3119,7 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "AbortSignal",
   "Blob",
   "BroadcastChannel",
+  "CloseEvent",
   "CustomEvent",
   "DOMException",
   "Event",
@@ -3437,6 +3438,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "httpClientReq":
     case "secureCtx":
     case "fsWatcher":
+    case "statWatcher":
     case "cryptoHash":
     case "cryptoHmac":
     case "childStream":

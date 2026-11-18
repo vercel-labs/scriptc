@@ -66,8 +66,19 @@ typedef void (*ScrWatchFileFn)(ScrClosure *cb, ScrStats *current, ScrStats *prev
  * the adapter calls the listener with (current, previous) Stats (+1 each).
  * The path is resolved (path.resolve) and keys the poller; a second call
  * on the same resolved path adds the listener and ignores its options. */
-void scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
-                       ScrWatchFileFn fn);
+/* fs.watchFile returns a StatWatcher (+1): one handle per call over the
+ * registration it added. ref()/unref() move that registration's loop
+ * liveness; both are no-ops once fs.unwatchFile removed it. Node's
+ * StatWatcher has no close() — unwatchFile is the removal API. */
+typedef struct ScrStatWatcher ScrStatWatcher;
+ScrStatWatcher *scr_fs_watch_file(ScrStr *path, double interval, bool persistent, ScrClosure *cb,
+                                  ScrWatchFileFn fn);
+ScrStatWatcher *scr_stat_watcher_retain(ScrStatWatcher *w);
+void scr_stat_watcher_release(ScrStatWatcher *w);
+void *scr_stat_watcher_retain_v(void *p);
+void scr_stat_watcher_release_v(void *p);
+void scr_stat_watcher_ref(ScrStatWatcher *w);
+void scr_stat_watcher_unref(ScrStatWatcher *w);
 /* fs.unwatchFile(path[, listener]) — cb borrowed, NULL removes every
  * listener; with none left the poller stops. */
 void scr_fs_unwatch_file(ScrStr *path, ScrClosure *cb);

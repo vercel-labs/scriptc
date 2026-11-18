@@ -115,6 +115,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseResolve",
   // A promise boxed as a weak collection's key (scr_dyn_new_promise).
   "weakMap.promiseKey",
+  // sqlite.backup answers a promise minted by the dyn-async unit.
+  "sqlite.backup",
   // The generic Promise statics build and settle their capability's promise
   // with dyn values (scr_dyn_new_promise, scr_dyn_promise_resolve).
   "promise.genericStatic",
@@ -125,6 +127,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // process.finalization reports its ExperimentalWarnings through this
   // unit's deferred warning queue.
   "process.finalization",
+  "process.emit",
+  "process.emitError",
   "process.emitWarning",
   "process.emitWarningText",
   "process.offMultipleResolves",
@@ -171,6 +175,12 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entryType",
   "perf.mark",
   "perf.measure",
+  // Resource timing entries and their buffer (scr_perf.c).
+  "perf.resourceMark",
+  "perf.resourceClear",
+  "perf.resourceBufferSize",
+  "perf.entryResourceNum",
+  "perf.entryResourceStr",
   // new PerformanceMark and the PerformanceObserver family: their
   // callbacks run from an immediate (scr_perf.c).
   "perf.markNew",
@@ -191,6 +201,21 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+  // The RunScope handle withScope answers, and AsyncResource's registry
+  // with its bound functions.
+  "als.withScope",
+  "ar.asyncId",
+  "ar.bind",
+  "ar.bindStatic",
+  "ar.emitDestroy",
+  "ar.new",
+  "ar.runInScope",
+  "ar.triggerAsyncId",
+
+  // trace_events.Tracing handles (same unit: the checked-dynamic handle
+  // table and the registry).
+  "te.createTracing",
+  "te.getEnabledCategories",
   "blob.arrayBuffer",
   "blob.bytes",
   "blob.fileNew",
@@ -221,6 +246,15 @@ const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.enterWith",
   "als.exitRun",
   "als.run",
+  // withScope installs a store exactly as enterWith does; a program whose
+  // only store comes from it schedules its timers and completion callbacks
+  // through the *_als entry points like any other store establishment.
+  "als.withScope",
+  // AsyncResource's calls run program code in the resource's context, so the
+  // scheduling they do carries that context too.
+  "ar.bind",
+  "ar.bindStatic",
+  "ar.runInScope",
   "dc.chanBindStore",
   "dc.chanRunStores",
   // getTestContext() reads the test runner's entry in the same snapshot.
@@ -316,7 +350,11 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 
 /** Entry points that link the stream unit (with STREAM_LIB_PREFIXES). */
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.toWebReadable",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
+  "webstream.writableToWeb",
+  "readable.iterator",
   "webstream.duplexFromWeb",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
@@ -402,7 +440,11 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 
 /** The Readable operators and Readable.from over a compiled generator or a checked-dynamic iterator (scr_stream_ops.c), which await through the dyn-async unit (with READABLE_DYN_ASYNC_PREFIXES). */
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "webstream.toWebReadable",
+  "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
+  "webstream.writableToWeb",
+  "readable.iterator",
   "webstream.duplexFromWeb",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
@@ -872,6 +914,7 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.prependExit",
   "process.prependSignal",
   "process.stdio",
+  "process.stdioOf",
   "process.stdinIsRaw",
   "process.stdioSlot",
   "process.stdioWriteDyn",
@@ -1075,6 +1118,7 @@ const WEBCRYPTO_ASYMMETRIC_NAMES: ReadonlySet<string> = new Set([
   "rsa-pss",
   "rsassa-pkcs1-v1_5",
   "x25519",
+  "x448",
 ]);
 
 /** Whether a string literal in the module names Ed25519, without regard
@@ -1764,6 +1808,7 @@ const RUNTIME_FEATURE_RULES = {
    * a boxed function or record that carries one): scr_dgram_dyn.c over
    * the dgram unit. */
   dgramDyn: rule({
+    fns: ["dgram.isSocket"],
     expr: (node, tables) =>
       (node.kind === "dynFrom" && mentionsDgramSocket(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsDgramSocket(node.type, tables())),
@@ -1906,7 +1951,12 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.from",
       "webstream.instanceOf",
       "webstream.install",
+      // Readable.toWeb links scr_webstreams.c, which invokes the source's
+      // sink members through scr_dyn_invoke.
+      "webstream.toWebReadable",
+      "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
+      "webstream.writableToWeb",
       "webstream.duplexFromWeb",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
@@ -2070,6 +2120,11 @@ const RUNTIME_FEATURE_RULES = {
    * generatePrime; unknown encodings and argument values render through
    * the inspect unit. */
   dh: rule({ fns: [...DH_LIB_FNS] }),
+  /** Argon2: scr_argon2.c. */
+  argon2: rule({ fns: ["crypto.argon2Sync", "crypto.argon2Cb"] }),
+  /** ML-KEM (mlkem-native): selected by the node:crypto encapsulate and
+   * WebCrypto ML-KEM lowerings, and links the vendored archive. */
+  mlkem: rule({ fns: [] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -2148,10 +2203,19 @@ const RUNTIME_FEATURE_RULES = {
       // A test's t.signal (scr_test.c): the abort unit supplies its
       // controller through scr_abort.c's helpers.
       "test.ctxSignal",
+      // IncomingMessage.signal (scr_http.c) uses the same helpers.
+      "http.reqSignal",
     ],
     // A program that reads the AbortController class as a value may build
     // one (dyn.globalConstructor), and the construction runs this unit.
     libCall: (node) => readsGlobalConstructor(node, "AbortController"),
+    // A checked-dynamic read of a `signal` member (IncomingMessage.signal in
+    // a JavaScript source) reaches the abort unit through the handle's dyn
+    // dispatch, where no libCall names it.
+    // A runtime key can name signal, so every dynamic member read selects
+    // the unit the handle's dispatch needs.
+    expr: (node) =>
+      node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
@@ -2167,10 +2231,16 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
+   * content as a byte-oriented web stream, its own gated unit. */
+  fsWebStream: rule({ fns: ["fileHandle.readableWebStream"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
-  fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
+  fsWatchFile: rule({
+    fns: ["fs.watchFile", "fs.unwatchFile", "statWatcher.ref", "statWatcher.unref"],
+    types: ["statWatcher"],
+  }),
   /** fsPromises.watch (scr_watch_async.c): the async iterable the
    * `for await` lowering drains, over the fs.watch watcher unit. */
   fsWatchEvents: rule({
@@ -2209,7 +2279,12 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      // Readable.toWeb links the web stream unit, which renders a
+      // non-iterable source (and a thrown member) through inspect.
+      "webstream.toWebReadable",
+      "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
+      "webstream.writableToWeb",
       "webstream.duplexFromWeb",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
@@ -2276,7 +2351,10 @@ const RUNTIME_FEATURE_RULES = {
   parseArgs: rule({ fns: [...PARSE_ARGS_LIB_FNS, ...UTIL_CALLABLE_LIB_FNS] }),
   /** perf_hooks event-loop metrics (eventLoopUtilization,
    * monitorEventLoopDelay): scr_perf_loop.c. */
-  perfLoop: rule({ fns: ["perf.idleTime"], prefixes: ["perf.loop", "perf.eld"] }),
+  perfLoop: rule({
+    fns: ["perf.idleTime", "worker.performance"],
+    prefixes: ["perf.loop", "perf.eld", "perf.histo"],
+  }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */
   pki: rule({ scan: webCryptoAsymmetricScan, fns: [...PKI_LIB_FNS] }),
@@ -2397,7 +2475,10 @@ const RUNTIME_FEATURE_RULES = {
    * SCR_NODE_ISLAND_STDIO build of scr_node_island.c, which make the
    * island's two output streams read and write the program's write slots;
    * every other program with islands keeps its island units unchanged. */
-  stdioObject: rule({ fns: ["process.stdio", "process.stdioSlot"], types: ["procStream"] }),
+  stdioObject: rule({
+    fns: ["process.stdio", "process.stdioOf", "process.stdioSlot"],
+    types: ["procStream"],
+  }),
   /** The program holds a process stream as a value and names getColorDepth
    * or hasColors: links scr_tty_colors.c (Node's color rules over an
    * environment object) and the SCR_TTY_COLORS build of scr_events.c, whose
@@ -2418,7 +2499,7 @@ const RUNTIME_FEATURE_RULES = {
    * the unit makes (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew"],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew", "readable.iterator"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program
@@ -2726,11 +2807,14 @@ function noRuntimeFeatures(): RuntimeFeatures {
     ecdh: false,
     x509: false,
     dh: false,
+    argon2: false,
+    mlkem: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsWebStream: false,
     fnMemberProps: false,
     fsFlags: false,
     fsExistsValue: false,

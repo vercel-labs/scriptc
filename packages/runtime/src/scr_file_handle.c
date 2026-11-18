@@ -35,6 +35,7 @@ struct ScrFileHandle {
   /* Node's kRefs: the handle itself counts 1, every stream over it one
    * more. close() resolves once the count reaches zero. */
   size_t refs;
+  bool locked; /* readableWebStream opened a stream on it */
   ScrFileHandleHook *hooks; /* 'close' listeners (the streams' close()) */
   ScrPromise *close_wait;   /* close() waiting for the streams, or NULL */
 };
@@ -339,6 +340,10 @@ int scr_file_handle_stream_unref(ScrFileHandle *h) {
   if (p) scr_promise_release(p);
   return fd;
 }
+
+
+bool scr_file_handle_is_locked(const ScrFileHandle *h) { return h->locked; }
+void scr_file_handle_lock(ScrFileHandle *h) { h->locked = true; }
 
 ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx) {
   ScrFileHandleHook *k = malloc(sizeof *k);

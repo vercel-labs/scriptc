@@ -306,6 +306,11 @@ typedef struct {
   const char *hash;   /* HMAC: the normalized hash name */
   bool has_length;
   double length;
+  /* KMAC sign and verify: KmacParams' required output length in bits and
+   * its optional customization (+1 until the caller drops it). */
+  bool has_output_length;
+  double output_length;
+  ScrBytes *customization;
 } ScrWcAlgorithm;
 
 const char scr_wc_normalize_prefix[] = "Failed to normalize algorithm";
@@ -368,7 +373,7 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
  * process-warning unit is linked, and otherwise to the default report. It
  * does not go through scr_emit_warning, which would make every WebCrypto
  * program link that unit. */
-static SCR_TL bool scr_wc_experimental_warned[5];
+static SCR_TL bool scr_wc_experimental_warned[17];
 
 static void scr_wc_warning_tick(ScrClosure *self) {
   ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
@@ -392,8 +397,10 @@ static void scr_wc_warning_tick(ScrClosure *self) {
 }
 
 static void scr_wc_warn_experimental_algorithm(const char *canonical) {
-  static const char *const names[] = {"SHA3-256", "SHA3-384", "SHA3-512", "AES-OCB",
-                                      "ChaCha20-Poly1305"};
+  static const char *const names[] = {"SHA3-256", "SHA3-384",      "SHA3-512", "AES-OCB",
+                                      "ChaCha20-Poly1305", "KMAC128", "KMAC256", "Argon2d",
+                                      "Argon2i", "Argon2id", "cSHAKE128", "cSHAKE256",
+                                      "TurboSHAKE128", "TurboSHAKE256", "KT128", "KT256", "X448"};
   for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
     if (strcmp(canonical, names[i]) != 0) continue;
     if (scr_wc_experimental_warned[i]) return;
@@ -554,6 +561,70 @@ static bool scr_wc_is_kdf(const char *name) {
   return strcmp(name, "PBKDF2") == 0 || strcmp(name, "HKDF") == 0;
 }
 
+static bool scr_wc_is_kmac(const char *name) {
+  return strcmp(name, "KMAC128") == 0 || strcmp(name, "KMAC256") == 0;
+}
+
+static bool scr_wc_is_argon2(const char *name) {
+  return strcmp(name, "Argon2d") == 0 || strcmp(name, "Argon2i") == 0 ||
+         strcmp(name, "Argon2id") == 0;
+}
+
+/* KmacImportParams / KmacKeyGenParams' optional [EnforceRange] length in
+ * bits; absent leaves the default for the caller. */
+static bool scr_wc_kmac_length_params(ScrDyn *identifier, ScrWcAlgorithm *out) {
+  if (!scr_wc_is_object(identifier)) return true;
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  ScrDyn *length = scr_wc_member(plain, "length");
+  bool ok = true;
+  if (length->kind != SCR_DYN_UNDEF) {
+    double x;
+    if (scr_wc_enforce_range(scr_wc_normalize_prefix, "length in passed algorithm", length,
+                             4294967295.0, &x)) {
+      out->has_length = true;
+      out->length = x;
+    } else {
+      ok = false;
+    }
+  }
+  scr_dyn_release(length);
+  scr_dyn_release(plain);
+  return ok;
+}
+
+/* KmacParams for sign and verify: the required [EnforceRange] output
+ * length in bits, then the optional customization BufferSource. */
+static bool scr_wc_kmac_params(ScrDyn *identifier, ScrWcAlgorithm *out) {
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("KmacParams", "outputLength");
+    return false;
+  }
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  ScrDyn *length = scr_wc_member(plain, "outputLength");
+  bool ok = true;
+  if (length->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("KmacParams", "outputLength");
+    ok = false;
+  } else {
+    double x;
+    if (scr_wc_enforce_range(scr_wc_normalize_prefix, "outputLength in passed algorithm", length,
+                             4294967295.0, &x)) {
+      out->has_output_length = true;
+      out->output_length = x;
+    } else {
+      ok = false;
+    }
+  }
+  scr_dyn_release(length);
+  if (ok)
+    ok = scr_wc_dictionary_buffer(plain, "KmacParams", "customization", false,
+                                  &out->customization);
+  scr_dyn_release(plain);
+  return ok;
+}
+
 typedef enum {
   SCR_WC_OP_IMPORT,
   SCR_WC_OP_SIGN,
@@ -576,6 +647,9 @@ static bool scr_wc_normalize(ScrDyn *identifier, const char *const *names, size_
     return false;
   }
   scr_wc_warn_experimental_algorithm(out->name);
+  bool kmac = scr_wc_is_kmac(out->name);
+  if (kmac && op == SCR_WC_OP_SIGN) return scr_wc_kmac_params(identifier, out);
+  if (kmac) return scr_wc_kmac_length_params(identifier, out);
   bool hmac = strcmp(out->name, "HMAC") == 0;
   if (op == SCR_WC_OP_IMPORT && hmac)
     return scr_wc_hmac_params(identifier, "HmacImportParams", "DataError", "importKey", out);
@@ -662,7 +736,8 @@ static ScrDyn *scr_crypto_key_algorithm(ScrCryptoKey *key) {
   if (!key->algorithm) {
     ScrDyn *algorithm = scr_dyn_new_obj();
     scr_dyn_obj_set(algorithm, "name", 4, scr_wc_cstr(key->name));
-    if (!scr_wc_is_kdf(key->name) && !scr_wc_is_chacha(key->name))
+    if (!scr_wc_is_kdf(key->name) && !scr_wc_is_chacha(key->name) &&
+        !scr_wc_is_argon2(key->name))
       scr_dyn_obj_set(algorithm, "length", 6, scr_dyn_new_num(key->length));
     if (key->hash) {
       ScrDyn *hash = scr_dyn_new_obj();
@@ -798,7 +873,9 @@ static void scr_wc_truncate_bits(unsigned char *data, size_t len, double bits) {
 
 /* The usages each key algorithm accepts. */
 static unsigned scr_wc_allowed_usages(const char *name) {
-  if (strcmp(name, "HMAC") == 0) return SCR_WC_USAGE_SIGN | SCR_WC_USAGE_VERIFY;
+  if (strcmp(name, "HMAC") == 0 || scr_wc_is_kmac(name))
+    return SCR_WC_USAGE_SIGN | SCR_WC_USAGE_VERIFY;
+  if (scr_wc_is_argon2(name)) return SCR_WC_USAGE_DERIVE_KEY | SCR_WC_USAGE_DERIVE_BITS;
   if (strcmp(name, "AES-KW") == 0) return SCR_WC_USAGE_WRAP_KEY | SCR_WC_USAGE_UNWRAP_KEY;
   if (scr_wc_is_kdf(name)) return SCR_WC_USAGE_DERIVE_KEY | SCR_WC_USAGE_DERIVE_BITS;
   return SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_DECRYPT | SCR_WC_USAGE_WRAP_KEY |
@@ -810,7 +887,7 @@ static bool scr_wc_check_usages(const char *name, long usages) {
   if (!(usages & ~(long)scr_wc_allowed_usages(name))) return true;
   char message[96];
   snprintf(message, sizeof message, "Unsupported key usage for %s%s key",
-           scr_wc_is_kdf(name) ? "a " : "", name);
+           scr_wc_is_kdf(name) || scr_wc_is_argon2(name) ? "a " : "", name);
   scr_throw_domex("SyntaxError", message);
   return false;
 }
@@ -830,6 +907,7 @@ static const char *scr_wc_jwk_alg(const char *name, const char *hash, double len
     return buf;
   }
   if (scr_wc_is_chacha(name)) return "C20P";
+  if (scr_wc_is_kmac(name)) return strcmp(name, "KMAC256") == 0 ? "K256" : "K128";
   if (!scr_wc_is_aes(name)) return NULL;
   snprintf(buf, size, "A%.0f%s", length, name + 4);
   return buf;
@@ -998,13 +1076,13 @@ static ScrBytes *scr_wc_jwk_secret(const ScrWcJwk *jwk, bool extractable, long u
 const ScrWcAsymmetric *scr_wc_asymmetric = NULL;
 
 static const char *const scr_wc_asymmetric_names[] = {
-    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519",
+    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519", "X448",
 };
 
 /* Whether an asymmetric algorithm name is one of the key-agreement ones
  * (deriveBits and deriveKey). */
 static bool scr_wc_is_derive_algorithm(const char *name) {
-  return strcmp(name, "ECDH") == 0 || strcmp(name, "X25519") == 0;
+  return strcmp(name, "ECDH") == 0 || strcmp(name, "X25519") == 0 || strcmp(name, "X448") == 0;
 }
 
 /* Whether the AlgorithmIdentifier at args[index] names ECDSA,
@@ -1147,6 +1225,60 @@ done:
   return result;
 }
 
+/* kmacImportKey: the usage check, then the format, then the key length.
+ * Node imports KMAC keys from raw-secret or JWK only (raw is refused),
+ * and the JWK alg is K128/K256. */
+static ScrDyn *scr_wc_import_kmac(const char *format, ScrBytes *data, const ScrWcJwk *jwk,
+                                  const ScrWcAlgorithm *algorithm, bool extractable, long usages,
+                                  bool *unsupported) {
+  if (!scr_wc_check_usages(algorithm->name, usages)) return NULL;
+  ScrBytes *bytes = NULL;
+  if (strcmp(format, "raw-secret") == 0) {
+    bytes = scr_bytes_retain(data);
+  } else if (strcmp(format, "jwk") == 0) {
+    bytes = scr_wc_jwk_secret(jwk, extractable, usages, "sig");
+    if (!bytes) return NULL;
+    const char *expected = scr_wc_jwk_alg(algorithm->name, NULL, 0, NULL, 0);
+    if (jwk->alg && expected && !scr_wc_str_is(jwk->alg, expected)) {
+      scr_bytes_release(bytes);
+      scr_throw_domex("DataError", "JWK \"alg\" does not match the requested algorithm");
+      return NULL;
+    }
+  } else {
+    *unsupported = true;
+    return NULL;
+  }
+  ScrDyn *result = NULL;
+  {
+    ScrBytes *view = bytes;
+    SCR_BYTES_SNAPSHOT(view);
+    size_t len = (size_t)scr_bytes_byte_len(view);
+    double length = (double)len * 8;
+    if (len == 0) {
+      scr_throw_domex("DataError", "Invalid key length");
+      goto done;
+    }
+    if (algorithm->has_length) {
+      if (scr_wc_bits_to_bytes(algorithm->length) != len) {
+        scr_throw_domex("DataError", "Invalid key length");
+        goto done;
+      }
+      length = algorithm->length;
+    }
+    result = scr_crypto_key_new(view->data, len, algorithm->name, NULL, length, (unsigned)usages,
+                                extractable);
+    /* A declared bit length that is not a whole byte count keeps only its
+     * high bits, like Node's key import. */
+    if (result) {
+      ScrCryptoKey *created = scr_crypto_key_of(result);
+      scr_wc_truncate_bits(created->data, created->len, length);
+    }
+  }
+done:
+  scr_bytes_release(bytes);
+  return result;
+}
+
 /* aesImportKey: the usage check, then the format and the key length. */
 static ScrDyn *scr_wc_import_aes(const char *format, ScrBytes *data, const ScrWcJwk *jwk,
                                  const char *name, bool extractable, long usages,
@@ -1192,6 +1324,27 @@ done:
   return result;
 }
 
+/* argon2ImportKey (Argon2d/i/id): raw-secret only, never extractable,
+ * derivation usages only, raw bytes of any length. */
+static ScrDyn *scr_wc_import_argon2(const char *format, ScrBytes *data, const char *name,
+                                    bool extractable, long usages, bool *unsupported) {
+  if (extractable) {
+    char message[64];
+    snprintf(message, sizeof message, "%s keys are not extractable", name);
+    scr_throw_domex("SyntaxError", message);
+    return NULL;
+  }
+  if (!scr_wc_check_usages(name, usages)) return NULL;
+  if (strcmp(format, "raw-secret") != 0) {
+    *unsupported = true;
+    return NULL;
+  }
+  ScrBytes *view = data;
+  SCR_BYTES_SNAPSHOT(view);
+  return scr_crypto_key_new(view->data, (size_t)scr_bytes_byte_len(view), name, NULL, 0,
+                            (unsigned)usages, false);
+}
+
 /* importGenericSecretKey (PBKDF2, HKDF): never extractable, derivation
  * usages only, raw bytes of any length. */
 static ScrDyn *scr_wc_import_kdf(const char *format, ScrBytes *data, const char *name,
@@ -1226,6 +1379,10 @@ static ScrDyn *scr_wc_import_key_sync(const char *format, ScrBytes *data, const 
     key = scr_wc_import_aes(format, data, jwk, algorithm->name, extractable, usages, &unsupported);
   else if (scr_wc_is_kdf(algorithm->name))
     key = scr_wc_import_kdf(format, data, algorithm->name, extractable, usages, &unsupported);
+  else if (scr_wc_is_argon2(algorithm->name))
+    key = scr_wc_import_argon2(format, data, algorithm->name, extractable, usages, &unsupported);
+  else if (scr_wc_is_kmac(algorithm->name))
+    key = scr_wc_import_kmac(format, data, jwk, algorithm, extractable, usages, &unsupported);
   else {
     scr_wc_unsupported_algorithm("importKey", algorithm->name);
     return NULL;
@@ -1305,6 +1462,15 @@ static ScrDyn *scr_wc_key_object_to_crypto_key_values(const ScrDyn *key, ScrDyn 
                     (key->v.handle.tag == SCR_DYNH_PRIVATE_KEY ||
                      key->v.handle.tag == SCR_DYNH_PUBLIC_KEY);
   if (asymmetric) {
+    /* X448 reports its ExperimentalWarning when the algorithm normalizes,
+     * as importKey and generateKey do; peek at the name without disturbing
+     * the conversion's own error order. */
+    ScrStr *name = NULL;
+    if (algorithm->kind == SCR_DYN_STR) name = scr_str_retain(algorithm->v.str);
+    if (name) {
+      if (scr_wc_ascii_ieq(name, "X448")) scr_wc_warn_experimental_algorithm("X448");
+      scr_str_release(name);
+    }
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->to_crypto_key) {
       scr_wc_unsupported("toCryptoKey", "an asymmetric KeyObject");
       return NULL;
@@ -1431,7 +1597,8 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
                         SCR_WC_OP_GENERATE, &algorithm))
     goto done;
   bool hmac = strcmp(algorithm.name, "HMAC") == 0;
-  if (!hmac && !scr_wc_is_cipher_key(algorithm.name)) {
+  bool kmac = scr_wc_is_kmac(algorithm.name);
+  if (!hmac && !kmac && !scr_wc_is_cipher_key(algorithm.name)) {
     scr_wc_unsupported_algorithm("generateKey", algorithm.name);
     goto done;
   }
@@ -1452,6 +1619,9 @@ ScrPromise *scr_webcrypto_generate_key(ScrDyn *args) {
                                        strcmp(algorithm.hash, "SHA-512") == 0
                                  ? 1024
                                  : 512)
+                  : kmac ? (algorithm.has_length
+                                ? algorithm.length
+                                : strcmp(algorithm.name, "KMAC256") == 0 ? 256 : 128)
                   : scr_wc_is_chacha(algorithm.name) ? 256
                   : algorithm.has_length              ? algorithm.length
                                                       : 512;
@@ -1474,9 +1644,17 @@ done:
 /* exportKeySync's checks for a secret key: false with Node's error
  * pending. raw, raw-secret and jwk are the formats a secret key exports. */
 static bool scr_wc_exportable(const char *format, const ScrCryptoKey *key) {
-  if (scr_wc_is_kdf(key->name)) {
+  if (scr_wc_is_kdf(key->name) || scr_wc_is_argon2(key->name)) {
     char message[64];
     snprintf(message, sizeof message, "%s key export is not supported", key->name);
+    scr_throw_domex("NotSupportedError", message);
+    return false;
+  }
+  /* KMAC keys export as raw-secret (and JWK) but not as raw. */
+  if (scr_wc_is_kmac(key->name) && strcmp(format, "raw") == 0) {
+    char message[96];
+    snprintf(message, sizeof message, "Unable to export %s secret key using %s format", key->name,
+             format);
     scr_throw_domex("NotSupportedError", message);
     return false;
   }
@@ -1573,10 +1751,9 @@ ScrPromise *scr_webcrypto_export_key(ScrDyn *args) {
 }
 
 /* sign(algorithm, key, data) / verify(algorithm, key, signature, data):
- * the HMAC over `data`, or NULL with the error pending. *mac_len is the
- * digest length. */
-static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char mac[64],
-                               size_t *mac_len, ScrBytes **signature) {
+ * the HMAC or KMAC over `data` (+1), or NULL with the error pending. */
+static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, ScrBytes **mac_out,
+                               ScrBytes **signature) {
   const char *prefix = verify ? "Failed to execute 'verify' on 'SubtleCrypto'"
                               : "Failed to execute 'sign' on 'SubtleCrypto'";
   const char *method = verify ? "verify" : "sign";
@@ -1586,6 +1763,8 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char ma
   scr_wc_args_take(&a, args, n);
   bool ok = false;
   ScrBytes *data = NULL;
+  ScrWcAlgorithm algorithm;
+  memset(&algorithm, 0, sizeof algorithm);
   if (!scr_wc_is_object(a.v[0])) {
     ScrStr *s = scr_wc_dom_string(a.v[0]);
     if (!s) goto done;
@@ -1603,11 +1782,11 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char ma
   }
   data = scr_wc_buffer_source(prefix, verify ? 3 : 2, a.v[verify ? 3 : 2]);
   if (!data) goto done;
-  ScrWcAlgorithm algorithm;
   if (!scr_wc_normalize(a.v[0], scr_wc_sign_names, SCR_WC_COUNT(scr_wc_sign_names),
                         SCR_WC_OP_SIGN, &algorithm))
     goto done;
-  if (strcmp(algorithm.name, "HMAC") != 0) {
+  bool kmac = scr_wc_is_kmac(algorithm.name);
+  if (!kmac && strcmp(algorithm.name, "HMAC") != 0) {
     scr_wc_unsupported_algorithm(method, algorithm.name);
     goto done;
   }
@@ -1624,11 +1803,46 @@ static bool scr_wc_sign_verify(const ScrDyn *args, bool verify, unsigned char ma
   {
     ScrBytes *view = data;
     SCR_BYTES_SNAPSHOT(view);
-    *mac_len = scr_crypto_hmac_raw(scr_wc_native_hash(key->hash), key->data, key->len, view->data,
-                                   (size_t)scr_bytes_byte_len(view), mac);
+    size_t data_len = (size_t)scr_bytes_byte_len(view);
+    if (kmac) {
+      size_t out_bytes = scr_wc_bits_to_bytes(algorithm.output_length);
+      /* OpenSSL's KMAC refuses outputs above 2^21 - 1 bytes. */
+      if (out_bytes > 2097151) {
+        scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
+        goto done;
+      }
+      /* OpenSSL's KMAC accepts a customization of at most 512 bytes. */
+      if (algorithm.customization && scr_bytes_byte_len(algorithm.customization) > 512) {
+        scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
+        goto done;
+      }
+      ScrBytes *mac = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
+      ScrKeccakCtx ctx;
+      /* KMAC encodes the key's declared bit length, which a WebCrypto key
+       * can record below its whole byte count. */
+      size_t key_bits = key->length > 0 ? (size_t)key->length : key->len * 8;
+      size_t key_bytes = (key_bits + 7) / 8;
+      if (key_bytes > key->len) key_bytes = key->len;
+      scr_kmac_init(&ctx, strcmp(algorithm.name, "KMAC256") == 0, key->data, key_bytes, key_bits,
+                    algorithm.customization ? algorithm.customization->data : NULL,
+                    algorithm.customization
+                        ? (size_t)scr_bytes_byte_len(algorithm.customization)
+                        : 0);
+      scr_keccak_update(&ctx, view->data, data_len);
+      scr_kmac_final(&ctx, out_bytes, (size_t)algorithm.output_length, mac->data);
+      *mac_out = mac;
+    } else {
+      unsigned char raw[64];
+      size_t len = scr_crypto_hmac_raw(scr_wc_native_hash(key->hash), key->data, key->len,
+                                       view->data, data_len, raw);
+      ScrBytes *mac = scr_bytes_new(SCR_BYTES_U8, (double)len);
+      if (len) memcpy(mac->data, raw, len);
+      *mac_out = mac;
+    }
   }
   ok = true;
 done:
+  if (algorithm.customization) scr_bytes_release(algorithm.customization);
   if (data) scr_bytes_release(data);
   scr_wc_args_drop(&a, n);
   return ok;
@@ -1640,13 +1854,10 @@ ScrPromise *scr_webcrypto_sign(ScrDyn *args) {
     return scr_wc_asymmetric ? scr_wc_asymmetric->sign(args)
                              : scr_wc_asymmetric_missing("sign", asymmetric);
   }
-  unsigned char mac[64];
-  size_t mac_len = 0;
-  if (!scr_wc_sign_verify(args, false, mac, &mac_len, NULL)) return scr_wc_rejected();
-  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)mac_len);
-  memcpy(out->data, mac, mac_len);
+  ScrBytes *mac = NULL;
+  if (!scr_wc_sign_verify(args, false, &mac, NULL)) return scr_wc_rejected();
   ScrPromise *p = scr_promise_new();
-  scr_crypto_defer_bytes(out, NULL, scr_crypto_promise_callback(p),
+  scr_crypto_defer_bytes(mac, NULL, scr_crypto_promise_callback(p),
                          scr_crypto_promise_settle_array_buffer);
   return p;
 }
@@ -1667,26 +1878,31 @@ ScrPromise *scr_webcrypto_verify(ScrDyn *args) {
     return scr_wc_asymmetric ? scr_wc_asymmetric->verify(args)
                              : scr_wc_asymmetric_missing("verify", asymmetric);
   }
-  unsigned char mac[64];
-  size_t mac_len = 0;
+  ScrBytes *mac = NULL;
   ScrBytes *signature = NULL;
-  if (!scr_wc_sign_verify(args, true, mac, &mac_len, &signature)) {
+  if (!scr_wc_sign_verify(args, true, &mac, &signature)) {
+    if (mac) scr_bytes_release(mac);
     if (signature) scr_bytes_release(signature);
     return scr_wc_rejected();
   }
   bool equal;
   {
     ScrBytes *view = signature;
+    ScrBytes *expected = mac;
     SCR_BYTES_SNAPSHOT(view);
+    SCR_BYTES_SNAPSHOT(expected);
     /* A signature of another length is simply not valid; equal lengths
      * compare in constant time. */
+    size_t mac_len = (size_t)scr_bytes_byte_len(expected);
     size_t sig_len = (size_t)scr_bytes_byte_len(view);
     equal = sig_len == mac_len;
     unsigned char diff = 0;
-    for (size_t i = 0; equal && i < mac_len; i++) diff |= (unsigned char)(view->data[i] ^ mac[i]);
+    for (size_t i = 0; equal && i < mac_len; i++)
+      diff |= (unsigned char)(view->data[i] ^ expected->data[i]);
     equal = equal && diff == 0;
   }
   scr_bytes_release(signature);
+  scr_bytes_release(mac);
   ScrPromise *p = scr_promise_new();
   scr_crypto_defer_dyn(scr_dyn_new_bool(equal), NULL, scr_crypto_promise_callback(p),
                        scr_wc_settle_verified);
@@ -1747,6 +1963,166 @@ done:
   return result ? result : scr_wc_rejected();
 }
 
+/* A CShakeParams BufferSource member: absent leaves *out NULL; a view on a
+ * SharedArrayBuffer draws Node's TypeError. */
+static bool scr_wc_cshake_buffer(const ScrDyn *dict, const char *member, ScrBytes **out) {
+  ScrDyn *value = scr_wc_member(dict, member);
+  bool ok = true;
+  if (value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(value);
+    return true;
+  }
+  if (value->kind == SCR_DYN_BYTES && value->v.bytes->backing && value->v.bytes->backing->shared) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE",
+                      "%s: %s in passed algorithm is a view on a SharedArrayBuffer, which is not "
+                      "allowed.",
+                      scr_wc_normalize_prefix, member);
+    ok = false;
+  } else {
+    ScrDyn *plain = scr_wc_plain(value);
+    if (!plain) ok = false;
+    else if (plain->kind == SCR_DYN_BYTES || scr_array_buffer_is(plain)) {
+      *out = scr_bytes_buffer_source(plain);
+    } else {
+      scr_wc_type_error("ERR_INVALID_ARG_TYPE",
+                        "%s: %s in passed algorithm is not instance of ArrayBuffer, Buffer, "
+                        "TypedArray, or DataView.",
+                        scr_wc_normalize_prefix, member);
+      ok = false;
+    }
+    if (plain) scr_dyn_release(plain);
+  }
+  scr_dyn_release(value);
+  return ok;
+}
+
+/* KangarooTwelveParams: the required outputLength in bits (a positive whole
+ * number of bytes) and the optional customization. */
+static bool scr_wc_k12_params(ScrDyn *identifier, const char *canonical, double *bits_out,
+                              ScrBytes **custom_out) {
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("KangarooTwelveParams", "outputLength");
+    return false;
+  }
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  bool ok = true;
+  ScrDyn *length = scr_wc_member(plain, "outputLength");
+  if (length->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("KangarooTwelveParams", "outputLength");
+    ok = false;
+  } else if (!scr_wc_enforce_range(scr_wc_normalize_prefix, "outputLength in passed algorithm",
+                                   length, 4294967295.0, bits_out)) {
+    ok = false;
+  }
+  scr_dyn_release(length);
+  if (ok) ok = scr_wc_cshake_buffer(plain, "customization", custom_out);
+  scr_dyn_release(plain);
+  if (!ok) return false;
+  if (*custom_out && scr_bytes_byte_len(*custom_out) > 512) {
+    scr_throw_domex("OperationError",
+                    "KangarooTwelveParams.customization must be at most 512 bytes");
+    return false;
+  }
+  if (*bits_out < 8 || fmod(*bits_out, 8) != 0 || *bits_out > 4294967288.0) {
+    scr_throw_domex("OperationError", "Invalid KangarooTwelveParams outputLength");
+    return false;
+  }
+  scr_wc_warn_experimental_algorithm(canonical);
+  return true;
+}
+
+/* TurboShakeParams: the required outputLength in bits (a positive whole
+ * number of bytes) and the optional domainSeparation in 0x01..0x7f,
+ * defaulting to 0x1f. */
+static bool scr_wc_turboshake_params(ScrDyn *identifier, const char *canonical, double *bits_out,
+                                     double *domain_out) {
+  *domain_out = 0x1f;
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("TurboShakeParams", "outputLength");
+    return false;
+  }
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  bool ok = true;
+  ScrDyn *length = scr_wc_member(plain, "outputLength");
+  if (length->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("TurboShakeParams", "outputLength");
+    ok = false;
+  } else if (!scr_wc_enforce_range(scr_wc_normalize_prefix, "outputLength in passed algorithm",
+                                   length, 4294967295.0, bits_out)) {
+    ok = false;
+  }
+  scr_dyn_release(length);
+  if (ok) {
+    ScrDyn *domain = scr_wc_member(plain, "domainSeparation");
+    if (domain->kind != SCR_DYN_UNDEF &&
+        !scr_wc_enforce_range(scr_wc_normalize_prefix, "domainSeparation in passed algorithm",
+                              domain, 255.0, domain_out))
+      ok = false;
+    scr_dyn_release(domain);
+  }
+  scr_dyn_release(plain);
+  if (ok && (*bits_out < 8 || fmod(*bits_out, 8) != 0 || *bits_out > 4294967288.0)) {
+    scr_throw_domex("OperationError", "Invalid TurboShakeParams outputLength");
+    ok = false;
+  }
+  if (ok && (*domain_out < 1 || *domain_out > 127)) {
+    scr_throw_domex("OperationError", "TurboShakeParams.domainSeparation must be in range 0x01-0x7f");
+    ok = false;
+  }
+  if (ok) scr_wc_warn_experimental_algorithm(canonical);
+  return ok;
+}
+
+/* CShakeParams: the required outputLength in bits (at most 2^32 - 8, which
+ * Node's cSHAKE accepts) and the optional functionName and customization,
+ * whose only supported function name is "KMAC" (and the empty one). */
+static bool scr_wc_cshake_params(ScrDyn *identifier, const char *canonical, double *bits_out,
+                                 ScrBytes **func_out, ScrBytes **custom_out) {
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("CShakeParams", "outputLength");
+    return false;
+  }
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  bool ok = true;
+  ScrDyn *length = scr_wc_member(plain, "outputLength");
+  if (length->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("CShakeParams", "outputLength");
+    ok = false;
+  } else if (!scr_wc_enforce_range(scr_wc_normalize_prefix, "outputLength in passed algorithm",
+                                   length, 4294967295.0, bits_out)) {
+    ok = false;
+  }
+  scr_dyn_release(length);
+  if (ok) ok = scr_wc_cshake_buffer(plain, "functionName", func_out);
+  if (ok) ok = scr_wc_cshake_buffer(plain, "customization", custom_out);
+  scr_dyn_release(plain);
+  if (!ok) return false;
+  if (*custom_out && scr_bytes_byte_len(*custom_out) > 512) {
+    scr_throw_domex("OperationError", "CShakeParams.customization must be at most 512 bytes");
+    return false;
+  }
+  if (*func_out && scr_bytes_byte_len(*func_out) != 0) {
+    size_t len = (size_t)scr_bytes_byte_len(*func_out);
+    const unsigned char *name = (*func_out)->data;
+    bool kmac = len == 4 && memcmp(name, "KMAC", 4) == 0;
+    bool tuple = len == 9 && memcmp(name, "TupleHash", 9) == 0;
+    bool parallel = len == 12 && memcmp(name, "ParallelHash", 12) == 0;
+    if (!kmac && !tuple && !parallel) {
+      scr_throw_domex("NotSupportedError", "Unsupported CShakeParams functionName");
+      return false;
+    }
+  }
+  if (*bits_out > 4294967288.0) {
+    scr_throw_domex("OperationError", "Invalid CShakeParams outputLength");
+    return false;
+  }
+  scr_wc_warn_experimental_algorithm(canonical);
+  return true;
+}
+
 /* digest(algorithm, data). */
 ScrPromise *scr_webcrypto_digest(ScrDyn *args) {
   static const char prefix[] = "Failed to execute 'digest' on 'SubtleCrypto'";
@@ -1762,6 +2138,66 @@ ScrPromise *scr_webcrypto_digest(ScrDyn *args) {
   }
   data = scr_wc_buffer_source(prefix, 1, a.v[1]);
   if (!data) goto done;
+  {
+    ScrStr *name = scr_wc_algorithm_name(a.v[0], "Algorithm");
+    if (!name) goto done;
+    const char *canonical =
+        scr_wc_lookup(scr_wc_digest_names, SCR_WC_COUNT(scr_wc_digest_names), name);
+    scr_str_release(name);
+    if (canonical != NULL &&
+        (strcmp(canonical, "cSHAKE128") == 0 || strcmp(canonical, "cSHAKE256") == 0)) {
+      double bits = 0;
+      ScrBytes *func = NULL;
+      ScrBytes *custom = NULL;
+      if (!scr_wc_cshake_params(a.v[0], canonical, &bits, &func, &custom)) {
+        if (func) scr_bytes_release(func);
+        if (custom) scr_bytes_release(custom);
+        goto done;
+      }
+      size_t out_bytes = (size_t)((bits + 7) / 8);
+      ScrBytes *view = data;
+      SCR_BYTES_SNAPSHOT(view);
+      out = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
+      scr_cshake_hash(strcmp(canonical, "cSHAKE256") == 0, func ? func->data : NULL,
+                      func ? (size_t)scr_bytes_byte_len(func) : 0,
+                      custom ? custom->data : NULL,
+                      custom ? (size_t)scr_bytes_byte_len(custom) : 0, view->data,
+                      (size_t)scr_bytes_byte_len(view), out->data, out_bytes, (size_t)bits);
+      if (func) scr_bytes_release(func);
+      if (custom) scr_bytes_release(custom);
+      goto done;
+    }
+    if (canonical != NULL &&
+        (strcmp(canonical, "TurboSHAKE128") == 0 || strcmp(canonical, "TurboSHAKE256") == 0)) {
+      double bits = 0;
+      double domain = 0x1f;
+      if (!scr_wc_turboshake_params(a.v[0], canonical, &bits, &domain)) goto done;
+      size_t out_bytes = (size_t)(bits / 8);
+      ScrBytes *view = data;
+      SCR_BYTES_SNAPSHOT(view);
+      out = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
+      scr_turboshake_hash(strcmp(canonical, "TurboSHAKE256") == 0, (unsigned char)domain,
+                          view->data, (size_t)scr_bytes_byte_len(view), out->data, out_bytes);
+      goto done;
+    }
+    if (canonical != NULL && (strcmp(canonical, "KT128") == 0 || strcmp(canonical, "KT256") == 0)) {
+      double bits = 0;
+      ScrBytes *custom = NULL;
+      if (!scr_wc_k12_params(a.v[0], canonical, &bits, &custom)) {
+        if (custom) scr_bytes_release(custom);
+        goto done;
+      }
+      size_t out_bytes = (size_t)(bits / 8);
+      ScrBytes *view = data;
+      SCR_BYTES_SNAPSHOT(view);
+      out = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
+      scr_k12_hash(strcmp(canonical, "KT256") == 0, custom ? custom->data : NULL,
+                   custom ? (size_t)scr_bytes_byte_len(custom) : 0, view->data,
+                   (size_t)scr_bytes_byte_len(view), out->data, out_bytes);
+      if (custom) scr_bytes_release(custom);
+      goto done;
+    }
+  }
   const char *hash = scr_wc_digest_algorithm(a.v[0], "digest");
   if (!hash) goto done;
   {
@@ -2306,12 +2742,26 @@ typedef struct {
   double iterations;
   ScrBytes *salt;
   ScrBytes *info;
+  /* Argon2Params: the nonce (also the KDF salt), the optional secretValue
+   * and associatedData, and the cost parameters. */
+  bool argon2;
+  ScrBytes *nonce;
+  ScrBytes *secret_value;
+  ScrBytes *associated_data;
+  double memory;
+  double passes;
+  double parallelism;
+  double version;
 } ScrWcKdfParams;
 
 static void scr_wc_kdf_params_drop(ScrWcKdfParams *params) {
   if (params->salt) scr_bytes_release(params->salt);
   if (params->info) scr_bytes_release(params->info);
-  params->salt = params->info = NULL;
+  if (params->nonce) scr_bytes_release(params->nonce);
+  if (params->secret_value) scr_bytes_release(params->secret_value);
+  if (params->associated_data) scr_bytes_release(params->associated_data);
+  params->salt = params->info = params->nonce = NULL;
+  params->secret_value = params->associated_data = NULL;
 }
 
 /* A HashAlgorithmIdentifier member with ensureSHA (`dict` names the
@@ -2358,6 +2808,100 @@ static bool scr_wc_member_hash(const ScrDyn *dict, const char *dict_name, ScrDyn
   return ok;
 }
 
+/* An Argon2Params [EnforceRange] unsigned long member. */
+static bool scr_wc_argon2_number(const ScrDyn *dict, const char *member, double *out) {
+  ScrDyn *value = scr_wc_member(dict, member);
+  bool ok;
+  if (value->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("Argon2Params", member);
+    ok = false;
+  } else {
+    char context[48];
+    snprintf(context, sizeof context, "%s in passed algorithm", member);
+    ok = scr_wc_enforce_range(scr_wc_normalize_prefix, context, value, 4294967295.0, out);
+  }
+  scr_dyn_release(value);
+  return ok;
+}
+
+/* An Argon2Params BufferSource member. A view on a SharedArrayBuffer is
+ * rejected with Node's TypeError instead of being read non-atomically. */
+static bool scr_wc_argon2_buffer(const ScrDyn *dict, const char *member, bool required,
+                                 ScrBytes **out) {
+  ScrDyn *value = scr_wc_member(dict, member);
+  bool ok = true;
+  if (value->kind == SCR_DYN_UNDEF) {
+    if (required) {
+      scr_wc_missing_member("Argon2Params", member);
+      ok = false;
+    }
+  } else if (value->kind == SCR_DYN_BYTES && value->v.bytes->backing &&
+             value->v.bytes->backing->shared) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE",
+                      "%s: %s in passed algorithm is a view on a SharedArrayBuffer, which is not "
+                      "allowed.",
+                      scr_wc_normalize_prefix, member);
+    ok = false;
+  } else {
+    ScrDyn *plain = scr_wc_plain(value);
+    if (!plain) ok = false;
+    else if (plain->kind == SCR_DYN_BYTES || scr_array_buffer_is(plain)) {
+      *out = scr_bytes_buffer_source(plain);
+    } else {
+      scr_wc_type_error("ERR_INVALID_ARG_TYPE",
+                        "%s: %s in passed algorithm is not instance of ArrayBuffer, Buffer, "
+                        "TypedArray, or DataView.",
+                        scr_wc_normalize_prefix, member);
+      ok = false;
+    }
+    if (plain) scr_dyn_release(plain);
+  }
+  scr_dyn_release(value);
+  return ok;
+}
+
+/* normalizeAlgorithm(algorithm, 'deriveBits') for Argon2d/i/id: the
+ * required nonce, memory, passes and parallelism, the optional secretValue
+ * and associatedData, and version, whose only valid value is 19. */
+static bool scr_wc_normalize_argon2(ScrDyn *identifier, ScrWcKdfParams *params) {
+  params->argon2 = true;
+  params->version = 0x13;
+  scr_wc_warn_experimental_algorithm(params->name);
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("Argon2Params", "nonce");
+    return false;
+  }
+  ScrDyn *dict = scr_wc_plain(identifier);
+  if (!dict) return false;
+  bool ok = scr_wc_argon2_buffer(dict, "nonce", true, &params->nonce);
+  if (ok) ok = scr_wc_argon2_buffer(dict, "secretValue", false, &params->secret_value);
+  if (ok) ok = scr_wc_argon2_buffer(dict, "associatedData", false, &params->associated_data);
+  if (ok) ok = scr_wc_argon2_number(dict, "memory", &params->memory);
+  if (ok) ok = scr_wc_argon2_number(dict, "passes", &params->passes);
+  if (ok) ok = scr_wc_argon2_number(dict, "parallelism", &params->parallelism);
+  if (ok) {
+    ScrDyn *version = scr_wc_member(dict, "version");
+    if (version->kind != SCR_DYN_UNDEF) {
+      double v;
+      if (!scr_wc_enforce_range(scr_wc_normalize_prefix, "version in passed algorithm", version,
+                                255.0, &v))
+        ok = false;
+      else {
+        if (v != 19) {
+          char message[64];
+          snprintf(message, sizeof message, "%.0f is not a valid Argon2 version", v);
+          scr_throw_domex("OperationError", message);
+          ok = false;
+        }
+      }
+    }
+    scr_dyn_release(version);
+  }
+  scr_dyn_release(dict);
+  if (!ok) scr_wc_kdf_params_drop(params);
+  return ok;
+}
+
 /* normalizeAlgorithm(algorithm, 'deriveBits') for PBKDF2 and HKDF. */
 static bool scr_wc_normalize_kdf(ScrDyn *identifier, const char *method, ScrWcKdfParams *params) {
   memset(params, 0, sizeof *params);
@@ -2369,6 +2913,7 @@ static bool scr_wc_normalize_kdf(ScrDyn *identifier, const char *method, ScrWcKd
     scr_throw_domex("NotSupportedError", "Unrecognized algorithm name");
     return false;
   }
+  if (scr_wc_is_argon2(params->name)) return scr_wc_normalize_argon2(identifier, params);
   if (!scr_wc_is_kdf(params->name)) {
     scr_wc_unsupported_algorithm(method, params->name);
     return false;
@@ -2459,6 +3004,56 @@ static ScrBytes *scr_wc_kdf_derive(const ScrWcKdfParams *params, const ScrCrypto
   return out;
 }
 
+/* Argon2's length rules and derivation: the tag is the derived bits. */
+static bool scr_wc_argon2_length(bool null_length, double length) {
+  if (null_length) {
+    scr_throw_domex("OperationError", "length cannot be null");
+    return false;
+  }
+  if (fmod(length, 8) != 0) {
+    scr_throw_domex("OperationError", "length must be a multiple of 8");
+    return false;
+  }
+  if (length < 32) {
+    scr_throw_domex("OperationError", "length must be >= 32");
+    return false;
+  }
+  return true;
+}
+
+static ScrBytes *scr_wc_argon2_derive(const ScrWcKdfParams *params, const ScrCryptoKey *key,
+                                      double length) {
+  size_t nonce_len = (size_t)scr_bytes_byte_len(params->nonce);
+  /* Node checks the parameters in the order the derivation reports them. */
+  if (nonce_len < 8) {
+    scr_throw_domex("OperationError", "nonce must be at least 8 bytes");
+    return NULL;
+  }
+  if (params->parallelism < 1 || params->parallelism > 16777215) {
+    scr_throw_domex("OperationError", "parallelism must be > 0 and <= 16777215");
+    return NULL;
+  }
+  if (params->memory < 8 * params->parallelism) {
+    scr_throw_domex("OperationError", "memory must be at least 8 times the degree of parallelism");
+    return NULL;
+  }
+  if (params->passes < 1) {
+    scr_throw_domex("OperationError", "passes must be > 0");
+    return NULL;
+  }
+  const char *algorithm = strcmp(params->name, "Argon2d") == 0    ? "argon2d"
+                          : strcmp(params->name, "Argon2i") == 0 ? "argon2i"
+                                                                 : "argon2id";
+  return scr_argon2_hash(
+      algorithm, key->data, key->len, params->nonce->data, nonce_len,
+      params->secret_value ? params->secret_value->data : NULL,
+      params->secret_value ? (size_t)scr_bytes_byte_len(params->secret_value) : 0,
+      params->associated_data ? params->associated_data->data : NULL,
+      params->associated_data ? (size_t)scr_bytes_byte_len(params->associated_data) : 0,
+      (uint32_t)params->passes, (uint32_t)params->memory, (uint32_t)params->parallelism,
+      (uint32_t)(length / 8));
+}
+
 /* The base key checks deriveBits and deriveKey share. */
 static bool scr_wc_check_base_key(const ScrCryptoKey *key, const char *algorithm, unsigned usage,
                                   const char *usage_name) {
@@ -2502,6 +3097,7 @@ ScrPromise *scr_webcrypto_derive_bits(ScrDyn *args) {
     goto done;
   const char *asymmetric = scr_wc_asymmetric_name(args, 0);
   if (asymmetric && scr_wc_is_derive_algorithm(asymmetric)) {
+    scr_wc_warn_experimental_algorithm(asymmetric);
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
       result = scr_wc_asymmetric_missing("deriveBits", asymmetric);
       goto done;
@@ -2515,6 +3111,12 @@ ScrPromise *scr_webcrypto_derive_bits(ScrDyn *args) {
   if (!scr_wc_check_base_key(asymmetric_key ? NULL : key, params.name, SCR_WC_USAGE_DERIVE_BITS,
                              "deriveBits"))
     goto done;
+  if (params.argon2) {
+    if (!scr_wc_argon2_length(null_length, length)) goto done;
+    ScrBytes *bits = scr_wc_argon2_derive(&params, key, length);
+    if (bits) result = scr_wc_deferred_buffer(bits);
+    goto done;
+  }
   if (!scr_wc_kdf_length(&params, null_length, length)) goto done;
   if (length == 0) {
     ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
@@ -2606,11 +3208,12 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
   double length;
   if (!scr_wc_derived_length(a.v[2], &imported, &null_length, &length)) goto done;
   if (strcmp(imported.name, "HMAC") != 0 && !scr_wc_is_cipher_key(imported.name) &&
-      !scr_wc_is_kdf(imported.name)) {
+      !scr_wc_is_kdf(imported.name) && !scr_wc_is_argon2(imported.name)) {
     scr_wc_unsupported_algorithm("deriveKey", imported.name);
     goto done;
   }
   if (agreement) {
+    scr_wc_warn_experimental_algorithm(asymmetric);
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
       result = scr_wc_asymmetric_missing("deriveKey", asymmetric);
       goto done;
@@ -2627,8 +3230,14 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
   if (!scr_wc_check_base_key(asymmetric_key ? NULL : key, params.name, SCR_WC_USAGE_DERIVE_KEY,
                              "deriveKey"))
     goto done;
-  if (!scr_wc_kdf_length(&params, null_length, length)) goto done;
-  ScrBytes *bits = scr_wc_kdf_derive(&params, key, length);
+  ScrBytes *bits;
+  if (params.argon2) {
+    if (!scr_wc_argon2_length(null_length, length)) goto done;
+    bits = scr_wc_argon2_derive(&params, key, length);
+  } else {
+    if (!scr_wc_kdf_length(&params, null_length, length)) goto done;
+    bits = scr_wc_kdf_derive(&params, key, length);
+  }
   if (!bits) goto done;
   ScrDyn *derived = scr_wc_import_key_sync("raw-secret", bits, NULL, &imported, extractable, usages);
   scr_bytes_release(bits);

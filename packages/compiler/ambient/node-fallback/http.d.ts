@@ -75,6 +75,9 @@ declare module "http" {
     readonly complete: boolean;
     readonly aborted: boolean;
     readonly destroyed: boolean;
+    /* IncomingMessage.signal: one AbortSignal per request, aborted when the
+     * request is destroyed before it completes. */
+    readonly signal: AbortSignal;
     readonly statusCode: number | undefined;
     readonly statusMessage: string | undefined;
     readonly socket: Socket;
@@ -155,6 +158,9 @@ declare module "http" {
     ): ServerResponse;
     writeContinue(callback?: () => void): void;
     writeProcessing(callback?: () => void): void;
+    /* Node's generic informational response: any 1xx status but 101,
+     * answered with write()'s backpressure boolean. */
+    writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void): void;
     /* Answers whether the buffer is still below its 64 KiB high-water
      * mark; a false answer fires 'drain' once the bytes are out. */
@@ -242,6 +248,9 @@ declare module "http" {
     }): string;
     maxSockets: number;
     maxFreeSockets: number;
+    /* Node's cap across every name: requests queue once the agent's live
+     * and idle sockets reach it (Infinity by default). */
+    maxTotalSockets: number;
     keepAliveMsecs: number;
     readonly keepAlive: boolean;
     readonly protocol: string;

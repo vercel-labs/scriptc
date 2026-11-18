@@ -13,10 +13,3 @@ compat-stream-absent.ts:16:32 - error SC0001: Property 'wrap' does not exist on 
   16 | const wrapped = new Readable().wrap(old);
      |                                ^~~~
   17 | wrapped.resume();
-
-compat-stream-absent.ts:21:14 - error SC0001: Cannot find name 'Duplex'.
-
-  20 | const transform = new TransformStream();
-  21 | const pair = Duplex.toWeb(new PassThrough());
-     |              ^~~~~~
-  22 | console.log(typeof transform.readable, typeof pair);

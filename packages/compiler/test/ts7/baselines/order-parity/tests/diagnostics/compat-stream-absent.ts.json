@@ -8,8 +8,8 @@
    "message": "Property 'duplexPair' does not exist on type 'typeof import(\"stream\")'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 400,
-    "end": 410
+    "start": 408,
+    "end": 418
    },
    "typeWorld": true,
    "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'duplexPair' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
@@ -19,17 +19,8 @@
    "message": "Property 'wrap' does not exist on type 'Readable'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 610,
-    "end": 614
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Cannot find name 'Duplex'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 735,
-    "end": 741
+    "start": 618,
+    "end": 622
    }
   }
  ]

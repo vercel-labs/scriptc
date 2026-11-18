@@ -2568,6 +2568,35 @@ export function widenCjsExportsOfWidenedBindings(
       return undefined;
     });
   }
+  // A conditional wrapper re-exports another module's table
+  // (`module.exports = require("./cjs/react.development.js")` behind
+  // NODE_ENV): its member slots were typed from the checker's union over the
+  // branches, which follows each target's initializer type. Once a target's
+  // member is checked-dynamic (above), the wrapper's value is too. A wrapper
+  // of a wrapper needs the rounds.
+  for (;;) {
+    let changed = false;
+    for (const { sf } of parts) {
+      if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+      const slots = lowerer.cjsConditionalWholeExportGlobals.get(sf);
+      if (slots === undefined) continue;
+      const targets = cjsConditionalWholeExportTargetsOf(lowerer, sf);
+      if (targets === null) continue;
+      for (const [name, slot] of slots) {
+        if (slot.type.kind === "dyn") continue;
+        const widenedTarget = targets.some((target) => {
+          const member =
+            lowerer.cjsInFileExportMemberGlobals.get(target.req.dep)?.get(name) ??
+            lowerer.cjsConditionalWholeExportGlobals.get(target.req.dep)?.get(name);
+          return member !== undefined && member.type.kind === "dyn";
+        });
+        if (!widenedTarget) continue;
+        slot.type = DYN;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
 }
 
 export function collectGlobals(

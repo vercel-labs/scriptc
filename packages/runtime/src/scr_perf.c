@@ -1631,28 +1631,161 @@ static void scr_perf_observe_function(const ScrStr *name, double start, double d
   scr_perf_entry_release(&entry);
 }
 
+/* One completed call's readings: Node's processComplete records the
+ * duration into the options histogram (nanoseconds, rounded up) and then
+ * hands the observers the 'function' entry. A record that throws (a zero
+ * duration is below the histogram's range) leaves no entry. */
+static bool scr_perf_timerified_record(ScrDyn *histogram, const ScrStr *name, double start,
+                                       double duration, ScrDyn *detail) {
+  if (histogram != NULL) {
+    scr_histo_record_checked(histogram, ceil(duration * 1e6));
+    if (scr_exc_pending()) return false;
+  }
+  scr_perf_observe_function(name, start, duration, detail);
+  return true;
+}
+
+/* The call's argument list as the entry's detail array. */
+static ScrDyn *scr_perf_argument_detail(ScrDyn *const *args, size_t argc) {
+  ScrDyn *detail = scr_dyn_new_arr();
+  for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(detail, scr_dyn_retain(args[i]));
+  return detail;
+}
+
+/* The promise continuation's caps: [0] the original's name, [1] the call's
+ * start time, [2] the argument list, [3] the options histogram (absent when
+ * the options named none). */
+static ScrDyn *scr_perf_timerified_settled(ScrClosure *closure, ScrDyn *const *args,
+                                           size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrStr *name = scr_box_get_ref(closure->caps[0]);
+  double start = scr_box_get_f64(closure->caps[1]);
+  ScrDyn *detail = scr_box_get_ref(closure->caps[2]);
+  ScrDyn *histogram = closure->caps[3] != NULL ? scr_box_get_ref(closure->caps[3]) : NULL;
+  scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
+  scr_dyn_release(histogram);
+  scr_dyn_release(detail);
+  scr_str_release(name);
+  return scr_dyn_undefined();
+}
+
+/* Node's wrapper answers the call's promise with the reading attached
+ * through `finally`, so the entry lands once the call settles (a rejection
+ * records too, and the rejection still propagates). */
+static ScrDyn *scr_perf_timerified_defer(const ScrStr *name, double start, ScrDyn *detail,
+                                         ScrDyn *histogram, ScrDyn *promise) {
+  ScrClosure *closure = scr_closure_new(NULL, 4);
+  closure->caps[0] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(closure->caps[0], scr_str_retain((ScrStr *)name));
+  closure->caps[1] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[1], start);
+  closure->caps[2] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[2], scr_dyn_retain(detail));
+  if (histogram != NULL) {
+    closure->caps[3] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_box_set_ref(closure->caps[3], scr_dyn_retain(histogram));
+  }
+  ScrDyn *callback = scr_dyn_new_func(closure, scr_perf_timerified_settled, 0, "", "");
+  /* result.finally(callback): the promise's own method value, called with
+   * the promise as `this` (the gated async unit installs the member). */
+  ScrStr *key = scr_str_new("finally", 7);
+  ScrDyn *method = scr_dyn_promise_key_get(promise, key);
+  scr_str_release(key);
+  if (method == NULL || !scr_dyn_is_callable(method)) {
+    /* No finally to attach (only a build without the promise unit, which a
+     * promise result cannot come from): record now and hand the promise
+     * back untouched. */
+    scr_dyn_release(method);
+    scr_dyn_release(callback);
+    scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
+    return scr_dyn_retain(promise);
+  }
+  ScrDyn *arguments[1] = {callback};
+  scr_dyn_this_push_dyn(promise);
+  ScrDyn *settled = scr_dyn_call(method, arguments, 1, "timerified function");
+  scr_dyn_this_pop();
+  scr_dyn_release(method);
+  scr_dyn_release(callback);
+  return settled;
+}
+
 /* The wrapper: caps[0] the original function (+1), caps[1] the wrapper's
  * display name (the function box borrows its bytes), caps[2] the original's
- * name (the entry's). */
+ * name (the entry's), caps[3] the options histogram (a RecordableHistogram
+ * handle, or absent). */
 static ScrDyn *scr_perf_timerified_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   ScrDyn *fn = scr_box_get_ref(closure->caps[0]);
   ScrStr *name = scr_box_get_ref(closure->caps[2]);
+  ScrDyn *histogram = closure->caps[3] != NULL ? scr_box_get_ref(closure->caps[3]) : NULL;
   ScrDyn *self = scr_dyn_this_get();
   double start = scr_perf_now();
   scr_dyn_this_push_dyn(self);
   ScrDyn *result = scr_dyn_call(fn, args, argc, "timerified function");
   scr_dyn_this_pop();
   scr_dyn_release(self);
-  double duration = scr_perf_now() - start;
-  /* A call that threw records nothing (Node's wrapper only enqueues the
-   * entry of a returned call). */
-  if (!scr_exc_pending()) {
-    ScrDyn *detail = scr_dyn_new_arr();
-    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(detail, scr_dyn_retain(args[i]));
-    scr_perf_observe_function(name, start, duration, detail);
+  scr_dyn_release(fn);
+  if (scr_exc_pending()) {
+    /* A call that threw records nothing (Node's wrapper only records a call
+     * that returned). */
+    scr_dyn_release(histogram);
+    scr_str_release(name);
+    return result;
+  }
+  ScrDyn *detail = scr_perf_argument_detail(args, argc);
+  /* An async call's entry lands when its promise settles, timed over the
+   * whole call. */
+  if (result != NULL && result->kind == SCR_DYN_PROMISE) {
+    ScrDyn *settled = scr_perf_timerified_defer(name, start, detail, histogram, result);
     scr_dyn_release(detail);
+    scr_dyn_release(histogram);
+    scr_str_release(name);
+    scr_dyn_release(result);
+    return settled;
+  }
+  bool recorded = scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
+  scr_dyn_release(detail);
+  scr_dyn_release(histogram);
+  scr_str_release(name);
+  if (!recorded) {
+    scr_dyn_release(result);
+    return NULL;
   }
   return result;
+}
+
+/* `new wrapper(...)`: Node's wrapper constructs its original with the
+ * wrapper's arguments (new.target is the original) and records the entry,
+ * answering the instance. */
+static bool scr_perf_timerified_construct(const ScrDyn *callee, const ScrDyn *args,
+                                          ScrDyn **out) {
+  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != scr_perf_timerified_call) return false;
+  ScrClosure *closure = callee->v.fn.clo;
+  ScrDyn *fn = scr_box_get_ref(closure->caps[0]);
+  ScrStr *name = scr_box_get_ref(closure->caps[2]);
+  ScrDyn *histogram = closure->caps[3] != NULL ? scr_box_get_ref(closure->caps[3]) : NULL;
+  double start = scr_perf_now();
+  ScrDyn *constructed = scr_dyn_construct(fn, args, name);
+  scr_dyn_release(fn);
+  if (constructed == NULL) {
+    /* The original refused construction; its exception is the answer. */
+    scr_dyn_release(histogram);
+    scr_str_release(name);
+    return true;
+  }
+  ScrDyn *detail = scr_dyn_new_arr();
+  for (size_t i = 0; i < (size_t)args->v.arr.len; i++)
+    scr_dyn_arr_push(detail, scr_dyn_retain(args->v.arr.items[i]));
+  bool recorded = scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
+  scr_dyn_release(detail);
+  scr_dyn_release(histogram);
+  scr_str_release(name);
+  if (!recorded) {
+    scr_dyn_release(constructed);
+    return true;
+  }
+  *out = constructed;
+  return true;
 }
 
 /* `performance.timerify(fn)` / `perf_hooks.timerify(fn, options?)` (+1):
@@ -1682,6 +1815,34 @@ ScrDyn *scr_perf_timerify(ScrDyn *args) {
       return NULL;
     }
   }
+  /* options.histogram: Node takes a RecordableHistogram and records each
+   * call's duration into it (nanoseconds). */
+  ScrDyn *histogram = NULL; /* +1 when the options name one */
+  if (options->kind != SCR_DYN_UNDEF) {
+    ScrDyn *value = scr_dyn_obj_read(options, "histogram", 9);
+    if (value != NULL && value->kind != SCR_DYN_UNDEF) {
+      bool recordable = value->kind == SCR_DYN_HANDLE &&
+                        value->v.handle.tag == SCR_DYNH_HISTOGRAM &&
+                        value->v.handle.ptr != NULL;
+      if (!recordable) {
+        char detail[128];
+        const char *received = scr_dyn_specific_type(value, detail, sizeof detail);
+        /* Node names its internal event-loop class in this message. */
+        if (value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_ELD_HISTOGRAM)
+          received = "an instance of ELDHistogram";
+        char msg[256];
+        int n = snprintf(msg, sizeof msg,
+                         "The \"options.histogram\" property must be an instance of "
+                         "RecordableHistogram. Received %s",
+                         received);
+        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+        scr_dyn_release(value);
+        return NULL;
+      }
+      histogram = scr_dyn_retain(value);
+    }
+    scr_dyn_release(value);
+  }
   ScrStr *raw_name = scr_str_new("", 0);
   ScrDyn *name_value = scr_dyn_obj_read(fn, "name", 4);
   if (name_value && name_value->kind == SCR_DYN_STR && name_value->v.str->len > 0) {
@@ -1694,7 +1855,8 @@ ScrDyn *scr_perf_timerify(ScrDyn *args) {
   if (length_value && length_value->kind == SCR_DYN_NUM) arity = length_value->v.num;
   scr_dyn_release(length_value);
   scr_perf_arm();
-  ScrClosure *closure = scr_closure_new(NULL, 3);
+  ScrClosure *closure = scr_closure_new(NULL, 4);
+  closure->caps[3] = NULL;
   closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
   scr_box_set_ref(closure->caps[0], scr_dyn_retain(fn));
   ScrStr *display = scr_str_new("timerified ", 11);
@@ -1704,8 +1866,38 @@ ScrDyn *scr_perf_timerify(ScrDyn *args) {
   scr_box_set_ref(closure->caps[1], scr_str_retain(joined));
   closure->caps[2] = scr_box_new(SCR_BOX_STR);
   scr_box_set_ref(closure->caps[2], raw_name); /* moves */
+  if (histogram != NULL) {
+    closure->caps[3] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_box_set_ref(closure->caps[3], histogram); /* moves */
+  }
+  /* A wrapper constructs its original (Node's ReflectConstruct path); the
+   * construct dispatcher asks this hook before refusing a plain function. */
+  scr_dyn_timerified_construct_fn = scr_perf_timerified_construct;
   ScrDyn *wrapper =
       scr_dyn_new_func(closure, scr_perf_timerified_call, (uint32_t)arity, "", joined->data);
   scr_str_release(joined);
+  /* An ordinary function's own prototype object, with the wrapper as its
+   * constructor, as Node's wrapper carries (the construction itself goes
+   * through the hook above, which constructs the ORIGINAL). */
+  ScrDyn *prototype = scr_dyn_new_obj();
+  scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain(wrapper));
+  /* The prototype's constructor property is hidden (writable and
+   * configurable, not enumerable), as on any function's prototype. */
+  for (size_t i = 0; i < (size_t)prototype->v.obj.len; i++)
+    scr_dyn_obj_dict_entries(prototype)[i].enumerable = false;
+  scr_dyn_fn_seed_prototype(wrapper, prototype);
+  /* The seed's builtin recipe makes a constructor's prototype read-only;
+   * an ordinary function's is writable in Node, and only its sameness and
+   * attributes' enumerable/configurable bits are fixed. */
+  ScrDyn *table = scr_dyn_function_properties(wrapper); /* +1 */
+  if (table != NULL) {
+    ScrDynEntry *entries = scr_dyn_obj_dict_entries(table);
+    for (size_t i = 0; i < (size_t)table->v.obj.len; i++) {
+      if (entries[i].key != NULL && entries[i].key_len == 9 &&
+          memcmp(entries[i].key, "prototype", 9) == 0)
+        entries[i].writable = true;
+    }
+    scr_dyn_release(table);
+  }
   return wrapper;
 }

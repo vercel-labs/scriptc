@@ -1,7 +1,13 @@
 // performance.timerify wraps a function, records a 'function' entry whose
 // detail is the argument list for the observers (never the timeline), passes
 // `this` and thrown errors through, and validates fn/options like Node.
-import { performance, timerify, PerformanceObserver } from "node:perf_hooks";
+import {
+  performance,
+  timerify,
+  PerformanceObserver,
+  createHistogram,
+  monitorEventLoopDelay,
+} from "node:perf_hooks";
 
 const seen = [];
 const observer = new PerformanceObserver((list) => {
@@ -17,6 +23,12 @@ function original(a, b) {
 }
 const wrapped = performance.timerify(original);
 console.log("wrapper", wrapped.name, wrapped.length, Object.prototype.toString.call(wrapped));
+console.log(
+  "prototype",
+  Object.keys(wrapped.prototype).length,
+  wrapped.prototype.constructor === wrapped,
+  Object.getOwnPropertyDescriptor(wrapped, "prototype").writable,
+);
 console.log("call", wrapped(1, 2));
 
 const obj = {
@@ -37,6 +49,53 @@ try {
   console.log("throws", error.message);
 }
 
+// A wrapper is a constructor too: `new` constructs the original and records
+// the call, and the instance is the original's (the wrapper's own prototype
+// plays no part).
+function Point(x, y) {
+  this.x = x;
+  this.y = y;
+}
+Point.prototype.sum = function sum() {
+  return this.x + this.y;
+};
+const TimedPoint = performance.timerify(Point);
+const point = new TimedPoint(3, 4);
+console.log("construct", point.x, point.y, point.sum(), point instanceof Point, point instanceof TimedPoint);
+
+// An async call's entry lands when its promise settles, timed over the whole
+// call, and a rejection records too while still rejecting.
+const timedAsync = performance.timerify(async function gather(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return ms * 2;
+});
+console.log("async", await timedAsync(20));
+await new Promise((resolve) => setTimeout(resolve, 20));
+const timedReject = performance.timerify(async function losing() {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  throw new Error("nope");
+});
+try {
+  await timedReject();
+  console.log("reject missing");
+} catch (error) {
+  console.log("async throws", error.message);
+}
+await new Promise((resolve) => setTimeout(resolve, 20));
+
+// options.histogram: each completed call's duration lands in the histogram as
+// a rounded-up nanosecond count.
+const histogram = createHistogram();
+const timedSum = performance.timerify(
+  function sum(a, b) {
+    return a + b;
+  },
+  { histogram },
+);
+timedSum(1, 2);
+timedSum(3, 4);
+console.log("histogram", histogram.count, histogram.min >= 1, histogram.max >= 1);
+
 await new Promise((resolve) => setTimeout(resolve, 20));
 observer.disconnect();
 console.log("seen", seen.join(" | "));
@@ -48,6 +107,9 @@ for (const [label, run] of [
   ["options-null", () => performance.timerify(original, null)],
   ["options-array", () => performance.timerify(original, [])],
   ["options-number", () => performance.timerify(original, 5)],
+  ["histogram-number", () => performance.timerify(original, { histogram: 5 })],
+  ["histogram-object", () => performance.timerify(original, { histogram: {} })],
+  ["histogram-interval", () => performance.timerify(original, { histogram: monitorEventLoopDelay() })],
 ]) {
   try {
     run();

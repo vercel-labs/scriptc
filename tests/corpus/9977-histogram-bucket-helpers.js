@@ -47,6 +47,6 @@ for (const [label, run] of [
     run();
     console.log("accepted", label);
   } catch (error) {
-    console.log("invalid", label, error.name, error.message);
+    console.log("invalid", label, error.name, error.code, error.message);
   }
 }

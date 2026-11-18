@@ -1630,7 +1630,7 @@ double scr_histo_bucket_arg(ScrDyn *value, double which) {
     int n = snprintf(msg, sizeof msg, "The \"%s\" argument must be of type number. Received %s",
                      name, scr_dyn_specific_type(value != NULL ? value : scr_dyn_undefined(), detail,
                                                  sizeof detail));
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
     return 0;
   }
   double v = value->v.num;
@@ -1641,7 +1641,7 @@ double scr_histo_bucket_arg(ScrDyn *value, double which) {
       scr_num_received(v, num);
       int n = snprintf(msg, sizeof msg,
                        "The value of \"base\" is out of range. It must be > 1. Received %s", num);
-      scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)n);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
       return 0;
     }
     return v;
@@ -1653,7 +1653,7 @@ double scr_histo_bucket_arg(ScrDyn *value, double which) {
     int n = snprintf(msg, sizeof msg,
                      "The value of \"%s\" is out of range. It must be an integer. Received %s", name,
                      num);
-    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)n);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
     return 0;
   }
   if (!(v >= 1 && v <= 9007199254740991.0)) {
@@ -1664,7 +1664,7 @@ double scr_histo_bucket_arg(ScrDyn *value, double which) {
                      "The value of \"%s\" is out of range. It must be >= 1 && <= 9007199254740991. "
                      "Received %s",
                      name, num);
-    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)n);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
     return 0;
   }
   return v;

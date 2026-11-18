@@ -156,6 +156,9 @@ ScrH2Session *scr_http2_stream_session(ScrH2Stream *st); /* +1 */
 /* the emitted-adapter thunks (arity + record-building live program-side) */
 void scr_http2_stream_thunk(ScrClosure *cb, ScrH2Stream *st, ScrArr *pairs, double flags);
 void scr_http2_resp_thunk(ScrClosure *cb, ScrArr *pairs, double status, double flags);
+/* The 'error' listener adapter for a stream that closed with a nonzero
+ * RST_STREAM code: Node's ERR_HTTP2_STREAM_ERROR, message unchanged. */
+void scr_http2_stream_err_thunk(ScrClosure *cb, ScrStr *msg);
 void scr_http2_session_thunk(ScrClosure *cb, ScrH2Session *sess);
 void scr_http2_session_thunk0(ScrClosure *cb, ScrH2Session *sess);
 void scr_http2_connect_thunk2(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *sock);

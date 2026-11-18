@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/inferred-member-read-before-write.mjs"
+ ],
+ "diags": []
+}

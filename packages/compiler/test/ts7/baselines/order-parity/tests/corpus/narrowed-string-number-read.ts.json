@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/narrowed-string-number-read.ts"
+ ],
+ "diags": []
+}

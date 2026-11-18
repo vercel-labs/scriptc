@@ -1344,9 +1344,37 @@ interface MessageEvent<T = unknown> extends Event {
 declare var MessageEvent: {
   new <T = unknown>(
     type: string,
-    eventInitDict?: { data?: T; origin?: string; lastEventId?: string },
+    eventInitDict?: {
+      data?: T;
+      origin?: string;
+      lastEventId?: string;
+      source?: unknown;
+      ports?: readonly MessagePort[];
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+    },
   ): MessageEvent<T>;
   readonly prototype: MessageEvent;
+};
+interface CloseEvent extends Event {
+  readonly code: number;
+  readonly reason: string;
+  readonly wasClean: boolean;
+}
+declare var CloseEvent: {
+  new (
+    type: string,
+    eventInitDict?: {
+      code?: number;
+      reason?: string;
+      wasClean?: boolean;
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+    },
+  ): CloseEvent;
+  readonly prototype: CloseEvent;
 };
 interface AddEventListenerOptions {
   capture?: boolean;
@@ -2054,6 +2082,14 @@ declare module "node:perf_hooks" {
     countAt(value: number): number;
     cdf(value: number): number;
     ccdf(value: number): number;
+    ksTest(other: Histogram): number;
+    cohensD(other: Histogram): number;
+    cliffsD(other: Histogram): number;
+    mannWhitneyTest(other: Histogram): {
+      readonly uStatistic: number;
+      readonly zScore: number;
+      readonly pValue: number;
+    };
     reset(): void;
   }
   export interface IntervalHistogram extends Histogram {

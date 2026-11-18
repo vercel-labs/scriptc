@@ -262,7 +262,9 @@ typedef enum {
  * objects are pinned above at the values they had (100 to 102), so the two
  * Intl formatters could join without renumbering them. */
 #define SCR_DYNH_NEW_TAGS(Y) \
+  Y(ASYNC_RESOURCE) /* async_hooks AsyncResource (scr_async_dyn.c) */ \
   Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
+  Y(CLOSE_EVENT) /* CloseEvent (scr_event_target.c) */ \
   Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
   Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
   Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
@@ -273,6 +275,7 @@ typedef enum {
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \

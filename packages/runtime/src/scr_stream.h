@@ -230,6 +230,10 @@ double scr_stream_get_default_hwm(bool object_mode);
  * watcher marks lifecycle errors handled (no unhandled-'error' crash —
  * Node's eos registers listeners). */
 ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv);
+/* finished() for a watcher that must report at the stream's close step even
+ * when the stream does not emit 'close' (emitClose off), so an owner such as
+ * an adapter can let go of the stream. */
+ScrClosure *scr_stream_finished_always(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv);
 /* The dyn-valued finished/pipeline callback inv (a mustCall wrapper in
  * the slot): success calls with NO arguments, errors box through the
  * boundary encoding. cb's cap boxes the dyn callable. */
@@ -356,6 +360,19 @@ ScrPromise *scr_stream_next_chunk_dyn_single(ScrStream *s);
 bool scr_stream_readable_object_entries(ScrStream *s);
 /* The same step resolving with an iterator result ({ value, done }). */
 ScrPromise *scr_stream_next_result_dyn(ScrStream *s);
+/* readable.iterator([options]) (scr_stream_iterator.c): the async iterator
+ * over the readable's chunks, +1. */
+struct ScrDyn *scr_stream_iterator(ScrStream *s, bool destroy_on_return);
+/* The same for a checked-dynamic receiver, validating the options. */
+/* Installed by the iterator unit (scr_stream_iterator.c) so the stream unit's
+ * checked-dynamic dispatch links it only when the unit is present. */
+/* Marks the stream's next error as consumed by an internal listener (the
+ * iterator's throw): it still reaches stream.errored and user listeners but is
+ * not an unhandled 'error' event. */
+void scr_stream_next_error_consumed(ScrStream *s);
+extern struct ScrDyn *(*scr_stream_iterator_hook)(ScrStream *s, struct ScrDyn *const *args,
+                                                 size_t argc);
+struct ScrDyn *scr_stream_dyn_iterator(ScrStream *s, struct ScrDyn *const *args, size_t argc);
 /* The native readable stream behind a checked-dynamic value (+1), or NULL. */
 ScrStream *scr_stream_native_readable_of_dyn(const struct ScrDyn *value);
 /* for await over a checked-dynamic value in a program with streams
@@ -439,6 +456,10 @@ ScrStream *scr_stream_from_async_gen(struct ScrGen *g, ScrClosure *next, ScrClos
                                      double hwm);
 ScrDyn *scr_stream_from_done(void); /* +1, the process-lived marker (scr_stream.c) */
 ScrStream *scr_stream_pause(ScrStream *s);            /* recv +1 */
+/* Whether the stream's lifecycle emits 'close' (the emitClose option). */
+bool scr_stream_emits_close(ScrStream *s);
+/* Whether the stream's lifecycle emits 'close' (the emitClose option). */
+bool scr_stream_emits_close(ScrStream *s);
 ScrStream *scr_stream_resume(ScrStream *s);           /* recv +1 */
 bool scr_stream_is_paused(ScrStream *s);
 double scr_stream_flowing(ScrStream *s); /* -1 = null, 0 = false, 1 = true */

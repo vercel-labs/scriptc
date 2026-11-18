@@ -254,6 +254,7 @@ export const FETCH_AMBIENT_TYPES = [
   "Event",
   "CustomEvent",
   "MessageEvent",
+  "CloseEvent",
   "EventTarget",
   "AddEventListenerOptions",
   "EventListenerOptions",
@@ -4777,6 +4778,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return F64;
   }
+  // async_hooks.AsyncResource: a checked-dynamic handle whose payload lives
+  // exactly as long as the value does, so a resource the program drops is
+  // reclaimed with everything it captured.
+  if (
+    psym !== undefined &&
+    psymName === "AsyncResource" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return DYN;
+  }
   // trace_events.Tracing: a native handle the runtime builds for
   // createTracing, so the value is checked-dynamic and its member reads and
   // enable()/disable() calls ride the dyn tree.
@@ -4788,6 +4804,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
         isDeclaredInAmbientModule(d, "trace_events"),
+    )
+  ) {
+    return DYN;
+  }
+  // async_hooks.RunScope (AsyncLocalStorage.withScope): a checked-dynamic
+  // object carrying dispose and [Symbol.dispose] — the runtime builds it.
+  if (
+    psym !== undefined &&
+    psymName === "RunScope" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
     )
   ) {
     return DYN;

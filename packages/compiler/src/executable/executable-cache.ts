@@ -143,6 +143,8 @@ export interface EarlyExecutableNativeFeatures {
   /** node:sqlite: scr_sqlite.c and the vendored SQLite archive. */
   sqlite?: boolean;
   webStreams?: boolean;
+  /** filehandle.readableWebStream: scr_fs_web_stream.c. */
+  fsWebStream?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
@@ -205,6 +207,7 @@ export interface EarlyExecutableNativeFeatures {
   cipher: boolean;
   ecdh: boolean;
   argon2: boolean;
+  mlkem: boolean;
   dh: boolean;
   pki: boolean;
   ed25519: boolean;

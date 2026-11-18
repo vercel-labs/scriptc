@@ -201,6 +201,16 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+  // The RunScope handle withScope answers, and AsyncResource's registry
+  // with its bound functions.
+  "als.withScope",
+  "ar.asyncId",
+  "ar.bind",
+  "ar.bindStatic",
+  "ar.emitDestroy",
+  "ar.new",
+  "ar.runInScope",
+  "ar.triggerAsyncId",
 
   // trace_events.Tracing handles (same unit: the checked-dynamic handle
   // table and the registry).
@@ -236,6 +246,15 @@ const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.enterWith",
   "als.exitRun",
   "als.run",
+  // withScope installs a store exactly as enterWith does; a program whose
+  // only store comes from it schedules its timers and completion callbacks
+  // through the *_als entry points like any other store establishment.
+  "als.withScope",
+  // AsyncResource's calls run program code in the resource's context, so the
+  // scheduling they do carries that context too.
+  "ar.bind",
+  "ar.bindStatic",
+  "ar.runInScope",
   "dc.chanBindStore",
   "dc.chanRunStores",
   // getTestContext() reads the test runner's entry in the same snapshot.
@@ -335,6 +354,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "readable.iterator",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -422,6 +442,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "readable.iterator",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -2097,6 +2118,9 @@ const RUNTIME_FEATURE_RULES = {
   dh: rule({ fns: [...DH_LIB_FNS] }),
   /** Argon2: scr_argon2.c. */
   argon2: rule({ fns: ["crypto.argon2Sync", "crypto.argon2Cb"] }),
+  /** ML-KEM (mlkem-native): selected by the node:crypto encapsulate and
+   * WebCrypto ML-KEM lowerings, and links the vendored archive. */
+  mlkem: rule({ fns: [] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -2189,6 +2213,16 @@ const RUNTIME_FEATURE_RULES = {
     expr: (node) =>
       node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
   }),
+  /** IncomingMessage.signal: the message's abort signal is an
+   * AbortController, so a program that reads it links the signal unit
+   * (scr_abort.c) without touching fetch. */
+  httpSignal: rule({
+    fns: ["http.reqSignal"],
+    // An untyped message reads `signal` through a checked-dynamic key get,
+    // which no libCall stands for: that read needs the signal unit too.
+    expr: (node) =>
+      node.kind === "dynKeyGet" && node.key.kind === "strLit" && node.key.value === "signal",
+  }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** util.markPromiseAsHandled (scr_util_mark_handled.c): it reports its
@@ -2203,6 +2237,9 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
+   * content as a byte-oriented web stream, its own gated unit. */
+  fsWebStream: rule({ fns: ["fileHandle.readableWebStream"] }),
   /** fs.openAsBlob: the Blob over a file's bytes (scr_fs_blob.c), which
    * reads the file on demand through the file handle unit. */
   fsOpenAsBlob: rule({ fns: ["fs.openAsBlob"] }),
@@ -2470,7 +2507,7 @@ const RUNTIME_FEATURE_RULES = {
    * the unit makes (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew"],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew", "readable.iterator"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program
@@ -2779,11 +2816,13 @@ function noRuntimeFeatures(): RuntimeFeatures {
     x509: false,
     dh: false,
     argon2: false,
+    mlkem: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsWebStream: false,
     fsOpenAsBlob: false,
     fnMemberProps: false,
     fsFlags: false,
@@ -2806,6 +2845,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webBodies: false,
     webStreams: false,
     abortSignal: false,
+    httpSignal: false,
     utilTiming: false,
     utilMarkPromiseAsHandled: false,
     utilTraceSigInt: false,

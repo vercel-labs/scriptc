@@ -475,16 +475,6 @@ ScrPromise *scr_promise_new(void) {
   return p;
 }
 
-/* The entries scr_lib.c's fs.mkdtempDisposable helpers reach the promise
- * unit through, installed whenever this unit is linked (scr_lib.h's
- * scr_mkdtemp_promise_* pointers). */
-__attribute__((constructor)) static void scr_mkdtemp_promise_bridge_install(void) {
-  scr_mkdtemp_promise_new = scr_promise_new;
-  scr_mkdtemp_promise_reject_pending = scr_promise_reject_pending;
-  scr_mkdtemp_promise_settled_ref = scr_promise_settled_ref;
-  scr_mkdtemp_promise_settled_void = scr_promise_settled_void;
-}
-
 /* Makes `dst` a view of `src`: the same promise to the program, at another
  * inner type. The view copies the source's settlement and, for a rejection,
  * becomes the promise that is tracked as unhandled (scr_promise_settle_from).
@@ -958,10 +948,48 @@ ScrAlsCtx *scr_als_ctx_retain(ScrAlsCtx *c) {
   return c;
 }
 
+/* Snapshots are collector objects: a store can hold a callback that captured a
+ * resource that captured the same store, so the entry values are the snapshot's
+ * traced children and the collector walks the whole loop. A collected snapshot
+ * frees nothing itself — the collector already accounted for every entry
+ * value. */
+static SCR_TL long scr_als_ctx_live = 0;
+
+long scr_als_live_contexts(void) { return scr_als_ctx_live; }
+
+#ifdef SCR_RC_AUDIT
+void (*scr_als_ctx_release_probe)(void) = NULL;
+#endif
+
+static void scr_als_ctx_trace(void *o, ScrTraceVisit visit, void *ctx) {
+  ScrAlsCtx *c = o;
+  for (size_t i = 0; i < c->len; i++) visit(c->entries[i].value, ctx);
+}
+
+static void scr_als_ctx_gcfree(void *o) {
+  scr_als_ctx_live--;
+  scr_cyc_free(o);
+}
+
 void scr_als_ctx_release(ScrAlsCtx *c) {
-  if (!c || --c->rc != 0) return;
-  for (size_t i = 0; i < c->len; i++) scr_dyn_release(c->entries[i].value);
-  free(c);
+  if (!c) return;
+  if (--c->rc != 0) {
+    scr_cyc_released(c); /* possible cycle root; may collect — c is done */
+    return;
+  }
+  scr_cyc_dead(c);
+  for (size_t i = 0; i < c->len; i++) {
+    scr_dyn_release(c->entries[i].value);
+#ifdef SCR_RC_AUDIT
+    if (i == 0 && scr_als_ctx_release_probe != NULL) {
+      void (*probe)(void) = scr_als_ctx_release_probe;
+      scr_als_ctx_release_probe = NULL;
+      probe();
+    }
+#endif
+  }
+  scr_als_ctx_live--;
+  scr_cyc_free(c);
 }
 
 /* enterWith on the main stack lasts until that code returns to the loop,
@@ -1029,10 +1057,12 @@ static inline void *scr_fiber_region_capture(void) {
 
 /* Fresh snapshot storage. */
 ScrAlsCtx *scr_als_ctx_alloc(size_t len) {
-  ScrAlsCtx *c = malloc(sizeof *c + len * sizeof(ScrAlsEntry));
+  static ScrCycType cyc_type = {&scr_als_ctx_trace, &scr_als_ctx_gcfree, SCR_CYC_KIND_NONE};
+  ScrAlsCtx *c = scr_cyc_alloc(sizeof *c + len * sizeof(ScrAlsEntry), &cyc_type);
   if (!c) scr_oom();
   c->rc = 1;
   c->len = len;
+  scr_als_ctx_live++;
   return c;
 }
 

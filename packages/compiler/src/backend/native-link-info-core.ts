@@ -29,6 +29,8 @@ export interface NativeLinkFeatures {
   fileHandle: boolean;
   /** fs.openAsBlob: scr_fs_blob.c, the Blob unit over a file's reads. */
   fsOpenAsBlob?: boolean;
+  /** filehandle.readableWebStream: scr_fs_web_stream.c. */
+  fsWebStream?: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
@@ -315,6 +317,9 @@ export interface NativeLinkFeatures {
   dh: boolean;
   /** crypto.argon2 and crypto.argon2Sync: scr_argon2.c. */
   argon2: boolean;
+  /** crypto.encapsulate/decapsulate and the WebCrypto ML-KEM algorithms:
+   * scr_mlkem.c plus the vendored mlkem-native archive. */
+  mlkem: boolean;
   /** Asymmetric KeyObjects, crypto.sign/verify and Sign/Verify: scr_pki.c
    * plus the mbedTLS archive. */
   pki: boolean;
@@ -403,6 +408,7 @@ const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   ecdh: false,
   dh: false,
   argon2: false,
+  mlkem: false,
   pki: false,
   ed25519: false,
   x509: false,
@@ -485,6 +491,7 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // listeners), so the iterator unit brings the checked-dynamic async unit
   // with it.
   { feature: "watchEvents", requires: ["watch", "dynAsync"] },
+  { feature: "fsWebStream", requires: ["fileHandle"] },
   { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
 ];
 

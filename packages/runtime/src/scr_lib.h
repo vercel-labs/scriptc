@@ -292,6 +292,14 @@ ScrBigInt *scr_histo_percentile_big(ScrDyn *handle, double percentile);
 double scr_histo_count_at(ScrDyn *handle, double value);
 double scr_histo_cdf(ScrDyn *handle, double value);
 double scr_histo_ccdf(ScrDyn *handle, double value);
+/* The distribution comparisons accept either histogram table and reject an
+ * `other` that is not a Histogram with Node's ERR_INVALID_ARG_TYPE. */
+double scr_histo_ks_test(ScrDyn *handle, ScrDyn *other);
+double scr_histo_cohens_d(ScrDyn *handle, ScrDyn *other);
+double scr_histo_cliffs_d(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_u(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_z(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_p(ScrDyn *handle, ScrDyn *other);
 double scr_histo_percentiles_count(ScrDyn *handle);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
@@ -546,15 +554,6 @@ ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix);           /* +1 */
 ScrStr *scr_mkdtemp_result_path(ScrMkdtempResult *r);             /* +1 */
 ScrPromise *scr_mkdtemp_result_remove(ScrMkdtempResult *r);       /* +1 */
 void scr_mkdtemp_result_remove_sync(ScrMkdtempResult *r);
-/* The promise entries the fs.mkdtempDisposable helpers need, installed by
- * the promise unit's constructor (scr_async.c). scr_lib.c then links without
- * the promise unit, which the runtime unit tests that link scr_lib.c alone
- * rely on; a program can only reach the helpers after linking it. */
-extern ScrPromise *(*scr_mkdtemp_promise_new)(void);
-extern void (*scr_mkdtemp_promise_reject_pending)(ScrPromise *p);
-extern ScrPromise *(*scr_mkdtemp_promise_settled_ref)(
-    void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
-extern ScrPromise *(*scr_mkdtemp_promise_settled_void)(void);
 void scr_fs_access(ScrStr *path, double mode);
 ScrStr *scr_fs_read_fd(double fd);
 

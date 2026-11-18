@@ -4653,6 +4653,12 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
     /* An absent name is absent without reading native state (Node answers
      * undefined for it even on a closed database). */
     if (!scr_dyn_handle_own_name(value, key)) return scr_dyn_retain(scr_dyn_undefined());
+    if (scr_dyn_handle_ops_of(value)->own_descriptor) {
+      ScrDyn *descriptor =
+          scr_dyn_handle_ops_of(value)->own_descriptor(value->v.handle.ptr, key->data, key->len);
+      if (descriptor) return descriptor;
+      if (scr_exc_pending()) return NULL;
+    }
     ScrDyn *view = scr_dyn_handle_own_view(value);
     if (!view) return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
     ScrDyn *descriptor = scr_dyn_own_descriptor(view, key);
@@ -15377,7 +15383,7 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_STR)
     return scr_dyn_canonical_own_index(key, (size_t)scr_str_utf16_len(v->v.str));
   if (v->kind == SCR_DYN_BYTES) return scr_dyn_bytes_in(v, key);
-  if (v->kind == SCR_DYN_HANDLE) {
+  if (v->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(v)) {
     /* The class's own names answer without reading native state (for-in
      * rechecks presence on every visit), then the modeled members. */
     if (scr_dyn_handle_own_name(v, key)) return true;
@@ -21177,20 +21183,22 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     }
     return out;
   }
-  if (v->kind == SCR_DYN_HANDLE) {
+  if (v->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(v)) {
     /* The key list needs no values, so it stays exact while the class's
      * state is gone (Object.keys of a closed database's limits). */
     if (mode == SCR_OBJWALK_KEYS) {
       ScrDyn *names = scr_dyn_handle_own_names(v);
+      scr_dyn_release(out);
       if (names) return names;
       if (scr_exc_pending()) return NULL;
       return scr_dyn_new_arr();
     }
     ScrDyn *view = scr_dyn_handle_own_view(v);
+    scr_dyn_release(out);
     if (!view) return scr_exc_pending() ? NULL : scr_dyn_new_arr();
-    ScrDyn *out = scr_dyn_objwalk(view, mode);
+    ScrDyn *walked = scr_dyn_objwalk(view, mode);
     scr_dyn_release(view);
-    return out;
+    return walked;
   }
   /* Scalars (numbers, booleans, functions): no own enumerable
    * string keys. */
@@ -21361,6 +21369,12 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
     return keys;
   }
   case SCR_DYN_HANDLE: {
+    if (scr_ni_dyn_handle(v)) {
+      /* An island value keeps its keys in Node; the walk is not modeled. */
+      static const char island_msg[] = "for-in over this checked-dynamic kind is not supported yet";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, island_msg, sizeof island_msg - 1, "SC1090");
+      return NULL;
+    }
     ScrDyn *names = scr_dyn_handle_own_names(v);
     if (names) return names;
     return scr_exc_pending() ? NULL : scr_dyn_new_arr();
@@ -22263,7 +22277,8 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     scr_throw_error_msg(SCR_ERR_TYPE, m, strlen(m));
     return false;
   }
-  if (v->kind == SCR_DYN_HANDLE) return scr_dyn_handle_own_name(v, key);
+  if (v->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(v))
+    return scr_dyn_handle_own_name(v, key);
 
   if (v->kind == SCR_DYN_OBJ) {
     /* Object.prototype's builtin members are its own properties (zod's
@@ -22334,7 +22349,8 @@ bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
     return false;
   }
   /* A handle class's own properties are all enumerable. */
-  if (value->kind == SCR_DYN_HANDLE) return scr_dyn_handle_own_name(value, key);
+  if (value->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(value))
+    return scr_dyn_handle_own_name(value, key);
   if (value->kind == SCR_DYN_OBJ)
     return scr_dyn_obj_enumerable(value, key->data, key->len);
   if (value->kind == SCR_DYN_STR)

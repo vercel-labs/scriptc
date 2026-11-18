@@ -37,6 +37,11 @@ console.log("addedJson:", JSON.stringify(limits).slice(0, 40));
 console.log("addedValue:", fields.extra);
 delete fields.extra;
 console.log("deleted:", Object.keys(limits).length, Object.hasOwn(limits, "extra"));
+// A write through a temporary reference is a write on the one object the
+// database keeps.
+const temporary: any = db.limits;
+temporary.temp = 5;
+console.log("temporary:", db.limits, (db.limits as any).temp, Object.keys(db.limits).includes("temp"));
 console.log("limitDelete:", Object.getOwnPropertyNames(Object.getOwnPropertyDescriptor(limits, "length") ?? {}).length);
 
 // The live values reach the connection both ways.
@@ -78,6 +83,8 @@ refusal("values", () => Object.values(limits));
 refusal("json", () => JSON.stringify(limits));
 refusal("inspect", () => inspect(limits));
 refusal("descriptor", () => Object.getOwnPropertyDescriptor(limits, "length"));
+// A JavaScript-added property describes itself without the connection.
+console.log("closedAdded:", JSON.stringify(Object.getOwnPropertyDescriptor(limits, "alpha")));
 console.log("closedAbsent:", Object.getOwnPropertyDescriptor(limits, "nope"));
 console.log("closedRead:");
 try {

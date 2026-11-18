@@ -2717,6 +2717,11 @@ typedef struct ScrDynHandleOps {
    * keys, values, descriptors and serialization of such a handle read it,
    * so they follow the object's own attributes. NULL hook = none. */
   ScrDyn *(*own_view)(void *h);
+  /* The descriptor of the class's own property `key` (+1), using the same
+   * attributes the view would have: the undefined value when `key` names
+   * no own property, or NULL with an exception pending (a closed
+   * database's native limits). NULL hook = descriptors read own_view. */
+  ScrDyn *(*own_descriptor)(void *h, const char *key, size_t key_len);
   /* `delete handle[key]`: true when the property was removed or never
    * existed, false for a non-configurable own property (the caller throws
    * in strict code). NULL hook = the delete is refused. */

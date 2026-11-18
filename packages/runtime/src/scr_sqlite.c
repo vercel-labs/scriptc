@@ -95,16 +95,16 @@ struct ScrSqliteDb {
   ScrSqliteSession **sessions;
   size_t session_n, session_cap;
   bool ignore_next_error;
-  /* The limits object handed out so far, borrowed: the object owns its
-   * database, so a live one keeps this pointer valid and its release
-   * clears this. Node answers every read of `database.limits` with the
-   * same object. */
+  /* The limits object Node hands out for this database, owned: every read
+   * of `database.limits` answers it, so properties JavaScript added to it
+   * survive while the database lives. Its release clears the object's
+   * borrowed database pointer, like the weak pointer Node's limits hold. */
   ScrSqliteLimits *limits_object;
 };
 
 struct ScrSqliteLimits {
   size_t rc;
-  ScrSqliteDb *db; /* owned */
+  ScrSqliteDb *db; /* borrowed: the database owns this object and clears this when it goes */
   /* JavaScript-added properties: Node's limits object is an ordinary
    * object, so a write that names no limit lands here. NULL until the
    * first one. */
@@ -1489,11 +1489,14 @@ static void *scr_sqlite_limits_retain(void *h) {
 static void scr_sqlite_limits_release(void *h) {
   ScrSqliteLimits *l = h;
   if (l == NULL || --l->rc > 0) return;
-  ScrSqliteDb *db = l->db;
-  if (db != NULL && db->limits_object == l) db->limits_object = NULL;
   scr_dyn_release(l->expandos);
   free(l);
-  scr_sqlite_db_release(db);
+}
+
+/* Whether the limits object still reaches an open connection. A database
+ * that went away (the object outlived it) answers as a closed one does. */
+static bool scr_sqlite_limits_open(const ScrSqliteLimits *l) {
+  return l->db != NULL && l->db->conn != NULL;
 }
 
 /* The index of a limit name, or -1. */
@@ -1514,7 +1517,7 @@ static ScrDyn *scr_sqlite_limits_get(void *h, const char *key, size_t len) {
     const ScrDyn *added = l->expandos != NULL ? scr_dyn_obj_get(l->expandos, key, len) : NULL;
     return added != NULL ? scr_dyn_retain(added) : NULL;
   }
-  if (l->db->conn == NULL) {
+  if (!scr_sqlite_limits_open(l)) {
     scr_sqlite_invalid_state("database is not open");
     return NULL;
   }
@@ -1532,7 +1535,7 @@ static bool scr_sqlite_limits_set(void *h, const char *key, size_t len, const Sc
     scr_dyn_obj_set(l->expandos, key, len, scr_dyn_retain((ScrDyn *)value));
     return true;
   }
-  if (l->db->conn == NULL) {
+  if (!scr_sqlite_limits_open(l)) {
     scr_sqlite_invalid_state("database is not open");
     return true;
   }
@@ -1595,6 +1598,38 @@ static ScrDyn *scr_sqlite_limits_own_names(void *h) {
   return names;
 }
 
+/* The descriptor of one own property. The limits are the connection's live
+ * values (Node's data properties: writable and enumerable, not
+ * configurable), so a closed database raises the read's error, while a
+ * JavaScript-added property describes itself without the connection. */
+static ScrDyn *scr_sqlite_limits_descriptor(void *h, const char *key, size_t len) {
+  ScrSqliteLimits *l = h;
+  int index = scr_sqlite_limit_index(key, len);
+  ScrDyn *out = scr_dyn_new_obj();
+  if (index >= 0) {
+    if (!scr_sqlite_limits_open(l)) {
+      scr_dyn_release(out);
+      scr_sqlite_invalid_state("database is not open");
+      return NULL;
+    }
+    scr_dyn_obj_set(out, "value", 5, scr_dyn_new_num((double)sqlite3_limit(l->db->conn, index, -1)));
+    scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(true));
+    scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(true));
+    scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(false));
+    return out;
+  }
+  const ScrDyn *value = l->expandos != NULL ? scr_dyn_obj_get(l->expandos, key, len) : NULL;
+  if (value == NULL) {
+    scr_dyn_release(out);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  scr_dyn_obj_set(out, "value", 5, scr_dyn_retain((ScrDyn *)value));
+  scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(true));
+  scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(true));
+  return out;
+}
+
 /* `delete limits[key]`: the limits themselves are not configurable (Node's
  * own properties are non-deletable); a JavaScript-added property goes away. */
 static bool scr_sqlite_limits_delete(void *h, const char *key, size_t len) {
@@ -1614,7 +1649,7 @@ static bool scr_sqlite_limits_delete(void *h, const char *key, size_t len) {
  * read does. */
 static ScrDyn *scr_sqlite_limits_own_view(void *h) {
   ScrSqliteLimits *l = h;
-  if (l->db->conn == NULL) {
+  if (!scr_sqlite_limits_open(l)) {
     scr_sqlite_invalid_state("database is not open");
     return NULL;
   }
@@ -1651,6 +1686,7 @@ static const ScrDynHandleOps scr_sqlite_limits_ops = {
     .json_empty_object = true,
     .own_names = scr_sqlite_limits_own_names,
     .own_view = scr_sqlite_limits_own_view,
+    .own_descriptor = scr_sqlite_limits_descriptor,
     .delete_key = scr_sqlite_limits_delete,
 };
 
@@ -1967,6 +2003,11 @@ static void scr_sqlite_db_release(void *h) {
   if (db->conn != NULL) {
     sqlite3_close_v2(db->conn);
     db->conn = NULL;
+  }
+  if (db->limits_object != NULL) {
+    db->limits_object->db = NULL;
+    scr_sqlite_limits_release(db->limits_object);
+    db->limits_object = NULL;
   }
   scr_dyn_release(db->authorizer);
   db->authorizer = NULL;
@@ -3359,22 +3400,20 @@ static ScrDyn *scr_sqlite_db_get(void *h, const char *key, size_t len) {
     return scr_dyn_new_bool(sqlite3_get_autocommit(db->conn) == 0);
   }
   if (len == 6 && memcmp(key, "limits", 6) == 0) {
-    /* Node hands out one limits object per database: cache the state this
-     * object carries, and box it again (handle identity is the native
-     * pointer, so every read answers the same object). */
+    /* Node hands out one limits object per database: the database owns it,
+     * so a write through a temporary (`db.limits.extra = 1`) reaches every
+     * later read, and each read boxes the same state (handle identity is
+     * the native pointer). */
     ScrSqliteLimits *l = db->limits_object;
-    bool fresh = l == NULL;
-    if (fresh) {
+    if (l == NULL) {
       l = calloc(1, sizeof *l);
       if (l == NULL) scr_sqlite_oom();
-      l->rc = 1;
-      l->db = scr_sqlite_db_retain(db);
+      l->rc = 1; /* the database's reference */
+      l->db = db;
       db->limits_object = l;
     }
     scr_dyn_handle_install(SCR_DYNH_SQLITE_LIMITS, &scr_sqlite_limits_ops);
-    ScrDyn *box = scr_dyn_new_handle(l, SCR_DYNH_SQLITE_LIMITS);
-    if (fresh) scr_sqlite_limits_release(l);
-    return box;
+    return scr_dyn_new_handle(l, SCR_DYNH_SQLITE_LIMITS);
   }
   return NULL;
 }

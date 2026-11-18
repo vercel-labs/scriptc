@@ -44,6 +44,11 @@ void scr_file_handle_close(ScrFileHandle *h);
 typedef struct ScrFileHandleHook ScrFileHandleHook;
 void scr_file_handle_ref(ScrFileHandle *h);
 int scr_file_handle_stream_unref(ScrFileHandle *h);
+/* kUnref for a stream that does not own the descriptor's close: drops the
+ * stream's reference, and closes the handle (fulfilling a close() that was
+ * waiting for it) only when it was the last reference and `close_when_unused`
+ * asks for it. A live stream on the same handle keeps its descriptor. */
+void scr_file_handle_stream_detach(ScrFileHandle *h, bool close_when_unused);
 ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx);
 void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
 /* FileHandle.createReadStream / createWriteStream(options): +1 runtime

@@ -23,10 +23,28 @@ typedef struct ScrFsWebStream {
   ScrFileHandle *handle; /* +1 */
   bool auto_close;
   bool closed;
+  /* Whether the stream took the handle's stream reference (an autoClose
+   * stream does) and has not dropped it yet. */
+  bool handle_ref;
   /* What the next read may produce, when the pending read's view is
    * smaller than a whole chunk (0: the whole chunk). */
   size_t read_limit;
 } ScrFsWebStream;
+
+/* The stream's end: an autoClose stream drops the handle's stream
+ * reference, and the descriptor closes only when no other stream still
+ * holds it. A read stream on the same handle that is still live keeps its
+ * descriptor — closing it underneath would hand that stream a descriptor
+ * number the process may already have reused. */
+static void scr_fs_web_stream_drop_handle(ScrFsWebStream *st) {
+  if (!st->handle_ref) return;
+  st->handle_ref = false;
+  /* autoClose asks for the descriptor to close; either way it closes only
+   * when this was the handle's last stream, so a live read stream on the
+   * same handle keeps the descriptor it is reading from. */
+  scr_file_handle_stream_detach(st->handle, st->auto_close);
+  if (scr_exc_pending()) scr_exc_clear();
+}
 
 /* One read in flight: the chunk copied out of the handle (or the EOF / error
  * answer) delivered to the stream's sink on the next tick. */
@@ -86,11 +104,11 @@ static void scr_fs_web_read_deliver(ScrClosure *cb) {
       r->sink->error(r->sink_ctx, r->error);
     } else if (r->chunk == NULL) {
       /* EOF: an autoClose stream closes the handle it read from, as Node's
-       * done handler does. */
-      if (r->stream->auto_close && !r->stream->closed) {
+       * done handler does — through the handle's stream reference count, so
+       * a descriptor another stream still holds stays open. */
+      if (!r->stream->closed) {
         r->stream->closed = true;
-        scr_file_handle_close(r->stream->handle);
-        if (scr_exc_pending()) scr_exc_clear();
+        scr_fs_web_stream_drop_handle(r->stream);
       }
       r->sink->close(r->sink_ctx);
     }
@@ -148,10 +166,7 @@ static ScrPromise *scr_fs_web_stream_cancel(void *ctx, ScrDyn *reason) {
   (void)reason;
   ScrFsWebStream *st = ctx;
   st->closed = true;
-  if (st->auto_close) {
-    scr_file_handle_close(st->handle);
-    if (scr_exc_pending()) scr_exc_clear();
-  }
+  scr_fs_web_stream_drop_handle(st);
   return scr_promise_settled_void();
 }
 
@@ -203,9 +218,14 @@ ScrDyn *scr_file_handle_readable_web_stream(ScrFileHandle *h, ScrDyn *options) {
   st->rc = 1; /* the stream source owns it; its release frees it */
   st->handle = scr_file_handle_retain(h);
   st->auto_close = auto_close;
-  /* The handle's loop liveness follows the stream, as Node refs it while
-   * the stream is alive. */
-  scr_file_handle_ref(h);
+  /* An autoClose stream takes the handle's stream reference: its end drops
+   * it and the descriptor closes when it was the last holder. A stream that
+   * does not close the handle takes no reference, so a later close() never
+   * waits for it. */
+  if (auto_close) {
+    scr_file_handle_ref(h);
+    st->handle_ref = true;
+  }
   ScrDyn *stream = scr_webstream_bytes_over(&scr_fs_web_stream_source, st);
   return stream;
 }

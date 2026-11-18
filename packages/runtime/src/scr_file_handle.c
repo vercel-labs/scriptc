@@ -340,6 +340,22 @@ int scr_file_handle_stream_unref(ScrFileHandle *h) {
   return fd;
 }
 
+void scr_file_handle_stream_detach(ScrFileHandle *h, bool close_when_unused) {
+  if (h->refs > 0) h->refs--;
+  /* The handle's own reference is one of the count: with at most that one
+   * left, no stream holds the handle any more. */
+  if (h->refs > 1) return;
+  ScrPromise *waiting = h->close_wait;
+  h->close_wait = NULL;
+  if (close_when_unused || waiting != NULL) {
+    if (h->fd >= 0) scr_file_handle_close(h);
+  }
+  if (waiting != NULL) {
+    scr_promise_fulfill_void(waiting);
+    scr_promise_release(waiting);
+  }
+}
+
 ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx) {
   ScrFileHandleHook *k = malloc(sizeof *k);
   if (!k) scr_trap("scriptc: out of memory\n");

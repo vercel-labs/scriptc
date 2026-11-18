@@ -51,4 +51,25 @@ try {
   console.log("closed", (err as Error).name, (err as { code: string }).code, (err as Error).message);
 }
 
+// 5. A stream that does not close the handle takes no reference on it: once
+// it ends, a close() finishes instead of waiting for a reference no one will
+// drop.
+const fifth = await fs.promises.open(file, "r");
+const plain = fifth.readableWebStream();
+for await (const chunk of plain) void chunk;
+await fifth.close();
+console.log("close after stream", fifth.fd >= 0);
+
+// 6. autoClose closes the handle when the stream ends, once no other stream
+// holds its descriptor.
+const sixth = await fs.promises.open(file, "r");
+const auto = sixth.readableWebStream({ autoClose: true });
+for await (const chunk of auto) void chunk;
+try {
+  await sixth.read();
+  console.log("after autoClose", "read");
+} catch (err) {
+  console.log("after autoClose", (err as Error).name, (err as { code?: string }).code);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });

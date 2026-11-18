@@ -96,6 +96,28 @@ timedSum(1, 2);
 timedSum(3, 4);
 console.log("histogram", histogram.count, histogram.min >= 1, histogram.max >= 1);
 
+// Any promise-like result (one whose finally is callable) defers the entry
+// to that finally and answers what finally returns.
+const thenable = {
+  tag: "thenable",
+  finally(callback) {
+    callback();
+    return `settled:${this.tag}`;
+  },
+};
+const timedThenable = performance.timerify(function shape() {
+  return thenable;
+});
+console.log("thenable", timedThenable());
+
+// A finally that is not callable is no promise-like: the call is recorded
+// itself and its result returned as it stands.
+const notFinally = { finally: 5 };
+const timedPlain = performance.timerify(function plain() {
+  return notFinally;
+});
+console.log("not-finally", timedPlain() === notFinally);
+
 await new Promise((resolve) => setTimeout(resolve, 20));
 observer.disconnect();
 console.log("seen", seen.join(" | "));

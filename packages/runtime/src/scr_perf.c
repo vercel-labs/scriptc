@@ -1670,11 +1670,50 @@ static ScrDyn *scr_perf_timerified_settled(ScrClosure *closure, ScrDyn *const *a
   return scr_dyn_undefined();
 }
 
-/* Node's wrapper answers the call's promise with the reading attached
+/* Node's wrapper reads `result.finally` on every non-nullish result and
+ * defers when it is callable — any promise-like, not only a native promise.
+ * These are the result kinds that carry members. */
+static bool scr_perf_result_carries_members(const ScrDyn *value) {
+  switch (value->kind) {
+    case SCR_DYN_OBJ:
+    case SCR_DYN_ARR:
+    case SCR_DYN_BYTES:
+    case SCR_DYN_FUNC:
+    case SCR_DYN_HANDLE:
+    case SCR_DYN_TYPED_REF:
+    case SCR_DYN_PROXY:
+    case SCR_DYN_PROMISE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/* Node's wrapper answers a promise-like call with the reading attached
  * through `finally`, so the entry lands once the call settles (a rejection
- * records too, and the rejection still propagates). */
+ * records too, and the rejection still propagates); finally's own answer
+ * replaces the call's. Answers NULL when the result is not promise-like
+ * (or the read threw), so the caller records the call itself. */
 static ScrDyn *scr_perf_timerified_defer(const ScrStr *name, double start, ScrDyn *detail,
-                                         ScrDyn *histogram, ScrDyn *promise) {
+                                         ScrDyn *histogram, ScrDyn *result) {
+  ScrDyn *method = NULL;
+  ScrStr *key = scr_str_new("finally", 7);
+  if (result->kind == SCR_DYN_PROMISE) {
+    /* The gated async unit installs Promise.prototype's members. */
+    method = scr_dyn_promise_key_get(result, key);
+  } else if (scr_dyn_in(result, key)) {
+    method = scr_dyn_obj_read(result, "finally", 7);
+  }
+  scr_str_release(key);
+  if (scr_exc_pending()) {
+    /* A throwing `finally` read propagates, as it does in Node. */
+    scr_dyn_release(method);
+    return NULL;
+  }
+  if (method == NULL || !scr_dyn_is_callable(method)) {
+    scr_dyn_release(method);
+    return NULL;
+  }
   ScrClosure *closure = scr_closure_new(NULL, 4);
   closure->caps[0] = scr_box_new(SCR_BOX_STR);
   scr_box_set_ref(closure->caps[0], scr_str_retain((ScrStr *)name));
@@ -1687,22 +1726,8 @@ static ScrDyn *scr_perf_timerified_defer(const ScrStr *name, double start, ScrDy
     scr_box_set_ref(closure->caps[3], scr_dyn_retain(histogram));
   }
   ScrDyn *callback = scr_dyn_new_func(closure, scr_perf_timerified_settled, 0, "", "");
-  /* result.finally(callback): the promise's own method value, called with
-   * the promise as `this` (the gated async unit installs the member). */
-  ScrStr *key = scr_str_new("finally", 7);
-  ScrDyn *method = scr_dyn_promise_key_get(promise, key);
-  scr_str_release(key);
-  if (method == NULL || !scr_dyn_is_callable(method)) {
-    /* No finally to attach (only a build without the promise unit, which a
-     * promise result cannot come from): record now and hand the promise
-     * back untouched. */
-    scr_dyn_release(method);
-    scr_dyn_release(callback);
-    scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
-    return scr_dyn_retain(promise);
-  }
   ScrDyn *arguments[1] = {callback};
-  scr_dyn_this_push_dyn(promise);
+  scr_dyn_this_push_dyn(result);
   ScrDyn *settled = scr_dyn_call(method, arguments, 1, "timerified function");
   scr_dyn_this_pop();
   scr_dyn_release(method);
@@ -1733,15 +1758,17 @@ static ScrDyn *scr_perf_timerified_call(ScrClosure *closure, ScrDyn *const *args
     return result;
   }
   ScrDyn *detail = scr_perf_argument_detail(args, argc);
-  /* An async call's entry lands when its promise settles, timed over the
-   * whole call. */
-  if (result != NULL && result->kind == SCR_DYN_PROMISE) {
+  /* A promise-like call's entry lands when its finally completes, timed
+   * over the whole call. */
+  if (result != NULL && scr_perf_result_carries_members(result)) {
     ScrDyn *settled = scr_perf_timerified_defer(name, start, detail, histogram, result);
-    scr_dyn_release(detail);
-    scr_dyn_release(histogram);
-    scr_str_release(name);
-    scr_dyn_release(result);
-    return settled;
+    if (settled != NULL || scr_exc_pending()) {
+      scr_dyn_release(detail);
+      scr_dyn_release(histogram);
+      scr_str_release(name);
+      scr_dyn_release(result);
+      return settled;
+    }
   }
   bool recorded = scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
   scr_dyn_release(detail);

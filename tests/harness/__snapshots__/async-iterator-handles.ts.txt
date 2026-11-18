@@ -1,12 +1,3 @@
-async-iterator-handles.ts:5:22 - error SC2020: 'Readable.iterator' is part of the standard library types but has no scriptc lowering yet
-
-  4 | // objects are not yet first-class static values.
-  5 | const nodeIterator = Readable.from(["a"]).iterator();
-    |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  6 | const webIterator = ReadableStream.from([1]).values();
-
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
-
 async-iterator-handles.ts:6:21 - error SC2020: 'ReadableStream.values' is part of the standard library types but has no scriptc lowering yet
 
   5 | const nodeIterator = Readable.from(["a"]).iterator();

@@ -186,11 +186,13 @@ const total = parallelReduce(
 
 In scriptc builds the chunks of a `parallelInto` or a `parallelReduce` may run on several threads at once when scriptc can show that doing so is not observable:
 
-- The callback is a function expression written at the call site.
+- The callback is a function expression written at the call site, and it is neither `async` nor a generator.
 - It reads numbers, booleans and the elements and `length` of typed arrays, and writes only elements of its `part` (`parallelInto`) and variables it declares itself, which hold numbers or booleans. `parallelReduce`'s `combine` reads only its arguments.
 - It does not allocate, throw, `await`, or call anything except the global `Math`'s pure functions. A helper thread has no way to allocate or to carry a thrown value, so `Math.hypot` is not among them: its arguments reach the runtime as one array, which every call allocates. Nor is a program's own object named `Math`, which is not the global `Math`.
 
 A captured typed array it reads is compared with the target: when the two overlap, the chunks run one after another, since one chunk's write could race another's read. A call that breaks a rule compiles to the sequential loop, which is exactly the Node.js call, and scriptc reports which rule it broke as a performance warning (SC6106), never as a build failure. `parallelFor` always runs its chunks one after another until scriptc can show that its callbacks write disjoint elements.
+
+A program that reads stack traces, such as through `Error.stack` or `console.trace`, runs the chunks of every call one after another on the calling thread, because every function that keeps a stack frame records it in state the threads would share.
 
 The number of threads is the process's, taken from `SCRIPTC_THREADS` (default: the hardware thread count, capped at 64). Results do not depend on it: chunks are handed out whole and the reduce fold is in chunk order, so a sum of floating-point values is the same on every run and every machine.
 

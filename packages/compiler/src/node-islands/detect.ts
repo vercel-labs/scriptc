@@ -1206,7 +1206,19 @@ class ModuleScanner {
         );
         return;
       }
-      if (first !== undefined && !this.isModuleObject(first) && !this.inInteropHelper(call))
+      // A definition on an object the program builds is an ordinary
+      // property the compiler's object model holds: a literal passed here
+      // becomes a checked-dynamic object, an instance keeps it in its
+      // property bag, and a constructor function's prototype is a live
+      // object. Two targets stay outside that model: a class's own
+      // prototype, whose members are laid out at compile time, and a
+      // builtin's, which every module sharing the builtin observes.
+      if (
+        target !== undefined &&
+        !this.isModuleObject(target) &&
+        !this.inInteropHelper(call) &&
+        (this.isClassPrototypeTarget(target) || this.patchesBuiltinValue(target))
+      )
         this.add("R2.3", "define-property", `'${text}()'`, call);
       return;
     }
@@ -1253,33 +1265,9 @@ class ModuleScanner {
       this.add("R2.3", "define-property", `'${text.slice(text.lastIndexOf(".") + 1)}()'`, call);
       return;
     }
-    // constructor functions
-    if (
-      args.length === 2 &&
-      (resolved === "util.inherits" ||
-        (text === "inherits" && !this.functions.has("inherits")) ||
-        text.endsWith(".inherits"))
-    ) {
-      this.add("R2.1", "constructor-function", `'${text}()'`, call);
-      return;
-    }
-    if (
-      ts.isPropertyAccessExpression(target) &&
-      (propertyName(target) === "call" || propertyName(target) === "apply") &&
-      first !== undefined &&
-      first.kind === ts.SyntaxKind.ThisKeyword &&
-      ts.isExpressionStatement(call.parent!)
-    ) {
-      const fn = target.expression;
-      const name = ts.isIdentifier(fn) ? fn.text : null;
-      if (name !== null && /^[A-Z]/.test(name) && !this.classes.has(name))
-        this.add(
-          "R2.1",
-          "constructor-function",
-          `'${name}.${propertyName(target)}(this, …)'`,
-          call,
-        );
-    }
+    // Constructor functions are objects the object model holds: `new F()`,
+    // `util.inherits(A, B)` and `A.call(this, …)` all lower to it, and only
+    // the lowering's own refusals decide what a constructor shape costs.
   }
 
   private visitFunctionConstructor(node: ts.Node, args: readonly ts.Node[]): void {
@@ -1301,15 +1289,49 @@ class ModuleScanner {
 
   private visitNew(node: ts.NewExpression): void {
     const callee = node.expression;
+    // `new (f.bind(…))()`: Node constructs the bound function's target with
+    // the bound arguments, which the runtime's construction does not do yet.
+    const wrapped = stripWrappers(callee);
+    if (
+      ts.isCallExpression(wrapped) &&
+      ts.isPropertyAccessExpression(wrapped.expression) &&
+      propertyName(wrapped.expression) === "bind"
+    ) {
+      this.add("R2.1", "constructor-function", "constructing a bound function", node);
+      return;
+    }
     if (!ts.isIdentifier(callee)) return;
     const name = callee.text;
     if (name === "Function" && this.isGlobal("Function")) {
       this.visitFunctionConstructor(node, node.arguments?.nodes ?? []);
     } else if (name === "Proxy" && !this.declared.has("Proxy")) {
       this.add("R2.5", "proxy", "new Proxy()", node);
-    } else if (this.functions.has(name) && !this.classes.has(name)) {
-      this.add("R2.1", "constructor-function", `'new ${name}()' of a function`, node);
     }
+    // `new F()` on a constructor function lowers to the object model the
+    // function's prototype is part of; nothing here marks it.
+  }
+
+  /** Whether `node` is the prototype of a class this file declares: `C`
+   * itself, `C.prototype`, or a member reached through it. A class's
+   * members are laid out at compile time, so a definition or write on its
+   * prototype outside a declared member is outside the compiler's view. */
+  private isClassPrototypeTarget(node: ts.Node): boolean {
+    const text = chainText(node);
+    if (text === null) return false;
+    const parts = text.split(".");
+    if (parts.length >= 2 && parts[1] === "prototype") {
+      const name = parts[0]!;
+      return this.classes.has(name) && !this.functions.has(name);
+    }
+    return false;
+  }
+
+  /** Whether `node` is a member of a builtin global (`Array.prototype`,
+   * `Math`, `JSON`): a definition there patches the builtin every module
+   * that shares it observes, which the program's own objects never are. */
+  private patchesBuiltinValue(node: ts.Node): boolean {
+    const root = chainRoot(node);
+    return root !== null && this.isGlobal(root.text);
   }
 
   private isModuleObject(node: ts.Node): boolean {
@@ -1382,7 +1404,10 @@ class ModuleScanner {
         this.add("R1.4", "loader-hook", `a ${what} of '${resolved}'`, node);
         return;
       }
-      // F.prototype…
+      // F.prototype…: a constructor function's prototype is one object the
+      // program builds and every instance inherits from, so a write reaches
+      // its property table like any other object's. A class's prototype is
+      // laid out at compile time and keeps its refusal.
       const parts = text.split(".");
       if (parts.length >= 2 && parts[1] === "prototype") {
         const name = parts[0]!;
@@ -1390,12 +1415,8 @@ class ModuleScanner {
           this.add("R2.5", "builtin-write", `a ${what} of '${text}'`, node);
           return;
         }
-        if (binding === undefined && this.classes.has(name) && !this.functions.has(name)) {
+        if (binding === undefined && this.isClassPrototypeTarget(left)) {
           this.add("R2.3", "define-property", `a ${what} of the class prototype '${text}'`, node);
-          return;
-        }
-        if (binding === undefined && name !== "this") {
-          this.add("R2.1", "constructor-function", `a ${what} of '${text}'`, node);
           return;
         }
       }

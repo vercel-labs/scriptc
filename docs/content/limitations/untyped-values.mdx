@@ -14,6 +14,9 @@ Supported native handles also retain identity.
 An instance of a class that declares `toString`, converted to a string where its class is not known (an untyped array's `join`, `String()` or a template over such an array, the default sort order), throws `SC2020` instead of running the method; convert the instance where its class is known.
 JavaScript argument and return conversions preserve native array references; other JSON-shaped record and array conversions can copy values.
 
+A native `Proxy` keeps its traps in a value typed `any` or `unknown`, an interface or object type, or a string-keyed dictionary: member reads, writes, method calls and `in` on it run the traps, and one interface-typed value can hold either a class instance or a `Proxy`.
+A program class type holds only instances of the class, so a `Proxy` returned or assigned where a class type is expected throws a catchable `TypeError` (`SC2020`); declare the value as an interface the class satisfies, or as `any`.
+
 Supported operations on `unknown` include truthiness, `typeof` narrowing, property access, `+`, `switch`, and `throw`.
 Cast before using other operations.
 

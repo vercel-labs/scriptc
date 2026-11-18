@@ -234,6 +234,11 @@ bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, si
 struct ScrMessage;
 bool scr_emitter_emit_message(ScrEmitter *em, ScrStr *name, const struct ScrMessage *message,
                               ScrDyn *(*decode)(const struct ScrMessage *));
+/* The same emit, handing the decoded value the listeners read to the caller
+ * (+1, NULL when none was decoded): a MessagePort delivers that one object
+ * to its EventTarget listeners too, as Node's dispatch does. */
+bool scr_emitter_emit_message_out(ScrEmitter *em, ScrStr *name, const struct ScrMessage *message,
+                                  ScrDyn *(*decode)(const struct ScrMessage *), ScrDyn **out);
 /* An untyped emit of an event with a fixed tuple: the arguments as given
  * for dynamic listeners, plus the tuple converted by the caller as
  * scr_emitter_emit's variadics for typed listeners. has_typed answers

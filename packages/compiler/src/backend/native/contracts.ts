@@ -202,6 +202,9 @@ export interface CcOptions {
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
   mime?: boolean;
+  /** node:sqlite: compiles scr_sqlite.c and links the vendored SQLite
+   * archive. */
+  sqlite?: boolean;
   /** `--large-pages`: compiles scr_text_pages.c. */
   largePages?: boolean;
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
@@ -431,6 +434,13 @@ export interface CcOptions {
    * unit under the same precedent, so polling-free binaries keep their
    * exact link line. */
   watchFile?: boolean;
+  /** The program uses fsPromises.watch (moduleUsesFsWatchEvents on the IR):
+   * compiles scr_watch_async.c into the binary, and with it scr_watch.c
+   * (the iterator is a queue over that unit's watcher). */
+  watchEvents?: boolean;
+  /** The program uses filehandle.readableWebStream: compiles
+   * scr_fs_web_stream.c into the binary, and scr_webstreams.c with it. */
+  fsWebStream?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */
@@ -465,6 +475,11 @@ export interface CcOptions {
    * createDiffieHellmanGroup: compiles scr_dh.c and links the mbedTLS
    * archive (shared with tls). */
   dh?: boolean;
+  /** crypto.argon2 and crypto.argon2Sync: compiles scr_argon2.c. */
+  argon2?: boolean;
+  /** ML-KEM (mlkem-native): compiles scr_mlkem.c and links the vendored
+   * ML-KEM archive. */
+  mlkem?: boolean;
   /** Asymmetric KeyObjects and signatures: compiles scr_pki.c and links
    * the mbedTLS archive. */
   pki?: boolean;

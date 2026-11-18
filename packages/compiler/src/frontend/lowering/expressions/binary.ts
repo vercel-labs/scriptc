@@ -103,11 +103,12 @@ import {
   tryLowerBytesReadNumberEquality,
 } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
+import { cjsRuntimeOptionalExportStorage } from "../cjs-inline-require.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
 import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
-import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
+import { lowerDynTypeofTest, lowerErrorCodeTypeofTest, withTypeofTestCycleRead } from "./typeof.js";
 import { builtinClassRefOf, sameBuiltinClass } from "../builtins/class-values.js";
 import {
   lowerRuntimeConstructorIs,
@@ -415,6 +416,8 @@ function mayLowerAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
     );
   }
   if (ts.isPropertyAccessExpression(expr)) {
+    // A CommonJS module member the module may leave unassigned.
+    if (cjsRuntimeOptionalExportStorage(lowerer, expr) !== null) return true;
     const type = lowerer.checker.getTypeAtLocation(expr.expression);
     if (lowerer.checker.getPropertyOfType(type, expr.name.text)) return false;
     return lowerer.checker.getIndexInfosOfType(type).length > 0;
@@ -2051,6 +2054,18 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               locOf(expr.left.argumentExpression),
               expr.left.argumentExpression,
             );
+          // A JavaScript file's typed-array store with a checked-dynamic
+          // index (`used[a] = 1`, an untyped parameter): the write goes
+          // through the checked-dynamic property store, whose integer-indexed
+          // exotic write coerces the value and ignores an out-of-range index,
+          // exactly as Node's does. The statement form of the store takes the
+          // same route (element-access.ts, lowerElementWrite).
+          if (index.type.kind === "dyn" && recv.type.kind === "bytes")
+            return lowerDynMemberAssignment(
+              lowerer,
+              expr,
+              lowerer.coerceInto(expr.left.expression, recv, DYN),
+            );
           if (index.type.kind !== "f64")
             lowerer.unsupported(
               "SC1090",
@@ -2389,7 +2404,10 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       lowerer.lowerCaughtTypeofTest(expr, loc) ??
       lowerDynTypeofTest(lowerer, expr, loc) ??
       lowerUnionTypeofTest(lowerer, expr, loc);
-    if (test) return test;
+    // These tests can answer from the operand's type alone (a union
+    // whose arms all answer alike): a binding an import cycle can reach
+    // before its declaration ran keeps its checked read.
+    if (test) return withTypeofTestCycleRead(lowerer, expr, test, loc);
   }
   // `x.constructor === Readable` for an instance of EventEmitter or a
   // stream class: the instance's own class, compared without a class value.

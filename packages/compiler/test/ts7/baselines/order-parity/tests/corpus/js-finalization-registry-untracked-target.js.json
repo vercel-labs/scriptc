@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-finalization-registry-untracked-target.js"
+ ],
+ "diags": []
+}

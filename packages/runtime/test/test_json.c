@@ -950,6 +950,87 @@ static void test_class_test_walk(void) {
   scr_dyn_release(parent);
 }
 
+
+/* Object.setPrototypeOf on class instances (scr_instance_proto_set): an
+ * instance's old prototype can be the last owner of another instance whose
+ * prototype was replaced too. Replacing the first instance's prototype then
+ * frees the second within the call, and the second's disposal moves the
+ * first's entry in the table (backward-shift deletion of a shared probe
+ * run). The first instance must keep the new prototype, and nothing may
+ * read the old one after it is freed (ASan). The instances are fake: two
+ * addresses picked to land in the same bucket of the table's first
+ * capacity, so the second one inserted probes past the first. */
+typedef struct {
+  size_t rc;
+  size_t pad;
+} FakeInstance;
+
+static void *fake_instance_retain(void *p) {
+  ((FakeInstance *)p)->rc++;
+  return p;
+}
+
+static void fake_instance_release(void *p) {
+  FakeInstance *instance = p;
+  if (--instance->rc != 0) return;
+  scr_weak_dispose(p);
+  instance->rc = SIZE_MAX; /* freed */
+}
+
+static ScrDyn *fake_instance_view(void *p) {
+  (void)p;
+  return scr_dyn_new_obj();
+}
+
+/* scr_instance_proto_bucket's hash. */
+static size_t fake_instance_bucket(const void *p, size_t capacity) {
+  uintptr_t h = (uintptr_t)p >> 4;
+  h ^= h >> 17;
+  h *= (uintptr_t)0x9E3779B97F4A7C15ull;
+  return (size_t)(h ^ (h >> 29)) & (capacity - 1);
+}
+
+static void instance_prototype_release_tests(void) {
+  static FakeInstance arena[256] __attribute__((aligned(16)));
+  size_t first = 0, second = 0;
+  for (size_t j = 1; j < 256 && second == 0; j++)
+    if (fake_instance_bucket(&arena[j], 16) == fake_instance_bucket(&arena[0], 16)) second = j;
+  check(second != 0, "two instances share a bucket");
+  if (second == 0) return;
+  static const char key[] = "object:FakeInstance";
+  FakeInstance *b = &arena[first], *a = &arena[second];
+  b->rc = 1;
+  a->rc = 1;
+
+  ScrDyn *cap_b = scr_dyn_new_typed_ref(b, fake_instance_retain, fake_instance_release, key,
+                                        sizeof key - 1, fake_instance_view, NULL);
+  ScrDyn *proto_b = scr_dyn_new_obj();
+  scr_dyn_release(scr_dyn_set_prototype(cap_b, proto_b));
+  scr_dyn_release(proto_b);
+
+  ScrDyn *cap_a = scr_dyn_new_typed_ref(a, fake_instance_retain, fake_instance_release, key,
+                                        sizeof key - 1, fake_instance_view, NULL);
+  ScrDyn *proto_a = scr_dyn_new_obj();
+  scr_dyn_obj_set(proto_a, "b", 1, cap_b); /* proto_a owns B's only capsule */
+  fake_instance_release(b);                /* and through it, B */
+  scr_dyn_release(scr_dyn_set_prototype(cap_a, proto_a));
+  scr_dyn_release(proto_a);
+  scr_dyn_release(cap_a); /* the table is proto_a's last owner */
+
+  ScrDyn *cap_a2 = scr_dyn_new_typed_ref(a, fake_instance_retain, fake_instance_release, key,
+                                         sizeof key - 1, fake_instance_view, NULL);
+  ScrDyn *proto_c = scr_dyn_new_obj();
+  scr_dyn_release(scr_dyn_set_prototype(cap_a2, proto_c));
+  check(b->rc == SIZE_MAX, "replacing a prototype frees the instance it owned");
+  ScrDyn *got = scr_dyn_get_prototype(cap_a2);
+  check(got == proto_c, "the instance keeps its new prototype after its entry moved");
+  scr_dyn_release(got);
+  scr_dyn_release(proto_c);
+  scr_dyn_release(cap_a2);
+  fake_instance_release(a);
+  check(a->rc == SIZE_MAX, "the instance is freed");
+}
+
 int main(void) {
   test_class_values();
   scr_init();
@@ -1130,6 +1211,7 @@ int main(void) {
   live_array_ref_tests();
   live_record_ref_tests();
   record_reflects_static_tests();
+  instance_prototype_release_tests();
 
   printf("%d/%d checks passed\n", checks - failures, checks);
   return failures == 0 ? 0 : 1;

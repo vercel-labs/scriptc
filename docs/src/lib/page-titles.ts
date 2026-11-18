@@ -2,6 +2,7 @@ export const PAGE_TITLES: Record<string, string> = {
   "": "TypeScript-to-Native\nCompiler",
   introduction: "Introduction",
   quickstart: "Quickstart",
+  "node-development-loop": "Node.js Development Loop",
   cli: "CLI Reference",
   coverage: "Coverage Reports",
   dependencies: "npm Dependencies",

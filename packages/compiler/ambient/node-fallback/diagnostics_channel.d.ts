@@ -1,24 +1,24 @@
 /// <reference path="./async_hooks.d.ts" />
 
-/* node:diagnostics_channel — the in-process pub/sub core: named channels,
- * subscribe/unsubscribe (module-level and channel-level), publish with any
- * dyn-convertible message. Channel values are f64 handles into the
- * runtime's channel registry (the readline.Interface precedent — channels
- * are process-lived in Node too, its WeakRef machinery aside).
- * The store-binding surface (bindStore/unbindStore/runStores) lowers onto
- * the AsyncLocalStorage integration (dc.chan* libCalls).
+/* node:diagnostics_channel — the in-process pub/sub core: named channels
+ * (string or symbol names), subscribe/unsubscribe (module-level and
+ * channel-level), publish with any dyn-convertible message. Channel values
+ * are f64 handles into the runtime's channel registry (the
+ * readline.Interface precedent — channels are process-lived in Node too,
+ * its WeakRef machinery aside). Names and subscribers cross as dyn values,
+ * so the runtime applies Node's own argument checks. The store-binding
+ * surface (bindStore/unbindStore/runStores) lowers onto the
+ * AsyncLocalStorage integration (dc.chan* libCalls).
  *
- * TracingChannel (tracingChannel) is the five-event-channel collection:
- * an f64 handle into the runtime's tracing registry (type-mapper.ts maps the
+ * TracingChannel (tracingChannel) is the five-event-channel collection: an
+ * f64 handle into the runtime's tracing registry (type-mapper.ts maps the
  * name like Channel). subscribe/unsubscribe walk a handlers object;
- * traceSync/traceCallback run Node's publish choreography in the runtime
- * (context defaults to a fresh {}); tracePromise is declared (the member
- * exists in Node) but fences at the call site — the traced function's
- * promise cannot cross the checked-dynamic tree boundary yet. */
+ * traceSync/traceCallback/tracePromise run Node's publish choreography in
+ * the runtime (context defaults to a fresh {}). */
 declare module "node:diagnostics_channel" {
-  export type ChannelListener = (message: unknown, name: string) => void;
+  export type ChannelListener = (message: unknown, name: string | symbol) => void;
   export interface Channel {
-    readonly name: string;
+    readonly name: string | symbol;
     readonly hasSubscribers: boolean;
     publish(message: unknown): void;
     subscribe(onMessage: ChannelListener): void;
@@ -30,10 +30,10 @@ declare module "node:diagnostics_channel" {
     unbindStore(store: import("async_hooks").AsyncLocalStorage<any>): boolean;
     runStores(context: unknown, fn: (...args: any[]) => any, thisArg?: any, ...args: any[]): any;
   }
-  export function channel(name: string): Channel;
-  export function subscribe(name: string, onMessage: ChannelListener): void;
-  export function unsubscribe(name: string, onMessage: ChannelListener): boolean;
-  export function hasSubscribers(name: string): boolean;
+  export function channel(name: string | symbol): Channel;
+  export function subscribe(name: string | symbol, onMessage: ChannelListener): void;
+  export function unsubscribe(name: string | symbol, onMessage: ChannelListener): boolean;
+  export function hasSubscribers(name: string | symbol): boolean;
   export interface TracingChannelSubscribers {
     start?: (message: any) => void;
     end?: (message: any) => void;

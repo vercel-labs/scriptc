@@ -90,7 +90,7 @@ export function methodsIntactMember(info: ClassInfo): boolean {
  * prototype object that no code has asked for cannot have been changed. So
  * the two tests are exact, whatever write the census could not bound. Null
  * when a class above `info` keeps its own property contract. */
-function methodsUnreplaced(
+export function methodsUnreplaced(
   lowerer: Lowerer,
   receiver: IrExpr,
   info: ClassInfo,

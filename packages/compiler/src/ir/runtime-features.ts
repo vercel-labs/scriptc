@@ -354,6 +354,8 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "webstream.toWebDuplex",
+  "webstream.toWebDuplexDyn",
   "readable.iterator",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
@@ -373,6 +375,9 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexifyReadable",
   "stream.duplexifyWritable",
   "stream.duplexifyPair",
+  "stream.duplexPair",
+  "stream.wrap",
+  "stream.wrapDyn",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -442,6 +447,8 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "webstream.toWebDuplex",
+  "webstream.toWebDuplexDyn",
   "readable.iterator",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
@@ -455,6 +462,15 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "stream.unboxDynStage",
+  // The stream/consumers promise settles through the chunk list and
+  // scr_blob.c's Blob constructor (blob()), so each consumer links the
+  // checked-dynamic async unit that carries the blob unit with it.
+  "sc.text",
+  "sc.json",
+  "sc.buffer",
+  "sc.bytes",
+  "sc.arrayBuffer",
+  "sc.blob",
 ]);
 
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
@@ -1954,6 +1970,8 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
+      "webstream.toWebDuplex",
+      "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
       // method value.
@@ -1988,7 +2006,14 @@ const RUNTIME_FEATURE_RULES = {
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
   streamDyn: rule({
-    fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
+    fns: [
+      "stream.dynNative",
+      "stream.dynNativePipe",
+      "stream.pipeDyn",
+      "stream.unpipeDyn",
+      "stream.wrapDyn",
+      "webstream.toWebDuplexDyn",
+    ],
   }),
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
@@ -2213,6 +2238,16 @@ const RUNTIME_FEATURE_RULES = {
     expr: (node) =>
       node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
   }),
+  /** IncomingMessage.signal: the message's abort signal is an
+   * AbortController, so a program that reads it links the signal unit
+   * (scr_abort.c) without touching fetch. */
+  httpSignal: rule({
+    fns: ["http.reqSignal"],
+    // An untyped message reads `signal` through a checked-dynamic key get,
+    // which no libCall stands for: that read needs the signal unit too.
+    expr: (node) =>
+      node.kind === "dynKeyGet" && node.key.kind === "strLit" && node.key.value === "signal",
+  }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** util.markPromiseAsHandled (scr_util_mark_handled.c): it reports its
@@ -2281,6 +2316,8 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
+      "webstream.toWebDuplex",
+      "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",
@@ -2831,6 +2868,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     webBodies: false,
     webStreams: false,
     abortSignal: false,
+    httpSignal: false,
     utilTiming: false,
     utilMarkPromiseAsHandled: false,
     utilTraceSigInt: false,

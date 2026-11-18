@@ -22478,14 +22478,20 @@ export class Lowerer {
     };
     decls.forEach((decl, i) => {
       // A fixed-tuple rest parameter owns every remaining (flattened)
-      // shape, possibly none for `[]` (restTupleShapes).
+      // shape, possibly none for `[]` (restTupleShapes). A trailing hidden
+      // arguments array (appendArgumentsParameter) is not one of its
+      // positions: the caller binds it after these parameters.
+      const tupleEnd = shapes.findIndex((shape, at) => at >= i && shape.restTuple !== true);
+      const tupleShapes = shapes.slice(i, tupleEnd < 0 ? shapes.length : tupleEnd);
       if (
         decl.dotDotDotToken !== undefined &&
         ts.isIdentifier(decl.name) &&
         i === decls.length - 1 &&
-        (shapes[i] === undefined ? shapes.length === i : shapes[i]!.restTuple === true)
+        (tupleShapes.length > 0 ||
+          shapes.length === i ||
+          (shapes.length === i + 1 && shapes[i]!.mode === "arguments"))
       ) {
-        this.declareRestTupleParam(decl, decl.name, shapes.slice(i), params, prologue);
+        this.declareRestTupleParam(decl, decl.name, tupleShapes, params, prologue);
         return;
       }
       const shape = shapes[i]!;

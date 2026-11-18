@@ -2687,6 +2687,7 @@ static ScrDyn *scr_dyn_not_iterable(const ScrDyn *src, const ScrStr *msg) {
     break;
   }
   case SCR_DYN_FUNC: scr_jb_puts(&b, "function"); break;
+  case SCR_DYN_SYMBOL: scr_jb_puts(&b, "symbol"); break;
   default: scr_jb_puts(&b, "object"); break;
   }
   scr_jb_puts(&b, " is not iterable (cannot read property Symbol(Symbol.iterator))");
@@ -11799,9 +11800,15 @@ ScrDyn *scr_dyn_iterator_optional(const ScrDyn *source) {
   ScrDyn *iterator = scr_iterator_call(method, source, "value[Symbol.iterator]");
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *checked = scr_dyn_iterator_result(iterator);
-  scr_dyn_release(iterator);
-  return checked;
+  /* V8 names the method's answer, not an iterator result: a primitive
+   * iterator is "Result of the Symbol.iterator method is not an object". */
+  if (!scr_iterator_object(iterator)) {
+    scr_dyn_release(iterator);
+    static const char message[] = "Result of the Symbol.iterator method is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  return iterator;
 }
 
 ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
@@ -11824,9 +11831,15 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
   ScrDyn *iterator = scr_iterator_call(method, source, "value[Symbol.iterator]");
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *checked = scr_dyn_iterator_result(iterator);
-  scr_dyn_release(iterator);
-  return checked;
+  /* V8 names the method's answer, not an iterator result: a primitive
+   * iterator is "Result of the Symbol.iterator method is not an object". */
+  if (!scr_iterator_object(iterator)) {
+    scr_dyn_release(iterator);
+    static const char message[] = "Result of the Symbol.iterator method is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  return iterator;
 }
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {
@@ -13621,14 +13634,25 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_release(scr_dyn_set_prototype(d, prototype));
     scr_dyn_release(prototype);
   }
-  if (e->message_present) {
+  /* A SystemError lists code, name and message before its info record. */
+  const bool system = e->system_message != NULL;
+  if (e->message_present && !system) {
     scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->message_enumerable;
   }
   if (e->system_message) {
-    /* SystemError: code, the read-only `info` context ({ message, path,
-     * syscall, errno, code }), then errno, syscall, path and dest. */
+    /* SystemError: code, name, message, then the read-only `info` context
+     * ({ message, path, syscall, errno, code }), then errno, syscall, path
+     * and dest — Node's own property order. */
     if (e->code) scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
+    if (e->name_present) {
+      scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
+      scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->name_enumerable;
+    }
+    if (e->message_present) {
+      scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
+      scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->message_enumerable;
+    }
     ScrDyn *info = scr_dyn_new_obj();
     scr_dyn_obj_set(info, "message", 7, scr_dyn_new_str(e->system_message));
     if (e->system_path) scr_dyn_obj_set(info, "path", 4, scr_dyn_new_str(e->system_path));
@@ -13639,7 +13663,11 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "info", 4, info);
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].writable = false;
     scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
-    if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
+    scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].writable = false;
+    if (e->system_call) {
+      scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
+      scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].writable = false;
+    }
   } else if (e->errno_order) {
     /* ErrnoException: errno, code, path, syscall. */
     if (e->system_call) scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
@@ -13674,6 +13702,8 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "code", 4, scr_dyn_new_num(scr_domex_code(( ScrError *)e)));
     if (scr_domex_has_cause((ScrError *)e)) {
       scr_dyn_obj_set(d, "cause", 5, scr_domex_cause((ScrError *)e));
+      /* Node defines the options form's cause non-enumerable, as Error's. */
+      scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->cause_enumerable;
     }
   }
   /* A disposal SuppressedError's non-enumerable `error` and `suppressed`
@@ -13692,8 +13722,9 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "errors", 6, scr_aggregate_errors((ScrError *)e));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = false;
   }
-  /* An own `name` is assigned after construction defines the others. */
-  if (e->name_present) {
+  /* An own `name` is assigned after construction defines the others (a
+   * SystemError's already sits before its message). */
+  if (e->name_present && !system) {
     scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->name_enumerable;
   }

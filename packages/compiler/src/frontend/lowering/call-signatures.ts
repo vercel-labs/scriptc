@@ -1071,6 +1071,25 @@ export function requireExactArityValue(
       ? lowerer.mapTypeOf(lowerer.typeOf(contextual))
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
+  // A signature that can be called with a different number of arguments
+  // (an optional, defaulted or rest parameter) reads its actual argument
+  // list from the hidden "arguments" array (appendArgumentsParameter), and
+  // no checked signature spells that array in its parameter list. A value
+  // that stays checked-dynamic keeps it: the boxed call thunk fills the
+  // array with exactly the arguments its caller passed, so
+  // `arguments.length` answers the call. A typed slot cannot, because its
+  // own parameter list carries no array, and keeps the refusal.
+  if (
+    funcType.kind === "func" &&
+    funcType.argumentsAll === true &&
+    (mapped === null || mapped.kind === "dyn") &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return;
   // A lambda whose OWN signature already spells the completed ABI is a
   // value: every read of it types it that way, and its slot converts it
   // (the surplus-parameter and undefined-arm adapters). The mapped-type
@@ -1375,7 +1394,15 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
  * array unless a declared rest parameter already owns that contract.
  * Class methods are strict; other parameterized forms require ES modules
  * because sloppy-mode arguments alias named parameters, unless the body
- * cannot observe that aliasing (argumentsAliasingUnobservable). */
+ * cannot observe that aliasing (argumentsAliasingUnobservable).
+ *
+ * A TYPED function receives the same hidden array when its callers can pass
+ * a different number of arguments than the declaration names: an optional,
+ * defaulted or rest parameter makes `arguments.length` vary per call, and a
+ * fixed-arity signature is the only one whose count folds to a constant
+ * (property-access.ts). The array holds every argument the caller passed,
+ * so `arguments.length` answers the call itself rather than the declared
+ * parameter count. */
 function appendArgumentsParameter(
   lowerer: Lowerer,
   node: ts.SignatureDeclaration,
@@ -1383,16 +1410,37 @@ function appendArgumentsParameter(
   mode: "arguments" | "dynRest",
 ): void {
   if (
-    shapes.some((s) => s.mode === "rest" || s.mode === "dynRest") ||
     !(
       ts.isFunctionExpression(node) ||
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node)
     ) ||
-    !isJsSourceFile(ts.getSourceFileOfNode(node)) ||
     !bodyReadsArguments(node)
   )
     return;
+  const typed = !isJsSourceFile(ts.getSourceFileOfNode(node));
+  if (typed) {
+    // Typed sources stay zero-cost for a fixed-arity signature: its count is
+    // the declared count (property-access.ts folds it). Only a parameter
+    // that can be absent makes the count a per-call fact. The array follows
+    // every declared slot, a rest array or the flattened positions of a
+    // tuple rest included (declareParams binds those first).
+    if (
+      !node.parameters.nodes.some(
+        (param) => param.questionToken || param.initializer || param.dotDotDotToken,
+      )
+    )
+      return;
+  } else if (shapes.some((s) => s.mode === "rest" || s.mode === "dynRest")) return;
+  // A typed rest spelled `any[]` or `unknown[]` is a checked-dynamic pack
+  // that already holds every argument the call passed, so the body's
+  // `arguments` is that pack (declareFunctionArguments clones it) and no
+  // second trailing array is appended: the variadic value's ABI the
+  // checked-dynamic layer fills carries one.
+  if (shapes.some((s) => s.mode === "dynRest")) return;
+  // The array is a copy of the call's arguments, so a sloppy-mode function
+  // whose `arguments` would alias its parameters keeps the refusal, typed
+  // or not.
   if (node.parameters.nodes.length > 0 || ts.isMethodDeclaration(node)) {
     const classMethod =
       ts.isMethodDeclaration(node) &&
@@ -1412,7 +1460,7 @@ function appendArgumentsParameter(
       );
     }
   }
-  shapes.push({ type: DYN, mode });
+  shapes.push({ type: DYN, mode: typed ? "arguments" : mode });
 }
 
 /** Whether `arguments` inside `node` is Node's unmapped object: strict code

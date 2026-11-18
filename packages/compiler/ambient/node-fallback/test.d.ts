@@ -204,6 +204,12 @@ declare module "node:test" {
   type FunctionPropertyNames<T> = {
     [K in keyof T]: T[K] extends Function ? K : never;
   }[keyof T];
+  interface MockMethodOptions extends MockFunctionOptions {
+    /* The property is treated as a getter (or a setter); the two are
+     * mutually exclusive. */
+    getter?: boolean;
+    setter?: boolean;
+  }
   interface MockTracker {
     fn<F extends Function = (...args: any[]) => undefined>(original?: F): Mock<F>;
     /* The { times } option: the implementation serves that many calls and
@@ -224,7 +230,7 @@ declare module "node:test" {
     method<MockedObject extends object, MethodName extends FunctionPropertyNames<MockedObject>>(
       object: MockedObject,
       methodName: MethodName,
-      options?: MockFunctionOptions,
+      options?: MockMethodOptions,
     ): MockedObject[MethodName] extends Function ? Mock<MockedObject[MethodName]> : never;
     method<
       MockedObject extends object,
@@ -234,10 +240,22 @@ declare module "node:test" {
       object: MockedObject,
       methodName: MethodName,
       implementation: Implementation,
-      options?: MockFunctionOptions,
+      options?: MockMethodOptions,
     ): MockedObject[MethodName] extends Function
       ? Mock<MockedObject[MethodName] | Implementation>
       : never;
+    getter<MockedObject extends object, MethodName extends keyof MockedObject>(
+      object: MockedObject,
+      methodName: MethodName,
+      implementation: (...args: any[]) => MockedObject[MethodName],
+      options?: MockFunctionOptions,
+    ): Mock<() => MockedObject[MethodName]>;
+    setter<MockedObject extends object, MethodName extends keyof MockedObject>(
+      object: MockedObject,
+      methodName: MethodName,
+      implementation: (value: MockedObject[MethodName]) => void,
+      options?: MockFunctionOptions,
+    ): Mock<(value: MockedObject[MethodName]) => void>;
     reset(): void;
     restoreAll(): void;
     readonly timers: MockTimers;

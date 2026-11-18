@@ -5880,7 +5880,14 @@ ScrPromise *scr_sp_pipeline_stages_opts(double n, ScrStream **streams, double co
  * closures share the cap layout: caps[0] the pending promise, caps[1]
  * the chunk list (Buffer entries). */
 
-enum { SCR_SC_TEXT = 0, SCR_SC_JSON = 1, SCR_SC_BUFFER = 2, SCR_SC_ARRAY_BUFFER = 3, SCR_SC_BYTES = 4 };
+enum {
+  SCR_SC_TEXT = 0,
+  SCR_SC_JSON = 1,
+  SCR_SC_BUFFER = 2,
+  SCR_SC_ARRAY_BUFFER = 3,
+  SCR_SC_BYTES = 4,
+  SCR_SC_BLOB = 5
+};
 
 static void scr_sc_settle_ok(ScrClosure *cb, int kind) {
   ScrPromise *p = scr_box_get_ref(cb->caps[0]);  /* +1 */
@@ -5892,6 +5899,29 @@ static void scr_sc_settle_ok(ScrClosure *cb, int kind) {
      * plain Uint8Array over the same fresh storage */
     if (kind == SCR_SC_BUFFER) scr_stream_buffer(all);
     scr_promise_fulfill_ref(p, all, scr_bytes_retain_v, scr_bytes_release_v, NULL);
+    scr_promise_release(p);
+    return;
+  }
+  if (kind == SCR_SC_BLOB) {
+    /* Node's blob() collects the chunks into `new Blob(parts)`: no type,
+     * so `blob.type` is "", and the size counts the concatenated bytes. */
+    /* new Blob(parts): the constructor's first argument is the list of
+     * parts, so the bytes ride in a one-element array inside the args. */
+    ScrDyn *list = scr_dyn_new_arr();
+    scr_dyn_arr_push(list, scr_dyn_new_bytes(all));
+    ScrDyn *args = scr_dyn_new_arr();
+    scr_dyn_arr_push(args, list);
+    ScrDyn *blob = scr_blob_new(args);
+    scr_dyn_release(args);
+    if (blob == NULL) {
+      /* Blob construction threw (an exception is pending). */
+      scr_bytes_release(all);
+      scr_promise_reject_pending(p);
+      scr_promise_release(p);
+      return;
+    }
+    scr_bytes_release(all);
+    scr_promise_fulfill_ref(p, blob, scr_dyn_retain_v, scr_dyn_release_v, NULL);
     scr_promise_release(p);
     return;
   }
@@ -5984,6 +6014,10 @@ static void scr_sc_fin_bytes(ScrClosure *cb, ScrStream *s, ScrError *err) {
   (void)s;
   scr_sc_fin(cb, err, SCR_SC_BYTES);
 }
+static void scr_sc_fin_blob(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  (void)s;
+  scr_sc_fin(cb, err, SCR_SC_BLOB);
+}
 
 static ScrClosure *scr_sc_closure(void *fn, ScrPromise *p, ScrArr *chunks) {
   ScrClosure *c = scr_closure_new(fn, 2);
@@ -6010,6 +6044,7 @@ static ScrPromise *scr_sc_consume(ScrStream *s, int kind) {
                             : kind == SCR_SC_JSON  ? &scr_sc_fin_json
                             : kind == SCR_SC_BUFFER ? &scr_sc_fin_buffer
                             : kind == SCR_SC_BYTES  ? &scr_sc_fin_bytes
+                            : kind == SCR_SC_BLOB   ? &scr_sc_fin_blob
                                                     : &scr_sc_fin_array_buffer;
   /* The terminal watcher first (it marks lifecycle errors handled); the
    * promise form exposes no unhook — the cleanup closure drops. */
@@ -6032,6 +6067,7 @@ ScrPromise *scr_sc_json(ScrStream *s) { return scr_sc_consume(s, SCR_SC_JSON); }
 ScrPromise *scr_sc_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_BUFFER); }
 ScrPromise *scr_sc_array_buffer(ScrStream *s) { return scr_sc_consume(s, SCR_SC_ARRAY_BUFFER); }
 ScrPromise *scr_sc_bytes(ScrStream *s) { return scr_sc_consume(s, SCR_SC_BYTES); }
+ScrPromise *scr_sc_blob(ScrStream *s) { return scr_sc_consume(s, SCR_SC_BLOB); }
 
 /* ── stream.addAbortSignal and the constructors' signal option ─────────
  * lib/internal/streams/add-abort-signal.js: the signal must be an object
@@ -7145,6 +7181,10 @@ ScrDyn *scr_stream_chunk_value(ScrStream *s, ScrBytes *chunk) {
   if (desc) return desc->box(chunk);
   if (scr_stream_writes_values(s)) return scr_dyn_retain((ScrDyn *)chunk);
   return scr_dyn_new_buffer(chunk);
+}
+
+const ScrStreamTypedDesc *scr_stream_write_desc(const ScrStream *s) {
+  return s != NULL && s->st != NULL ? s->st->w.cur_desc : NULL;
 }
 
 void *scr_stream_chunk_typed(ScrStream *s, ScrBytes *chunk, const ScrStreamTypedDesc *desc) {

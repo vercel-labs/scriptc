@@ -65,6 +65,11 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // t.error builds Node's wrapper over the failure through the inspect
   // unit's rendering, which can raise.
   "test.ctxError",
+  // The accessor descriptor walk can throw (a fenced class reflection, a
+  // throwing getter trap), and the accessor requirement throws Node's
+  // ERR_INVALID_ARG_VALUE for a missing method.
+  "test.accessorDescriptor",
+  "test.accessorRequire",
   "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
@@ -443,6 +448,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // (~~), which calls a value's valueOf/toString.
   "net.sockSetKeepAlive",
   "http.reqSetEncoding",
+  // req.signal builds the message's AbortController on first read and aborts
+  // it when the message is already gone; both go through the signal unit.
+  "http.reqSignal",
   "fs.readFileSyncBuf",
   "fs.readFileSyncDyn",
   "fs.statSyncDyn",
@@ -596,6 +604,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.sessionPingPayload",
   "http2.getPackedSettings",
   "http2.getUnpackedSettings",
+  "http2.streamRespondWait",
+  "http2.streamSendTrailers",
+  "http2.streamAdditionalHeaders",
+  "http2.responseWriteInformation",
   "http2.streamRespond",
   "http2.streamWrite",
   "http2.streamWriteBytes",
@@ -629,6 +641,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "sc.json",
   "sc.buffer",
   "sc.bytes",
+  "sc.blob",
   "sc.arrayBuffer",
   "readable.newDyn",
   "writable.newDyn",
@@ -678,6 +691,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
   "webstream.toWebReadableDyn",
+  "webstream.toWebDuplexDyn",
+  // The option walk behind duplexPair throws the not-supported Error for an
+  // option it cannot apply; wrap refuses a stream that already carries native
+  // state and wrapDyn a value that is not a native readable stream.
+  "stream.duplexPair",
+  "stream.wrap",
+  "stream.wrapDyn",
   "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",

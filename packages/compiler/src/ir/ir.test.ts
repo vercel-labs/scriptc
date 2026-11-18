@@ -91,6 +91,27 @@ describe("IR kind sets", () => {
     expect(typeEquals(full, surplus)).toBe(false);
     expect(typeKey(full)).toBe("func(string,arguments[])=>string");
   });
+
+  test("distinguishes a typed rest array from the arguments array after it", () => {
+    const packed = arrayOf(STRING);
+    const both = {
+      kind: "func" as const,
+      params: [packed],
+      ret: STRING,
+      rest: true as const,
+      restAbi: "typed" as const,
+      argumentsAll: true as const,
+    };
+    const rest = {
+      kind: "func" as const,
+      params: [packed],
+      ret: STRING,
+      rest: true as const,
+      restAbi: "typed" as const,
+    };
+    expect(typeEquals(both, rest)).toBe(false);
+    expect(typeKey(both)).toBe("func(array<string>,...typed[],arguments[])=>string");
+  });
 });
 
 describe("checked records with opaque payloads", () => {

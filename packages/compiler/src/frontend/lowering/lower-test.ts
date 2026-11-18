@@ -31,6 +31,7 @@ import {
 } from "../../ir/ir.js";
 import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import {
+  lowerMockAccessor,
   lowerMockContextCall,
   lowerMockContextProperty,
   lowerMockFn,
@@ -57,6 +58,15 @@ function lowerMockTrackerMember(
       return lowerMockFn(lowerer, call, `${what}.fn`, tracker());
     case "method":
       return lowerMockMethod(lowerer, call, `${what}.method`, tracker());
+    case "getter":
+    case "setter":
+      return lowerMockAccessor(
+        lowerer,
+        call,
+        `${what}.${member}`,
+        tracker(),
+        member === "getter" ? "get" : "set",
+      );
     case "restoreAll":
     case "reset":
       return lowerMockTrackerCall(lowerer, call, member, tracker());

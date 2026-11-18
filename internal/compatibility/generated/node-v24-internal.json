@@ -110064,6 +110064,7 @@
           "tests/corpus/util-inspect-colors-errors.ts",
           "tests/corpus/util-inspect-colors-escaped-cwd.ts",
           "tests/corpus/util-inspect-colors-values.ts",
+          "tests/corpus/util-inspect-compact-true.ts",
           "tests/corpus/util-inspect-error-hidden.ts",
           "tests/corpus/util-inspect-function-hidden.ts",
           "tests/corpus/util-inspect-options.ts",
@@ -111565,7 +111566,8 @@
           "tests/corpus/util-inspect-colors-values.ts",
           "tests/corpus/util-inspect-colors-builtins.ts",
           "tests/corpus/util-inspect-colors-errors.ts",
-          "tests/corpus/util-inspect-colors-escaped-cwd.ts"
+          "tests/corpus/util-inspect-colors-escaped-cwd.ts",
+          "tests/corpus/util-inspect-compact-true.ts"
         ]
       },
       "anchorSource": "exact"
@@ -111603,7 +111605,8 @@
           "tests/corpus/util-inspect-colors-values.ts",
           "tests/corpus/util-inspect-colors-builtins.ts",
           "tests/corpus/util-inspect-colors-errors.ts",
-          "tests/corpus/util-inspect-colors-escaped-cwd.ts"
+          "tests/corpus/util-inspect-colors-escaped-cwd.ts",
+          "tests/corpus/util-inspect-compact-true.ts"
         ]
       },
       "anchorSource": "exact"

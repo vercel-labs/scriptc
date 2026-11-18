@@ -606,6 +606,7 @@ typedef struct {
   size_t cap;
   bool all_num; /* every entry so far flagged numeric (grouping order) */
   const void *seen; /* the value this frame pushed on the seen stack, or NULL */
+  size_t indent; /* the indentation this frame added (2, or 3 as an object property under compact true) */
 } InspFrame;
 
 static SCR_TL InspFrame *g_frames;
@@ -614,7 +615,8 @@ static SCR_TL size_t g_frames_cap;
 static SCR_TL size_t g_indent;       /* ctx.indentationLvl */
 static SCR_TL bool g_no_break;       /* breakLength: Infinity (console.table cells) */
 static SCR_TL double g_break_length = 80; /* ctx.breakLength */
-static SCR_TL double g_compact = 3;  /* ctx.compact: a number, -1 for false */
+static SCR_TL double g_compact = 3; /* ctx.compact: a number, -1 for false, -2 for true */
+
 static SCR_TL bool g_sorted;         /* ctx.sorted === true */
 static SCR_TL double g_max_array_length = 100; /* ctx.maxArrayLength */
 static SCR_TL double g_max_string_length = 10000; /* ctx.maxStringLength */
@@ -695,7 +697,8 @@ void scr_insp_begin(double recurse) {
   f->all_num = true;
   f->seen = NULL;
   g_cur_depth = recurse;
-  g_indent += 2;
+  f->indent = 2;
+  g_indent += f->indent;
   if (g_pending_seen) {
     const void *v = g_pending_seen;
     g_pending_seen = NULL;
@@ -710,7 +713,7 @@ static void insp_frame_pop(void) {
   InspFrame *f = &g_frames[--g_nframes];
   for (size_t i = 0; i < f->len; i++) scr_str_release(f->items[i]);
   free(f->items);
-  g_indent -= 2;
+  g_indent -= f->indent;
 }
 
 /* Append one already-rendered entry (borrowed; retained here). is_num
@@ -971,7 +974,7 @@ static bool insp_below_break_length(InspFrame *f, size_t start, const ScrStr *ba
 static ScrStr *insp_end_tail(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse, bool array_extras,
                              bool trailing_more, size_t sort_tail) {
   InspFrame *f = insp_top();
-  g_indent -= 2;
+  g_indent -= f->indent;
   if (g_sorted && f->len > 1) {
     size_t from = 0;
     if (sort_tail != INSP_SORT_ALL) {
@@ -982,6 +985,7 @@ static ScrStr *insp_end_tail(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurs
   /* Node adds a circular target's `<ref *N>` to the base before it chooses
    * the layout, so the reference counts toward the line width. */
   ScrStr *ref_base = NULL;
+  ScrStr *ref_open = NULL;
   int ref_id = f->seen ? insp_circ_id(f->seen) : 0;
   if (ref_id) {
     char buf[32];
@@ -990,12 +994,20 @@ static ScrStr *insp_end_tail(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurs
     if (g_colors) insp_style_open(&rb, INSP_SPECIAL);
     ib_bytes(&rb, buf, (size_t)n);
     if (g_colors) insp_style_close(&rb, INSP_SPECIAL);
-    if (base->len) {
+    if (g_compact == -2) {
+      /* Node's compact: true keeps the reference on the opening brace. */
       ib_char(&rb, ' ');
-      ib_str(&rb, base);
+      ib_str(&rb, b0);
+      ref_open = ib_take(&rb);
+      b0 = ref_open;
+    } else {
+      if (base->len) {
+        ib_char(&rb, ' ');
+        ib_str(&rb, base);
+      }
+      ref_base = ib_take(&rb);
+      base = ref_base;
     }
-    ref_base = ib_take(&rb);
-    base = ref_base;
   }
   /* Styling the prefix runs `inspect.styles.special`'s getter, and a getter
    * that inspects another value pushes frame storage that can reallocate
@@ -1006,6 +1018,45 @@ static ScrStr *insp_end_tail(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurs
   bool compact = g_compact >= 1;
   if (compact && array_extras && entries > 6) insp_group(f, trailing_more);
   InspBuf out = {0};
+  if (g_compact == -2) {
+    /* Node's compact: true: one line when it fits, otherwise every entry on
+     * its own line with the opening brace in front of the first one (the
+     * closing brace behind the last). */
+    if (insp_below_break_length(f, 0, base)) {
+      ib_str(&out, b0);
+      if (base->len) {
+        ib_char(&out, ' ');
+        ib_str(&out, base);
+      }
+      ib_char(&out, ' ');
+      for (size_t i = 0; i < f->len; i++) {
+        if (i) ib_cstr(&out, ", ");
+        ib_str(&out, f->items[i]);
+      }
+      ib_char(&out, ' ');
+      ib_str(&out, b1);
+      goto done;
+    }
+    ib_str(&out, b0);
+    if (base->len == 0 && insp_utf16_len(b0->data, b0->len) == 1) {
+      ib_char(&out, ' ');
+    } else {
+      if (base->len) {
+        ib_char(&out, ' ');
+        ib_str(&out, base);
+      }
+      ib_char(&out, '\n');
+      ib_spaces(&out, g_indent + 2);
+    }
+    for (size_t i = 0; i < f->len; i++) {
+      if (i) ib_cstr(&out, ",\n");
+      if (i) ib_spaces(&out, g_indent + 2);
+      ib_str(&out, f->items[i]);
+    }
+    ib_char(&out, ' ');
+    ib_str(&out, b1);
+    goto done;
+  }
   if (compact && g_cur_depth - recurse < g_compact && entries == f->len) {
     size_t start = f->len + g_indent + insp_utf16_len(b0->data, b0->len) +
                    insp_utf16_len(base->data, base->len) + 10;
@@ -1049,6 +1100,7 @@ done:;
   free(f->items);
   g_nframes--;
   if (ref_base) scr_str_release(ref_base);
+  if (ref_open) scr_str_release(ref_open);
   return ib_take(&out);
 }
 
@@ -1254,7 +1306,8 @@ ScrStr *scr_insp_str(ScrStr *s) {
   if (surrogate_tail_len) ib_bytes(&val, surrogate_tail, surrogate_tail_len);
   size_t vlen = val.len;
   const char *v = val.data ? val.data : "";
-  if (!g_no_break && units > 16 && (double)units > g_break_length - (double)g_indent - 4 &&
+  if (g_compact != -2 && !g_no_break && units > 16 &&
+      (double)units > g_break_length - (double)g_indent - 4 &&
       memchr(v, '\n', vlen) != NULL) {
     /* split after each newline; quote each chunk; join with ` +\n<indent+2>` */
     size_t chunk_start = 0;
@@ -1391,6 +1444,8 @@ static ScrStr *insp_view_property(ScrDyn *props, const ScrBytes *b, ScrDyn *box,
   ScrStr *key = symbol ? scr_insp_dyn(symbol, recurse, depth) : NULL;
   ScrStr *val;
   if (!held.accessor) {
+    /* An object property's value indents 3 levels under compact: true. */
+    scr_insp_prop_child(true);
     val = scr_insp_dyn(held.value, recurse, depth);
   } else {
     bool owned = false;
@@ -1404,19 +1459,50 @@ static ScrStr *insp_view_property(ScrDyn *props, const ScrBytes *b, ScrDyn *box,
     if (symbol) scr_dyn_release(symbol);
     return NULL;
   }
-  InspBuf eb = {0};
+  InspBuf kb = {0};
   bool brackets = !held.enumerable && bracket_hidden;
-  if (brackets) ib_char(&eb, '[');
-  if (key) ib_bytes(&eb, key->data, key->len);
-  else insp_key_into(&eb, own_key->data, own_key->len);
-  if (brackets) ib_char(&eb, ']');
-  ib_cstr(&eb, ": ");
-  ib_bytes(&eb, val->data, val->len);
+  if (brackets) ib_char(&kb, '[');
+  if (key) ib_bytes(&kb, key->data, key->len);
+  else insp_key_into(&kb, own_key->data, own_key->len);
+  if (brackets) ib_char(&kb, ']');
+  ScrStr *keyStr = ib_take(&kb);
+  ScrStr *entry = scr_insp_property(keyStr, val, !held.accessor);
+  scr_str_release(keyStr);
   scr_str_release(key);
   scr_str_release(val);
   insp_prop_drop(&held, own_key);
   if (symbol) scr_dyn_release(symbol);
-  return ib_take(&eb);
+  return entry;
+}
+
+/* The next composite rendered is an object property's value: under
+ * compact: true its frame indents one extra level (Node's formatProperty
+ * diff of 3). */
+void scr_insp_prop_child(bool object_type) {
+  /* Node's formatProperty adds 3 levels before an object property's value
+   * under compact: true (every other composite adds 2), and the property
+   * entry restores the extra level after composing. */
+  if (g_compact == -2 && object_type) g_indent += 1;
+}
+
+/* A property entry from its rendered key and value, Node's formatProperty:
+ * `key: value`, except that under compact: true an object property's value
+ * wider than breakLength starts on the next line at the value's own
+ * indentation. */
+ScrStr *scr_insp_property(ScrStr *key, ScrStr *value, bool object_type) {
+  InspBuf out = {0};
+  ib_bytes(&out, key->data, key->len);
+  ib_char(&out, ':');
+  if (g_compact == -2 && object_type &&
+      (double)insp_utf16_len(value->data, value->len) > g_break_length) {
+    ib_char(&out, '\n');
+    ib_spaces(&out, g_indent);
+  } else {
+    ib_char(&out, ' ');
+  }
+  ib_bytes(&out, value->data, value->len);
+  if (g_compact == -2 && object_type) g_indent -= 1;
+  return ib_take(&out);
 }
 
 static size_t insp_view_property_count(ScrDyn *props) {
@@ -5397,7 +5483,7 @@ static void insp_apply_default_options(ScrInspFormatOptions *o) {
   if ((v = INSP_DEFAULT("sorted"))) o->sorted = scr_dyn_truthy(v);
   if ((v = INSP_DEFAULT("compact"))) {
     if (v->kind == SCR_DYN_NUM) o->compact = v->v.num < 0 ? 0 : v->v.num;
-    else if (v->kind == SCR_DYN_BOOL && !v->v.b) o->compact = -1;
+    else if (v->kind == SCR_DYN_BOOL) o->compact = v->v.b ? -2 : -1;
   }
   if ((v = INSP_DEFAULT("breakLength")) && v->kind == SCR_DYN_NUM) o->break_length = v->v.num;
   if ((v = INSP_DEFAULT("maxArrayLength"))) {
@@ -5980,9 +6066,9 @@ bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o
   INSP_OPT("compact");
   if (present) {
     if (value->kind == SCR_DYN_NUM) o->compact = value->v.num < 0 ? 0 : value->v.num;
-    else if (value->kind == SCR_DYN_BOOL && !value->v.b) o->compact = -1;
+    else if (value->kind == SCR_DYN_BOOL) o->compact = value->v.b ? -2 : -1;
     else {
-      insp_fmt_fence(o, "with this compact option has no lowering (compact must be false or a number)");
+      insp_fmt_fence(o, "with this compact option has no lowering (compact must be true, false or a number)");
       goto done;
     }
   }

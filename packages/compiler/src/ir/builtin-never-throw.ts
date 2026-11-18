@@ -234,6 +234,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_insp_numeric_separator stores one flag and answers its previous
   // value.
   "insp.numericSeparator",
+  // scr_insp_prop_child stores one flag; scr_insp_property builds a string.
+  "insp.propChild",
+  "insp.property",
   // scr_worker_share_env answers the thread's SHARE_ENV symbol and makes it
   // on first use; it takes no argument, and running out of memory ends the
   // process.

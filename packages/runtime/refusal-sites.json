@@ -908,7 +908,7 @@
  {
   "file": "scr_inspect.c",
   "function": "scr_insp_format_read_options",
-  "message": "with this compact option has no lowering (compact must be false or a number)",
+  "message": "with this compact option has no lowering (compact must be true, false or a number)",
   "code": "SC2020"
  },
  {

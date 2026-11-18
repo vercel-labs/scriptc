@@ -3301,6 +3301,7 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_CLIENT_SOCKET:
   case SCR_HTTP_EMIT_CLIENT_FINISH:
   case SCR_HTTP_EMIT_CLIENT_ABORT:
+  case SCR_HTTP_EMIT_CLIENT_WAE:
   case SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR:
     scr_http_client_release_internal((struct ScrHttpClientReq *)e->h);
     break;
@@ -6987,7 +6988,10 @@ void scr_http_client_destroy(ScrHttpClientReq *c) {
  * socket answers ERR_STREAM_WRITE_AFTER_END, whose 'error' is uncaught when
  * the caller has no listener. */
 static void scr_http_client_emit_write_after_end(struct ScrHttpClientReq *c) {
-  if (c->close_emitted) return;
+  /* Node's deferred error: a message destroyed before the deferred call runs
+   * reports to the write callback only (the default callback is a noop, so
+   * nothing is emitted), and a settled message has no listeners left. */
+  if (c->destroyed || c->close_emitted) return;
   ScrStr *text = scr_str_new("write after end", 15);
   ScrError *err = scr_error_new(SCR_ERR_ERROR, text);
   scr_error_set_code(err, "ERR_STREAM_WRITE_AFTER_END");

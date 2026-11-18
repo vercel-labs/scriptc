@@ -275,6 +275,12 @@ void scr_als_ctx_release(ScrAlsCtx *c);
 /* Live snapshots on this thread (the runtime tests assert a store <-> resource
  * loop returns to its baseline). */
 long scr_als_live_contexts(void);
+#ifdef SCR_RC_AUDIT
+/* Runtime-test hook: called once while a snapshot's entries are being released
+ * (after the first one), so a test can force a collection pass at the exact
+ * point a snapshot is half-disposed. */
+extern void (*scr_als_ctx_release_probe)(void);
+#endif
 /* After an enterWith: on the main stack, queues the tick that ends it. */
 void scr_als_entered_with(void);
 ScrAlsCtx *scr_als_ctx_alloc(size_t len);

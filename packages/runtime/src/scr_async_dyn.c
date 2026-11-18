@@ -444,6 +444,7 @@ typedef struct ScrAsyncResource {
 } ScrAsyncResource;
 
 static SCR_TL ScrAsyncResource *scr_ar_live = NULL;
+
 static SCR_TL size_t scr_ar_live_count = 0;
 
 /* Live resources: a handle that the program drops must take its payload
@@ -472,13 +473,25 @@ static void scr_ar_teardown(void) {
    * store that holds its own resource — which unlinks and frees that entry
    * from inside the release. Hold every entry for the walk, so each release
    * below is the only thing that can free its node, then drop it. */
+  scr_cyc_suspend(); /* no collection pass over a half-released snapshot */
   for (ScrAsyncResource *r = scr_ar_live; r != NULL; r = r->next) scr_ar_retain(r);
   for (ScrAsyncResource *r = scr_ar_live; r != NULL;) {
     ScrAsyncResource *next = r->next;
-    scr_ar_release_payload(r);
+    /* Detach the children before releasing them: a release below can run a
+     * collector pass, and the pass must not walk this resource into the
+     * snapshot it is in the middle of disposing (its entries are released one
+     * by one, and a binding the store holds can release this very resource
+     * mid-walk). A pass that misses an edge only over-retains. */
+    ScrDyn *type = r->type;
+    ScrAlsCtx *ctx = r->ctx;
+    r->type = NULL;
+    r->ctx = NULL;
+    scr_dyn_release(type);
+    scr_als_ctx_release(ctx);
     scr_ar_release(r);
     r = next;
   }
+  scr_cyc_resume();
 }
 
 

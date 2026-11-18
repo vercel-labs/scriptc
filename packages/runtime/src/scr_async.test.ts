@@ -76,6 +76,14 @@ test("a store and a resource that hold each other are collected", async () => {
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
+test("teardown releases cyclic stores without walking a disposed snapshot", async () => {
+  const result = await execFileAsync(bin, ["teardown"]);
+  expect(result.stdout).toBe(
+    "teardown releases cyclic stores without walking a disposed snapshot\n",
+  );
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("an AsyncResource handle owns its payload", async () => {
   const result = await execFileAsync(bin, ["resources"]);
   expect(result.stdout).toBe("async resource handles own their payload\n");

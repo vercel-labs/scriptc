@@ -805,6 +805,11 @@ void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
  * that walks it finds it externally referenced. */
 void scr_cyc_on_release(void *obj);
 void scr_cyc_on_dead(void *obj);
+/* Keep collection passes out of a release sequence whose intermediate states a
+ * tracer must not see (exit teardown). Candidates buffered meanwhile wait for
+ * the next pass; nesting counts. */
+void scr_cyc_suspend(void);
+void scr_cyc_resume(void);
 /* A set of object pointers for scr_cyc_collect_set: open addressing over
  * `mask + 1` slots (a power of two), NULL marking an empty slot. */
 typedef struct {

@@ -957,6 +957,10 @@ static SCR_TL long scr_als_ctx_live = 0;
 
 long scr_als_live_contexts(void) { return scr_als_ctx_live; }
 
+#ifdef SCR_RC_AUDIT
+void (*scr_als_ctx_release_probe)(void) = NULL;
+#endif
+
 static void scr_als_ctx_trace(void *o, ScrTraceVisit visit, void *ctx) {
   ScrAlsCtx *c = o;
   for (size_t i = 0; i < c->len; i++) visit(c->entries[i].value, ctx);
@@ -974,7 +978,16 @@ void scr_als_ctx_release(ScrAlsCtx *c) {
     return;
   }
   scr_cyc_dead(c);
-  for (size_t i = 0; i < c->len; i++) scr_dyn_release(c->entries[i].value);
+  for (size_t i = 0; i < c->len; i++) {
+    scr_dyn_release(c->entries[i].value);
+#ifdef SCR_RC_AUDIT
+    if (i == 0 && scr_als_ctx_release_probe != NULL) {
+      void (*probe)(void) = scr_als_ctx_release_probe;
+      scr_als_ctx_release_probe = NULL;
+      probe();
+    }
+#endif
+  }
   scr_als_ctx_live--;
   scr_cyc_free(c);
 }

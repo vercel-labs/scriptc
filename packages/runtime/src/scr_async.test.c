@@ -372,6 +372,53 @@ static void async_resource_store_cycle_is_collected(void) {
   printf("a store and a resource that hold each other are collected\n");
 }
 
+#define TEARDOWN_CYCLES 256
+
+#ifdef SCR_RC_AUDIT
+/* The pass the snapshot probe runs: the snapshot's first entry has just been
+ * released, so a resource still pointing at that snapshot would be traced into
+ * freed memory. */
+static void teardown_cycles_pass(void) { scr_collect_cycles(); }
+#endif
+
+/* Exit teardown releases each resource's type and snapshot, and a collection
+ * pass must be safe inside that sequence: the resource's children are detached
+ * before they are released, and no release in the window asks for a pass. Many
+ * cyclic stores left live at exit give the teardown real work; the sanitized
+ * build's probe forces a pass at the exact point one snapshot's first entry
+ * has been released. */
+static void async_resource_teardown_releases_cyclic_stores(void) {
+  const size_t before = scr_ar_live_resources();
+  ScrStr *name = scr_str_new("TEARDOWN", 8);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < TEARDOWN_CYCLES; i++) {
+    const double store_id = scr_als_new();
+    ScrDyn *store_value = scr_dyn_new_obj();
+    ScrAlsCtx *prev = scr_als_enter(store_id, store_value);
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    ScrClosure *closure = scr_closure_new(NULL, 0);
+    ScrDyn *target = scr_dyn_new_func(closure, ar_test_target, 0, "()", "target");
+    ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
+    assert(bound != NULL);
+    scr_dyn_obj_set(store_value, "cb", 2, scr_dyn_retain(bound));
+    scr_als_restore(prev);
+    scr_dyn_release(resource);
+    scr_dyn_release(bound);
+    scr_dyn_release(target);
+    scr_dyn_release(store_value);
+  }
+  scr_dyn_release(type);
+  /* The loops are unreachable now; whatever the collector has not reclaimed
+   * yet is what the exit teardown releases. */
+  assert(scr_ar_live_resources() > before);
+#ifdef SCR_RC_AUDIT
+  scr_als_ctx_release_probe = teardown_cycles_pass;
+#endif
+  printf("teardown releases cyclic stores without walking a disposed snapshot\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
@@ -384,6 +431,10 @@ int main(int argc, char **argv) {
   }
   if (argc > 1 && strcmp(argv[1], "cycle") == 0) {
     async_resource_store_cycle_is_collected();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "teardown") == 0) {
+    async_resource_teardown_releases_cyclic_stores();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "bindings") == 0) {

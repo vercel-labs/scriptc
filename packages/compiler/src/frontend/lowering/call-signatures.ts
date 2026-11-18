@@ -1432,6 +1432,12 @@ function appendArgumentsParameter(
     )
       return;
   } else if (shapes.some((s) => s.mode === "rest" || s.mode === "dynRest")) return;
+  // A typed rest spelled `any[]` or `unknown[]` is a checked-dynamic pack
+  // that already holds every argument the call passed, so the body's
+  // `arguments` is that pack (declareFunctionArguments clones it) and no
+  // second trailing array is appended: the variadic value's ABI the
+  // checked-dynamic layer fills carries one.
+  if (shapes.some((s) => s.mode === "dynRest")) return;
   // The array is a copy of the call's arguments, so a sloppy-mode function
   // whose `arguments` would alias its parameters keeps the refusal, typed
   // or not.

@@ -214,7 +214,6 @@ function declareFunctionArguments(
     lowerer.ctx.argumentsLocal = local;
   }
   if (
-    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
     !ts.isArrowFunction(node) &&
     shapes.length === 1 &&
     shapes[0]?.mode === "dynRest" &&

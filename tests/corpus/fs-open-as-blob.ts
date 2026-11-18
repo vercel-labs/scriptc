@@ -240,4 +240,27 @@ try { await nativeEndings.text(); console.log("parts native", "read"); } catch (
 try { await mixedNative.text(); console.log("parts mixed native", "read"); } catch (err) { console.log("parts mixed native", (err as Error).name); }
 try { await mixedFile.text(); console.log("parts file", "read"); } catch (err) { console.log("parts file", (err as Error).name); }
 
+// 17. An empty file part of a composed Blob is still checked: the Blob
+// rejects once that file changes or goes away.
+const emptyPart = join(dir, "empty-part.bin");
+fs.writeFileSync(emptyPart, "");
+const composed = new Blob([await fs.openAsBlob(emptyPart), "tail"]);
+console.log("composed", JSON.stringify(await composed.text()));
+fs.writeFileSync(emptyPart, "grew");
+try {
+  await composed.text();
+  console.log("composed changed", "read");
+} catch (err) {
+  console.log("composed changed", (err as Error).name);
+}
+fs.writeFileSync(emptyPart, "");
+const composedGone = new Blob([await fs.openAsBlob(emptyPart), "tail"]);
+fs.rmSync(emptyPart);
+try {
+  await composedGone.text();
+  console.log("composed removed", "read");
+} catch (err) {
+  console.log("composed removed", (err as Error).name);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });

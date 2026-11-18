@@ -361,6 +361,13 @@ typedef struct ScrBlobChain {
 
 static bool scr_blob_chain_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
   ScrBlobChain *c = ctx;
+  /* Every file part is asked, even an empty one whose bytes the range walk
+   * never reaches: the part's own check is what turns a changed or removed
+   * file into NotReadableError. */
+  for (size_t i = 0; i < c->nsegs; i++) {
+    ScrBlobSource *source = c->segs[i].source;
+    if (source != NULL && !source->read(source->ctx, c->segs[i].source_off, 0, NULL)) return false;
+  }
   size_t pos = 0, done = 0;
   for (size_t i = 0; i < c->nsegs && done < len; i++) {
     ScrBlobSeg *seg = &c->segs[i];

@@ -9,11 +9,14 @@
  *
  * Resolution over-approximates on purpose. The linker resolves a relative name
  * against search paths the compiler does not model exactly (the script's
- * directory, the working directory, SEARCH_DIR), and an INCLUDEd script keeps
- * the search directories its includer had in effect, so every existing
- * candidate is recorded and a script reached through another includer is read
- * again with them. Recording a file the linker did not open only makes a later
- * build redo the link; missing a file it did open is a stale executable.
+ * directory, the working directory, SEARCH_DIR), and a SEARCH_DIR a script adds
+ * is in effect for the whole link once the script is read: an INCLUDEd script
+ * keeps the directories its includer had, and a later INCLUDE in the includer
+ * sees the directories the included script added. So the directories found in
+ * every reachable script are shared, every existing candidate is recorded, and
+ * a script is read again when that set grows. Recording a file the linker did
+ * not open only makes a later build redo the link; missing a file it did open
+ * is a stale executable.
  */
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -38,13 +41,6 @@ const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_DEPTH = 8;
 const DEFAULT_MAX_FILES = 10_000;
 
-/** A file still to inspect, and the search directories the input that named it
- * had in effect. An INCLUDEd script resolves its own names through them too. */
-interface PendingInput {
-  path: string;
-  searchDirectories: readonly string[];
-}
-
 /** The existing files `inputs` name besides themselves: the files a linker
  * script includes or adds, and the members of a thin archive. Absolute paths,
  * sorted, excluding the inputs themselves and anything under `excludedRoots`. */
@@ -58,41 +54,51 @@ export async function namedLinkInputDependencies(
   // The inputs are already the caller's to snapshot; an input another input
   // names is still read again, but it is not reported as a named file.
   const roots = new Set(inputs.map((input) => resolve(options.cwd, input)));
-  // The search directories each file has been read with. A script reached
-  // again through another includer that adds search directories is read again,
-  // so an INCLUDE it resolves only through those directories is recorded.
+  // Every search directory found in a reachable script. A SEARCH_DIR is in
+  // effect for the whole link once its script is read, so the set is shared:
+  // an INCLUDEd script resolves through its includer's directories, and a
+  // script read before a directory was added is read again once it exists.
+  const searchDirectories = new Set<string>();
+  // The search directories each file has been read with. A file is read again
+  // when the shared set has grown since, so an INCLUDE it resolves only
+  // through a newly added directory is recorded.
   const read = new Map<string, Set<string>>();
-  let pending: PendingInput[] = inputs.map((input) => ({
-    path: resolve(options.cwd, input),
-    searchDirectories: [],
-  }));
-  for (let depth = 0; pending.length > 0; depth++) {
-    // Deeper nesting is not refused silently: a named input's own names stay
-    // unread, so the proof cannot cover them.
-    if (depth > MAX_DEPTH) throw new Error(`link inputs nest deeper than ${MAX_DEPTH} levels`);
-    const next: PendingInput[] = [];
-    for (const item of pending) {
-      const alreadyRead = read.get(item.path);
-      if (
-        alreadyRead !== undefined &&
-        item.searchDirectories.every((directory) => alreadyRead.has(directory))
-      )
-        continue;
-      const searchDirectories = alreadyRead ?? new Set<string>();
-      for (const directory of item.searchDirectories) searchDirectories.add(directory);
-      read.set(item.path, searchDirectories);
-      const found = await namedInputs(item.path, options.cwd, [...searchDirectories]);
-      for (const dependency of found.dependencies) {
-        if (excluded.some((root) => isUnder(dependency, root))) continue;
-        if (!roots.has(dependency) && !named.has(dependency)) {
-          named.add(dependency);
-          if (named.size > maxFiles)
-            throw new Error(`link input ${item.path} names more than ${maxFiles} files`);
+  // Directories are only added, so each pass either ends the loop or reads a
+  // file again with directories it did not have; the reachable files are
+  // finite.
+  for (;;) {
+    const foundSearchDirectories = searchDirectories.size;
+    let pending = [...roots];
+    for (let depth = 0; pending.length > 0; depth++) {
+      // Deeper nesting is not refused silently: a named input's own names stay
+      // unread, so the proof cannot cover them.
+      if (depth > MAX_DEPTH) throw new Error(`link inputs nest deeper than ${MAX_DEPTH} levels`);
+      const next: string[] = [];
+      for (const path of pending) {
+        const alreadyRead = read.get(path);
+        if (
+          alreadyRead !== undefined &&
+          [...searchDirectories].every((directory) => alreadyRead.has(directory))
+        )
+          continue;
+        const directories = alreadyRead ?? new Set<string>();
+        for (const directory of searchDirectories) directories.add(directory);
+        read.set(path, directories);
+        const found = await namedInputs(path, options.cwd, [...searchDirectories]);
+        for (const directory of found.searchDirectories) searchDirectories.add(directory);
+        for (const dependency of found.dependencies) {
+          if (excluded.some((root) => isUnder(dependency, root))) continue;
+          if (!roots.has(dependency) && !named.has(dependency)) {
+            named.add(dependency);
+            if (named.size > maxFiles)
+              throw new Error(`link input ${path} names more than ${maxFiles} files`);
+          }
+          next.push(dependency);
         }
-        next.push({ path: dependency, searchDirectories: found.searchDirectories });
       }
+      pending = next;
     }
-    pending = next;
+    if (searchDirectories.size === foundSearchDirectories) break;
   }
   return [...named].sort();
 }
@@ -107,8 +113,8 @@ const THIN_ARCHIVE_MAGIC = "!<thin>\n";
 interface NamedInputs {
   /** The existing files the input names. */
   dependencies: string[];
-  /** The search directories a script's own names resolve against, which the
-   * scripts it INCLUDEd inherit. Empty for a file that is not a script. */
+  /** The search directories a script's SEARCH_DIR adds, as absolute paths.
+   * Empty for a file that is not a script. */
   searchDirectories: string[];
 }
 
@@ -258,20 +264,21 @@ function linkerScriptInputs(
     }
     index++;
   }
-  // The directories in effect here, which a script this one INCLUDEd resolves
-  // its own names through too. A SEARCH_DIR entry is a relative name the
-  // linker may read from the script's directory or the working directory, so
-  // both readings are kept.
-  const searchDirectories = [
-    ...new Set([
-      scriptDir,
-      cwd,
-      ...inheritedSearchDirectories,
-      ...found.searchDirectories.flatMap((directory) => [
+  // A SEARCH_DIR entry is a relative name the linker may read from the
+  // script's directory or the working directory, so both readings are kept.
+  const addedSearchDirectories = [
+    ...new Set(
+      found.searchDirectories.flatMap((directory) => [
         resolve(scriptDir, directory),
         resolve(cwd, directory),
       ]),
-    ]),
+    ),
+  ];
+  // The directories in effect here: the script's own directory, the working
+  // directory, and every SEARCH_DIR found in this script or in a script
+  // already read.
+  const searchDirectories = [
+    ...new Set([scriptDir, cwd, ...inheritedSearchDirectories, ...addedSearchDirectories]),
   ];
   const paths = new Set<string>();
   for (const name of found.names) {
@@ -290,7 +297,7 @@ function linkerScriptInputs(
       for (const candidate of existingCandidates(name, searchDirectories)) paths.add(candidate);
     }
   }
-  return { dependencies: [...paths], searchDirectories };
+  return { dependencies: [...paths], searchDirectories: addedSearchDirectories };
 }
 
 /** Split a script's commands and names. Comments and punctuation carry no

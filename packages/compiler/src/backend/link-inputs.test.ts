@@ -112,6 +112,18 @@ test("an INCLUDEd script resolves its names through the includer's SEARCH_DIR", 
   expect(await namedLinkInputDependencies([outer], { cwd: root })).toEqual([inner, library].sort());
 });
 
+test("a SEARCH_DIR in an INCLUDEd script resolves a later INCLUDE in its parent", async () => {
+  const root = scratch();
+  const extra = file(root, "libs/extra.ld", "INPUT ( extra.o )\n");
+  const extraObject = file(root, "libs/extra.o");
+  const child = file(root, "scripts/child.ld", "SEARCH_DIR( ../libs )\n");
+  const parent = file(root, "scripts/main.ld", 'INCLUDE "child.ld"\nINCLUDE "extra.ld"\n');
+
+  expect(await namedLinkInputDependencies([parent], { cwd: root })).toEqual(
+    [child, extra, extraObject].sort(),
+  );
+});
+
 test("an input another input includes is not reported as a named file", async () => {
   const root = scratch();
   const first = file(root, "first.ld", 'INCLUDE "second.ld"\nINPUT ( first.o )\n');

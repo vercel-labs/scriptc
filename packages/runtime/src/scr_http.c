@@ -10148,6 +10148,7 @@ static ScrDyn *scr_http_agent_keep_socket_alive(ScrHttpAgent *a, ScrDyn *const *
 /* agent.reuseSocket(socket, request): the socket is referenced again and
  * carries the agent's timeout. */
 static ScrDyn *scr_http_agent_reuse_socket(ScrHttpAgent *a, ScrDyn *const *args, size_t argc) {
+  (void)a;
   ScrDyn *view = NULL;
   ScrNetSocket *sock = argc > 0 ? scr_http_agent_socket_arg(args[0], &view) : NULL;
   if (sock == NULL) {
@@ -10157,8 +10158,20 @@ static ScrDyn *scr_http_agent_reuse_socket(ScrHttpAgent *a, ScrDyn *const *args,
     return NULL;
   }
   scr_dyn_release(view);
+  /* Node: the request learns its socket came from the free list, and the
+   * socket is referenced again. The timeout is left as it is — Node applies
+   * the request's own timeout next to the reuse, so the agent's timeout
+   * must not overwrite a request-specific one. */
+  if (argc > 1) {
+    ScrDyn *req_view = args[1] != NULL && args[1]->kind == SCR_DYN_TYPED_REF
+                           ? scr_dyn_typed_ref_materialize(args[1])
+                           : NULL;
+    const ScrDyn *req = req_view != NULL ? req_view : args[1];
+    if (req != NULL && req->kind == SCR_DYN_HANDLE && req->v.handle.tag == SCR_DYNH_HTTP_CLIENT)
+      ((ScrHttpClientReq *)req->v.handle.ptr)->reused = true;
+    scr_dyn_release(req_view);
+  }
   scr_net_sock_set_ref(sock, true);
-  scr_net_sock_set_timeout(sock, a->timeout_ms > 0 ? a->timeout_ms : 0);
   return scr_dyn_retain(scr_dyn_undefined());
 }
 

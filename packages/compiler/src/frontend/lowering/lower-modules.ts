@@ -2524,6 +2524,52 @@ function cjsModuleKeepsOriginalExports(lowerer: Lowerer, sf: ts.SourceFile): boo
   return keeps;
 }
 
+/** An export member that stores a JavaScript binding the widening scan found
+ * (analyzeJsWidenedBindings) holds checked-dynamic values. The member's slot
+ * was registered from the checker's type for `exports.<name>`, which follows
+ * the binding's initializer; the program's later write stored a value that
+ * type does not admit, and a store into that slot would check the value back
+ * into it and throw. Node's exports object holds whatever the binding holds,
+ * so the slot is checked-dynamic too. Runs after the widening scan and before
+ * any module init lowers. */
+export function widenCjsExportsOfWidenedBindings(
+  lowerer: Lowerer,
+  parts: readonly FileParts[],
+): void {
+  for (const { sf } of parts) {
+    if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+    if (
+      !lowerer.cjsInFileExportMemberGlobals.has(sf) &&
+      !lowerer.cjsConditionalWholeExportGlobals.has(sf)
+    )
+      continue;
+    ts.walkPreorder(sf, (node) => {
+      if (
+        !ts.isBinaryExpression(node) ||
+        node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+        !ts.isPropertyAccessExpression(node.left) ||
+        node.left.questionDotToken !== undefined ||
+        !ts.isIdentifier(node.left.name)
+      )
+        return undefined;
+      const recv = node.left.expression;
+      if (!isCjsExportsIdentifier(lowerer, recv) && !isCjsModuleExports(lowerer, recv))
+        return undefined;
+      let rhs: ts.Node = node.right;
+      while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+      if (!ts.isIdentifier(rhs)) return undefined;
+      const source = lowerer.checker.getSymbolAtLocation(rhs);
+      if (source === undefined || !lowerer.jsWidenedBindings.has(source)) return undefined;
+      const name = node.left.name.text;
+      const member = lowerer.cjsInFileExportMemberGlobals.get(sf)?.get(name);
+      if (member !== undefined) member.type = DYN;
+      const whole = lowerer.cjsConditionalWholeExportGlobals.get(sf)?.get(name);
+      if (whole !== undefined) whole.type = DYN;
+      return undefined;
+    });
+  }
+}
+
 export function collectGlobals(
   lowerer: Lowerer,
   sf: ts.SourceFile,

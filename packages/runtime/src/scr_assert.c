@@ -2569,17 +2569,19 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
       if (scr_dyn_arr_has_index(b, i)) ownB++;
       else holes = true;
     }
-    if (ownB == 0) return true;
-    if (holes) {
-      if (ownA != ownB) return false;
-      size_t ia = 0, ib = 0;
-      for (;;) {
-        while (ia < la && !scr_dyn_arr_has_index(a, ia)) ia++;
-        while (ib < lb && !scr_dyn_arr_has_index(b, ib)) ib++;
-        if (ia >= la || ib >= lb) return ia >= la && ib >= lb;
-        if (!scr_assert_partial_eq(a->v.arr.items[ia], b->v.arr.items[ib])) return false;
-        ia++;
-        ib++;
+    if (holes && ownB != 0) {
+      /* Each expected own index takes the actual's value at that index, or
+       * the next own value after it: a hole is skipped, so `[, 1, 2]`
+       * provides `[1]`, while the cursor only moves forward, which is why
+       * `[1, 2]` does not provide `[2, ,]`. An expected array with no own
+       * index asks for nothing (its named properties still compare below). */
+      size_t p = 0;
+      for (size_t k = 0; k < lb; k++) {
+        if (!scr_dyn_arr_has_index(b, k)) continue;
+        while (p < la && !scr_dyn_arr_has_index(a, p)) p++;
+        if (p >= la) return false;
+        if (!scr_assert_partial_eq(a->v.arr.items[p], b->v.arr.items[k])) return false;
+        p++;
       }
     }
   }

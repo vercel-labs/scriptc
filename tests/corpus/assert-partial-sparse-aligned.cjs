@@ -44,3 +44,18 @@ check("denseVsSparse", () => assert.partialDeepStrictEqual([1, 2], [2, ,]));
 check("denseSubset", () => assert.partialDeepStrictEqual([1, 2, 3], [1, 3]));
 check("denseEqual", () => assert.partialDeepStrictEqual([1, 2], [1, 2]));
 check("denseMismatch", () => assert.partialDeepStrictEqual([1, 2], [2, 1]));
+// A sparse actual provides a dense expected subset through the own values
+// after its holes.
+check("sparseSubset", () => {
+  const a = [];
+  a.length = 3;
+  a[1] = 1;
+  a[2] = 2;
+  assert.partialDeepStrictEqual(a, [1]);
+});
+// An expected array with no own index still compares its named properties.
+check("namedProps", () => {
+  const b = new Array(1);
+  b.extra = 1;
+  assert.partialDeepStrictEqual(new Array(1), b);
+});

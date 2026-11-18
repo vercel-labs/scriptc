@@ -2553,9 +2553,13 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
    * needs one on the actual side (an actual hole fails the aligned key
    * check). The unequal-length forms below keep Node's subsequence match. */
   if (la == lb) {
+    /* Node compares the expected array's own indexes by VALUE: a hole on
+     * either side reads as undefined, so `[, undefined]` partially matches
+     * `[undefined, ,]` (the hole is not a property either side must own). */
     for (size_t i = 0; i < la; i++) {
       if (!scr_dyn_arr_has_index(b, i)) continue;
-      if (!scr_dyn_arr_has_index(a, i)) return false;
+      const ScrDyn *av = scr_dyn_arr_has_index(a, i) ? a->v.arr.items[i] : scr_dyn_undefined();
+      if (!scr_assert_partial_eq(av, b->v.arr.items[i])) return false;
     }
   }
   const ScrDyn *pb = b->v.arr.properties;

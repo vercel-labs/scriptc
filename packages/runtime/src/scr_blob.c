@@ -162,14 +162,35 @@ static ScrStr *scr_blob_type_of(ScrStr *s) {
   return out;
 }
 
-ScrStr *scr_blob_type_normalized(ScrStr *raw) { return scr_blob_type_of(scr_str_retain(raw)); }
+/* Node's openAsBlob keeps the type the caller gave it; only the characters
+ * that could not travel in a header are dropped (the empty type then).
+ * Case is preserved: MIME parameters can be case-sensitive. */
+ScrStr *scr_blob_type_printable(ScrStr *raw) {
+  for (size_t i = 0; i < raw->len; i++) {
+    unsigned char c = (unsigned char)raw->data[i];
+    if (c < 0x20 || c > 0x7e) return scr_str_new("", 0);
+  }
+  return scr_str_retain(raw);
+}
 
 /* One source part: a Blob contributes its own parts, an ArrayBuffer or
  * view its bytes, and anything else its UTF-8 string (line endings
  * rewritten to the platform's when `native`). */
+static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b);
+
 static bool scr_blob_add_source(ScrBlobBuild *bb, const ScrDyn *source, bool native) {
   ScrBlob *inner = scr_blob_of(source);
   if (inner) {
+    if (inner->source) {
+      /* A file-backed Blob has no store to copy: its bytes are read here,
+       * once, into the new Blob (a changed file is NotReadableError). */
+      ScrBytes *bytes = scr_blob_copy_bytes(inner);
+      if (bytes == NULL) return false;
+      scr_blob_build_bytes(bb, bytes->data, bytes->len);
+      scr_blob_build_part(bb, bytes->len);
+      scr_bytes_release(bytes);
+      return true;
+    }
     const uint8_t *at = inner->store->data + inner->off;
     for (size_t i = 0; i < inner->nparts; i++) {
       scr_blob_build_bytes(bb, at, inner->parts[i]);
@@ -520,16 +541,16 @@ static void scr_blob_not_readable(void) {
  * file-backed source no longer answers its range. */
 static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)b->len);
-  if (b->len) {
-    if (b->source) {
-      if (!b->source->read(b->source->ctx, b->off, b->len, bytes->data)) {
-        scr_bytes_release(bytes);
-        scr_blob_not_readable();
-        return NULL;
-      }
-    } else {
-      memcpy(bytes->data, b->store->data + b->off, b->len);
+  if (b->source) {
+    /* The source is asked even for an empty Blob: its check is what turns
+     * a changed or removed file into NotReadableError. */
+    if (!b->source->read(b->source->ctx, b->off, b->len, bytes->len ? bytes->data : NULL)) {
+      scr_bytes_release(bytes);
+      scr_blob_not_readable();
+      return NULL;
     }
+  } else if (b->len) {
+    memcpy(bytes->data, b->store->data + b->off, b->len);
   }
   return bytes;
 }
@@ -698,8 +719,19 @@ static ScrDyn *scr_blob_inspect_view(void *ptr) {
 }
 
 /* structuredClone: a new Blob (or File) over the same immutable store. */
+/* Node's structured clone and postMessage both refuse a Blob backed by a
+ * file: "Invalid state: File-backed Blobs are not cloneable". */
+static void scr_blob_not_cloneable(void) {
+  static const char message[] = "Invalid state: File-backed Blobs are not cloneable";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_STATE");
+}
+
 static ScrDyn *scr_blob_clone(void *ptr) {
   ScrBlob *b = ptr;
+  if (b->source) {
+    scr_blob_not_cloneable();
+    return NULL;
+  }
   ScrBlob *out = scr_blob_alloc();
   b->store->rc++;
   out->store = b->store;
@@ -757,29 +789,12 @@ static void *scr_blob_share(void *h) {
       memcpy(payload->parts, b->parts, b->nparts * sizeof *payload->parts);
     }
   } else {
-    /* A file-backed Blob (fs.openAsBlob) is read once for the transfer:
-     * the copy cannot consult the other thread's file source. A source
-     * that changed shares an empty blob rather than throwing here, as a
-     * transfer has no failure path. */
-    ScrBytes *bytes = scr_blob_copy_bytes(b);
-    if (scr_exc_pending()) { scr_exc_clear(); scr_bytes_release(bytes); bytes = NULL; }
-    size_t len = bytes ? (size_t)scr_bytes_byte_len(bytes) : 0;
-    ScrBlobStore *copy = malloc(sizeof *copy + len);
-    if (!copy) scr_trap("scriptc: out of memory\n");
-    copy->rc = 1;
-    copy->len = len;
-    if (len) memcpy(copy->data, bytes->data, len);
-    scr_bytes_release(bytes);
-    payload->store = copy;
-    payload->off = 0;
-    payload->len = len;
-    payload->last_modified = b->last_modified;
-    if (len) {
-      payload->nparts = 1;
-      payload->parts = malloc(sizeof *payload->parts);
-      if (!payload->parts) scr_trap("scriptc: out of memory\n");
-      payload->parts[0] = len;
-    }
+    /* A file-backed Blob cannot cross a message: its bytes live in the
+     * file, which the receiving thread would have to re-open and re-check.
+     * The encoder reads a NULL with the exception pending (scr_message.c). */
+    free(payload);
+    scr_blob_not_cloneable();
+    return NULL;
   }
   payload->type = scr_blob_payload_text(b->type, &payload->type_len);
   payload->name = scr_blob_payload_text(b->name, &payload->name_len);

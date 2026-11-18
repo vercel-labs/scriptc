@@ -101,4 +101,54 @@ try {
   console.log("link same size", (err as Error).name);
 }
 
+// 8. A file Blob used as a part of a new Blob is read into it.
+const wrapped = new Blob([blob]);
+console.log("wrap", wrapped.size, await wrapped.text());
+
+// 9. A file-backed Blob cannot be cloned or sent in a message.
+try {
+  structuredClone(blob);
+  console.log("clone", "cloned");
+} catch (err) {
+  console.log("clone", (err as Error).name, (err as { code?: string }).code);
+}
+
+// 10. options.type is a JavaScript property read: an accessor runs, an
+// inherited member counts, and the case is kept.
+const getterOptions = {
+  get type() {
+    return "Text/Plain";
+  },
+};
+const getterBlob = await fs.openAsBlob(file, getterOptions);
+console.log("getter type", getterBlob.type);
+const inherited = await fs.openAsBlob(file, Object.create({ type: "x/Y" }));
+console.log("inherited type", inherited.type);
+const casing = await fs.openAsBlob(file, { type: "multipart/form-data; boundary=AbC123" });
+console.log("case type", casing.type);
+const throwing = {
+  get type(): string {
+    throw new RangeError("boom");
+  },
+};
+try {
+  await fs.openAsBlob(file, throwing);
+  console.log("getter error", "none");
+} catch (err) {
+  console.log("getter error", (err as Error).name, (err as Error).message);
+}
+
+// 11. An empty file's Blob still checks the file on every read.
+const blank = join(dir, "blank.bin");
+fs.writeFileSync(blank, "");
+const blankBlob = await fs.openAsBlob(blank);
+console.log("blank", blankBlob.size, JSON.stringify(await blankBlob.text()));
+fs.writeFileSync(blank, "longer");
+try {
+  await blankBlob.text();
+  console.log("blank changed", "read");
+} catch (err) {
+  console.log("blank changed", (err as Error).name);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });

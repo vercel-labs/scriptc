@@ -27,13 +27,34 @@ typedef struct ScrFsBlob {
   double dev, ino;
 } ScrFsBlob;
 
+/* `options.type` as a JavaScript property read — an accessor runs, an
+ * inherited member counts, and a compiled record or proxy answers through
+ * its own path (+1, or NULL with the getter's exception pending). */
+static ScrDyn *scr_fs_blob_type_value(const ScrDyn *options) {
+  static const char key[] = "type";
+  ScrStr *name = scr_str_new(key, 4);
+  ScrDyn *value;
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    value = scr_dyn_typed_ref_key_get(options, name);
+  } else if (options->kind == SCR_DYN_PROXY) {
+    value = scr_dyn_proxy_get(options, name);
+  } else if (options->kind == SCR_DYN_OBJ) {
+    value = scr_dyn_obj_read(options, key, 4);
+  } else {
+    value = scr_dyn_retain(scr_dyn_undefined());
+  }
+  scr_str_release(name);
+  return value;
+}
+
 /* openAsBlob's options.type: Node's `options.type || ''` then
  * validateString, so a falsy member is the empty type and a truthy
  * non-string is the converter's TypeError. */
 static ScrStr *scr_fs_blob_type(const ScrDyn *options) {
-  const ScrDyn *value = scr_dyn_obj_get(options, "type", 4); /* borrowed */
-  if (value == NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL ||
-      !scr_dyn_truthy(value)) {
+  ScrDyn *value = scr_fs_blob_type_value(options); /* +1, or NULL pending */
+  if (value == NULL) return NULL;
+  if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || !scr_dyn_truthy(value)) {
+    scr_dyn_release(value);
     return scr_str_new("", 0);
   }
   if (value->kind != SCR_DYN_STR) {
@@ -49,12 +70,16 @@ static ScrStr *scr_fs_blob_type(const ScrDyn *options) {
                    "The \"options.type\" property must be of type string.");
     }
     scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_TYPE");
+    scr_dyn_release(value);
     return NULL;
   }
-  /* The type reaches Content-Type on a fetch body: Node's Blob type rule
-   * (empty when a character is outside U+0020..U+007E, otherwise
-   * lowercased) keeps control characters from crossing into a header. */
-  return scr_blob_type_normalized(value->v.str);
+  /* The type reaches Content-Type on a fetch body: Node's openAsBlob keeps
+   * the caller's string, and only a character that could not travel in a
+   * header turns it into the empty type (case is preserved: MIME
+   * parameters can be case-sensitive). */
+  ScrStr *out = scr_blob_type_printable(value->v.str);
+  scr_dyn_release(value);
+  return out;
 }
 
 static bool scr_fs_blob_options_object(const ScrDyn *options) {

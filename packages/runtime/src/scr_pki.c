@@ -1854,12 +1854,14 @@ static SpKey *sp_mlkem_from_der(const unsigned char *der, size_t len, bool priva
                                               0x01, 0x65, 0x03, 0x04, 0x04};
   static const unsigned char pre_spki_tail[12] = {0x30, 0x0b, 0x06, 0x09, 0x60, 0x86,
                                                   0x48, 0x01, 0x65, 0x03, 0x04, 0x04};
-  if (private_key) {
-    if (len != 86 || memcmp(der, pre_pkcs8, sizeof pre_pkcs8) != 0) return NULL;
+  /* A PKCS#8 private encoding answers a public key too (createPublicKey
+   * from a private key or its PEM/DER), through the public half derived
+   * from the seed. */
+  if (len == 86 && memcmp(der, pre_pkcs8, sizeof pre_pkcs8) == 0) {
     if (der[18] != 0x04 || der[19] != 0x42 || der[20] != 0x80 || der[21] != 0x40) return NULL;
     int level = der[17] == 1 ? 512 : der[17] == 2 ? 768 : der[17] == 3 ? 1024 : 0;
     if (level == 0) return NULL;
-    SpKey *k = sp_key_alloc(true);
+    SpKey *k = sp_key_alloc(private_key);
     k->mlkem = true;
     k->mlkem_level = level;
     memcpy(k->mlkem_seed, der + 22, 64);
@@ -1868,8 +1870,10 @@ static SpKey *sp_mlkem_from_der(const unsigned char *der, size_t len, bool priva
       sp_key_release(k);
       return NULL;
     }
+    if (!private_key) mbedtls_platform_zeroize(k->mlkem_seed, 64);
     return k;
   }
+  if (private_key) return NULL;
   if (len < 22 || der[0] != 0x30 || der[1] != 0x82 ||
       memcmp(der + 4, pre_spki_tail, sizeof pre_spki_tail) != 0)
     return NULL;
@@ -6704,6 +6708,33 @@ static void scr_crypto_kem_settle_bytes(ScrClosure *cb, ScrError *error, ScrByte
   scr_dyn_release(callback);
 }
 
+/* The deferred queue's failure adapter: the callback receives the error
+ * alone, as Node's crypto job completions call it. The queue owns the error
+ * and releases it after this returns. */
+static void scr_crypto_kem_settle_error(ScrClosure *cb, ScrError *error, ScrBytes *value) {
+  (void)value;
+  ScrDyn *callback = (ScrDyn *)scr_box_get_ref(cb->caps[0]);
+  ScrDyn *thrown = scr_dyn_from_error(error);
+  ScrDyn *argv[1] = {thrown};
+  ScrDyn *r = scr_dyn_call(callback, argv, 1, "callback");
+  if (r) scr_dyn_release(r);
+  scr_dyn_release(thrown);
+  scr_dyn_release(callback);
+}
+
+/* A KEM operation the key cannot perform, in a callback form: Node queues
+ * the failure and answers undefined, and the callback receives the error
+ * alone (synchronous calls throw instead). */
+static void scr_crypto_kem_fail_async(ScrDyn *callback) {
+  ScrStr *message = scr_str_new("Deriving bits failed", 20);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  ScrClosure *settle = scr_closure_new(scr_crypto_kem_settle_error, 1);
+  settle->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  scr_box_set_ref(settle->caps[0], scr_dyn_retain(callback));
+  scr_crypto_defer_bytes(NULL, error, settle, scr_crypto_kem_settle_error);
+}
+
 /* validateFunction for the optional callback: a function when present. */
 static bool scr_crypto_kem_callback_ok(const ScrDyn *callback) {
   if (callback->kind == SCR_DYN_UNDEF) return true;
@@ -6716,23 +6747,32 @@ static bool scr_crypto_kem_callback_ok(const ScrDyn *callback) {
  * callback in a later macrotask. */
 ScrDyn *scr_crypto_encapsulate_dyn(ScrDyn *key, ScrDyn *callback) {
   if (!scr_crypto_kem_callback_ok(callback)) return NULL;
+  bool async = callback->kind != SCR_DYN_UNDEF;
   ScrPkiKey *material = scr_crypto_key_object_material(key);
   if (!material) {
     scr_crypto_kem_decoder_unsupported();
     return NULL;
   }
   if (!scr_pki_key_is_mlkem(material)) {
-    scr_pki_mlkem_key_unsupported();
     scr_pki_key_release(material);
+    if (async) {
+      scr_crypto_kem_fail_async(callback);
+      return scr_dyn_undefined();
+    }
+    scr_pki_mlkem_key_unsupported();
     return NULL;
   }
   ScrDyn *result = scr_pki_mlkem_encapsulate(material);
   scr_pki_key_release(material);
   if (!result) {
+    if (async) {
+      scr_crypto_kem_fail_async(callback);
+      return scr_dyn_undefined();
+    }
     scr_pki_mlkem_encapsulate_failed();
     return NULL;
   }
-  if (callback->kind == SCR_DYN_UNDEF) return result;
+  if (!async) return result;
   ScrClosure *settle = scr_closure_new(scr_crypto_kem_settle_dyn, 1);
   settle->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
   scr_box_set_ref(settle->caps[0], scr_dyn_retain(callback));
@@ -6745,27 +6785,38 @@ ScrDyn *scr_crypto_encapsulate_dyn(ScrDyn *key, ScrDyn *callback) {
 /* crypto.decapsulate(key, ciphertext[, callback]). */
 ScrDyn *scr_crypto_decapsulate_dyn(ScrDyn *key, ScrDyn *ciphertext, ScrDyn *callback) {
   if (!scr_crypto_kem_callback_ok(callback)) return NULL;
+  bool async = callback->kind != SCR_DYN_UNDEF;
   ScrPkiKey *material = scr_crypto_key_object_material(key);
   if (!material) {
     scr_crypto_kem_decoder_unsupported();
     return NULL;
   }
+  /* The key-shape checks answer synchronously even in a callback form;
+   * a ciphertext (or key type) the operation cannot use is queued. */
   if (!scr_pki_key_is_private(material)) {
     scr_pki_mlkem_expected_private();
     scr_pki_key_release(material);
     return NULL;
   }
   if (!scr_pki_key_is_mlkem(material)) {
-    scr_pki_mlkem_decapsulate_failed();
     scr_pki_key_release(material);
+    if (async) {
+      scr_crypto_kem_fail_async(callback);
+      return scr_dyn_undefined();
+    }
+    scr_pki_mlkem_decapsulate_failed();
     return NULL;
   }
   ScrBytes *bytes = ciphertext->kind == SCR_DYN_BYTES || scr_buffer_storage_is(ciphertext)
                         ? scr_bytes_buffer_source(ciphertext)
                         : NULL;
   if (!bytes) {
-    scr_pki_mlkem_decapsulate_failed();
     scr_pki_key_release(material);
+    if (async) {
+      scr_crypto_kem_fail_async(callback);
+      return scr_dyn_undefined();
+    }
+    scr_pki_mlkem_decapsulate_failed();
     return NULL;
   }
   ScrBytes *shared = scr_pki_mlkem_decapsulate(material, bytes->data,
@@ -6773,10 +6824,14 @@ ScrDyn *scr_crypto_decapsulate_dyn(ScrDyn *key, ScrDyn *ciphertext, ScrDyn *call
   scr_pki_key_release(material);
   scr_bytes_release(bytes);
   if (!shared) {
+    if (async) {
+      scr_crypto_kem_fail_async(callback);
+      return scr_dyn_undefined();
+    }
     scr_pki_mlkem_decapsulate_failed();
     return NULL;
   }
-  if (callback->kind == SCR_DYN_UNDEF) {
+  if (!async) {
     ScrDyn *out = scr_dyn_new_buffer(shared);
     scr_bytes_release(shared);
     return out;

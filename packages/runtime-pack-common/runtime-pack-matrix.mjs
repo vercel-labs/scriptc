@@ -107,6 +107,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Island libCalls on native values typed by island declarations invoke
   // through the checked-dynamic path (scr_node_island_handle.c).
   ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
+  // dyn_global_construct (scr_dyn_invoke.c) names the worker message channel, which only
+  // scr_worker_events.c defines; the declaration it sees (scr_bytes.h) is not weak, so a program
+  // that pulls dynamic invocation needs this unit whether or not it uses workers.
+  ["scr_worker_events.c", any("dynInvoke", "workers")],
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],

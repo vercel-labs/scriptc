@@ -14,7 +14,7 @@
     "end": 0
    },
    "milestone": "later",
-   "hint": "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge"
+   "hint": "ES-module cycles of let/const/function/class bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var) or break the named edge"
   }
  ]
 }

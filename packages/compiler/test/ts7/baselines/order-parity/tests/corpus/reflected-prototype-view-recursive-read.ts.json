@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/reflected-prototype-view-recursive-read.ts"
+ ],
+ "diags": []
+}

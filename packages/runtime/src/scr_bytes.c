@@ -765,6 +765,19 @@ double scr_bytes_get_or_nan(const ScrBytes *b, double i) {
   return scr_bytes_get(b, i);
 }
 
+#ifdef SCR_JS_OBJECT_MODEL
+/* The element at `i` as a JavaScript value (+1) for a visit that may outlive
+ * its bound (t262-dc2): past the live length — a buffer that shrank, or a
+ * detached one, under the loop — it is undefined, exactly Node's
+ * IntegerIndexedElementGet on a typed array. The registry keeps b->len
+ * current, so the test sees the shrink. Never touches storage out of
+ * bounds. */
+ScrDyn *scr_bytes_item_dyn(const ScrBytes *b, double i) {
+  if (!(i >= 0) || i != trunc(i) || i >= (double)b->len) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_dyn_new_num(scr_bytes_load(b, (size_t)i));
+}
+#endif
+
 /* Store v at a valid index with the element type's JS conversion. */
 static void scr_bytes_store(ScrBytes *b, size_t idx, double v) {
   if (b->shared) {
@@ -1228,17 +1241,23 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
 }
 
 void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
+  double t = (offset != offset) ? 0 : trunc(offset);
+  if (!(t >= 0)) {
+    static const char msg[] = "offset is out of bounds";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return;
+  }
 #ifdef SCR_JS_OBJECT_MODEL
   if (!scr_js_typed_method_ok(dst, "set")) return;
-  /* Node validates the source view before the offset: a detached source, or
-   * a fixed-length one whose buffer shrank out from under it, throws. */
+  /* Node validates the source view before the bounds: a detached source, or
+   * a fixed-length one whose buffer shrank out from under it, throws even
+   * when the copy would land out of range. */
   if (!scr_js_bytes_live(src)) {
     scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
     return;
   }
 #endif
-  double t = (offset != offset) ? 0 : trunc(offset);
-  if (!(t >= 0) || (double)src->len + t > (double)dst->len) {
+  if ((double)src->len + t > (double)dst->len) {
     static const char msg[] = "offset is out of bounds";
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return;
@@ -1466,6 +1485,14 @@ void scr_bytes_set_from_dyn(ScrBytes *dst, const ScrDyn *src, double offset) {
     scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
     return;
   }
+#ifdef SCR_JS_OBJECT_MODEL
+  /* Node converts the offset and rejects a negative one before it validates
+   * the receiver: a detached target still reports the RangeError above. */
+  if (!scr_js_bytes_live(dst)) {
+    scr_js_bytes_throw_detached("%TypedArray%.prototype.set");
+    return;
+  }
+#endif
   if (src->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(src);
     if (view->kind == SCR_DYN_BYTES || view->kind == SCR_DYN_ARR) scr_bytes_set_from_dyn(dst, view, t);
@@ -1508,6 +1535,29 @@ void scr_js_bytes_throw_detached(const char *label) {
   scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
 }
 
+/* V8's own label for %TypedArray%.prototype.findLastIndex's receiver check is
+ * "findIndexLast" (the C++ builtin's name), and Node prints the label
+ * verbatim, so the message names that text. */
+const char *scr_js_typed_detached_method(const char *method) {
+  return strcmp(method, "findLastIndex") == 0 ? "findIndexLast" : method;
+}
+
+/* A callback method's entry guard (t262-dc2): Node's ValidateTypedArray runs
+ * once before forEach/map/... reads %TypedArrayLength, so a detached or
+ * out-of-bounds receiver throws even when the visit would run no iterations.
+ * `method` names the %TypedArray%.prototype method for Node's message. */
+void scr_js_bytes_require_live(const ScrBytes *b, const ScrStr *method) {
+  if (scr_js_bytes_live(b)) return;
+  char name[48];
+  size_t len = method->len < sizeof name - 1 ? method->len : sizeof name - 1;
+  memcpy(name, method->data, len);
+  name[len] = '\0';
+  char label[96];
+  snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s",
+           scr_js_typed_detached_method(name));
+  scr_js_bytes_throw_detached(label);
+}
+
 /* Whether `b`'s length follows its owner (a view built without a length
  * over a resizable buffer); a subarray that runs to the end of one stays
  * tracking. */
@@ -1520,7 +1570,8 @@ bool scr_js_bytes_tracking(const ScrBytes *b) {
 static bool scr_js_typed_method_ok(const ScrBytes *b, const char *method) {
   if (scr_js_bytes_live(b)) return true;
   char label[96];
-  int length = snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s", method);
+  int length = snprintf(label, sizeof label, "%%TypedArray%%.prototype.%s",
+                        scr_js_typed_detached_method(method));
   scr_js_bytes_throw_detached(label);
   (void)length;
   return false;
@@ -4171,6 +4222,50 @@ ScrBytes *scr_buffer_pool_adopt(ScrBytes *b) {
   return v;
 }
 
+/* Buffer.copyBytesFrom(view[, offset[, length]]): Node's copyBytesFrom —
+ * a pooled Buffer holding a copy of the view's underlying bytes over the
+ * element window [offset, min(offset + length, view.length)), so a wider
+ * typed array copies view.length * BYTES_PER_ELEMENT bytes. `mask` bit 0
+ * marks a supplied offset and bit 1 a supplied length; an absent one takes
+ * Node's default (0, and the rest of the view). Each supplied position is
+ * Node's validateInteger (an integer >= 0, ERR_OUT_OF_RANGE otherwise),
+ * checked in argument order, and an empty view answers an empty Buffer
+ * before any position is read. A DataView is not a TypedArray: Node
+ * reports ERR_INVALID_ARG_TYPE for it. NULL with the exception pending. */
+ScrBytes *scr_buffer_copy_bytes_from(const ScrBytes *view, double offset, double length,
+                                     double mask) {
+  SCR_BYTES_SNAPSHOT(view);
+  size_t given = (size_t)mask;
+  if (view->is_data_view) {
+    char msg[96];
+    int mlen = snprintf(msg, sizeof msg,
+                        "The \"view\" argument must be an instance of TypedArray. Received an instance of %s",
+                        "DataView");
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)mlen, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  double view_length = (double)view->len;
+  if (view_length == 0) return scr_bytes_new(SCR_BYTES_U8, 0);
+  double start = 0, end = view_length;
+  if ((given & 1) != 0) {
+    if (!scr_bytes_validate_off("offset", offset, 9007199254740991.0)) return NULL;
+    if (offset >= view_length) return scr_bytes_new(SCR_BYTES_U8, 0);
+    start = offset;
+  }
+  if ((given & 2) != 0) {
+    if (!scr_bytes_validate_off("length", length, 9007199254740991.0)) return NULL;
+    end = start + length < view_length ? start + length : view_length;
+  }
+  if (end <= start) return scr_bytes_new(SCR_BYTES_U8, 0);
+  size_t element = scr_bytes_elem_size(view->elem);
+  size_t from = (size_t)start * element;
+  size_t count = (size_t)(end - start) * element;
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)count);
+  if (view->shared) scr_bytes_raw_in(view, out->data, view->data + from, count);
+  else memcpy(out->data, view->data + from, count);
+  return scr_buffer_pool_adopt(out);
+}
+
 void scr_buffer_pool_reset(void) {
   scr_bytes_release(scr_pool_slab);
   scr_pool_slab = NULL;
@@ -4349,7 +4444,10 @@ double scr_bytes_index_of(const ScrBytes *b, const ScrBytes *needle, double off,
   if (o < 0) {
     o += (double)len;
     if (o < 0) {
-      if (!fwd) return -1;
+      /* Node's IndexOfOffset: a backward search that starts before the
+       * first byte finds nothing — unless the needle is empty, which
+       * matches at 0 there. */
+      if (!fwd && nlen != 0) return -1;
       o = 0;
     }
   }
@@ -4503,19 +4601,53 @@ ScrBytes *scr_bytes_fill_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,
   return r;
 }
 
-/* src.copy(dst, targetStart?, sourceStart?, sourceEnd?): Node's C++-side
- * ladder — fractional indices TRUNCATE without an error, targetStart/sourceEnd
- * check only >= 0 (past-the-end clamps to nothing), sourceStart is
- * bounded by the source length. Returns the byte count copied. */
+/* copyImpl's index conversion: an integer-valued index is kept as it is
+ * (Number.isInteger keeps values beyond the safe-integer range too), while
+ * any other goes through buffer.js's toInteger — flooring a finite value
+ * inside the safe range and answering the default 0 for NaN, ±Infinity and
+ * anything outside it. Node's copy never reports a non-integer index. */
+static double scr_bytes_copy_integer(double v) {
+  if (isfinite(v) && floor(v) == v) return v;
+  if (!isnan(v) && v >= -9007199254740991.0 && v <= 9007199254740991.0) return floor(v);
+  return 0;
+}
+
+/* copyImpl's range check, whose message names only the bound: ">= 0", or
+ * ">= 0 && <= <max>". */
+static bool scr_bytes_copy_range(const char *name, double value, double max) {
+  if (value >= 0 && (max < 0 || value <= max)) return true;
+  char recv[48];
+  scr_num_received(value, recv);
+  char msg[160];
+  int mlen;
+  if (max < 0) {
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"%s\" is out of range. It must be >= 0. Received %s", name, recv);
+  } else {
+    char maxb[32];
+    scr_f64_to_str(max, maxb);
+    mlen = snprintf(msg, sizeof msg,
+                    "The value of \"%s\" is out of range. It must be >= 0 && <= %s. Received %s",
+                    name, maxb, recv);
+  }
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* src.copy(dst, targetStart?, sourceStart?, sourceEnd?): Node's copyImpl
+ * ladder — every index converts with Number.isInteger-or-toInteger (so NaN,
+ * ±Infinity and fractions never fail as non-integers), targetStart and
+ * sourceEnd check only >= 0 (past-the-end clamps to nothing), sourceStart
+ * is bounded by the source length. Returns the byte count copied. */
 double scr_bytes_copy_into(const ScrBytes *src, ScrBytes *dst, double nargs,
                            double ts, double ss, double se) {
   size_t n = (size_t)nargs;
-  ts = n < 1 ? 0 : trunc(ts);
-  ss = n < 2 ? 0 : trunc(ss);
-  se = n < 3 ? (double)src->len : trunc(se);
-  if (!scr_bytes_validate_off("targetStart", ts, -1)) return 0;
-  if (!scr_bytes_validate_off("sourceStart", ss, (double)src->len)) return 0;
-  if (!scr_bytes_validate_off("sourceEnd", se, -1)) return 0;
+  ts = n < 1 ? 0 : scr_bytes_copy_integer(ts);
+  ss = n < 2 ? 0 : scr_bytes_copy_integer(ss);
+  se = n < 3 ? (double)src->len : scr_bytes_copy_integer(se);
+  if (!scr_bytes_copy_range("targetStart", ts, -1)) return 0;
+  if (!scr_bytes_copy_range("sourceStart", ss, (double)src->len)) return 0;
+  if (!scr_bytes_copy_range("sourceEnd", se, -1)) return 0;
   if (ts >= (double)dst->len) return 0;
   size_t t0 = (size_t)ts;
   size_t s0 = (size_t)ss;

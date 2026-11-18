@@ -553,8 +553,8 @@ export function lowerRequireMainProperty(
   const loc = locOf(expr);
   // JavaScript types `require.main` as `any`: Node's Module object, the same
   // one `module.children[i]` answers, so identity comparisons hold.
-  if (isAnyTyped(lowerer, expr)) {
-    if (entryId === undefined) return unitUndefined(loc);
+  if (isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) {
+    if (entryId === undefined) return dynUndefined(loc);
     return {
       kind: "libCall",
       fn: "module.dynObject",
@@ -653,6 +653,16 @@ export function lowerNodeModuleIdentifier(lowerer: Lowerer, expr: ts.Identifier)
   if (!isCjsModuleGlobal(lowerer, expr)) return null;
   const ref = cjsModuleRef(lowerer, expr);
   if (ref) {
+    // In JavaScript the identifier is itself a value (`child.parent ===
+    // module`, `module === require.main`), and Node compares objects: answer
+    // the checked-dynamic view of this module, the same object its children
+    // and `require.main` answer.
+    if (
+      (isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) &&
+      ref.type.kind === "f64"
+    ) {
+      return { kind: "libCall", fn: "module.dynObject", args: [ref], type: DYN, loc: locOf(expr) };
+    }
     if (!keepsModuleTyped(lowerer, expr)) untypedModuleValueFence(lowerer, expr);
     return ref;
   }
@@ -678,6 +688,11 @@ function moduleArmOf(lowerer: Lowerer, type: IrType): IrType {
  * position, where Node's object itself is the value). */
 function isAnyTyped(lowerer: Lowerer, node: ts.Expression): boolean {
   return (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0;
+}
+
+/** The checked-dynamic undefined value, for a branch of a dynamic ternary. */
+function dynUndefined(loc: SrcLoc): IrExpr {
+  return { kind: "dynFrom", value: unitUndefined(loc), type: DYN, loc };
 }
 
 function unitUndefined(loc: SrcLoc): IrExpr {
@@ -754,7 +769,7 @@ export function lowerNodeModuleProperty(
       // the member is `any`: Node's array of Module objects as checked
       // values, where `children[i].id` and identity comparisons answer what
       // Node answers (the static handle array is for typed programs).
-      return isAnyTyped(lowerer, expr)
+      return isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)
         ? { kind: "libCall", fn: "module.dynChildren", args: [moduleRef], type: DYN, loc }
         : call("module.children", arrayOf(F64));
     case "loaded":
@@ -762,7 +777,7 @@ export function lowerNodeModuleProperty(
     case "isPreloading":
       return boolLit(false, loc);
     case "parent": {
-      if (isAnyTyped(lowerer, expr)) {
+      if (isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) {
         const slot = lowerer.declareHiddenLocal("%moduleParent", F64);
         const ref: IrExpr = { kind: "varRef", localId: slot.id, type: F64, loc };
         return {
@@ -772,7 +787,7 @@ export function lowerNodeModuleProperty(
             kind: "ternary",
             cond: { kind: "bin", op: ">=", left: ref, right: numLit(0, loc), type: BOOL, loc },
             then: { kind: "libCall", fn: "module.dynObject", args: [ref], type: DYN, loc },
-            else_: unitUndefined(loc),
+            else_: dynUndefined(loc),
             type: DYN,
             loc,
           },

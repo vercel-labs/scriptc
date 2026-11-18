@@ -245,6 +245,8 @@ typedef struct {
   ScrDyn *exports_dyn;
 } ScrModuleRecord;
 
+static void scr_module_dyn_refresh(ScrModuleRecord *m);
+
 static SCR_TL ScrModuleRecord *scr_module_records = NULL;
 static SCR_TL size_t scr_module_record_count = 0;
 static SCR_TL size_t scr_module_next_cache_order = 1;
@@ -543,12 +545,14 @@ void scr_module_link(double parent_id, double child_id) {
   if (!child->is_main && child->parent < 0) child->parent = parent_id;
   if (!scr_arr_includes_f64(parent->children, child_id)) {
     scr_arr_push_f64(parent->children, child_id);
+    scr_module_dyn_refresh(parent);
   }
 }
 
 void scr_module_finish(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
   m->loaded = true;
+  scr_module_dyn_refresh(m);
 }
 
 void scr_module_fail(double module_id) {
@@ -559,12 +563,14 @@ void scr_module_fail(double module_id) {
     if (at >= 0) {
       ScrArr *removed = scr_arr_splice(parent->children, at, 1);
       scr_arr_release(removed);
+      scr_module_dyn_refresh(parent);
     }
   }
   m->parent = m->is_main ? -1 : -2;
   m->cache_order = 0;
   m->in_cache = false;
   m->loaded = false;
+  scr_module_dyn_refresh(m);
 }
 
 ScrStr *scr_module_filename(double module_id) {
@@ -596,6 +602,18 @@ void scr_module_set_exports_dyn(double module_id, ScrDyn *value) {
   scr_dyn_release(previous);
 }
 
+/* Node's Module keeps `children` live and `loaded` current on the object a
+ * program already holds; the cached view is updated in place whenever the
+ * registry changes one of those. */
+static void scr_module_dyn_refresh(ScrModuleRecord *m) {
+  if (!m->dyn_self) return;
+  scr_dyn_obj_set(m->dyn_self, "loaded", 6, scr_dyn_new_bool(m->loaded));
+  ScrDyn *children = scr_dyn_new_arr();
+  for (size_t i = 0; i < (size_t)scr_arr_len(m->children); i++)
+    scr_dyn_arr_push(children, scr_module_dyn_object(scr_arr_get_f64(m->children, (double)i)));
+  scr_dyn_obj_set(m->dyn_self, "children", 8, children);
+}
+
 /* The checked-dynamic view of one module record (Node's Module object as a
  * program sees it when the value's type is any): one object per record,
  * built once and cached, so identity holds between `module.children[i]`,
@@ -622,7 +640,13 @@ ScrDyn *scr_module_dyn_object(double module_id) {
     scr_dyn_arr_push(children, scr_module_dyn_object(scr_arr_get_f64(m->children, (double)i)));
   }
   scr_dyn_obj_set(o, "children", 8, children);
-  scr_dyn_obj_set(o, "parent", 6, m->parent < 0 ? scr_dyn_new_null() : scr_module_dyn_object(m->parent));
+  /* The registry's two absent markers are Node's two cases: -1 is the
+   * entry (no parent, `null`) and -2 is a module loaded outside the
+   * CommonJS graph (an ES-module entry's import, `undefined`). */
+  scr_dyn_obj_set(o, "parent", 6,
+                  m->parent == -1 ? scr_dyn_new_null()
+                  : m->parent < 0  ? scr_dyn_retain(scr_dyn_undefined())
+                                   : scr_module_dyn_object(m->parent));
   /* Node's `parent` is not one of the Module constructor's own enumerable
    * fields: `Object.keys` omits it, so the dyn object does too. */
   scr_dyn_obj_set_attrs_at(o, scr_dyn_obj_index_of(o, "parent", 6), true, false, true);

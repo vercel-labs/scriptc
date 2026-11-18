@@ -432,7 +432,7 @@ declare module "node:fs" {
   export function openAsBlob(
     path: string | URL | Uint8Array,
     options?: { type?: string },
-  ): Promise<import("node:buffer").Blob>;
+  ): Promise<globalThis.Blob>;
   export const constants: {
     readonly F_OK: number;
     readonly R_OK: number;

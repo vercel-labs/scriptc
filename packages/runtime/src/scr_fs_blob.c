@@ -36,6 +36,16 @@ static ScrDyn *scr_fs_blob_type_value(const ScrDyn *options) {
   ScrDyn *value;
   if (options->kind == SCR_DYN_TYPED_REF) {
     value = scr_dyn_typed_ref_key_get(options, name);
+    if (value == NULL && !scr_exc_pending()) {
+      /* A record capsule answers through the view it materializes; one
+       * without the member is the default options (the caller then uses the
+       * empty type). */
+      ScrDyn *view = scr_dyn_typed_ref_materialize(options);
+      if (view != NULL) {
+        value = scr_dyn_obj_read(view, key, 4);
+        scr_dyn_release(view);
+      }
+    }
   } else if (options->kind == SCR_DYN_PROXY) {
     value = scr_dyn_proxy_get(options, name);
   } else if (options->kind == SCR_DYN_OBJ) {
@@ -51,8 +61,13 @@ static ScrDyn *scr_fs_blob_type_value(const ScrDyn *options) {
  * validateString, so a falsy member is the empty type and a truthy
  * non-string is the converter's TypeError. */
 static ScrStr *scr_fs_blob_type(const ScrDyn *options) {
-  ScrDyn *value = scr_fs_blob_type_value(options); /* +1, or NULL pending */
-  if (value == NULL) return NULL;
+  ScrDyn *value = scr_fs_blob_type_value(options); /* +1, or NULL */
+  if (value == NULL) {
+    /* A getter's exception propagates; a capsule with no such member is the
+     * default options. */
+    if (scr_exc_pending()) return NULL;
+    return scr_str_new("", 0);
+  }
   if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || !scr_dyn_truthy(value)) {
     scr_dyn_release(value);
     return scr_str_new("", 0);
@@ -169,12 +184,20 @@ static bool scr_fs_blob_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
  * it), so the hook only drops what the context owns. */
 static void scr_fs_blob_source_release(void *ctx) {
   ScrFsBlob *b = ctx;
+  /* An exception may already be propagating (a validator that threw after
+   * reading the Blob, say): keep it across the close and put it back, so the
+   * destructor does not swallow it. */
+  ScrCaught *pending = scr_exc_pending() ? scr_exc_take() : NULL;
   if (b->handle != NULL) {
     scr_file_handle_close(b->handle);
     if (scr_exc_pending()) scr_exc_clear();
     scr_file_handle_release(b->handle);
   }
   scr_str_release(b->path);
+  if (pending != NULL) {
+    scr_rethrow(pending);
+    scr_caught_release(pending);
+  }
 }
 
 /* fs.openAsBlob(path[, options]) → a promise of the Blob (+1). The open

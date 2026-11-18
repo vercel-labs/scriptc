@@ -385,18 +385,45 @@ static ScrBlob *scr_blob_construct(const ScrDyn *sources, const ScrDyn *options)
     }
     scr_str_release(endings);
   }
+  ScrStr *type = scr_blob_absent(type_raw) ? scr_str_new("", 0) : scr_blob_to_string(type_raw);
+  if (!type) goto fail;
+  /* A single file-backed part stays lazy: the new Blob shares the file's
+   * source instead of copying its bytes, so it reads (and rejects a changed
+   * file) exactly like the Blob it was built from, as Node's data queue
+   * does. */
+  if (!native && list->v.arr.len == 1) {
+    const ScrDyn *only_value =
+        scr_dyn_arr_has_index(list, 0) ? list->v.arr.items[0] : scr_dyn_undefined();
+    ScrBlob *only = scr_blob_of(only_value);
+    if (only != NULL && only->source != NULL) {
+      ScrBlob *out = scr_blob_alloc();
+      only->source->rc++;
+      out->source = only->source;
+      out->off = only->off;
+      out->len = only->len;
+      out->nparts = only->nparts;
+      if (only->nparts) {
+        out->parts = malloc(only->nparts * sizeof *out->parts);
+        if (!out->parts) scr_trap("scriptc: out of memory\n");
+        memcpy(out->parts, only->parts, only->nparts * sizeof *out->parts);
+      }
+      if (only->name) out->name = scr_str_retain(only->name);
+      out->last_modified = only->last_modified;
+      out->type = scr_blob_type_of(type); /* consumes the type */
+      scr_dyn_release(endings_raw);
+      scr_dyn_release(type_raw);
+      scr_dyn_release(list);
+      return out;
+    }
+  }
   ScrBlobBuild bb = {0};
   for (size_t i = 0; i < list->v.arr.len; i++) {
     const ScrDyn *item = scr_dyn_arr_has_index(list, i) ? list->v.arr.items[i] : scr_dyn_undefined();
     if (!scr_blob_add_source(&bb, item, native)) {
       scr_blob_build_free(&bb);
+      scr_str_release(type);
       goto fail;
     }
-  }
-  ScrStr *type = scr_blob_absent(type_raw) ? scr_str_new("", 0) : scr_blob_to_string(type_raw);
-  if (!type) {
-    scr_blob_build_free(&bb);
-    goto fail;
   }
   scr_dyn_release(endings_raw);
   scr_dyn_release(type_raw);

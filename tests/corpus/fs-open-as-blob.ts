@@ -169,4 +169,32 @@ console.log(
 const emptyClone = structuredClone(head);
 console.log("empty slice clone", emptyClone.size, JSON.stringify(await emptyClone.text()));
 
+// 13. A Blob or File built from a file Blob stays lazy: it reads the same
+// file, and rejects once the file is gone.
+const lazyFile = join(dir, "lazy.bin");
+fs.writeFileSync(lazyFile, "lazydata");
+const lazy = await fs.openAsBlob(lazyFile);
+const wrappedLazy = new Blob([lazy]);
+const fileLazy = new File([lazy], "lazy.bin");
+fs.rmSync(lazyFile);
+try {
+  await wrappedLazy.text();
+  console.log("lazy blob", "read");
+} catch (err) {
+  console.log("lazy blob", (err as Error).name);
+}
+try {
+  await fileLazy.text();
+  console.log("lazy file", "read");
+} catch (err) {
+  console.log("lazy file", (err as Error).name);
+}
+
+// 14. A class instance is an options record too.
+class BlobOptions {
+  type = "text/plain";
+}
+const classBlob = await fs.openAsBlob(file, new BlobOptions());
+console.log("class options", classBlob.type);
+
 fs.rmSync(dir, { recursive: true, force: true });

@@ -657,6 +657,7 @@ export function prepareNativeExecutable(
           ...(carriesDebugSources(options.optimization, options.strip)
             ? { debugSources: prepared.sourceTexts }
             : {}),
+          positionSources: prepared.sourceTexts,
           ...(conversionTrace ? { conversionTrace: true } : {}),
           ...(islandModuleData === undefined ? {} : { nodeIslandModuleData: islandModuleData }),
         });

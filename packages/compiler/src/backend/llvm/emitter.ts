@@ -116,7 +116,15 @@ import {
   type Int32ArrayProof,
   type Int32ArrayRevision,
 } from "../../ir/int32-arrays.js";
-import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
+import {
+  everyExpr,
+  everyExprChild,
+  everyStmt,
+  everyStmtChild,
+  everyStmtList,
+} from "../../ir/traverse.js";
+import { SourceLocations, type SourcePosition } from "../source-locations.js";
+import { NEVER_THROW_LIB_FNS } from "../../ir/builtin-never-throw.js";
 import {
   INT32_RANGE,
   withinInt32,
@@ -629,6 +637,10 @@ export interface LlvmTargetOptions {
   timing?: CompilationTiming;
   /** Exact frontend sources for dev-build locations and variable metadata. */
   debugSources?: ReadonlyMap<string, string>;
+  /** Exact frontend sources for release-build stack positions (line and
+   * column constants): the sources stay in the compiler, only the numbers
+   * reach the executable. */
+  positionSources?: ReadonlyMap<string, string>;
   /** The output is linked with the report of failed checked conversions
    * (scr_conversion_trace.c, runtime feature conversionTrace), so each
    * conversion's failure path calls it with the conversion's position. Set
@@ -2465,6 +2477,14 @@ export class LlEmitter {
   readonly stackTraces: boolean;
   /** Source frames carry the position of the running statement. */
   readonly positionedFrames: boolean;
+  /** Release builds whose program observes stacks: each frame records the
+   * position of its latest call or throw site (structured fields, no
+   * per-statement text). */
+  readonly stackPositions: boolean;
+  private readonly positionOf: ((loc: SrcLoc) => SourcePosition | null) | null;
+  private readonly positionSourcesValue: ReadonlyMap<string, string> | undefined;
+  /** Whether the function being emitted has a source frame to position. */
+  frameActive = false;
   /** The executable prints its frame chain when it aborts. */
   readonly abortFrames: boolean;
   /** Checked conversions pass their position to their failure path, which
@@ -2527,6 +2547,25 @@ export class LlEmitter {
     this.positionedFrames =
       options.debugSources !== undefined && options.sanitizeAttributes === false;
     this.stackTraces = this.positionedFrames || observesStacks(mod, this.nodeIndex);
+    // A release build whose program observes stacks records the position of
+    // each call and throw site in the frame, instead of the per-statement
+    // text a dev build stores. A sanitized build keeps the release frames:
+    // ASan instruments every store, and dev builds already skip positions
+    // there for the same reason.
+    this.stackPositions =
+      !this.positionedFrames &&
+      this.stackTraces &&
+      options.sanitizeAttributes === false &&
+      options.positionSources !== undefined;
+    const positionSources = options.positionSources;
+    this.positionSourcesValue = positionSources;
+    this.positionOf =
+      this.stackPositions && positionSources !== undefined
+        ? (() => {
+            const locations = new SourceLocations(positionSources);
+            return (loc: SrcLoc) => locations.position(loc);
+          })()
+        : null;
     // A build that carries debug sources can say where a checked conversion
     // is, so its conversions report their failures (scr_conversion_trace.c).
     // The build asks for it where it also links that unit: an emitter whose
@@ -3831,6 +3870,115 @@ export class LlEmitter {
    * same spelling, so the report and a stack trace name a place alike, and
    * the conversion's own column where a frame has only its statement's. A
    * position the sources do not hold falls back to the file. */
+  /** V8's column for a call frame is the callee's own name, not the start
+   * of the receiver expression: `obj.fetch()` reports `fetch`. The record
+   * narrows the call's span to the identifier before its argument list,
+   * falling back to the call's own start where the sources do not spell
+   * one. */
+  private callCalleeLoc(loc: SrcLoc): SrcLoc {
+    const text = this.positionSourcesValue?.get(loc.file);
+    if (text === undefined) return loc;
+
+    const i = Math.min(loc.end, text.length) - 1;
+    if (text[i] !== ")") return loc;
+    let depth = 0;
+    let open = -1;
+    for (let j = i; j >= loc.start; j--) {
+      const ch = text[j];
+      if (ch === ")") depth++;
+      else if (ch === "(" && --depth === 0) {
+        open = j;
+        break;
+      }
+    }
+    if (open < 0) return loc;
+    let k = open - 1;
+    while (k >= loc.start && /\s/.test(text[k]!)) k--;
+    const end = k + 1;
+    while (k >= loc.start && /[A-Za-z0-9_$]/.test(text[k]!)) k--;
+    if (end === k + 1) return loc;
+    // A `new C(...)` call keeps the constructor expression's start (the
+    // `new` keyword), which is where V8 points the frame; a method called on
+    // a new expression (`new C().m()`) still names `m`.
+    if (text.startsWith("new", loc.start) && k + 1 === loc.start + 4) return loc;
+    return { file: loc.file, start: k + 1, end };
+  }
+
+  /** The position to record for a statement that can be observed by a
+   * stack read: its throw site, or its deepest call that is not a
+   * never-throwing runtime call. Null when nothing in it can raise or
+   * capture a stack, which keeps hot loops over pure calls store-free. */
+  private positionSite(s: IrStmt): SrcLoc | null {
+    // V8 names the thrown expression's position, not the `throw` keyword.
+    if (s.kind === "throw") return s.value.loc;
+    let best: SrcLoc | null = null;
+    let canThrow = false;
+    const raise = (loc: SrcLoc): void => {
+      canThrow = true;
+      // The deepest call in the statement runs first: a stack captured while
+      // it runs names its line (Node's `console.log(new Error())` names the
+      // inner construction). A later call in the same statement that throws
+      // on its own names the inner call's line instead; expressions with
+      // several calls are rare and one store cannot name both.
+      if (best === null || loc.start > best.start) best = loc;
+    };
+    everyStmt(s, {
+      stmt: (child) => {
+        if (child !== s && child.kind === "throw") raise(child.value.loc);
+        return true;
+      },
+      expr: (e) => {
+        const call =
+          e.kind === "call" ||
+          e.kind === "callValue" ||
+          e.kind === "virtualCall" ||
+          e.kind === "dynCall" ||
+          e.kind === "dynInvoke" ||
+          e.kind === "libCall" ||
+          e.kind === "new" ||
+          e.kind === "intrinsic" ||
+          e.kind === "arrIntrinsic" ||
+          e.kind === "bytesIntrinsic";
+        if (!call) return true;
+        if (e.kind === "libCall" && NEVER_THROW_LIB_FNS.has(e.fn)) return true;
+        // A direct call to a function that mints no Error and cannot raise
+        // cannot observe this frame either: hot loops over pure helpers stay
+        // store-free.
+        if (
+          e.kind === "call" &&
+          !this.mayThrow.has(e.callee) &&
+          this.unframedFunctions.has(e.callee)
+        )
+          return true;
+        // V8 keeps a `new` expression's own start (the `new` keyword) and
+        // names a call's callee identifier, without its receiver.
+        raise(e.kind === "new" ? e.loc : this.callCalleeLoc(e.loc));
+        return true;
+      },
+    });
+    return canThrow ? best : null;
+  }
+
+  /** Stores `loc`'s position in the current frame: the caller's frame names
+   * the call or throw site still running, as V8's does. */
+  private emitStackPosition(loc: SrcLoc): void {
+    const position = this.positionOf?.(loc) ?? null;
+    if (position === null) return;
+    const shape = "{ ptr, ptr, ptr, ptr, i32, i32 }";
+    const slot = (index: number): string => {
+      const name = this.B.tmp();
+      this.B.line(
+        `${name} = getelementptr inbounds ${shape}, ptr %source_frame, i32 0, i32 ${index}`,
+      );
+      return name;
+    };
+    const fn = this.currentFrameName === undefined ? "null" : this.cstr(this.currentFrameName);
+    this.B.line(`store ptr ${fn}, ptr ${slot(2)}`);
+    this.B.line(`store ptr ${this.cstr(position.file)}, ptr ${slot(3)}`);
+    this.B.line(`store i32 ${position.line}, ptr ${slot(4)}`);
+    this.B.line(`store i32 ${position.column}, ptr ${slot(5)}`);
+  }
+
   conversionTraceAt(loc: SrcLoc): (() => void) | undefined {
     const debug = this.debug;
     if (!this.conversionTrace || debug === null) return undefined;
@@ -3871,7 +4019,7 @@ export class LlEmitter {
         // folds it into the store, and would keep a shared one on the stack.
         const slot = this.B.tmp();
         this.B.line(
-          `${slot} = getelementptr inbounds { ptr, ptr }, ptr %source_frame, i32 0, i32 1`,
+          `${slot} = getelementptr inbounds { ptr, ptr, ptr, ptr, i32, i32 }, ptr %source_frame, i32 0, i32 1`,
         );
         this.B.line(`store ptr ${this.cstr(text)}, ptr ${slot}`);
       },
@@ -8120,6 +8268,10 @@ export class LlEmitter {
     this.B.debugLocation = this.debug?.location(s.loc, this.debugScope) ?? null;
     const positions = this.framePositions;
     const outerPosition = positions === null ? null : positions.enter(s);
+    if (this.stackPositions && this.frameActive) {
+      const site = this.positionSite(s);
+      if (site !== null) this.emitStackPosition(site);
+    }
     const loop =
       s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf";
     const builder = this.B;

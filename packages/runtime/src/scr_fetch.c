@@ -14,6 +14,12 @@
 #include "scr_system_errors.h"
 #include "scr_url_internal.h"
 
+#if defined(__APPLE__)
+/* scr_dyn_invoke.c, scr_http.c and scr_test.c define this weakly for Mach-O's
+ * linker; the abort unit's strong definition tells them it is available. */
+int scr_dyn_abort_unit_linked = 1;
+#endif
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

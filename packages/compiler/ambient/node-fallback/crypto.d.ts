@@ -80,6 +80,22 @@ declare module "crypto" {
     key: JsonWebKey;
     format: "jwk";
   }
+  export interface Argon2Parameters {
+    message: string | ArrayBuffer | ArrayBufferView;
+    nonce: string | ArrayBuffer | ArrayBufferView;
+    parallelism: number;
+    tagLength: number;
+    memory: number;
+    passes: number;
+    secret?: string | ArrayBuffer | ArrayBufferView;
+    associatedData?: string | ArrayBuffer | ArrayBufferView;
+  }
+  export function argon2Sync(algorithm: string, parameters: Argon2Parameters): Buffer;
+  export function argon2(
+    algorithm: string,
+    parameters: Argon2Parameters,
+    callback: (error: Error | null, result?: Buffer) => void,
+  ): void;
   export function createPrivateKey(
     key: PrivateKeyInput | string | Buffer | JsonWebKeyInput,
   ): KeyObject;
@@ -217,6 +233,24 @@ declare module "crypto" {
     options: X25519KeyPairOptions<"der", "der">,
   ): KeyPairSyncResult<Buffer, Buffer>;
   export function generateKeyPairSync(type: "x25519", options?: {}): KeyPairKeyObjectResult;
+  export interface X448KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    publicKeyEncoding: { type: "spki"; format: PubF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
+  }
+  export function generateKeyPairSync(
+    type: "x448",
+    options: X448KeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "x448",
+    options: X448KeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(type: "x448", options?: {}): KeyPairKeyObjectResult;
   export function generateKeyPair(
     type: "x25519",
     options: {} | undefined,
@@ -224,6 +258,11 @@ declare module "crypto" {
   ): void;
   export function generateKeyPair(
     type: "ed25519",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  export function generateKeyPair(
+    type: "x448",
     options: {} | undefined,
     callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
   ): void;

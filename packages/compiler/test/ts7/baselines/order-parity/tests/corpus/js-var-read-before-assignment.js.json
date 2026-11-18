@@ -1,4 +1,6 @@
 {
-  "order": ["<repo>/tests/corpus/js-var-read-before-assignment.js"],
-  "diags": []
+ "order": [
+  "<repo>/tests/corpus/js-var-read-before-assignment.js"
+ ],
+ "diags": []
 }

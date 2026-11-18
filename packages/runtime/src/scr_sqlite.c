@@ -1370,35 +1370,41 @@ static ScrDyn *scr_sqlite_tag_invoke(void *h, ScrDyn *self, const char *method,
   ScrSqliteStmt *stmt = scr_sqlite_tag_statement(store, sql);
   scr_str_release(sql);
   if (stmt == NULL) return NULL;
-  if (!scr_sqlite_tag_bind(stmt, args, argc)) return NULL;
-
-  if (strcmp(method, "run") == 0) return scr_sqlite_stmt_run_result(stmt);
-  if (strcmp(method, "all") == 0) return scr_sqlite_stmt_all_result(stmt);
-  if (strcmp(method, "get") == 0) {
+  /* The cache's reference is not enough for the call: a user function the
+   * statement runs can clear() the store, and the statement being executed
+   * must stay alive until it finishes. */
+  scr_sqlite_stmt_retain(stmt);
+  ScrDyn *out = NULL;
+  if (!scr_sqlite_tag_bind(stmt, args, argc)) {
+    /* The bind's own exception is pending. */
+  } else if (strcmp(method, "run") == 0) {
+    out = scr_sqlite_stmt_run_result(stmt);
+  } else if (strcmp(method, "all") == 0) {
+    out = scr_sqlite_stmt_all_result(stmt);
+  } else if (strcmp(method, "get") == 0) {
     int r = sqlite3_step(stmt->stmt);
-    ScrDyn *out;
     if (r == SQLITE_DONE || (r == SQLITE_ROW && sqlite3_column_count(stmt->stmt) == 0)) {
       out = scr_dyn_retain(scr_dyn_undefined());
+      sqlite3_reset(stmt->stmt);
     } else if (r != SQLITE_ROW) {
       sqlite3_reset(stmt->stmt);
       scr_sqlite_throw_db_error(stmt->db);
-      return NULL;
     } else {
       out = scr_sqlite_row(stmt, stmt->return_arrays);
+      sqlite3_reset(stmt->stmt);
     }
-    sqlite3_reset(stmt->stmt);
-    return out;
-  }
-  if (strcmp(method, "iterate") == 0) {
+  } else if (strcmp(method, "iterate") == 0) {
     ScrSqliteIter *it = calloc(1, sizeof *it);
     if (it == NULL) scr_sqlite_oom();
     it->rc = 1;
     it->stmt = scr_sqlite_stmt_retain(stmt);
     it->generation = stmt->generation;
-    return scr_sqlite_iter_new(it);
+    out = scr_sqlite_iter_new(it);
+  } else {
+    scr_sqlite_not_a_function(what);
   }
-  scr_sqlite_not_a_function(what);
-  return NULL;
+  scr_sqlite_stmt_release(stmt);
+  return out;
 }
 
 static ScrDyn *scr_sqlite_tag_get(void *h, const char *key, size_t len) {
@@ -1566,6 +1572,306 @@ static const ScrDynHandleOps scr_sqlite_limits_ops = {
     .inspect_view = scr_sqlite_limits_inspect_view,
     .json_empty_object = true,
 };
+
+/* ── sqlite.backup ──────────────────────────────────────────────────── */
+
+static char *scr_sqlite_validate_path(const ScrDyn *path);
+static ScrSqliteDb *scr_sqlite_db_of(const ScrDyn *box);
+
+/* One backup run: the destination handle the copy writes, the source
+ * connection it reads, and the state its deferred steps share. The promise
+ * settles on the turn that reaches SQLITE_DONE, so the job outlives the call
+ * that started it and frees itself with that turn's closure. */
+typedef struct ScrSqliteBackupJob {
+  size_t rc;
+  ScrPromise *promise; /* owned */
+  ScrSqliteDb *source; /* owned */
+  ScrDyn *progress; /* owned, NULL without a callback */
+  ScrStr *source_db; /* owned when options named one */
+  ScrStr *dest_db; /* owned when options named one */
+  sqlite3 *dest;
+  sqlite3_backup *copy;
+  int rate;
+} ScrSqliteBackupJob;
+
+static void *scr_sqlite_backup_job_retain(void *p) {
+  ((ScrSqliteBackupJob *)p)->rc++;
+  return p;
+}
+
+/* Rejects the backup's promise. A step that fails names its own code, which
+ * is the error Node reports; a copy that never started (BUSY and LOCKED leave
+ * the destination without one) reports the destination handle's error. That
+ * text belongs to the handle, so it is copied before the job's release closes
+ * it. */
+static void scr_sqlite_backup_reject(ScrSqliteBackupJob *job, int code) {
+  int errcode;
+  const char *text;
+  if (code != SQLITE_OK) {
+    errcode = code;
+    text = sqlite3_errstr(code);
+  } else {
+    errcode = job->dest == NULL ? SQLITE_ERROR : sqlite3_extended_errcode(job->dest);
+    text = job->dest != NULL ? sqlite3_errmsg(job->dest) : sqlite3_errstr(errcode);
+  }
+  ScrStr *message = scr_str_new(text, strlen(text));
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(e, "ERR_SQLITE_ERROR");
+  const char *errtext = sqlite3_errstr(errcode);
+  ScrStr *errstr = scr_str_new(errtext, strlen(errtext));
+  ScrDyn *errstr_dyn = scr_dyn_new_str(errstr);
+  scr_str_release(errstr);
+  scr_error_set_prop(e, "errcode", 7, scr_dyn_new_num((double)errcode));
+  scr_error_set_prop(e, "errstr", 6, errstr_dyn);
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+  scr_promise_reject_pending(job->promise);
+}
+
+static void scr_sqlite_backup_job_release(void *p) {
+  ScrSqliteBackupJob *job = p;
+  if (job == NULL || --job->rc > 0) return;
+  if (job->copy != NULL) sqlite3_backup_finish(job->copy);
+  if (job->dest != NULL) sqlite3_close_v2(job->dest);
+  scr_promise_release(job->promise);
+  scr_dyn_release(job->progress);
+  scr_str_release(job->source_db);
+  scr_str_release(job->dest_db);
+  scr_sqlite_db_release(job->source);
+  free(job);
+}
+
+/* The JavaScript progress callback over { totalPages, remainingPages }. */
+static bool scr_sqlite_backup_progress(ScrSqliteDb *db, const ScrDyn *progress, int total,
+                                       int remaining) {
+  if (progress == NULL) return true;
+  ScrDyn *info = scr_dyn_new_obj_null_proto();
+  scr_dyn_obj_set(info, "totalPages", 10, scr_dyn_new_num((double)total));
+  scr_dyn_obj_set(info, "remainingPages", 14, scr_dyn_new_num((double)remaining));
+  scr_dyn_this_push_dyn(scr_dyn_undefined());
+  ScrDyn *result = scr_dyn_call(progress, &info, 1, "progress");
+  scr_dyn_this_pop();
+  scr_dyn_release(info);
+  if (result == NULL) return false;
+  scr_dyn_release(result);
+  (void)db;
+  return true;
+}
+
+static void scr_sqlite_backup_step(ScrClosure *self);
+
+/* Queues the next step on a later loop turn, as Node's BackupJob schedules
+ * one threadpool work item per step and settles the promise from that work's
+ * completion: the loop keeps running between two steps, so a writer that
+ * holds the destination (or a write transaction on the source) can release
+ * it while a busy step waits, and timers and other fibers keep running
+ * instead of stalling behind the copy.
+ *
+ * The step goes on the immediate queue rather than the deferred-callback
+ * one: the immediate station snapshots the callbacks queued for this turn,
+ * so a step that queues the next one runs at most once per turn in the
+ * runtime's own loop, and in a hosted loop each step is handed to the host's
+ * check phase, which runs it on a later host turn. The deferred queue is
+ * drained to exhaustion in one host turn, which would run a busy copy's
+ * whole retry chain without ever returning to the loop. */
+static void scr_sqlite_backup_schedule(ScrSqliteBackupJob *job) {
+  ScrClosure *step = scr_closure_new((void *)scr_sqlite_backup_step, 1);
+  ScrBox *box =
+      scr_box_new_obj(scr_sqlite_backup_job_retain, scr_sqlite_backup_job_release, NULL);
+  scr_box_set_ref(box, scr_sqlite_backup_job_retain(job)); /* the box owns this reference */
+  step->caps[0] = box;
+  (void)scr_set_immediate(step); /* the queue owns the closure */
+}
+
+/* One step of the copy, then either the next turn, the rejection or the
+ * page count. */
+static void scr_sqlite_backup_step(ScrClosure *self) {
+  ScrSqliteBackupJob *job = scr_box_get_ref(self->caps[0]);
+  int status = sqlite3_backup_step(job->copy, job->rate);
+  if (!(status == SQLITE_OK || status == SQLITE_DONE || status == SQLITE_BUSY ||
+        status == SQLITE_LOCKED)) {
+    scr_sqlite_backup_reject(job, status);
+    scr_sqlite_backup_job_release(job);
+    return;
+  }
+  int total = sqlite3_backup_pagecount(job->copy);
+  int remaining = sqlite3_backup_remaining(job->copy);
+  if (remaining != 0) {
+    /* Pages are left, whether the step copied some or was held off by a
+     * lock (BUSY and LOCKED leave the counters as the last successful step
+     * set them). The progress callback runs here, between two steps. */
+    if (!scr_sqlite_backup_progress(job->source, job->progress, total, remaining)) {
+      scr_promise_reject_pending(job->promise); /* the callback's exception */
+    } else {
+      scr_sqlite_backup_schedule(job);
+    }
+    scr_sqlite_backup_job_release(job);
+    return;
+  }
+  if (status != SQLITE_DONE) {
+    /* A first step that could not start: Node rejects rather than retrying a
+     * copy whose page count it never learned. */
+    scr_sqlite_backup_reject(job, SQLITE_OK);
+    scr_sqlite_backup_job_release(job);
+    return;
+  }
+  ScrDyn *pages = scr_dyn_new_num((double)total);
+  scr_promise_fulfill_ref(job->promise, pages, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+  scr_sqlite_backup_job_release(job);
+}
+
+/* sqlite.backup(sourceDb, path[, options]): copies the source database into
+ * a new file and answers the promise of its page count, as Node's BackupJob
+ * does. The copy is a pending promise: the destination is opened here, and
+ * each step runs on its own loop turn, so the progress callbacks and every
+ * other pending fiber run between steps and the loop never stalls on a
+ * writer that holds a lock. All arguments are borrowed; +1, or NULL with the
+ * exception pending for the validation failures Node throws. */
+ScrDyn *scr_sqlite_backup(ScrDyn *source, ScrDyn *path, ScrDyn *options) {
+  ScrSqliteDb *db = scr_sqlite_db_of(source);
+  if (db == NULL) {
+    scr_sqlite_invalid_arg_type("The \"sourceDb\" argument must be an object.");
+    return NULL;
+  }
+  if (db->conn == NULL) {
+    scr_sqlite_invalid_state("database is not open");
+    return NULL;
+  }
+  char *destination = scr_sqlite_validate_path(path);
+  if (destination == NULL) return NULL;
+
+  int rate = 100;
+  const char *source_db = "main";
+  const char *dest_db = "main";
+  ScrStr *held_source = NULL;
+  ScrStr *held_target = NULL;
+  ScrDyn *progress = NULL;
+  if (!scr_sqlite_is_undefined(options)) {
+    if (!scr_sqlite_object_like(options)) {
+      free(destination);
+      scr_sqlite_invalid_arg_type("The \"options\" argument must be an object.");
+      return NULL;
+    }
+    ScrDyn *rate_value = scr_sqlite_get(options, "rate");
+    ScrDyn *source_value = scr_sqlite_get(options, "source");
+    ScrDyn *target_value = scr_sqlite_get(options, "target");
+    ScrDyn *progress_value = scr_sqlite_get(options, "progress");
+    bool ok = false;
+    if (rate_value == NULL || source_value == NULL || target_value == NULL ||
+        progress_value == NULL)
+      goto done;
+    if (rate_value->kind != SCR_DYN_UNDEF) {
+      if (rate_value->kind != SCR_DYN_NUM || rate_value->v.num != floor(rate_value->v.num) ||
+          rate_value->v.num < (double)INT_MIN || rate_value->v.num > (double)INT_MAX) {
+        scr_sqlite_invalid_arg_type("The \"options.rate\" argument must be an integer.");
+        goto done;
+      }
+      rate = (int)rate_value->v.num;
+      if (rate <= 0) {
+        scr_sqlite_out_of_range("The \"options.rate\" argument must be a positive integer.");
+        goto done;
+      }
+    }
+    if (source_value->kind != SCR_DYN_UNDEF) {
+      if (source_value->kind != SCR_DYN_STR) {
+        scr_sqlite_invalid_arg_type("The \"options.source\" argument must be a string.");
+        goto done;
+      }
+      held_source = scr_str_retain(source_value->v.str);
+      source_db = held_source->data;
+    }
+    if (target_value->kind != SCR_DYN_UNDEF) {
+      if (target_value->kind != SCR_DYN_STR) {
+        scr_sqlite_invalid_arg_type("The \"options.target\" argument must be a string.");
+        goto done;
+      }
+      held_target = scr_str_retain(target_value->v.str);
+      dest_db = held_target->data;
+    }
+    if (progress_value->kind != SCR_DYN_UNDEF) {
+      if (progress_value->kind != SCR_DYN_FUNC) {
+        scr_sqlite_invalid_arg_type("The \"options.progress\" argument must be a function.");
+        goto done;
+      }
+      progress = scr_dyn_retain(progress_value);
+    }
+    ok = true;
+  done:
+    scr_dyn_release(rate_value);
+    scr_dyn_release(source_value);
+    scr_dyn_release(target_value);
+    scr_dyn_release(progress_value);
+    if (!ok) {
+      scr_dyn_release(progress);
+      scr_str_release(held_source);
+      scr_str_release(held_target);
+      free(destination);
+      return NULL;
+    }
+  }
+
+  sqlite3 *dest = NULL;
+  int r = sqlite3_open_v2(destination, &dest,
+                          SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, NULL);
+  free(destination);
+  if (r != SQLITE_OK) {
+    /* The message belongs to the destination handle, so copy it before the
+     * handle closes. Node rejects the promise (the destination is opened
+     * before the work starts), so the error becomes the rejection. */
+    int errcode = dest != NULL ? sqlite3_extended_errcode(dest) : r;
+    const char *text = dest != NULL ? sqlite3_errmsg(dest) : sqlite3_errstr(r);
+    ScrStr *message = scr_str_new(text, strlen(text));
+    if (dest != NULL) sqlite3_close_v2(dest);
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+    scr_str_release(message);
+    scr_error_set_code(e, "ERR_SQLITE_ERROR");
+    ScrStr *errstr = scr_str_new(sqlite3_errstr(errcode), strlen(sqlite3_errstr(errcode)));
+    ScrDyn *errstr_dyn = scr_dyn_new_str(errstr);
+    scr_str_release(errstr);
+    scr_error_set_prop(e, "errcode", 7, scr_dyn_new_num((double)errcode));
+    scr_error_set_prop(e, "errstr", 6, errstr_dyn);
+    scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+    ScrPromise *promise =
+        scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+    scr_dyn_release(progress);
+    scr_str_release(held_source);
+    scr_str_release(held_target);
+    ScrDyn *box = scr_dyn_new_promise(promise);
+    scr_promise_release(promise);
+    return box;
+  }
+  sqlite3_backup *copy = sqlite3_backup_init(dest, dest_db, db->conn, source_db);
+  if (copy == NULL) {
+    int errcode = sqlite3_errcode(dest);
+    scr_sqlite_throw_coded_error(errcode, sqlite3_errstr(errcode));
+    sqlite3_close_v2(dest);
+    ScrPromise *promise =
+        scr_promise_settled_ref(NULL, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+    scr_dyn_release(progress);
+    scr_str_release(held_source);
+    scr_str_release(held_target);
+    ScrDyn *box = scr_dyn_new_promise(promise);
+    scr_promise_release(promise);
+    return box;
+  }
+
+  ScrSqliteBackupJob *job = calloc(1, sizeof *job);
+  if (job == NULL) scr_sqlite_oom();
+  job->rc = 1;
+  job->promise = scr_promise_new();
+  job->source = scr_sqlite_db_retain(db);
+  job->progress = progress; /* ownership moves */
+  job->source_db = held_source; /* ownership moves */
+  job->dest_db = held_target; /* ownership moves */
+  job->dest = dest;
+  job->copy = copy;
+  job->rate = rate;
+  scr_sqlite_backup_schedule(job); /* the step's box owns a reference */
+  ScrDyn *box = scr_dyn_new_promise(job->promise);
+  scr_sqlite_backup_job_release(job); /* the caller's reference */
+  return box;
+}
+
 
 /* ── DatabaseSync ───────────────────────────────────────────────────── */
 
@@ -2763,84 +3069,67 @@ static bool scr_sqlite_db_deserialize(ScrSqliteDb *db, ScrDyn *const *args, size
     scr_sqlite_invalid_arg_type("The \"buffer\" argument must be a Uint8Array.");
     return false;
   }
-  size_t byte_length = input->v.bytes->len;
-  if (byte_length == 0) {
+  if (input->v.bytes->len == 0) {
     scr_dyn_release(input);
     scr_sqlite_invalid_arg_value("The \"buffer\" argument must not be empty.");
     return false;
   }
   ScrDyn *options = scr_dyn_retain((ScrDyn *)scr_sqlite_arg(args, argc, 1));
+  ScrStr *held = NULL;
   const char *db_name = "main";
+  bool ok = true;
   if (options->kind != SCR_DYN_UNDEF) {
     if (!scr_sqlite_object_like(options)) {
-      scr_dyn_release(options);
-      scr_dyn_release(input);
       scr_sqlite_invalid_arg_type("The \"options\" argument must be an object.");
-      return false;
+      ok = false;
+      goto done;
     }
     ScrDyn *name = scr_sqlite_get(options, "dbName");
     if (name == NULL) {
-      scr_dyn_release(options);
-      scr_dyn_release(input);
-      return false;
+      ok = false;
+      goto done;
     }
     if (name->kind != SCR_DYN_UNDEF) {
       if (name->kind != SCR_DYN_STR) {
         scr_dyn_release(name);
-        scr_dyn_release(options);
-        scr_dyn_release(input);
         scr_sqlite_invalid_arg_type("The \"options.dbName\" argument must be a string.");
-        return false;
+        ok = false;
+        goto done;
       }
       /* The SQLite call borrows the name; hold it through the call. */
-      ScrStr *held = scr_str_retain(name->v.str);
-      scr_dyn_release(name);
+      held = scr_str_retain(name->v.str);
       db_name = held->data;
-      /* Deserializes below, then releases `held`. */
-      unsigned char *buf = sqlite3_malloc64(byte_length);
-      if (buf == NULL) {
-        scr_str_release(held);
-        scr_dyn_release(options);
-        scr_dyn_release(input);
-        scr_throw_error_msg_code(SCR_ERR_ERROR, "Memory allocation failed", 22,
-                                 "ERR_MEMORY_ALLOCATION_FAILED");
-        return false;
-      }
-      memcpy(buf, input->v.bytes->data, byte_length);
-      scr_sqlite_db_close_statements(db);
-      int r = sqlite3_deserialize(db->conn, db_name, buf, (sqlite3_int64)byte_length,
-                                  (sqlite3_int64)byte_length,
-                                  SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
-      bool ok = true;
-      if (r != SQLITE_OK) {
-        scr_sqlite_throw_db_error(db);
-        ok = false;
-      }
-      scr_str_release(held);
-      scr_dyn_release(options);
-      scr_dyn_release(input);
-      return ok;
     }
     scr_dyn_release(name);
   }
+  /* Reading the options ran their getters, and one can detach or resize the
+   * buffer: what is copied is the view's state now, not the length measured
+   * before. A view the getter detached has no bytes left, which is the empty
+   * buffer error Node answers for one that arrives detached. */
+  size_t byte_length = scr_bytes_view_usable(input->v.bytes) ? input->v.bytes->len : 0;
+  if (byte_length == 0) {
+    scr_sqlite_invalid_arg_value("The \"buffer\" argument must not be empty.");
+    ok = false;
+    goto done;
+  }
   unsigned char *buf = sqlite3_malloc64(byte_length);
   if (buf == NULL) {
-    scr_dyn_release(options);
-    scr_dyn_release(input);
     scr_throw_error_msg_code(SCR_ERR_ERROR, "Memory allocation failed", 22,
                              "ERR_MEMORY_ALLOCATION_FAILED");
-    return false;
+    ok = false;
+    goto done;
   }
   memcpy(buf, input->v.bytes->data, byte_length);
   scr_sqlite_db_close_statements(db);
   int r = sqlite3_deserialize(db->conn, db_name, buf, (sqlite3_int64)byte_length,
                               (sqlite3_int64)byte_length,
                               SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_RESIZEABLE);
-  bool ok = true;
   if (r != SQLITE_OK) {
     scr_sqlite_throw_db_error(db);
     ok = false;
   }
+done:
+  scr_str_release(held);
   scr_dyn_release(options);
   scr_dyn_release(input);
   return ok;

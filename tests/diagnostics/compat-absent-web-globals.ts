@@ -2,9 +2,6 @@
 // each use below is refused by name, which is the evidence the
 // compatibility ledger cites for marking these rows a verified absence
 // rather than an unverified registry gap.
-const channel = new BroadcastChannel("updates");
-channel.close();
-
 const events = new EventSource("http://localhost:1/stream");
 events.close();
 

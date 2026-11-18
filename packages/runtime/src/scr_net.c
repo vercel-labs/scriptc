@@ -2520,6 +2520,15 @@ double scr_net_server_timeout_get(ScrNetServer *s, double field) {
   return s->http_timeouts[i];
 }
 
+/* A timeout field as the HTTP timeout checker reads it: a non-number value
+ * reads 0 (Node's NumberIsFinite guard), never a pending exception. */
+double scr_net_server_timeout_raw(ScrNetServer *s, double field) {
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  if (s->http_timeout_dyn[i] != NULL) return 0;
+  return s->http_timeouts[i];
+}
+
 void scr_net_server_timeout_set(ScrNetServer *s, double field, double value) {
   int i = (int)field;
   if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
@@ -9236,6 +9245,11 @@ void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg) {
 }
 
 void scr_net_server_defer_connections(ScrNetServer *s) { s->defer_conn = true; }
+
+/* Whether this server speaks TLS: the handshake-complete event is the
+ * marker (tls.createServer/tls.Server and https set it; a plain net
+ * server and http2's secure server do not). */
+bool scr_net_server_is_tls(const ScrNetServer *s) { return s->defer_conn; }
 
 void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, void **ctx,
                                      void (**ctx_free)(void *)) {

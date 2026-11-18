@@ -1,4 +1,5 @@
 import { callableMemberFieldTarget } from "../callable-properties.js";
+import { reboundRequireBindingOf } from "../rebindable-requires.js";
 import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
@@ -30,7 +31,11 @@ import { builtinNamespaceValue, wellKnownSymbolValue } from "../builtin-namespac
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
-import { lowerHistogramProperty, lowerPerfHooksProperty } from "../builtins/performance.js";
+import {
+  lowerHistogramProperty,
+  lowerPerfHooksProperty,
+  lowerRecordableHistogramProperty,
+} from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import {
@@ -497,6 +502,24 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // worker.performance: the Worker's event-loop utilization object. It is a
+  // runtime call rather than a plain handle read so a program that reads it
+  // links the loop metrics and marks the loop's start, which is what the
+  // object reports.
+  if (
+    !expr.questionDotToken &&
+    expr.name.text === "performance" &&
+    isWorkerThreadsClass(lowerer, expr.expression, "Worker")
+  ) {
+    lowerer.usesWorkers = true;
+    return {
+      kind: "libCall",
+      fn: "worker.performance",
+      args: [lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN)],
+      type: DYN,
+      loc,
+    };
+  }
   // worker.stdout and worker.stderr are Readables Node always answers, with
   // or without the Worker's stdout/stderr option. The streams unit is entered
   // before the read, so the stream the runtime creates on first read exists.
@@ -513,6 +536,23 @@ export function lowerPropertyAccessExpr(
       loc,
     };
     return workerStdioSequence(read, loc);
+  }
+  // `fs.readFileSync` where `fs` is a require binding the file reassigns
+  // (rebindable-requires.ts): the binding's storage holds whatever the
+  // program stored, so the member is read from that checked-dynamic value.
+  if (
+    reboundRequireBindingOf(lowerer, expr.expression) !== null &&
+    // A private name is never a string key: it stays the class's own
+    // brand-checked access.
+    !ts.isPrivateIdentifier(expr.name)
+  ) {
+    return {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
   }
   // A JavaScript source reading a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The name
@@ -675,6 +715,20 @@ export function lowerPropertyAccessExpr(
       lowerBufferPrototypeMember(lowerer, expr) ?? lowerBufferPrototypeObject(lowerer, expr);
     if (member) return member;
   }
+  // socket.type: "udp4" or "udp6", the socket's own family.
+  if (
+    !expr.questionDotToken &&
+    expr.name.text === "type" &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "dgramSocket"
+  ) {
+    return {
+      kind: "libCall",
+      fn: "dgram.type",
+      args: [lowerer.lowerExpr(expr.expression)],
+      type: STRING,
+      loc,
+    };
+  }
   // A dgram socket's method read as a value in JavaScript (`emit:
   // socket.emit.bind(socket)`): the socket crosses as its checked-dynamic
   // handle, whose methods are function values that dispatch on their
@@ -710,6 +764,11 @@ export function lowerPropertyAccessExpr(
   // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
   {
     const reading = lowerHistogramProperty(lowerer, expr);
+    if (reading) return reading;
+  }
+  // A createHistogram RecordableHistogram's readings and percentiles Map.
+  {
+    const reading = lowerRecordableHistogramProperty(lowerer, expr);
     if (reading) return reading;
   }
   // An X509Certificate's publicKey KeyObject.

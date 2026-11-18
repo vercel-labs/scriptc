@@ -1943,7 +1943,14 @@ export function lowerStaticAbortSignalListenerCall(
  * argument vector (Node validates it in the constructor). */
 export function lowerEventTargetNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   const name = stdlibGlobalNameOf(lowerer, expr.expression);
-  if (name !== "EventTarget" && name !== "Event" && name !== "CustomEvent") return null;
+  if (
+    name !== "EventTarget" &&
+    name !== "Event" &&
+    name !== "CustomEvent" &&
+    name !== "MessageEvent" &&
+    name !== "CloseEvent"
+  )
+    return null;
   const args = expr.arguments?.nodes ?? [];
   if (args.some(ts.isSpreadElement)) return null;
   const loc = locOf(expr);
@@ -1966,7 +1973,14 @@ export function lowerEventTargetNew(lowerer: Lowerer, expr: ts.NewExpression): I
   }
   return {
     kind: "libCall",
-    fn: name === "Event" ? "event.new" : "event.customNew",
+    fn:
+      name === "Event"
+        ? "event.new"
+        : name === "CustomEvent"
+          ? "event.customNew"
+          : name === "MessageEvent"
+            ? "event.messageNew"
+            : "event.closeNew",
     args: [{ kind: "dynArrLit", elems: values, type: DYN, loc }],
     type: DYN,
     loc,

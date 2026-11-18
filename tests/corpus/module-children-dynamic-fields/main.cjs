@@ -1,0 +1,18 @@
+const child = require("./child.cjs");
+console.log("len", module.children.length);
+const c = module.children[0];
+console.log("id", typeof c.id, c.id.endsWith("child.cjs"));
+console.log("loaded", c.loaded);
+console.log("filename", c.filename.endsWith("child.cjs"));
+console.log("path", typeof c.path, c.path.length > 0);
+console.log("isMain", c === require.main);
+console.log("typeofElem", typeof module.children[0]);
+console.log("grand", c.children[0].id.endsWith("grand.cjs"));
+console.log("grandLen", c.children.length);
+console.log("paths", Array.isArray(c.paths), c.paths.length > 0);
+console.log("oor", module.children[9] === undefined);
+console.log("mainIdType", typeof require.main.id, require.main.id.length > 0);
+console.log("parentIsMain", c.parent.id === require.main.id);
+console.log("hasParent", "parent" in c);
+console.log("exitTag", child.tag);
+console.log("iter", module.children.map((m) => m.id.endsWith("child.cjs")).join(","));

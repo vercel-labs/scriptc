@@ -5187,6 +5187,10 @@ function buildLibFnSignatures() {
      * never throws. */
     "process.stdoutWrite": { argTypes: [STRING], result: BOOL },
     "process.stdio": { argTypes: [F64], result: DYN },
+    /** Node's Module object as a checked-dynamic value; one per record. */
+    "module.dynObject": { argTypes: [F64], result: DYN },
+    "module.dynChildren": { argTypes: [F64], result: DYN },
+    "module.setExportsDyn": { argTypes: [F64, DYN], result: VOID },
     /** The same stream object for a procStream VALUE (the cursor methods'
      * receiver): its scalar representation IS the descriptor. */
     "process.stdioOf": { argTypes: [PROCSTREAM_T], result: DYN },

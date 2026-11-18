@@ -238,6 +238,11 @@ typedef struct {
   bool in_cache;
   bool loaded;
   bool is_main;
+  /* The checked-dynamic Module object (built once, for JavaScript values
+   * and identity comparisons) and this module's exports value, which the
+   * compiled prologue stores so another module's view can read it. */
+  ScrDyn *dyn_self;
+  ScrDyn *exports_dyn;
 } ScrModuleRecord;
 
 static SCR_TL ScrModuleRecord *scr_module_records = NULL;
@@ -252,6 +257,8 @@ static void scr_module_registry_cleanup(void) {
     scr_str_release(m->path);
     scr_arr_release(m->paths);
     scr_arr_release(m->children);
+    scr_dyn_release(m->dyn_self);
+    scr_dyn_release(m->exports_dyn);
   }
   free(scr_module_records);
   scr_module_records = NULL;
@@ -578,6 +585,62 @@ ScrArr *scr_module_paths(double module_id) {
 
 ScrArr *scr_module_children(double module_id) {
   return scr_arr_retain(scr_module_record(module_id)->children);
+}
+
+/* Stores the module's exports value for the checked-dynamic Module view
+ * another module reads. Borrowed; a later store replaces it. */
+void scr_module_set_exports_dyn(double module_id, ScrDyn *value) {
+  ScrModuleRecord *m = scr_module_record(module_id);
+  ScrDyn *previous = m->exports_dyn;
+  m->exports_dyn = value ? scr_dyn_retain(value) : NULL;
+  scr_dyn_release(previous);
+}
+
+/* The checked-dynamic view of one module record (Node's Module object as a
+ * program sees it when the value's type is any): one object per record,
+ * built once and cached, so identity holds between `module.children[i]`,
+ * `module.parent` and `require.main`. +1. */
+ScrDyn *scr_module_dyn_object(double module_id) {
+  ScrModuleRecord *m = scr_module_record(module_id);
+  if (m->dyn_self) return scr_dyn_retain(m->dyn_self);
+  ScrDyn *o = scr_dyn_new_obj();
+  /* Cache before filling: a require cycle reaches the parent through its
+   * children, and the record must already answer its own object then. */
+  m->dyn_self = scr_dyn_retain(o);
+  scr_dyn_obj_set(o, "id", 2, scr_dyn_new_str(m->id));
+  scr_dyn_obj_set(o, "filename", 8, scr_dyn_new_str(m->filename));
+  scr_dyn_obj_set(o, "path", 4, scr_dyn_new_str(m->path));
+  scr_dyn_obj_set(o, "loaded", 6, scr_dyn_new_bool(m->loaded));
+  ScrDyn *paths = scr_dyn_new_arr();
+  for (size_t i = 0; i < (size_t)scr_arr_len(m->paths); i++) {
+    ScrStr *entry = (ScrStr *)scr_arr_get_ref(m->paths, (double)i);
+    scr_dyn_arr_push(paths, scr_dyn_new_str(entry));
+  }
+  scr_dyn_obj_set(o, "paths", 5, paths);
+  ScrDyn *children = scr_dyn_new_arr();
+  for (size_t i = 0; i < (size_t)scr_arr_len(m->children); i++) {
+    scr_dyn_arr_push(children, scr_module_dyn_object(scr_arr_get_f64(m->children, (double)i)));
+  }
+  scr_dyn_obj_set(o, "children", 8, children);
+  scr_dyn_obj_set(o, "parent", 6, m->parent < 0 ? scr_dyn_new_null() : scr_module_dyn_object(m->parent));
+  /* Node's `parent` is not one of the Module constructor's own enumerable
+   * fields: `Object.keys` omits it, so the dyn object does too. */
+  scr_dyn_obj_set_attrs_at(o, scr_dyn_obj_index_of(o, "parent", 6), true, false, true);
+  scr_dyn_obj_set(o, "exports", 7,
+                  m->exports_dyn ? scr_dyn_retain(m->exports_dyn) : scr_dyn_retain(scr_dyn_undefined()));
+  return o;
+}
+
+/* module.children as checked-dynamic values: a fresh array of the
+ * children's Module objects (Node's array is live and per parent; the
+ * compiled form reads it at the call, as the static array does). +1. */
+ScrDyn *scr_module_dyn_children(double module_id) {
+  ScrModuleRecord *m = scr_module_record(module_id);
+  ScrDyn *out = scr_dyn_new_arr();
+  for (size_t i = 0; i < (size_t)scr_arr_len(m->children); i++) {
+    scr_dyn_arr_push(out, scr_module_dyn_object(scr_arr_get_f64(m->children, (double)i)));
+  }
+  return out;
 }
 
 double scr_module_parent(double module_id) {

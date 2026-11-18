@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-children-dynamic-fields/grand.cjs",
+  "<repo>/tests/corpus/module-children-dynamic-fields/child.cjs",
+  "<repo>/tests/corpus/module-children-dynamic-fields/main.cjs"
+ ],
+ "diags": []
+}

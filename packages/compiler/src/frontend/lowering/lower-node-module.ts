@@ -19,6 +19,7 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  type SrcLoc,
   NULL_T,
   STRING,
   UNDEFINED_T,
@@ -549,7 +550,20 @@ export function lowerRequireMainProperty(
   )
     return null;
   const entryId = lowerer.cjsModuleIdOf.get(lowerer.entry);
-  const raw = entryId === undefined ? numLit(-1, locOf(expr)) : numLit(entryId, locOf(expr));
+  const loc = locOf(expr);
+  // JavaScript types `require.main` as `any`: Node's Module object, the same
+  // one `module.children[i]` answers, so identity comparisons hold.
+  if (isAnyTyped(lowerer, expr)) {
+    if (entryId === undefined) return unitUndefined(loc);
+    return {
+      kind: "libCall",
+      fn: "module.dynObject",
+      args: [numLit(entryId, loc)],
+      type: DYN,
+      loc,
+    };
+  }
+  const raw = entryId === undefined ? numLit(-1, loc) : numLit(entryId, loc);
   return lowerer.maybeNarrow(optionalModule(lowerer, expr, raw, "undefined"), expr);
 }
 
@@ -660,6 +674,16 @@ function moduleArmOf(lowerer: Lowerer, type: IrType): IrType {
   return arms.length === 1 ? arms[0]! : type;
 }
 
+/** Whether the checker gives this expression `any` (an untyped JavaScript
+ * position, where Node's object itself is the value). */
+function isAnyTyped(lowerer: Lowerer, node: ts.Expression): boolean {
+  return (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0;
+}
+
+function unitUndefined(loc: SrcLoc): IrExpr {
+  return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
+}
+
 export function lowerNodeModuleProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -726,16 +750,41 @@ export function lowerNodeModuleProperty(
     case "paths":
       return call("module.paths", arrayOf(STRING));
     case "children":
-      return call("module.children", arrayOf(F64));
+      // JavaScript reads the CommonJS `module` global as `{ exports }`, so
+      // the member is `any`: Node's array of Module objects as checked
+      // values, where `children[i].id` and identity comparisons answer what
+      // Node answers (the static handle array is for typed programs).
+      return isAnyTyped(lowerer, expr)
+        ? { kind: "libCall", fn: "module.dynChildren", args: [moduleRef], type: DYN, loc }
+        : call("module.children", arrayOf(F64));
     case "loaded":
       return call("module.loaded", BOOL);
     case "isPreloading":
       return boolLit(false, loc);
-    case "parent":
+    case "parent": {
+      if (isAnyTyped(lowerer, expr)) {
+        const slot = lowerer.declareHiddenLocal("%moduleParent", F64);
+        const ref: IrExpr = { kind: "varRef", localId: slot.id, type: F64, loc };
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: slot.id, init: call("module.parent", F64), loc }],
+          result: {
+            kind: "ternary",
+            cond: { kind: "bin", op: ">=", left: ref, right: numLit(0, loc), type: BOOL, loc },
+            then: { kind: "libCall", fn: "module.dynObject", args: [ref], type: DYN, loc },
+            else_: unitUndefined(loc),
+            type: DYN,
+            loc,
+          },
+          type: DYN,
+          loc,
+        };
+      }
       return lowerer.maybeNarrow(
         optionalModule(lowerer, expr, call("module.parent", F64), "parent"),
         expr,
       );
+    }
     default:
       lowerer.noLowering(
         `module.${member}`,

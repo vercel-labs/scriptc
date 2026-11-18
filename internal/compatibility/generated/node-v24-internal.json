@@ -71709,7 +71709,8 @@
           "tests/corpus/2860-require-resolve/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -71997,7 +71998,8 @@
         "evidence": "compiler-feature:modules.cache",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72133,7 +72135,8 @@
         "evidence": "compiler-feature:modules.children",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72256,7 +72259,8 @@
         "evidence": "compiler-feature:modules.id",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72283,7 +72287,8 @@
         "evidence": "compiler-feature:modules.isPreloading",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72310,7 +72315,8 @@
         "evidence": "compiler-feature:modules.loaded",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72337,7 +72343,8 @@
         "evidence": "compiler-feature:modules.parent",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72364,7 +72371,8 @@
         "evidence": "compiler-feature:modules.path",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72391,7 +72399,8 @@
         "evidence": "compiler-feature:modules.paths",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72418,7 +72427,8 @@
         "evidence": "compiler-feature:modules.Module",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "exact"

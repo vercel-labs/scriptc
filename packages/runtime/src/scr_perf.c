@@ -779,6 +779,11 @@ double scr_perf_resource_mark(ScrDyn *args) {
   /* deliveryType defaults to '' (the 8th argument is optional). */
   r->delivery_type = scr_perf_nullish(delivery) ? scr_str_new("", 0) : scr_perf_string(delivery);
   scr_str_release(cache_mode);
+  /* A timing, connection or body value that cannot convert (a Symbol, a
+   * getter that throws) recorded its field's default: the entry is buffered
+   * intact rather than left half-built, which used to poison the timeline
+   * and make later reads abort the process. Node buffers the call too. */
+  if (scr_exc_pending()) scr_exc_clear();
   if (!r->delivery_type) {
     scr_str_release(name);
     scr_perf_resource_release(r);
@@ -857,18 +862,23 @@ double scr_perf_entry_resource_num(double i, double which) {
   }
 }
 
+/* A resource field as a string (+1): "" when the entry has none. */
+static ScrStr *scr_perf_resource_str_field(const ScrStr *s) {
+  return s ? scr_str_retain((ScrStr *)s) : scr_str_new("", 0);
+}
+
 ScrStr *scr_perf_entry_resource_str(double i, double which) {
   const ScrPerfEntry *e = scr_perf_at(i);
   const ScrPerfResource *r = e->resource;
   if (r == NULL) return scr_str_new("", 0);
   switch ((int)which) {
-    case 0: return scr_str_retain(r->initiator_type);
-    case 1: return scr_str_retain(r->alpn);
-    case 2: return scr_str_retain(r->delivery_type);
+    case 0: return scr_perf_resource_str_field(r->initiator_type);
+    case 1: return scr_perf_resource_str_field(r->alpn);
+    case 2: return scr_perf_resource_str_field(r->delivery_type);
     case 3: return scr_str_new(r->render_blocking ? "blocking" : "non-blocking",
                               r->render_blocking ? 8 : 12);
-    case 4: return scr_str_retain(r->content_type);
-    default: return scr_str_retain(r->content_encoding);
+    case 4: return scr_perf_resource_str_field(r->content_type);
+    default: return scr_perf_resource_str_field(r->content_encoding);
   }
 }
 

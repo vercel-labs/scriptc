@@ -169,6 +169,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http.clientOnConnect",
   "http.clientOnInformation",
   "http2.sessionOnPing",
+  // A header-record listener registration: no listener runs inside the
+  // call, and a registered callback cannot raise.
+  "http2.streamOnTrailers",
+  "http2.streamOnHeaders",
+  "http2.streamOnWantTrailers",
+  "http2.streamOnContinue",
   // Reads of the session's, the stream's or the request's state bits.
   "http2.sessionConnecting",
   "http2.streamHeadersSent",

@@ -63,6 +63,34 @@ console.log("record pathname only", JSON.stringify(fromRecord.exec({ pathname: "
 const empty = new URLPattern();
 console.log("empty", empty.test("https://anything/x"), empty.pathname, empty.hasRegExpGroups);
 
+const query = new URLPattern("https://h/books/:id?q=:term");
+console.log("query", JSON.stringify(query.exec("https://h/books/7?q=hello")));
+
+const explicitPort = new URLPattern("https://h:8080/x");
+console.log(
+  "explicit port",
+  explicitPort.hostname,
+  explicitPort.port,
+  explicitPort.test("https://h:8080/x")
+);
+
+const defaultPort = new URLPattern("https://h:443/x");
+console.log("default port", JSON.stringify(defaultPort.port), defaultPort.test("https://h/x"));
+
+show("record base arg", () => fromRecord.exec({}, "https://h/x"));
+console.log("record base url", JSON.stringify(fromRecord.exec({ baseURL: "https://h/x" })));
+console.log(
+  "record relative",
+  JSON.stringify(fromRecord.exec({ pathname: "x", baseURL: "https://h/" }))
+);
+console.log("record omitted base", fromRecord.exec({ pathname: "x" }));
+console.log(
+  "record canonicalized",
+  JSON.stringify(
+    fromRecord.exec({ protocol: "HTTPS:", hostname: "H", port: "443", pathname: "/x" })
+  )
+);
+
 show("invalid regexp", () => new URLPattern({ pathname: "/([)" }));
 show("duplicate names", () => new URLPattern({ pathname: "/:a/:a" }));
 show("relative without base", () => new URLPattern("/books"));

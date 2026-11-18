@@ -36,6 +36,21 @@ t("search miss", search, "http://h/x?q=cats");
 const hash = new URLPattern("https://h/p#:section");
 t("hash", hash, "https://h/p#intro");
 
+const ctorQuery = new URLPattern("https://h/books/:id?q=:term");
+t("constructor query", ctorQuery, "https://h/books/7?q=hello");
+console.log("constructor query props", ctorQuery.pathname, ctorQuery.search, ctorQuery.hash);
+
+// ":" before an identifier starts a name, so the userinfo's colon joins the
+// username instead of splitting off a password.
+const colonUserinfo = new URLPattern("https://u:p@h:8/x");
+console.log(
+  "userinfo props",
+  colonUserinfo.username,
+  colonUserinfo.password,
+  colonUserinfo.hostname,
+  colonUserinfo.port
+);
+
 const host = new URLPattern("https://*.example.com/:file");
 t("host", host, "https://api.example.com/a.txt");
 t("host miss", host, "https://api.other.com/a.txt");

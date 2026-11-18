@@ -773,187 +773,322 @@ static bool ws_is_special_scheme(const ScrStr *scheme) {
 enum { WC_INIT, WC_PROTOCOL, WC_AUTHORITY, WC_USERNAME, WC_PASSWORD, WC_HOSTNAME, WC_PORT,
        WC_PATHNAME, WC_SEARCH, WC_HASH, WC_DONE };
 
-/* The constructor string parser: the standard's state machine over lenient
- * tokens, with components recorded as the input text between separators. */
+/* The constructor string parser: the standard's algorithm over lenient
+ * tokens. Components are recorded as the input text between separators;
+ * pattern syntax inside a component stays text until the component is
+ * compiled. */
+typedef struct {
+  ScrStr *input;
+  const WsTokens *tokens;
+  WsInit *out;
+  size_t token_index;
+  size_t token_increment;
+  size_t component_start;
+  size_t group_depth;
+  size_t ipv6_depth;
+  bool protocol_special;
+  int state;
+} WsCtor;
+
+static const WsToken *ws_ctor_safe(const WsCtor *c, size_t index) {
+  if (index < c->tokens->len) return &c->tokens->items[index];
+  return &c->tokens->items[c->tokens->len - 1];
+}
+
+/* The component string: the input text from the component's first token to
+ * the current one. */
+static ScrStr *ws_ctor_component_string(const WsCtor *c) {
+  const WsToken *end = ws_ctor_safe(c, c->token_index);
+  const WsToken *start = ws_ctor_safe(c, c->component_start);
+  return ws_slice(c->input, start->pos, end->pos);
+}
+
+static ScrStr **ws_ctor_field(WsInit *init, int state) {
+  switch (state) {
+  case WC_PROTOCOL: return &init->protocol;
+  case WC_USERNAME: return &init->username;
+  case WC_PASSWORD: return &init->password;
+  case WC_HOSTNAME: return &init->hostname;
+  case WC_PORT: return &init->port;
+  case WC_PATHNAME: return &init->pathname;
+  case WC_SEARCH: return &init->search;
+  case WC_HASH: return &init->hash;
+  default: return NULL;
+  }
+}
+
+/* The standard's change state: record the finishing component's text, fill
+ * the defaults a later component implies, and restart the current component
+ * at the token after the separator. */
+static void ws_ctor_change_state(WsCtor *c, int new_state, size_t skip) {
+  if (c->state != WC_INIT && c->state != WC_AUTHORITY && c->state != WC_DONE) {
+    ScrStr **field = ws_ctor_field(c->out, c->state);
+    if (field != NULL) {
+      scr_str_release(*field);
+      *field = ws_ctor_component_string(c);
+    }
+  }
+  if (c->state != WC_INIT && new_state != WC_DONE) {
+    bool from_userinfo = c->state == WC_PROTOCOL || c->state == WC_AUTHORITY ||
+                         c->state == WC_USERNAME || c->state == WC_PASSWORD;
+    bool to_later = new_state == WC_PORT || new_state == WC_PATHNAME || new_state == WC_SEARCH ||
+                    new_state == WC_HASH;
+    if (from_userinfo && to_later && c->out->hostname == NULL)
+      c->out->hostname = scr_str_new("", 0);
+    bool from_before_pathname =
+        from_userinfo || c->state == WC_HOSTNAME || c->state == WC_PORT;
+    if (from_before_pathname && (new_state == WC_SEARCH || new_state == WC_HASH) &&
+        c->out->pathname == NULL)
+      c->out->pathname =
+          c->protocol_special ? scr_str_new("/", 1) : scr_str_new("", 0);
+    if ((from_before_pathname || c->state == WC_PATHNAME) && new_state == WC_HASH &&
+        c->out->search == NULL)
+      c->out->search = scr_str_new("", 0);
+  }
+  c->state = new_state;
+  c->token_index += skip;
+  c->component_start = c->token_index;
+  c->token_increment = 0;
+}
+
+static void ws_ctor_rewind(WsCtor *c) {
+  c->token_index = c->component_start;
+  c->token_increment = 0;
+}
+
+/* A pattern-syntax character of the given spelling: an escaped character
+ * spells its escaped byte, so "\?" is a literal and not a separator. */
+static bool ws_ctor_char_is(const WsCtor *c, size_t index, const char *value) {
+  const WsToken *token = ws_ctor_safe(c, index);
+  if (!ws_scheme_is(token->value, value)) return false;
+  return token->type == TK_CHAR || token->type == TK_ESCAPED_CHAR ||
+         token->type == TK_INVALID_CHAR;
+}
+
+static bool ws_ctor_protocol_suffix(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index, ":");
+}
+
+static bool ws_ctor_authority_slashes(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index + 1, "/") &&
+         ws_ctor_char_is(c, c->token_index + 2, "/");
+}
+
+static bool ws_ctor_identity_terminator(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index, "@");
+}
+
+static bool ws_ctor_password_prefix(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index, ":");
+}
+
+static bool ws_ctor_port_prefix(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index, ":");
+}
+
+static bool ws_ctor_pathname_start(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index, "/");
+}
+
+static bool ws_ctor_hash_prefix(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index, "#");
+}
+
+static bool ws_ctor_ipv6_open(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index, "[");
+}
+
+static bool ws_ctor_ipv6_close(const WsCtor *c) {
+  return ws_ctor_char_is(c, c->token_index, "]");
+}
+
+/* A '?' separated from pattern syntax: the character itself, or the "?"
+ * modifier when it does not follow a part it could modify. */
+static bool ws_ctor_search_prefix(const WsCtor *c) {
+  if (ws_ctor_char_is(c, c->token_index, "?")) return true;
+  const WsToken *token = ws_ctor_safe(c, c->token_index);
+  if (!ws_scheme_is(token->value, "?")) return false;
+  if (c->token_index == 0) return true;
+  const WsToken *previous = ws_ctor_safe(c, c->token_index - 1);
+  if (previous->type == TK_NAME || previous->type == TK_REGEXP || previous->type == TK_CLOSE ||
+      previous->type == TK_ASTERISK)
+    return false;
+  return true;
+}
+
+/* Whether the protocol component's pattern matches a special scheme: the
+ * compiled pattern against each of them, so wildcards and groups count. */
+static bool ws_ctor_compute_special(WsCtor *c) {
+  ScrStr *text = ws_ctor_component_string(c);
+  WsComponent component;
+  ws_component_init(&component);
+  bool ok = ws_compile(&component, text, "", "", true, false);
+  scr_str_release(text);
+  if (!ok) {
+    ws_component_free(&component);
+    return false;
+  }
+  static const char *const schemes[] = {"http", "https", "ws", "wss", "ftp", "file"};
+  bool special = false;
+  for (size_t i = 0; i < sizeof schemes / sizeof schemes[0] && !special; i++) {
+    ScrStr *probe = scr_str_new(schemes[i], strlen(schemes[i]));
+    ScrArr *match = scr_regex_exec(probe, component.regex);
+    scr_str_release(probe);
+    if (match != NULL) {
+      special = true;
+      scr_arr_release(match);
+    }
+  }
+  ws_component_free(&component);
+  c->protocol_special = special;
+  return true;
+}
+
 static bool ws_parse_ctor(ScrStr *input, WsInit *out) {
   WsTokens tokens = {NULL, 0, 0};
   if (!ws_tokenize(input, false, &tokens)) {
     ws_tokens_free(&tokens);
     return false;
   }
-  int state = WC_INIT;
-  size_t index = 0;
-  size_t component_start = 0;
-  size_t group_depth = 0;
-  size_t ipv6 = 0;
+  WsCtor c = {
+      .input = input,
+      .tokens = &tokens,
+      .out = out,
+      .token_index = 0,
+      .token_increment = 1,
+      .component_start = 0,
+      .group_depth = 0,
+      .ipv6_depth = 0,
+      .protocol_special = false,
+      .state = WC_INIT,
+  };
   bool ok = true;
-  for (;;) {
-    if (index >= tokens.len) break;
-    const WsToken *token = &tokens.items[index];
+  while (c.token_index < tokens.len) {
+    c.token_increment = 1;
+    const WsToken *token = &tokens.items[c.token_index];
     if (token->type == TK_END) {
-      size_t end = input->len;
-      switch (state) {
-      case WC_INIT: {
+      if (c.state == WC_INIT) {
         /* A relative constructor string: hash, search or pathname. */
-        if (input->len > 0 && input->data[0] == '#') {
-          out->hash = ws_slice(input, 1, input->len);
-        } else if (input->len > 0 && input->data[0] == '?') {
-          out->search = ws_slice(input, 1, input->len);
+        ws_ctor_rewind(&c);
+        if (ws_ctor_hash_prefix(&c)) {
+          ws_ctor_change_state(&c, WC_HASH, 1);
+        } else if (ws_ctor_search_prefix(&c)) {
+          ws_ctor_change_state(&c, WC_SEARCH, 1);
         } else {
-          out->pathname = ws_slice(input, component_start, end);
+          ws_ctor_change_state(&c, WC_PATHNAME, 0);
         }
-        break;
+        c.token_index += c.token_increment;
+        continue;
       }
-      case WC_AUTHORITY:
-      case WC_HOSTNAME:
-        out->hostname = ws_slice(input, component_start, end);
-        break;
-      case WC_PORT:
-        out->port = ws_slice(input, component_start, end);
-        break;
-      case WC_PATHNAME:
-        out->pathname = ws_slice(input, component_start, end);
-        break;
-      case WC_SEARCH:
-        out->search = ws_slice(input, component_start, end);
-        break;
-      case WC_HASH:
-        out->hash = ws_slice(input, component_start, end);
-        break;
-      default:
-        break;
+      if (c.state == WC_AUTHORITY) {
+        /* No "@": there is no username or password. */
+        ws_ctor_rewind(&c);
+        c.state = WC_HOSTNAME;
+        c.token_index += c.token_increment;
+        continue;
       }
-      state = WC_DONE;
+      ws_ctor_change_state(&c, WC_DONE, 0);
       break;
     }
     if (token->type == TK_OPEN) {
-      group_depth++;
-      index++;
+      c.group_depth++;
+      c.token_index += c.token_increment;
       continue;
     }
-    if (group_depth > 0) {
-      if (token->type == TK_CLOSE) group_depth--;
-      index++;
+    if (c.group_depth > 0) {
+      if (token->type == TK_CLOSE) c.group_depth--;
+      c.token_index += c.token_increment;
       continue;
     }
-    if (state == WC_INIT &&
-        (token->type == TK_CHAR || token->type == TK_ESCAPED_CHAR ||
-         token->type == TK_INVALID_CHAR) &&
-        token->value->data[0] == ':') {
-      /* A scheme separator: the text so far is the protocol. */
-      out->protocol = ws_slice(input, 0, token->pos);
-      component_start = token->pos + 1;
-      /* Authority slashes: "//" right after the separator. */
-      if (index + 2 < tokens.len && tokens.items[index + 1].type == TK_CHAR &&
-          tokens.items[index + 1].value->data[0] == '/' && tokens.items[index + 2].type == TK_CHAR &&
-          tokens.items[index + 2].value->data[0] == '/') {
-        component_start = tokens.items[index + 2].pos + 1;
-        state = WC_AUTHORITY;
-        index += 3;
-      } else {
-        state = WC_PATHNAME;
-        index++;
+    switch (c.state) {
+    case WC_INIT:
+      if (ws_ctor_protocol_suffix(&c)) {
+        ws_ctor_rewind(&c);
+        c.state = WC_PROTOCOL;
       }
-      continue;
-    }
-    char c = (token->type == TK_CHAR || token->type == TK_ESCAPED_CHAR ||
-               token->type == TK_INVALID_CHAR)
-                  ? token->value->data[0]
-                  : '\0';
-    switch (state) {
+      break;
+    case WC_PROTOCOL:
+      if (ws_ctor_protocol_suffix(&c)) {
+        if (!ws_ctor_compute_special(&c)) {
+          ok = false;
+          break;
+        }
+        int next = WC_PATHNAME;
+        size_t skip = 1;
+        if (ws_ctor_authority_slashes(&c)) {
+          next = WC_AUTHORITY;
+          skip = 3;
+        } else if (c.protocol_special) {
+          next = WC_AUTHORITY;
+        }
+        ws_ctor_change_state(&c, next, skip);
+      }
+      break;
     case WC_AUTHORITY:
-      if (c == '/' || c == '?' || c == '#') {
-        /* no userinfo: the text so far is the hostname */
-        state = WC_HOSTNAME;
-        continue;
+      if (ws_ctor_identity_terminator(&c)) {
+        ws_ctor_rewind(&c);
+        c.state = WC_USERNAME;
+      } else if (ws_ctor_pathname_start(&c) || ws_ctor_search_prefix(&c) ||
+                 ws_ctor_hash_prefix(&c)) {
+        ws_ctor_rewind(&c);
+        c.state = WC_HOSTNAME;
       }
-      if (c == '@') {
-        ScrStr *userinfo = ws_slice(input, component_start, token->pos);
-        size_t colon = userinfo->len;
-        for (size_t i = 0; i < userinfo->len; i++)
-          if (userinfo->data[i] == ':') {
-            colon = i;
-            break;
-          }
-        out->username = ws_slice(userinfo, 0, colon);
-        if (colon < userinfo->len) out->password = ws_slice(userinfo, colon + 1, userinfo->len);
-        scr_str_release(userinfo);
-        component_start = token->pos + 1;
-        state = WC_HOSTNAME;
+      break;
+    case WC_USERNAME:
+      if (ws_ctor_password_prefix(&c)) {
+        ws_ctor_change_state(&c, WC_PASSWORD, 1);
+      } else if (ws_ctor_identity_terminator(&c)) {
+        ws_ctor_change_state(&c, WC_HOSTNAME, 1);
       }
-      index++;
+      break;
+    case WC_PASSWORD:
+      if (ws_ctor_identity_terminator(&c)) ws_ctor_change_state(&c, WC_HOSTNAME, 1);
       break;
     case WC_HOSTNAME:
-      if (token->type == TK_NAME && token->pos < input->len && input->data[token->pos] == ':' &&
-          ipv6 == 0) {
-        out->hostname = ws_slice(input, component_start, token->pos);
-        component_start = token->pos + 1;
-        state = WC_PORT;
-        index++;
-        break;
+      if (ws_ctor_ipv6_open(&c)) {
+        c.ipv6_depth++;
+      } else if (ws_ctor_ipv6_close(&c)) {
+        if (c.ipv6_depth > 0) c.ipv6_depth--;
+      } else if (ws_ctor_port_prefix(&c) && c.ipv6_depth == 0) {
+        ws_ctor_change_state(&c, WC_PORT, 1);
+      } else if (ws_ctor_pathname_start(&c)) {
+        ws_ctor_change_state(&c, WC_PATHNAME, 0);
+      } else if (ws_ctor_search_prefix(&c)) {
+        ws_ctor_change_state(&c, WC_SEARCH, 1);
+      } else if (ws_ctor_hash_prefix(&c)) {
+        ws_ctor_change_state(&c, WC_HASH, 1);
       }
-      if (c == '[') {
-        ipv6++;
-      } else if (c == ']' && ipv6 > 0) {
-        ipv6--;
-      } else if (ipv6 == 0 && c == ':') {
-        out->hostname = ws_slice(input, component_start, token->pos);
-        component_start = token->pos + 1;
-        state = WC_PORT;
-      } else if (ipv6 == 0 && (c == '/' || c == '?' || c == '#')) {
-        out->hostname = ws_slice(input, component_start, token->pos);
-        component_start = c == '/' ? token->pos : token->pos + 1;
-        state = c == '/' ? WC_PATHNAME : c == '?' ? WC_SEARCH : WC_HASH;
-        if (state == WC_SEARCH && out->pathname == NULL)
-          out->pathname = scr_str_new(ws_is_special_scheme(out->protocol ? out->protocol : input)
-                                          ? "/"
-                                          : "",
-                                      1);
-        if (state == WC_HASH && out->search == NULL) out->search = scr_str_new("", 0);
-      }
-      index++;
       break;
     case WC_PORT:
-      if (c == '/' || c == '?' || c == '#') {
-        out->port = ws_slice(input, component_start, token->pos);
-        component_start = c == '/' ? token->pos : token->pos + 1;
-        state = c == '/' ? WC_PATHNAME : c == '?' ? WC_SEARCH : WC_HASH;
-        if (state == WC_SEARCH && out->pathname == NULL)
-          out->pathname = scr_str_new(ws_is_special_scheme(out->protocol ? out->protocol : input)
-                                          ? "/"
-                                          : "",
-                                      1);
-        if (state == WC_HASH && out->search == NULL) out->search = scr_str_new("", 0);
+      if (ws_ctor_pathname_start(&c)) {
+        ws_ctor_change_state(&c, WC_PATHNAME, 0);
+      } else if (ws_ctor_search_prefix(&c)) {
+        ws_ctor_change_state(&c, WC_SEARCH, 1);
+      } else if (ws_ctor_hash_prefix(&c)) {
+        ws_ctor_change_state(&c, WC_HASH, 1);
       }
-      index++;
       break;
     case WC_PATHNAME:
-      if (c == '?' || c == '#') {
-        out->pathname = ws_slice(input, component_start, token->pos);
-        component_start = token->pos + 1;
-        state = c == '?' ? WC_SEARCH : WC_HASH;
-        if (state == WC_HASH && out->search == NULL) out->search = scr_str_new("", 0);
+      if (ws_ctor_search_prefix(&c)) {
+        ws_ctor_change_state(&c, WC_SEARCH, 1);
+      } else if (ws_ctor_hash_prefix(&c)) {
+        ws_ctor_change_state(&c, WC_HASH, 1);
       }
-      index++;
       break;
     case WC_SEARCH:
-      if (c == '#') {
-        out->search = ws_slice(input, component_start, token->pos);
-        component_start = token->pos + 1;
-        state = WC_HASH;
-      }
-      index++;
+      if (ws_ctor_hash_prefix(&c)) ws_ctor_change_state(&c, WC_HASH, 1);
       break;
     default:
-      index++;
       break;
     }
-    if (scr_exc_pending()) {
+    if (!ok || scr_exc_pending()) {
       ok = false;
       break;
     }
+    c.token_index += c.token_increment;
   }
   ws_tokens_free(&tokens);
+  if (ok && out->hostname != NULL && out->port == NULL) out->port = scr_str_new("", 0);
   return ok;
 }
 
@@ -979,6 +1114,156 @@ static bool ws_read_field(const ScrDyn *object, const char *name, ScrStr **out) 
   if (text == NULL) return false;
   *out = text;
   return true;
+}
+
+/* The URL standard's percent-encode sets for a special URL's components.
+ * Every non-ASCII byte and the C0 controls are always encoded; these list
+ * the ASCII characters each component additionally encodes. */
+#define WS_PATH_ENCODE "\"#<>?`{}"
+#define WS_QUERY_ENCODE "\"#<>"
+#define WS_FRAGMENT_ENCODE "\"<>`"
+#define WS_USERINFO_ENCODE "\"#/:;<=>?@[\\]^`{|}"
+
+enum { WF_PROTOCOL, WF_USERNAME, WF_PASSWORD, WF_HOSTNAME, WF_PORT, WF_PATHNAME, WF_SEARCH,
+       WF_HASH };
+
+static ScrStr *ws_percent_encode(const ScrStr *value, const char *encode_set) {
+  static const char hex[] = "0123456789ABCDEF";
+  WsBuf b = {0};
+  for (size_t i = 0; i < value->len; i++) {
+    unsigned char c = (unsigned char)value->data[i];
+    if (c <= 0x20 || c >= 0x7f || strchr(encode_set, c) != NULL) {
+      char escaped[3] = {'%', hex[c >> 4], hex[c & 15]};
+      ws_buf_add(&b, escaped, 3);
+    } else {
+      ws_buf_add(&b, value->data + i, 1);
+    }
+  }
+  return ws_buf_finish(&b);
+}
+
+static ScrStr *ws_str_join(const char *prefix, const ScrStr *value, const char *suffix) {
+  WsBuf b = {0};
+  if (prefix != NULL) ws_buf_str(&b, prefix);
+  if (value != NULL) ws_buf_scr(&b, value);
+  if (suffix != NULL) ws_buf_str(&b, suffix);
+  return ws_buf_finish(&b);
+}
+
+/* Parse a URL, answering NULL and clearing the parser's throw when the
+ * input is invalid: every caller turns that into a TypeError. */
+static ScrUrl *ws_parse_or_null(ScrStr *text) {
+  ScrUrl *url = scr_url_new(text);
+  if (url == NULL) scr_exc_clear();
+  return url;
+}
+
+static ScrStr *ws_strip_one(ScrStr *value, char marker, bool leading) {
+  if (leading) {
+    if (value->len > 0 && value->data[0] == marker)
+      return scr_str_new(value->data + 1, value->len - 1);
+  } else if (value->len > 0 && value->data[value->len - 1] == marker) {
+    return scr_str_new(value->data, value->len - 1);
+  }
+  return scr_str_retain(value);
+}
+
+/* The standard's process <component> for init with type "url": the value
+ * through the URL parser's canonicalization for that component. NULL with
+ * the standard's TypeError pending. */
+static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol) {
+  switch (field) {
+  case WF_PROTOCOL: {
+    ScrStr *stripped = ws_strip_one(value, ':', false);
+    if (stripped->len == 0) return stripped;
+    ScrStr *candidate = ws_str_join(NULL, stripped, "://dummy.invalid/");
+    scr_str_release(stripped);
+    ScrUrl *url = ws_parse_or_null(candidate);
+    scr_str_release(candidate);
+    if (url != NULL) {
+      ScrStr *text = scr_url_protocol(url);
+      scr_url_release(url);
+      ScrStr *out = ws_strip_protocol(text);
+      scr_str_release(text);
+      return out;
+    }
+    break;
+  }
+  case WF_USERNAME:
+  case WF_PASSWORD:
+    return ws_percent_encode(value, WS_USERINFO_ENCODE);
+  case WF_HOSTNAME: {
+    if (value->len == 0) return scr_str_new("", 0);
+    ScrStr *candidate = ws_str_join("https://", value, "/");
+    ScrUrl *url = ws_parse_or_null(candidate);
+    scr_str_release(candidate);
+    if (url != NULL) {
+      ScrStr *out = scr_url_hostname(url);
+      scr_url_release(url);
+      return out;
+    }
+    break;
+  }
+  case WF_PORT: {
+    if (value->len == 0) return scr_str_new("", 0);
+    WsBuf b = {0};
+    if (protocol != NULL && protocol->len > 0) {
+      ws_buf_scr(&b, protocol);
+    } else {
+      /* a non-special scheme: no default port is stripped */
+      ws_buf_str(&b, "x");
+    }
+    ws_buf_str(&b, "://h:");
+    ws_buf_scr(&b, value);
+    ws_buf_str(&b, "/");
+    ScrStr *candidate = ws_buf_finish(&b);
+    ScrUrl *url = ws_parse_or_null(candidate);
+    scr_str_release(candidate);
+    if (url != NULL) {
+      ScrStr *out = scr_url_port(url);
+      scr_url_release(url);
+      return out;
+    }
+    break;
+  }
+  case WF_PATHNAME:
+    if (value->len == 0) return scr_str_new("", 0);
+    return ws_percent_encode(value, WS_PATH_ENCODE);
+  case WF_SEARCH: {
+    ScrStr *stripped = ws_strip_one(value, '?', true);
+    ScrStr *out = ws_percent_encode(stripped, WS_QUERY_ENCODE);
+    scr_str_release(stripped);
+    return out;
+  }
+  case WF_HASH: {
+    ScrStr *stripped = ws_strip_one(value, '#', true);
+    ScrStr *out = ws_percent_encode(stripped, WS_FRAGMENT_ENCODE);
+    scr_str_release(stripped);
+    return out;
+  }
+  default: break;
+  }
+  ws_type_error("Failed to construct URLPattern");
+  return NULL;
+}
+
+/* A relative pathname resolves against the base URL's directory, like the
+ * standard's pathname inheritance for a match input. */
+static ScrStr *ws_resolve_pathname(ScrStr *pathname, ScrUrl *base) {
+  if (pathname->len == 0 || pathname->data[0] == '/' || base == NULL) return pathname;
+  ScrStr *base_path = scr_url_pathname(base);
+  size_t cut = base_path->len;
+  while (cut > 0 && base_path->data[cut - 1] != '/') cut--;
+  ScrStr *out = pathname;
+  if (cut > 0) {
+    WsBuf b = {0};
+    ws_buf_add(&b, base_path->data, cut);
+    ws_buf_scr(&b, pathname);
+    scr_str_release(pathname);
+    out = ws_buf_finish(&b);
+  }
+  scr_str_release(base_path);
+  return out;
 }
 
 /* A base URL's components fill the init's missing ones; a relative
@@ -1118,6 +1403,21 @@ static bool ws_init_from_dyn(ScrDyn *input, ScrStr *base_text, bool *from_string
 
 static bool ws_build(ScrUrlPattern *pattern, WsInit *init, bool from_string, bool ignore_case) {
   ws_apply_defaults(init, from_string);
+  /* A port that names its protocol's default port is the empty port. */
+  if (init->port != NULL && init->port->len > 0 && ws_is_special_scheme(init->protocol)) {
+    const char *default_port = NULL;
+    if (ws_scheme_is(init->protocol, "http") || ws_scheme_is(init->protocol, "ws")) {
+      default_port = "80";
+    } else if (ws_scheme_is(init->protocol, "https") || ws_scheme_is(init->protocol, "wss")) {
+      default_port = "443";
+    } else if (ws_scheme_is(init->protocol, "ftp")) {
+      default_port = "21";
+    }
+    if (default_port != NULL && ws_scheme_is(init->port, default_port)) {
+      scr_str_release(init->port);
+      init->port = scr_str_new("", 0);
+    }
+  }
   pattern->ignore_case = ignore_case;
   bool ok = ws_compile(&pattern->protocol, init->protocol, "", "", true, ignore_case) &&
             ws_compile(&pattern->username, init->username, "", "", false, ignore_case) &&
@@ -1153,7 +1453,32 @@ static ScrStr *ws_take_or_empty(ScrStr *value) {
 /* Canonicalize the match input: a URL string through the WHATWG parser (a
  * relative string needs a base; without one the match fails), or a
  * component record with the base filling what it omits. */
-static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out) {
+/* The init record's slot for one component. */
+static ScrStr **ws_init_field(WsInit *init, int field) {
+  switch (field) {
+  case WF_PROTOCOL: return &init->protocol;
+  case WF_USERNAME: return &init->username;
+  case WF_PASSWORD: return &init->password;
+  case WF_HOSTNAME: return &init->hostname;
+  case WF_PORT: return &init->port;
+  case WF_PATHNAME: return &init->pathname;
+  case WF_SEARCH: return &init->search;
+  case WF_HASH: return &init->hash;
+  default: return NULL;
+  }
+}
+
+/* Canonicalize a match input: a URL string through the WHATWG parser (a
+ * relative string needs a base; without one the match fails), or a
+ * component record through the standard's URLPatternInit processing: the
+ * record's own baseURL fills the components it omits, by the standard's
+ * specificity rules, and the explicit components are canonicalized as a
+ * URL's. `fatal` marks the standard's TypeError for a base URL beside a
+ * record, which reaches the caller; other invalid inputs just fail the
+ * match. */
+static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out,
+                              const char *base_error, bool *fatal) {
+  *fatal = false;
   memset(out, 0, sizeof *out);
   if (input->kind == SCR_DYN_STR) {
     ScrUrl *url = base_text != NULL ? scr_url_new_base(input->v.str, base_text)
@@ -1180,44 +1505,105 @@ static bool ws_input_from_dyn(ScrDyn *input, ScrStr *base_text, WsInput *out) {
     return true;
   }
   if (input->kind == SCR_DYN_OBJ) {
-    if (!ws_read_field(input, "protocol", &out->protocol) ||
-        !ws_read_field(input, "username", &out->username) ||
-        !ws_read_field(input, "password", &out->password) ||
-        !ws_read_field(input, "hostname", &out->hostname) ||
-        !ws_read_field(input, "port", &out->port) ||
-        !ws_read_field(input, "pathname", &out->pathname) ||
-        !ws_read_field(input, "search", &out->search) ||
-        !ws_read_field(input, "hash", &out->hash)) {
+    WsInit init;
+    memset(&init, 0, sizeof init);
+    ScrStr *base_field = NULL;
+    if (!ws_read_field(input, "protocol", &init.protocol) ||
+        !ws_read_field(input, "username", &init.username) ||
+        !ws_read_field(input, "password", &init.password) ||
+        !ws_read_field(input, "hostname", &init.hostname) ||
+        !ws_read_field(input, "port", &init.port) ||
+        !ws_read_field(input, "pathname", &init.pathname) ||
+        !ws_read_field(input, "search", &init.search) ||
+        !ws_read_field(input, "hash", &init.hash) ||
+        !ws_read_field(input, "baseURL", &base_field)) {
+      ws_init_free(&init);
+      scr_str_release(base_field);
+      /* the record's own getter threw: that exception reaches the caller */
+      *fatal = true;
       return false;
     }
-    if (out->protocol != NULL) {
-      ScrStr *stripped = ws_strip_protocol(out->protocol);
-      scr_str_release(out->protocol);
-      out->protocol = stripped;
-    }
-    if (out->search != NULL) {
-      ScrStr *stripped = ws_strip_marker(out->search, '?');
-      scr_str_release(out->search);
-      out->search = stripped;
-    }
-    if (out->hash != NULL) {
-      ScrStr *stripped = ws_strip_marker(out->hash, '#');
-      scr_str_release(out->hash);
-      out->hash = stripped;
-    }
     if (base_text != NULL) {
-      ScrUrl *base = scr_url_new(base_text);
-      if (base == NULL) return false;
-      if (out->protocol == NULL) {
+      /* the standard takes a base URL only with a URL string */
+      ws_init_free(&init);
+      scr_str_release(base_field);
+      ws_type_error(base_error);
+      *fatal = true;
+      return false;
+    }
+    bool has[8] = {
+        init.protocol != NULL, init.username != NULL, init.password != NULL,
+        init.hostname != NULL, init.port != NULL,     init.pathname != NULL,
+        init.search != NULL,   init.hash != NULL,
+    };
+    ScrUrl *base = NULL;
+    if (base_field != NULL) {
+      base = ws_parse_or_null(base_field);
+      scr_str_release(base_field);
+      if (base == NULL) {
+        ws_init_free(&init);
+        ws_type_error("Failed to construct URLPattern");
+        return false;
+      }
+    }
+    if (base != NULL) {
+      /* A component is inherited only when the record omits it and every
+       * component at least as specific as it. */
+      if (!has[WF_PROTOCOL]) {
         ScrStr *protocol = scr_url_protocol(base);
-        out->protocol = ws_strip_protocol(protocol);
+        init.protocol = ws_strip_protocol(protocol);
         scr_str_release(protocol);
       }
-      if (out->hostname == NULL) out->hostname = scr_url_hostname(base);
-      if (out->port == NULL) out->port = scr_url_port(base);
-      if (out->pathname == NULL) out->pathname = scr_url_pathname(base);
-      scr_url_release(base);
+      if (!has[WF_PROTOCOL] && !has[WF_HOSTNAME] && !has[WF_PORT] && !has[WF_USERNAME])
+        init.username = scr_url_username(base);
+      if (!has[WF_PROTOCOL] && !has[WF_HOSTNAME] && !has[WF_PORT] && !has[WF_USERNAME] &&
+          !has[WF_PASSWORD])
+        init.password = scr_url_password(base);
+      if (!has[WF_PROTOCOL] && !has[WF_HOSTNAME]) init.hostname = scr_url_hostname(base);
+      if (!has[WF_PROTOCOL] && !has[WF_HOSTNAME] && !has[WF_PORT]) init.port = scr_url_port(base);
+      if (!has[WF_PROTOCOL] && !has[WF_HOSTNAME] && !has[WF_PORT] && !has[WF_PATHNAME])
+        init.pathname = scr_url_pathname(base);
+      if (!has[WF_PROTOCOL] && !has[WF_HOSTNAME] && !has[WF_PORT] && !has[WF_PATHNAME] &&
+          !has[WF_SEARCH]) {
+        ScrStr *search = scr_url_search(base);
+        init.search = ws_strip_marker(search, '?');
+        scr_str_release(search);
+      }
+      if (!has[WF_PROTOCOL] && !has[WF_HOSTNAME] && !has[WF_PORT] && !has[WF_PATHNAME] &&
+          !has[WF_SEARCH] && !has[WF_HASH]) {
+        ScrStr *hash = scr_url_hash(base);
+        init.hash = ws_strip_marker(hash, '#');
+        scr_str_release(hash);
+      }
     }
+    static const int fields[8] = {WF_PROTOCOL, WF_USERNAME, WF_PASSWORD, WF_HOSTNAME,
+                                  WF_PORT,     WF_PATHNAME, WF_SEARCH,   WF_HASH};
+    for (size_t i = 0; i < 8; i++) {
+      int field = fields[i];
+      if (!has[i]) continue;
+      ScrStr **slot = ws_init_field(&init, field);
+      if (slot == NULL || *slot == NULL) continue;
+      ScrStr *canonical = ws_canonicalize(field, *slot, init.protocol);
+      if (canonical == NULL) {
+        if (base != NULL) scr_url_release(base);
+        ws_init_free(&init);
+        return false;
+      }
+      scr_str_release(*slot);
+      *slot = canonical;
+    }
+    if (has[WF_PATHNAME] && init.pathname != NULL)
+      init.pathname = ws_resolve_pathname(init.pathname, base);
+    if (base != NULL) scr_url_release(base);
+    out->protocol = init.protocol;
+    out->username = init.username;
+    out->password = init.password;
+    out->hostname = init.hostname;
+    out->port = init.port;
+    out->pathname = init.pathname;
+    out->search = init.search;
+    out->hash = init.hash;
+    memset(&init, 0, sizeof init);
     return true;
   }
   return true;
@@ -1277,13 +1663,22 @@ static ScrDyn *ws_component_result(ScrStr *input, ScrDyn *groups) {
 /* exec(test_only=false) / test: the standard's result, or NULL for no
  * match. `input`/`base` are borrowed. */
 static ScrDyn *ws_exec(ScrUrlPattern *pattern, ScrDyn *input, ScrDyn *base, bool test_only,
-                       bool *matched) {
+                       bool *matched, bool *threw) {
+  *threw = false;
   ScrStr *base_text = NULL;
   if (base != NULL && base->kind == SCR_DYN_STR) base_text = base->v.str;
   WsInput in;
-  if (!ws_input_from_dyn(input, base_text, &in)) {
+  bool fatal = false;
+  const char *base_error = test_only ? "Failed to test URLPattern" : "Failed to exec URLPattern";
+  if (!ws_input_from_dyn(input, base_text, &in, base_error, &fatal)) {
     ws_input_free(&in);
     *matched = false;
+    if (fatal) {
+      *threw = true; /* the standard's TypeError reaches the caller */
+      return NULL;
+    }
+    /* an invalid input is a catchable no-match, not a throw */
+    scr_exc_clear();
     return scr_dyn_retain(scr_dyn_undefined());
   }
   ScrStr *protocol = ws_take_or_empty(in.protocol);
@@ -1347,6 +1742,7 @@ static ScrDyn *ws_exec(ScrUrlPattern *pattern, ScrDyn *input, ScrDyn *base, bool
         scr_str_release(search);
         scr_str_release(hash);
         ws_input_free(&in);
+        *threw = true;
         return NULL;
       }
       scr_dyn_arr_push(inputs, copy);
@@ -1425,7 +1821,9 @@ static ScrDyn *ws_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *co
   ScrDyn *input = argc > 0 ? args[0] : scr_dyn_undefined();
   ScrDyn *base = argc > 1 ? args[1] : scr_dyn_undefined();
   bool matched = false;
-  ScrDyn *result = ws_exec(ptr, input, base, is_test, &matched);
+  bool threw = false;
+  ScrDyn *result = ws_exec(ptr, input, base, is_test, &matched, &threw);
+  if (threw) return NULL; /* the standard's TypeError reaches the caller */
   if (is_test) {
     scr_dyn_release(result);
     return scr_dyn_new_bool(matched);

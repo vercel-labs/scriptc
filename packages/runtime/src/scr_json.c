@@ -2687,6 +2687,7 @@ static ScrDyn *scr_dyn_not_iterable(const ScrDyn *src, const ScrStr *msg) {
     break;
   }
   case SCR_DYN_FUNC: scr_jb_puts(&b, "function"); break;
+  case SCR_DYN_SYMBOL: scr_jb_puts(&b, "symbol"); break;
   default: scr_jb_puts(&b, "object"); break;
   }
   scr_jb_puts(&b, " is not iterable (cannot read property Symbol(Symbol.iterator))");
@@ -11799,9 +11800,15 @@ ScrDyn *scr_dyn_iterator_optional(const ScrDyn *source) {
   ScrDyn *iterator = scr_iterator_call(method, source, "value[Symbol.iterator]");
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *checked = scr_dyn_iterator_result(iterator);
-  scr_dyn_release(iterator);
-  return checked;
+  /* V8 names the method's answer, not an iterator result: a primitive
+   * iterator is "Result of the Symbol.iterator method is not an object". */
+  if (!scr_iterator_object(iterator)) {
+    scr_dyn_release(iterator);
+    static const char message[] = "Result of the Symbol.iterator method is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  return iterator;
 }
 
 ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
@@ -11824,9 +11831,15 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
   ScrDyn *iterator = scr_iterator_call(method, source, "value[Symbol.iterator]");
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *checked = scr_dyn_iterator_result(iterator);
-  scr_dyn_release(iterator);
-  return checked;
+  /* V8 names the method's answer, not an iterator result: a primitive
+   * iterator is "Result of the Symbol.iterator method is not an object". */
+  if (!scr_iterator_object(iterator)) {
+    scr_dyn_release(iterator);
+    static const char message[] = "Result of the Symbol.iterator method is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  return iterator;
 }
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {

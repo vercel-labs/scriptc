@@ -47,6 +47,7 @@ import {
   superIntoResultSlot,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
+import { checkedIteratorPack } from "./expressions/array-literals.js";
 import { lowerReadlineInterfaceNew, lowerReadlineUiNew } from "./builtins/readline.js";
 import {
   builtinMemberBindingTarget,
@@ -12281,7 +12282,11 @@ function aggregateErrorConstructor(lowerer: Lowerer, loc: SrcLoc): string {
       type: DYN,
     }));
     const error = varRef("error", type, loc);
-    const list = checkedIterableSpread(lowerer, varRef("errors", DYN, loc), "", loc);
+    /* AggregateError iterates its errors like Array.from and for-of, so a
+     * non-iterable argument reports Node's kind wording ("number 5 is not
+     * iterable (cannot read property Symbol(Symbol.iterator))"), not the
+     * spread syntax text a user spread would throw. */
+    const list = checkedIteratorPack(lowerer, varRef("errors", DYN, loc), "", loc);
     lowerer.liftedFns.push({
       name,
       params,

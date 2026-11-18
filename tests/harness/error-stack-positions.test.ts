@@ -71,6 +71,12 @@ function captureConstructor(): string {
   return new CapturedError().stack ?? "";
 }
 
+function sequenced(): string {
+  let note = "";
+  const stack = (note = "x", middle());
+  return stack;
+}
+
 function sink(value: string): void {
   if (value === "never") throw new Error("no");
 }
@@ -87,6 +93,7 @@ console.log("capture", frames(middle()));
 console.log("method", frames(new Holder().fetch()));
 console.log("throw", frames(caughtThrow()));
 console.log("module", frames(new Error("top").stack ?? ""));
+console.log("sequence", frames(sequenced()));
 console.log("constructor", frames(captureConstructor()));
 console.log("loop", loopCondition(middle));
 `;

@@ -3930,10 +3930,11 @@ export class LlEmitter {
       if (best === null || loc.start > best.start) best = loc;
     };
     everyStmt(s, {
-      // Only this statement's own expressions: a child statement stores its
-      // own position when it runs, and its calls must not stand for this
-      // statement's execution point (a loop condition, for one).
-      stmt: (child) => child === s,
+      // Child statements are walked: a statement nested in an expression
+      // (a sequence expression's own statements) runs as part of this one,
+      // and its result call must still name the caller. A loop body's store
+      // before the loop is superseded by the condition's per-iteration store.
+      stmt: () => true,
       expr: (e) => {
         const call =
           e.kind === "call" ||

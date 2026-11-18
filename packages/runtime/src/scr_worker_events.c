@@ -275,13 +275,29 @@ static void scr_worker_view_release(void *ptr) {
  * listener refs that port and leaves the thread handle's own ref alone, so
  * a Worker that was never unref()ed keeps the loop alive without listeners
  * and one that was unref()ed stays unreferenced when a listener leaves. */
+/* Node's setupPortReferencing for a port: it is referenced while any
+ * 'message' listener exists (Node's port keeps the emitter surface and the
+ * EventTarget surface in one registry) and the first listener starts it.
+ * The emitter's own on/off and the EventTarget attribute/listeners both
+ * end here, so removing one kind while the other remains keeps the port
+ * referenced, as Node's does. */
+static void scr_port_message_refs(ScrWorkerView *view) {
+  double listeners = view->et && scr_et_broadcast_ops->listener_count
+                         ? scr_et_broadcast_ops->listener_count(view->et, "message")
+                         : 0;
+  ScrStr *name = scr_str_new("message", 7);
+  listeners += scr_emitter_listener_count(view->events, name);
+  scr_str_release(name);
+  bool present = listeners > 0;
+  view->started = present || view->started;
+  view->referenced = present;
+}
+
 static void scr_worker_message_listeners(void *ptr, const ScrStr *name, bool present) {
   ScrWorkerView *view = ptr;
   if (name->len != 7 || memcmp(name->data, "message", 7)) return;
-  if (view->port) {
-    view->started = present || view->started;
-    view->referenced = present;
-  } else view->message_port_ref = present;
+  if (!view->port) view->message_port_ref = present;
+  else scr_port_message_refs(view);
 }
 
 /** The internal 'newListener'/'removeListener' listeners Node registers at
@@ -903,9 +919,9 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     ScrDyn *out = NULL;
     ScrEventTargetCore *core = scr_port_core(view);
     if (core && scr_et_broadcast_ops->method(core, self, method, args, argc, &out)) {
-      if (method_is(method, "addEventListener") && argc > 0 && args[0]->kind == SCR_DYN_STR &&
-          args[0]->v.str->len == 7 && !memcmp(args[0]->v.str->data, "message", 7))
-        view->started = true;
+      if (argc > 0 && args[0]->kind == SCR_DYN_STR && args[0]->v.str->len == 7 &&
+          !memcmp(args[0]->v.str->data, "message", 7))
+        scr_port_message_refs(view);
       return out;
     }
   }
@@ -1063,7 +1079,7 @@ static bool scr_worker_view_set(void *ptr, const char *key, size_t length, const
     ScrEventTargetCore *core = scr_port_core(view);
     if (!core) return false;
     scr_et_broadcast_ops->handler_set(core, type, value);
-    if (!strcmp(type, "message")) view->started = true;
+    if (!strcmp(type, "message")) scr_port_message_refs(view);
     return true;
   }
   return false;

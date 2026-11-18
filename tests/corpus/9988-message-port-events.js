@@ -62,6 +62,29 @@ await tick();
 global.port1.close();
 global.port2.close();
 
+const { port1: g1, port2: g2 } = new ModuleChannel();
+g1.unref();
+g2.unref();
+const refs = [];
+const track = (label) => refs.push(`${label}:${g2.hasRef()}`);
+track("fresh");
+const listener = () => {};
+g2.onmessage = listener;
+track("onmessage");
+g2.onmessage = null;
+track("cleared");
+g2.addEventListener("message", listener);
+track("added");
+g2.removeEventListener("message", listener);
+track("removed");
+g2.on("message", listener);
+track("on");
+g2.removeListener("message", listener);
+track("off");
+console.log("refs", refs.join(" "));
+g1.close();
+g2.close();
+
 console.log(
   "types",
   typeof ModuleChannel,

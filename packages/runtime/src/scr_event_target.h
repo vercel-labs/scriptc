@@ -123,6 +123,9 @@ typedef struct {
   /* a plain (untrusted) Event of the given type, as Node's MessagePort
    * sends for 'close' */
   void (*dispatch_type)(ScrEventTargetCore *core, ScrDyn *self, const char *type);
+  /* the type's listener count on the core (the on<type> attribute counts
+   * as one, as Node's port bookkeeping expects) */
+  double (*listener_count)(ScrEventTargetCore *core, const char *type);
   bool (*method)(ScrEventTargetCore *core, ScrDyn *self, const char *method, ScrDyn *const *args,
                  size_t argc, ScrDyn **out);
   ScrDyn *(*method_value)(const char *name, size_t length);

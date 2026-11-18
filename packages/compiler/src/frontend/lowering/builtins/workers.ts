@@ -41,7 +41,22 @@ export function lowerWorkerMetadata(lowerer: Lowerer, member: string, loc: SrcLo
     case "workerData":
       return { kind: "libCall", fn: "worker.data", args: [], type: DYN, loc };
     case "parentPort":
-      return { kind: "libCall", fn: "worker.parentPort", args: [], type: DYN, loc };
+      /* The port's EventTarget surface (onmessage, addEventListener)
+       * dispatches through the event target unit's table, so reading the
+       * port installs it before the program can register a listener. */
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "event.broadcastInstall", args: [], type: VOID, loc },
+            loc,
+          },
+        ],
+        result: { kind: "libCall", fn: "worker.parentPort", args: [], type: DYN, loc },
+        type: DYN,
+        loc,
+      };
     case "isInternalThread":
       return { kind: "boolLit", value: false, type: BOOL, loc };
     case "resourceLimits":
@@ -440,6 +455,11 @@ export function lowerMessageChannelNew(
  * arguments evaluate. */
 export function lowerMessagePortNew(lowerer: Lowerer, expression: ts.NewExpression): IrExpr | null {
   if (!isWorkerThreadsClass(lowerer, expression, "MessagePort")) return null;
+  if (lowerer.targetPlatform === "wasi") {
+    lowerer.noLowering("MessagePort in this target", expression, "use a native static executable");
+  }
+  /* The refusal lives in the worker events unit, which the call links. */
+  lowerer.usesWorkers = true;
   const loc = locOf(expression);
   const elems: IrExpr[] = [];
   for (const arg of expression.arguments?.nodes ?? []) {

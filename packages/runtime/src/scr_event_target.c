@@ -1922,9 +1922,16 @@ static void scr_et_broadcast_dispatch_type(ScrEventTargetCore *core, ScrDyn *sel
   scr_dyn_release(event);
 }
 
+static double scr_et_broadcast_listener_count(ScrEventTargetCore *core, const char *type) {
+  ScrStr *name = scr_str_new(type, strlen(type));
+  ScrEtRoot *root = scr_et_root_find(core, name);
+  scr_str_release(name);
+  return root ? (double)root->size : 0;
+}
+
 static const ScrEtBroadcastOps scr_et_broadcast_table = {
     &scr_et_broadcast_core_new,  &scr_et_broadcast_core_free, &scr_et_broadcast_dispatch,
-    &scr_et_broadcast_dispatch_type,
+    &scr_et_broadcast_dispatch_type, &scr_et_broadcast_listener_count,
     &scr_et_target_method,       &scr_et_broadcast_method_value,
     &scr_et_handler_get,         &scr_et_handler_set,
 };

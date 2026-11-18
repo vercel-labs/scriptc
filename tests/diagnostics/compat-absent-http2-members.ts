@@ -5,8 +5,6 @@ import * as http2 from "node:http2";
 const server = http2.createServer();
 server.setTimeout(1000);
 server.on("stream", (stream) => {
-  stream.sendTrailers({ "x-trailer": "1" });
-  stream.additionalHeaders({ ":status": 103 });
   stream.respondWithFile("/tmp/file");
   stream.respondWithFD(0);
   stream.pushStream({ ":path": "/pushed" }, () => {});
@@ -21,5 +19,4 @@ client.goaway(0);
 client.on("timeout", () => {});
 const request = client.request({ ":path": "/" });
 request.on("push", () => {});
-request.on("headers", () => {});
 request.on("ready", () => {});

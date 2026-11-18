@@ -547,6 +547,37 @@ export function lowerFileHandleMethodCall(
   if (name === "createReadStream" || name === "createWriteStream" || name === "readLines") {
     return lowerFileHandleStreamCall(lowerer, call, name, receiver(), loc);
   }
+  if (name === "readableWebStream") {
+    // The handle's content as a checked-dynamic web stream (the stdlib
+    // ReadableStream is opaque to the compiler): Node's type: "bytes" stream
+    // over the handle's own reads. The options record crosses as one dyn
+    // value for the runtime's Node-order checks.
+    const args = call.arguments.nodes;
+    if (args.length > 1 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`FileHandle.readableWebStream with ${args.length} arguments`, call);
+    }
+    let options: IrExpr = dynUndefinedExpr(loc);
+    if (args[0] !== undefined) {
+      const raw = lowerer.lowerExpr(args[0]);
+      if (raw.type.kind === "dyn") options = raw;
+      else if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
+        options = { kind: "dynFrom", value: raw, type: DYN, loc };
+      } else {
+        lowerer.noLowering(
+          `FileHandle.readableWebStream with a '${lowerer.fmt(raw.type)}' options value`,
+          args[0],
+          "the options are a plain object",
+        );
+      }
+    }
+    return {
+      kind: "libCall",
+      fn: "fileHandle.readableWebStream",
+      args: [receiver(), options],
+      type: DYN,
+      loc,
+    };
+  }
   const num = (
     node: ts.Expression | undefined,
     dflt: number,

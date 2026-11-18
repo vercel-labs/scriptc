@@ -104,11 +104,18 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // scr_als_with_scope reads the effective store, enters the new one and
+  // boxes the RunScope; no program code runs and nothing raises.
+  "als.withScope",
+  // The AsyncResource reads answer the registry's ids, and emitDestroy
+  // marks the entry; none runs program code or raises.
+  "ar.asyncId",
+  "ar.emitDestroy",
+  "ar.triggerAsyncId",
   // The resource-timing field accessors read a view entry's own numbers and
   // strings; no program code runs.
   "perf.entryResourceNum",
   "perf.entryResourceStr",
-
   // publish runs every subscriber and catches its throw: like Node's
   // process.nextTick(triggerUncaughtException), the exception is delivered
   // on a later tick instead of leaving the call, so publish itself raises
@@ -162,6 +169,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http.clientOnConnect",
   "http.clientOnInformation",
   "http2.sessionOnPing",
+  // A header-record listener registration: no listener runs inside the
+  // call, and a registered callback cannot raise.
+  "http2.streamOnTrailers",
+  "http2.streamOnHeaders",
+  "http2.streamOnWantTrailers",
+  "http2.streamOnContinue",
   // Reads of the session's, the stream's or the request's state bits.
   "http2.sessionConnecting",
   "http2.streamHeadersSent",
@@ -217,6 +230,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // cursor methods use it to reach the same object process.stdio answers.
   "process.stdioOf",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
+  // readable.iterator builds the async iterator object; its members run later.
+  "readable.iterator",
   "readable.encodingName",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
   // path that is not there is the answer false, and the probe reports no

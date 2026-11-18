@@ -553,6 +553,21 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "fileHandle.readableWebStream") {
+    // A checked-dynamic web stream over the handle's reads. May throw (a
+    // closed or locked handle is Node's ERR_INVALID_STATE) — the standard
+    // pending check.
+    const handle = host.emitExpr(e.args[0]!);
+    const options = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_file_handle_readable_web_stream(ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_file_handle_readable_web_stream(ptr ${handle.name}, ptr ${options.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "fsp.mkdtempDisposable") {
     // The temp directory plus its hooks. A failed mkdtemp settles the
     // promise as a rejection, so there is no pending check here; the

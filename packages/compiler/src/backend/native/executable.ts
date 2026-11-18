@@ -381,6 +381,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
+  // filehandle.readableWebStream's byte stream over the handle's reads,
+  // its own gate (it links the FileHandle and web stream units with it).
+  unit((u) => u.opts.fsWebStream === true, "scr_fs_web_stream.c"),
   // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
   // dns/promises' Resolver need (scr_dns_resolve.c's own class row).
   unit((u) => u.opts.webStreams === true || u.opts.dnsResolve === true, "scr_dyn_handle_class.c"),
@@ -443,6 +446,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),
+  // readable.iterator builds the async iterator over the readable's chunks.
+  unit((u) => u.opts.stream && u.opts.dynAsync && u.opts.symbol === true, "scr_stream_iterator.c"),
   unit((u) => u.opts.stream && u.opts.dynAsync, "scr_stream_ops.c"),
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.

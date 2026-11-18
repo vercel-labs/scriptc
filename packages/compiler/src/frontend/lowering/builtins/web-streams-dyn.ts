@@ -97,6 +97,8 @@ const TYPED_CLASSES: ReadonlySet<string> = new Set([
   "TransformStreamDefaultController",
   "TextEncoderStream",
   "TextDecoderStream",
+  "CompressionStream",
+  "DecompressionStream",
 ]);
 const WEB_VIEW_CALLS: ReadonlySet<string> = new Set(READABLE_STREAM_WEB_VIEW_CALLS);
 
@@ -168,6 +170,8 @@ export function programUsesTypedWebStreams(lowerer: Lowerer): boolean {
           name === "ByteLengthQueuingStrategy" ||
           name === "TextEncoderStream" ||
           name === "TextDecoderStream" ||
+          name === "CompressionStream" ||
+          name === "DecompressionStream" ||
           name === "ReadableStreamDefaultReader" ||
           name === "ReadableStreamBYOBReader" ||
           name === "ReadableByteStreamController" ||

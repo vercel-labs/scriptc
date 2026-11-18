@@ -1700,6 +1700,25 @@ declare var TextDecoderStream: {
   new (label?: string, options?: { fatal?: boolean; ignoreBOM?: boolean }): TextDecoderStream;
   readonly prototype: TextDecoderStream;
 };
+/* Node's CompressionStream and DecompressionStream: a byte transform over
+ * the vendored zlib. The writable takes the chunks zlib accepts (bytes or a
+ * string); the readable answers the compressed/decompressed bytes. */
+interface CompressionStream {
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array | string>;
+}
+declare var CompressionStream: {
+  new (format: "gzip" | "deflate" | "deflate-raw"): CompressionStream;
+  readonly prototype: CompressionStream;
+};
+interface DecompressionStream {
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array | string>;
+}
+declare var DecompressionStream: {
+  new (format: "gzip" | "deflate" | "deflate-raw"): DecompressionStream;
+  readonly prototype: DecompressionStream;
+};
 
 /* fetch, typed as the native JSON + readable-stream slice: one URL, an
  * optional init with the members CLI requests carry, and a Response

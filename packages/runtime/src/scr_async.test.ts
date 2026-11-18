@@ -76,6 +76,12 @@ test("AsyncResource bindings own their payload and release it", async () => {
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
+test("a promiseResolve hook may drop the settling promise's owner", async () => {
+  const result = await execFileAsync(bin, ["settlehook"]);
+  expect(result.stdout).toBe("a promiseResolve hook may drop the settling promise's owner\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("a store and a resource that hold each other are collected", async () => {
   const result = await execFileAsync(bin, ["cycle"]);
   expect(result.stdout).toBe("a store and a resource that hold each other are collected\n");

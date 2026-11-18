@@ -440,6 +440,36 @@ static void async_resource_teardown_releases_cyclic_stores(void) {
   printf("teardown releases cyclic stores without walking a disposed snapshot\n");
 }
 
+/* A promiseResolve hook runs inside the settlement and may drop the last
+ * reference the program held to the settling promise; the settlement must
+ * finish on a promise it still holds. */
+static ScrPromise *settle_hook_promise;
+static ScrDyn *settle_hook_release(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  if (settle_hook_promise != NULL) {
+    scr_promise_release(settle_hook_promise); /* the program's only reference */
+    settle_hook_promise = NULL;
+  }
+  return scr_dyn_undefined();
+}
+
+static void promise_resolve_hook_can_drop_the_settling_promise(void) {
+  scr_async_hooks_install();
+  ScrClosure *closure = scr_closure_new(NULL, 0);
+  ScrDyn *release = scr_dyn_new_func(closure, settle_hook_release, 1, "(id)", "release");
+  double handle = scr_ah_parts(NULL, NULL, NULL, NULL, release); /* promiseResolve slot */
+  assert(handle >= 1);
+  scr_ah_enable(handle);
+  scr_dyn_release(release);
+  ScrPromise *p = scr_promise_new();
+  settle_hook_promise = p; /* the program keeps exactly this one reference */
+  scr_promise_fulfill_void(p); /* the hook releases it mid-settlement */
+  assert(settle_hook_promise == NULL);
+  printf("a promiseResolve hook may drop the settling promise's owner\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "promises") == 0) {
@@ -460,6 +490,10 @@ int main(int argc, char **argv) {
   }
   if (argc > 1 && strcmp(argv[1], "teardown") == 0) {
     async_resource_teardown_releases_cyclic_stores();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "settlehook") == 0) {
+    promise_resolve_hook_can_drop_the_settling_promise();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "bindings") == 0) {

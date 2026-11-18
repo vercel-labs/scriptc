@@ -1004,6 +1004,23 @@ static void scr_async_fire_end(ScrAsyncIds *ids, ScrAsyncExecState prev, bool de
   free(ids);
 }
 
+/* The after hook alone: the timer loop decides destruction after it runs, so
+ * an after hook that refreshes the still-firing timer keeps the ids it
+ * re-arms with. */
+static void scr_async_fire_after(ScrAsyncIds *ids, ScrAsyncExecState prev) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->after != NULL) ops->after(ids->id);
+  scr_async_exec_leave(prev);
+}
+
+static void scr_async_fire_destroy(ScrAsyncIds *ids) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->destroy != NULL) ops->destroy(ids->id);
+  free(ids);
+}
+
 static void scr_async_fire_end_keep(ScrAsyncIds *ids, ScrAsyncExecState prev) {
   if (ids == NULL) return;
   const ScrAsyncHookOps *ops = scr_async_hook_ops;
@@ -2762,6 +2779,11 @@ static void scr_promise_settle_wake_cbs(ScrPromise *p) {
 /* Settle helpers wake waiters into the microtask queue and dispatch the
  * callback waiters. */
 static void scr_promise_settle_wake(ScrPromise *p) {
+  /* A promiseResolve hook runs inside the settlement and can drop the last
+   * reference the program held to this promise (a reader's closed promise,
+   * for one); hold it for the whole wake so the settlement below never runs
+   * on a freed promise. */
+  scr_promise_retain(p);
   if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_settled(p);
   if (p->ncbs != 0) {
     scr_promise_settle_wake_cbs(p);
@@ -2778,6 +2800,7 @@ static void scr_promise_settle_wake(ScrPromise *p) {
     p->nwaiters = 0;
   }
   if (p->state == SCR_PROM_REJECTED) scr_track_rejection(p);
+  scr_promise_release(p);
 }
 
 /* ── Promise.race ─────────────────────────────────────────────────────
@@ -7481,13 +7504,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       double started = t.id != 0 && t.repeat_ms > 0 ? scr_now_ms() : 0;
       ScrAsyncExecState async_prev = scr_async_fire_begin(t.async_ids);
       ((void (*)(ScrClosure *))t.cb->fn)(t.cb);
-      if ((t.id != 0 && t.repeat_ms > 0 && !scr_firing_cleared) ||
-          (t.id != 0 && scr_firing_refresh && !scr_firing_cleared)) {
-        /* The entry re-arms and keeps its resource. */
-        scr_async_fire_end_keep(t.async_ids, async_prev);
-      } else {
-        scr_async_fire_end(t.async_ids, async_prev, true);
-      }
+      /* The after hook runs before the destruction decision: it can refresh
+       * the still-firing timer, and the entry then keeps the ids it re-arms
+       * with instead of having them freed underneath it. */
+      scr_async_fire_after(t.async_ids, async_prev);
+      bool keep_ids =
+          t.id != 0 && !scr_firing_cleared && (t.repeat_ms > 0 || scr_firing_refresh);
       if (t.id != 0 && t.repeat_ms > 0 && !scr_firing_cleared) {
         /* Re-arm relative to the time the callback started, as Node's
          * listOnTimeout does (getLibuvNow() before _onTimeout): a slow
@@ -7507,6 +7529,13 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         scr_timer_push(again);
       } else {
         scr_closure_release(t.cb);
+      }
+      if (!keep_ids) {
+        /* Nothing re-armed: the resource is done. Clear the firing id before
+         * the destroy hook so a refresh there cannot target a timer that no
+         * longer exists (its ids are freed next). */
+        scr_firing_id = 0;
+        scr_async_fire_destroy(t.async_ids);
       }
       scr_firing_id = 0;
       if (scr_exc_pending()) return false; /* uncaught throw in a callback: main handles it */

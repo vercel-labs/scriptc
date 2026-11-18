@@ -19,6 +19,10 @@ const show = (label, fn) => {
 
 show('createHook()', () => ah.createHook());
 show('createHook({ init: 5 })', () => ah.createHook({ init: 5 }));
+// An explicit null is present, not absent: Node raises ERR_ASYNC_CALLBACK for
+// it, unlike the undefined a missing member reads.
+show('createHook({ init: null })', () => ah.createHook({ init: null }));
+show('createHook({ after: null })', () => ah.createHook({ after: null }));
 show('createHook({ promiseResolve: "x" })', () => ah.createHook({ promiseResolve: 'x' }));
 show('createHook(5)', () => ah.createHook(5));
 

@@ -3539,8 +3539,9 @@ double scr_ah_create(ScrDyn *options) {
 }
 
 /* The five callbacks as Node's createHook takes them: bounded (borrowed)
- * values, each either absent (undefined/null) or a function, validated with
- * Node's ERR_ASYNC_CALLBACK in slot order. Answers the 1-based handle. */
+ * values, each either absent (undefined) or a function; an explicit null or
+ * any other non-function raises Node's ERR_ASYNC_CALLBACK in slot order.
+ * Answers the 1-based handle. */
 double scr_ah_parts(ScrDyn *init, ScrDyn *before, ScrDyn *after, ScrDyn *destroy,
                     ScrDyn *promise_resolve) {
   ScrDyn **given[5] = {&init, &before, &after, &destroy, &promise_resolve};
@@ -3548,7 +3549,7 @@ double scr_ah_parts(ScrDyn *init, ScrDyn *before, ScrDyn *after, ScrDyn *destroy
   ScrDyn **dest[5] = {&hook.init, &hook.before, &hook.after, &hook.destroy, &hook.promise_resolve};
   for (size_t i = 0; i < 5; i++) {
     ScrDyn *value = *given[i];
-    if (value == NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) continue;
+    if (value == NULL || value->kind == SCR_DYN_UNDEF) continue;
     if (value->kind != SCR_DYN_FUNC) {
       static const char prefix[] = "hook.";
       static const char suffix[] = " must be a function";

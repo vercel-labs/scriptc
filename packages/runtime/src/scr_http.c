@@ -2154,7 +2154,12 @@ void scr_http_res_write_information_dyn(ScrHttpRes *r, const ScrDyn *status /*bo
       snprintf(line, sizeof line, "HTTP/1.1 %d %s\r\n", (int)code, scr_http_reason((int)code));
   scr_http_buf_append(&b, line, (size_t)line_len);
   ScrDyn *headers_plain = NULL;
-  if (headers != NULL && headers->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(headers)) {
+  /* A headers value that crossed in from a typed module arrives as a typed
+   * reference (a Record<string, string> imported by a JavaScript file, for
+   * one): materialize it into the plain dyn array or object the shape
+   * ladder below reads. Materializing only arrays left a record reference
+   * to fail the Object check below with a TypeError Node never throws. */
+  if (headers != NULL && headers->kind == SCR_DYN_TYPED_REF) {
     headers_plain = scr_dyn_typed_ref_materialize(headers);
     if (headers_plain == NULL) {
       free(b.data);
@@ -5814,9 +5819,13 @@ bool scr_http_req_complete(ScrHttpReq *r) {
 }
 
 /* The stream died with the response side open: 'aborted' fires NOW (the
- * teardown macrotask, Node's position), then the close rides the sweep. */
+ * teardown macrotask, Node's position), then the close rides the sweep.
+ * `aborted` may already be set: destroy() marks an incomplete message
+ * aborted so its signal and flag are right from that moment, and this is
+ * the event that reports the abort the destroy started. The listener list
+ * drops after the first fire, so a repeat call emits nothing. */
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
-  if (r->close_emitted || r->aborted) return;
+  if (r->close_emitted) return;
   r->aborted = true;
   scr_http_req_abort_signal(r);
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
@@ -6070,7 +6079,8 @@ struct ScrHttpClientReq {
                                * unset): the response parser's header-line budget,
                                * captured when the socket is assigned */
   bool reused;                /* req.reusedSocket: the socket came from an agent's free list */
-  bool sock_pooled;           /* the socket went back to the agent after the response */
+  bool sock_pooled;
+  bool handed_over; /* a CONNECT or upgrade response took the socket */           /* the socket went back to the agent after the response */
   ScrStr *pool_key;           /* https: TLS options a pooled socket must match (+1), or NULL */
   ScrClosure *abort_listener; /* its closure (borrowed); caps[0] points back here */
   struct ScrHttpAgentEnt *agent_ent; /* its entry in the agent's list while listed */
@@ -7189,7 +7199,9 @@ void scr_http_client_abort(ScrHttpClientReq *c) {
 bool scr_http_client_aborted(ScrHttpClientReq *c) { return c->aborted; }
 
 bool scr_http_client_destroyed(ScrHttpClientReq *c) {
-  return c->destroyed || c->close_emitted;
+  /* Node marks the request destroyed as the socket is handed back to the
+   * agent (responseKeepAlive) — the pooled state — and when it closes. */
+  return c->destroyed || c->close_emitted || c->sock_pooled;
 }
 
 void scr_http_client_on_response(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpRespFn fn, bool once) {
@@ -7455,6 +7467,7 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
    * same path as 'connect'. */
   if (connect || (status == 101 && scr_http_client_response_upgrades(res))) {
     ScrNetLs *handover = connect ? &c->connect_ls : &c->upgrade_ls;
+    c->handed_over = true;
     conn->client_resp_started = true;
     c->response_started = true;
     c->response_done = true; /* the exchange settled: no timeout/hang-up paths */
@@ -10135,7 +10148,9 @@ static ScrDyn *scr_http_dynh_client_get(void *h, const char *key, size_t key_len
     return scr_dyn_new_handle(c->sock, SCR_DYNH_NET_SOCKET);
   }
   if (strcmp(key, "destroyed") == 0) return scr_dyn_new_bool(scr_http_client_destroyed(c));
-  if (strcmp(key, "writableEnded") == 0) return scr_dyn_new_bool(c->ended);
+  /* writableEnded, and its deprecated alias `finished` */
+  if (strcmp(key, "writableEnded") == 0 || strcmp(key, "finished") == 0)
+    return scr_dyn_new_bool(c->ended);
   if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_http_client_writable_length(c));
   if (strcmp(key, "writableNeedDrain") == 0)
     return scr_dyn_new_bool(scr_http_client_writable_need_drain(c));

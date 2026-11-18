@@ -18,6 +18,7 @@ import {
   F64,
   FILEHANDLE_T,
   FSWATCHER_T,
+  MKDTEMPRESULT_T,
   WATCHEVENTS_T,
   STATWATCHER_T,
   HTTP2SESSION_T,
@@ -83,6 +84,8 @@ function buildLibFnSignatures() {
     "event.targetNew": { argTypes: [], result: DYN },
     "event.new": { argTypes: [DYN], result: DYN },
     "event.customNew": { argTypes: [DYN], result: DYN },
+    "event.messageNew": { argTypes: [DYN], result: DYN },
+    "event.closeNew": { argTypes: [DYN], result: DYN },
     "event.is": { argTypes: [DYN, F64], result: BOOL },
     /** Compiled EventTarget and Event subclasses: the receiver is the
      * instance (an object rooted at %EventTarget / %Event). targetInit and
@@ -729,6 +732,16 @@ function buildLibFnSignatures() {
     "perf.entryStart": { argTypes: [F64], result: F64 },
     "perf.entryDuration": { argTypes: [F64], result: F64 },
     "perf.entryDetail": { argTypes: [F64], result: DYN },
+    /** performance.markResourceTiming: the call's dyn argument vector in,
+     * the resource entry (view index 0) out (MAY THROW). clearResourceTimings
+     * and setResourceTimingBufferSize take their argument vector too.
+     * entryResourceNum/Str read a view entry's resource fields by the
+     * selector order builtins/performance.ts defines. */
+    "perf.resourceMark": { argTypes: [DYN], result: F64 },
+    "perf.resourceClear": { argTypes: [DYN], result: VOID },
+    "perf.resourceBufferSize": { argTypes: [DYN], result: VOID },
+    "perf.entryResourceNum": { argTypes: [F64, F64], result: F64 },
+    "perf.entryResourceStr": { argTypes: [F64, F64], result: STRING },
     "perf.entryKeep": { argTypes: [DYN], result: VOID },
     "perf.entryRef": { argTypes: [F64], result: DYN },
     /** new PerformanceMark(name, options?): Node's constructor (MAY
@@ -765,12 +778,49 @@ function buildLibFnSignatures() {
     "perf.loopExit": { argTypes: [], result: F64 },
     "perf.loopCount": { argTypes: [], result: F64 },
     "perf.idleTime": { argTypes: [], result: F64 },
-    "perf.eldNew": { argTypes: [F64], result: F64 },
-    "perf.eldEnable": { argTypes: [F64], result: BOOL },
-    "perf.eldDisable": { argTypes: [F64], result: BOOL },
-    "perf.eldReset": { argTypes: [F64], result: VOID },
-    "perf.eldPercentile": { argTypes: [F64, F64], result: F64 },
-    "perf.eldStat": { argTypes: [F64, F64], result: F64 },
+    "perf.eldNew": { argTypes: [F64], result: DYN },
+    "perf.eldEnable": { argTypes: [DYN], result: BOOL },
+    "perf.eldDisable": { argTypes: [DYN], result: BOOL },
+    "perf.eldReset": { argTypes: [DYN], result: VOID },
+    "perf.eldPercentile": { argTypes: [DYN, F64], result: F64 },
+    "perf.eldStat": { argTypes: [DYN, F64], result: F64 },
+    /** perf_hooks createHistogram (scr_perf_loop.c): a negative handle into
+     * a refcounted checked-dynamic runtime object (its release frees the
+     * buckets); the base Histogram interface accepts either this object or
+     * an event-loop histogram, and the runtime dispatches on the handle.
+     * histoNew(options dyn, the dyn undefined
+     * when absent) validates the options as Node does (MAY THROW);
+     * histoRecord/RecordCorrected validate an integer >= 1 (MAY THROW) and
+     * histoRecordBig takes the bigint form (MAY THROW for an out-of-range
+     * bigint); histoStat(which) reads 0 count, 1 min, 2 max, 3 mean,
+     * 4 stddev, 5 exceeds and histoStatBig answers the integer readings as a
+     * bigint. percentile expects Node's validated (0, 100]. The percentiles
+     * getter's Map is built from the view histoPercentilesCount rebuilds. */
+    "perf.histoNew": { argTypes: [DYN], result: DYN },
+    "perf.histoRecord": { argTypes: [DYN, F64], result: VOID },
+    "perf.histoRecordBig": { argTypes: [DYN, BIGINT_T], result: VOID },
+    "perf.histoRecordCorrected": { argTypes: [DYN, F64, F64], result: VOID },
+    "perf.histoRecordDelta": { argTypes: [DYN], result: VOID },
+    "perf.histoReset": { argTypes: [DYN], result: VOID },
+    "perf.histoAdd": { argTypes: [DYN, DYN], result: VOID },
+    "perf.histoSubtract": { argTypes: [DYN, DYN], result: VOID },
+    "perf.histoStat": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoStatBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoPercentile": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentileBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoCountAt": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoCdf": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoCcdf": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentilesCount": { argTypes: [DYN], result: F64 },
+    "perf.histoPercentilesKey": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentilesValue": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoDispose": { argTypes: [DYN], result: VOID },
+    "perf.histoKsTest": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoCohensD": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoCliffsD": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyU": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyZ": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyP": { argTypes: [DYN, DYN], result: F64 },
     /** process.memoryUsage(): memoryUsageTake samples the resident set and
      * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
      * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2
@@ -1675,6 +1725,9 @@ function buildLibFnSignatures() {
     /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
      * WritableStream and the option flags; a Writable. */
     "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
+     * option flags; a web WritableStream. */
+    "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
@@ -2094,6 +2147,7 @@ function buildLibFnSignatures() {
     /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
      * (scr_worker_events.c; the latter may throw). */
     "worker.channel": { argTypes: [], result: DYN },
+    "worker.portConstruct": { argTypes: [DYN], result: DYN },
     "worker.receiveMessageOnPort": { argTypes: [DYN], result: DYN },
     /** setEnvironmentData(key, value) and getEnvironmentData(key)
      * (scr_worker_events.c; arguments borrowed). */
@@ -4749,6 +4803,30 @@ function buildLibFnSignatures() {
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    /** fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync: the temp
+     * directory plus its removal and disposal hooks (scr_lib.c). The
+     * options record crosses as one dyn value for the runtime's Node-order
+     * encoding check. */
+    "fsp.mkdtempDisposable": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: MKDTEMPRESULT_T },
+    },
+    "fs.mkdtempDisposableSync": { argTypes: [STRING], result: MKDTEMPRESULT_T },
+    /** The handle's content as Node's type: "bytes" web stream (a checked-
+     * dynamic stream: the stdlib ReadableStream interface has no static
+     * representation). */
+    "fileHandle.readableWebStream": { argTypes: [FILEHANDLE_T, DYN], result: DYN },
+    "mkdtempResult.path": { argTypes: [MKDTEMPRESULT_T], result: STRING },
+    "mkdtempResult.remove": {
+      argTypes: [MKDTEMPRESULT_T],
+      result: { kind: "promise", inner: VOID },
+    },
+    "mkdtempResult.removeSync": { argTypes: [MKDTEMPRESULT_T], result: VOID },
+    "mkdtempResult.asyncDispose": {
+      argTypes: [MKDTEMPRESULT_T],
+      result: { kind: "promise", inner: VOID },
+    },
+    "mkdtempResult.dispose": { argTypes: [MKDTEMPRESULT_T], result: VOID },
     /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
     "fsp.readFileEncoded": {
       argTypes: [STRING, STRING],
@@ -6122,6 +6200,9 @@ function buildLibFnSignatures() {
      * readable.fromIter is Readable.from over a class iterator, already
      * opened: [checked-dynamic { next } object, flags, highWaterMark];
      * readable.fromAsyncIter is the async class iterator's twin. */
+    /** readable.iterator (scr_stream_iterator.c): the readable and the
+     * destroyOnReturn flag; the async iterator object. */
+    "readable.iterator": { argTypes: [null, BOOL], result: DYN },
     "readable.nextChunk": { argTypes: [null], result: VOID },
     "readable.nextChunkDyn": { argTypes: [null], result: VOID },
     "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },
@@ -6945,6 +7026,30 @@ function buildLibFnSignatures() {
     /** AsyncLocalStorage.snapshot(): a dyn function (cb, ...args) that runs
      * cb in the context active at the snapshot. */
     "als.snapshot": { argTypes: [], result: DYN },
+    /** AsyncLocalStorage.withScope(store): enters the store now and answers
+     * the native RunScope handle whose dispose()/[Symbol.dispose] installs
+     * the value getStore() answered before it again. */
+    "als.withScope": { argTypes: [F64, DYN], result: DYN },
+    /** AsyncResource (node:async_hooks — scr_async_dyn.c): a resource is a
+     * checked-dynamic handle whose payload (its type, its captured store
+     * context and its ids) lives exactly as long as the value does. ar.new
+     * [type, options] applies Node's checks (MAY THROW: ERR_INVALID_ARG_TYPE
+     * for a non-string type or a non-object options read,
+     * ERR_INVALID_ASYNC_ID for a bad triggerAsyncId); ar.runInScope
+     * [handle, fn, thisArg, args-array] runs the function in the resource's
+     * store context and ids (MAY THROW: the call itself); ar.bind
+     * [handle, fn, thisArg] answers Node's bound function (MAY THROW:
+     * ERR_INVALID_ARG_TYPE for a non-function); ar.bindStatic
+     * [fn, type, thisArg] applies the same checks plus the type defaulting
+     * (MAY THROW); ar.emitDestroy answers the handle; asyncId/triggerAsyncId
+     * are the ids the resource was given. */
+    "ar.new": { argTypes: [DYN, DYN], result: DYN },
+    "ar.runInScope": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "ar.bind": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "ar.bindStatic": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "ar.emitDestroy": { argTypes: [DYN], result: DYN },
+    "ar.asyncId": { argTypes: [DYN], result: F64 },
+    "ar.triggerAsyncId": { argTypes: [DYN], result: F64 },
     /** Channel.bindStore/unbindStore/runStores (scr_dc.c): the
      * AsyncLocalStorage integration — set-semantics bindings per store,
      * runStores entering every bound store with transform(data) around the

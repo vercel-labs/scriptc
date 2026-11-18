@@ -363,6 +363,11 @@ declare module "stream" {
      * the writer's write() settles, end() closes the writer and destroy()
      * aborts it. The options have no lowering yet. */
     static fromWeb(writableStream: WritableStream<Uint8Array>, options?: {}): Writable;
+    /* A web WritableStream over this writable: a writer's write() completes
+     * when the writable accepts the chunk (at its 'drain' when the write was
+     * backpressured) and rejects with the stream's error when that write
+     * fails; close() ends the writable and abort() destroys it. */
+    static toWeb(writable: Writable): WritableStream<Uint8Array>;
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
     _writev(

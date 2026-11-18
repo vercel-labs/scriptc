@@ -4,7 +4,10 @@ import {
   lowerIteratorNew,
 } from "./iterator-prototype.js";
 import { lowerWrapperNew } from "./primitive-wrappers.js";
-import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
+import {
+  lowerAsyncLocalStorageOptions,
+  lowerAsyncResourceConstruction,
+} from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
   DATE_TIME_FIELD,
@@ -185,6 +188,7 @@ import { lowerTextCodecNew } from "./builtins/text-codecs.js";
 import {
   lowerBroadcastChannelNew,
   lowerMessageChannelNew,
+  lowerMessagePortNew,
   lowerWorkerNew,
 } from "./builtins/workers.js";
 import {
@@ -12877,7 +12881,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
   if (readlineUi) return readlineUi;
-  const channel = lowerMessageChannelNew(lowerer, expr) ?? lowerBroadcastChannelNew(lowerer, expr);
+  const channel =
+    lowerMessageChannelNew(lowerer, expr) ??
+    lowerMessagePortNew(lowerer, expr) ??
+    lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
@@ -14041,6 +14048,17 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         type: F64,
         loc,
       };
+    }
+    // `new AsyncResource(type[, opts])` (node:async_hooks): an f64 handle
+    // into the runtime's resource registry — the ambient class's constant
+    // options checks (type string, triggerAsyncId, requireManualDestroy)
+    // run in the runtime, which reads the options object as JavaScript does.
+    if (
+      symbol !== null &&
+      ts.symbolName(symbol) === "AsyncResource" &&
+      lowerer.isStdlibSymbol(symbol)
+    ) {
+      return lowerAsyncResourceConstruction(lowerer, expr, loc);
     }
     // `new Promise<T>((resolve) => ...)`: the ambient Promise constructor.
     if (symbol !== null && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)) {

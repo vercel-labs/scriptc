@@ -546,6 +546,7 @@ import {
   appendForkModules,
   appendWorkerModules,
   workerThreadModules,
+  widenCjsExportsOfWidenedBindings,
 } from "./lower-modules.js";
 import {
   isNodeModuleHandle,
@@ -756,6 +757,7 @@ import {
   lowerDiagnosticsChannelMethodCall,
   lowerDiagnosticsChannelProperty,
   lowerAsyncLocalStorageMethodCall,
+  lowerAsyncResourceMethodCall,
   lowerTracingChannelMethodCall,
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
@@ -14554,6 +14556,11 @@ export class Lowerer {
       this.widenRetypedOperatorBindings(parts);
       this.analyzeOpenEnumerations(parts);
     });
+    // An export member whose value is one of those widened bindings holds
+    // checked-dynamic values too (Node's exports object stores whatever the
+    // binding holds), so a store must not check it back into the type the
+    // binding's initializer gave it.
+    widenCjsExportsOfWidenedBindings(this, parts);
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
     // class, and reference lowering needs each class's rebindability
@@ -15320,6 +15327,7 @@ export class Lowerer {
         this.widenRetypedOperatorBindings(parts);
         this.analyzeOpenEnumerations(parts);
       });
+      widenCjsExportsOfWidenedBindings(this, parts);
       // Decorated classes analyze post-collection here too: the %init seeds
       // lower the decoration calls, whose edges (decorator bodies, construct
       // thunks) reachable emit must see.
@@ -25444,6 +25452,13 @@ export class Lowerer {
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
     return lowerAsyncLocalStorageMethodCall(this, call, access);
+  }
+
+  lowerAsyncResourceMethodCall(
+    call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,
+  ): IrExpr | null {
+    return lowerAsyncResourceMethodCall(this, call, access);
   }
 
   lowerDiagnosticsChannelProperty(access: ts.PropertyAccessExpression): IrExpr | null {

@@ -235,6 +235,8 @@ import {
   lowerFileHandleDisposeCall,
   lowerDirentMethodCall,
   lowerFileHandleMethodCall,
+  lowerMkdtempResultDisposeCall,
+  lowerMkdtempResultMethodCall,
   lowerDirMethodCall,
   lowerWatcherMethodCall,
 } from "./builtins/filesystem.js";
@@ -242,6 +244,7 @@ import {
   fencePerfEntryKeyWalk,
   isPerfEntryType,
   lowerHistogramMethodCall,
+  lowerRecordableHistogramMethodCall,
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
@@ -2181,6 +2184,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // process-start-anchored monotonic clock.
       lowerPerfHooksCall(lowerer, expr, expr.expression) ??
       lowerHistogramMethodCall(lowerer, expr, expr.expression) ??
+      lowerRecordableHistogramMethodCall(lowerer, expr, expr.expression) ??
       // The composed crypto pattern (randomBytes(n).toString(enc))
       // — its receiver is a Buffer-typed CALL no other lowering claims.
       lowerer.lowerCryptoComposedCall(expr, expr.expression) ??
@@ -2217,6 +2221,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerCipherMethodCall(lowerer, expr, expr.expression) ??
       lowerFileHandleMethodCall(lowerer, expr, expr.expression) ??
       lowerDirMethodCall(lowerer, expr, expr.expression) ??
+      lowerMkdtempResultMethodCall(lowerer, expr, expr.expression) ??
       lowerChildPropertyCall(lowerer, expr, expr.expression) ??
       lowerer.lowerChildMethodCall(expr, expr.expression) ??
       // Piped child-output stream receivers — on/once("data" | "end").
@@ -2244,6 +2249,9 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // AsyncLocalStorage receivers — run/getStore/exit/enterWith over
       // the f64 store handle.
       lowerer.lowerAsyncLocalStorageMethodCall(expr, expr.expression) ??
+      // AsyncResource receivers — runInAsyncScope/bind/emitDestroy over
+      // the f64 resource handle.
+      lowerer.lowerAsyncResourceMethodCall(expr, expr.expression) ??
       // TracingChannel receivers — subscribe/unsubscribe/traceSync/
       // traceCallback over the f64 tracing handle.
       lowerer.lowerTracingChannelMethodCall(expr, expr.expression) ??
@@ -2518,6 +2526,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     if (dirDispose) return dirDispose;
     const fileHandleDispose = lowerFileHandleDisposeCall(lowerer, expr);
     if (fileHandleDispose) return fileHandleDispose;
+    const mkdtempDispose = lowerMkdtempResultDisposeCall(lowerer, expr);
+    if (mkdtempDispose) return mkdtempDispose;
     const streamDispose = lowerStreamAsyncDisposeCall(lowerer, expr);
     if (streamDispose) return streamDispose;
     const netServerDispose = lowerNetServerAsyncDisposeCall(lowerer, expr);

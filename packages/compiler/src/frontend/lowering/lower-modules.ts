@@ -2524,6 +2524,81 @@ function cjsModuleKeepsOriginalExports(lowerer: Lowerer, sf: ts.SourceFile): boo
   return keeps;
 }
 
+/** An export member that stores a JavaScript binding the widening scan found
+ * (analyzeJsWidenedBindings) holds checked-dynamic values. The member's slot
+ * was registered from the checker's type for `exports.<name>`, which follows
+ * the binding's initializer; the program's later write stored a value that
+ * type does not admit, and a store into that slot would check the value back
+ * into it and throw. Node's exports object holds whatever the binding holds,
+ * so the slot is checked-dynamic too. Runs after the widening scan and before
+ * any module init lowers. */
+export function widenCjsExportsOfWidenedBindings(
+  lowerer: Lowerer,
+  parts: readonly FileParts[],
+): void {
+  for (const { sf } of parts) {
+    if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+    if (
+      !lowerer.cjsInFileExportMemberGlobals.has(sf) &&
+      !lowerer.cjsConditionalWholeExportGlobals.has(sf)
+    )
+      continue;
+    ts.walkPreorder(sf, (node) => {
+      if (
+        !ts.isBinaryExpression(node) ||
+        node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+        !ts.isPropertyAccessExpression(node.left) ||
+        node.left.questionDotToken !== undefined ||
+        !ts.isIdentifier(node.left.name)
+      )
+        return undefined;
+      const recv = node.left.expression;
+      if (!isCjsExportsIdentifier(lowerer, recv) && !isCjsModuleExports(lowerer, recv))
+        return undefined;
+      let rhs: ts.Node = node.right;
+      while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+      if (!ts.isIdentifier(rhs)) return undefined;
+      const source = lowerer.checker.getSymbolAtLocation(rhs);
+      if (source === undefined || !lowerer.jsWidenedBindings.has(source)) return undefined;
+      const name = node.left.name.text;
+      const member = lowerer.cjsInFileExportMemberGlobals.get(sf)?.get(name);
+      if (member !== undefined) member.type = DYN;
+      const whole = lowerer.cjsConditionalWholeExportGlobals.get(sf)?.get(name);
+      if (whole !== undefined) whole.type = DYN;
+      return undefined;
+    });
+  }
+  // A conditional wrapper re-exports another module's table
+  // (`module.exports = require("./cjs/react.development.js")` behind
+  // NODE_ENV): its member slots were typed from the checker's union over the
+  // branches, which follows each target's initializer type. Once a target's
+  // member is checked-dynamic (above), the wrapper's value is too. A wrapper
+  // of a wrapper needs the rounds.
+  for (;;) {
+    let changed = false;
+    for (const { sf } of parts) {
+      if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+      const slots = lowerer.cjsConditionalWholeExportGlobals.get(sf);
+      if (slots === undefined) continue;
+      const targets = cjsConditionalWholeExportTargetsOf(lowerer, sf);
+      if (targets === null) continue;
+      for (const [name, slot] of slots) {
+        if (slot.type.kind === "dyn") continue;
+        const widenedTarget = targets.some((target) => {
+          const member =
+            lowerer.cjsInFileExportMemberGlobals.get(target.req.dep)?.get(name) ??
+            lowerer.cjsConditionalWholeExportGlobals.get(target.req.dep)?.get(name);
+          return member !== undefined && member.type.kind === "dyn";
+        });
+        if (!widenedTarget) continue;
+        slot.type = DYN;
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+}
+
 export function collectGlobals(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -4657,7 +4732,23 @@ export function lowerFileInit(
     // JavaScript var initialized with an existing checked-dynamic object)
     // gets the dyn undefined once the body has lowered.
     const unionEntryInits: { at: number; g: IrGlobal }[] = [];
-    for (const g of lowerer.varGlobalEntryInits.get(sf) ?? []) {
+    // A retyping pass (the JavaScript hoisted read's operator widening) can
+    // give a module binding checked-dynamic storage after collection noted
+    // it. A NULL dyn slot is a trap, not undefined, so every mutable dyn
+    // global this module declares holds the dyn undefined from module entry
+    // like the noted ones.
+    const entryInits = [...(lowerer.varGlobalEntryInits.get(sf) ?? [])];
+    const entryInitIds = new Set(entryInits.map((g) => g.id));
+    for (const g of lowerer.globalsList) {
+      if (entryInitIds.has(g.id) || !g.mutable || g.type.kind !== "dyn") continue;
+      // A lexical binding keeps its NULL TDZ sentinel: its early reads are
+      // checked, not answered with undefined.
+      if (g.tdz !== undefined || g.initFlag !== undefined) continue;
+      if (g.source?.scope.file !== sf.fileName) continue;
+      entryInits.push(g);
+      entryInitIds.add(g.id);
+    }
+    for (const g of entryInits) {
       if (g.type.kind !== "union" && g.type.kind !== "dyn") continue;
       const wrapped =
         g.type.kind === "dyn" ? dynUndefinedExpr(loc0) : lowerer.unassignedSlotInit(g.type, loc0);

@@ -3859,6 +3859,13 @@ export class LlEmitter {
   /** The name a frame line gives `fn`: a class member's in V8's spelling,
    * otherwise the function's source name; undefined for module-level code
    * and generated helpers. */
+  /** Whether `name` is a constructor that captures a stack trace onto
+   * itself (`Error.captureStackTrace(this, new.target)`): its frame is
+   * omitted by the capture, so it keeps no frame to position. */
+  constructorCapturesOntoSelf(name: string): boolean {
+    return this.frameCaptures.constructors.has(name);
+  }
+
   frameNameOf(fn: IrFunction): string | undefined {
     return this.memberFrameNames.get(fn.name) ?? fn.sourceName;
   }
@@ -3923,10 +3930,10 @@ export class LlEmitter {
       if (best === null || loc.start > best.start) best = loc;
     };
     everyStmt(s, {
-      stmt: (child) => {
-        if (child !== s && child.kind === "throw") raise(child.value.loc);
-        return true;
-      },
+      // Only this statement's own expressions: a child statement stores its
+      // own position when it runs, and its calls must not stand for this
+      // statement's execution point (a loop condition, for one).
+      stmt: (child) => child === s,
       expr: (e) => {
         const call =
           e.kind === "call" ||
@@ -3957,6 +3964,56 @@ export class LlEmitter {
       },
     });
     return canThrow ? best : null;
+  }
+
+  /** The deepest call in an expression, for the places an expression runs
+   * repeatedly without a statement of its own (a loop's condition or
+   * update). */
+  private expressionSite(e: IrExpr): SrcLoc | null {
+    let best: SrcLoc | null = null;
+    everyExpr(e, {
+      stmt: () => true,
+      expr: (node) => {
+        const call =
+          node.kind === "call" ||
+          node.kind === "callValue" ||
+          node.kind === "virtualCall" ||
+          node.kind === "dynCall" ||
+          node.kind === "dynInvoke" ||
+          node.kind === "libCall" ||
+          node.kind === "new" ||
+          node.kind === "intrinsic" ||
+          node.kind === "arrIntrinsic" ||
+          node.kind === "bytesIntrinsic";
+        if (!call) return true;
+        if (node.kind === "libCall" && NEVER_THROW_LIB_FNS.has(node.fn)) return true;
+        if (
+          node.kind === "call" &&
+          !this.mayThrow.has(node.callee) &&
+          this.unframedFunctions.has(node.callee)
+        )
+          return true;
+        const loc = node.kind === "new" ? node.loc : this.callCalleeLoc(node.loc);
+        if (best === null || loc.start > best.start) best = loc;
+        return true;
+      },
+    });
+    return best;
+  }
+
+  /** Stores the position an expression's call site is running, for a
+   * repeated evaluation that a statement store cannot name. */
+  emitPositionForExpr(e: IrExpr): void {
+    if (!this.stackPositions || !this.frameActive) return;
+    const site = this.expressionSite(e);
+    if (site !== null) this.emitStackPosition(site);
+  }
+
+  /** The statement form for a loop's update, which runs on its own. */
+  emitPositionForStmt(s: IrStmt): void {
+    if (!this.stackPositions || !this.frameActive) return;
+    const site = this.positionSite(s);
+    if (site !== null) this.emitStackPosition(site);
   }
 
   /** Stores `loc`'s position in the current frame: the caller's frame names

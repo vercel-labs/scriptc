@@ -649,7 +649,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     (fn.sourceName !== undefined ||
       positions !== null ||
       initFrame ||
-      (emitter.stackPositions && emitter.currentFrameName !== undefined)) &&
+      (emitter.stackPositions &&
+        emitter.currentFrameName !== undefined &&
+        !emitter.constructorCapturesOntoSelf(fn.name))) &&
     !emitter.unframedFunctions.has(fn.name)
   ) {
     B.entryAllocas.push(`%source_frame = alloca { ptr, ptr, ptr, ptr, i32, i32 }`);

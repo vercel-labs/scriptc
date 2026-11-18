@@ -74,6 +74,60 @@ const setterOnly: any = {
 };
 const data: any = { value: 1 };
 
+const restorable: any = {
+  get accessor(): number {
+    return 1;
+  },
+  set accessor(x: number) {},
+};
+
+test("implementation argument evaluates before the accessor lookup", () => {
+  const order: string[] = [];
+  const spy = mock.getter(
+    restorable,
+    "accessor",
+    (() => {
+      order.push("implementation");
+      // The implementation argument's side effects run before Node reads the
+      // accessor, so the mock captures this redefined descriptor.
+      Object.defineProperty(restorable, "accessor", {
+        configurable: true,
+        get() {
+          return 9;
+        },
+      });
+      return () => 42;
+    })(),
+  );
+  assert.deepStrictEqual(order, ["implementation"]);
+  assert.strictEqual(restorable.accessor, 42);
+  assert.strictEqual(spy.mock.callCount(), 1);
+  spy.mock.restore();
+  assert.strictEqual(restorable.accessor, 9);
+});
+
+test("a rejected mock still evaluates its implementation argument", () => {
+  const calls: string[] = [];
+  assert.throws(
+    () => {
+      mock.getter(
+        data,
+        "value",
+        (() => {
+          calls.push("evaluated");
+          return () => 1;
+        })(),
+      );
+    },
+    {
+      name: "TypeError",
+      code: "ERR_INVALID_ARG_VALUE",
+      message: "The argument 'methodName' must be a method. Received undefined",
+    },
+  );
+  assert.deepStrictEqual(calls, ["evaluated"]);
+});
+
 test("missing accessor throws", () => {
   const expected = {
     name: "TypeError",

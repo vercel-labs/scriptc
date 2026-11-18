@@ -1388,13 +1388,8 @@ function lowerMockAccessorRecord(
   const objLocal = lowerer.declareHiddenLocal("%mockObject", record);
   const obj = () => varRef(objLocal.id, record, loc);
   stmts.push({ kind: "varDecl", localId: objLocal.id, init: objectValue, loc });
-  const originalLocal = lowerer.declareHiddenLocal("%mockOriginal", fn);
-  stmts.push({
-    kind: "varDecl",
-    localId: originalLocal.id,
-    init: recordGet(obj(), slotName, fn, loc),
-    loc,
-  });
+  /* The arguments evaluate before the mock is set up (Node's method()
+   * reads the current accessor only after them). */
   const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn);
   stmts.push({
     kind: "varDecl",
@@ -1403,6 +1398,13 @@ function lowerMockAccessorRecord(
     loc,
   });
   stmts.push(...timesOption.check);
+  const originalLocal = lowerer.declareHiddenLocal("%mockOriginal", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: originalLocal.id,
+    init: recordGet(obj(), slotName, fn, loc),
+    loc,
+  });
   const unmock: IrExpr = {
     kind: "call",
     callee: mockUnmockFactory(lowerer, ctxType!, record, slotName, loc),
@@ -1535,6 +1537,18 @@ function lowerMockAccessorCore(
     init: lowerer.coerceToExpected(strLit(field, loc), DYN),
     loc,
   });
+  /* The call's arguments evaluate before Node's method() runs: the
+   * implementation (and the options' times check) come before the accessor
+   * lookup, so their side effects are never skipped by a rejection and the
+   * descriptor read is not stale. */
+  const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn!);
+  stmts.push({
+    kind: "varDecl",
+    localId: implLocal.id,
+    init: loweredImpl ?? lowerer.lowerExprExpecting(implementationNode, fn!),
+    loc,
+  });
+  stmts.push(...timesOption.check);
   /* The original descriptor the restore() closure redefines, and a second
    * copy the mock rewrites and installs (Node keeps the original intact). */
   const originalDesc = lowerer.declareHiddenLocal("%mockOriginalDescriptor", DYN);
@@ -1567,14 +1581,6 @@ function lowerMockAccessorCore(
     },
     loc,
   });
-  const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn!);
-  stmts.push({
-    kind: "varDecl",
-    localId: implLocal.id,
-    init: loweredImpl ?? lowerer.lowerExprExpecting(implementationNode, fn!),
-    loc,
-  });
-  stmts.push(...timesOption.check);
   const unmock: IrExpr = {
     kind: "call",
     callee: mockAccessorUnmockFactory(lowerer, ctxType!, loc),

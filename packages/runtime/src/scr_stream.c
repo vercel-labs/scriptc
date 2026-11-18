@@ -92,9 +92,6 @@ struct ScrStreamState {
 
   /* shared lifecycle */
   bool destroyed, destroy_calling, error_emitted, close_emitted, error_scheduled, close_scheduled;
-  /* A watcher that must report at the close step even when the stream does
-   * not emit 'close' (an adapter that has to let go of the stream). */
-  bool fin_close_step;
   /* a parked for-await consumed the error as its rejection: the 'error'
    * EVENT is suppressed unless a user listener exists (Node's iterator
    * registers its own handler, so no unhandled-'error' crash occurs) */
@@ -288,6 +285,9 @@ struct ScrStreamState {
   struct {
     ScrClosure **cb;
     ScrStreamErrInv *inv;
+    /* The watcher must also report at the stream's close step when the
+     * stream does not emit 'close' (an adapter that has to let go). */
+    bool *close_step;
     size_t n, cap;
   } fin;
 
@@ -492,6 +492,7 @@ static void scr_stream_state_drop(ScrStreamState *st, bool gc) {
   free(st->w.end_cbs);
   free(st->fin.cb);
   free(st->fin.inv);
+  free(st->fin.close_step);
   free(st->pipes.dst);
   free(st->pipes.end);
   free(st->drain_srcs.src);
@@ -3699,15 +3700,18 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, ScrDyn *opts,
  *   - both register 'error' handlers, so an otherwise-unhandled stream
  *     error no longer crashes (the SCR_ST_ERROR suppression above). */
 
-static void scr_stream_fin_add(ScrStreamState *st, ScrClosure *cb /*moves*/, ScrStreamErrInv inv) {
+static void scr_stream_fin_add(ScrStreamState *st, ScrClosure *cb /*moves*/, ScrStreamErrInv inv,
+                               bool close_step) {
   if (st->fin.n == st->fin.cap) {
     st->fin.cap = st->fin.cap ? st->fin.cap * 2 : 2;
     st->fin.cb = realloc(st->fin.cb, st->fin.cap * sizeof *st->fin.cb);
     st->fin.inv = realloc(st->fin.inv, st->fin.cap * sizeof *st->fin.inv);
-    if (!st->fin.cb || !st->fin.inv) scr_stream_oom();
+    st->fin.close_step = realloc(st->fin.close_step, st->fin.cap * sizeof *st->fin.close_step);
+    if (!st->fin.cb || !st->fin.inv || !st->fin.close_step) scr_stream_oom();
   }
   st->fin.cb[st->fin.n] = cb;
   st->fin.inv[st->fin.n] = inv;
+  st->fin.close_step[st->fin.n] = close_step;
   st->fin.n++;
 }
 
@@ -3738,26 +3742,51 @@ static ScrError *scr_stream_finish_status(ScrStream *s) {
   return NULL;
 }
 
-static void scr_stream_notify_finished(ScrStream *s) {
+/* Report the watchers. `close_step_only` is the close-step notification of a
+ * stream that does not emit 'close': only the watchers that asked for it fire,
+ * and the others stay registered (Node's finished() stays pending there). */
+static void scr_stream_notify_finished_mode(ScrStream *s, bool close_step_only) {
   ScrStreamState *st = s->st;
   if (st->fin.n == 0) return;
-  /* Take the list out first: a watcher may register another finished()
-   * or run cleanup reentrantly. */
   ScrClosure **cbs = st->fin.cb;
   ScrStreamErrInv *invs = st->fin.inv;
+  bool *close_steps = st->fin.close_step;
   size_t n = st->fin.n;
   st->fin.cb = NULL;
   st->fin.inv = NULL;
+  st->fin.close_step = NULL;
   st->fin.n = 0;
   st->fin.cap = 0;
   ScrError *err = scr_stream_finish_status(s);
+  size_t kept = 0;
   for (size_t i = 0; i < n; i++) {
+    if (close_step_only && !close_steps[i]) {
+      /* Still waiting for a report Node would not give at the close step. */
+      cbs[kept] = cbs[i];
+      invs[kept] = invs[i];
+      close_steps[kept] = close_steps[i];
+      kept++;
+      continue;
+    }
     if (!scr_exc_pending()) invs[i](cbs[i], s, err);
     scr_closure_release(cbs[i]);
   }
   if (err) scr_error_release(err);
-  free(cbs);
-  free(invs);
+  if (kept == 0) {
+    free(cbs);
+    free(invs);
+    free(close_steps);
+    return;
+  }
+  st->fin.cb = cbs;
+  st->fin.inv = invs;
+  st->fin.close_step = close_steps;
+  st->fin.n = kept;
+  st->fin.cap = n;
+}
+
+static void scr_stream_notify_finished(ScrStream *s) {
+  scr_stream_notify_finished_mode(s, false);
 }
 
 static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
@@ -3769,6 +3798,8 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
       scr_closure_release(st->fin.cb[i]);
       memmove(&st->fin.cb[i], &st->fin.cb[i + 1], (st->fin.n - i - 1) * sizeof *st->fin.cb);
       memmove(&st->fin.inv[i], &st->fin.inv[i + 1], (st->fin.n - i - 1) * sizeof *st->fin.inv);
+      memmove(&st->fin.close_step[i], &st->fin.close_step[i + 1],
+              (st->fin.n - i - 1) * sizeof *st->fin.close_step);
       st->fin.n--;
       break;
     }
@@ -3780,11 +3811,10 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
 static ScrClosure *scr_stream_finish_register(ScrStream *s, ScrClosure *cb /*moves*/,
                                                ScrStreamErrInv inv, bool close_step) {
   ScrStreamState *st = s->st;
-  if (close_step) st->fin_close_step = true;
-  scr_stream_fin_add(st, scr_closure_retain(cb), inv);
+  scr_stream_fin_add(st, scr_closure_retain(cb), inv, close_step);
   bool will_close = scr_stream_will_emit_close(st);
-  if (((st->emit_close || st->fin_close_step) && st->close_emitted) || st->destroyed ||
-      (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
+  if ((close_step && st->close_emitted) || (st->emit_close && st->close_emitted) ||
+      st->destroyed || (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
     /* Already terminal: Node's eos still calls back asynchronously. */
     scr_st_tick(s, SCR_ST_FIN, NULL, NULL);
   }
@@ -8629,7 +8659,11 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
          * 'close' (Node's willEmitClose stance); a stream without the
          * 'close' event reports at 'finish' or, for a destroy before it,
          * not at all (Node leaves that watcher pending). */
-        if (st->emit_close || st->fin_close_step) scr_stream_notify_finished(s);
+        if (st->emit_close) {
+          scr_stream_notify_finished(s);
+        } else {
+          scr_stream_notify_finished_mode(s, true);
+        }
         /* Fully closed: nothing calls the option callbacks again (Node's
          * contract), so drop them here — this breaks the reference cycle
          * a callback capturing its own stream forms, including the dyn-

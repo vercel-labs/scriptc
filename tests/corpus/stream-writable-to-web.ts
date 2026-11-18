@@ -1,7 +1,7 @@
 // Writable.toWeb: a web WritableStream over a native Writable. A writer's
 // write() completes when the native write does, close() ends the writable,
 // and abort() destroys it with the reason.
-import { Duplex, Writable } from "node:stream";
+import { Duplex, Writable, finished } from "node:stream";
 
 const log: string[] = [];
 const encoder = new TextEncoder();
@@ -390,6 +390,24 @@ async function main(): Promise<void> {
     new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 25)),
   ]);
   log.push(`close after quiet destroy ${quietClose}`);
+
+  // A user finished() watcher on that silent destroy stays pending, as Node
+  // leaves it, even with an adapter attached to the same writable.
+  const watchQuiet = new Writable({
+    emitClose: false,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const watchQuietWriter = Writable.toWeb(watchQuiet).getWriter();
+  await watchQuietWriter.write(encoder.encode("s"));
+  let watchCalled = false;
+  finished(watchQuiet, () => {
+    watchCalled = true;
+  });
+  watchQuiet.destroy();
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  log.push(`finished after quiet destroy called ${watchCalled}`);
 }
 
 main().then(() => {

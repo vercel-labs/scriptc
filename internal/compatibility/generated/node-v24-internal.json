@@ -46938,7 +46938,9 @@
           "tests/corpus/fs-exists-path-kinds.cjs",
           "tests/corpus/fs-filehandle-controls.ts",
           "tests/corpus/fs-filehandle-data-options.ts",
+          "tests/corpus/fs-filehandle-lines.ts",
           "tests/corpus/fs-links-times.cjs",
+          "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
@@ -47245,11 +47247,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.createReadStream",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47272,11 +47275,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.createWriteStream",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47507,11 +47511,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.readLines",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47833,10 +47838,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48311,8 +48317,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.mkdtempDisposable",
+        "tests": [
+          "tests/corpus/fs-mkdtemp-disposable.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51333,8 +51342,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.mkdtempDisposableSync",
+        "tests": [
+          "tests/corpus/fs-mkdtemp-disposable.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55688,6 +55700,11 @@
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/9917-structured-clone-errors.ts",
+          "tests/corpus/9988-message-port-events.js",
+          "tests/corpus/9989-message-close-events.js",
+          "tests/corpus/9991-global-channels.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts",
+          "tests/corpus/9996-resource-timing.ts",
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
@@ -55729,7 +55746,6 @@
           "tests/corpus/webassembly-typed.ts",
           "tests/corpus/webassembly-worker.ts",
           "tests/corpus/webassembly-wpt-jsapi.mjs",
-          "tests/diagnostics/compat-absent-lowerings.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
@@ -56046,10 +56062,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.BroadcastChannel",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/9991-global-channels.ts"
         ]
       },
       "anchorSource": "exact"
@@ -56125,8 +56141,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.CloseEvent",
+        "tests": [
+          "tests/corpus/9989-message-close-events.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -56506,10 +56525,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.MessageChannel",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/9988-message-port-events.js"
         ]
       },
       "anchorSource": "exact"
@@ -56532,8 +56551,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.MessageEvent",
+        "tests": [
+          "tests/corpus/9989-message-close-events.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -56555,10 +56577,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.MessagePort",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/9988-message-port-events.js"
         ]
       },
       "anchorSource": "exact"
@@ -56744,8 +56766,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.PerformanceResourceTiming",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -80596,6 +80622,12 @@
           "tests/corpus/5214-perf-entry-inspect.ts",
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/compat-js-value-reads-require.cjs",
           "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/net-paused-socket-exit.cjs",
@@ -81758,8 +81790,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceResourceTiming",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -81781,8 +81817,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.performanceResourceTiming.toJSON",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -81804,8 +81844,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.workerStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81827,8 +81871,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.redirectStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81850,8 +81898,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.redirectEnd",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81873,8 +81925,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.fetchStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81896,8 +81952,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.domainLookupStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81919,8 +81979,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.domainLookupEnd",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81942,8 +82006,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.connectStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81965,8 +82033,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.connectEnd",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -81988,8 +82060,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.secureConnectionStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82011,8 +82087,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.requestStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82034,8 +82114,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.finalResponseHeadersStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82057,8 +82141,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.firstInterimResponseStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82080,8 +82168,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.responseStart",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82103,8 +82195,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.responseEnd",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82126,8 +82222,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.transferSize",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82149,8 +82249,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.encodedBodySize",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82172,8 +82276,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.decodedBodySize",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82195,8 +82303,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.renderBlockingStatus",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82218,8 +82330,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.contentType",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82241,8 +82357,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.contentEncoding",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -82525,6 +82645,10 @@
         "status": "partial",
         "evidence": "compiler-feature:perf_hooks.Histogram",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -82549,8 +82673,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.ccdf",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82572,8 +82702,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.cdf",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82641,8 +82777,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.countAt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82853,8 +82995,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.percentileBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82996,9 +83144,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.count",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83023,8 +83175,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.countBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83046,9 +83206,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.exceeds",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83073,8 +83237,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.exceedsBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83188,9 +83360,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.max",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83215,8 +83391,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.maxBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83238,9 +83422,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.mean",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83265,9 +83453,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.min",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83292,8 +83484,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.minBigInt",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83315,8 +83515,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.percentiles",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
+          "tests/corpus/perf-hooks-event-loop-histogram.ts",
+          "tests/corpus/6397-event-loop-metrics.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83384,9 +83592,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:perf_hooks.stddev",
         "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/6397-event-loop-metrics.ts"
         ]
@@ -83541,8 +83753,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.RecordableHistogram extends Histogram",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83564,8 +83782,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.add",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83587,8 +83811,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.record",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83610,8 +83840,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.recordDelta",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83633,8 +83869,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.recordCorrected",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83656,8 +83898,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.subtract",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83771,8 +84019,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.perf_hooks.createHistogram",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9998-histogram-recordable.js",
+          "tests/corpus/9995-histogram-upcast.ts",
+          "tests/corpus/9994-histogram-short-lived.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84006,8 +84260,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.performance.clearResourceTimings",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84178,8 +84436,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.performance.markResourceTiming",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84259,8 +84521,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.performance.setResourceTimingBufferSize",
+        "tests": [
+          "tests/corpus/9996-resource-timing.ts",
+          "tests/corpus/9993-resource-timing-buffered.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -92859,6 +93125,7 @@
           "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/stream-web-predicates.ts",
           "tests/corpus/stream-writable-from-web.ts",
+          "tests/corpus/stream-writable-to-web.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-stream-absent.ts"
@@ -93513,10 +93780,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-writable-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94208,10 +94475,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-writable-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116257,13 +116524,17 @@
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/webcrypto-aes-ocb.ts",
           "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/webcrypto-chacha20-poly1305.ts",
+          "tests/corpus/webcrypto-cshake.ts",
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/webcrypto-get-public-key.ts",
           "tests/corpus/webcrypto-kmac.ts",
+          "tests/corpus/webcrypto-kt.ts",
           "tests/corpus/webcrypto-rsa-oaep.ts",
           "tests/corpus/webcrypto-sha3-digest.ts",
+          "tests/corpus/webcrypto-turboshake.ts",
           "tests/corpus/webcrypto-x25519-key-agreement.ts",
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/fixtures/node-types/webcrypto-keys.ts",
@@ -117439,9 +117710,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.associatedData",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117465,9 +117737,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.memory",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117491,9 +117764,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117517,9 +117791,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.nonce",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117543,9 +117818,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.parallelism",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117569,9 +117845,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.passes",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117595,9 +117872,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.secretValue",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117621,9 +117899,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.version",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117716,8 +117995,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.CShakeParams",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117739,8 +118021,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117762,8 +118047,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.outputLength",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117785,8 +118073,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.functionName",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -117808,8 +118099,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.customization",
+        "tests": [
+          "tests/corpus/webcrypto-cshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119017,8 +119311,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.KangarooTwelveParams",
+        "tests": [
+          "tests/corpus/webcrypto-kt.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -119040,8 +119337,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.customization",
+        "tests": [
+          "tests/corpus/webcrypto-kt.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119063,8 +119363,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/webcrypto-kt.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -119086,8 +119389,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.outputLength",
+        "tests": [
+          "tests/corpus/webcrypto-kt.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -120181,8 +120487,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.TurboShakeParams",
+        "tests": [
+          "tests/corpus/webcrypto-turboshake.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -120204,8 +120513,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.domainSeparation",
+        "tests": [
+          "tests/corpus/webcrypto-turboshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -120227,8 +120539,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.name",
+        "tests": [
+          "tests/corpus/webcrypto-turboshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -120250,8 +120565,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webcrypto"
+        "status": "supported",
+        "evidence": "compiler-feature:webcrypto.outputLength",
+        "tests": [
+          "tests/corpus/webcrypto-turboshake.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

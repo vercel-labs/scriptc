@@ -263,8 +263,11 @@ typedef enum {
  * Intl formatters could join without renumbering them. */
 #define SCR_DYNH_NEW_TAGS(Y) \
   Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
+  Y(CLOSE_EVENT) /* CloseEvent (scr_event_target.c) */ \
   Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
   Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
+  Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
+  Y(HISTOGRAM) /* createHistogram RecordableHistogram (scr_perf_loop.c) */ \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
   Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \

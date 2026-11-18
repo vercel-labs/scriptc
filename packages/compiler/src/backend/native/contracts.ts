@@ -474,6 +474,9 @@ export interface CcOptions {
   dh?: boolean;
   /** crypto.argon2 and crypto.argon2Sync: compiles scr_argon2.c. */
   argon2?: boolean;
+  /** ML-KEM (mlkem-native): compiles scr_mlkem.c and links the vendored
+   * ML-KEM archive. */
+  mlkem?: boolean;
   /** Asymmetric KeyObjects and signatures: compiles scr_pki.c and links
    * the mbedTLS archive. */
   pki?: boolean;

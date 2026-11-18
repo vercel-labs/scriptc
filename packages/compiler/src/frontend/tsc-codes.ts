@@ -491,19 +491,50 @@ const deprecatedBufferCall = (_node: ts.Node, d: ts.Diagnostic): boolean => {
 };
 
 /** TS2684 names a call whose supplied receiver the checker's `this` type
- * rejects, and marks the receiver expression (`base.get` in
- * `base.get.call(el)`). JavaScript makes the call anyway: `.call` and
- * `.apply` hand the callee whatever receiver the expression produced, and a
- * function that never reads its receiver ignores it. Admitting the call is
- * Node-exact when the callee's type declares no `this` parameter at all: a
- * function that declares no receiver never reads one, and a value whose
- * runtime form is checked-dynamic — a property descriptor's `get`/`set`, an
- * extracted method value — takes the receiver from the ambient slot the
- * dynamic call binds. A callee whose type does declare `this` keeps the
- * refusal: its static call checks the receiver against that type, while Node
- * reads whatever fields the object happens to have. */
-const untypedReceiverCall = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
-  // The marked expression is the callee the `.call`/`.apply` access names.
+ * rejects. Checker builds anchor the diagnostic on different nodes of the
+ * same call — the callee (`base.get` in `base.get.call(el)`), the `.call`
+ * access, or the whole call — so the site is asked for whichever of those
+ * the marked node is. JavaScript makes the call anyway: `.call` and `.apply`
+ * hand the callee whatever receiver the expression produced, and a function
+ * that never reads its receiver ignores it. Admitting the call is Node-exact
+ * when the callee's type declares no `this` parameter at all, or a receiver
+ * it leaves as `any`/`unknown`: such a callee never reads its receiver, and
+ * a value whose runtime form is checked-dynamic — a property descriptor's
+ * `get`/`set`, an extracted method value — takes the receiver from the
+ * ambient slot the dynamic call binds. A callee whose type declares a real
+ * `this` keeps the refusal: its static call checks the receiver against that
+ * type, while Node reads whatever fields the object happens to have. */
+export const untypedReceiverCall = (
+  node: ts.Node,
+  _d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
+  const callee = receiverCallCallee(node);
+  if (callee === null) return false;
+  const checker = program.getTypeChecker();
+  const target = checker.getNonNullableType(checker.getTypeAtLocation(callee));
+  const signatures = checker.getCallSignatures(target);
+  return (
+    signatures.length > 0 &&
+    signatures.every((signature) => {
+      const receiver = signature.getThisParameter();
+      if (receiver === undefined) return true;
+      // A `this: any`/`this: unknown` parameter constrains no receiver.
+      const flags = checker.getTypeOfSymbolAtLocation(receiver, callee).flags;
+      return (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+    })
+  );
+};
+
+/** The callee expression of the `.call`/`.apply` call that `node` marks, or
+ * null when the marked node is not part of one. */
+function receiverCallCallee(node: ts.Node): ts.Expression | null {
+  const isCallOrApply = (access: ts.PropertyAccessExpression): boolean =>
+    access.name.text === "call" || access.name.text === "apply";
+  const callsThrough = (access: ts.PropertyAccessExpression): boolean => {
+    const call = access.parent;
+    return call !== undefined && ts.isCallExpression(call) && call.expression === access;
+  };
   let context: ts.Node = node;
   while (
     context.parent !== undefined &&
@@ -514,25 +545,29 @@ const untypedReceiverCall = (node: ts.Node, _d: ts.Diagnostic, program: ts.Progr
       ts.isSatisfiesExpression(context.parent))
   )
     context = context.parent;
+  // The whole call.
+  if (
+    ts.isCallExpression(context) &&
+    ts.isPropertyAccessExpression(context.expression) &&
+    isCallOrApply(context.expression) &&
+    callsThrough(context.expression)
+  )
+    return context.expression.expression;
+  // The `.call`/`.apply` access itself.
+  if (ts.isPropertyAccessExpression(context) && isCallOrApply(context) && callsThrough(context))
+    return context.expression;
+  // The callee the access names.
   const access = context.parent;
   if (
-    access === undefined ||
-    !ts.isPropertyAccessExpression(access) ||
-    access.expression !== context
+    access !== undefined &&
+    ts.isPropertyAccessExpression(access) &&
+    access.expression === context &&
+    isCallOrApply(access) &&
+    callsThrough(access)
   )
-    return false;
-  const member = access.name.text;
-  if (member !== "call" && member !== "apply") return false;
-  const call = access.parent;
-  if (call === undefined || !ts.isCallExpression(call) || call.expression !== access) return false;
-  const checker = program.getTypeChecker();
-  const target = checker.getNonNullableType(checker.getTypeAtLocation(node));
-  const signatures = checker.getCallSignatures(target);
-  return (
-    signatures.length > 0 &&
-    signatures.every((signature) => signature.getThisParameter() === undefined)
-  );
-};
+    return context as ts.Expression;
+  return null;
+}
 
 /** TS17013 inside a method or accessor body (including an arrow nested in
  * one): `new.target` is legal there and always undefined, because a method is

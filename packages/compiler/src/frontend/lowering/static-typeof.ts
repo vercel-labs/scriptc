@@ -58,8 +58,7 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
     ambientUndefinedFnSymbolOf(lowerer, e) ||
     // A name the program installs on the global object answers at run time
     // (typeof.ts reads it), so no static answer folds.
-    (ambientTypesOnlyGlobalSymbolOf(lowerer, e) &&
-      !programMayWriteGlobalName(lowerer, e.text, e))
+    (ambientTypesOnlyGlobalSymbolOf(lowerer, e) && !programMayWriteGlobalName(lowerer, e.text, e))
   )
     return "undefined";
   return null;

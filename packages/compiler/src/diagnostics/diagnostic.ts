@@ -2575,9 +2575,12 @@ export function libIntBoundaryDiag(
 }
 
 export function iceDiag(message: string, loc: SrcLoc): ScrDiagnostic {
+  // An invariant that failed without a message still has to say that it did:
+  // "internal compiler error:  — please report this" reads like a truncation.
+  const detail = message.trim() === "" ? "a compiler invariant failed without a message" : message;
   return {
     code: "SC9001",
-    message: `internal compiler error: ${message} — please report this`,
+    message: `internal compiler error: ${detail} — please report this`,
     loc,
   };
 }

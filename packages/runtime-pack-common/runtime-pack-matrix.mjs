@@ -252,6 +252,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
+  ["scr_stream_iterator.c", all("stream", "dynAsync", "symbol")],
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
   ["scr_stream_dyn.c", "streamDyn"],
@@ -361,6 +362,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_to_web.c", all("stream", "webStreams", "dynAsync")],
   // Writable.fromWeb wraps a web WritableStream's writer.
   ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
+  // Writable.toWeb wraps a native writable in a web WritableStream.
+  ["scr_stream_writable_to_web.c", all("stream", "webStreams", "dynAsync")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
@@ -828,6 +831,9 @@ export function createRuntimePackMatrix({
     { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
+    // ML-KEM (mlkem-native): the post-quantum KEM surfaces of node:crypto
+    // and WebCrypto.
+    { id: "mlkem", predicate: "mlkem" },
     { id: "sqlite", predicate: "sqlite" },
   ];
   const matrix = withLibraryRuntimeFlavors(

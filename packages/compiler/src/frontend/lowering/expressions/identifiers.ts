@@ -1293,6 +1293,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   {
     const sym = lowerer.resolveValueSymbol(expr);
     let classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    // A binding the checker models as an ALIAS of the class — an import or
+    // re-export whose exported name also declares a JSDoc namespace, as
+    // `@typedef {Object} GLTFLoader~LoadObject` does in three's
+    // GLTFLoader.js — is not the symbol classBySymbol keys; its aliased
+    // target is.
+    if (
+      classInfo === undefined &&
+      sym &&
+      (sym.flags & ts.SymbolFlags.Alias) !== 0 &&
+      !lowerer.isStdlibSymbol(sym)
+    )
+      classInfo = lowerer.classBySymbol.get(lowerer.checker.getAliasedSymbol(sym));
     // A class local to a function lowered once per instantiation
     // (`$constructor` called with different argument types) registers per
     // instance under the same symbol: a hoisted function of a later

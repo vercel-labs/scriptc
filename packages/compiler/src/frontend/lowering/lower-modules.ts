@@ -4657,7 +4657,23 @@ export function lowerFileInit(
     // JavaScript var initialized with an existing checked-dynamic object)
     // gets the dyn undefined once the body has lowered.
     const unionEntryInits: { at: number; g: IrGlobal }[] = [];
-    for (const g of lowerer.varGlobalEntryInits.get(sf) ?? []) {
+    // A retyping pass (the JavaScript hoisted read's operator widening) can
+    // give a module binding checked-dynamic storage after collection noted
+    // it. A NULL dyn slot is a trap, not undefined, so every mutable dyn
+    // global this module declares holds the dyn undefined from module entry
+    // like the noted ones.
+    const entryInits = [...(lowerer.varGlobalEntryInits.get(sf) ?? [])];
+    const entryInitIds = new Set(entryInits.map((g) => g.id));
+    for (const g of lowerer.globalsList) {
+      if (entryInitIds.has(g.id) || !g.mutable || g.type.kind !== "dyn") continue;
+      // A lexical binding keeps its NULL TDZ sentinel: its early reads are
+      // checked, not answered with undefined.
+      if (g.tdz !== undefined || g.initFlag !== undefined) continue;
+      if (g.source?.scope.file !== sf.fileName) continue;
+      entryInits.push(g);
+      entryInitIds.add(g.id);
+    }
+    for (const g of entryInits) {
       if (g.type.kind !== "union" && g.type.kind !== "dyn") continue;
       const wrapped =
         g.type.kind === "dyn" ? dynUndefinedExpr(loc0) : lowerer.unassignedSlotInit(g.type, loc0);

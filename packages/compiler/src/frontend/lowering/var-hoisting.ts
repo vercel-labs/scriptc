@@ -679,17 +679,47 @@ interface Settle {
   loop: number;
 }
 
+/** Test seam: the settlement proofs a build computes, by key, while a caller
+ * has asked for them (countSettleProofs). A successful build proves each
+ * key at most once; the regression that held every conditional answer out of
+ * the memo re-proved each cycle-touching key once for every binding whose
+ * analysis consulted it. */
+let settleProofs: Map<string, number> | null = null;
+
+/** Starts counting the settlement proofs a build computes, and clears the
+ * previous counts. */
+export function countSettleProofs(): void {
+  settleProofs = new Map();
+}
+
+/** The settlement proofs computed since countSettleProofs, by key. */
+export function settleProofCounts(): ReadonlyMap<string, number> {
+  return settleProofs ?? EMPTY_PROOF_COUNTS;
+}
+
+const EMPTY_PROOF_COUNTS: ReadonlyMap<string, number> = new Map();
+
 class ScopeAnalysis {
   private readonly js: boolean;
-  /** Whether a function declaration's references all settle, by scope
-   * and settling index. Only final answers are here: a key whose proof is
-   * running answers optimistically (see functionSettles), and an answer
-   * that leaned on one is not remembered. */
+  /** Whether a function declaration's references all settle, by scope and
+   * settling index. A key whose proof is running answers optimistically
+   * (see functionSettles): an answer that leaned on one is kept until the
+   * outermost proof finishes, because the cycle's root decides whether it
+   * holds. Holding every such answer out of the memo makes a program whose
+   * call graph is full of cycles re-prove the same functions once per
+   * binding. */
   private readonly functionMemo = new Map<string, boolean>();
   /** The keys whose proof is running right now. */
   private readonly functionPending = new Set<string>();
+  /** The `true` answers proven under a call cycle, oldest first. A proof
+   * that ends `false` drops the answers above its mark, which recompute on
+   * demand; the outermost proof that ends `true` confirms every one. */
+  private readonly conditionalAnswers: string[] = [];
+  /** conditionalAnswers as a set, so taking a memoized answer knows whether
+   * that answer still depends on a cycle being proven. */
+  private readonly conditionalKeys = new Set<string>();
   /** How many optimistic answers the running proofs have leaned on, in
-   * total: a `true` proof that saw the count change is not final. */
+   * total. */
   private provisionalAnswers = 0;
   private readonly functionRefs = new Map<ts.Node, ts.Identifier[]>();
   /** The same answers for one `let` binding's stores. */
@@ -856,35 +886,69 @@ class ScopeAnalysis {
     const scopeKey = ts.isSourceFile(scope) ? "file" : `${scope.pos}`;
     const key = `${scopeKey}:${fn.pos}:${settle.index}:${settle.end}:${settle.loop}`;
     const known = this.functionMemo.get(key);
-    if (known !== undefined) return known;
+    if (known !== undefined) {
+      // A memoized `true` answer that still leans on a cycle being proven is
+      // no safer to reuse than the optimistic answer itself: the proof that
+      // takes it must stay conditional too.
+      if (known && this.conditionalKeys.has(key)) this.provisionalAnswers++;
+      return known;
+    }
     if (this.functionPending.has(key)) {
       // A reference inside the cycle being proven: answer with the
-      // optimistic "settled". The proof that asked may only rely on it
-      // until it finishes, so its answer is not remembered below.
+      // optimistic "settled". The proofs that lean on it stay conditional
+      // until the outermost proof finishes.
       this.provisionalAnswers++;
       return true;
     }
-    this.functionPending.add(key);
     const provisionalAt = this.provisionalAnswers;
-    const references = this.referencesOf(fn.name!);
-    // An exported function runs after the module's body, which stores the
-    // binding only when one of its statements does.
-    const exported =
-      (ts.getModifiers(fn)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false) ||
-      references.some(isExportedName);
-    const result =
-      !(exported && settle.index === Infinity) &&
-      references.every(
-        (ref) =>
-          isInside(ref, fn) || isExportedName(ref) || this.settles(scope, settle, ref, false),
-      );
-    this.functionPending.delete(key);
-    // A `true` answer that leaned on an optimistic one may not survive the
-    // proof that started the cycle, which can still find a callable-before-
-    // assignment function; remembering it would classify another binding as
-    // settled and let the lowering read an empty slot. A `false` answer only
-    // ever under-approximates, so it is kept.
-    if (!result || this.provisionalAnswers === provisionalAt) this.functionMemo.set(key, result);
+    const conditionalAt = this.conditionalAnswers.length;
+    if (settleProofs !== null) settleProofs.set(key, (settleProofs.get(key) ?? 0) + 1);
+    this.functionPending.add(key);
+    let result: boolean;
+    try {
+      const references = this.referencesOf(fn.name!);
+      // An exported function runs after the module's body, which stores the
+      // binding only when one of its statements does.
+      const exported =
+        (ts.getModifiers(fn)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false) ||
+        references.some(isExportedName);
+      result =
+        !(exported && settle.index === Infinity) &&
+        references.every(
+          (ref) =>
+            isInside(ref, fn) || isExportedName(ref) || this.settles(scope, settle, ref, false),
+        );
+    } finally {
+      this.functionPending.delete(key);
+    }
+    if (!result) {
+      // A `true` answer proven under this `false` one assumed the cycle
+      // closes: drop each so a later query proves it again. A `false` answer
+      // only ever under-approximates, so it is kept.
+      while (this.conditionalAnswers.length > conditionalAt) {
+        const dropped = this.conditionalAnswers.pop()!;
+        this.conditionalKeys.delete(dropped);
+        this.functionMemo.delete(dropped);
+      }
+      this.functionMemo.set(key, false);
+    } else if (
+      this.provisionalAnswers !== provisionalAt ||
+      this.conditionalAnswers.length > conditionalAt
+    ) {
+      // This answer, or one it used, leaned on a call cycle: it holds only
+      // if the cycle's root does, so the outermost proof confirms it.
+      this.functionMemo.set(key, true);
+      this.conditionalKeys.add(key);
+      this.conditionalAnswers.push(key);
+    } else {
+      this.functionMemo.set(key, true);
+    }
+    if (this.functionPending.size === 0) {
+      // The outermost proof finished and nothing it leaned on contradicted
+      // it, so every answer kept for its cycles is final.
+      this.conditionalAnswers.length = 0;
+      this.conditionalKeys.clear();
+    }
     return result;
   }
 

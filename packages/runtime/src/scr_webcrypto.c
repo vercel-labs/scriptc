@@ -373,7 +373,7 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
  * process-warning unit is linked, and otherwise to the default report. It
  * does not go through scr_emit_warning, which would make every WebCrypto
  * program link that unit. */
-static SCR_TL bool scr_wc_experimental_warned[16];
+static SCR_TL bool scr_wc_experimental_warned[17];
 
 static void scr_wc_warning_tick(ScrClosure *self) {
   ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
@@ -400,7 +400,7 @@ static void scr_wc_warn_experimental_algorithm(const char *canonical) {
   static const char *const names[] = {"SHA3-256", "SHA3-384",      "SHA3-512", "AES-OCB",
                                       "ChaCha20-Poly1305", "KMAC128", "KMAC256", "Argon2d",
                                       "Argon2i", "Argon2id", "cSHAKE128", "cSHAKE256",
-                                      "TurboSHAKE128", "TurboSHAKE256", "KT128", "KT256"};
+                                      "TurboSHAKE128", "TurboSHAKE256", "KT128", "KT256", "X448"};
   for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
     if (strcmp(canonical, names[i]) != 0) continue;
     if (scr_wc_experimental_warned[i]) return;
@@ -1076,13 +1076,13 @@ static ScrBytes *scr_wc_jwk_secret(const ScrWcJwk *jwk, bool extractable, long u
 const ScrWcAsymmetric *scr_wc_asymmetric = NULL;
 
 static const char *const scr_wc_asymmetric_names[] = {
-    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519",
+    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519", "X448",
 };
 
 /* Whether an asymmetric algorithm name is one of the key-agreement ones
  * (deriveBits and deriveKey). */
 static bool scr_wc_is_derive_algorithm(const char *name) {
-  return strcmp(name, "ECDH") == 0 || strcmp(name, "X25519") == 0;
+  return strcmp(name, "ECDH") == 0 || strcmp(name, "X25519") == 0 || strcmp(name, "X448") == 0;
 }
 
 /* Whether the AlgorithmIdentifier at args[index] names ECDSA,
@@ -3088,6 +3088,7 @@ ScrPromise *scr_webcrypto_derive_bits(ScrDyn *args) {
     goto done;
   const char *asymmetric = scr_wc_asymmetric_name(args, 0);
   if (asymmetric && scr_wc_is_derive_algorithm(asymmetric)) {
+    scr_wc_warn_experimental_algorithm(asymmetric);
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
       result = scr_wc_asymmetric_missing("deriveBits", asymmetric);
       goto done;
@@ -3203,6 +3204,7 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
     goto done;
   }
   if (agreement) {
+    scr_wc_warn_experimental_algorithm(asymmetric);
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
       result = scr_wc_asymmetric_missing("deriveKey", asymmetric);
       goto done;

@@ -13664,11 +13664,14 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     ScrDyn *prototype = scr_dyn_new_obj();
     if (!e->name_present) {
       scr_dyn_obj_set(prototype, "name", 4, scr_dyn_new_str(e->name));
-      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = false;
+      /* A DOMException's name, message and code are enumerable accessors on
+       * the class prototype in Node, so `for...in` visits them; an ordinary
+       * error's prototype fields are not enumerable. */
+      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = domex;
     }
     if (!e->message_present) {
       scr_dyn_obj_set(prototype, "message", 7, scr_dyn_new_str(e->message));
-      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = false;
+      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = domex;
     }
     if (domex) {
       /* WebIDL's DOMException: `code` is a prototype accessor and the class
@@ -13679,7 +13682,7 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
                                         "native:DOMException", "get code");
       scr_dyn_obj_set_accessor(prototype, "code", 4, getter, NULL);
       ScrDynEntry *entry = scr_dyn_find_entry(prototype, "code", 4);
-      if (entry) entry->enumerable = false;
+      if (entry) entry->enumerable = true;
       ScrDyn *to_string = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_error_prototype_to_string,
                                           0, "native:Error", "toString");
       scr_dyn_obj_set(prototype, "toString", 8, to_string);

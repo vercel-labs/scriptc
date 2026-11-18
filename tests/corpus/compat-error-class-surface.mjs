@@ -170,3 +170,18 @@ try {
   console.log("call without new", error.name, JSON.stringify(error.message));
 }
 console.log("dom constructor", new DOMException("x").constructor.name);
+
+// DOMException's name, message and code are enumerable prototype members, so
+// for...in visits them; an ordinary error's prototype members are not, and
+// the error's own `stack` is not enumerable either way.
+function enumeratedKeys(value) {
+  const keys = [];
+  for (const key in value) keys.push(key);
+  return keys;
+}
+const domexKeys = enumeratedKeys(new DOMException("m", "AbortError"));
+console.log(
+  "dom for-in",
+  ["name", "message", "code", "stack"].filter((key) => domexKeys.includes(key)).join(","),
+);
+console.log("error for-in", enumeratedKeys(new Error("m")).length);

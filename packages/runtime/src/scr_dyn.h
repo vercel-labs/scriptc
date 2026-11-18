@@ -2318,6 +2318,14 @@ void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */
 void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+/* The next error view built on this thread takes this own property before
+ * its class name. AssertionError's constructor assigns generatedMessage
+ * before name, and the view's shape is still being laid out when the first
+ * extra property is attached. Moves value; a pending seed is dropped when
+ * replaced. */
+void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value);
+/* The seed if no view consumed it (+1), else NULL. */
+ScrDyn *scr_error_take_seed(void);
 /* scr_throw_node_coded with an own `url` property (error.nodeThrow's
  * fourth argument). Borrows the strings; always throws. */
 SCR_COLD void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg,

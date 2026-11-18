@@ -177,6 +177,9 @@ struct ScrTestCtx {
    * released before scr_test_exit_code prints the summary. */
   ScrStr *fail_msg; /* owned */
   double start_ms; /* when the test started running; NaN before */
+  /* When the body was invoked (Node's stopTest starts after the beforeEach
+   * hooks): the plan's wait shares the remaining { timeout } from here. */
+  double body_start_ms;
   size_t serial; /* index in scr_test_nodes, getTestContext()'s handle */
   bool finished; /* its result line has been reported */
   /* Explicit { only: false }: Node filters the test (and a suite's whole
@@ -354,6 +357,7 @@ static ScrTestCtx *scr_test_node_new(ScrStr *name /*borrowed*/, int mode,
   t->deadline_ms = INFINITY;
   t->concurrency = 1;
   t->start_ms = NAN;
+  t->body_start_ms = NAN;
   if (scr_test_nnodes == scr_test_nodes_cap) {
     scr_test_nodes_cap = scr_test_nodes_cap ? scr_test_nodes_cap * 2 : 16;
     scr_test_nodes = realloc(scr_test_nodes, scr_test_nodes_cap * sizeof *scr_test_nodes);
@@ -680,7 +684,7 @@ static bool scr_test_signal_wake(ScrTestCtx *run, ScrTestCtx *t) {
  * <timeout>ms" and the running child is cancelled with Node's parent
  * message; the body keeps running unobserved. */
 static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *scope,
-                                   ScrTestCtx *ctx) {
+                                   ScrTestCtx *ctx, double own_left_override) {
   /* A hook runs for its context: an inherited beforeEach is bounded by the
    * deadlines above the test it runs for, not above the suite that
    * registered it. */
@@ -688,7 +692,13 @@ static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *sco
   double suite_deadline = INFINITY;
   ScrTestCtx *owner = scr_test_deadline_of(run, &suite_deadline);
   double suite_left = owner != NULL ? suite_deadline - scr_now_ms() : INFINITY;
-  double own_left = t != NULL && isfinite(t->timeout) ? t->timeout : INFINITY;
+  /* The test's own window: its { timeout } from the body's start, or the
+   * caller's remaining-time override (a plan's wait shares the body's
+   * deadline, as Node races the plan against stopTest). */
+  double own_left =
+      !isnan(own_left_override)
+          ? own_left_override
+          : (t != NULL && isfinite(t->timeout) ? t->timeout : INFINITY);
   bool watching = false;
   for (ScrTestCtx *n = run; n != NULL; n = n->parent) {
     if (n->abort_promise != NULL) watching = true;
@@ -765,26 +775,30 @@ static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *sco
 /* A test that ended short of its t.plan count with { wait }: waits for the
  * remaining assertions or subtests, or for the wait window to elapse —
  * Node lets assertions running in timers finish before it judges the
- * plan. */
+ * plan. The wait is bounded by the test's own { timeout } as Node races
+ * the plan promise against its stopTest timer: `wait: true` waits until the
+ * plan is met, the timeout cancels the test, or a suite deadline or the
+ * { signal } stops it. */
 static void scr_test_await_plan(ScrTestCtx *t) {
-  t->plan_met = scr_promise_new();
-  if (t->plan_wait < 0) {
-    /* `wait: true`: Node waits indefinitely for the remaining assertions
-     * and subtests — the runner parks until the plan is met. */
-    scr_await_void(t->plan_met);
-    scr_promise_release(t->plan_met);
-    t->plan_met = NULL;
-    return;
+  double remaining = INFINITY;
+  if (isfinite(t->timeout) && !isnan(t->body_start_ms)) {
+    remaining = t->timeout - (scr_now_ms() - t->body_start_ms);
+    if (remaining < 0) remaining = 0;
   }
-  ScrPromise *timer = scr_promise_new();
-  double handle = scr_set_timeout_handle(scr_make_resolve(timer, 3 /* void */), t->plan_wait);
-  ScrPromise *race = scr_promise_new();
-  scr_promise_race_join(race, t->plan_met, scr_promise_adapt_copy);
-  scr_promise_race_join(race, timer, scr_promise_adapt_copy);
-  scr_await_void(race);
-  scr_clear_interval(handle);
-  scr_promise_release(race);
-  scr_promise_release(timer);
+  t->plan_met = scr_promise_new();
+  ScrPromise *wait = scr_promise_new();
+  double wait_handle = -1;
+  ScrPromise *p = scr_promise_new();
+  scr_promise_race_join(p, t->plan_met, scr_promise_adapt_copy);
+  if (t->plan_wait >= 0) {
+    /* A numeric wait: `wait: true` has none of its own (-2). */
+    wait_handle = scr_set_timeout_handle(scr_make_resolve(wait, 3 /* void */), t->plan_wait);
+    scr_promise_race_join(p, wait, scr_promise_adapt_copy);
+  }
+  scr_test_await_bounded(p, t, t, t, remaining);
+  if (wait_handle >= 0) scr_clear_interval(wait_handle);
+  scr_promise_release(p);
+  scr_promise_release(wait);
   scr_promise_release(t->plan_met);
   t->plan_met = NULL;
 }
@@ -905,7 +919,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
       ((void (*)(ScrClosure *, ScrTestCtx *, ScrClosure *))cb->fn)(
           cb, takes_ctx ? scr_testctx_retain(ctx) : NULL, scr_closure_retain(done));
       if (!scr_exc_pending()) {
-        scr_test_await_bounded(d->p, timed, scope, ctx);
+        scr_test_await_bounded(d->p, timed, scope, ctx, NAN);
       }
     }
     scr_closure_release(done);
@@ -928,7 +942,7 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
             ? ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *)) cb->fn)(cb, scr_testctx_retain(ctx))
             : ((ScrPromise * (*)(ScrClosure *)) cb->fn)(cb);
     if (!scr_exc_pending() && p) {
-      scr_test_await_bounded(p, timed, scope, ctx);
+      scr_test_await_bounded(p, timed, scope, ctx, NAN);
     }
     scr_promise_release(p);
   } else if (takes_ctx) {
@@ -1519,6 +1533,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     t->err = scr_exc_take();
     failed = true;
   } else if (t->cb) {
+    t->body_start_ms = scr_now_ms();
     scr_test_call(t->cb, t->flags, t, t, t);
     if (t->state != SCR_TS_PENDING) {
       /* Its parent timed out and cancelled it while the body ran: the
@@ -1551,8 +1566,16 @@ static void scr_test_run_node(ScrTestCtx *t) {
   if (!failed && t->plan >= 0 && t->plan_count != t->plan) {
     /* A shortfall waits out { wait } first, as Node holds the test open
      * for assertions its timers still run. */
-    if (t->plan_wait != -1 && t->plan_count < t->plan) scr_test_await_plan(t);
-    if (t->plan_count != t->plan) {
+    if (t->plan_wait != -1 && t->plan_count < t->plan) {
+      scr_test_await_plan(t);
+      if (scr_exc_pending()) {
+        /* The test's { timeout } fired while the plan waited: that timeout
+         * is the failure, as Node's stopTest wins the race. */
+        t->err = scr_exc_take();
+        failed = true;
+      }
+    }
+    if (!failed && t->plan_count != t->plan) {
       char buf[128];
       int n;
       if (t->plan_wait >= 0 && t->plan_count < t->plan) {

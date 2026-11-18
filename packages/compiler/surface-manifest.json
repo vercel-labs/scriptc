@@ -2360,6 +2360,13 @@
       "note": "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes"
     },
     {
+      "id": "node-builtin.perf_hooks.createHistogram",
+      "kind": "node-builtin",
+      "name": "perf_hooks.createHistogram",
+      "status": "static",
+      "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf and the percentiles Map"
+    },
+    {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
@@ -2398,6 +2405,13 @@
       "name": "perf_hooks.performance.mark",
       "status": "static",
       "note": "records a mark in the thread's performance timeline at the live clock or the given startTime"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.markResourceTiming",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.markResourceTiming",
+      "status": "static",
+      "note": "the PerformanceResourceTiming entries markResourceTiming builds from fetch timing info, clearResourceTimings and setResourceTimingBufferSize; the resource fields and toJSON"
     },
     {
       "id": "node-builtin.perf_hooks.performance.measure",

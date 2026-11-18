@@ -175,6 +175,12 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entryType",
   "perf.mark",
   "perf.measure",
+  // Resource timing entries and their buffer (scr_perf.c).
+  "perf.resourceMark",
+  "perf.resourceClear",
+  "perf.resourceBufferSize",
+  "perf.entryResourceNum",
+  "perf.entryResourceStr",
   // new PerformanceMark and the PerformanceObserver family: their
   // callbacks run from an immediate (scr_perf.c).
   "perf.markNew",
@@ -1088,6 +1094,7 @@ const WEBCRYPTO_ASYMMETRIC_NAMES: ReadonlySet<string> = new Set([
   "rsa-pss",
   "rsassa-pkcs1-v1_5",
   "x25519",
+  "x448",
 ]);
 
 /** Whether a string literal in the module names Ed25519, without regard
@@ -2314,7 +2321,7 @@ const RUNTIME_FEATURE_RULES = {
    * monitorEventLoopDelay): scr_perf_loop.c. */
   perfLoop: rule({
     fns: ["perf.idleTime", "worker.performance"],
-    prefixes: ["perf.loop", "perf.eld"],
+    prefixes: ["perf.loop", "perf.eld", "perf.histo"],
   }),
   /** scr_pki.c over the mbedTLS archive: asymmetric KeyObjects and
    * signatures. */

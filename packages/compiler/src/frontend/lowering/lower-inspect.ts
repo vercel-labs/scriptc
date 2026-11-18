@@ -2596,7 +2596,21 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             loc,
           },
           then: strLit("PerformanceMark", loc),
-          else_: strLit("PerformanceMeasure", loc),
+          else_: {
+            kind: "ternary",
+            cond: {
+              kind: "strEq",
+              negated: false,
+              left: get("entryType", STRING),
+              right: strLit("measure", loc),
+              type: BOOL,
+              loc,
+            },
+            then: strLit("PerformanceMeasure", loc),
+            else_: strLit("PerformanceResourceTiming", loc),
+            type: STRING,
+            loc,
+          },
           type: STRING,
           loc,
         };

@@ -60,6 +60,7 @@ import {
 import {
   BIGINT_T,
   KEY_ORDER_FIELD,
+  PERF_ENTRY_JSON_FIELDS,
   PERF_ENTRY_MARKER,
   PERF_NODE_TIMING_JSON_FIELDS,
   PERF_NODE_TIMING_MARKER,
@@ -1292,7 +1293,72 @@ function esOwnKeyOrder(names: string[]): string[] {
 export { PERF_ENTRY_MARKER };
 
 /** PerformanceEntry's toJSON fields, in toJSON's order. */
-export const PERF_ENTRY_FIELDS = ["name", "entryType", "startTime", "duration", "detail"];
+export const PERF_ENTRY_FIELDS: string[] = [...PERF_ENTRY_JSON_FIELDS];
+
+/** PerformanceResourceTiming's toJSON fields, in toJSON's order (Node's
+ * internal/perf/resource_timing.js). The class extends PerformanceEntry but
+ * its toJSON carries the resource fields instead of `detail`. */
+export const PERF_RESOURCE_TIMING_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "initiatorType",
+  "nextHopProtocol",
+  "workerStart",
+  "redirectStart",
+  "redirectEnd",
+  "fetchStart",
+  "domainLookupStart",
+  "domainLookupEnd",
+  "connectStart",
+  "connectEnd",
+  "secureConnectionStart",
+  "requestStart",
+  "finalResponseHeadersStart",
+  "firstInterimResponseStart",
+  "responseStart",
+  "responseEnd",
+  "transferSize",
+  "encodedBodySize",
+  "decodedBodySize",
+  "deliveryType",
+  "responseStatus",
+  "renderBlockingStatus",
+  "contentType",
+  "contentEncoding",
+] as const;
+
+/** The PerformanceResourceTiming members the entry record also carries:
+ * every resource field except the four base entry fields and the resource
+ * toJSON. Node's resource timings extend PerformanceEntry, so the fields
+ * live on the same record shape the entry classes share. */
+export const PERF_RESOURCE_FIELDS: readonly { name: string; type: "number" | "string" }[] = [
+  { name: "initiatorType", type: "string" },
+  { name: "nextHopProtocol", type: "string" },
+  { name: "workerStart", type: "number" },
+  { name: "redirectStart", type: "number" },
+  { name: "redirectEnd", type: "number" },
+  { name: "fetchStart", type: "number" },
+  { name: "domainLookupStart", type: "number" },
+  { name: "domainLookupEnd", type: "number" },
+  { name: "connectStart", type: "number" },
+  { name: "connectEnd", type: "number" },
+  { name: "secureConnectionStart", type: "number" },
+  { name: "requestStart", type: "number" },
+  { name: "finalResponseHeadersStart", type: "number" },
+  { name: "firstInterimResponseStart", type: "number" },
+  { name: "responseStart", type: "number" },
+  { name: "responseEnd", type: "number" },
+  { name: "transferSize", type: "number" },
+  { name: "encodedBodySize", type: "number" },
+  { name: "decodedBodySize", type: "number" },
+  { name: "deliveryType", type: "string" },
+  { name: "responseStatus", type: "number" },
+  { name: "renderBlockingStatus", type: "string" },
+  { name: "contentType", type: "string" },
+  { name: "contentEncoding", type: "string" },
+];
 
 /** The record shape behind PerformanceEntry, PerformanceMark and
  * PerformanceMeasure values (see mapType). The marker is an always-absent
@@ -1306,7 +1372,11 @@ export function perfEntryShape(shapes: ShapeRegistry, unions: UnionRegistry): st
       { name: "entryType", type: STRING },
       { name: "name", type: STRING },
       { name: "startTime", type: F64 },
-    ],
+      ...PERF_RESOURCE_FIELDS.map((field) => ({
+        name: field.name,
+        type: field.type === "number" ? F64 : STRING,
+      })),
+    ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     false,
     undefined,
     PERF_ENTRY_FIELDS,
@@ -2744,7 +2814,9 @@ function isWorkerHandleSymbol(
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
         (isDeclaredInAmbientModule(d, "worker_threads") ||
-          (ts.symbolName(symbol) === "BroadcastChannel" &&
+          ((ts.symbolName(symbol) === "MessagePort" ||
+            ts.symbolName(symbol) === "MessageChannel" ||
+            ts.symbolName(symbol) === "BroadcastChannel") &&
             isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName))),
     )
   );
@@ -6842,7 +6914,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     ((psym !== undefined && psymName === "PerformanceEntry") ||
       (psym !== undefined && psymName === "PerformanceMark") ||
-      (psym !== undefined && psymName === "PerformanceMeasure")) &&
+      (psym !== undefined && psymName === "PerformanceMeasure") ||
+      (psym !== undefined && psymName === "PerformanceResourceTiming")) &&
     psym.declarations.some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
@@ -6875,7 +6948,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
   // runtime's histogram table, like a timer handle. Its members lower over
   // the handle (builtins/performance.ts).
-  if (isStdlibInterface("IntervalHistogram")) return F64;
+  // Histogram values are refcounted runtime handle objects: an
+  // IntervalHistogram (monitorEventLoopDelay) and a RecordableHistogram
+  // (createHistogram) are both checked-dynamic handles whose release frees
+  // the buckets when the value dies, so a short-lived histogram does not
+  // stay in a thread table until exit. The members lower over the handle,
+  // which carries the class its fields come from.
+  if (
+    isStdlibInterface("IntervalHistogram") ||
+    isStdlibInterface("Histogram") ||
+    isStdlibInterface("RecordableHistogram")
+  )
+    return DYN;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",

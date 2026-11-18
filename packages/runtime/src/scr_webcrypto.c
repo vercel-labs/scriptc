@@ -373,7 +373,7 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
  * process-warning unit is linked, and otherwise to the default report. It
  * does not go through scr_emit_warning, which would make every WebCrypto
  * program link that unit. */
-static SCR_TL bool scr_wc_experimental_warned[14];
+static SCR_TL bool scr_wc_experimental_warned[17];
 
 static void scr_wc_warning_tick(ScrClosure *self) {
   ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
@@ -400,7 +400,7 @@ static void scr_wc_warn_experimental_algorithm(const char *canonical) {
   static const char *const names[] = {"SHA3-256", "SHA3-384",      "SHA3-512", "AES-OCB",
                                       "ChaCha20-Poly1305", "KMAC128", "KMAC256", "Argon2d",
                                       "Argon2i", "Argon2id", "cSHAKE128", "cSHAKE256",
-                                      "TurboSHAKE128", "TurboSHAKE256"};
+                                      "TurboSHAKE128", "TurboSHAKE256", "KT128", "KT256", "X448"};
   for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
     if (strcmp(canonical, names[i]) != 0) continue;
     if (scr_wc_experimental_warned[i]) return;
@@ -1076,13 +1076,13 @@ static ScrBytes *scr_wc_jwk_secret(const ScrWcJwk *jwk, bool extractable, long u
 const ScrWcAsymmetric *scr_wc_asymmetric = NULL;
 
 static const char *const scr_wc_asymmetric_names[] = {
-    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519",
+    "ECDSA", "Ed25519", "RSA-PSS", "RSASSA-PKCS1-v1_5", "ECDH", "RSA-OAEP", "X25519", "X448",
 };
 
 /* Whether an asymmetric algorithm name is one of the key-agreement ones
  * (deriveBits and deriveKey). */
 static bool scr_wc_is_derive_algorithm(const char *name) {
-  return strcmp(name, "ECDH") == 0 || strcmp(name, "X25519") == 0;
+  return strcmp(name, "ECDH") == 0 || strcmp(name, "X25519") == 0 || strcmp(name, "X448") == 0;
 }
 
 /* Whether the AlgorithmIdentifier at args[index] names ECDSA,
@@ -1462,6 +1462,15 @@ static ScrDyn *scr_wc_key_object_to_crypto_key_values(const ScrDyn *key, ScrDyn 
                     (key->v.handle.tag == SCR_DYNH_PRIVATE_KEY ||
                      key->v.handle.tag == SCR_DYNH_PUBLIC_KEY);
   if (asymmetric) {
+    /* X448 reports its ExperimentalWarning when the algorithm normalizes,
+     * as importKey and generateKey do; peek at the name without disturbing
+     * the conversion's own error order. */
+    ScrStr *name = NULL;
+    if (algorithm->kind == SCR_DYN_STR) name = scr_str_retain(algorithm->v.str);
+    if (name) {
+      if (scr_wc_ascii_ieq(name, "X448")) scr_wc_warn_experimental_algorithm("X448");
+      scr_str_release(name);
+    }
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->to_crypto_key) {
       scr_wc_unsupported("toCryptoKey", "an asymmetric KeyObject");
       return NULL;
@@ -1987,6 +1996,42 @@ static bool scr_wc_cshake_buffer(const ScrDyn *dict, const char *member, ScrByte
   return ok;
 }
 
+/* KangarooTwelveParams: the required outputLength in bits (a positive whole
+ * number of bytes) and the optional customization. */
+static bool scr_wc_k12_params(ScrDyn *identifier, const char *canonical, double *bits_out,
+                              ScrBytes **custom_out) {
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("KangarooTwelveParams", "outputLength");
+    return false;
+  }
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  bool ok = true;
+  ScrDyn *length = scr_wc_member(plain, "outputLength");
+  if (length->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("KangarooTwelveParams", "outputLength");
+    ok = false;
+  } else if (!scr_wc_enforce_range(scr_wc_normalize_prefix, "outputLength in passed algorithm",
+                                   length, 4294967295.0, bits_out)) {
+    ok = false;
+  }
+  scr_dyn_release(length);
+  if (ok) ok = scr_wc_cshake_buffer(plain, "customization", custom_out);
+  scr_dyn_release(plain);
+  if (!ok) return false;
+  if (*custom_out && scr_bytes_byte_len(*custom_out) > 512) {
+    scr_throw_domex("OperationError",
+                    "KangarooTwelveParams.customization must be at most 512 bytes");
+    return false;
+  }
+  if (*bits_out < 8 || fmod(*bits_out, 8) != 0 || *bits_out > 4294967288.0) {
+    scr_throw_domex("OperationError", "Invalid KangarooTwelveParams outputLength");
+    return false;
+  }
+  scr_wc_warn_experimental_algorithm(canonical);
+  return true;
+}
+
 /* TurboShakeParams: the required outputLength in bits (a positive whole
  * number of bytes) and the optional domainSeparation in 0x01..0x7f,
  * defaulting to 0x1f. */
@@ -2133,6 +2178,23 @@ ScrPromise *scr_webcrypto_digest(ScrDyn *args) {
       out = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
       scr_turboshake_hash(strcmp(canonical, "TurboSHAKE256") == 0, (unsigned char)domain,
                           view->data, (size_t)scr_bytes_byte_len(view), out->data, out_bytes);
+      goto done;
+    }
+    if (canonical != NULL && (strcmp(canonical, "KT128") == 0 || strcmp(canonical, "KT256") == 0)) {
+      double bits = 0;
+      ScrBytes *custom = NULL;
+      if (!scr_wc_k12_params(a.v[0], canonical, &bits, &custom)) {
+        if (custom) scr_bytes_release(custom);
+        goto done;
+      }
+      size_t out_bytes = (size_t)(bits / 8);
+      ScrBytes *view = data;
+      SCR_BYTES_SNAPSHOT(view);
+      out = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
+      scr_k12_hash(strcmp(canonical, "KT256") == 0, custom ? custom->data : NULL,
+                   custom ? (size_t)scr_bytes_byte_len(custom) : 0, view->data,
+                   (size_t)scr_bytes_byte_len(view), out->data, out_bytes);
+      if (custom) scr_bytes_release(custom);
       goto done;
     }
   }
@@ -3035,6 +3097,7 @@ ScrPromise *scr_webcrypto_derive_bits(ScrDyn *args) {
     goto done;
   const char *asymmetric = scr_wc_asymmetric_name(args, 0);
   if (asymmetric && scr_wc_is_derive_algorithm(asymmetric)) {
+    scr_wc_warn_experimental_algorithm(asymmetric);
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
       result = scr_wc_asymmetric_missing("deriveBits", asymmetric);
       goto done;
@@ -3150,6 +3213,7 @@ ScrPromise *scr_webcrypto_derive_key(ScrDyn *args) {
     goto done;
   }
   if (agreement) {
+    scr_wc_warn_experimental_algorithm(asymmetric);
     if (!scr_wc_asymmetric || !scr_wc_asymmetric->derive_bits) {
       result = scr_wc_asymmetric_missing("deriveKey", asymmetric);
       goto done;

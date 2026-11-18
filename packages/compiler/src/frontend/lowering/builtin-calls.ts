@@ -7,6 +7,7 @@ import {
 import {
   lowerEventLoopUtilizationCall,
   lowerMonitorEventLoopDelayCall,
+  lowerCreateHistogramCall,
 } from "./builtins/performance.js";
 import {
   lowerEnvironmentData,
@@ -196,6 +197,9 @@ export function lowerBuiltinCall(
   }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
     return lowerMonitorEventLoopDelayCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "createHistogram") {
+    return lowerCreateHistogramCall(lowerer, expr);
   }
   if (bi.module === "perf_hooks" && bi.member === "eventLoopUtilization") {
     return lowerEventLoopUtilizationCall(lowerer, expr);

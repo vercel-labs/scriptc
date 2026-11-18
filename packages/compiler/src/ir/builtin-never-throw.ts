@@ -12,6 +12,23 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // perf_hooks histogram readings and state: the handle indexes the
+  // thread's table, every selector is arithmetic over it, and none runs
+  // program code. (Creating and recording validate their arguments, so
+  // those are MAY_THROW.)
+  "perf.histoStat",
+  "perf.histoStatBig",
+  "perf.histoPercentile",
+  "perf.histoPercentileBig",
+  "perf.histoCountAt",
+  "perf.histoCdf",
+  "perf.histoCcdf",
+  "perf.histoRecordDelta",
+  "perf.histoReset",
+  "perf.histoPercentilesCount",
+  "perf.histoPercentilesKey",
+  "perf.histoPercentilesValue",
+  "perf.histoDispose",
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",
@@ -87,6 +104,11 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // The resource-timing field accessors read a view entry's own numbers and
+  // strings; no program code runs.
+  "perf.entryResourceNum",
+  "perf.entryResourceStr",
+
   // publish runs every subscriber and catches its throw: like Node's
   // process.nextTick(triggerUncaughtException), the exception is delivered
   // on a later tick instead of leaving the call, so publish itself raises

@@ -15,67 +15,76 @@
  *                           without the error when this side failed), then
  *                           completes the destruction.
  *
- * Ownership: the pair state BORROWS both streams (Node's #otherSide is a
- * plain field); each side's stream holds a PairSide in its native state
- * slot that clears the pair's pointer for that side when the stream is
- * freed. The hooks hold the pair state, so the two streams and their hooks
- * never form an untraced reference cycle. */
+ * An option callback the program passed (read, write, final or destroy) is
+ * an own method on the instance in Node, so it shadows DuplexSide's
+ * prototype hook; the hook is installed here only for the options the
+ * program did not supply.
+ *
+ * Ownership: the pair state retains both streams (Node's #otherSide is a
+ * strong field), and every hook holds the pair, so the streams and the pair
+ * form a reference cycle the collector can trace: dropping one endpoint
+ * keeps the other alive — a pending write still reaches its EOF — and the
+ * collector reclaims the pair once both are unreachable. */
 #include "scr_runtime.h"
 #include "scr_stream.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct Pair Pair;
 struct Pair {
   size_t rc;
-  ScrStream *s[2]; /* borrowed; NULL once that stream is freed */
+  ScrStream *s[2]; /* +1 each */
   /* A write on that side is waiting for the peer's _read. */
   bool wait[2];
 };
+
+static void pair_trace(void *h, ScrTraceVisit visit, void *ctx) {
+  Pair *p = h;
+  for (int i = 0; i < 2; i++) {
+    if (p->s[i]) visit(p->s[i], ctx);
+  }
+}
+
+/* The collector frees the traced streams itself; this just frees the pair. */
+static void pair_gcfree(void *h) {
+  scr_obj_free_note();
+  scr_cyc_free(h);
+}
+
+static void pair_destroy(void *h) {
+  Pair *p = h;
+  for (int i = 0; i < 2; i++) {
+    ScrStream *s = p->s[i];
+    p->s[i] = NULL;
+    if (s) scr_stream_release(s);
+  }
+  pair_gcfree(p);
+}
 
 static Pair *pair_ref(Pair *p) {
   p->rc++;
   return p;
 }
 
-static void pair_unref(Pair *p) {
-  if (--p->rc > 0) return;
-  free(p);
-}
-
-/* The native state each side's stream owns: it drops that side from the
- * pair when the stream is freed, so the borrowed pointers never dangle. */
-typedef struct PairSide PairSide;
-struct PairSide {
-  size_t rc;
-  Pair *pair; /* +1 */
-  int side;
-};
-
-static void pair_side_unref(void *v) {
-  PairSide *side = v;
-  if (--side->rc > 0) return;
-  if (side->pair->s[side->side] != NULL) side->pair->s[side->side] = NULL;
-  pair_unref(side->pair);
-  free(side);
-}
-
-static PairSide *pair_side_new(Pair *p, int side) {
-  PairSide *s = calloc(1, sizeof *s);
-  if (!s) abort();
-  s->rc = 1;
-  s->pair = pair_ref(p);
-  s->side = side;
-  return s;
+static void pair_unref(void *h) {
+  Pair *p = h;
+  if (--p->rc == 0) {
+    scr_cyc_dead(p);
+    scr_rc_destroy(p, pair_destroy);
+  } else {
+    scr_cyc_released(p);
+  }
 }
 
 static void *pair_ref_v(void *p) { return pair_ref(p); }
-static void pair_unref_v(void *p) { pair_unref(p); }
 
-/* A hook closure over the pair. */
+static ScrCycType pair_cyc_type = { &pair_trace, &pair_gcfree, SCR_CYC_KIND_NONE, 0 };
+
+/* A hook closure over the pair (+1). */
 static ScrClosure *pair_closure(Pair *p, void *fn) {
   ScrClosure *cl = scr_closure_new(fn, 1);
-  cl->caps[0] = scr_box_new_obj(pair_ref_v, pair_unref_v, NULL);
+  cl->caps[0] = scr_box_new_obj(pair_ref_v, pair_unref, pair_trace);
   scr_box_set_ref(cl->caps[0], pair_ref(p));
   return cl;
 }
@@ -83,7 +92,7 @@ static ScrClosure *pair_closure(Pair *p, void *fn) {
 /* A hook closure over the pair and a side. */
 static ScrClosure *pair_side_closure(Pair *p, void *fn, int side, bool had_error) {
   ScrClosure *cl = scr_closure_new(fn, 3);
-  cl->caps[0] = scr_box_new_obj(pair_ref_v, pair_unref_v, NULL);
+  cl->caps[0] = scr_box_new_obj(pair_ref_v, pair_unref, pair_trace);
   scr_box_set_ref(cl->caps[0], pair_ref(p));
   cl->caps[1] = scr_box_new(SCR_BOX_F64);
   scr_box_set_f64(cl->caps[1], (double)side);
@@ -95,6 +104,17 @@ static ScrClosure *pair_side_closure(Pair *p, void *fn, int side, bool had_error
 static Pair *pair_of(ScrClosure *cl) { return scr_box_get_ref(cl->caps[0]); /* +1 */ }
 
 static int pair_side(const Pair *p, const ScrStream *s) { return s == p->s[0] ? 0 : 1; }
+
+/* Whether the options object supplies a function for `key` (Node's
+ * `typeof options.write === 'function'`): such a callback is an own method
+ * that shadows the pair's hook. */
+static bool pair_option_fn(const ScrDyn *opts, const char *key) {
+  if (opts == NULL || opts->kind != SCR_DYN_OBJ) return false;
+  ScrDyn *v = scr_dyn_obj_read(opts, key, strlen(key));
+  bool fn = v != NULL && v->kind == SCR_DYN_FUNC;
+  if (v) scr_dyn_release(v);
+  return fn;
+}
 
 /* The zero-length write's completion, on a later tick (Node's
  * process.nextTick(callback) in _write). */
@@ -197,7 +217,7 @@ static void pair_peer_tick(ScrClosure *cl) {
   pair_unref(p);
 }
 
-static void pair_destroy(ScrClosure *cl, ScrStream *s, ScrError *err) {
+static void pair_destroy_hook(ScrClosure *cl, ScrStream *s, ScrError *err) {
   Pair *p = pair_of(cl);
   int side = pair_side(p, s);
   /* Node reads `otherSide.destroyed` when the tick runs, not here. */
@@ -234,29 +254,33 @@ ScrArr *scr_stream_duplexpair(ScrDyn *options) {
     if (materialized) scr_dyn_release(materialized);
     return NULL;
   }
-  if (materialized) scr_dyn_release(materialized);
-  Pair *p = calloc(1, sizeof *p);
+  Pair *p = scr_cyc_alloc(sizeof *p, &pair_cyc_type);
   if (!p) abort();
+  scr_obj_alloc_note();
   p->rc = 1;
-  p->s[0] = first;
+  p->s[0] = first;  /* the creation references move into the pair */
   p->s[1] = second;
-  scr_stream_set_read(first, pair_closure(p, (void *)&pair_read), &pair_read);
-  scr_stream_set_write(first, pair_closure(p, (void *)&pair_write), &pair_write);
-  scr_stream_set_final(first, pair_closure(p, (void *)&pair_final), &pair_final);
-  scr_stream_set_destroy(first, pair_closure(p, (void *)&pair_destroy), &pair_destroy);
-  scr_stream_set_read(second, pair_closure(p, (void *)&pair_read), &pair_read);
-  scr_stream_set_write(second, pair_closure(p, (void *)&pair_write), &pair_write);
-  scr_stream_set_final(second, pair_closure(p, (void *)&pair_final), &pair_final);
-  scr_stream_set_destroy(second, pair_closure(p, (void *)&pair_destroy), &pair_destroy);
-  /* Each side's native state lets that side's teardown clear the pair's
-   * borrowed pointer. */
-  scr_stream_set_native(first, pair_side_new(p, 0), &pair_side_unref);
-  scr_stream_set_native(second, pair_side_new(p, 1), &pair_side_unref);
+  /* Node's own callbacks shadow the prototype hooks, one key at a time. */
+  if (!pair_option_fn(options, "read"))
+    scr_stream_set_read(first, pair_closure(p, (void *)&pair_read), &pair_read);
+  if (!pair_option_fn(options, "write"))
+    scr_stream_set_write(first, pair_closure(p, (void *)&pair_write), &pair_write);
+  if (!pair_option_fn(options, "final"))
+    scr_stream_set_final(first, pair_closure(p, (void *)&pair_final), &pair_final);
+  if (!pair_option_fn(options, "destroy"))
+    scr_stream_set_destroy(first, pair_closure(p, (void *)&pair_destroy_hook), &pair_destroy_hook);
+  if (!pair_option_fn(options, "read"))
+    scr_stream_set_read(second, pair_closure(p, (void *)&pair_read), &pair_read);
+  if (!pair_option_fn(options, "write"))
+    scr_stream_set_write(second, pair_closure(p, (void *)&pair_write), &pair_write);
+  if (!pair_option_fn(options, "final"))
+    scr_stream_set_final(second, pair_closure(p, (void *)&pair_final), &pair_final);
+  if (!pair_option_fn(options, "destroy"))
+    scr_stream_set_destroy(second, pair_closure(p, (void *)&pair_destroy_hook), &pair_destroy_hook);
   ScrArr *out = scr_arr_new_ops(&pair_arr_ops, 2);
   scr_arr_set_ref(out, 0, scr_stream_retain(first));
   scr_arr_set_ref(out, 1, scr_stream_retain(second));
-  pair_unref(p); /* the hooks and the side states own the pair now */
-  scr_stream_release(first); /* the array and side state hold it */
-  scr_stream_release(second);
+  if (materialized) scr_dyn_release(materialized);
+  pair_unref(p); /* the hooks own the pair now */
   return out;
 }

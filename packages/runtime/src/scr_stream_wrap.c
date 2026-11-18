@@ -12,9 +12,11 @@
  * source this unit adapts, that loop copies nothing — the same wrapper
  * surface Node builds.
  *
- * Ownership: the context BORROWS both streams; each one's native state slot
- * clears the context's pointer for that side when the stream is freed. The
- * listeners and the _read hook hold the context, so no untraced cycle forms. */
+ * Ownership: the context retains both streams, as Node's listeners capture
+ * the wrapper and the source: a source the program drops stays readable
+ * while the wrapper is paused on it. The context, both streams and the hooks
+ * form a reference cycle the collector traces, so it is reclaimed once the
+ * program can reach neither side. */
 #include "scr_runtime.h"
 #include "scr_stream.h"
 
@@ -24,54 +26,55 @@
 typedef struct WrapCtx WrapCtx;
 struct WrapCtx {
   size_t rc;
-  ScrStream *self; /* borrowed; NULL once freed */
-  ScrStream *src;  /* borrowed; NULL once freed */
+  ScrStream *self; /* +1 */
+  ScrStream *src;  /* +1 */
   bool paused;
 };
+
+static void wrap_trace(void *h, ScrTraceVisit visit, void *ctx) {
+  WrapCtx *c = h;
+  if (c->self) visit(c->self, ctx);
+  if (c->src) visit(c->src, ctx);
+}
+
+/* The collector frees the traced streams itself; this just frees the block. */
+static void wrap_gcfree(void *h) {
+  scr_obj_free_note();
+  scr_cyc_free(h);
+}
+
+static void wrap_destroy_ctx(void *h) {
+  WrapCtx *c = h;
+  ScrStream *self = c->self;
+  ScrStream *src = c->src;
+  c->self = c->src = NULL;
+  if (self) scr_stream_release(self);
+  if (src) scr_stream_release(src);
+  wrap_gcfree(c);
+}
 
 static WrapCtx *wrap_ref(WrapCtx *c) {
   c->rc++;
   return c;
 }
 
-static void wrap_unref(WrapCtx *c) {
-  if (--c->rc > 0) return;
-  free(c);
-}
-
-/* One side's native state: it drops the context's borrowed pointer when
- * that stream is freed. */
-typedef struct WrapSide WrapSide;
-struct WrapSide {
-  size_t rc;
-  WrapCtx *ctx; /* +1 */
-  bool source;
-};
-
-static void wrap_side_unref(void *v) {
-  WrapSide *side = v;
-  if (--side->rc > 0) return;
-  if (side->ctx->self != NULL && !side->source) side->ctx->self = NULL;
-  if (side->ctx->src != NULL && side->source) side->ctx->src = NULL;
-  wrap_unref(side->ctx);
-  free(side);
-}
-
-static WrapSide *wrap_side_new(WrapCtx *c, bool source) {
-  WrapSide *s = calloc(1, sizeof *s);
-  if (!s) abort();
-  s->rc = 1;
-  s->ctx = wrap_ref(c);
-  s->source = source;
-  return s;
+static void wrap_unref(void *h) {
+  WrapCtx *c = h;
+  if (--c->rc == 0) {
+    scr_cyc_dead(c);
+    scr_rc_destroy(c, wrap_destroy_ctx);
+  } else {
+    scr_cyc_released(c);
+  }
 }
 
 static void *wrap_ref_v(void *p) { return wrap_ref(p); }
-static void wrap_unref_v(void *p) { wrap_unref(p); }
+
+static ScrCycType wrap_cyc_type = { &wrap_trace, &wrap_gcfree, SCR_CYC_KIND_NONE, 0 };
 
 static ScrClosure *wrap_closure(WrapCtx *c, void *fn) {
   ScrClosure *cl = scr_closure_new(fn, 1);
-  cl->caps[0] = scr_box_new_obj(wrap_ref_v, wrap_unref_v, NULL);
+  cl->caps[0] = scr_box_new_obj(wrap_ref_v, wrap_unref, wrap_trace);
   scr_box_set_ref(cl->caps[0], wrap_ref(c));
   return cl;
 }
@@ -141,29 +144,20 @@ static void wrap_read(ScrClosure *cl, ScrStream *s, double size) {
   wrap_unref(c);
 }
 
-/* readable.wrap(stream): this readable (+1). A stream that already carries
- * another unit's native state (an fs or zlib stream) cannot host the wrap
- * side state, so it is refused by name. */
+/* readable.wrap(stream): this readable (+1). */
 ScrStream *scr_stream_wrap(ScrStream *self, ScrStream *src) {
-  if (scr_stream_has_native_state(self) || (src != self && scr_stream_has_native_state(src))) {
-    static const char message[] =
-        "readable.wrap over a stream with native state (an fs or zlib stream) is not supported yet";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return NULL;
-  }
-  WrapCtx *c = calloc(1, sizeof *c);
+  WrapCtx *c = scr_cyc_alloc(sizeof *c, &wrap_cyc_type);
   if (!c) abort();
+  scr_obj_alloc_note();
   c->rc = 1;
-  c->self = self;
-  c->src = src;
+  c->self = scr_stream_retain(self);
+  c->src = scr_stream_retain(src);
   scr_stream_set_read(self, wrap_closure(c, (void *)&wrap_read), &wrap_read);
   wrap_on(src, "data", wrap_closure(c, (void *)&wrap_data), scr_ee_inv_fixed3);
   wrap_on(src, "end", wrap_closure(c, (void *)&wrap_end), scr_ee_inv_fixed0);
   wrap_on(src, "error", wrap_closure(c, (void *)&wrap_error), scr_ee_inv_fixed1);
   wrap_on(src, "close", wrap_closure(c, (void *)&wrap_close), scr_ee_inv_fixed0);
   wrap_on(src, "destroy", wrap_closure(c, (void *)&wrap_close), scr_ee_inv_fixed0);
-  scr_stream_set_native(self, wrap_side_new(c, false), &wrap_side_unref);
-  scr_stream_set_native(src, wrap_side_new(c, true), &wrap_side_unref);
-  wrap_unref(c); /* the hooks and the side states own the context now */
+  wrap_unref(c); /* the hooks own the context now */
   return scr_stream_retain(self);
 }

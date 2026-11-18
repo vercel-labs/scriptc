@@ -1836,12 +1836,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_stream_wrap.c",
-  "function": "scr_stream_wrap",
-  "message": "readable.wrap over a stream with native state (an fs or zlib stream) is not supported yet",
-  "code": "SC2020"
- },
- {
   "file": "scr_stream_wrap_dyn.c",
   "function": "scr_stream_wrap_dyn",
   "message": "readable.wrap over a checked-dynamic value that is not a native readable stream is not supported yet",

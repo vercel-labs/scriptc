@@ -655,9 +655,6 @@ void scr_stream_set_flush_on_prefinish(ScrStream *s);
 void scr_stream_set_destroyed(ScrStream *s, bool destroyed);
 void scr_stream_set_native(ScrStream *s, void *state, void (*release)(void *));
 void *scr_stream_native(ScrStream *s, void (*release)(void *));
-/* Whether some unit attached native state to the stream (fs and zlib streams
- * do). A stream that carries it cannot host another unit's state slot. */
-bool scr_stream_has_native_state(const ScrStream *s);
 
 /* Completion entries for the compiler-emitted done closures (err/data
  * MOVE; NULLs = absent). */

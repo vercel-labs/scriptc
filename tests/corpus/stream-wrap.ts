@@ -59,6 +59,25 @@ async function main(): Promise<void> {
   }
 
   {
+    // A source the program drops stays alive through the wrapper: the chunks
+    // still buffered in the paused source arrive when the wrapper reads.
+    function makeWrapper(): Readable {
+      const source = new PassThrough();
+      const wrapped = new Readable({ highWaterMark: 1, read() {} }).wrap(source);
+      source.write("a");
+      source.write("b");
+      source.write("c");
+      source.end("d");
+      return wrapped;
+    }
+    const wrapped = makeWrapper();
+    const chunks: string[] = [];
+    wrapped.on("data", (data: Buffer) => chunks.push(String(data)));
+    await new Promise<void>((resolve) => wrapped.once("end", resolve));
+    log.push(`dropped source ${chunks.join("|")}`);
+  }
+
+  {
     // A clean source close destroys the wrapper without an error.
     const source = new PassThrough();
     const wrapped = new Readable({ read() {} }).wrap(source);

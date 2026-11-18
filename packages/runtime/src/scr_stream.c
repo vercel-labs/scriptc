@@ -3139,10 +3139,6 @@ void scr_stream_set_native(ScrStream *s, void *state /*moves*/, void (*release)(
   st->native_release = release;
 }
 
-bool scr_stream_has_native_state(const ScrStream *s) {
-  return s != NULL && s->st != NULL && s->st->native != NULL;
-}
-
 void *scr_stream_native(ScrStream *s, void (*release)(void *)) {
   ScrStreamState *st = s->st;
   return st != NULL && st->native != NULL && st->native_release == release ? st->native : NULL;

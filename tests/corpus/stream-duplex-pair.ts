@@ -2,7 +2,7 @@
 // the other side, the write callback completes when that side reads the
 // chunk, end() ends the other side's readable and this side finishes after
 // it, and destroying one side closes the other.
-import { duplexPair } from "node:stream";
+import { Duplex, duplexPair } from "node:stream";
 
 const log: string[] = [];
 
@@ -69,6 +69,40 @@ async function main(): Promise<void> {
     left.end();
     await ended;
     log.push(`objects ${got.length} ${JSON.stringify(got)}`);
+  }
+
+  {
+    // A dropped endpoint stays alive through the pair: the survivor still
+    // receives the data written before the drop and the peer's 'end'.
+    function survivor(): Duplex {
+      const pair = duplexPair();
+      pair[0].write("kept");
+      pair[0].end();
+      return pair[1];
+    }
+    const right = survivor();
+    const chunks: string[] = [];
+    right.on("data", (data: Buffer) => chunks.push(String(data)));
+    await new Promise<void>((resolve) => right.once("end", resolve));
+    log.push(`survivor ${chunks.join("|")}`);
+  }
+
+  {
+    // An option callback is an own method that shadows the pair's hook, as
+    // in Node: the custom write runs and the peer receives nothing.
+    const writes: string[] = [];
+    const [left, right] = duplexPair({
+      write(chunk: Buffer, _encoding: string, callback: (error?: Error | null) => void) {
+        writes.push(String(chunk));
+        callback();
+      },
+    });
+    const got: string[] = [];
+    right.on("data", (data: Buffer) => got.push(String(data)));
+    left.write("custom");
+    left.end();
+    await ticks(2);
+    log.push(`custom write ${writes.join("|")} peer ${got.length}`);
   }
 
   {

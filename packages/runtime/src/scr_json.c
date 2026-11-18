@@ -4617,8 +4617,48 @@ static bool scr_dyn_canonical_own_index(const ScrStr *key, size_t length);
 
 static ScrDyn *scr_dyn_proxy_own_descriptor_held(const ScrDyn *value, const ScrStr *key);
 
+/* A handle class's own properties, when its ops declare them (a
+ * DatabaseSync's limits object). NULL when the class has none, or with an
+ * exception pending when building the values threw. */
+static ScrDyn *scr_dyn_handle_own_names(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_HANDLE) return NULL;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(v);
+  return ops->own_names ? ops->own_names(v->v.handle.ptr) : NULL;
+}
+
+static ScrDyn *scr_dyn_handle_own_view(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_HANDLE) return NULL;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(v);
+  return ops->own_view ? ops->own_view(v->v.handle.ptr) : NULL;
+}
+
+/* Whether `key` is one of a handle class's own property names. */
+static bool scr_dyn_handle_own_name(const ScrDyn *v, const ScrStr *key) {
+  ScrDyn *names = scr_dyn_handle_own_names(v);
+  if (!names) return false;
+  bool found = false;
+  for (size_t i = 0; i < names->v.arr.len && !found; i++) {
+    const ScrDyn *name = names->v.arr.items[i];
+    if (name->kind == SCR_DYN_STR && name->v.str->len == key->len &&
+        memcmp(name->v.str->data, key->data, key->len) == 0)
+      found = true;
+  }
+  scr_dyn_release(names);
+  return found;
+}
+
 ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
+  if (value->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(value)->own_names) {
+    /* An absent name is absent without reading native state (Node answers
+     * undefined for it even on a closed database). */
+    if (!scr_dyn_handle_own_name(value, key)) return scr_dyn_retain(scr_dyn_undefined());
+    ScrDyn *view = scr_dyn_handle_own_view(value);
+    if (!view) return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+    ScrDyn *descriptor = scr_dyn_own_descriptor(view, key);
+    scr_dyn_release(view);
+    return descriptor;
+  }
   if (value->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(value);
     ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_own_descriptor(view, key);
@@ -9654,6 +9694,9 @@ static bool scr_dyn_handle_in(const ScrDyn *d, const ScrStr *k) {
     if (strlen(methods[i].name) == k->len && memcmp(methods[i].name, k->data, k->len) == 0) return true;
   for (size_t i = 0; accessors && accessors[i].name; i++)
     if (strlen(accessors[i].name) == k->len && memcmp(accessors[i].name, k->data, k->len) == 0) return true;
+  /* A class's own property names exist without reading native state (a
+   * closed database's limits). */
+  if (scr_dyn_handle_own_name(d, k)) return true;
   ScrDyn *value = ops->get ? ops->get(d->v.handle.ptr, k->data, k->len) : NULL;
   if (!value) return scr_dyn_object_proto_name(k);
   scr_dyn_release(value);
@@ -12713,7 +12756,7 @@ ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
     return NULL;
   }
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_PROXY && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR && target->kind != SCR_DYN_STR && target->kind != SCR_DYN_BOOL && target->kind != SCR_DYN_NUM && target->kind != SCR_DYN_TYPED_REF && target->kind != SCR_DYN_BYTES) {
+  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_PROXY && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR && target->kind != SCR_DYN_STR && target->kind != SCR_DYN_BOOL && target->kind != SCR_DYN_NUM && target->kind != SCR_DYN_TYPED_REF && target->kind != SCR_DYN_BYTES && target->kind != SCR_DYN_HANDLE) {
     static const char msg[] = "Object.getOwnPropertyDescriptor on this value is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
@@ -13187,6 +13230,18 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
     return present;
   }
   case SCR_DYN_HANDLE:
+    if (scr_dyn_handle_ops_of(d)->own_view) {
+      /* The class's own enumerable properties, read on this call. */
+      ScrDyn *view = scr_dyn_handle_own_view(d);
+      if (!view) {
+        if (scr_exc_pending()) return true;
+        scr_jb_puts(b, "{}");
+        return true;
+      }
+      bool present = scr_dyn_json_write(b, view);
+      scr_dyn_release(view);
+      return present;
+    }
     if (scr_dyn_handle_ops_of(d)->json_empty_object) {
       /* No own enumerable properties (Blob, File). */
       scr_jb_puts(b, "{}");
@@ -15322,6 +15377,12 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_STR)
     return scr_dyn_canonical_own_index(key, (size_t)scr_str_utf16_len(v->v.str));
   if (v->kind == SCR_DYN_BYTES) return scr_dyn_bytes_in(v, key);
+  if (v->kind == SCR_DYN_HANDLE) {
+    /* The class's own names answer without reading native state (for-in
+     * rechecks presence on every visit), then the modeled members. */
+    if (scr_dyn_handle_own_name(v, key)) return true;
+    return scr_dyn_handle_in(v, key);
+  }
   return false;
 }
 
@@ -18274,6 +18335,11 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
     (void)scr_dyn_string_delete_own(recv, key, strict);
     return;
   }
+  if (recv->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(recv)->delete_key) {
+    if (!scr_dyn_handle_ops_of(recv)->delete_key(recv->v.handle.ptr, key->data, key->len) && strict)
+      scr_dyn_throw_property(recv, key->data, key->len, true);
+    return;
+  }
   if (recv->kind == SCR_DYN_BOOL || recv->kind == SCR_DYN_NUM ||
       recv->kind == SCR_DYN_BIGINT || recv->kind == SCR_DYN_SYMBOL) {
     /* Every other primitive's ToObject wrapper owns no property, so the
@@ -20719,6 +20785,11 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
+  if (value->kind == SCR_DYN_HANDLE) {
+    ScrDyn *names = scr_dyn_handle_own_names(value);
+    if (names) return names;
+    if (scr_exc_pending()) return NULL;
+  }
   static const char message[] = "Object.getOwnPropertyNames on this value is not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return NULL;
@@ -21106,7 +21177,22 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     }
     return out;
   }
-  /* Scalars (numbers, booleans, functions, handles): no own enumerable
+  if (v->kind == SCR_DYN_HANDLE) {
+    /* The key list needs no values, so it stays exact while the class's
+     * state is gone (Object.keys of a closed database's limits). */
+    if (mode == SCR_OBJWALK_KEYS) {
+      ScrDyn *names = scr_dyn_handle_own_names(v);
+      if (names) return names;
+      if (scr_exc_pending()) return NULL;
+      return scr_dyn_new_arr();
+    }
+    ScrDyn *view = scr_dyn_handle_own_view(v);
+    if (!view) return scr_exc_pending() ? NULL : scr_dyn_new_arr();
+    ScrDyn *out = scr_dyn_objwalk(view, mode);
+    scr_dyn_release(view);
+    return out;
+  }
+  /* Scalars (numbers, booleans, functions): no own enumerable
    * string keys. */
   return out;
 }
@@ -21273,6 +21359,11 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
       scr_dyn_arr_push(keys, scr_dyn_objwalk_key(key, (size_t)len));
     }
     return keys;
+  }
+  case SCR_DYN_HANDLE: {
+    ScrDyn *names = scr_dyn_handle_own_names(v);
+    if (names) return names;
+    return scr_exc_pending() ? NULL : scr_dyn_new_arr();
   }
   case SCR_DYN_NULL:
   case SCR_DYN_UNDEF:
@@ -21584,6 +21675,20 @@ static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool 
       scr_dyn_copy_property(target, key, value, define);
       scr_dyn_release(value);
       if (scr_exc_pending()) break;
+    }
+    scr_dyn_release(keys);
+    return;
+  }
+  if (src->kind == SCR_DYN_HANDLE) {
+    /* A class's own enumerable properties (`{ ...database.limits }`). */
+    ScrDyn *keys = scr_dyn_obj_keys(src);
+    if (!keys) return;
+    for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
+      ScrStr *key = keys->v.arr.items[i]->v.str;
+      ScrDyn *value = scr_dyn_obj_read(src, key->data, key->len);
+      if (!value) break;
+      scr_dyn_copy_property(target, key, value, define);
+      scr_dyn_release(value);
     }
     scr_dyn_release(keys);
     return;
@@ -22158,7 +22263,7 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     scr_throw_error_msg(SCR_ERR_TYPE, m, strlen(m));
     return false;
   }
-
+  if (v->kind == SCR_DYN_HANDLE) return scr_dyn_handle_own_name(v, key);
 
   if (v->kind == SCR_DYN_OBJ) {
     /* Object.prototype's builtin members are its own properties (zod's
@@ -22228,6 +22333,8 @@ bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return false;
   }
+  /* A handle class's own properties are all enumerable. */
+  if (value->kind == SCR_DYN_HANDLE) return scr_dyn_handle_own_name(value, key);
   if (value->kind == SCR_DYN_OBJ)
     return scr_dyn_obj_enumerable(value, key->data, key->len);
   if (value->kind == SCR_DYN_STR)

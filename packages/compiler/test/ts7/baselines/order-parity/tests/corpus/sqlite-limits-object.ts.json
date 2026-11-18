@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/sqlite-limits-object.ts"
+ ],
+ "diags": []
+}

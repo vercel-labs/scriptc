@@ -2706,6 +2706,21 @@ typedef struct ScrDynHandleOps {
    * answer). The web stream classes answer Node's symbol getters here;
    * only they set it. */
   ScrDyn *(*stream_predicate)(void *h, ScrDynHandleTag tag, double which);
+  /* The class's own string keys as a fresh array (+1), in enumeration
+   * order, or NULL when the class has none. Object.getOwnPropertyNames,
+   * for-in, Object.hasOwn and Object.keys read it; it answers without
+   * touching native state, so it also works when that state is gone (a
+   * closed database). NULL hook = the class has no own properties. */
+  ScrDyn *(*own_names)(void *h);
+  /* The class's own enumerable properties as a fresh ordinary object (+1;
+   * a snapshot built on the call), or NULL when the class has none. The
+   * keys, values, descriptors and serialization of such a handle read it,
+   * so they follow the object's own attributes. NULL hook = none. */
+  ScrDyn *(*own_view)(void *h);
+  /* `delete handle[key]`: true when the property was removed or never
+   * existed, false for a non-configurable own property (the caller throws
+   * in strict code). NULL hook = the delete is refused. */
+  bool (*delete_key)(void *h, const char *key, size_t key_len);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),

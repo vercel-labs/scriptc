@@ -91469,7 +91469,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/sqlite-authorizer.ts",
@@ -91479,6 +91479,7 @@
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
           "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-limits-object.ts",
           "tests/corpus/sqlite-limits.ts",
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-return-arrays.ts",
@@ -92071,10 +92072,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:limits",
         "tests": [
-          "tests/corpus/sqlite-limits.ts"
+          "tests/corpus/sqlite-limits.ts",
+          "tests/corpus/sqlite-limits-object.ts"
         ]
       },
       "anchorSource": "ancestor"

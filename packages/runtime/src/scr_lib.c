@@ -246,6 +246,7 @@ typedef struct {
 } ScrModuleRecord;
 
 static void scr_module_dyn_refresh(ScrModuleRecord *m);
+static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id);
 
 static SCR_TL ScrModuleRecord *scr_module_records = NULL;
 static SCR_TL size_t scr_module_record_count = 0;
@@ -572,7 +573,7 @@ void scr_module_fail(double module_id) {
     if (at >= 0) {
       ScrArr *removed = scr_arr_splice(parent->children, at, 1);
       scr_arr_release(removed);
-      scr_module_dyn_refresh(parent);
+      scr_module_dyn_children_remove(parent, module_id);
     }
   }
   m->parent = m->is_main ? -1 : -2;
@@ -617,10 +618,30 @@ void scr_module_set_exports_dyn(double module_id, ScrDyn *value) {
 static void scr_module_dyn_refresh(ScrModuleRecord *m) {
   if (!m->dyn_self) return;
   scr_dyn_obj_set(m->dyn_self, "loaded", 6, scr_dyn_new_bool(m->loaded));
-  ScrDyn *children = scr_dyn_new_arr();
-  for (size_t i = 0; i < (size_t)scr_arr_len(m->children); i++)
-    scr_dyn_arr_push(children, scr_module_dyn_object(scr_arr_get_f64(m->children, (double)i)));
-  scr_dyn_obj_set(m->dyn_self, "children", 8, children);
+}
+
+/* Drops a child from the view's live `children` array in place, so an array
+ * a program kept loses the failed module the way Node's one array does. */
+static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id) {
+  if (!m->dyn_self) return;
+  ScrDyn *kids = scr_dyn_obj_read(m->dyn_self, "children", 8);
+  if (!kids || kids->kind != SCR_DYN_ARR) {
+    scr_dyn_release(kids);
+    return;
+  }
+  ScrDyn *target = scr_module_dyn_object(child_id);
+  for (size_t i = 0; i < (size_t)kids->v.arr.len; i++) {
+    if (kids->v.arr.items[i] != target) continue;
+    ScrDyn *held = kids->v.arr.items[i];
+    for (size_t j = i + 1; j < (size_t)kids->v.arr.len; j++) kids->v.arr.items[j - 1] = kids->v.arr.items[j];
+    kids->v.arr.len--;
+    if (kids->v.arr.length == kids->v.arr.len + 1) kids->v.arr.length = kids->v.arr.len;
+    if (kids->v.arr.presence) kids->v.arr.presence[kids->v.arr.len] = 0;
+    scr_dyn_release(held);
+    break;
+  }
+  scr_dyn_release(target);
+  scr_dyn_release(kids);
 }
 
 /* The checked-dynamic view of one module record (Node's Module object as a

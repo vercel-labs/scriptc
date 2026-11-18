@@ -26,3 +26,11 @@ console.log("alias", moduleAlias === require.main);
 console.log("hasParent", "parent" in c);
 console.log("exitTag", child.tag);
 console.log("iter", module.children.map((m) => m.id.endsWith("child.cjs")).join(","));
+const keptKids = module.children;
+const keptCount = keptKids.length;
+try {
+  require("./boom.cjs");
+} catch (e) {
+  console.log("failedRequire", e.message);
+}
+console.log("keptChildren", keptCount, keptKids.length, module.children.length, keptKids === module.children);

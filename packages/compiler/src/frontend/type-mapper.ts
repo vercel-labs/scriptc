@@ -311,6 +311,8 @@ export const CIPHER_TYPE_NAMES: ReadonlySet<string> = new Set([
  * accessor) and the DebugLoggerFunction its callback receives. Values
  * behind this surface use the checked-dynamic tree; see mapTypeInner. */
 const PARSE_ARGS_DYN_TYPES = new Set([
+  "CallSiteObject",
+  "GetCallSitesOptions",
   "DebugLogger",
   "DebugLoggerFunction",
   "ParseArgsConfig",

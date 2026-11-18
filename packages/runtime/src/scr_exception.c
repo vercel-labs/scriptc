@@ -249,6 +249,115 @@ ScrStr *scr_stack_capture(void) {
   return scr_stack_capture_from(SCR_EXC_CUR()->stack);
 }
 
+/* V8's CallSite function names drop the class: a method's name alone, a
+ * getter's `get p`, and a constructor's class name without `new `. */
+static void scr_call_site_name(const char *fn, const char **name, size_t *len) {
+  const char *out = fn != NULL ? fn : "";
+  if (strncmp(out, "new ", 4) == 0) out += 4;
+  else {
+    const char *dot = strrchr(out, '.');
+    if (dot != NULL) out = dot + 1;
+  }
+  *name = out;
+  *len = strlen(out);
+}
+
+static bool scr_call_site_digits(const char *s, size_t n, unsigned *out) {
+  if (n == 0) return false;
+  unsigned value = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (s[i] < '0' || s[i] > '9') return false;
+    value = value * 10 + (unsigned)(s[i] - '0');
+  }
+  *out = value;
+  return true;
+}
+
+/* The script and position inside a `file:line:column` (or bare `file`). */
+static void scr_call_site_where(const char *s, size_t n, size_t *script_len, unsigned *line,
+                                unsigned *column) {
+  *script_len = n;
+  *line = 0;
+  *column = 0;
+  const char *last = NULL;
+  const char *prev = NULL;
+  for (size_t i = n; i > 0; i--) {
+    if (s[i - 1] == ':') {
+      if (last == NULL) last = s + i - 1;
+      else {
+        prev = s + i - 1;
+        break;
+      }
+    }
+  }
+  if (last == NULL || prev == NULL) return;
+  unsigned parsed_line;
+  unsigned parsed_column;
+  if (!scr_call_site_digits(prev + 1, (size_t)(last - prev - 1), &parsed_line) ||
+      !scr_call_site_digits(last + 1, (size_t)(s + n - last - 1), &parsed_column))
+    return;
+  *script_len = (size_t)(prev - s);
+  *line = parsed_line;
+  *column = parsed_column;
+}
+
+/* A frame's call-site fields: its structured position when the build
+ * records one, else the positioned `at name (file:line:column)` line a dev
+ * build keeps (a release line without a position still names the frame). */
+static void scr_call_site_fields(const ScrStackFrame *frame, const char **name, size_t *name_len,
+                                 const char **script, size_t *script_len, unsigned *line,
+                                 unsigned *column) {
+  if (frame->line != 0) {
+    scr_call_site_name(frame->fn, name, name_len);
+    *script = frame->script != NULL ? frame->script : "";
+    *script_len = strlen(*script);
+    *line = frame->line;
+    *column = frame->column;
+    return;
+  }
+  const char *text = frame->text != NULL ? frame->text : "";
+  size_t n = strlen(text);
+  size_t i = 0;
+  while (i < n && text[i] == ' ') i++;
+  if (n - i >= 3 && memcmp(text + i, "at ", 3) == 0) i += 3;
+  const char *rest = text + i;
+  size_t rest_len = n - i;
+  const char *inner = rest;
+  size_t inner_len = rest_len;
+  size_t name_end = 0;
+  if (rest_len > 0 && rest[rest_len - 1] == ')') {
+    for (size_t j = rest_len - 1; j > 0; j--) {
+      if (rest[j - 1] == '(') {
+        name_end = j - 1;
+        inner = rest + j;
+        inner_len = rest_len - j - 1;
+        break;
+      }
+    }
+  } else {
+    name_end = 0;
+  }
+  while (name_end > 0 && rest[name_end - 1] == ' ') name_end--;
+  if (name_end > 0) {
+    /* The parsed name is a prefix of the frame text: copy it before
+     * mapping, so the result reads no further than the name. */
+    char stack_name[96];
+    size_t copy = name_end < sizeof stack_name - 1 ? name_end : sizeof stack_name - 1;
+    memcpy(stack_name, rest, copy);
+    stack_name[copy] = '\0';
+    static SCR_TL char kept[96];
+    scr_call_site_name(stack_name, name, name_len);
+    memcpy(kept, *name, *name_len);
+    kept[*name_len] = '\0';
+    *name = kept;
+  } else {
+    *name = "";
+    *name_len = 0;
+  }
+  scr_call_site_where(inner, inner_len, script_len, line, column);
+  *script = inner;
+}
+
 /* Node's ERR_OUT_OF_RANGE for getCallSites' frameCount. */
 static void scr_call_sites_range(const char *must, double value) {
   char shown[32];
@@ -306,20 +415,26 @@ ScrDyn *scr_util_call_sites(ScrDyn *frame_count, ScrDyn *options) {
   size_t made = 0;
   for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame != NULL && (double)made < count;
        frame = frame->previous) {
+    const char *name;
+    size_t name_len;
+    const char *script;
+    size_t script_len;
+    unsigned line;
+    unsigned column;
+    scr_call_site_fields(frame, &name, &name_len, &script, &script_len, &line, &column);
     ScrDyn *entry = scr_dyn_new_obj();
-    ScrStr *name = scr_str_new(frame->fn != NULL ? frame->fn : "", frame->fn != NULL ? strlen(frame->fn) : 0);
-    scr_dyn_obj_set(entry, "functionName", 12, scr_dyn_new_str(name));
-    scr_str_release(name);
+    ScrStr *name_text = scr_str_new(name, name_len);
+    scr_dyn_obj_set(entry, "functionName", 12, scr_dyn_new_str(name_text));
+    scr_str_release(name_text);
     ScrStr *script_id = scr_str_new("0", 1);
     scr_dyn_obj_set(entry, "scriptId", 8, scr_dyn_new_str(script_id));
     scr_str_release(script_id);
-    ScrStr *script = scr_str_new(frame->script != NULL ? frame->script : "",
-                                 frame->script != NULL ? strlen(frame->script) : 0);
-    scr_dyn_obj_set(entry, "scriptName", 10, scr_dyn_new_str(script));
-    scr_str_release(script);
-    scr_dyn_obj_set(entry, "lineNumber", 10, scr_dyn_new_num((double)frame->line));
-    scr_dyn_obj_set(entry, "columnNumber", 12, scr_dyn_new_num((double)frame->column));
-    scr_dyn_obj_set(entry, "column", 6, scr_dyn_new_num((double)frame->column));
+    ScrStr *script_text = scr_str_new(script, script_len);
+    scr_dyn_obj_set(entry, "scriptName", 10, scr_dyn_new_str(script_text));
+    scr_str_release(script_text);
+    scr_dyn_obj_set(entry, "lineNumber", 10, scr_dyn_new_num((double)line));
+    scr_dyn_obj_set(entry, "columnNumber", 12, scr_dyn_new_num((double)column));
+    scr_dyn_obj_set(entry, "column", 6, scr_dyn_new_num((double)column));
     /* push moves its ownership in. */
     scr_dyn_arr_push(out, entry);
     made++;

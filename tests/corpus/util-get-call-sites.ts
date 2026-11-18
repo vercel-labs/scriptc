@@ -24,8 +24,31 @@ function outer(count?: number): string {
   return inner(count);
 }
 
+function directName(): string {
+  return getCallSites(1)[0].functionName;
+}
+
+class Named {
+  name = "";
+  constructor() {
+    this.name = getCallSites(1)[0].functionName;
+  }
+  m(): string {
+    return getCallSites(1)[0].functionName;
+  }
+  get p(): string {
+    return getCallSites(1)[0].functionName;
+  }
+  static s(): string {
+    return getCallSites(1)[0].functionName;
+  }
+}
+
 console.log("two", show(getCallSites(2)));
 console.log("nested", outer(3));
+console.log("direct", directName());
+const named = new Named();
+console.log("labels", named.m(), named.name, Named.s(), named.p);
 console.log("inner", outer(1));
 console.log("options", show(getCallSites({ sourceMap: false })));
 console.log("default", show(getCallSites()).length > 0);

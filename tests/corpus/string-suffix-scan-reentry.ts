@@ -122,6 +122,20 @@ function outerDeclaration(text: string): string {
   return seen;
 }
 
+// A local declared in the parent `for` loop's initializer runs once, not on
+// every pass, so a scan re-entered by that loop continues from the suffix the
+// previous pass left.
+function forInitializerDeclaration(text: string): number {
+  let n = 0;
+  for (let rest = text, round = 0; round < 3; round += 1) {
+    while (rest.length > 0) {
+      n = n + rest.charCodeAt(0);
+      rest = rest.slice(1);
+    }
+  }
+  return n;
+}
+
 const text = "abc;def;ghijkl;mn";
 const other = "aaabbbccc";
 console.log(reentered(text, 2), reentered(text, 5), reentered("", 3));
@@ -131,3 +145,8 @@ console.log(declaredEachPass(text, 4), declaredEachPass(other, 3));
 console.log(reenteredDoWhile(text, 3), reenteredDoWhile("x", 2));
 console.log(outerReads(text, 3), outerReads(other, 9));
 console.log(outerDeclaration("abc"), outerDeclaration(""), outerDeclaration(text));
+console.log(
+  forInitializerDeclaration("abcdefg"),
+  forInitializerDeclaration(""),
+  forInitializerDeclaration("abc"),
+);

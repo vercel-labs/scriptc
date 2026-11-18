@@ -233,12 +233,21 @@ export function findStringCursorLoops(
           record(writes, node.localId, { ok: false, chain: [...chain] });
         break;
     }
-    if (
-      node.kind === "while" ||
-      node.kind === "doWhile" ||
-      node.kind === "for" ||
-      node.kind === "forOf"
-    ) {
+    if (node.kind === "for") {
+      // The initializer runs once, and the condition and update are not the
+      // body, so a declaration there is not remade by a pass of this loop: it
+      // does not count as a declaration inside the loop for freshEachEntry.
+      if (node.init !== null && !stmt(node.init)) return false;
+      if (node.cond !== null && !expr(node.cond)) return false;
+      if (node.update !== null && !stmt(node.update)) return false;
+      chain.push(node);
+      try {
+        return node.body.every(stmt);
+      } finally {
+        chain.pop();
+      }
+    }
+    if (node.kind === "while" || node.kind === "doWhile" || node.kind === "forOf") {
       chain.push(node);
       try {
         return everyStmtChild(node, expr, stmt);

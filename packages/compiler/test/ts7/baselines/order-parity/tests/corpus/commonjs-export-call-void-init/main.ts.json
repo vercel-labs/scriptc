@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/commonjs-export-call-void-init/main.ts"],
+  "diags": []
+}

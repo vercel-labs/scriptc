@@ -15,6 +15,7 @@ import {
   BOOL,
   DYN,
   F64,
+  isUnitType,
   type IrExpr,
   type IrStmt,
   type IrType,
@@ -25,6 +26,7 @@ import {
   arrayOf,
 } from "../../ir/ir.js";
 import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 const MODULE_FIELDS = new Set([
   "children",
@@ -219,8 +221,87 @@ export function isRequireCacheExpr(lowerer: Lowerer, node: ts.Expression): boole
   return cjsGlobal(lowerer, node.expression, "require");
 }
 
+/** `require.main`, `module.parent`, and `module.parent.parent`: a property
+ * path the module registry answers, even in a JS file whose implicit
+ * `module.exports` assignment leaves `module` typed as `any`. */
+/** Whether the program has a CommonJS entry module — Node's require.main.
+ * An ES-module entry has no CommonJS main, so `require.main` is undefined
+ * there even inside the CommonJS modules it imports. */
+function requireMainPresent(lowerer: Lowerer): boolean {
+  return !isNodeEsmFile(lowerer.entry, lowerer.program);
+}
+
+function isRequireMainExpr(lowerer: Lowerer, node: ts.Expression): boolean {
+  const value = withoutParenthesesTypeWrappers(node);
+  if (ts.isPropertyAccessExpression(value) && !value.questionDotToken && value.name.text === "main")
+    return cjsGlobal(lowerer, withoutParenthesesTypeWrappers(value.expression), "require");
+  return false;
+}
+
+/** `typeof <module value>` for the two spellings whose value the entry kind
+ * decides: `require.main` (parenthesized or not) and a const bound from it.
+ * A CommonJS entry always has a main module ("object"); an ES-module entry
+ * has none, so the value is undefined ("undefined"). Null for every other
+ * operand. */
+export function lowerModuleValueTypeof(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  const loc = locOf(node);
+  const answer = (): IrExpr => strLit(requireMainPresent(lowerer) ? "object" : "undefined", loc);
+  if (isRequireMainExpr(lowerer, node)) return answer();
+  const value = withoutParenthesesTypeWrappers(node);
+  if (!ts.isIdentifier(value)) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(value);
+  const decl = symbol?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer === undefined ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return null;
+  return isRequireMainExpr(lowerer, decl.initializer) ? answer() : null;
+}
+
+function moduleObjectExpression(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return false;
+  if (node.name.text === "main" && cjsGlobal(lowerer, node.expression, "require"))
+    return requireMainPresent(lowerer);
+  if (node.name.text !== "parent") return false;
+  return (
+    isCjsModuleGlobal(lowerer, node.expression) || moduleObjectExpression(lowerer, node.expression)
+  );
+}
+
 function nodeModuleType(lowerer: Lowerer, node: ts.Expression): boolean {
+  // `require.main` in an ES-module-entry program is undefined, so its
+  // declared module arm must not make `typeof` answer "object".
+  if (
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "main" &&
+    !node.questionDotToken &&
+    cjsGlobal(lowerer, node.expression, "require") &&
+    !requireMainPresent(lowerer)
+  )
+    return false;
+  if (isRequireMainExpr(lowerer, node)) return requireMainPresent(lowerer);
+  if (moduleObjectExpression(lowerer, node)) return true;
   const type = lowerer.typeOf(node);
+  // `require.main` and `module.parent` are typed `ScriptcModule |
+  // undefined`; the module arm is what the value is when it is present, so
+  // the union answers through it (the member lowering narrows the arm).
+  if (type.isUnionType()) {
+    return ts
+      .constituentTypes(type)
+      .some(
+        (arm) =>
+          (arm.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) === 0 &&
+          nodeModuleTypeOf(lowerer, arm),
+      );
+  }
+  return nodeModuleTypeOf(lowerer, type);
+}
+
+function nodeModuleTypeOf(lowerer: Lowerer, type: ts.Type): boolean {
   const mapped = lowerer.mapTypeOf(type);
   const symbol = type.getSymbol();
   if (
@@ -381,13 +462,34 @@ export function lowerCjsTopLevelThis(lowerer: Lowerer, expr: ts.Expression): IrE
   return varRef(global.id, DYN, locOf(expr));
 }
 
+/** The declared type of the module member `node` names, which the checker
+ * keeps even where the site type is `any` (a JS file that assigns
+ * `module.exports`). */
+function declaredModuleMemberType(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): IrType | null | undefined {
+  if (!ts.isPropertyAccessExpression(node)) return undefined;
+  const symbol = lowerer.checker.getSymbolAtLocation(node.name);
+  if (!symbol) return undefined;
+  const type = lowerer.checker.getTypeOfSymbolAtLocation(symbol, node);
+  return type ? lowerer.mapTypeOf(type) : undefined;
+}
+
 function optionalModule(
   lowerer: Lowerer,
   node: ts.Expression,
   raw: IrExpr,
   absent: "undefined" | "parent",
 ): IrExpr {
-  const target = lowerer.irTypeOf(node);
+  let target = lowerer.irTypeOf(node);
+  if (target.kind !== "union") {
+    // `module.exports = ...` in a JavaScript file leaves `module` typed as
+    // any while the ambient declaration still says the member is nullable;
+    // the union is what the value is, and the fields it serves need it.
+    const declared = declaredModuleMemberType(lowerer, node);
+    if (declared != null && declared.kind === "union") target = declared;
+  }
   if (target.kind !== "union") return raw;
   const loc = locOf(node);
   const slot = lowerer.declareHiddenLocal("%module", F64);
@@ -550,6 +652,14 @@ export function lowerNodeModuleIdentifier(lowerer: Lowerer, expr: ts.Identifier)
   lowerer.unsupported("SC1090", expr, "the CommonJS 'module' object in an ES module");
 }
 
+/** The single non-unit arm of a module-valued union (`require.main`,
+ * `module.parent`), or the type itself when it is not such a union. */
+function moduleArmOf(lowerer: Lowerer, type: IrType): IrType {
+  if (type.kind !== "union") return type;
+  const arms = lowerer.unions.get(type.unionId)?.arms.filter((arm) => !isUnitType(arm)) ?? [];
+  return arms.length === 1 ? arms[0]! : type;
+}
+
 export function lowerNodeModuleProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -558,6 +668,13 @@ export function lowerNodeModuleProperty(
   if (!direct && !nodeModuleType(lowerer, expr.expression)) return null;
   if (expr.questionDotToken) return null;
   const member = expr.name.text;
+  if (member === "exports" && direct) {
+    // A module whose whole export a run-time write chooses: the read is the
+    // checked-dynamic slot that write filled (an empty object before it).
+    const slot = lowerer.cjsRuntimeWholeExportValueSlotOf(ts.getSourceFileOfNode(expr));
+    if (slot !== null && !moduleExportsAlwaysTruthy(lowerer, expr))
+      return { kind: "varRef", localId: slot.id, type: DYN, loc: locOf(expr) };
+  }
   if (member === "exports" && direct && moduleExportsAlwaysTruthy(lowerer, expr))
     return boolLit(true, locOf(expr));
   if (member === "exports" && direct) {
@@ -569,7 +686,9 @@ export function lowerNodeModuleProperty(
     ? cjsModuleRef(lowerer, expr.expression)
     : lowerer.lowerExpr(expr.expression);
   if (moduleRef?.type.kind === "union") {
-    const present = lowerer.stripUndefinedArm(moduleRef.type);
+    // `module.parent` is `ScriptcModule | null | undefined`; the module arm
+    // is the only non-unit arm, and it is the one every field read wants.
+    const present = moduleArmOf(lowerer, moduleRef.type);
     const helper =
       present.kind === "f64"
         ? lowerer.narrowedArmHelper(moduleRef.type.unionId, present, locOf(expr.expression))
@@ -624,6 +743,33 @@ export function lowerNodeModuleProperty(
         "the static CommonJS module surface is id, filename, path, paths, loaded, isPreloading, parent, children, exports, and require",
       );
   }
+}
+
+/** `typeof module.parent`: null (the CommonJS entry) and a module (a module
+ * required by CommonJS) both answer "object"; a module loaded by an ES-module
+ * entry has no CommonJS parent and answers "undefined". The registry's
+ * absent marker (-2) is the only one that renders "undefined". */
+export function lowerModuleParentTypeof(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
+  if (!ts.isPropertyAccessExpression(node) || node.questionDotToken) return null;
+  if (node.name.text !== "parent" || !isCjsModuleGlobal(lowerer, node.expression)) return null;
+  const id = cjsModuleRef(lowerer, node.expression);
+  if (!id) return null;
+  const loc = locOf(node);
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "libCall", fn: "module.parent", args: [id], type: F64, loc },
+      right: numLit(-2, loc),
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "strLit", value: "undefined", type: STRING, loc },
+    else_: { kind: "strLit", value: "object", type: STRING, loc },
+    type: STRING,
+    loc,
+  };
 }
 
 export function lowerRequireCacheElement(

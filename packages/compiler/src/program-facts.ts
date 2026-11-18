@@ -572,6 +572,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["importsNodeApi"],
   },
   {
+    name: "js-widened-fields",
+    file: `${SRC}/frontend/lowering/lowerer.ts`,
+    symbol: "jsWidenedFields",
+    source: "types",
+    scope: "shape",
+    setBy:
+      "a write of a value the checker cannot show fits the JSDoc type of a class field, in an unchecked JavaScript source",
+    gates:
+      "the field's storage is checked-dynamic for every instance of the class and every reader of its layout",
+    narrower:
+      "the write sites, where the receiver's class is known; a write the scan cannot type as a field of one class keeps the declared storage",
+    tracked: null,
+    lowererFields: ["jsWidenedFields"],
+  },
+  {
     name: "global-object-writes",
     file: `${SRC}/frontend/lowering/global-object-writes.ts`,
     symbol: "globalObjectWrites",
@@ -737,6 +752,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "where the program requires or imports one module whose export object is an accessor",
   ),
   scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsRuntimeWholeExportValueWritesOf",
+    1,
+    "prefilter",
+    "a module whose whole export is chosen at run time has to spell `module.exports`; every write it finds is decided from its target's symbol and its value's type",
+  ),
+  scan(
     "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
     1,
     "prefilter",
@@ -759,12 +780,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "a file that never spells `extends` declares no derived class",
-  ),
-  scan(
-    "frontend/lowering/cycle-initialization.ts#earlyHeritageReference",
-    1,
-    "closed-world",
-    "references to one class of an import cycle",
   ),
   scan(
     "frontend/lowering/cycle-initialization.ts#classLocalNames",
@@ -964,6 +979,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "program roots named by createRequire calls",
   ),
   scan(
+    "frontend/lowering/cycle-initialization.ts#earlyHeritageReferences",
+    1,
+    "closed-world",
+    "the `extends` clauses that read a class of an import cycle before its declaration, each of which carries the class's initialization check at its own statement",
+  ),
+  scan(
     "frontend/program.ts#boundedDynamicImportRoots7",
     1,
     "discovery",
@@ -974,6 +995,18 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots of the entry package",
+  ),
+  scan(
+    "frontend/program.ts#declarationTwinRoots7",
+    1,
+    "discovery",
+    "program roots for the runtime implementation of each project declaration the program holds (a `.d.ts` beside the JavaScript it describes)",
+  ),
+  scan(
+    "frontend/program.ts#cjsStarReexportSources",
+    2,
+    "discovery",
+    "the files whose `export *` re-exports a CommonJS module, which the lowering rewrites with the Node lexer's names; the text test picks a helper binding the file does not already spell",
   ),
   decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
   scan(

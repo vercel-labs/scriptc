@@ -5,6 +5,7 @@ import { builtinConstLit } from "../surfaces.js";
 import { HTTP2_CONSTANTS } from "../http2-constants.js";
 import { CRYPTO_CONSTANTS } from "../crypto-tables.js";
 import { ZLIB_CONSTANTS } from "../zlib-constants.js";
+import { SQLITE_CONSTANTS } from "../sqlite-constants.js";
 import {
   BOOL,
   DYN,
@@ -45,6 +46,10 @@ const BUILTIN_CONSTANTS_TABLES: Record<
   zlib: {
     table: ZLIB_CONSTANTS,
     hint: "the table bakes Node v24's zlib.constants members as literals — this name is not one of them",
+  },
+  sqlite: {
+    table: SQLITE_CONSTANTS,
+    hint: "the table bakes Node v24's sqlite.constants members as literals — this name is not one of them",
   },
 };
 
@@ -309,7 +314,8 @@ export function lowerFsConstantsProperty(
   if (expr.questionDotToken) return null;
   if (!ts.isIdentifier(expr.expression)) return null;
   const bi = lowerer.builtinImportOf(expr.expression);
-  if (!bi || bi.module !== "fs" || bi.member !== "constants") return null;
+  if (!bi || (bi.module !== "fs" && bi.module !== "fs/promises") || bi.member !== "constants")
+    return null;
   const MODES: Record<string, number | undefined> = {
     F_OK: 0,
     X_OK: 1,

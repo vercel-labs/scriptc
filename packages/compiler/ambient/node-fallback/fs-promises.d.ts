@@ -59,6 +59,11 @@ declare module "fs/promises" {
     createReadStream(options?: CreateReadStreamOptions): import("node:fs").ReadStream;
     createWriteStream(options?: CreateWriteStreamOptions): import("node:fs").WriteStream;
     readLines(options?: CreateReadStreamOptions): import("node:readline").Interface;
+    /** The handle's content as Node's type: "bytes" web stream. */
+    readableWebStream(options?: {
+      type?: "bytes";
+      autoClose?: boolean;
+    }): ReadableStream<Uint8Array>;
     sync(): Promise<void>;
     datasync(): Promise<void>;
     truncate(len?: number): Promise<void>;

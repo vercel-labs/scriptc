@@ -1582,10 +1582,14 @@ export function lowerHistogramMethodCall(
       loc,
     };
   }
+  {
+    const comparison = lowerHistogramComparison(lowerer, expr, access, name, loc);
+    if (comparison !== null) return comparison;
+  }
   lowerer.noLowering(
     `IntervalHistogram.${name}`,
     expr,
-    "enable(), disable(), reset(), percentile(p) and the min, max, mean, stddev, count and exceeds readings are the lowered surface",
+    "enable(), disable(), reset(), percentile(p), ksTest, cohensD, cliffsD, mannWhitneyTest and the min, max, mean, stddev, count and exceeds readings are the lowered surface",
   );
 }
 
@@ -2020,6 +2024,89 @@ export function lowerRecordableHistogramProperty(
   return null;
 }
 
+/** The distribution comparisons on a Histogram (the base interface the
+ * IntervalHistogram and RecordableHistogram both carry): ksTest, cohensD and
+ * cliffsD answer a number, mannWhitneyTest a null-prototype-shaped record of
+ * its three readings. The runtime validates `other` and answers Node's
+ * values. */
+function lowerHistogramComparison(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  const args = call.arguments.nodes;
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, DYN);
+  if (
+    (name === "ksTest" || name === "cohensD" || name === "cliffsD") &&
+    args.length === 1 &&
+    !ts.isSpreadElement(args[0]!)
+  ) {
+    const fn =
+      name === "ksTest"
+        ? "perf.histoKsTest"
+        : name === "cohensD"
+          ? "perf.histoCohensD"
+          : "perf.histoCliffsD";
+    return {
+      kind: "libCall",
+      fn,
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
+      type: F64,
+      loc,
+    };
+  }
+  if (name === "mannWhitneyTest" && args.length === 1 && !ts.isSpreadElement(args[0]!)) {
+    const resultType = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (resultType?.kind !== "record")
+      lowerer.noLowering("Histogram.mannWhitneyTest with this result type", call);
+    /* Node builds the result from one pass over both histograms; the runtime
+     * answers the three readings, and the receiver and the argument are
+     * evaluated once into hidden locals. */
+    const h = lowerer.declareHiddenLocal("%histogram", DYN);
+    const o = lowerer.declareHiddenLocal("%other", DYN);
+    const both = (): IrExpr[] => [varRef(h.id, DYN, loc), varRef(o.id, DYN, loc)];
+    const reading = (fn: IrLibFn): IrExpr => ({
+      kind: "libCall",
+      fn,
+      args: both(),
+      type: F64,
+      loc,
+    });
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "varDecl",
+          localId: h.id,
+          init: handle(),
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: o.id,
+          init: lowerer.lowerExprExpecting(args[0]!, DYN),
+          loc,
+        },
+      ],
+      result: {
+        kind: "recordLit",
+        fields: [
+          { name: "uStatistic", value: reading("perf.histoMannWhitneyU") },
+          { name: "zScore", value: reading("perf.histoMannWhitneyZ") },
+          { name: "pValue", value: reading("perf.histoMannWhitneyP") },
+        ],
+        type: resultType,
+        loc,
+      },
+      type: resultType,
+      loc,
+    };
+  }
+  return null;
+}
+
 /** The method calls on a RecordableHistogram. Node validates record's
  * number form (an integer >= 1), recordCorrected's two integers, and
  * percentile's range; add/subtract need the other histogram's handle. */
@@ -2117,6 +2204,10 @@ export function lowerRecordableHistogramMethodCall(
       loc,
     };
   }
+  {
+    const comparison = lowerHistogramComparison(lowerer, call, access, name, loc);
+    if (comparison !== null) return comparison;
+  }
   if (name === "percentilesBigInt") {
     lowerer.noLowering(
       "Histogram.percentilesBigInt",
@@ -2127,6 +2218,6 @@ export function lowerRecordableHistogramMethodCall(
   lowerer.noLowering(
     `Histogram.${name}`,
     call,
-    "record, recordDelta, recordCorrected, reset, add, subtract, percentile, percentileBigInt, countAt, cdf and ccdf are the lowered surface",
+    "record, recordDelta, recordCorrected, reset, add, subtract, percentile, percentileBigInt, countAt, cdf, ccdf, ksTest, cohensD, cliffsD and mannWhitneyTest are the lowered surface",
   );
 }

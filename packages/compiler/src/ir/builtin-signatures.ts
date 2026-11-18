@@ -815,6 +815,12 @@ function buildLibFnSignatures() {
     "perf.histoPercentilesKey": { argTypes: [DYN, F64], result: F64 },
     "perf.histoPercentilesValue": { argTypes: [DYN, F64], result: F64 },
     "perf.histoDispose": { argTypes: [DYN], result: VOID },
+    "perf.histoKsTest": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoCohensD": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoCliffsD": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyU": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyZ": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoMannWhitneyP": { argTypes: [DYN, DYN], result: F64 },
     /** process.memoryUsage(): memoryUsageTake samples the resident set and
      * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
      * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2
@@ -4802,6 +4808,10 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: MKDTEMPRESULT_T },
     },
     "fs.mkdtempDisposableSync": { argTypes: [STRING], result: MKDTEMPRESULT_T },
+    /** The handle's content as Node's type: "bytes" web stream (a checked-
+     * dynamic stream: the stdlib ReadableStream interface has no static
+     * representation). */
+    "fileHandle.readableWebStream": { argTypes: [FILEHANDLE_T, DYN], result: DYN },
     "mkdtempResult.path": { argTypes: [MKDTEMPRESULT_T], result: STRING },
     "mkdtempResult.remove": {
       argTypes: [MKDTEMPRESULT_T],
@@ -7012,6 +7022,30 @@ function buildLibFnSignatures() {
     /** AsyncLocalStorage.snapshot(): a dyn function (cb, ...args) that runs
      * cb in the context active at the snapshot. */
     "als.snapshot": { argTypes: [], result: DYN },
+    /** AsyncLocalStorage.withScope(store): enters the store now and answers
+     * the native RunScope handle whose dispose()/[Symbol.dispose] installs
+     * the value getStore() answered before it again. */
+    "als.withScope": { argTypes: [F64, DYN], result: DYN },
+    /** AsyncResource (node:async_hooks — scr_async_dyn.c): a resource is a
+     * checked-dynamic handle whose payload (its type, its captured store
+     * context and its ids) lives exactly as long as the value does. ar.new
+     * [type, options] applies Node's checks (MAY THROW: ERR_INVALID_ARG_TYPE
+     * for a non-string type or a non-object options read,
+     * ERR_INVALID_ASYNC_ID for a bad triggerAsyncId); ar.runInScope
+     * [handle, fn, thisArg, args-array] runs the function in the resource's
+     * store context and ids (MAY THROW: the call itself); ar.bind
+     * [handle, fn, thisArg] answers Node's bound function (MAY THROW:
+     * ERR_INVALID_ARG_TYPE for a non-function); ar.bindStatic
+     * [fn, type, thisArg] applies the same checks plus the type defaulting
+     * (MAY THROW); ar.emitDestroy answers the handle; asyncId/triggerAsyncId
+     * are the ids the resource was given. */
+    "ar.new": { argTypes: [DYN, DYN], result: DYN },
+    "ar.runInScope": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    "ar.bind": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "ar.bindStatic": { argTypes: [DYN, DYN, DYN], result: DYN },
+    "ar.emitDestroy": { argTypes: [DYN], result: DYN },
+    "ar.asyncId": { argTypes: [DYN], result: F64 },
+    "ar.triggerAsyncId": { argTypes: [DYN], result: F64 },
     /** Channel.bindStore/unbindStore/runStores (scr_dc.c): the
      * AsyncLocalStorage integration — set-semantics bindings per store,
      * runStores entering every bound store with transform(data) around the

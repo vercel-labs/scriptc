@@ -292,6 +292,14 @@ ScrBigInt *scr_histo_percentile_big(ScrDyn *handle, double percentile);
 double scr_histo_count_at(ScrDyn *handle, double value);
 double scr_histo_cdf(ScrDyn *handle, double value);
 double scr_histo_ccdf(ScrDyn *handle, double value);
+/* The distribution comparisons accept either histogram table and reject an
+ * `other` that is not a Histogram with Node's ERR_INVALID_ARG_TYPE. */
+double scr_histo_ks_test(ScrDyn *handle, ScrDyn *other);
+double scr_histo_cohens_d(ScrDyn *handle, ScrDyn *other);
+double scr_histo_cliffs_d(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_u(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_z(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_p(ScrDyn *handle, ScrDyn *other);
 double scr_histo_percentiles_count(ScrDyn *handle);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);

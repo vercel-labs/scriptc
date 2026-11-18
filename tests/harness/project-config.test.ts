@@ -148,6 +148,10 @@ for (const [name, title] of [
     "child-held-exit-listeners",
     "a function passed by name as an exit or close listener keeps its number code under @types/node",
   ],
+  [
+    "async-resource",
+    "AsyncResource's constructor, runInAsyncScope, bind and static bind under @types/node",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);

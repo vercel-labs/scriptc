@@ -201,6 +201,16 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+  // The RunScope handle withScope answers, and AsyncResource's registry
+  // with its bound functions.
+  "als.withScope",
+  "ar.asyncId",
+  "ar.bind",
+  "ar.bindStatic",
+  "ar.emitDestroy",
+  "ar.new",
+  "ar.runInScope",
+  "ar.triggerAsyncId",
 
   // trace_events.Tracing handles (same unit: the checked-dynamic handle
   // table and the registry).
@@ -236,6 +246,15 @@ const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.enterWith",
   "als.exitRun",
   "als.run",
+  // withScope installs a store exactly as enterWith does; a program whose
+  // only store comes from it schedules its timers and completion callbacks
+  // through the *_als entry points like any other store establishment.
+  "als.withScope",
+  // AsyncResource's calls run program code in the resource's context, so the
+  // scheduling they do carries that context too.
+  "ar.bind",
+  "ar.bindStatic",
+  "ar.runInScope",
   "dc.chanBindStore",
   "dc.chanRunStores",
   // getTestContext() reads the test runner's entry in the same snapshot.
@@ -2208,6 +2227,9 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
+   * content as a byte-oriented web stream, its own gated unit. */
+  fsWebStream: rule({ fns: ["fileHandle.readableWebStream"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
@@ -2787,6 +2809,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsWebStream: false,
     fnMemberProps: false,
     fsFlags: false,
     fsExistsValue: false,

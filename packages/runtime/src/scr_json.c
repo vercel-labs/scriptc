@@ -9397,6 +9397,7 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
   d->v.handle.tag = tag;
   d->v.handle.traced = tag == SCR_DYNH_WEAK_MAP || tag == SCR_DYNH_WEAK_SET ||
       tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT || tag == SCR_DYNH_DISPOSABLE_STACK ||
+      tag == SCR_DYNH_ASYNC_RESOURCE ||
       tag == SCR_DYNH_CIPHER || tag == SCR_DYNH_DECIPHER || tag == SCR_DYNH_SIGN ||
       tag == SCR_DYNH_VERIFY ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
@@ -9626,6 +9627,8 @@ static ScrDyn *scr_dynh_method_value(ScrDynHandleTag tag, const ScrDynHandleOps 
 ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
   ScrDynHandleTag tag = d->v.handle.tag;
   const ScrDynHandleOps *ops = scr_dyn_handle_ops(tag);
+  /* A handle may model no properties at all (RunScope): there is no getter
+   * to call, and its unmodeled names answer undefined like any other. */
   ScrDyn *r = ops->get ? ops->get(d->v.handle.ptr, k->data, k->len) : NULL;
   if (scr_exc_pending()) {
     scr_dyn_release(r);

@@ -481,6 +481,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.histoPercentilesKey": "scr_histo_percentiles_key",
   "perf.histoPercentilesValue": "scr_histo_percentiles_value",
   "perf.histoDispose": "scr_histo_dispose",
+  "perf.histoKsTest": "scr_histo_ks_test",
+  "perf.histoCohensD": "scr_histo_cohens_d",
+  "perf.histoCliffsD": "scr_histo_cliffs_d",
+  "perf.histoMannWhitneyU": "scr_histo_mann_whitney_u",
+  "perf.histoMannWhitneyZ": "scr_histo_mann_whitney_z",
+  "perf.histoMannWhitneyP": "scr_histo_mann_whitney_p",
   "process.memoryUsageTake": "scr_process_memory_usage_take",
   "process.memoryUsageField": "scr_process_memory_usage_field",
   "process.rss": "scr_process_rss",
@@ -2155,6 +2161,16 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "als.name": "scr_als_name",
   "als.bindCallbackDyn": "scr_als_bind_dyn",
   "als.snapshot": "scr_als_snapshot",
+  "als.withScope": "scr_als_with_scope",
+  // AsyncResource (scr_async_dyn.c): 1-based f64 handles over the resource
+  // registry; runInScope/bind/bindStatic dispatch user callbacks (may-throw).
+  "ar.new": "scr_ar_new",
+  "ar.runInScope": "scr_ar_run_in_scope",
+  "ar.bind": "scr_ar_bind",
+  "ar.bindStatic": "scr_ar_bind_static",
+  "ar.emitDestroy": "scr_ar_emit_destroy",
+  "ar.asyncId": "scr_ar_async_id",
+  "ar.triggerAsyncId": "scr_ar_trigger_id",
   "dc.chanBindStore": "scr_dc_chan_bind_store",
   // node:async_hooks (scr_async_dyn.c / scr_async.c): the hook registry and
   // the execution-id pair.

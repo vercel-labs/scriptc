@@ -111,6 +111,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "ah.providers",
   "ah.executionId",
   "ah.triggerId",
+  // scr_als_with_scope reads the effective store, enters the new one and
+  // boxes the RunScope; no program code runs and nothing raises.
+  "als.withScope",
+  // The AsyncResource reads answer the registry's ids, and emitDestroy
+  // marks the entry; none runs program code or raises.
+  "ar.asyncId",
+  "ar.emitDestroy",
+  "ar.triggerAsyncId",
   // The resource-timing field accessors read a view entry's own numbers and
   // strings; no program code runs.
   "perf.entryResourceNum",

@@ -1671,6 +1671,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "async":
     case "als":
     case "ah":
+    case "ar":
     case "te":
       return host.emitAsyncContextLibCall(e);
     case "process":

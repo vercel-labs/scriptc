@@ -403,6 +403,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "als.exitRun",
   "als.newOptions",
   "als.bindCallbackDyn",
+  // AsyncResource: the constructor's type/options checks, the traced call
+  // itself, and the bound function's argument check all throw.
+  "ar.new",
+  "ar.runInScope",
+  "ar.bind",
+  "ar.bindStatic",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
@@ -773,6 +779,14 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // add/subtract reject a non-RecordableHistogram argument.
   "perf.histoAdd",
   "perf.histoSubtract",
+  // The comparisons reject an `other` that is not a Histogram with Node's
+  // ERR_INVALID_ARG_TYPE.
+  "perf.histoKsTest",
+  "perf.histoCohensD",
+  "perf.histoCliffsD",
+  "perf.histoMannWhitneyU",
+  "perf.histoMannWhitneyZ",
+  "perf.histoMannWhitneyP",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
@@ -1711,6 +1725,8 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // watchEvents.take raises ERR_FS_WATCH_QUEUE_OVERFLOW when the queue
   // overflowed under overflow: "error".
   "watchEvents.take",
+  // readableWebStream throws Node's ERR_INVALID_STATE for a closed handle.
+  "fileHandle.readableWebStream",
   // The disposable temp directory: creating it validates the options and
   // can fail in mkdtemp, and its removal raises rm's errors (the promise
   // form turns them into a rejection, the sync form throws them).

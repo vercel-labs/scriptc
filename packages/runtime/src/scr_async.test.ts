@@ -25,6 +25,8 @@ beforeAll(async () => {
     ...(sanitize ? ["-fsanitize=address,undefined", "-DSCR_RC_AUDIT"] : []),
     ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
     join(import.meta.dirname, "scr_async.test.c"),
+    // The gated async unit: the AsyncResource handle and its payload.
+    join(import.meta.dirname, "scr_async_dyn.c"),
     ...EXECUTABLE_RUNTIME_SOURCES.filter((name) => name !== "scr_async.c").map((name) =>
       join(import.meta.dirname, name),
     ),
@@ -57,6 +59,40 @@ test("fiber stacks commit on demand and preserve large frames across suspension"
 test("the promise resource table survives tombstone churn", async () => {
   const result = await execFileAsync(bin, ["promises"]);
   expect(result.stdout).toBe("promise table survives tombstone churn\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("a destroyed AsyncResource keeps its context until the resource is freed", async () => {
+  const result = await execFileAsync(bin, ["destroy"]);
+  expect(result.stdout).toBe(
+    "a destroyed async resource keeps its context until the resource is freed\n",
+  );
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("AsyncResource bindings own their payload and release it", async () => {
+  const result = await execFileAsync(bin, ["bindings"]);
+  expect(result.stdout).toBe("async resource bindings own and release their payload\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("a store and a resource that hold each other are collected", async () => {
+  const result = await execFileAsync(bin, ["cycle"]);
+  expect(result.stdout).toBe("a store and a resource that hold each other are collected\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("teardown releases cyclic stores without walking a disposed snapshot", async () => {
+  const result = await execFileAsync(bin, ["teardown"]);
+  expect(result.stdout).toBe(
+    "teardown releases cyclic stores without walking a disposed snapshot\n",
+  );
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("an AsyncResource handle owns its payload", async () => {
+  const result = await execFileAsync(bin, ["resources"]);
+  expect(result.stdout).toBe("async resource handles own their payload\n");
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 

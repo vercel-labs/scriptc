@@ -462,6 +462,15 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "stream.unboxDynStage",
+  // The stream/consumers promise settles through the chunk list and
+  // scr_blob.c's Blob constructor (blob()), so each consumer links the
+  // checked-dynamic async unit that carries the blob unit with it.
+  "sc.text",
+  "sc.json",
+  "sc.buffer",
+  "sc.bytes",
+  "sc.arrayBuffer",
+  "sc.blob",
 ]);
 
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */

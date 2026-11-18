@@ -254,6 +254,7 @@ export const FETCH_AMBIENT_TYPES = [
   "Event",
   "CustomEvent",
   "MessageEvent",
+  "CloseEvent",
   "EventTarget",
   "AddEventListenerOptions",
   "EventListenerOptions",

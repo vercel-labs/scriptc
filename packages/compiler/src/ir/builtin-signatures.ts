@@ -84,6 +84,8 @@ function buildLibFnSignatures() {
     "event.targetNew": { argTypes: [], result: DYN },
     "event.new": { argTypes: [DYN], result: DYN },
     "event.customNew": { argTypes: [DYN], result: DYN },
+    "event.messageNew": { argTypes: [DYN], result: DYN },
+    "event.closeNew": { argTypes: [DYN], result: DYN },
     "event.is": { argTypes: [DYN, F64], result: BOOL },
     /** Compiled EventTarget and Event subclasses: the receiver is the
      * instance (an object rooted at %EventTarget / %Event). targetInit and

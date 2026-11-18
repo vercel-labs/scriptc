@@ -259,6 +259,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "abort.any",
   "event.new",
   "event.customNew",
+  "event.messageNew",
+  "event.closeNew",
   "event.init",
   "event.targetCall",
   "event.targetDispatch",

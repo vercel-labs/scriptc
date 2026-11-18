@@ -1325,6 +1325,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "event.targetNew": "scr_event_target_new",
   "event.new": "scr_event_new",
   "event.customNew": "scr_custom_event_new",
+  "event.messageNew": "scr_message_event_new",
+  "event.closeNew": "scr_close_event_new",
   "event.is": "scr_event_is",
   "event.targetInit": "scr_event_target_obj_init",
   "event.init": "scr_event_obj_init",

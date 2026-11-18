@@ -12968,7 +12968,9 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
     if (d->v.handle.tag == SCR_DYNH_MESSAGE_PORT) return scr_str_new("[object EventTarget]", sizeof "[object EventTarget]" - 1);
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
-        d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
+        d->v.handle.tag == SCR_DYNH_EVENT || d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT ||
+        d->v.handle.tag == SCR_DYNH_MESSAGE_EVENT || d->v.handle.tag == SCR_DYNH_CLOSE_EVENT ||
+        d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER ||
         d->v.handle.tag == SCR_DYNH_WEAK_MAP || d->v.handle.tag == SCR_DYNH_WEAK_SET ||
         d->v.handle.tag == SCR_DYNH_FINALIZATION_REGISTRY ||
         d->v.handle.tag == SCR_DYNH_WEAK_REF ||
@@ -14211,7 +14213,9 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     }
     if ((d->v.handle.tag >= SCR_DYNH_ABORT_SIGNAL &&
          d->v.handle.tag <= SCR_DYNH_ABORT_CONTROLLER) || d->v.handle.tag == SCR_DYNH_EVENT_TARGET ||
-        d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT || d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP ||
+        d->v.handle.tag == SCR_DYNH_EVENT || d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT ||
+        d->v.handle.tag == SCR_DYNH_MESSAGE_EVENT || d->v.handle.tag == SCR_DYNH_CLOSE_EVENT ||
+        d->v.handle.tag == SCR_DYNH_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SHARED_ARRAY_BUFFER || d->v.handle.tag == SCR_DYNH_SET || d->v.handle.tag == SCR_DYNH_MAP ||
         d->v.handle.tag == SCR_DYNH_BLOB || d->v.handle.tag == SCR_DYNH_FILE ||
         d->v.handle.tag == SCR_DYNH_DISPOSABLE_STACK) {
       ScrJsonBuf b;

@@ -1847,11 +1847,10 @@ export function lowerRecordKeyRead(
     declared = DYN;
   // A key whose literal type names only declared fields of one type, on a
   // record whose other fields have other types, reads the field it names.
-  // A called access (`r[key]()`) keeps the refusal.
-  const named =
-    !declared && litKey === null && !isCalledAccess(expr)
-      ? sameTypedFieldKeys(lowerer, shape, keyNode)
-      : null;
+  // A called access (`r[key]()`) reads it too: the call carries the holder
+  // as its receiver where the member can hold a function that reads it
+  // (member-call-receivers.ts), exactly like the dot spelling.
+  const named = !declared && litKey === null ? sameTypedFieldKeys(lowerer, shape, keyNode) : null;
   if (named) {
     const stmts: IrStmt[] = [];
     const settle = (value: IrExpr, name: string, force = false): IrExpr => {
@@ -3523,10 +3522,15 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
       : lowerer.lowerExpr(expr.right);
   // Validate the payload before emitting a native store. A dormant JS
   // method can contradict its JSDoc element type; retain its call-time
-  // refusal instead of leaving invalid IR in a newly reachable method.
+  // refusal instead of leaving invalid IR in a newly reachable method. A
+  // checked-dynamic value in a `(T | undefined)[]` slot can hold the
+  // present undefined the slot records in its state byte (a member read on
+  // an indexed object), so it converts against the optional element type
+  // like a union with an undefined arm.
   const expected =
     value.type.kind === "undefinedT" ||
-    (value.type.kind === "union" && lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0)
+    (value.type.kind === "union" && lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0) ||
+    (value.type.kind === "dyn" && arr.type.optionalElements === true)
       ? arrayValueType(lowerer, arr.type.elem)
       : arr.type.elem;
   const stored = lowerer.coerceInto(expr.right, value, expected);

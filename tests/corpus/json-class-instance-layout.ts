@@ -266,6 +266,17 @@ Object.defineProperty(baggedItem, "extra", {
 box.items = [item, item];
 console.log(JSON.stringify(box));
 
+// Array-index field names are listed before the other own keys, in ascending
+// numeric order rather than creation order, so this class keeps the runtime
+// walk.
+class Indexed {
+  10 = "ten";
+  2 = "two";
+  b = 1;
+  1 = "one";
+}
+console.log(JSON.stringify(new Indexed()));
+
 // A chain far deeper than JSON.stringify's nesting limit throws Node's
 // catchable RangeError instead of exhausting the native stack.
 class DeepChain {

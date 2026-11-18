@@ -80,6 +80,10 @@ function classEligible(lowerer: Lowerer, className: string, visiting: Set<string
         continue;
       }
       if (symbols.has(field.name)) continue;
+      // Every enumeration lists array-index keys before the other own keys,
+      // in ascending numeric order rather than creation order, which the
+      // layout writer cannot reproduce. Such a class keeps the runtime walk.
+      if (isArrayIndexKeyName(field.name)) return false;
       // `toJSON` answers for the whole value whether it holds a function
       // (JSON.stringify calls it) or any other value (the runtime walk
       // emits it as an ordinary field, which the layout writer would too,
@@ -98,6 +102,13 @@ function classEligible(lowerer: Lowerer, className: string, visiting: Set<string
   // question; any other class instance keeps the runtime walk.
   info.def.jsonLayout = true;
   return true;
+}
+
+/** Whether `name` is an array index key, which every own-property
+ * enumeration lists before the other keys and in ascending numeric order. */
+function isArrayIndexKeyName(name: string): boolean {
+  const index = Number(name);
+  return Number.isInteger(index) && index >= 0 && index < 0xffffffff && String(index) === name;
 }
 
 /** Whether a class creates its own enumerable fields in the order its

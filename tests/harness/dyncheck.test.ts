@@ -1750,13 +1750,14 @@ server.listen(0, '127.0.0.1', wrap(function() {
 `;
 
   test("a real-but-unmodeled member on a dyn handle throws the 'not supported yet' Error", async () => {
-    // writeContinue stays unmodeled (cork/uncork/flushHeaders graduated
-    // to real dispatches — the ladder's exemplar moves with the surface).
+    // addTrailers stays unmodeled (cork/uncork/flushHeaders, then the
+    // informational calls, graduated to real dispatches — the ladder's
+    // exemplar moves with the surface).
     const r = await compileAndRun(
       "handle-unmodeled-member",
       serverPreamble +
         `server.on('request', wrap(function(req, res) {
-  res.writeContinue();
+  res.addTrailers({ 'x-a': '1' });
 }));
 ` +
         listenAndHit,
@@ -1764,7 +1765,7 @@ server.listen(0, '127.0.0.1', wrap(function() {
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain(
-      "'ServerResponse.prototype.writeContinue' on a dynamic value is not supported yet",
+      "'ServerResponse.prototype.addTrailers' on a dynamic value is not supported yet",
     );
   });
 

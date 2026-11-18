@@ -1,0 +1,35 @@
+jsdoc-typed-pattern-writes.js:16:6 - error SC1090: a value lacking a required property of its declared type is not supported yet
+
+  15 | let scanned = new Trio();
+  16 | for (scanned of [{ a: 1 }]) console.log(scanned.a);
+     |      ^~~~~~~
+  17 | 
+
+  hint: the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2739 here.)
+
+jsdoc-typed-pattern-writes.js:20:2 - error SC1090: a value lacking a required property of its declared type is not supported yet
+
+  19 | let destructured = new Trio();
+  20 | [destructured] = [{ a: 2 }];
+     |  ^~~~~~~~~~~~
+  21 | console.log(destructured.a);
+
+  hint: the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2739 here.)
+
+jsdoc-typed-pattern-writes.js:25:7 - error SC1090: a value lacking a required property of its declared type is not supported yet
+
+  24 | let keyed = new Trio();
+  25 | ({ a: keyed } = { a: { a: 3 } });
+     |       ^~~~~
+  26 | console.log(keyed.a);
+
+  hint: the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2739 here.)
+
+jsdoc-typed-pattern-writes.js:33:7 - error SC1090: a value lacking a required property of its declared type is not supported yet
+
+  32 | const holder = new Holder();
+  33 | ({ p: holder.item } = { p: { a: 4 } });
+     |       ^~~~~~~~~~~
+  34 | console.log(holder.item.a);
+
+  hint: the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2739 here.)

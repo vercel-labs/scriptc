@@ -490,6 +490,111 @@ test("a value missing declared properties is not described as a Set argument", (
   expect(`${kept.message} ${kept.hint}`).not.toContain("'has'");
 });
 
+/* for-in's head is retyped by shipped JavaScript: the key string lands in a
+ * binding declared to hold something else, and the right side is walked
+ * whatever the checker inferred there. tsc reports TS2405/TS2407 only for a
+ * checked JavaScript file (and for TypeScript input); Node assigns the key
+ * and enumerates the value. */
+const RETYPED_FOR_IN = `const table = { a: 1, b: 2 };
+var key = 3;
+for (key in table) console.log(typeof key, key);
+function create(type, config) {
+  var count = arguments.length - 2;
+  for (var name in ((count = type.defaultProps), count)) console.log(name, count[name]);
+}
+export { create };`;
+
+test("an unchecked JavaScript for-in writes the key into a retyped binding", () => {
+  expect(
+    diagnostics(
+      RETYPED_FOR_IN,
+      'import { create } from "./library.js"; create(function C() {}, {});',
+    ),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript for-in keeps tsc's head diagnostics", () => {
+  const kept = diagnostics(
+    `// @ts-check\n${RETYPED_FOR_IN}`,
+    'import { create } from "./library.js"; create(function C() {}, {});',
+  ).map((diagnostic) => diagnostic.message);
+  expect(kept.some((message) => message.includes("left-hand side of a 'for...in'"))).toBe(true);
+  expect(kept.some((message) => message.includes("right-hand side of a 'for...in'"))).toBe(true);
+});
+
+test("an unchecked JavaScript for-in key keeps the string an array read leaves it to hold", () => {
+  // The read may leave the binding undefined, so its collected storage is
+  // `number | undefined`; the loop still writes the key string into it.
+  const library = `/** @param {number[]} list */
+export function first(list) {
+  var key = list[0];
+  for (key in { a: 1 }) console.log(typeof key, key);
+  var out = key;
+  return out;
+}`;
+  expect(
+    diagnostics(library, 'import { first } from "./library.js"; console.log(first([]));'),
+  ).toEqual([]);
+});
+
+test("an unchecked JavaScript JSDoc parameter holds a for-in key string", () => {
+  // The annotation types the parameter `number`; the loop writes the key
+  // string into it and the function answers it, as Node does.
+  const library = `/** @param {number} key */
+export function walk(key) {
+  for (key in { a: 1 }) console.log(typeof key, key);
+  var out = key;
+  return out;
+}`;
+  expect(
+    diagnostics(library, 'import { walk } from "./library.js"; console.log(walk(1));'),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript JSDoc parameter keeps tsc's head diagnostic", () => {
+  const library = `// @ts-check
+/** @param {number} key */
+export function walk(key) {
+  for (key in { a: 1 }) console.log(typeof key, key);
+  return key;
+}`;
+  const kept = diagnostics(library, 'import { walk } from "./library.js"; console.log(walk(1));');
+  expect(
+    kept.some((diagnostic) => diagnostic.message.includes("left-hand side of a 'for...in'")),
+  ).toBe(true);
+});
+
+test("TypeScript keeps the for-in head diagnostics of the same source", () => {
+  const kept = diagnostics(
+    RETYPED_FOR_IN,
+    'import { create } from "./library.js"; create(function C() {}, {});',
+    "ts",
+  ).map((diagnostic) => diagnostic.message);
+  expect(kept.some((message) => message.includes("left-hand side of a 'for...in'"))).toBe(true);
+  expect(kept.some((message) => message.includes("right-hand side of a 'for...in'"))).toBe(true);
+});
+
+/* A record-typed binding reassigned to Object.freeze's result of another
+ * shape: TypeScript reports the missing properties (TS2739), while the
+ * unchecked JavaScript file stores the frozen object the program wrote. */
+const FROZEN_REASSIGNMENT = `var apis = { isMounted: ["isMounted"], replaceState: ["replaceState"] };
+apis = Object.freeze({ __proto__: null, c: function (size) { return size + 1; } });
+export const read = apis.c(2);`;
+
+test("an unchecked JavaScript binding holds a frozen value outside its record type", () => {
+  expect(
+    diagnostics(FROZEN_REASSIGNMENT, 'import { read } from "./library.js"; console.log(read);'),
+  ).toEqual([]);
+});
+
+test("a checked JavaScript binding keeps the missing-property diagnostic", () => {
+  const kept = diagnostics(
+    `// @ts-check\n${FROZEN_REASSIGNMENT}`,
+    'import { read } from "./library.js"; console.log(read);',
+  );
+  expect(kept.some((diagnostic) => diagnostic.code === "SC1090")).toBe(true);
+});
+
 test.for(["/\\1/", "/(a)\\2/", "/\\8/", "/(a)\\12/", "/[\\1]/"])(
   "JavaScript admits a regex decimal escape without its group outside Unicode mode: %s",
   (literal) => {

@@ -4,7 +4,10 @@ import {
   lowerIteratorNew,
 } from "./iterator-prototype.js";
 import { lowerWrapperNew } from "./primitive-wrappers.js";
-import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
+import {
+  lowerAsyncLocalStorageOptions,
+  lowerAsyncResourceConstruction,
+} from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
   DATE_TIME_FIELD,
@@ -185,6 +188,7 @@ import { lowerTextCodecNew } from "./builtins/text-codecs.js";
 import {
   lowerBroadcastChannelNew,
   lowerMessageChannelNew,
+  lowerMessagePortNew,
   lowerWorkerNew,
 } from "./builtins/workers.js";
 import {
@@ -225,9 +229,15 @@ import {
   classSymbolKeyOfSymbol,
   symbolFieldDisplayName,
 } from "./symbol-fields.js";
-import { lowerHttpAgentNew, lowerHttpServerNew, lowerTlsSocketNew } from "./lower-server.js";
+import {
+  lowerHttpAgentNew,
+  lowerHttpServerNew,
+  lowerTlsServerNew,
+  lowerTlsSocketNew,
+} from "./lower-server.js";
 import {
   ambientNsRootOf,
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefReadType,
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
@@ -12871,7 +12881,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
   if (readlineUi) return readlineUi;
-  const channel = lowerMessageChannelNew(lowerer, expr) ?? lowerBroadcastChannelNew(lowerer, expr);
+  const channel =
+    lowerMessageChannelNew(lowerer, expr) ??
+    lowerMessagePortNew(lowerer, expr) ??
+    lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
@@ -13038,6 +13051,19 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       };
     }
     return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
+  }
+  // `new XRWebGLLayer(...)` where the callee names a global only a
+  // types-only package declares: Node throws the ReferenceError at the
+  // callee read, before any argument runs (the ambient-namespace stance,
+  // one identifier deep).
+  if (ts.isIdentifier(expr.expression)) {
+    if (ambientTypesOnlyGlobalSymbolOf(lowerer, expr.expression) !== null) {
+      // The read throws before the construction runs; its value is typed for
+      // the slot it lands in, and the checked-dynamic value converts into a
+      // declared type where one names it (the conversion never runs).
+      const t = ambientUndefReadType(lowerer, expr) ?? DYN;
+      return nsUndefRead(lowerer, expr.expression.text, expr, t);
+    }
   }
   // A package declaration without a compiled constructor cannot provide
   // a runtime value. Report the package at the construction site.
@@ -13207,6 +13233,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   // `new tls.TLSSocket(socket, options)` — the server-mode wrap of an open
   // socket (lower-server).
   {
+    const tlsServer = lowerTlsServerNew(lowerer, expr);
+    if (tlsServer !== null) return tlsServer;
     const tlsSocket = lowerTlsSocketNew(lowerer, expr);
     if (tlsSocket) return tlsSocket;
   }
@@ -14020,6 +14048,17 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         type: F64,
         loc,
       };
+    }
+    // `new AsyncResource(type[, opts])` (node:async_hooks): an f64 handle
+    // into the runtime's resource registry — the ambient class's constant
+    // options checks (type string, triggerAsyncId, requireManualDestroy)
+    // run in the runtime, which reads the options object as JavaScript does.
+    if (
+      symbol !== null &&
+      ts.symbolName(symbol) === "AsyncResource" &&
+      lowerer.isStdlibSymbol(symbol)
+    ) {
+      return lowerAsyncResourceConstruction(lowerer, expr, loc);
     }
     // `new Promise<T>((resolve) => ...)`: the ambient Promise constructor.
     if (symbol !== null && ts.symbolName(symbol) === "Promise" && lowerer.isStdlibSymbol(symbol)) {

@@ -71,6 +71,12 @@ export interface VarReadAnalysis {
    * store, whatever their declared type (an unannotated one has `any`):
    * the binding is never observed in its unassigned state. */
   storedBeforeRead: Set<ts.Symbol>;
+  /** Typed `var` bindings with a reference lexically ABOVE the declaration
+   * whose every read still runs after the first store: a function declared
+   * above the variable (or a later statement of the same scope) can only
+   * read the assigned storage, so the hoisted slot needs no undefined arm
+   * and a forward reference may declare it empty. */
+  forwardStored: Set<ts.Symbol>;
 }
 
 export function analyzeVarReads(
@@ -80,6 +86,7 @@ export function analyzeVarReads(
   const checker = lowerer.checker;
   const out = new Map<ts.Symbol, ts.Identifier>();
   const stored = new Set<ts.Symbol>();
+  const forward = new Set<ts.Symbol>();
   const neverReturns = (call: ts.CallExpression): boolean => {
     try {
       return (lowerer.typeOf(call).flags & ts.TypeFlags.Never) !== 0;
@@ -226,12 +233,21 @@ export function analyzeVarReads(
       // early read could contradict.
       if (!binding.typed) continue;
       const settle = analysis.settleIndex(binding.scope, symbol);
+      // The declaration's own position: a reference before it is the
+      // forward shape the lowering meets before the statement lowers.
+      const firstPos = Math.min(...binding.names.map((n) => n.getStart()));
+      // `var x!: T` waives tsc's definite-assignment check of the binding's
+      // own-code reads, as a `!` on a read does: their position decides.
+      const asserted = binding.names.some((name) => {
+        const declaration = name.parent;
+        return ts.isVariableDeclaration(declaration) && declaration.exclamationToken !== undefined;
+      });
       const early =
         references.find(
           (ref) =>
             !binding.names.includes(ref) &&
             !isPlainWriteTarget(ref) &&
-            !analysis.settles(binding.scope, settle, ref),
+            !analysis.settles(binding.scope, settle, ref, true, !asserted),
         ) ??
         // No statement of the module stores it, and another module can read it.
         (settle.index === Infinity &&
@@ -242,10 +258,16 @@ export function analyzeVarReads(
       if (early) {
         out.set(symbol, early);
         stored.delete(symbol);
+      } else if (references.some((ref) => !binding.names.includes(ref) && ref.pos < firstPos)) {
+        // Every read of the binding settles after the first store. A
+        // reference lexically above the declaration therefore reads the
+        // assigned storage, never the unassigned state: the forward
+        // predeclaration can register the slot empty.
+        forward.add(symbol);
       }
     }
   }
-  return { early: out, storedBeforeRead: stored };
+  return { early: out, storedBeforeRead: stored, forwardStored: forward };
 }
 
 /** The function body or source file a `var` hoists to. */
@@ -657,12 +679,48 @@ interface Settle {
   loop: number;
 }
 
+/** Test seam: the settlement proofs a build computes, by key, while a caller
+ * has asked for them (countSettleProofs). A successful build proves each
+ * key at most once; the regression that held every conditional answer out of
+ * the memo re-proved each cycle-touching key once for every binding whose
+ * analysis consulted it. */
+let settleProofs: Map<string, number> | null = null;
+
+/** Starts counting the settlement proofs a build computes, and clears the
+ * previous counts. */
+export function countSettleProofs(): void {
+  settleProofs = new Map();
+}
+
+/** The settlement proofs computed since countSettleProofs, by key. */
+export function settleProofCounts(): ReadonlyMap<string, number> {
+  return settleProofs ?? EMPTY_PROOF_COUNTS;
+}
+
+const EMPTY_PROOF_COUNTS: ReadonlyMap<string, number> = new Map();
+
 class ScopeAnalysis {
   private readonly js: boolean;
-  /** Whether a function declaration's references all settle, by scope
-   * and settling index (in progress counts as settled: a function only
-   * its own body names is never called through that name). */
+  /** Whether a function declaration's references all settle, by scope and
+   * settling index. A key whose proof is running answers optimistically
+   * (see functionSettles): an answer that leaned on one is kept until the
+   * outermost proof finishes, because the cycle's root decides whether it
+   * holds. Holding every such answer out of the memo makes a program whose
+   * call graph is full of cycles re-prove the same functions once per
+   * binding. */
   private readonly functionMemo = new Map<string, boolean>();
+  /** The keys whose proof is running right now. */
+  private readonly functionPending = new Set<string>();
+  /** The `true` answers proven under a call cycle, oldest first. A proof
+   * that ends `false` drops the answers above its mark, which recompute on
+   * demand; the outermost proof that ends `true` confirms every one. */
+  private readonly conditionalAnswers: string[] = [];
+  /** conditionalAnswers as a set, so taking a memoized answer knows whether
+   * that answer still depends on a cycle being proven. */
+  private readonly conditionalKeys = new Set<string>();
+  /** How many optimistic answers the running proofs have leaned on, in
+   * total. */
+  private provisionalAnswers = 0;
   private readonly functionRefs = new Map<ts.Node, ts.Identifier[]>();
   /** The same answers for one `let` binding's stores. */
   private readonly lexicalFunctionMemo = new Map<StoreAnalysis, Map<ts.Node, boolean>>();
@@ -722,8 +780,10 @@ class ScopeAnalysis {
 
   /** Whether `ref` (inside `scope`, or in another module) runs only after
    * the store `settle` describes. `read`: `ref` reads the binding itself,
-   * so tsc vouches for one in the scope's own code. */
-  settles(scope: Scope, settle: Settle, ref: ts.Identifier, read = true): boolean {
+   * so tsc vouches for one in the scope's own code — except behind a `!`,
+   * on the read or on the declaration (`checked: false`), which waives that
+   * definite-assignment check, so the reference's own position decides. */
+  settles(scope: Scope, settle: Settle, ref: ts.Identifier, read = true, checked = true): boolean {
     if (ts.getSourceFileOfNode(ref) !== this.sf) return true;
     const statements = statementsOf(scope);
     let deferred: ts.Node | null = null;
@@ -741,7 +801,7 @@ class ScopeAnalysis {
       if (n.parent === container) top = n;
     }
     if (top === null) return false;
-    if (deferred === null && read && !this.js) return true;
+    if (deferred === null && read && !this.js && checked && !isNonNullAsserted(ref)) return true;
     if (deferred !== null && ts.isFunctionDeclaration(deferred) && deferred.name !== undefined)
       return this.functionSettles(scope, settle, deferred);
     const index = statements.indexOf(top as ts.Statement);
@@ -823,23 +883,72 @@ class ScopeAnalysis {
   }
 
   private functionSettles(scope: Scope, settle: Settle, fn: ts.FunctionDeclaration): boolean {
-    const key = `${fn.pos}:${settle.index}:${settle.end}:${settle.loop}`;
+    const scopeKey = ts.isSourceFile(scope) ? "file" : `${scope.pos}`;
+    const key = `${scopeKey}:${fn.pos}:${settle.index}:${settle.end}:${settle.loop}`;
     const known = this.functionMemo.get(key);
-    if (known !== undefined) return known;
-    this.functionMemo.set(key, true);
-    const references = this.referencesOf(fn.name!);
-    // An exported function runs after the module's body, which stores the
-    // binding only when one of its statements does.
-    const exported =
-      (ts.getModifiers(fn)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false) ||
-      references.some(isExportedName);
-    const result =
-      !(exported && settle.index === Infinity) &&
-      references.every(
-        (ref) =>
-          isInside(ref, fn) || isExportedName(ref) || this.settles(scope, settle, ref, false),
-      );
-    this.functionMemo.set(key, result);
+    if (known !== undefined) {
+      // A memoized `true` answer that still leans on a cycle being proven is
+      // no safer to reuse than the optimistic answer itself: the proof that
+      // takes it must stay conditional too.
+      if (known && this.conditionalKeys.has(key)) this.provisionalAnswers++;
+      return known;
+    }
+    if (this.functionPending.has(key)) {
+      // A reference inside the cycle being proven: answer with the
+      // optimistic "settled". The proofs that lean on it stay conditional
+      // until the outermost proof finishes.
+      this.provisionalAnswers++;
+      return true;
+    }
+    const provisionalAt = this.provisionalAnswers;
+    const conditionalAt = this.conditionalAnswers.length;
+    if (settleProofs !== null) settleProofs.set(key, (settleProofs.get(key) ?? 0) + 1);
+    this.functionPending.add(key);
+    let result: boolean;
+    try {
+      const references = this.referencesOf(fn.name!);
+      // An exported function runs after the module's body, which stores the
+      // binding only when one of its statements does.
+      const exported =
+        (ts.getModifiers(fn)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false) ||
+        references.some(isExportedName);
+      result =
+        !(exported && settle.index === Infinity) &&
+        references.every(
+          (ref) =>
+            isInside(ref, fn) || isExportedName(ref) || this.settles(scope, settle, ref, false),
+        );
+    } finally {
+      this.functionPending.delete(key);
+    }
+    if (!result) {
+      // A `true` answer proven under this `false` one assumed the cycle
+      // closes: drop each so a later query proves it again. A `false` answer
+      // only ever under-approximates, so it is kept.
+      while (this.conditionalAnswers.length > conditionalAt) {
+        const dropped = this.conditionalAnswers.pop()!;
+        this.conditionalKeys.delete(dropped);
+        this.functionMemo.delete(dropped);
+      }
+      this.functionMemo.set(key, false);
+    } else if (
+      this.provisionalAnswers !== provisionalAt ||
+      this.conditionalAnswers.length > conditionalAt
+    ) {
+      // This answer, or one it used, leaned on a call cycle: it holds only
+      // if the cycle's root does, so the outermost proof confirms it.
+      this.functionMemo.set(key, true);
+      this.conditionalKeys.add(key);
+      this.conditionalAnswers.push(key);
+    } else {
+      this.functionMemo.set(key, true);
+    }
+    if (this.functionPending.size === 0) {
+      // The outermost proof finished and nothing it leaned on contradicted
+      // it, so every answer kept for its cycles is final.
+      this.conditionalAnswers.length = 0;
+      this.conditionalKeys.clear();
+    }
     return result;
   }
 

@@ -55657,6 +55657,7 @@
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/9917-structured-clone-errors.ts",
+          "tests/corpus/9989-message-close-events.js",
           "tests/corpus/buffer-atob-btoa.js",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
@@ -56094,8 +56095,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.CloseEvent",
+        "tests": [
+          "tests/corpus/9989-message-close-events.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -56501,8 +56505,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "partial",
+        "evidence": "compiler-feature:globals.MessageEvent",
+        "tests": [
+          "tests/corpus/9989-message-close-events.js"
+        ]
       },
       "anchorSource": "exact"
     },

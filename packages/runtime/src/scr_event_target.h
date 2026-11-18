@@ -40,8 +40,13 @@ typedef struct ScrEvent {
   ScrStr *type;
   ScrDyn *target;  /* +1, NULL until dispatched */
   ScrDyn *detail;  /* CustomEvent's detail, MessageEvent's data (+1); NULL for Event */
+  ScrStr *origin;       /* MessageEvent: owned */
+  ScrStr *last_event_id; /* MessageEvent: owned */
+  ScrDyn *ports;        /* MessageEvent: owned array, or NULL */
+  ScrStr *reason;       /* CloseEvent: owned */
+  int64_t code;         /* CloseEvent */
   double time_stamp;
-  bool custom, message, bubbles, cancelable, composed, trusted;
+  bool custom, message, close, was_clean, bubbles, cancelable, composed, trusted;
   bool default_prevented, propagation_stopped, stop, dispatching, in_passive;
   bool tracked;
   struct ScrEvent *tracked_prev, *tracked_next;
@@ -75,7 +80,10 @@ ScrDyn *scr_event_new_trusted(const char *type);
 ScrDyn *scr_event_target_new(void);
 ScrDyn *scr_event_new(ScrDyn *args);
 ScrDyn *scr_custom_event_new(ScrDyn *args);
-/* `v instanceof Event` (kind 0), `CustomEvent` (1), `EventTarget` (2). */
+ScrDyn *scr_message_event_new(ScrDyn *args);
+ScrDyn *scr_close_event_new(ScrDyn *args);
+/* `v instanceof Event` (kind 0), `CustomEvent` (1), `EventTarget` (2),
+ * `MessageEvent` (3), `CloseEvent` (4). */
 bool scr_event_is(const ScrDyn *v, double kind);
 /* The node:events helpers over EventTarget receivers: Node's
  * getEventListeners(target, type) answers +1, an array of the type's

@@ -985,10 +985,22 @@ static void scr_event_drop_refs(ScrEvent *ev) {
   scr_event_untrack(ev);
   ScrDyn *target = ev->target;
   ScrDyn *detail = ev->detail;
+  ScrDyn *ports = ev->ports;
+  ScrStr *origin = ev->origin;
+  ScrStr *last_event_id = ev->last_event_id;
+  ScrStr *reason = ev->reason;
   ev->target = NULL;
   ev->detail = NULL;
+  ev->ports = NULL;
+  ev->origin = NULL;
+  ev->last_event_id = NULL;
+  ev->reason = NULL;
   scr_dyn_release(target);
   scr_dyn_release(detail);
+  scr_dyn_release(ports);
+  scr_str_release(origin);
+  scr_str_release(last_event_id);
+  scr_str_release(reason);
 }
 
 static void scr_event_release_v(void *p) {
@@ -1096,6 +1108,14 @@ static ScrDyn *scr_event_target_value(const ScrEvent *ev) {
   return ev->target ? scr_dyn_retain(ev->target) : scr_dyn_new_null();
 }
 
+/* A borrowed string as a dyn string value, "" when absent. */
+static ScrDyn *scr_et_str_value(const ScrStr *s) {
+  ScrStr *owned = s ? scr_str_retain((ScrStr *)s) : scr_str_new("", 0);
+  ScrDyn *value = scr_dyn_new_str(owned);
+  scr_str_release(owned);
+  return value;
+}
+
 static ScrDyn *scr_event_get(void *ptr, const char *key, size_t len) {
   ScrEvent *ev = ptr;
   if (scr_et_key(key, len, "type")) return scr_dyn_new_str(ev->type);
@@ -1118,14 +1138,15 @@ static ScrDyn *scr_event_get(void *ptr, const char *key, size_t len) {
     return ev->detail ? scr_dyn_retain(ev->detail) : scr_dyn_new_null();
   if (ev->message) {
     if (scr_et_key(key, len, "data")) return ev->detail ? scr_dyn_retain(ev->detail) : scr_dyn_new_null();
-    if (scr_et_key(key, len, "origin") || scr_et_key(key, len, "lastEventId")) {
-      ScrStr *empty = scr_str_new("", 0);
-      ScrDyn *value = scr_dyn_new_str(empty);
-      scr_str_release(empty);
-      return value;
-    }
+    if (scr_et_key(key, len, "origin")) return scr_et_str_value(ev->origin);
+    if (scr_et_key(key, len, "lastEventId")) return scr_et_str_value(ev->last_event_id);
     if (scr_et_key(key, len, "source")) return scr_dyn_new_null();
-    if (scr_et_key(key, len, "ports")) return scr_dyn_new_arr();
+    if (scr_et_key(key, len, "ports")) return ev->ports ? scr_dyn_retain(ev->ports) : scr_dyn_new_arr();
+  }
+  if (ev->close) {
+    if (scr_et_key(key, len, "code")) return scr_dyn_new_num((double)ev->code);
+    if (scr_et_key(key, len, "reason")) return scr_et_str_value(ev->reason);
+    if (scr_et_key(key, len, "wasClean")) return scr_dyn_new_bool(ev->was_clean);
   }
   return scr_et_method_value(key, len, false);
 }
@@ -1226,6 +1247,17 @@ static const ScrDynHandleOps scr_event_ops = {
 
 static const ScrDynHandleOps scr_message_event_ops = {
     .cls = "MessageEvent",
+    .retain = scr_event_retain_v,
+    .release = scr_event_release_v,
+    .invoke = scr_event_invoke,
+    .get = scr_event_get,
+    .set = scr_event_set,
+    .inspect_view = scr_event_inspect_view,
+    .json_empty_object = true,
+};
+
+static const ScrDynHandleOps scr_close_event_ops = {
+    .cls = "CloseEvent",
     .retain = scr_event_retain_v,
     .release = scr_event_release_v,
     .invoke = scr_event_invoke,
@@ -1780,6 +1812,7 @@ static void scr_et_install(void) {
   scr_dyn_handle_install(SCR_DYNH_EVENT, &scr_event_ops);
   scr_dyn_handle_install(SCR_DYNH_CUSTOM_EVENT, &scr_custom_event_ops);
   scr_dyn_handle_install(SCR_DYNH_MESSAGE_EVENT, &scr_message_event_ops);
+  scr_dyn_handle_install(SCR_DYNH_CLOSE_EVENT, &scr_close_event_ops);
   scr_dyn_handle_install(SCR_DYNH_EVENT_TARGET, &scr_event_target_ops);
   scr_event_ref_hooks = &scr_event_obj_ref_hooks;
   scr_et_register_teardown();
@@ -1879,6 +1912,219 @@ ScrDyn *scr_custom_event_new(ScrDyn *args) {
   return out;
 }
 
+/* A value rendered the way Node's error messages render a received
+ * argument: strings in quotes, numbers through util.inspect's number
+ * formatting, null/undefined/bools verbatim and other objects as {} or []. */
+static void scr_et_render_arg(const ScrDyn *v, char *out, size_t cap) {
+  if (v == NULL) {
+    snprintf(out, cap, "undefined");
+    return;
+  }
+  switch (v->kind) {
+    case SCR_DYN_STR:
+      snprintf(out, cap, "\"%.*s\"", (int)v->v.str->len, v->v.str->data);
+      return;
+    case SCR_DYN_NUM: {
+      char num[48];
+      scr_num_received(v->v.num, num);
+      snprintf(out, cap, "%s", num);
+      return;
+    }
+    case SCR_DYN_BOOL:
+      snprintf(out, cap, "%s", v->v.b ? "true" : "false");
+      return;
+    case SCR_DYN_NULL:
+      snprintf(out, cap, "null");
+      return;
+    case SCR_DYN_UNDEF:
+      snprintf(out, cap, "undefined");
+      return;
+    case SCR_DYN_ARR:
+      snprintf(out, cap, "[]");
+      return;
+    default:
+      snprintf(out, cap, "{}");
+      return;
+  }
+}
+
+/* A value rendered as plain text (no quotes for a string), for the source
+ * error's `("value")` form. */
+static void scr_et_render_plain(const ScrDyn *v, char *out, size_t cap) {
+  if (v == NULL) {
+    snprintf(out, cap, "undefined");
+    return;
+  }
+  switch (v->kind) {
+    case SCR_DYN_STR:
+      snprintf(out, cap, "%.*s", (int)v->v.str->len, v->v.str->data);
+      return;
+    case SCR_DYN_NUM: {
+      char num[48];
+      scr_num_received(v->v.num, num);
+      snprintf(out, cap, "%s", num);
+      return;
+    }
+    case SCR_DYN_BOOL:
+      snprintf(out, cap, "%s", v->v.b ? "true" : "false");
+      return;
+    case SCR_DYN_NULL:
+      snprintf(out, cap, "null");
+      return;
+    case SCR_DYN_UNDEF:
+      snprintf(out, cap, "undefined");
+      return;
+    case SCR_DYN_ARR:
+      snprintf(out, cap, "[]");
+      return;
+    default:
+      snprintf(out, cap, "{}");
+      return;
+  }
+}
+
+/* An option object's member as a string: ToString, "" when absent. */
+static ScrStr *scr_et_option_string(const ScrDyn *options, const char *key) {
+  ScrDyn *value = scr_et_prop(options, key);
+  if (value == NULL) return NULL;
+  ScrStr *out = value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL
+                    ? scr_str_new("", 0)
+                    : scr_dyn_string_coerce_js(value);
+  scr_dyn_release(value);
+  return out;
+}
+
+/* new MessageEvent(type, init?): the event classes' members are prototype
+ * getters; data/origin/lastEventId/source/ports come from the init
+ * dictionary with Node's defaults and errors (internal/event_target.js). */
+ScrDyn *scr_message_event_new(ScrDyn *args) {
+  scr_et_install();
+  size_t argc = args && args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  if (argc == 0) {
+    static const char msg[] = "MessageEvent constructor: 1 argument required, but 0 found.";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  ScrEvent *ev = scr_event_construct(args, false);
+  if (!ev) return NULL;
+  ev->message = true;
+  ScrDyn *options = args->v.arr.len > 1 ? args->v.arr.items[1] : NULL;
+  if (options && options->kind != SCR_DYN_UNDEF && options->kind != SCR_DYN_NULL) {
+    ScrDyn *data = scr_et_prop(options, "data");
+    if (data == NULL && scr_exc_pending()) goto fail;
+    if (data && data->kind != SCR_DYN_UNDEF) {
+      ev->detail = data; /* transfer */
+      scr_event_track(ev);
+    } else if (data) {
+      scr_dyn_release(data);
+    }
+    ev->origin = scr_et_option_string(options, "origin");
+    if (!ev->origin) goto fail;
+    ev->last_event_id = scr_et_option_string(options, "lastEventId");
+    if (!ev->last_event_id) goto fail;
+    ScrDyn *source = scr_et_prop(options, "source");
+    if (source == NULL && scr_exc_pending()) goto fail;
+    if (source && source->kind != SCR_DYN_UNDEF && source->kind != SCR_DYN_NULL) {
+      char rendered[64], msg[256];
+      scr_et_render_plain(source, rendered, sizeof rendered);
+      int len = snprintf(msg, sizeof msg,
+                         "MessageEvent constructor: Expected eventInitDict.source (\"%s\") to be "
+                         "an instance of MessagePort.",
+                         rendered);
+      scr_dyn_release(source);
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+      goto fail;
+    }
+    if (source) scr_dyn_release(source);
+    ScrDyn *ports = scr_et_prop(options, "ports");
+    if (ports == NULL && scr_exc_pending()) goto fail;
+    if (ports && ports->kind != SCR_DYN_UNDEF && ports->kind != SCR_DYN_NULL) {
+      if (ports->kind != SCR_DYN_ARR) {
+        char rendered[64], msg[224];
+        scr_et_render_arg(ports, rendered, sizeof rendered);
+        int len = snprintf(msg, sizeof msg,
+                           "MessageEvent constructor: eventInitDict.ports (%s) is not iterable.",
+                           rendered);
+        scr_dyn_release(ports);
+        scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+        goto fail;
+      }
+      for (size_t i = 0; i < ports->v.arr.len; i++) {
+        const ScrDyn *item = ports->v.arr.items[i];
+        if (item && item->kind == SCR_DYN_HANDLE && item->v.handle.tag == SCR_DYNH_MESSAGE_PORT)
+          continue;
+        char rendered[64], msg[256];
+        scr_et_render_arg(item, rendered, sizeof rendered);
+        int len = snprintf(msg, sizeof msg,
+                           "MessageEvent constructor: Expected eventInitDict.ports[%zu] (%s) to be "
+                           "an instance of MessagePort.",
+                           i, rendered);
+        scr_dyn_release(ports);
+        scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+        goto fail;
+      }
+      ev->ports = ports; /* transfer */
+    } else if (ports) {
+      scr_dyn_release(ports);
+    }
+  }
+  {
+    ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_MESSAGE_EVENT);
+    scr_event_release_v(ev);
+    return out;
+  }
+fail:
+  scr_event_release_v(ev);
+  return NULL;
+}
+
+/* new CloseEvent(type, init?): code (ToNumber, truncated and taken modulo
+ * 65536 with the sign kept), reason (ToString) and wasClean (ToBoolean). */
+ScrDyn *scr_close_event_new(ScrDyn *args) {
+  scr_et_install();
+  size_t argc = args && args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  if (argc == 0) {
+    static const char msg[] = "CloseEvent constructor: 1 argument required, but 0 found.";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  ScrEvent *ev = scr_event_construct(args, false);
+  if (!ev) return NULL;
+  ev->close = true;
+  ScrDyn *options = args->v.arr.len > 1 ? args->v.arr.items[1] : NULL;
+  if (options && options->kind != SCR_DYN_UNDEF && options->kind != SCR_DYN_NULL) {
+    double raw = 0;
+    ScrDyn *code = scr_et_prop(options, "code");
+    if (code == NULL && scr_exc_pending()) goto fail;
+    if (code && code->kind != SCR_DYN_UNDEF && code->kind != SCR_DYN_NULL) {
+      if (!scr_dyn_number_coerce_js(code, &raw)) {
+        scr_dyn_release(code);
+        goto fail;
+      }
+    }
+    if (code) scr_dyn_release(code);
+    if (!isfinite(raw)) raw = 0;
+    double truncated = raw < 0 ? ceil(raw) : floor(raw);
+    ev->code = (int64_t)fmod(truncated, 65536.0);
+    ev->reason = scr_et_option_string(options, "reason");
+    if (!ev->reason) goto fail;
+    ScrDyn *clean = scr_et_prop(options, "wasClean");
+    if (clean == NULL && scr_exc_pending()) goto fail;
+    ev->was_clean = clean && scr_dyn_truthy(clean);
+    if (clean) scr_dyn_release(clean);
+  } else {
+    ev->reason = scr_str_new("", 0);
+  }
+  {
+    ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_CLOSE_EVENT);
+    scr_event_release_v(ev);
+    return out;
+  }
+fail:
+  scr_event_release_v(ev);
+  return NULL;
+}
+
 /* ── BroadcastChannel's EventTarget side ───────────────────────────── */
 
 static ScrEventTargetCore *scr_et_broadcast_core_new(const char *cls) {
@@ -1928,8 +2174,11 @@ bool scr_event_is(const ScrDyn *v, double kind) {
   if (v->kind != SCR_DYN_HANDLE) return false;
   ScrDynHandleTag tag = v->v.handle.tag;
   if (kind == 0)
-    return tag == SCR_DYNH_EVENT || tag == SCR_DYNH_CUSTOM_EVENT || tag == SCR_DYNH_MESSAGE_EVENT;
+    return tag == SCR_DYNH_EVENT || tag == SCR_DYNH_CUSTOM_EVENT || tag == SCR_DYNH_MESSAGE_EVENT ||
+           tag == SCR_DYNH_CLOSE_EVENT;
   if (kind == 1) return tag == SCR_DYNH_CUSTOM_EVENT;
+  if (kind == 3) return tag == SCR_DYNH_MESSAGE_EVENT;
+  if (kind == 4) return tag == SCR_DYNH_CLOSE_EVENT;
   return tag == SCR_DYNH_EVENT_TARGET ||
          (scr_et_signal_core_fn != NULL && tag == SCR_DYNH_ABORT_SIGNAL);
 }

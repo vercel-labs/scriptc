@@ -7198,19 +7198,27 @@ void scr_mkdtemp_result_release_v(void *p) {
   scr_mkdtemp_result_release((ScrMkdtempResult *)p);
 }
 
-ScrPromise *(*scr_mkdtemp_promise_new)(void);
-void (*scr_mkdtemp_promise_reject_pending)(ScrPromise *p);
-ScrPromise *(*scr_mkdtemp_promise_settled_ref)(
-    void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace);
-ScrPromise *(*scr_mkdtemp_promise_settled_void)(void);
+/* The promise entries the fs.mkdtempDisposable helpers need, referenced
+ * weakly: the promise unit (scr_async.c) defines them, and a program that
+ * links scr_lib.c without it (a runtime unit test, or a hello build) must
+ * not pull the promise machinery into its binary — a constructor that named
+ * them did. A program can only reach these helpers after linking the unit,
+ * whose own references resolve them; scr_dyn_invoke.c's worker channel uses
+ * the same weak-reference pattern. */
+extern ScrPromise *scr_promise_new(void) __attribute__((weak));
+extern void scr_promise_reject_pending(ScrPromise *p) __attribute__((weak));
+extern ScrPromise *scr_promise_settled_ref(
+    void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace)
+    __attribute__((weak));
+extern ScrPromise *scr_promise_settled_void(void) __attribute__((weak));
 
 /* A promise already rejected by the pending exception, through the promise
  * unit's entries. */
 static ScrPromise *scr_mkdtemp_rejected_promise(void) {
-  if (!scr_mkdtemp_promise_new || !scr_mkdtemp_promise_reject_pending)
+  if (!scr_promise_new || !scr_promise_reject_pending)
     scr_trap("scriptc: the promise unit is not linked\n");
-  ScrPromise *p = scr_mkdtemp_promise_new();
-  scr_mkdtemp_promise_reject_pending(p);
+  ScrPromise *p = scr_promise_new();
+  scr_promise_reject_pending(p);
   return p;
 }
 
@@ -7224,9 +7232,9 @@ ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix) {
   ScrStr *created = scr_fs_mkdtemp(prefix); /* +1; throws */
   if (created == NULL) return scr_mkdtemp_rejected_promise();
   ScrMkdtempResult *r = scr_mkdtemp_result_new(created);
-  if (!scr_mkdtemp_promise_settled_ref) scr_trap("scriptc: the promise unit is not linked\n");
-  return scr_mkdtemp_promise_settled_ref(r, scr_mkdtemp_result_retain_v,
-                                         scr_mkdtemp_result_release_v, NULL);
+  if (!scr_promise_settled_ref) scr_trap("scriptc: the promise unit is not linked\n");
+  return scr_promise_settled_ref(r, scr_mkdtemp_result_retain_v,
+                                 scr_mkdtemp_result_release_v, NULL);
 }
 
 ScrStr *scr_mkdtemp_result_path(ScrMkdtempResult *r) { return scr_str_retain(r->path); }
@@ -7237,8 +7245,8 @@ ScrStr *scr_mkdtemp_result_path(ScrMkdtempResult *r) { return scr_str_retain(r->
 ScrPromise *scr_mkdtemp_result_remove(ScrMkdtempResult *r) {
   scr_fs_rm_opts(r->full, true, true);
   if (scr_exc_pending()) return scr_mkdtemp_rejected_promise();
-  if (!scr_mkdtemp_promise_settled_void) scr_trap("scriptc: the promise unit is not linked\n");
-  return scr_mkdtemp_promise_settled_void();
+  if (!scr_promise_settled_void) scr_trap("scriptc: the promise unit is not linked\n");
+  return scr_promise_settled_void();
 }
 
 void scr_mkdtemp_result_remove_sync(ScrMkdtempResult *r) {

@@ -4808,6 +4808,10 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: MKDTEMPRESULT_T },
     },
     "fs.mkdtempDisposableSync": { argTypes: [STRING], result: MKDTEMPRESULT_T },
+    /** The handle's content as Node's type: "bytes" web stream (a checked-
+     * dynamic stream: the stdlib ReadableStream interface has no static
+     * representation). */
+    "fileHandle.readableWebStream": { argTypes: [FILEHANDLE_T, DYN], result: DYN },
     "mkdtempResult.path": { argTypes: [MKDTEMPRESULT_T], result: STRING },
     "mkdtempResult.remove": {
       argTypes: [MKDTEMPRESULT_T],

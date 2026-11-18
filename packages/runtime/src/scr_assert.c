@@ -2552,11 +2552,37 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
    * no property requirement (Node skips it), while an expected own element
    * needs one on the actual side (an actual hole fails the aligned key
    * check). The unequal-length forms below keep Node's subsequence match. */
-  /* Node matches the expected array's own index values, in order, against
-   * the actual array's own index values: an expected hole imposes nothing,
-   * and an actual hole is not a value to match (so Array(1) does not
-   * partially match [undefined], while [, undefined] matches
-   * [undefined, ,]). */
+  /* Sparse arrays (either side has a hole) match by their own index
+   * values, in order: an expected hole imposes nothing and an actual hole
+   * is not a value, so `[, undefined]` matches `[undefined, ,]` while
+   * Array(1) does not match [undefined] and `[1, 2]` does not match
+   * `[2, ,]`. An expected array with no own index asks for nothing. Dense
+   * arrays keep the subsequence match below. */
+  {
+    size_t ownA = 0, ownB = 0;
+    bool holes = false;
+    for (size_t i = 0; i < la; i++) {
+      if (scr_dyn_arr_has_index(a, i)) ownA++;
+      else holes = true;
+    }
+    for (size_t i = 0; i < lb; i++) {
+      if (scr_dyn_arr_has_index(b, i)) ownB++;
+      else holes = true;
+    }
+    if (ownB == 0) return true;
+    if (holes) {
+      if (ownA != ownB) return false;
+      size_t ia = 0, ib = 0;
+      for (;;) {
+        while (ia < la && !scr_dyn_arr_has_index(a, ia)) ia++;
+        while (ib < lb && !scr_dyn_arr_has_index(b, ib)) ib++;
+        if (ia >= la || ib >= lb) return ia >= la && ib >= lb;
+        if (!scr_assert_partial_eq(a->v.arr.items[ia], b->v.arr.items[ib])) return false;
+        ia++;
+        ib++;
+      }
+    }
+  }
   const ScrDyn *pb = b->v.arr.properties;
   if (pb) {
     const ScrDyn *pa = a->v.arr.properties;
@@ -2568,11 +2594,10 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
   }
   size_t pos = 0;
   for (size_t i = 0; i < lb; i++) {
-    if (!scr_dyn_arr_has_index(b, i)) continue;
-    while (pos < la && !(scr_dyn_arr_has_index(a, pos) &&
-                         scr_assert_partial_eq(a->v.arr.items[pos], b->v.arr.items[i])))
+    while (!scr_assert_partial_eq(a->v.arr.items[pos], b->v.arr.items[i])) {
       pos++;
-    if (pos >= la) return false;
+      if (pos > la - lb + i) return false;
+    }
     pos++;
   }
   return true;

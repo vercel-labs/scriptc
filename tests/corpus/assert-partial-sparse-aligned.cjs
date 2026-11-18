@@ -37,3 +37,10 @@ check("undefVsArray1", () => assert.partialDeepStrictEqual([undefined], holes(1)
 check("sparseVsShort", () => assert.partialDeepStrictEqual(sparseA(), [undefined]));
 check("array2VsUndefs", () => assert.partialDeepStrictEqual(holes(2), [undefined, undefined]));
 check("dense", () => assert.partialDeepStrictEqual([1, 2, 3], [1, 3]));
+// A dense array does not match a sparse expectation that would require
+// skipping an element: the search is bounded before the expected hole.
+check("denseVsSparse", () => assert.partialDeepStrictEqual([1, 2], [2, ,]));
+// Dense arrays keep the subsequence match.
+check("denseSubset", () => assert.partialDeepStrictEqual([1, 2, 3], [1, 3]));
+check("denseEqual", () => assert.partialDeepStrictEqual([1, 2], [1, 2]));
+check("denseMismatch", () => assert.partialDeepStrictEqual([1, 2], [2, 1]));

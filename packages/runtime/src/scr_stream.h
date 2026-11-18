@@ -421,6 +421,7 @@ ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
 ScrPromise *scr_sc_array_buffer(ScrStream *s);
 ScrPromise *scr_sc_bytes(ScrStream *s); /* sc_buffer's bytes as a plain Uint8Array */
+ScrPromise *scr_sc_blob(ScrStream *s);  /* the chunks as a Blob (type "") */
 /* Readable.from over a typed source: arr holds the string or Buffer
  * elements (one element under SCR_FROM_SINGLE, from.js's string/Buffer
  * case). Elements push lazily, one _read at a time, as whole entries

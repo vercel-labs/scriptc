@@ -121785,6 +121785,7 @@
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/compat-web-stream-members.mjs",
           "tests/corpus/compat-web-stream-members.ts",
+          "tests/corpus/stream-consumers.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
           "tests/corpus/web-stream-readable-untyped.mjs",
@@ -121908,10 +121909,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.streamConsumers.arrayBuffer",
         "tests": [
-          "tests/corpus/4875-stream-consumers-array-buffer.ts"
+          "tests/corpus/4875-stream-consumers-array-buffer.ts",
+          "tests/corpus/stream-consumers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -121934,8 +121936,11 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.stream.consumers.blob"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.streamConsumers.blob",
+        "tests": [
+          "tests/corpus/stream-consumers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -121957,11 +121962,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.streamConsumers.buffer",
         "tests": [
           "tests/corpus/2629-stream-consumers.ts",
-          "tests/corpus/2630-stream-consumers-errors.ts"
+          "tests/corpus/2630-stream-consumers-errors.ts",
+          "tests/corpus/stream-consumers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122011,11 +122017,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.streamConsumers.json",
         "tests": [
           "tests/corpus/2629-stream-consumers.ts",
-          "tests/corpus/2630-stream-consumers-errors.ts"
+          "tests/corpus/2630-stream-consumers-errors.ts",
+          "tests/corpus/stream-consumers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122038,11 +122045,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.streamConsumers.text",
         "tests": [
           "tests/corpus/2629-stream-consumers.ts",
-          "tests/corpus/2630-stream-consumers-errors.ts"
+          "tests/corpus/2630-stream-consumers-errors.ts",
+          "tests/corpus/stream-consumers.ts"
         ]
       },
       "anchorSource": "exact"

@@ -19,6 +19,7 @@
   An object-mode write passes its encoding argument to `write` and `transform` as Node does (`undefined` when absent, `null` when a callback took its place); a parameter declared `string` receives `""` for `undefined` and `null`, and one declared `string | null | undefined` receives Node's value.
   `readable.read()` on an object-mode stream answers any value it holds.
   `node:stream/consumers` and readline interfaces read object-mode streams of strings and Buffers; other values throw a not-supported error.
+  `node:stream/consumers` `text`, `json`, `buffer`, `bytes`, `arrayBuffer` and `blob` collect a readable as Node does — the utf8 text, the parsed JSON, a Buffer, a plain Uint8Array, a byte-length-exact ArrayBuffer, or a Blob whose `type` is empty — and a stream error or an early close rejects the promise.
   `pipeline` accepts function stages anywhere among its streams: async generator functions (`async function* (source)`, iterating `source` with `for await`), an async generator source function (`async function* ({ signal })`), an async generator function as the destination, and an async function destination whose value resolves the promise form and reaches the callback's second argument.
   A stage is written inline, or named by a function declaration or a `const` bound to a function expression that nothing reassigns.
   The source may also be an array, a string, a `Set`, a `Map`, a generator or async generator object, or a synchronous generator function without parameters; their elements reach the next stage on the same ticks as in Node.

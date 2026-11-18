@@ -46897,6 +46897,7 @@
           "tests/corpus/fs-filehandle-data-options.ts",
           "tests/corpus/fs-filehandle-lines.ts",
           "tests/corpus/fs-links-times.cjs",
+          "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
@@ -48273,8 +48274,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.mkdtempDisposable",
+        "tests": [
+          "tests/corpus/fs-mkdtemp-disposable.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51295,8 +51299,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.mkdtempDisposableSync",
+        "tests": [
+          "tests/corpus/fs-mkdtemp-disposable.ts"
+        ]
       },
       "anchorSource": "exact"
     },

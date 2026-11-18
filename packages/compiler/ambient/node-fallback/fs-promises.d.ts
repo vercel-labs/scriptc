@@ -250,6 +250,16 @@ declare module "fs/promises" {
   export function appendFile(path: string | URL, data: string | ScriptcBufferView): Promise<void>;
   export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
   export function mkdtemp(prefix: string | URL): Promise<string>;
+  /** The object fsPromises.mkdtempDisposable answers: the created path, its
+   * removal, and the Symbol.asyncDispose hook. */
+  export interface DisposableTempDir extends AsyncDisposable {
+    path: string;
+    remove(): Promise<void>;
+  }
+  export function mkdtempDisposable(
+    prefix: string | URL,
+    options?: string | { encoding?: string },
+  ): Promise<DisposableTempDir>;
   export function rmdir(path: string | URL): Promise<void>;
   export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(

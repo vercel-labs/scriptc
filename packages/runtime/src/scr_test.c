@@ -178,6 +178,10 @@ struct ScrTestCtx {
   bool tr_started;
   bool tr_ended;
   bool tr_error;
+  /* The start/end payload Node publishes for this node: one context object
+   * shared by both events, so consumers can correlate them (the error event
+   * spreads it into a fresh object). */
+  ScrDyn *tr_ctx; /* owned */
   /* The failing-section message, rendered when the result settles: exit-time
    * reporting must not run custom inspectors, because module-level values are
    * released before scr_test_exit_code prints the summary. */
@@ -306,6 +310,7 @@ void scr_testctx_release(ScrTestCtx *t) {
    * reference to the signal can free it. */
   scr_test_watch_free(t);
   scr_dyn_release(t->signal_dyn);
+  scr_dyn_release(t->tr_ctx);
   scr_str_release(t->fail_msg);
   scr_promise_release(t->plan_met);
   scr_promise_release(t->abort_promise);
@@ -553,14 +558,28 @@ static ScrDyn *scr_test_tr_ctx(const ScrTestCtx *t) {
   return o;
 }
 
+/** The node's start/end payload: built once and shared by both events, as
+ * Node publishes one context object for them (+1). */
+static ScrDyn *scr_test_tr_roster(ScrTestCtx *t) {
+  if (!t->tr_ctx) t->tr_ctx = scr_test_tr_ctx(t);
+  return scr_dyn_retain(t->tr_ctx);
+}
+
 static void scr_test_tr_publish(int which, ScrTestCtx *t, bool with_error) {
   double handle = scr_test_tr_channel(which);
   if (isnan(handle)) return;
   /* Node publishes only with a subscriber attached; skip building the
    * message otherwise (every test start and end takes this path). */
   if (scr_dc_chan_has_subscribers && !scr_dc_chan_has_subscribers(handle)) return;
-  ScrDyn *msg = scr_test_tr_ctx(t);
-  if (with_error && t->err) scr_test_tr_put(msg, "error", 5, scr_caught_to_dyn(t->err));
+  ScrDyn *msg;
+  if (with_error && t->err) {
+    /* Node's error event is `{ ...channelContext, error }`: a fresh object
+     * over the same fields, so start/end still share their ctx. */
+    msg = scr_test_tr_ctx(t);
+    scr_test_tr_put(msg, "error", 5, scr_caught_to_dyn(t->err));
+  } else {
+    msg = scr_test_tr_roster(t);
+  }
   scr_dc_publish(handle, msg);
   scr_dyn_release(msg);
 }
@@ -1597,26 +1616,31 @@ static void scr_test_run_node(ScrTestCtx *t) {
     t->err = scr_exc_take();
     failed = true;
     scr_test_tr_error(t);
-  } else if (t->cb) {
+  } else {
+    /* Node publishes a test's start when its run begins; a fn-less test
+     * (test("empty"), test.todo("pending")) runs the noop body Node gives
+     * it and publishes the same start and end. */
     t->tr_started = true;
     scr_test_tr_publish(SCR_TR_START, t, false);
-    scr_test_call(t->cb, t->flags, t, t, t);
-    if (t->state != SCR_TS_PENDING) {
-      /* Its parent timed out and cancelled it while the body ran: the
-       * result is reported, its cleanup ran at the cancellation
-       * (scr_test_cancel_running), and the runner has moved on, so the
-       * registration parent is not restored either: it belongs to the
-       * test that runs now. */
-      if (scr_exc_pending()) scr_exc_clear();
-      if (t->concurrency > 1) scr_test_defer--;
-      return;
+    if (t->cb) {
+      scr_test_call(t->cb, t->flags, t, t, t);
+      if (t->state != SCR_TS_PENDING) {
+        /* Its parent timed out and cancelled it while the body ran: the
+         * result is reported, its cleanup ran at the cancellation
+         * (scr_test_cancel_running), and the runner has moved on, so the
+         * registration parent is not restored either: it belongs to the
+         * test that runs now. */
+        if (scr_exc_pending()) scr_exc_clear();
+        if (t->concurrency > 1) scr_test_defer--;
+        return;
+      }
+      if (scr_exc_pending()) {
+        t->err = scr_exc_take();
+        failed = true;
+        scr_test_tr_error(t);
+      }
+      if (failed && t->timed_out) scr_test_cancel_running(t);
     }
-    if (scr_exc_pending()) {
-      t->err = scr_exc_take();
-      failed = true;
-      scr_test_tr_error(t);
-    }
-    if (failed && t->timed_out) scr_test_cancel_running(t);
   }
   /* Children a passing body registered without running (bare test() in
    * the body): run them now, before the parent completes — Node holds
@@ -2640,6 +2664,13 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
     scr_test_print_str(root->name);
     scr_test_print_dur(root->dur_ms);
     fputc('\n', scr_test_out());
+  }
+  /* Node's implicit root reports its own start and end once every test has
+   * finished, still inside the run (the program's module values are alive;
+   * exit-time publication would run subscriber code after teardown). */
+  if (scr_test_root) {
+    scr_test_tr_publish(SCR_TR_START, scr_test_root, false);
+    scr_test_tr_publish(SCR_TR_END, scr_test_root, false);
   }
   scr_test_run_done = true;
   scr_snap_write_all();
@@ -3932,20 +3963,20 @@ int scr_test_exit_code(void) {
   /* Node's reporter ends its stream at exit: the summary and the failing
    * section print here, after every pending task (and so every late
    * registration) has run. */
-  if (scr_test_runner_spawned && scr_test_run_done) {
-    /* Node's implicit root reports its own start/end once every test has
-     * finished, before the summary ends the stream. */
-    if (scr_test_root) {
-      scr_test_tr_publish(SCR_TR_START, scr_test_root, false);
-      scr_test_tr_publish(SCR_TR_END, scr_test_root, false);
-    }
-    scr_test_print_summary();
-  }
+  if (scr_test_runner_spawned && scr_test_run_done) scr_test_print_summary();
   /* The program is done: the module tracker's restore closures go. */
   if (scr_exit_frees()) {
     scr_test_hooks_free(&scr_test_mocks);
     scr_mt_free_all();
     scr_snap_free_all();
+    /* The entry path and the root's cached tracing context outlive the
+     * runner; a clean RC-audited program must release them. */
+    scr_str_release(scr_test_entry);
+    scr_test_entry = NULL;
+    if (scr_test_root) {
+      scr_dyn_release(scr_test_root->tr_ctx);
+      scr_test_root->tr_ctx = NULL;
+    }
   }
   /* The runner never finished: a test awaited a promise nobody settles
    * and the loop exhausted (Node cancels the test and exits 1 — the

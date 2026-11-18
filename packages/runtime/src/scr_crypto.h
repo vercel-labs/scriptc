@@ -257,6 +257,15 @@ void scr_keccak_final(const ScrKeccakCtx *ctx, unsigned char *out, size_t len);
 void scr_kmac_init(ScrKeccakCtx *ctx, bool kmac256, const unsigned char *key, size_t keylen,
                    size_t key_bits, const unsigned char *custom, size_t customlen);
 void scr_kmac_final(const ScrKeccakCtx *ctx, size_t out_bytes, size_t bits, unsigned char *out);
+/* cSHAKE128/cSHAKE256 (SP 800-185) over `data`, with the optional function
+ * name and customization strings; `bits` masks the low bits past it. */
+/* TurboSHAKE128/256 (RFC 9861) over `data` with domain separation byte
+ * `domain` (0x01..0x7f), squeezing `out_bytes`. */
+void scr_turboshake_hash(bool t256, unsigned char domain, const unsigned char *data, size_t len,
+                         unsigned char *out, size_t out_bytes);
+void scr_cshake_hash(bool cshake256, const unsigned char *func, size_t func_len,
+                     const unsigned char *custom, size_t custom_len, const unsigned char *data,
+                     size_t data_len, unsigned char *out, size_t out_bytes, size_t bits);
 typedef struct ScrRipemd160Ctx {
   uint32_t h[5];
   uint64_t bytes;

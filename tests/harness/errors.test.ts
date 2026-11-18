@@ -3830,7 +3830,7 @@ await attempt("unwrap an ecdsa key", () =>
     expect(r.stdout).toBe(
       "ed448 Error SC2020 crypto.subtle.sign with the Ed448 algorithm is not supported yet\n" +
         "ecdsa with an hmac key InvalidAccessError 15 Key algorithm mismatch\n" +
-        "cshake Error SC2020 crypto.subtle.digest with the cSHAKE128 algorithm is not supported yet\n" +
+        "cshake TypeError ERR_MISSING_OPTION Failed to normalize algorithm: passed algorithm cannot be converted to 'CShakeParams' because 'outputLength' is required in 'CShakeParams'.\n" +
         "x448 bits Error SC2020 crypto.subtle.deriveBits with the X448 algorithm is not supported yet\n" +
         "ecdh bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +

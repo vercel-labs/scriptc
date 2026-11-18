@@ -1508,6 +1508,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "dgram.bindCb",
   "dgram.connect",
   "dgram.connectCb",
+  "dgram.connectDyn",
   "dgram.sendStr",
   "dgram.sendBytes",
   "dgram.sendChk",

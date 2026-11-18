@@ -374,6 +374,19 @@ long scr_dgram_live_count(void) { return scr_dgram_live; }
 static SCR_TL ScrDgramSocket *scr_dgram_socks = NULL; /* registry: +1 each, tail-appended */
 static SCR_TL ScrPoller *scr_dgram_poller = NULL;
 
+/* Deferred emits (a pending 'listening'/'connect'/'error', a queued dns
+ * delivery) have no descriptor to wait on, so the poll would sleep until
+ * the program's next timer and the emit would land late or behind a close.
+ * A zero-delay timer on the unit's own poller wakes it for the dispatch in
+ * the same turn. */
+static char scr_dgram_wake_key;
+static bool scr_dgram_wake_armed;
+
+static void scr_dgram_wake(void) {
+  if (scr_dgram_poller == NULL || scr_dgram_wake_armed) return;
+  scr_dgram_wake_armed = scrp_timer_arm(scr_dgram_poller, &scr_dgram_wake_key, 0, &scr_dgram_wake_key);
+}
+
 /* Pending dns.lookup deliveries (already resolved — getaddrinfo ran at
  * the call; the sweep fires them FIFO). */
 typedef struct ScrDnsPending {
@@ -468,6 +481,7 @@ static void scr_dgram_register(ScrDgramSocket *s) {
   ScrDgramSocket **link = &scr_dgram_socks;
   while (*link) link = &(*link)->next;
   *link = scr_dgram_retain(s);
+  scr_dgram_wake();
 }
 
 static void scr_dgram_unregister(ScrDgramSocket *s) {
@@ -571,6 +585,8 @@ static void scr_dgram_throw_exception_host_port(int err, const char *syscall, co
 static void scr_dgram_apply_init_buffers(ScrDgramSocket *s);
 static bool scr_dgram_send_blocked(ScrDgramSocket *s, const char *ip, int family);
 static ScrDyn *scr_dgram_blocked_error(const char *ip);
+static ScrDyn *scr_dgram_send_error(const char *msg);
+static void scr_dns_call_later(const ScrDyn *callback, ScrDyn **args, size_t argc, bool tick);
 
 /* A JS number as V8 prints it in an error's Received tail ("70000",
  * "1.5", "NaN", "Infinity"). Integer-valued doubles print without a
@@ -729,6 +745,7 @@ static void scr_dgram_apply_init_buffers(ScrDgramSocket *s) {
 static void scr_dgram_defer_err(ScrDgramSocket *s, const char *msg) {
   if (!s->pending_err) s->pending_err = scr_str_new(msg, strlen(msg));
   scr_dgram_register(s); /* the sweep delivers it */
+  scr_dgram_wake();
 }
 
 /* bind(port, host): binds NOW; 'listening' (and the bind callback) defer
@@ -805,7 +822,40 @@ static bool scr_dgram_bind_wildcard(ScrDgramSocket *s) {
  * here are deferred 'error's only for bad hosts. An address the socket's
  * sendBlockList blocks fails the connect itself (Node's doConnect answers
  * the callback, or emits 'error', with ERR_IP_BLOCKED). */
-void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb) {
+/* ── connect's completion callback ──────────────────────────────────────
+ * A dynamic (untyped JavaScript) callback: Node registers it as
+ * once('connect') and, when the connection is refused, calls it with the
+ * error instead (process.nextTick(callback, ex)), which the checked
+ * zero-argument closure a typed callback compiles to cannot carry. */
+static void *scr_dgram_dyn_retain_v(void *p) { return scr_dyn_retain((ScrDyn *)p); }
+static void scr_dgram_dyn_release_v(void *p) { scr_dyn_release((ScrDyn *)p); }
+
+static void scr_dgram_dyn_connect_fire(ScrClosure *cb) {
+  ScrDyn *fn = scr_box_get_ref(cb->caps[0]);
+  ScrDyn *result = scr_dyn_call(fn, NULL, 0, "callback");
+  scr_dyn_release(result);
+}
+
+static ScrClosure *scr_dgram_dyn_connect_job(const ScrDyn *fn) {
+  ScrClosure *job = scr_closure_new((void *)&scr_dgram_dyn_connect_fire, 1);
+  job->caps[0] = scr_box_new_obj(&scr_dgram_dyn_retain_v, &scr_dgram_dyn_release_v, NULL);
+  scr_box_set_ref(job->caps[0], scr_dyn_retain((ScrDyn *)fn));
+  return job;
+}
+
+/* Hands a refusal to the dynamic callback (Node's nextTick(callback, ex));
+ * a typed callback has its own deferred invocation below. */
+static void scr_dgram_connect_fail_dyn(const ScrDyn *dyn_cb, char *msg) {
+  ScrDyn *arg = scr_dgram_send_error(msg);
+  scr_dns_call_later(dyn_cb, &arg, 1, false);
+}
+
+static bool scr_dgram_connect_has_dyn(const ScrDyn *dyn_cb) {
+  return dyn_cb != NULL && scr_dgram_dyn_truthy(dyn_cb);
+}
+
+static void scr_dgram_connect_impl(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb,
+                                   const ScrDyn *dyn_cb) {
   if (s->closing || s->close_emitted) {
     scr_closure_release(cb);
     scr_dgram_throw("Not running");
@@ -820,14 +870,24 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
     scr_closure_release(cb);
     return;
   }
+  /* Node hands the callback to once('connect'), which validates it: a truthy
+   * value that is not a function throws there. */
+  if (scr_dgram_connect_has_dyn(dyn_cb) && !scr_dyn_is_callable(dyn_cb)) {
+    scr_closure_release(cb);
+    scr_dyn_arg_type_fail("listener", "of type function", dyn_cb);
+    return;
+  }
   if (cb) scr_dgram_ls_add(&s->conn_ls, cb, NULL, true);
+  else if (scr_dgram_connect_has_dyn(dyn_cb))
+    scr_dgram_ls_add(&s->conn_ls, scr_dgram_dyn_connect_job(dyn_cb), NULL, true);
   const char *h = host->len > 0 ? host->data : (s->v6 ? "::1" : "127.0.0.1");
   struct sockaddr_storage sa;
   socklen_t salen = sizeof sa;
   if (!scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     char msg[160];
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
-    scr_dgram_defer_err(s, msg);
+    if (scr_dgram_connect_has_dyn(dyn_cb)) scr_dgram_connect_fail_dyn(dyn_cb, msg);
+    else scr_dgram_defer_err(s, msg);
     return;
   }
   scr_dgram_ensure_fd(s);
@@ -839,14 +899,21 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
   char peer_ip[64];
   scr_dgram_sockaddr_ip(&sa, peer_ip, sizeof peer_ip);
   if (scr_dgram_send_blocked(s, peer_ip, sa.ss_family == AF_INET6 ? 6 : 4)) {
-    /* Node's doConnect failure: a callback (registered as once('connect'))
-     * is removed and answered with ERR_IP_BLOCKED, otherwise the failure
-     * is the deferred 'error'; 'connect' never emits. The implicit bind
-     * above stands, as in Node, so the socket stays usable. The typed
-     * connect callback takes no argument, so the error the listener would
-     * receive is not observable here. */
-    ScrClosure *failed = cb != NULL ? scr_dgram_ls_pop_last(&s->conn_ls) : NULL;
-    if (failed != NULL) {
+    /* Node's doConnect failure: the callback (registered as once('connect'))
+     * is removed and answered with ERR_IP_BLOCKED — a dynamic callback
+     * receives the error object itself — otherwise the failure is the
+     * deferred 'error'; 'connect' never emits. The implicit bind above
+     * stands, as in Node, so the socket stays usable. */
+    ScrClosure *failed =
+        (cb != NULL || dyn_cb != NULL) ? scr_dgram_ls_pop_last(&s->conn_ls) : NULL;
+    if (scr_dgram_connect_has_dyn(dyn_cb)) {
+      char msg[160];
+      int n = snprintf(msg, sizeof msg, "IP(%s) is blocked by net.BlockList", peer_ip);
+      scr_closure_release(failed);
+      ScrDyn *arg = scr_dgram_blocked_error(peer_ip);
+      (void)n;
+      scr_dns_call_later(dyn_cb, &arg, 1, false);
+    } else if (failed != NULL) {
       scr_next_tick(failed);
     } else {
       char msg[160];
@@ -864,13 +931,22 @@ void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure 
     char ip[64];
     scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
     snprintf(msg, sizeof msg, "connect %s %s:%d", scr_dgram_errname(errno), ip, (int)port);
-    scr_dgram_defer_err(s, msg);
+    if (scr_dgram_connect_has_dyn(dyn_cb)) scr_dgram_connect_fail_dyn(dyn_cb, msg);
+    else scr_dgram_defer_err(s, msg);
     return;
   }
   s->connected = true;
   s->emit_connect = true;
   scr_dgram_register(s);
   scr_dgram_update_read(s);
+}
+
+void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb) {
+  scr_dgram_connect_impl(s, port, host, cb, NULL);
+}
+
+void scr_dgram_connect_dyn(ScrDgramSocket *s, double port, ScrStr *host, const ScrDyn *cb) {
+  scr_dgram_connect_impl(s, port, host, NULL, cb);
 }
 
 /* bindSync([options]): Node's synchronous bind. numeric host only; the
@@ -2879,6 +2955,9 @@ static void scr_dgram_dispatch(void) {
    * never arrive. */
   scr_dgram_sweep();
   if (scr_exc_pending()) return;
+  /* Emits a callback just queued (a connect issued from a 'listening' or a
+   * dns callback) are due now: keep the loop from sleeping on them. */
+  if (scr_dgram_flags_pending()) scr_dgram_wake();
   if (scr_dgram_poller == NULL) return;
   ScrPollerEvent evs[64];
   int n = scrp_drain(scr_dgram_poller, evs, 64);
@@ -2886,6 +2965,10 @@ static void scr_dgram_dispatch(void) {
     if (scr_dnsq_hooks != NULL && scr_dnsq_hooks->owns(evs[i].udata)) {
       scr_dnsq_hooks->event(evs[i].udata, evs[i].events);
       if (scr_exc_pending()) return;
+      continue;
+    }
+    if (evs[i].udata == &scr_dgram_wake_key) {
+      scr_dgram_wake_armed = false;
       continue;
     }
     if ((evs[i].events & SCRP_TIMER) != 0) {
@@ -2902,6 +2985,9 @@ static void scr_dgram_dispatch(void) {
     scr_dgram_read(s);
     if (scr_exc_pending()) return;
   }
+  /* Emits a drained event's callback queued (a connect issued from a dns
+   * delivery) are due next turn: wake the poll for them too. */
+  if (scr_dgram_flags_pending()) scr_dgram_wake();
 }
 
 /* Exit-time registry cleanup (the scr_net.c precedent): sockets a

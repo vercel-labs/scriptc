@@ -139,3 +139,18 @@ test("the map unit's promise-key build is selected exactly when the dynamic prom
   expect(ways.length).toBeGreaterThan(0);
   expect(linking.length).toBeGreaterThanOrEqual(ways.length);
 });
+
+
+test("scr_dyn_invoke.c names the worker message channel only inside its worker build", () => {
+  // scr_worker_events.c defines it, and only a worker build compiles that unit; the header
+  // declares it non-weak, so a reference from a build without SCR_WORKERS left every
+  // dynamic-invoke program with an undefined _scr_worker_message_channel at link time. The call
+  // goes through SCR_WORKER_CHANNEL(), which is NULL outside a worker build.
+  const text = readFileSync(join(sourceDir, "scr_dyn_invoke.c"), "utf8");
+  const start = text.indexOf("#ifdef SCR_WORKERS");
+  const end = text.indexOf("#endif", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const outside = text.slice(0, start) + text.slice(end);
+  expect(outside).not.toContain("scr_worker_message_channel()");
+  expect(text.slice(start, end)).toContain("scr_worker_message_channel()");
+});

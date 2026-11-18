@@ -583,15 +583,3 @@ test("a unit has one build for every combination of the features its builds name
     }
   }
 });
-
-test("dynamic invocation builds the worker events unit that its global constructor calls", () => {
-  // scr_dyn_invoke.c's dyn_global_construct calls scr_worker_message_channel(), which
-  // scr_bytes.h declares non-weak and only scr_worker_events.c defines. The unit was built for
-  // worker programs alone, so a program that pulled dynamic invocation without workers linked
-  // with an undefined symbol: this closure keeps dynInvoke programs linkable.
-  const unit = matrix.runtime_units.find(
-    (u: { source: string }) => u.source === "scr_worker_events.c",
-  );
-  expect(unit).toBeDefined();
-  expect(unit.predicate).toEqual({ any: ["dynInvoke", "workers"] });
-});

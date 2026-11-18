@@ -2562,6 +2562,15 @@ static void dyn_global_ctors_cleanup(void) {
  * executable, and a build that linked no such unit answers the refusal the
  * value always gave. */
 extern ScrDyn *scr_worker_message_channel(void) __attribute__((weak));
+
+/* MessageChannel lives in scr_worker_events.c, which only a worker build compiles. A program
+ * without workers must not name the symbol at all: the header declares it non-weak, so merely
+ * referencing it left the program with an undefined _scr_worker_message_channel at link time. */
+#ifdef SCR_WORKERS
+#define SCR_WORKER_CHANNEL() scr_worker_message_channel()
+#else
+#define SCR_WORKER_CHANNEL() NULL
+#endif
 /* The runtime-provided host classes whose constructors the runtime builds:
  * the abort unit (scr_abort.c / scr_fetch.c), the event-target unit, and the
  * base error unit's DOMException. */
@@ -2666,8 +2675,8 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
   else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s49) == 0) *result = scr_weak_ref_new((ScrDyn *)first);
-  else if (strcmp(name, dyn_s50) == 0 && scr_worker_message_channel != NULL) {
-    *result = scr_worker_message_channel();
+  else if (strcmp(name, dyn_s50) == 0 && SCR_WORKER_CHANNEL() != NULL) {
+    *result = SCR_WORKER_CHANNEL();
   } else if (strcmp(name, dyn_s52) == 0 && scr_fetch_abort_controller_new != NULL) {
     *result = scr_fetch_abort_controller_new();
   } else if (strcmp(name, dyn_s53) == 0 && scr_event_new != NULL) {

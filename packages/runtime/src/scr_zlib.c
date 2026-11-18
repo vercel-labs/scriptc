@@ -1125,6 +1125,8 @@ static bool scr_ws_zstream_work(void *state, int flush, const unsigned char *in,
 
 static int scr_ws_zstream_error(void *state) { return ((ScrWsZstream *)state)->err; }
 
+static bool scr_ws_zstream_ended(void *state) { return ((ScrWsZstream *)state)->ended; }
+
 static void scr_ws_zstream_free(void *state) {
   ScrWsZstream *s = state;
   if (s->decompress) inflateEnd(&s->zs);
@@ -1133,7 +1135,8 @@ static void scr_ws_zstream_free(void *state) {
 }
 
 static const ScrWsZstreamOps scr_ws_zstream_table = {
-    scr_ws_zstream_new, scr_ws_zstream_work, scr_ws_zstream_error, scr_ws_zstream_free,
+    scr_ws_zstream_new, scr_ws_zstream_work, scr_ws_zstream_error, scr_ws_zstream_ended,
+    scr_ws_zstream_free,
 };
 
 /* The table scr_webstreams.c's CompressionStream classes read; this unit's

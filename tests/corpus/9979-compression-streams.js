@@ -42,6 +42,39 @@ console.log(
 );
 console.log("string chunk", hex(await run(new CompressionStream("deflate-raw"), ["hello"])));
 
+const bytes = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
+const u16 = new Uint16Array(bytes.buffer, 0, 4);
+const dv = new DataView(bytes.buffer, 0, 8);
+console.log(
+  "views",
+  hex(await run(new CompressionStream("gzip"), [bytes])),
+  hex(await run(new CompressionStream("gzip"), [u16])),
+  hex(await run(new CompressionStream("gzip"), [dv])),
+);
+
+const gz = await run(new CompressionStream("gzip"), [encoder.encode("hello world")]);
+try {
+  await run(new DecompressionStream("gzip"), [gz.slice(0, gz.length - 4)]);
+  console.log("truncated accepted");
+} catch (error) {
+  console.log("truncated", error.name, JSON.stringify(error.message), error.code);
+}
+const junk = new Uint8Array(gz.length + 3);
+junk.set(gz);
+junk.set([1, 2, 3], gz.length);
+try {
+  await run(new DecompressionStream("gzip"), [junk]);
+  console.log("junk accepted");
+} catch (error) {
+  console.log("junk", error.name, JSON.stringify(error.message), error.code);
+}
+try {
+  await run(new DecompressionStream("gzip"), [gz, new Uint8Array([1, 2, 3])]);
+  console.log("junk2 accepted");
+} catch (error) {
+  console.log("junk2", error.name, JSON.stringify(error.message), error.code);
+}
+
 for (const format of [undefined, "br", 5]) {
   try {
     new CompressionStream(format);

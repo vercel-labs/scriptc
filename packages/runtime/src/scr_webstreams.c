@@ -5714,6 +5714,14 @@ static bool ws_compression_step(WsCompressionStream *t, int flush, WsTController
     if (used_in == 0 && used_out == 0) break;
     if (flush == 0 && in_len == 0) break;
   }
+  if (in_len > 0) {
+    /* Bytes after the end of the compressed stream: Node rejects them
+     * (the same chunk's or a later write's). */
+    static const char msg[] = "Trailing junk found after the end of the compressed stream";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1,
+                             "ERR_TRAILING_JUNK_AFTER_STREAM_END");
+    return false;
+  }
   return true;
 }
 
@@ -5726,9 +5734,12 @@ static ScrBytes *ws_compression_chunk(ScrDyn *chunk) {
     scr_str_release(utf8);
     return bytes;
   }
-  if (chunk->kind == SCR_DYN_BYTES && !chunk->v.bytes->is_data_view) {
-    ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)chunk->v.bytes->len);
-    memcpy(out->data, chunk->v.bytes->data, chunk->v.bytes->len);
+  if (chunk->kind == SCR_DYN_BYTES) {
+    /* A typed array's len is its element count; a DataView's len is bytes.
+     * zlib sees the view's bytes, as Node's BufferSource handling does. */
+    size_t size = chunk->v.bytes->len * scr_bytes_elem_size(chunk->v.bytes->elem);
+    ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)size);
+    memcpy(out->data, chunk->v.bytes->data, size);
     return out;
   }
   char detail[256];
@@ -5764,6 +5775,11 @@ static ScrDyn *ws_compression_flush(ScrClosure *closure, ScrDyn *const *args, si
                         : NULL;
   ScrDyn *result = NULL;
   if (!ws_compression_step(t, 4, c, NULL, 0)) return NULL;
+  if (t->decompress && t->zstream && !scr_ws_zstream_ops->ended(t->zstream)) {
+    /* finish() reached no stream end: the compressed input was truncated. */
+    scr_throw_error_msg_code(SCR_ERR_TYPE, "", 0, "Z_BUF_ERROR");
+    return NULL;
+  }
   if (t->zstream && scr_ws_zstream_ops) {
     scr_ws_zstream_ops->free(t->zstream);
     t->zstream = NULL;

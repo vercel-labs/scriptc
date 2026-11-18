@@ -17,6 +17,7 @@ typedef struct {
   bool (*work)(void *state, int flush, const unsigned char *in, size_t in_len,
                unsigned char *out, size_t out_cap, size_t *used_in, size_t *used_out);
   int (*last_error)(void *state); /* zlib's errno after a failed work */
+  bool (*ended)(void *state);      /* the stream reached its end */
   void (*free)(void *state);
 } ScrWsZstreamOps;
 extern const ScrWsZstreamOps *scr_ws_zstream_ops;

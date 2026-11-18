@@ -43,6 +43,7 @@ typedef struct ScrEvent {
   ScrStr *origin;       /* MessageEvent: owned */
   ScrStr *last_event_id; /* MessageEvent: owned */
   ScrDyn *ports;        /* MessageEvent: owned array, or NULL */
+  ScrDyn *source;       /* MessageEvent: the init dictionary's MessagePort, owned */
   ScrStr *reason;       /* CloseEvent: owned */
   int64_t code;         /* CloseEvent */
   double time_stamp;

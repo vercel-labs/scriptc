@@ -87,6 +87,8 @@ console.log(
   plain.ports === plain.ports,
   Object.isFrozen(plain.ports),
 );
+const withSource = new MessageEvent("source", { source: channel.port1 });
+console.log("source", withSource.source === channel.port1, new MessageEvent("n").source === null);
 channel.port1.close();
 channel.port2.close();
 

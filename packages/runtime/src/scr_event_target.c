@@ -986,18 +986,21 @@ static void scr_event_drop_refs(ScrEvent *ev) {
   ScrDyn *target = ev->target;
   ScrDyn *detail = ev->detail;
   ScrDyn *ports = ev->ports;
+  ScrDyn *source = ev->source;
   ScrStr *origin = ev->origin;
   ScrStr *last_event_id = ev->last_event_id;
   ScrStr *reason = ev->reason;
   ev->target = NULL;
   ev->detail = NULL;
   ev->ports = NULL;
+  ev->source = NULL;
   ev->origin = NULL;
   ev->last_event_id = NULL;
   ev->reason = NULL;
   scr_dyn_release(target);
   scr_dyn_release(detail);
   scr_dyn_release(ports);
+  scr_dyn_release(source);
   scr_str_release(origin);
   scr_str_release(last_event_id);
   scr_str_release(reason);
@@ -1140,7 +1143,8 @@ static ScrDyn *scr_event_get(void *ptr, const char *key, size_t len) {
     if (scr_et_key(key, len, "data")) return ev->detail ? scr_dyn_retain(ev->detail) : scr_dyn_new_null();
     if (scr_et_key(key, len, "origin")) return scr_et_str_value(ev->origin);
     if (scr_et_key(key, len, "lastEventId")) return scr_et_str_value(ev->last_event_id);
-    if (scr_et_key(key, len, "source")) return scr_dyn_new_null();
+    if (scr_et_key(key, len, "source"))
+      return ev->source ? scr_dyn_retain(ev->source) : scr_dyn_new_null();
     if (scr_et_key(key, len, "ports")) {
       /* Node answers one frozen array, the same one on every read. */
       if (!ev->ports) {
@@ -1694,12 +1698,14 @@ void scr_event_state_trace(ScrEvent *ev, ScrTraceVisit visit, void *ctx) {
   if (!ev) return;
   if (ev->target) visit(ev->target, ctx);
   if (ev->detail) visit(ev->detail, ctx);
+  if (ev->source) visit(ev->source, ctx);
 }
 
 void scr_event_state_gcfree(ScrEvent *ev) {
   if (!ev) return;
   ev->target = NULL;
   ev->detail = NULL;
+  ev->source = NULL;
   scr_event_release_v(ev);
 }
 
@@ -2031,18 +2037,23 @@ ScrDyn *scr_message_event_new(ScrDyn *args) {
     if (!ev->last_event_id) goto fail;
     ScrDyn *source = scr_et_prop(options, "source");
     if (source == NULL && scr_exc_pending()) goto fail;
-    if (source && source->kind != SCR_DYN_UNDEF && source->kind != SCR_DYN_NULL) {
-      char rendered[64], msg[256];
-      scr_et_render_plain(source, rendered, sizeof rendered);
-      int len = snprintf(msg, sizeof msg,
-                         "MessageEvent constructor: Expected eventInitDict.source (\"%s\") to be "
-                         "an instance of MessagePort.",
-                         rendered);
+    if (source) {
+      if (source->kind == SCR_DYN_HANDLE && source->v.handle.tag == SCR_DYNH_MESSAGE_PORT) {
+        ev->source = source; /* transfer */
+        source = NULL;
+      } else if (source->kind != SCR_DYN_UNDEF && source->kind != SCR_DYN_NULL) {
+        char rendered[64], msg[256];
+        scr_et_render_plain(source, rendered, sizeof rendered);
+        int len = snprintf(msg, sizeof msg,
+                           "MessageEvent constructor: Expected eventInitDict.source (\"%s\") to be "
+                           "an instance of MessagePort.",
+                           rendered);
+        scr_dyn_release(source);
+        scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+        goto fail;
+      }
       scr_dyn_release(source);
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
-      goto fail;
     }
-    if (source) scr_dyn_release(source);
     ScrDyn *ports = scr_et_prop(options, "ports");
     if (ports == NULL && scr_exc_pending()) goto fail;
     if (ports && ports->kind != SCR_DYN_UNDEF && ports->kind != SCR_DYN_NULL) {

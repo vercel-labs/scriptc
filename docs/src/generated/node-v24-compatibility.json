@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3763,
+    "matrixRows": 3755,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 126,
+      "not-applicable": 134,
       "chapters": 6
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 396,
-      "apiEntries": 396
+      "entries": 388,
+      "apiEntries": 388
     },
     {
       "slug": "events",
@@ -22035,190 +22035,6 @@
       "scope": "api",
       "anchor": "err_proxy_tunnel",
       "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:99ded9f60d07",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_application_error`",
-      "signature": "`ERR_QUIC_APPLICATION_ERROR`",
-      "label": "ERR_QUIC_APPLICATION_ERROR",
-      "apiSymbol": "ERR_QUIC_APPLICATION_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_application_error",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:8dab3930d180",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_connection_failed`",
-      "signature": "`ERR_QUIC_CONNECTION_FAILED`",
-      "label": "ERR_QUIC_CONNECTION_FAILED",
-      "apiSymbol": "ERR_QUIC_CONNECTION_FAILED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_connection_failed",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:a6832d79a601",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_endpoint_closed`",
-      "signature": "`ERR_QUIC_ENDPOINT_CLOSED`",
-      "label": "ERR_QUIC_ENDPOINT_CLOSED",
-      "apiSymbol": "ERR_QUIC_ENDPOINT_CLOSED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_endpoint_closed",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:9b3a144c5163",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_open_stream_failed`",
-      "signature": "`ERR_QUIC_OPEN_STREAM_FAILED`",
-      "label": "ERR_QUIC_OPEN_STREAM_FAILED",
-      "apiSymbol": "ERR_QUIC_OPEN_STREAM_FAILED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_open_stream_failed",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:26e263d339c6",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_stream_aborted`",
-      "signature": "`ERR_QUIC_STREAM_ABORTED`",
-      "label": "ERR_QUIC_STREAM_ABORTED",
-      "apiSymbol": "ERR_QUIC_STREAM_ABORTED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_stream_aborted",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:a8b44a283f33",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_stream_reset`",
-      "signature": "`ERR_QUIC_STREAM_RESET`",
-      "label": "ERR_QUIC_STREAM_RESET",
-      "apiSymbol": "ERR_QUIC_STREAM_RESET",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_stream_reset",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:266e07dc7ced",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_transport_error`",
-      "signature": "`ERR_QUIC_TRANSPORT_ERROR`",
-      "label": "ERR_QUIC_TRANSPORT_ERROR",
-      "apiSymbol": "ERR_QUIC_TRANSPORT_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_transport_error",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:a7a688eeb772",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_version_negotiation_error`",
-      "signature": "`ERR_QUIC_VERSION_NEGOTIATION_ERROR`",
-      "label": "ERR_QUIC_VERSION_NEGOTIATION_ERROR",
-      "apiSymbol": "ERR_QUIC_VERSION_NEGOTIATION_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_version_negotiation_error",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
       "static": {
         "status": "not-implemented",
         "detail": "Not implemented in scriptc's static module-loader subset yet.",

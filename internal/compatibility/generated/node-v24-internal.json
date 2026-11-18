@@ -40158,7 +40158,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_QUIC_APPLICATION_ERROR"
       },
       "anchorSource": "exact"
@@ -40181,7 +40181,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_QUIC_CONNECTION_FAILED"
       },
       "anchorSource": "exact"
@@ -40204,7 +40204,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_QUIC_ENDPOINT_CLOSED"
       },
       "anchorSource": "exact"
@@ -40227,7 +40227,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_QUIC_OPEN_STREAM_FAILED"
       },
       "anchorSource": "exact"
@@ -40250,7 +40250,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_QUIC_STREAM_ABORTED"
       },
       "anchorSource": "exact"
@@ -40273,7 +40273,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_QUIC_STREAM_RESET"
       },
       "anchorSource": "exact"
@@ -40296,7 +40296,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_QUIC_TRANSPORT_ERROR"
       },
       "anchorSource": "exact"
@@ -40319,7 +40319,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_QUIC_VERSION_NEGOTIATION_ERROR"
       },
       "anchorSource": "exact"

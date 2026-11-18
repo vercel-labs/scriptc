@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/websocket-instanceof-only.mjs"
+ ],
+ "diags": []
+}

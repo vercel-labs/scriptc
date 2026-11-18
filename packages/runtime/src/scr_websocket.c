@@ -258,9 +258,13 @@ static void scr_ws_deliver(ScrWs *ws, int opcode, const unsigned char *payload, 
     data = scr_array_buffer_from_bytes(bytes);
   } else {
     /* binaryType 'blob' (Node's default): the message is a Blob holding
-     * the bytes, built through the blob unit the dyn-async feature links. */
+     * the bytes, built through the blob unit the dyn-async feature links.
+     * The part is the ArrayBuffer view of the payload, which the blob's
+     * part walk copies byte for byte. */
+    ScrDyn *sources = scr_dyn_new_arr();
+    scr_dyn_arr_push(sources, scr_array_buffer_from_bytes(bytes));
     ScrDyn *args = scr_dyn_new_arr();
-    scr_dyn_arr_push(args, scr_dyn_new_bytes(bytes));
+    scr_dyn_arr_push(args, sources);
     data = scr_blob_new(args);
     scr_dyn_release(args);
   }
@@ -638,9 +642,28 @@ static ScrDyn *scr_ws_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn
       }
     }
     if (ws->ready_state == SCR_WS_CONNECTING) {
-      /* Node fails the handshake; no close frame goes out. */
+      /* Node fails the handshake: the pending request is destroyed (a
+       * server that stalls the opening handshake must not keep the
+       * connection alive), then 'error' and close 1006 are reported. */
       ws->ready_state = SCR_WS_CLOSING;
       scr_str_release(reason);
+      if (ws->client != NULL) {
+        ScrNetSocket *pending = scr_http_client_socket(ws->client);
+        scr_http_client_destroy(ws->client);
+        /* the dialed connection goes with the request */
+        if (pending != NULL) {
+          scr_net_sock_destroy(pending);
+          scr_net_sock_release(pending);
+        }
+      }
+      if (!ws->discard) {
+        ws->discard = true;
+        scr_ws_destroy_socket(ws);
+        scr_ws_emit_type(ws, "error");
+        ScrStr *empty = scr_str_new("", 0);
+        scr_ws_emit_close(ws, 1006, empty, false);
+        scr_str_release(empty);
+      }
       return scr_dyn_retain(scr_dyn_undefined());
     }
     unsigned char payload[125];

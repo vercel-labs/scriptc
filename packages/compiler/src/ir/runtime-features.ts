@@ -2227,7 +2227,7 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   /** The WebSocket client (the global WebSocket class): scr_websocket.c. */
-  webSocket: rule({ fns: ["websocket.new"] }),
+  webSocket: rule({ fns: ["websocket.new", "websocket.is"] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
    * content as a byte-oriented web stream, its own gated unit. */

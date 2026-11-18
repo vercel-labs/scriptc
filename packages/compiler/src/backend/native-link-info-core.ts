@@ -498,6 +498,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // scr_fs_web_stream.c reads through the FileHandle unit; the web stream
   // unit comes with it through executable-features' webStreams OR.
   { feature: "fsWebStream", requires: ["fileHandle"] },
+  // scr_stream_dyn.c tests values and calls JavaScript stream members through
+  // the dyn-invoke unit (the checked-dynamic stream slots).
+  { feature: "streamDyn", requires: ["dynInvoke"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

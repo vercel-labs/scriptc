@@ -444,6 +444,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_dyn_builtin_stream.c",
   ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
+  // stream.duplexPair builds its two Duplexes on the stream constructor and
+  // its implementer hooks (scr_stream_pair.c).
+  unit((u) => u.opts.stream, "scr_stream_pair.c"),
+  // readable.wrap reads a native source's chunks into the receiver.
+  unit((u) => u.opts.stream, "scr_stream_wrap.c"),
+  // Its checked-dynamic entry point unwraps a boxed readable (scr_stream_dyn.c).
+  unit((u) => u.opts.streamDyn === true, "scr_stream_wrap_dyn.c"),
   // The stream defaults (setDefaultHighWaterMark) are process state the net
   // and http units read for the streams they build.
   unit((u) => u.opts.stream || u.net || u.http, "scr_stream_defaults.c"),
@@ -594,6 +601,17 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit(
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
     "scr_stream_writable_to_web.c",
+  ),
+  // Duplex.toWeb builds both adapters over the duplex.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web_pair.c",
+  ),
+  // Its checked-dynamic entry point unwraps a boxed duplex (scr_stream_dyn.c)
+  // and builds the typed adapters, so it needs both units' features.
+  unit(
+    (u) => u.opts.streamDyn === true && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web_pair_dyn.c",
   ),
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).

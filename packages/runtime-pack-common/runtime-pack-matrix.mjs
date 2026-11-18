@@ -252,6 +252,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
+  ["scr_stream_iterator.c", all("stream", "dynAsync", "symbol")],
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
   ["scr_stream_dyn.c", "streamDyn"],
@@ -830,6 +831,9 @@ export function createRuntimePackMatrix({
     { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
+    // ML-KEM (mlkem-native): the post-quantum KEM surfaces of node:crypto
+    // and WebCrypto.
+    { id: "mlkem", predicate: "mlkem" },
     { id: "sqlite", predicate: "sqlite" },
   ];
   const matrix = withLibraryRuntimeFlavors(

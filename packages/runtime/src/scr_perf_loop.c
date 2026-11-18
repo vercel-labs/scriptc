@@ -437,6 +437,8 @@ double scr_eld_stat(ScrDyn *handle, double which) {
     case 6:
     case 7: {
       if (h->total == 0) return 0;
+      /* Node answers kurtosis only from four samples; fewer read 0. */
+      if (w == 7 && h->total < 4) return 0;
       double n = (double)h->total;
       double mean = 0;
       for (size_t i = 0; i < h->counts_len; i++) {
@@ -1128,8 +1130,10 @@ double scr_histo_stat(ScrDyn *handle, double which) {
     case 6:
     case 7: {
       /* Node's shape moments over the same bucket medians its mean and
-       * stddev use: skewness m3/sd^3, kurtosis m4/sd^4 - 3. */
+       * stddev use: skewness m3/sd^3, kurtosis m4/sd^4 - 3 (kurtosis only
+       * from four samples; fewer read 0). */
       if (h->total == 0) return 0;
+      if (w == 7 && h->total < 4) return 0;
       int64_t sum = 0;
       for (int64_t i = 0; i < h->counts_len; i++) {
         if (h->counts[i] == 0) continue;

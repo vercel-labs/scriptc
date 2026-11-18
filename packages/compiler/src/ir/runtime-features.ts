@@ -175,6 +175,12 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entryType",
   "perf.mark",
   "perf.measure",
+  // Resource timing entries and their buffer (scr_perf.c).
+  "perf.resourceMark",
+  "perf.resourceClear",
+  "perf.resourceBufferSize",
+  "perf.entryResourceNum",
+  "perf.entryResourceStr",
   // new PerformanceMark and the PerformanceObserver family: their
   // callbacks run from an immediate (scr_perf.c).
   "perf.markNew",
@@ -329,6 +335,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "readable.iterator",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -416,6 +423,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "readable.iterator",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -1088,6 +1096,7 @@ const WEBCRYPTO_ASYMMETRIC_NAMES: ReadonlySet<string> = new Set([
   "rsa-pss",
   "rsassa-pkcs1-v1_5",
   "x25519",
+  "x448",
 ]);
 
 /** Whether a string literal in the module names Ed25519, without regard
@@ -2090,6 +2099,9 @@ const RUNTIME_FEATURE_RULES = {
   dh: rule({ fns: [...DH_LIB_FNS] }),
   /** Argon2: scr_argon2.c. */
   argon2: rule({ fns: ["crypto.argon2Sync", "crypto.argon2Cb"] }),
+  /** ML-KEM (mlkem-native): selected by the node:crypto encapsulate and
+   * WebCrypto ML-KEM lowerings, and links the vendored archive. */
+  mlkem: rule({ fns: [] }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -2460,7 +2472,7 @@ const RUNTIME_FEATURE_RULES = {
    * the unit makes (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew"],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew", "readable.iterator"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program
@@ -2769,6 +2781,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     x509: false,
     dh: false,
     argon2: false,
+    mlkem: false,
     emitter: false,
     eventTarget: false,
     eventsOnceSignal: false,

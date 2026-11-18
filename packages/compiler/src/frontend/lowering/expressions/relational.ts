@@ -655,9 +655,13 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     return { kind: "libCall", fn: "dyn.dataViewIs", args: [value], type: BOOL, loc };
   }
   {
-    const eventKind = ["Event", "CustomEvent", "EventTarget"].findIndex((name) =>
-      lowerer.isStdlibGlobal(expr.right, name),
-    );
+    const eventKind = [
+      "Event",
+      "CustomEvent",
+      "EventTarget",
+      "MessageEvent",
+      "CloseEvent",
+    ].findIndex((name) => lowerer.isStdlibGlobal(expr.right, name));
     if (eventKind >= 0) {
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       const kind: IrExpr = { kind: "numLit", value: eventKind, type: F64, loc };

@@ -34,6 +34,16 @@ show("percentile", [h.percentile(1), h.percentile(50), h.percentile(90), h.perce
 show("percentile big", [h.percentileBigInt(50), h.percentileBigInt(100)]);
 console.log("percentiles", JSON.stringify([...h.percentiles]));
 
+// Node answers kurtosis only from four samples: two and three read 0 while
+// skewness reports its own moment.
+const few = createHistogram();
+few.record(5);
+few.record(9);
+few.record(20);
+show("three-sample moments", [(few as any).skewness.toFixed(6), (few as any).kurtosis]);
+few.record(40);
+show("four-sample moments", [(few as any).skewness.toFixed(6), (few as any).kurtosis.toFixed(6)]);
+
 // A bigint record takes the exact integer form.
 h.record(2n ** 40n);
 show("after bigint record", [h.count, h.max, h.percentile(100)]);

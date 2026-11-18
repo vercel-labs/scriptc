@@ -111,6 +111,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "worker.parentPort",
   "worker.resourceLimits",
   "worker.channel",
+  "worker.portConstruct",
   "worker.receiveMessageOnPort",
   "worker.setEnvironmentData",
   "worker.getEnvironmentData",
@@ -258,6 +259,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "abort.any",
   "event.new",
   "event.customNew",
+  "event.messageNew",
+  "event.closeNew",
   "event.init",
   "event.targetCall",
   "event.targetDispatch",
@@ -735,6 +738,11 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // perf_hooks user timing: Node's argument validation, the unset-mark
   // SyntaxError DOMException, and the detail's DataCloneError.
   "perf.mark",
+  // markResourceTiming's argument reads and clearResourceTimings /
+  // setResourceTimingBufferSize validation.
+  "perf.resourceMark",
+  "perf.resourceClear",
+  "perf.resourceBufferSize",
   "perf.measure",
   "perf.entries",
   "perf.clearMarks",

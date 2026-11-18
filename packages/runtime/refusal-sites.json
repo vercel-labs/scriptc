@@ -1784,6 +1784,12 @@
  {
   "file": "scr_stream.c",
   "function": "scr_stream_dyn_call",
+  "message": "'readable.iterator' has no native lowering in this program",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dyn_call",
   "message": "Native stream method values with write encodings or callbacks have no lowering",
   "code": "SC2020"
  },

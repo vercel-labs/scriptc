@@ -17,9 +17,11 @@ import { InternalCompilerError } from "../../errors.js";
  * jsonStringify emission site runs the pending check (join still walks
  * only f64/string/bool/unit arms — the frontend's fence). */
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
+import { isPerfEntryShape } from "../../ir/ir.js";
 import {
   isPerfNodeTimingShape,
   isRefCounted,
+  PERF_ENTRY_JSON_FIELDS,
   PERF_NODE_TIMING_JSON_FIELDS,
   typeKey,
 } from "../../ir/ir.js";
@@ -379,7 +381,11 @@ export class LlWalkers {
     // and all. performance.nodeTiming is the exception: stringify runs its
     // toJSON first, which answers the class's own field list (without
     // uvMetricsInfo), so that list is what serializes.
-    const toJsonOrder = isPerfNodeTimingShape(shape) ? PERF_NODE_TIMING_JSON_FIELDS : null;
+    const toJsonOrder = isPerfNodeTimingShape(shape)
+      ? PERF_NODE_TIMING_JSON_FIELDS
+      : isPerfEntryShape(shape)
+        ? PERF_ENTRY_JSON_FIELDS
+        : null;
     emitPerKeyOrder(B, shape, fieldBase, "%v", (declaredOrder) => {
       const order = toJsonOrder ?? declaredOrder;
       const inOrder = new Set(order);

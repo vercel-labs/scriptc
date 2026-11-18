@@ -19,7 +19,13 @@ import {
   mapOf,
   typeKey,
 } from "../../../ir/ir.js";
-import { PERF_ENTRY_FIELDS, PERF_ENTRY_MARKER, perfEntryJsonShape } from "../../type-mapper.js";
+import {
+  PERF_ENTRY_FIELDS,
+  PERF_ENTRY_MARKER,
+  PERF_RESOURCE_FIELDS,
+  PERF_RESOURCE_TIMING_FIELDS,
+  perfEntryJsonShape,
+} from "../../type-mapper.js";
 import {
   PERF_NODE_TIMING_JSON_FIELDS,
   PERF_NODE_TIMING_MARKER,
@@ -154,9 +160,56 @@ export function lowerPerfHooksCall(
     const entry = lowerer.lowerExpr(access.expression);
     if (entry.type.kind !== "record")
       lowerer.badType(access.expression, lowerer.typeOf(access.expression));
+    const entryT = entry.type;
+    if (perfValueIsResourceTiming(lowerer, access.expression)) {
+      return {
+        kind: "dynFrom",
+        value: perfResourceJson(lowerer, entry, entryT, loc),
+        type: DYN,
+        loc,
+      };
+    }
+    // A PerformanceEntry-typed value may be any entry class: answer the
+    // resource toJSON for a resource entry and the base one otherwise,
+    // exactly as the class's own toJSON would. The receiver is bound once,
+    // so a call expression runs once.
+    const local = lowerer.declareHiddenLocal("%perfEntryToJson", entryT);
+    const ref = (): IrExpr => varRef(local.id, entryT, loc);
     return {
-      kind: "dynFrom",
-      value: perfEntryJson(lowerer, entry, entry.type, loc),
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: entry, loc }],
+      result: {
+        kind: "ternary",
+        cond: {
+          kind: "strEq",
+          negated: false,
+          left: {
+            kind: "recordGet",
+            obj: ref(),
+            shapeId: entryT.shapeId,
+            field: "entryType",
+            type: STRING,
+            loc,
+          },
+          right: { kind: "strLit", value: "resource", type: STRING, loc },
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "dynFrom",
+          value: perfResourceJson(lowerer, ref(), entryT, loc),
+          type: DYN,
+          loc,
+        },
+        else_: {
+          kind: "dynFrom",
+          value: perfEntryJson(lowerer, ref(), entryT, loc),
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      },
       type: DYN,
       loc,
     };
@@ -196,11 +249,51 @@ export function lowerPerfHooksCall(
   if (timeline && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
     return lowerPerfTimelineCall(lowerer, expr, access.name.text, timeline, loc);
   }
+  if (
+    access.name.text === "markResourceTiming" &&
+    isPerfHooksPerformanceExpr(lowerer, access.expression)
+  ) {
+    const args = lowerPerfArguments(lowerer, expr, loc);
+    const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (result?.kind !== "record" || !isPerfEntryType(lowerer, result)) {
+      lowerer.noLowering(
+        "markResourceTiming where the result is not a PerformanceResourceTiming",
+        expr,
+      );
+    }
+    // The runtime builds the entry and buffers it; the record is built from
+    // the view and handed back so the timeline answers this same object.
+    return perfEntryProduceCall(
+      lowerer,
+      "perf.resourceMark",
+      "%perf.markResourceTiming",
+      args,
+      result,
+      true,
+      loc,
+    );
+  }
+  if (
+    (access.name.text === "clearResourceTimings" ||
+      access.name.text === "setResourceTimingBufferSize") &&
+    isPerfHooksPerformanceExpr(lowerer, access.expression)
+  ) {
+    return {
+      kind: "libCall",
+      fn:
+        access.name.text === "clearResourceTimings"
+          ? "perf.resourceClear"
+          : "perf.resourceBufferSize",
+      args: [lowerPerfArguments(lowerer, expr, loc)],
+      type: VOID,
+      loc,
+    };
+  }
   if (isPerfHooksPerformanceExpr(lowerer, access.expression)) {
     lowerer.noLowering(
       `perf_hooks performance.${access.name.text}`,
       expr,
-      "performance.now() (and its .bind(performance) function value), nodeTiming, timeOrigin, toJSON, mark, measure, the getEntries family, clearMarks, clearMeasures and eventLoopUtilization are the lowered surface",
+      "performance.now() (and its .bind(performance) function value), nodeTiming, timeOrigin, toJSON, mark, measure, the getEntries family, clearMarks, clearMeasures, eventLoopUtilization and markResourceTiming are the lowered surface",
     );
   }
   return null;
@@ -428,6 +521,29 @@ function perfEntryRecord(
     name: read("perf.entryName", STRING),
     startTime: read("perf.entryStart", F64),
   };
+  // PerformanceResourceTiming's fields: one runtime selector each (a mark
+  // or measure answers 0/""), in the selector order scr_perf.c reads.
+  for (const field of PERF_RESOURCE_FIELDS) {
+    const selectorById = PERF_RESOURCE_NUM_SELECTORS.get(field.name);
+    if (selectorById !== undefined) {
+      values[field.name] = {
+        kind: "libCall",
+        fn: "perf.entryResourceNum",
+        args: [index, numLit(selectorById, loc)],
+        type: F64,
+        loc,
+      };
+      continue;
+    }
+    const selector = PERF_RESOURCE_STR_SELECTORS.get(field.name)!;
+    values[field.name] = {
+      kind: "libCall",
+      fn: "perf.entryResourceStr",
+      args: [index, numLit(selector, loc)],
+      type: STRING,
+      loc,
+    };
+  }
   return {
     kind: "recordLit",
     fields: Object.keys(values)
@@ -436,6 +552,91 @@ function perfEntryRecord(
     type: t,
     loc,
   };
+}
+
+/** The numeric PerformanceResourceTiming fields, as scr_perf.c's selectors. */
+const PERF_RESOURCE_NUM_SELECTORS: ReadonlyMap<string, number> = new Map([
+  ["workerStart", 0],
+  ["redirectStart", 1],
+  ["redirectEnd", 2],
+  ["fetchStart", 3],
+  ["domainLookupStart", 4],
+  ["domainLookupEnd", 5],
+  ["connectStart", 6],
+  ["connectEnd", 7],
+  ["secureConnectionStart", 8],
+  ["requestStart", 9],
+  ["finalResponseHeadersStart", 10],
+  ["firstInterimResponseStart", 11],
+  ["responseStart", 12],
+  ["responseEnd", 13],
+  ["transferSize", 14],
+  ["encodedBodySize", 15],
+  ["decodedBodySize", 16],
+  ["responseStatus", 17],
+]);
+
+/** The string PerformanceResourceTiming fields, as scr_perf.c's selectors. */
+const PERF_RESOURCE_STR_SELECTORS: ReadonlyMap<string, number> = new Map([
+  ["initiatorType", 0],
+  ["nextHopProtocol", 1],
+  ["deliveryType", 2],
+  ["renderBlockingStatus", 3],
+  ["contentType", 4],
+  ["contentEncoding", 5],
+]);
+
+/** True when the checker type is a stdlib PerformanceResourceTiming. */
+export function perfValueIsResourceTiming(lowerer: Lowerer, node: ts.Expression): boolean {
+  const symbol = lowerer.typeOf(node).getAliasSymbol() ?? lowerer.typeOf(node).getSymbol();
+  return (
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "PerformanceResourceTiming" &&
+    lowerer.isStdlibSymbol(symbol)
+  );
+}
+
+/** A PerformanceResourceTiming entry's toJSON(): every resource field, in
+ * Node's key order, as one plain object (the checker declares any, so the
+ * record crosses as a checked-dynamic value). */
+export function perfResourceJson(
+  lowerer: Lowerer,
+  entry: IrExpr,
+  entryT: IrType & { kind: "record" },
+  loc: SrcLoc,
+): IrExpr {
+  const shape = lowerer.shapes.get(entryT.shapeId)!;
+  const bound = bindRecordReceiver(lowerer, entry, "%perfResourceJson", loc);
+  const result: IrExpr = {
+    kind: "recordLit",
+    fields: PERF_RESOURCE_TIMING_FIELDS.map((name) => ({
+      name,
+      value: {
+        kind: "recordGet",
+        obj: bound.receiver,
+        shapeId: entryT.shapeId,
+        field: name,
+        type: shape.fields.find((f) => f.name === name)!.type,
+        loc,
+      },
+    })),
+    type: {
+      kind: "record",
+      shapeId: lowerer.shapes.intern(
+        PERF_RESOURCE_TIMING_FIELDS.map((name) => ({
+          name,
+          type: shape.fields.find((f) => f.name === name)!.type,
+        })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+        false,
+        undefined,
+        [...PERF_RESOURCE_TIMING_FIELDS],
+      ),
+    },
+    loc,
+  };
+  return bound.stmts.length === 0
+    ? result
+    : { kind: "seqExpr", stmts: bound.stmts, result, type: result.type, loc };
 }
 
 /** The call's arguments as one dyn array, in source order. Spread
@@ -703,6 +904,7 @@ type PerfClass =
   | "PerformanceEntry"
   | "PerformanceMark"
   | "PerformanceMeasure"
+  | "PerformanceResourceTiming"
   | "PerformanceObserver"
   | "PerformanceObserverEntryList";
 
@@ -710,6 +912,7 @@ const PERF_CLASSES: ReadonlySet<string> = new Set<PerfClass>([
   "PerformanceEntry",
   "PerformanceMark",
   "PerformanceMeasure",
+  "PerformanceResourceTiming",
   "PerformanceObserver",
   "PerformanceObserverEntryList",
 ]);
@@ -955,7 +1158,12 @@ export function lowerPerfInstanceof(lowerer: Lowerer, expr: ts.BinaryExpression)
       },
       right: {
         kind: "strLit",
-        value: cls === "PerformanceMark" ? "mark" : "measure",
+        value:
+          cls === "PerformanceMark"
+            ? "mark"
+            : cls === "PerformanceMeasure"
+              ? "measure"
+              : "resource",
         type: STRING,
         loc,
       },
@@ -970,7 +1178,19 @@ export function lowerPerfInstanceof(lowerer: Lowerer, expr: ts.BinaryExpression)
   return {
     kind: "libCall",
     fn: "perf.entryIs",
-    args: [value, numLit(cls === "PerformanceEntry" ? 0 : cls === "PerformanceMark" ? 1 : 2, loc)],
+    args: [
+      value,
+      numLit(
+        cls === "PerformanceEntry"
+          ? 0
+          : cls === "PerformanceMark"
+            ? 1
+            : cls === "PerformanceMeasure"
+              ? 2
+              : 4,
+        loc,
+      ),
+    ],
     type: BOOL,
     loc,
   };
@@ -1017,7 +1237,33 @@ export function perfEntryTag(
               loc,
             },
             then: { kind: "strLit", value: "[object PerformanceMark]", type: STRING, loc },
-            else_: { kind: "strLit", value: "[object PerformanceMeasure]", type: STRING, loc },
+            else_: {
+              kind: "ternary",
+              cond: {
+                kind: "strEq",
+                negated: false,
+                left: {
+                  kind: "recordGet",
+                  obj: e,
+                  shapeId: entryT.shapeId,
+                  field: "entryType",
+                  type: STRING,
+                  loc,
+                },
+                right: { kind: "strLit", value: "measure", type: STRING, loc },
+                type: BOOL,
+                loc,
+              },
+              then: { kind: "strLit", value: "[object PerformanceMeasure]", type: STRING, loc },
+              else_: {
+                kind: "strLit",
+                value: "[object PerformanceResourceTiming]",
+                type: STRING,
+                loc,
+              },
+              type: STRING,
+              loc,
+            },
             type: STRING,
             loc,
           },

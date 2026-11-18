@@ -152,10 +152,82 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
     "http2.streamUndefCall": "scr_http2_stream_undef_call",
+    "http2.sessionRef": "scr_http2_session_ref",
+    "http2.sessionUnref": "scr_http2_session_unref",
+    "http2.sessionSetLocalWindowSize": "scr_http2_session_set_local_window_size",
+    "http2.sessionGoawayOpaque": "scr_http2_session_goaway",
+    "http2.streamRespondWait": "scr_http2_stream_respond_wait",
+    "http2.streamSendTrailers": "scr_http2_stream_send_trailers",
+    "http2.streamAdditionalHeaders": "scr_http2_stream_additional_headers",
+    "http2.streamPriority": "scr_http2_stream_priority",
+    "http2.streamPushAllowed": "scr_http2_stream_push_allowed",
   };
   const symbol = direct[e.fn];
   if (symbol !== undefined) return finishRuntimeCall(host, e, symbol, a);
   switch (e.fn) {
+    case "http2.sessionGoaway":
+      return finishRuntimeCall(host, e, "scr_http2_session_goaway", [a[0]!, a[1]!, a[2]!, ptr()]);
+    case "http2.sessionSetTimeout":
+      return finishRuntimeCall(host, e, "scr_http2_session_set_timeout", [
+        a[0]!,
+        a[1]!,
+        ptr(),
+        a[2]!,
+      ]);
+    case "http2.sessionSetTimeoutCb": {
+      host.toHeap(args[2]!);
+      return finishRuntimeCall(host, e, "scr_http2_session_set_timeout", [
+        a[0]!,
+        a[1]!,
+        abiValue(host, args[2]!),
+        a[3]!,
+      ]);
+    }
+    case "http2.streamSetTimeout":
+      return finishRuntimeCall(host, e, "scr_http2_stream_set_timeout", [
+        a[0]!,
+        a[1]!,
+        ptr(),
+        a[2]!,
+      ]);
+    case "http2.streamSetTimeoutCb": {
+      host.toHeap(args[2]!);
+      return finishRuntimeCall(host, e, "scr_http2_stream_set_timeout", [
+        a[0]!,
+        a[1]!,
+        abiValue(host, args[2]!),
+        a[3]!,
+      ]);
+    }
+    case "http2.serverSetTimeout":
+      return finishRuntimeCall(host, e, "scr_http2_server_set_timeout", [
+        a[0]!,
+        a[1]!,
+        ptr(),
+        ptr(),
+      ]);
+    case "http2.serverSetTimeoutCb": {
+      const cb = callbackAdapter(
+        host,
+        args[2]!,
+        callbackType(args[2]!).params.length === 0
+          ? "scr_http2_session_thunk0"
+          : "scr_http2_session_thunk",
+        ["ptr", "ptr"],
+      );
+      return finishRuntimeCall(host, e, "scr_http2_server_set_timeout", [a[0]!, a[1]!, ...cb]);
+    }
+    case "http2.serverOnTimeout": {
+      const cb = callbackAdapter(
+        host,
+        args[1]!,
+        callbackType(args[1]!).params.length === 0
+          ? "scr_http2_session_thunk0"
+          : "scr_http2_session_thunk",
+        ["ptr", "ptr"],
+      );
+      return finishRuntimeCall(host, e, "scr_http2_server_on_timeout", [a[0]!, ...cb, a[2]!]);
+    }
     case "http2.streamNoop":
       return { name: "", type: e.type };
     case "http2.sessionPing":
@@ -327,6 +399,28 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.sessionOnClose":
       runtime = "scr_http2_session_on_close";
+      break;
+    case "http2.sessionOnTimeout":
+      runtime = "scr_http2_session_on_timeout";
+      break;
+    case "http2.streamOnTimeout":
+      runtime = "scr_http2_stream_on_timeout";
+      break;
+    case "http2.streamOnReady":
+      runtime = "scr_http2_stream_on_ready";
+      break;
+    case "http2.streamOnWantTrailers":
+      runtime = "scr_http2_stream_on_want_trailers";
+      break;
+    case "http2.streamOnTrailers":
+      runtime = "scr_http2_stream_on_trailers";
+      thunk = "scr_http2_headers_thunk";
+      params = ["ptr", "ptr", "double"];
+      break;
+    case "http2.streamOnHeaders":
+      runtime = "scr_http2_stream_on_headers";
+      thunk = "scr_http2_headers_thunk";
+      params = ["ptr", "ptr", "double"];
       break;
     case "http2.streamOnEnd":
       runtime = "scr_http2_stream_on_end";

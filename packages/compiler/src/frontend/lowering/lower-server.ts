@@ -1951,6 +1951,32 @@ function lowerNetServerMethodCall(
         call,
         "pass milliseconds and an optional socket callback",
       );
+    const serverName = ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol());
+    if (serverName === "Http2Server" || serverName === "Http2SecureServer") {
+      // Node's Http2Server.setTimeout: the value becomes server.timeout
+      // (each accepted session arms its idle timer with it) and the
+      // callback joins the server's 'timeout' listeners, which receive
+      // the session (not a socket).
+      const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+      const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+      const cb =
+        args.length === 2
+          ? lowerCallbackArg(
+              lowerer,
+              args[1]!,
+              "server timeout callbacks",
+              1,
+              (p) => p.kind === "http2Session",
+              "use (session) or ()",
+              [HTTP2SESSION_T],
+            ).cb
+          : null;
+      const fn: IrLibFn = cb === null ? "http2.serverSetTimeout" : "http2.serverSetTimeoutCb";
+      const callArgs = cb === null ? [receiver, ms] : [receiver, ms, cb];
+      if (chainingResultDiscarded(lowerer, call))
+        return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+      return receiverReturningCall(lowerer, fn, callArgs, NETSERVER_T, loc);
+    }
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
     const ms = lowerer.lowerExprExpecting(args[0]!, F64);
     const cb =
@@ -2687,6 +2713,28 @@ function lowerNetServerMethodCall(
       };
     }
     if (event === "timeout") {
+      const serverName = ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol());
+      if (serverName === "Http2Server" || serverName === "Http2SecureServer") {
+        // Http2Server 'timeout': (session) for an idle session past
+        // server.timeout — the net server's socket-shaped list is the
+        // HTTP/1.1 surface.
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[1]!,
+          "timeout listeners",
+          1,
+          (p) => p.kind === "http2Session",
+          "use (session) or ()",
+          [HTTP2SESSION_T],
+        );
+        return {
+          kind: "libCall",
+          fn: "http2.serverOnTimeout",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
+      }
       const { cb } = lowerCallbackArg(
         lowerer,
         args[1]!,
@@ -4227,6 +4275,38 @@ function h2EndStreamOption(lowerer: Lowerer, node: ts.Expression | undefined): b
   return end;
 }
 
+/** The `waitForTrailers` boolean of an h2 options object literal, as a
+ * literal bool. Returns undefined when absent (or the arg is absent). */
+function h2WaitForTrailersOption(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+): boolean | undefined {
+  if (node === undefined) return undefined;
+  if (!ts.isObjectLiteralExpression(node)) {
+    lowerer.noLowering(
+      "h2 options argument",
+      node,
+      "pass the options as an object literal ({ waitForTrailers: true })",
+    );
+  }
+  let wait: boolean | undefined;
+  for (const prop of (node as ts.ObjectLiteralExpression).properties.nodes) {
+    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
+      lowerer.noLowering(
+        "h2 options with spreads or computed keys",
+        prop,
+        "use plain `name: value` entries",
+      );
+    }
+    if ((prop.name as ts.Identifier).text !== "waitForTrailers") continue;
+    const init = (prop as ts.PropertyAssignment).initializer;
+    if (init.kind === ts.SyntaxKind.TrueKeyword) wait = true;
+    else if (init.kind === ts.SyntaxKind.FalseKeyword) wait = false;
+    else lowerer.noLowering("a non-literal waitForTrailers option", init, "spell it true or false");
+  }
+  return wait;
+}
+
 /** A settings listener or settings() callback as lowered. The runtime
  * hands the settings record over as a dynamic value, so a function that
  * declares the payload's parameters is boxed here and takes the entry
@@ -4306,6 +4386,101 @@ function lowerH2SessionMethodCall(
   if (name === "destroy") {
     requireStatementPosition(lowerer, call, "session.destroy(...)");
     return { kind: "libCall", fn: "http2.sessionDestroy", args: [receiver()], type: VOID, loc };
+  }
+  if (name === "goaway") {
+    requireStatementPosition(lowerer, call, "session.goaway(...)");
+    if (args.length > 3) {
+      lowerer.noLowering(
+        `session.goaway with ${args.length} arguments`,
+        call,
+        "use goaway([code[, lastStreamID[, opaqueData]]])",
+      );
+    }
+    const zero = (): IrExpr => ({ kind: "numLit", value: 0, type: F64, loc });
+    const code = args.length >= 1 ? lowerer.lowerExprExpecting(args[0]!, F64) : zero();
+    const last = args.length >= 2 ? lowerer.lowerExprExpecting(args[1]!, F64) : zero();
+    if (args.length === 3) {
+      const opaque = lowerer.lowerExpr(args[2]!);
+      if (opaque.type.kind !== "bytes") {
+        lowerer.noLowering(
+          `session.goaway with '${lowerer.fmt(opaque.type)}' opaqueData`,
+          args[2]!,
+          "the opaque data is a Buffer or Uint8Array",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "http2.sessionGoawayOpaque",
+        args: [receiver(), code, last, opaque],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.sessionGoaway",
+      args: [receiver(), code, last],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "ref" || name === "unref") {
+    requireStatementPosition(lowerer, call, `session.${name}()`);
+    if (args.length !== 0)
+      lowerer.noLowering(`session.${name} with arguments`, call, `${name}() takes no arguments`);
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "http2.sessionRef" : "http2.sessionUnref",
+      args: [receiver()],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "setTimeout") {
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `session.setTimeout with ${args.length} arguments`,
+        call,
+        "use setTimeout(milliseconds[, callback])",
+      );
+    }
+    const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+    const cb =
+      args.length === 2
+        ? lowerCallbackArg(
+            lowerer,
+            args[1]!,
+            "session timeout callbacks",
+            0,
+            () => false,
+            "use ()",
+            [],
+          ).cb
+        : null;
+    const fn: IrLibFn = cb === null ? "http2.sessionSetTimeout" : "http2.sessionSetTimeoutCb";
+    const callArgs =
+      cb === null
+        ? [receiver(), ms, boolLit(false, loc)]
+        : [receiver(), ms, cb, boolLit(true, loc)];
+    if (resultIsDiscarded(call)) return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+    return receiverReturningCall(lowerer, fn, callArgs, HTTP2SESSION_T, loc);
+  }
+  if (name === "setLocalWindowSize") {
+    requireStatementPosition(lowerer, call, "session.setLocalWindowSize(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `session.setLocalWindowSize with ${args.length} arguments`,
+        call,
+        "use setLocalWindowSize(windowSize)",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.sessionSetLocalWindowSize",
+      args: [receiver(), lowerer.lowerExprExpecting(args[0]!, F64)],
+      type: VOID,
+      loc,
+    };
   }
   if (name === "ping") {
     // session.ping([payload, ]callback): the (err, duration, payload)
@@ -4422,6 +4597,26 @@ function lowerH2SessionMethodCall(
         kind: "libCall",
         fn: "http2.sessionOnSettings0",
         args: [receiver(), cb, once, local],
+        type: VOID,
+        loc,
+      };
+    }
+    if (event === "timeout") {
+      // The idle timer setTimeout() armed elapsed: Node emits 'timeout'
+      // with no arguments.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "timeout listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionOnTimeout",
+        args: [receiver(), cb, once],
         type: VOID,
         loc,
       };
@@ -4544,13 +4739,13 @@ function lowerH2SessionMethodCall(
     lowerer.noLowering(
       `session.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"close", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events',
+      '"close", "error", "connect", "stream", "goaway", "ping", "timeout", "localSettings", and "remoteSettings" are the supported session events',
     );
   }
   lowerer.noLowering(
     `session.${name}`,
     call,
-    "close/destroy/request/settings/ping and on(...) are the lowered session members",
+    "close/destroy/request/settings/ping/goaway/ref/unref/setTimeout/setLocalWindowSize and on(...) are the lowered session members",
   );
 }
 
@@ -4583,6 +4778,16 @@ function lowerH2StreamMethodCall(
         ? lowerH2HeadersArg(lowerer, args[0]!)
         : ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } as IrExpr);
     const end = h2EndStreamOption(lowerer, args[1]);
+    const wait = h2WaitForTrailersOption(lowerer, args[1]);
+    if (wait === true) {
+      return {
+        kind: "libCall",
+        fn: "http2.streamRespondWait",
+        args: [receiver(), headersArg, boolLit(end ?? false, loc), boolLit(true, loc)],
+        type: VOID,
+        loc,
+      };
+    }
     return {
       kind: "libCall",
       fn: "http2.streamRespond",
@@ -4590,6 +4795,90 @@ function lowerH2StreamMethodCall(
       type: VOID,
       loc,
     };
+  }
+  if (name === "sendTrailers") {
+    requireStatementPosition(lowerer, call, "stream.sendTrailers(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `stream.sendTrailers with ${args.length} arguments`,
+        call,
+        "use sendTrailers(headers)",
+      );
+    }
+    const headersArg = lowerH2HeadersArg(lowerer, args[0]!);
+    return {
+      kind: "libCall",
+      fn: "http2.streamSendTrailers",
+      args: [receiver(), headersArg],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "additionalHeaders") {
+    requireStatementPosition(lowerer, call, "stream.additionalHeaders(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `stream.additionalHeaders with ${args.length} arguments`,
+        call,
+        "use additionalHeaders(headers)",
+      );
+    }
+    const headersArg = lowerH2HeadersArg(lowerer, args[0]!);
+    return {
+      kind: "libCall",
+      fn: "http2.streamAdditionalHeaders",
+      args: [receiver(), headersArg],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "priority") {
+    requireStatementPosition(lowerer, call, "stream.priority(...)");
+    if (args.length > 1) {
+      lowerer.noLowering(
+        `stream.priority with ${args.length} arguments`,
+        call,
+        "use priority(options)",
+      );
+    }
+    // Node 24 deprecated the call: no frame is sent, the first call warns
+    // and a destroyed stream throws — the runtime owns both.
+    return {
+      kind: "libCall",
+      fn: "http2.streamPriority",
+      args: [receiver()],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "setTimeout") {
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `stream.setTimeout with ${args.length} arguments`,
+        call,
+        "use setTimeout(milliseconds[, callback])",
+      );
+    }
+    const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+    const cb =
+      args.length === 2
+        ? lowerCallbackArg(
+            lowerer,
+            args[1]!,
+            "stream timeout callbacks",
+            0,
+            () => false,
+            "use ()",
+            [],
+          ).cb
+        : null;
+    const fn: IrLibFn = cb === null ? "http2.streamSetTimeout" : "http2.streamSetTimeoutCb";
+    const callArgs =
+      cb === null
+        ? [receiver(), ms, boolLit(false, loc)]
+        : [receiver(), ms, cb, boolLit(true, loc)];
+    if (resultIsDiscarded(call)) return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
+    return receiverReturningCall(lowerer, fn, callArgs, HTTP2STREAM_T, loc);
   }
   if (name === "write" || name === "end") {
     requireStatementPosition(lowerer, call, `stream.${name}(...)`);
@@ -4701,6 +4990,43 @@ function lowerH2StreamMethodCall(
     const once = boolLit(name === "once", loc);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
+    if (event === "timeout" || event === "ready" || event === "wantTrailers") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        `${event} listeners`,
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      const fn: IrLibFn =
+        event === "timeout"
+          ? "http2.streamOnTimeout"
+          : event === "ready"
+            ? "http2.streamOnReady"
+            : "http2.streamOnWantTrailers";
+      return { kind: "libCall", fn, args: [receiver(), cb, once], type: VOID, loc };
+    }
+    if (event === "trailers" || event === "headers") {
+      // (headers, flags) — the trailing block a peer sent, or an
+      // informational/additional HEADERS block on a client stream.
+      const cb = h2HeadersCallbackAdapter(
+        lowerer,
+        args[1]!,
+        `${event} listeners`,
+        null,
+        false,
+        loc,
+      );
+      return {
+        kind: "libCall",
+        fn: event === "trailers" ? "http2.streamOnTrailers" : "http2.streamOnHeaders",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "data") {
       const { cb } = lowerCallbackArg(
         lowerer,
@@ -4768,13 +5094,13 @@ function lowerH2StreamMethodCall(
     lowerer.noLowering(
       `stream.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"data", "end", "close", "aborted", "error", and "response" are the supported stream events',
+      '"data", "end", "close", "aborted", "error", "response", "headers", "trailers", "ready", "timeout", and "wantTrailers" are the supported stream events',
     );
   }
   lowerer.noLowering(
     `stream.${name}`,
     call,
-    "respond/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members",
+    "respond/write/end/close/destroy/setEncoding/resume/pause/sendTrailers/additionalHeaders/priority/setTimeout and on(...) are the lowered stream members",
   );
 }
 
@@ -5495,6 +5821,14 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.streamAborted", args: [recv()], type: BOOL, loc };
     if (m === "pending")
       return { kind: "libCall", fn: "http2.streamPending", args: [recv()], type: BOOL, loc };
+    if (m === "pushAllowed")
+      return {
+        kind: "libCall",
+        fn: "http2.streamPushAllowed",
+        args: [recv()],
+        type: BOOL,
+        loc,
+      };
     if (m === "headersSent")
       return { kind: "libCall", fn: "http2.streamHeadersSent", args: [recv()], type: BOOL, loc };
     if (m === "session")

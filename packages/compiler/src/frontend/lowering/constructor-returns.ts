@@ -408,6 +408,22 @@ function foreignObjectFeature(info: ClassInfo): string {
 
 /** `return <expr>` inside a class constructor whose value may be an
  * object. Null when the statement keeps the ordinary lowering. */
+/** Records that this construction's answer is the value the constructor
+ * returned, so a `finally` that runs afterwards leaves the published
+ * instance alone (lower-classes.ts constructorEpilogue). */
+function markValueReturn(lowerer: Lowerer, loc: SrcLoc): IrStmt[] {
+  const flag = lowerer.ctx.constructorValueReturn;
+  if (flag === undefined) return [];
+  return [
+    {
+      kind: "assign",
+      localId: flag.id,
+      value: { kind: "boolLit", value: true, type: BOOL, loc },
+      loc,
+    },
+  ];
+}
+
 export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrStmt | null {
   const info = lowerer.currentClass;
   if (info === null || info.ctor === null || stmt.expression === undefined) return null;
@@ -430,6 +446,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
       body: [
         { kind: "assign", localId: plan.slot!.id, value, loc },
         ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
+        ...markValueReturn(lowerer, loc),
         { kind: "return", value: null, loc },
       ],
       loc,
@@ -473,6 +490,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
         loc,
       },
       ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
+      ...markValueReturn(lowerer, loc),
       { kind: "return", value: null, loc },
     ];
   } else {
@@ -533,6 +551,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
                       loc,
                     },
                     ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
+                    ...markValueReturn(lowerer, loc),
                     { kind: "return" as const, value: null, loc },
                   ],
                   else_: null,

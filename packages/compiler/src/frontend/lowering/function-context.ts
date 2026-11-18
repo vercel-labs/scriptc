@@ -20,6 +20,11 @@ export interface FnCtx {
    * the end of a `finally` block, where a construction nested in the block
    * may have published its own result. */
   constructorEpilogue?: (site: "return" | "finally") => IrStmt[];
+  /** Set for a constructor that can answer a value of its own: records that
+   * such a return published the instance it answers, so a `finally` that
+   * runs afterwards does not publish this constructor's `this` over it
+   * (constructor-returns.ts lowerConstructorReturn). */
+  constructorValueReturn?: IrLocal;
   /** Set when a lookup of `this` returned thisLocal, from this function's
    * body or from a nested function that captures it. */
   thisRead?: true;

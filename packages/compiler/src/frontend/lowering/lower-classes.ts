@@ -10223,6 +10223,23 @@ function classCaptureParams(info: ClassInfo, context: FnCtx): Pick<IrFunction, "
   };
 }
 
+/** Whether a constructor's own body (nested functions and classes excluded)
+ * has a `finally` block: the only site that reads the value-return flag. */
+function hasOwnFinallyBlock(ctor: ts.Node): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return;
+    if (ts.isTryStatement(node) && node.finallyBlock !== undefined) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(ctor, visit);
+  return found;
+}
+
 function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
   const className = info.def.name;
   const thisType: IrType = { kind: "object", className };
@@ -10256,13 +10273,47 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
         loc,
       });
       const publish = () => [publishConstructorResult(lowerer, info, thisLocal, loc)];
-      // A `finally` republishes only while the constructor's answer is
-      // always its `this`: a returned instance or object sets the result
-      // slot itself, and a block that runs after that return must not
-      // overwrite it.
+      // A value return publishes the instance it answers itself
+      // (constructor-returns.ts lowerConstructorReturn), so a `finally`
+      // republishes this constructor's `this` only when no value return of
+      // this construction did. A finalizer that constructs the same class
+      // consumes whatever the class's result slot held, so a constructor
+      // finishing on the path that answers its own `this` publishes it
+      // again afterwards, while a value return's answer is left as it is.
       const returnsValue = (constructorReturnPlan(lowerer, info)?.returns.size ?? 0) !== 0;
+      const ctorBody = info.ctor?.body;
+      const needsValueFlag =
+        returnsValue && ctorBody !== undefined && hasOwnFinallyBlock(ctorBody);
+      let valueReturn: IrLocal | null = null;
+      if (needsValueFlag) {
+        valueReturn = { id: "%valueReturn.0", name: "%valueReturn", type: BOOL, mutable: true };
+        lowerer.ctx.locals.push(valueReturn);
+        body.push({
+          kind: "varDecl",
+          localId: valueReturn.id,
+          init: { kind: "boolLit", value: false, type: BOOL, loc },
+          loc,
+        });
+        lowerer.ctx.constructorValueReturn = valueReturn;
+      }
       lowerer.ctx.constructorEpilogue = (site) =>
-        site === "finally" && returnsValue ? [] : publish();
+        site === "finally" && valueReturn !== null
+          ? [
+              {
+                kind: "if",
+                cond: {
+                  kind: "unary",
+                  op: "!",
+                  operand: varRef(valueReturn.id, BOOL, loc),
+                  type: BOOL,
+                  loc,
+                },
+                then: publish(),
+                else_: null,
+                loc,
+              },
+            ]
+          : publish();
     }
     // A construction nested in this constructor's argument evaluation can
     // have been abandoned after publishing its instance (a `finally` that

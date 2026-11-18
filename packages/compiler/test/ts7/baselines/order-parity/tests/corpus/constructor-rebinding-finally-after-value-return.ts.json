@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/constructor-rebinding-finally-after-value-return.ts"
+ ],
+ "diags": []
+}

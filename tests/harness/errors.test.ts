@@ -3786,10 +3786,11 @@ refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
 });
 
 // WebCrypto's native slice is crypto.subtle's secret-key methods and its
-// ECDSA, Ed25519 and RSA algorithms. Algorithms Node recognizes outside
-// that slice reject with a coded SC2020
-// Error instead of a Node-shaped success, and a JavaScript call of a
-// method outside it meets its named fence when it runs.
+// ECDSA, Ed25519, X448 and RSA algorithms. Algorithms Node recognizes
+// outside that slice reject with a coded SC2020 Error instead of a
+// Node-shaped success, and a JavaScript call of a method outside it meets
+// its named fence when it runs. An X448 call that the key's usage refuses
+// still reports Node's ExperimentalWarning as the algorithm normalizes.
 // Node's own rejections (unknown names, bad usages) are corpus-pinned
 // (6292, 6294); these refusals have no Node twin, so they live here.
 describe("WebCrypto refusals (JS lane)", () => {
@@ -3826,12 +3827,17 @@ await attempt("unwrap an ecdsa key", () =>
       "mjs",
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stderr).toBe("");
+    // X448 normalizes before the refusal, so the runtime reports Node's
+    // one-per-process ExperimentalWarning (its prefix carries the pid).
+    expect(r.stderr.replace(/\(node:\d+\)/, "(node:PID)")).toBe(
+      "(node:PID) ExperimentalWarning: The X448 Web Crypto API algorithm is an experimental feature and might change at any time\n" +
+        "(Use `node --trace-warnings ...` to show where the warning was created)\n",
+    );
     expect(r.stdout).toBe(
       "ed448 Error SC2020 crypto.subtle.sign with the Ed448 algorithm is not supported yet\n" +
         "ecdsa with an hmac key InvalidAccessError 15 Key algorithm mismatch\n" +
         "cshake TypeError ERR_MISSING_OPTION Failed to normalize algorithm: passed algorithm cannot be converted to 'CShakeParams' because 'outputLength' is required in 'CShakeParams'.\n" +
-        "x448 bits Error SC2020 crypto.subtle.deriveBits with the X448 algorithm is not supported yet\n" +
+        "x448 bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "ecdh bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +
         "wrap an ecdsa key Error SC2020 crypto.subtle.wrapKey with an ECDSA, Ed25519 or RSA key is not supported yet\n" +

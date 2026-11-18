@@ -3814,8 +3814,15 @@ static ScrClosure *scr_stream_finish_register(ScrStream *s, ScrClosure *cb /*mov
   scr_stream_fin_add(st, scr_closure_retain(cb), inv, close_step);
   bool will_close = scr_stream_will_emit_close(st);
   if ((close_step && st->close_emitted) || (st->emit_close && st->close_emitted) ||
-      st->destroyed || (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
-    /* Already terminal: Node's eos still calls back asynchronously. */
+      (st->destroyed && (st->errored == NULL || st->error_emitted)) ||
+      (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
+    /* Already terminal: Node's eos still calls back asynchronously. A
+     * destroyed stream with a pending error waits for its own error tick,
+     * which reports the watcher and consumes the error as Node's eos
+     * does; ticking it here would drop the watcher first, so the
+     * AbortError asyncDispose destroyed with would emit unhandled. A
+     * cleanly destroyed stream, or one whose error was already reported,
+     * has nothing left to wait for. */
     scr_st_tick(s, SCR_ST_FIN, NULL, NULL);
   }
   ScrClosure *cleanup = scr_closure_new((void *)&scr_stream_finished_cleanup_fn, 2);

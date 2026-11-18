@@ -1,5 +1,9 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
-import { lowerFsPromisesWatchCall, lowerFsWatchFileCall } from "./builtins/filesystem.js";
+import {
+  lowerFsPromisesWatchCall,
+  lowerFsWatchFileCall,
+  lowerMkdtempDisposableCall,
+} from "./builtins/filesystem.js";
 import {
   lowerEventLoopUtilizationCall,
   lowerMonitorEventLoopDelayCall,
@@ -232,6 +236,20 @@ export function lowerBuiltinCall(
   // fsPromises.watch: the async iterator a `for await` drains (the
   // lowering of that loop drives it; any other use has no lowering and is
   // refused where it stands).
+  // fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync: the created
+  // directory plus its removal and disposal hooks.
+  if (
+    (bi.module === "fs/promises" && bi.member === "mkdtempDisposable") ||
+    (bi.module === "fs" && bi.member === "mkdtempDisposableSync")
+  ) {
+    const disposable = lowerMkdtempDisposableCall(
+      lowerer,
+      expr,
+      bi.member === "mkdtempDisposable",
+      loc,
+    );
+    if (disposable) return disposable;
+  }
   if (bi.module === "fs/promises" && bi.member === "watch") {
     const watching = lowerFsPromisesWatchCall(lowerer, expr, loc);
     if (watching) return watching;

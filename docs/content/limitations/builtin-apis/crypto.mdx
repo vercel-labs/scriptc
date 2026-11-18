@@ -72,6 +72,7 @@
   Secret keys import and export in the `raw`, `raw-secret`, and `jwk` formats; KMAC keys import from `raw-secret` and `jwk` only, export as `raw-secret` and `jwk` with the K128/K256 labels, and `sign()` takes the required `outputLength` in bits with the optional `customization`.
   `generateKey()`, `importKey()`, `exportKey()`, `sign()`, and `verify()` also support ECDSA (P-256, P-384, and P-521), Ed25519, RSASSA-PKCS1-v1_5, and RSA-PSS, with the `spki`, `pkcs8`, and `jwk` formats and `raw` for ECDSA and Ed25519 public keys.
   `generateKey()`, `importKey()`, and `exportKey()` also support ECDH and X25519, with `spki`, `pkcs8`, and `jwk` and `raw` for their public keys, and RSA-OAEP, whose `encrypt()` and `decrypt()` take the optional `label`.
+  `deriveBits()` and `deriveKey()` also run Argon2d, Argon2i and Argon2id: their keys import from `raw-secret` only, are never extractable, and take the required `nonce`, `memory`, `passes` and `parallelism`, the optional `secretValue` and `associatedData`, `version` 19 and the derived bit length (at least 32, a multiple of 8), with Node's normalization errors and each algorithm's ExperimentalWarning once per process.
   `deriveBits()` and `deriveKey()` derive an ECDH or X25519 shared secret, truncated to the requested bit length the way Node truncates it, and an AES or HMAC key from it.
   ECDSA, Ed25519, ECDH, X25519, and RSA are refused in wasm32-wasi builds.
   The asymmetric algorithms link when a string literal in the program names one; a name built only at run time throws a coded SC2020 error.

@@ -21,6 +21,11 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
+import {
+  documentedJsReturn,
+  returnedSlotIsClass,
+  returnsCheckedDynamicParameter,
+} from "./call-signatures.js";
 import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
@@ -264,6 +269,28 @@ function promiseArm(lowerer: Lowerer, type: ts.Type): ts.Type | undefined {
 /** Map a declaration's return contract while retaining JavaScript
  * inference fallbacks. Diagnostics preserve the caller's blame node. */
 export function declaredReturnType(
+  lowerer: Lowerer,
+  decl: ts.SignatureDeclaration,
+  blame: ts.Node,
+): IrType {
+  const ret = declaredReturnTypeInner(lowerer, decl, blame);
+  // A JavaScript file TypeScript does not check keeps a documented class
+  // result (`@returns {Color}`) and a result inferred from the function's own
+  // checked-dynamic parameter as hints, not promises: `reread(target = new
+  // Color()) { return target; }` answers the plain object a caller passed. A
+  // class-typed slot would convert it nominally and throw where Node answers
+  // it, so the result is checked-dynamic (an async function resolves one).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !lowerer.checkedJsFile(ts.getSourceFileOfNode(decl)) &&
+    (documentedJsReturn(decl) || returnsCheckedDynamicParameter(lowerer, decl)) &&
+    returnedSlotIsClass(lowerer, ret)
+  )
+    return ret.kind === "promise" ? { ...ret, inner: DYN } : DYN;
+  return ret;
+}
+
+function declaredReturnTypeInner(
   lowerer: Lowerer,
   decl: ts.SignatureDeclaration,
   blame: ts.Node,

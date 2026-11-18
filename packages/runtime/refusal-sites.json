@@ -781,6 +781,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_req_signal",
+  "message": "IncomingMessage.signal is not supported by this runtime build",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_res_informational_h1",
   "message": "Http2ServerResponse.%s is not supported by the static runtime yet",
   "code": "SC2020"
@@ -2397,6 +2403,12 @@
   "file": "scr_string.c",
   "function": "scr_qs_escape_value",
   "message": "querystring.escape of a function converts its source text, which a compiled binary does not keep",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_srv_opts_walk_ex",
+  "message": "the https.createServer options record changed while its members were read",
   "code": "SC2020"
  },
  {

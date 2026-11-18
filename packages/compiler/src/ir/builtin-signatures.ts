@@ -18,6 +18,7 @@ import {
   F64,
   FILEHANDLE_T,
   FSWATCHER_T,
+  MKDTEMPRESULT_T,
   WATCHEVENTS_T,
   STATWATCHER_T,
   HTTP2SESSION_T,
@@ -1675,6 +1676,9 @@ function buildLibFnSignatures() {
     /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
      * WritableStream and the option flags; a Writable. */
     "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
+     * option flags; a web WritableStream. */
+    "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
@@ -2591,23 +2595,26 @@ function buildLibFnSignatures() {
     // -1 without one; timeout read under flag 8; concurrency read under flag
     // 16, -1 for true). An out-of-range timeout or concurrency throws.
     "test.register": {
-      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
+      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
       result: VOID,
     },
     "test.registerEmpty": {
-      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64],
+      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
       result: VOID,
     },
     // The suite body takes no parameters or its SuiteContext (flag 2).
-    "test.suite": { argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64], result: VOID },
+    "test.suite": {
+      argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64, DYN],
+      result: VOID,
+    },
     // The trailing string is the hook call's "file:line:col".
     "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
     "test.sub": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
       result: { kind: "promise", inner: VOID },
     },
     "test.subEmpty": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
       result: VOID,
     },
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
@@ -2789,6 +2796,8 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "http.reqUrl": { argTypes: [HTTPREQ_T], result: STRING },
+    /** message.signal: the request's AbortSignal handle (checked-dynamic). */
+    "http.reqSignal": { argTypes: [HTTPREQ_T], result: DYN },
     "http.reqMethod": { argTypes: [HTTPREQ_T], result: STRING },
     "http.reqHeader": { argTypes: [HTTPREQ_T, STRING], result: VOID },
     "http.reqTrailer": { argTypes: [HTTPREQ_T, STRING], result: VOID },
@@ -4740,6 +4749,26 @@ function buildLibFnSignatures() {
     },
     "fsp.copyFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },
     "fsp.mkdtemp": { argTypes: [STRING], result: { kind: "promise", inner: STRING } },
+    /** fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync: the temp
+     * directory plus its removal and disposal hooks (scr_lib.c). The
+     * options record crosses as one dyn value for the runtime's Node-order
+     * encoding check. */
+    "fsp.mkdtempDisposable": {
+      argTypes: [STRING],
+      result: { kind: "promise", inner: MKDTEMPRESULT_T },
+    },
+    "fs.mkdtempDisposableSync": { argTypes: [STRING], result: MKDTEMPRESULT_T },
+    "mkdtempResult.path": { argTypes: [MKDTEMPRESULT_T], result: STRING },
+    "mkdtempResult.remove": {
+      argTypes: [MKDTEMPRESULT_T],
+      result: { kind: "promise", inner: VOID },
+    },
+    "mkdtempResult.removeSync": { argTypes: [MKDTEMPRESULT_T], result: VOID },
+    "mkdtempResult.asyncDispose": {
+      argTypes: [MKDTEMPRESULT_T],
+      result: { kind: "promise", inner: VOID },
+    },
+    "mkdtempResult.dispose": { argTypes: [MKDTEMPRESULT_T], result: VOID },
     /** readFile(path, encoding | { encoding }) for any runtime encoding name. */
     "fsp.readFileEncoded": {
       argTypes: [STRING, STRING],

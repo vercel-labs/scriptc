@@ -575,6 +575,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
     "scr_stream_from_web_writable.c",
   ),
+  // Writable.toWeb wraps the writable in a web WritableStream.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_writable_to_web.c",
+  ),
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
   unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),

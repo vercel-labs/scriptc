@@ -46895,7 +46895,9 @@
           "tests/corpus/fs-exists-path-kinds.cjs",
           "tests/corpus/fs-filehandle-controls.ts",
           "tests/corpus/fs-filehandle-data-options.ts",
+          "tests/corpus/fs-filehandle-lines.ts",
           "tests/corpus/fs-links-times.cjs",
+          "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
@@ -47202,11 +47204,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.createReadStream",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47229,11 +47232,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.createWriteStream",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47464,11 +47468,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle.readLines",
         "tests": [
           "tests/corpus/5554-fs-streams-typed.ts",
-          "tests/corpus/9753-file-handle-stream-signal.ts"
+          "tests/corpus/9753-file-handle-stream-signal.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -47790,10 +47795,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:fs.filehandle",
         "tests": [
-          "tests/corpus/2844-node-disposable-resources.ts"
+          "tests/corpus/2844-node-disposable-resources.ts",
+          "tests/corpus/fs-filehandle-lines.ts"
         ]
       },
       "anchorSource": "exact"
@@ -48268,8 +48274,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.mkdtempDisposable",
+        "tests": [
+          "tests/corpus/fs-mkdtemp-disposable.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -51290,8 +51299,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fs.mkdtempDisposableSync",
+        "tests": [
+          "tests/corpus/fs-mkdtemp-disposable.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58307,6 +58319,7 @@
           "tests/corpus/http-server-dynamic-shapes.mjs",
           "tests/corpus/http-server-events-audit.ts",
           "tests/corpus/http-server-incoming-message.ts",
+          "tests/corpus/http-server-incoming-signal.mjs",
           "tests/corpus/http-server-informational-callbacks.ts",
           "tests/corpus/http-server-lifecycle-limits.ts",
           "tests/corpus/http-server-limit-values.ts",
@@ -61822,10 +61835,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http.signal",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-server-incoming-signal.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -67915,6 +67928,7 @@
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/https-server-close-surface.mjs",
+          "tests/corpus/https-server-http-options.ts",
           "tests/corpus/https-server-inherited-surface.ts",
           "tests/corpus/https-server-max-headers-count.ts",
           "tests/corpus/net-server-dispose-http.ts"
@@ -68182,12 +68196,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:headersTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:https.headersTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/https-server-http-options.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -68210,7 +68222,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:https.maxHeadersCount",
         "tests": [
           "tests/corpus/https-server-max-headers-count.ts"
@@ -68236,12 +68248,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:requestTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:https.requestTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/https-server-http-options.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -68293,12 +68303,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:keepAliveTimeout",
+        "status": "supported",
+        "evidence": "compiler-feature:https.keepAliveTimeout",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/https-server-http-options.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92820,6 +92828,7 @@
           "tests/corpus/stream-web-predicates-js.cjs",
           "tests/corpus/stream-web-predicates.ts",
           "tests/corpus/stream-writable-from-web.ts",
+          "tests/corpus/stream-writable-to-web.ts",
           "tests/corpus/writable-error-callbacks.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-stream-absent.ts"
@@ -93474,10 +93483,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-writable-to-web.ts"
         ]
       },
       "anchorSource": "exact"
@@ -94169,10 +94178,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:stream.stream.Writable.toWeb",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/stream-writable-to-web.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -116218,6 +116227,7 @@
           "tests/corpus/node24-crypto-sha2.ts",
           "tests/corpus/webcrypto-aes-ocb.ts",
           "tests/corpus/webcrypto-algorithm-parameters.ts",
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/webcrypto-chacha20-poly1305.ts",
           "tests/corpus/webcrypto-ecdh-key-agreement.ts",
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
@@ -117400,9 +117410,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.associatedData",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117426,9 +117437,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.memory",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117452,9 +117464,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.name",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117478,9 +117491,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.nonce",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117504,9 +117518,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.parallelism",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117530,9 +117545,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.passes",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117556,9 +117572,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.secretValue",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },
@@ -117582,9 +117599,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webcrypto.version",
         "tests": [
+          "tests/corpus/webcrypto-argon2.ts",
           "tests/corpus/compat-webcrypto-modern-params.ts"
         ]
       },

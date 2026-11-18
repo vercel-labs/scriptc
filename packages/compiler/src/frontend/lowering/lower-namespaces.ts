@@ -44,6 +44,7 @@ import { boundIdentifiersOf } from "./lowerer.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "./host-globals.js";
 import { globalObjectInherits } from "./global-object-names.js";
 import { isIslandImportBinding } from "./lower-node-island.js";
+import { isNodeTypesPath } from "../dts-paths.js";
 import { funduleFunctionOf, funduleMemberOf, lowerFunduleMemberValue } from "./lower-fundule.js";
 import type { FileParts } from "./lower-modules.js";
 import { isCjsJsFile, isJsSourceFile, locOf } from "../program.js";
@@ -979,7 +980,56 @@ export function ambientUndefinedVarSymbolOf(
   return sym;
 }
 
-/** The symbol behind `ident` when it names an ambient `declare function`
+/** A GLOBAL an ambient declaration of a TYPES-ONLY package introduces and
+ * nothing defines: a `declare class XRWebGLLayer` in @types/webxr, which
+ * @types/three pulls in for its WebXR surface. Node provides only the
+ * globals its runtime ships, and a DefinitelyTyped declaration is not an
+ * import — the reference is an ordinary global lookup, so a read throws the
+ * catchable ReferenceError "<name> is not defined" and typeof answers
+ * "undefined". Null for the standard library, for Node's own types, and for
+ * anything a program or an island defines. */
+export function ambientTypesOnlyGlobalSymbolOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): ts.Symbol | null {
+  // A Node 24 global (host-globals.ts): Node defines it and the compiler
+  // answers its reads with the constructor value.
+  if (NODE_GLOBALS_WITHOUT_NATIVE.has(ident.text)) return null;
+  const sym = lowerer.resolveValueSymbol(ident);
+  if (sym === null || lowerer.isStdlibSymbol(sym)) return null;
+  let sawDeclaration = false;
+  for (const decl of sym.declarations) {
+    const sf = ts.getSourceFileOfNode(decl);
+    // A global of a types-only package: a `.d.ts` script (not a module) of
+    // an @types umbrella other than Node's own, at the file's top level.
+    if (
+      !sf.isDeclarationFile ||
+      ts.isExternalModule(sf) ||
+      isNodeTypesPath(sf.fileName) ||
+      decl.parent === undefined ||
+      !ts.isSourceFile(decl.parent)
+    )
+      return null;
+    // Something implements it: the program holds a real value.
+    if (
+      (ts.isVariableDeclaration(decl) && decl.initializer !== undefined) ||
+      (ts.isFunctionDeclaration(decl) && decl.body !== undefined)
+    )
+      return null;
+    // A type-world merge partner (the interface half of a class+interface
+    // fundule) carries no Ambient modifier; it declares no value.
+    if (
+      !ts.isInterfaceDeclaration(decl) &&
+      !ts.isTypeAliasDeclaration(decl) &&
+      !(ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Ambient)
+    )
+      return null;
+    sawDeclaration = true;
+  }
+  return sawDeclaration ? sym : null;
+}
+
+/** The symbol behind `ident` when it names an ambient `declare function`/** The symbol behind `ident` when it names an ambient `declare function`
  * NOTHING defines: every function declaration on the symbol is body-less
  * and ambient in a USER program file (merge partners — the fundule's
  * ambient namespace, an ambient class — may ride along; type-world

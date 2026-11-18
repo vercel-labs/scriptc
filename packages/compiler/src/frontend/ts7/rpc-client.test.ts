@@ -76,6 +76,24 @@ test("a complete server error permits the next request", () => {
   expect(io.client.timing().requests).toBe(2);
 });
 
+test("a server error with an empty payload still names the failed request", () => {
+  const io = scripted([frame(5, "getTypeAtLocation", ""), frame(4, "echo", "ok")]);
+  let error: Error | undefined;
+  try {
+    io.client.requestText("getTypeAtLocation", "{}");
+  } catch (e) {
+    error = e as Error;
+  }
+  expect(error).toBeDefined();
+  expect(error!.message.trim()).not.toBe("");
+  expect(error!.message).toContain("getTypeAtLocation");
+  expect(error!.message).toContain("without a message");
+  // The panic shape is what the lowering's fences recognize.
+  expect(error!.message.startsWith("panic:")).toBe(true);
+  expect(io.closes()).toBe(0);
+  expect(io.client.requestText("echo", "ok")).toBe("ok");
+});
+
 test.each([2, 3, 1])("invalid server message kind %i poisons the channel", (kind) => {
   const io = scripted([frame(kind, "echo", "bad")]);
   expect(() => io.client.requestText("echo", "hello")).toThrow("unexpected server message");

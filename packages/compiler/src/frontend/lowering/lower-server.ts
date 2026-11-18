@@ -4913,6 +4913,10 @@ export function lowerServerProperty(
         name === "httpVersionMajor" ? "http.reqHttpVersionMajor" : "http.reqHttpVersionMinor";
       return { kind: "libCall", fn, args: [receiver], type: F64, loc };
     }
+    if (name === "signal") {
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      return { kind: "libCall", fn: "http.reqSignal", args: [receiver], type: DYN, loc };
+    }
     if (name === "aborted" || name === "complete" || name === "destroyed") {
       // aborted: the connection (or the h2 stream) closed before the
       // response finished; complete: the whole message arrived.
@@ -5642,11 +5646,18 @@ interface HttpServerOptionValue {
  * Node's validateInteger ladder and the headersTimeout default/ordering
  * check. Other documented keys fence by name; undocumented keys drop like
  * Node drops them. */
+type HttpServerOptionPlan = {
+  joinDup: boolean;
+  allowMissingHost: boolean;
+  values: HttpServerOptionValue[];
+};
+
 function lowerHttpServerOptions(
   lowerer: Lowerer,
   node: ts.Expression,
   what: string,
-): { joinDup: boolean; allowMissingHost: boolean; values: HttpServerOptionValue[] } {
+  skipKey?: (key: string) => boolean,
+): HttpServerOptionPlan {
   if (!ts.isObjectLiteralExpression(node)) {
     lowerer.noLowering(
       `${what} with a non-literal options argument`,
@@ -5695,6 +5706,9 @@ function lowerHttpServerOptions(
       );
     }
     const key = (prop.name as ts.Identifier | ts.StringLiteral).text;
+    // https.createServer's bag also carries the TLS keys, which the TLS
+    // lowering reads or fences; leave them to it.
+    if (skipKey !== undefined && skipKey(key)) continue;
     if (key === "requireHostHeader") {
       if (initializer !== null && initializer.kind === ts.SyntaxKind.FalseKeyword) {
         allowMissingHost = true;
@@ -5788,48 +5802,15 @@ function lowerHttpServerOptions(
   return { joinDup, allowMissingHost, values };
 }
 
-/** The shared createServer([options][, handler]) shapes behind
- * http.createServer, http.Server, and `new http.Server`: no arguments
- * (the on("request") route), a lone handler, a lone options object, and
- * (options, handler). Modeled option values wrap the construction in an
- * interned option-setting helper. */
-function lowerHttpCreateServerForms(
+/** Wrap a freshly created HTTP or HTTPS server with the modeled
+ * createServer option setters (Node's constructor order), or answer it
+ * unchanged when no modeled option was supplied. */
+function applyHttpServerOptions(
   lowerer: Lowerer,
-  expr: ts.CallExpression | ts.NewExpression,
-  what: string,
+  opts: HttpServerOptionPlan,
+  server: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
-  if (args.length > 2) {
-    lowerer.noLowering(
-      `${what} with ${args.length} arguments`,
-      expr,
-      `the supported forms are ${what}([options][, (req, res) => ...])`,
-    );
-  }
-  let optsNode: ts.Expression | null = null;
-  let handlerNode: ts.Expression | null = null;
-  if (args.length === 2) {
-    optsNode = args[0]!;
-    handlerNode = args[1]!;
-  } else if (args.length === 1) {
-    if (ts.isObjectLiteralExpression(args[0]!)) optsNode = args[0]!;
-    else handlerNode = args[0]!;
-  }
-  const opts =
-    optsNode !== null
-      ? lowerHttpServerOptions(lowerer, optsNode, what)
-      : { joinDup: false, allowMissingHost: false, values: [] as HttpServerOptionValue[] };
-  const server: IrExpr =
-    handlerNode !== null
-      ? {
-          kind: "libCall",
-          fn: "http.createServer",
-          args: [lowerRequestHandlerArg(lowerer, handlerNode)],
-          type: NETSERVER_T,
-          loc,
-        }
-      : { kind: "libCall", fn: "http.createServerEmpty", args: [], type: NETSERVER_T, loc };
   if (!opts.joinDup && !opts.allowMissingHost && opts.values.length === 0) return server;
   // The option-setting composition: an interned helper takes the option
   // values first, in options-literal order (Node evaluates the literal
@@ -5924,6 +5905,51 @@ function lowerHttpCreateServerForms(
     type: NETSERVER_T,
     loc,
   };
+}
+
+/** The shared createServer([options][, handler]) shapes behind
+ * http.createServer, http.Server, and `new http.Server`: no arguments
+ * (the on("request") route), a lone handler, a lone options object, and
+ * (options, handler). Modeled option values wrap the construction in an
+ * interned option-setting helper. */
+function lowerHttpCreateServerForms(
+  lowerer: Lowerer,
+  expr: ts.CallExpression | ts.NewExpression,
+  what: string,
+  loc: SrcLoc,
+): IrExpr {
+  const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
+  if (args.length > 2) {
+    lowerer.noLowering(
+      `${what} with ${args.length} arguments`,
+      expr,
+      `the supported forms are ${what}([options][, (req, res) => ...])`,
+    );
+  }
+  let optsNode: ts.Expression | null = null;
+  let handlerNode: ts.Expression | null = null;
+  if (args.length === 2) {
+    optsNode = args[0]!;
+    handlerNode = args[1]!;
+  } else if (args.length === 1) {
+    if (ts.isObjectLiteralExpression(args[0]!)) optsNode = args[0]!;
+    else handlerNode = args[0]!;
+  }
+  const opts =
+    optsNode !== null
+      ? lowerHttpServerOptions(lowerer, optsNode, what)
+      : { joinDup: false, allowMissingHost: false, values: [] as HttpServerOptionValue[] };
+  const server: IrExpr =
+    handlerNode !== null
+      ? {
+          kind: "libCall",
+          fn: "http.createServer",
+          args: [lowerRequestHandlerArg(lowerer, handlerNode)],
+          type: NETSERVER_T,
+          loc,
+        }
+      : { kind: "libCall", fn: "http.createServerEmpty", args: [], type: NETSERVER_T, loc };
+  return applyHttpServerOptions(lowerer, opts, server, loc);
 }
 
 /** `new http.Server([options][, handler])` — the constructor spelling of
@@ -6472,10 +6498,56 @@ const TLS_VALIDATED_OPTIONS: ReadonlySet<string> = new Set([
   "ticketKeys",
 ]);
 
+/** The http.Server options https.createServer also reads (Node's
+ * https.createServer options are http.createServer's plus the TLS ones). */
+const HTTPS_HTTP_OPTION_KEYS: ReadonlySet<string> = new Set([
+  "requireHostHeader",
+  "joinDuplicateHeaders",
+  "requestTimeout",
+  "headersTimeout",
+  "keepAliveTimeout",
+  "keepAliveTimeoutBuffer",
+  "connectionsCheckingInterval",
+  "maxHeaderSize",
+  "rejectNonStandardBodyWrites",
+]);
+
+/** The HTTP option keys of an https.createServer options literal. */
+function httpsHttpOptionProps(
+  node: ts.ObjectLiteralExpression,
+): { key: string; prop: ts.ObjectLiteralElementLike }[] {
+  const found: { key: string; prop: ts.ObjectLiteralElementLike }[] = [];
+  for (const prop of node.properties.nodes) {
+    if (
+      (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
+      (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
+      HTTPS_HTTP_OPTION_KEYS.has(prop.name.text)
+    ) {
+      found.push({ key: prop.name.text, prop });
+    }
+  }
+  return found;
+}
+
+/** The static https lowering reads the HTTP option values as the option
+ * helper's arguments, ahead of the TLS fields inside the constructed
+ * server, so those reads leave literal position. Side-effect-free fields
+ * make the order unobservable; when a modeled HTTP option does work, or a
+ * TLS field does work while a modeled HTTP option is present (it could
+ * move a binding the option reads), the literal rides the runtime walk
+ * instead, which evaluates it once in source order. */
+function httpsLiteralOptionsNeedWalk(node: ts.ObjectLiteralExpression): boolean {
+  const httpProps = httpsHttpOptionProps(node);
+  if (httpProps.length === 0) return false;
+  const hasEffects = (prop: ts.ObjectLiteralElementLike): boolean =>
+    ts.isPropertyAssignment(prop) && !sideEffectFreeOptionValue(prop.initializer);
+  return httpProps.some(({ prop }) => hasEffects(prop)) || node.properties.nodes.some(hasEffects);
+}
+
 /** True when a literal options bag must ride the runtime walker: JS uses
- * it for the typed TLS validation ladders, HTTPS uses it for
- * keepAliveTimeoutBuffer so the HTTP option is consumed without losing
- * the literal's evaluation order, and `runtimeKeys` names options only the
+ * it for the typed TLS validation ladders, tls.createServer uses it for
+ * keepAliveTimeoutBuffer so the HTTP option is consumed without losing the
+ * literal's evaluation order, and `runtimeKeys` names options only the
  * runtime walk implements (tls.createServer's ALPNProtocols). */
 function tlsLiteralNeedsRuntimeWalk(
   node: ts.ObjectLiteralExpression,
@@ -6515,9 +6587,10 @@ function lowerTlsServerOptionsOrDyn(
   includeHttpTimeoutOptions = false,
   runtimeKeys: ReadonlySet<string> = new Set(),
   allowSni = false,
+  forceWalk = false,
 ): { cert: IrExpr; key: IrExpr; sni?: IrExpr; dyn?: undefined } | { dyn: IrExpr } {
   if (ts.isObjectLiteralExpression(node)) {
-    if (!tlsLiteralNeedsRuntimeWalk(node, includeHttpTimeoutOptions, runtimeKeys))
+    if (!forceWalk && !tlsLiteralNeedsRuntimeWalk(node, includeHttpTimeoutOptions, runtimeKeys))
       return lowerTlsServerOptions(lowerer, node, what, allowSni);
     const sniOption = node.properties.nodes.find(
       (p) =>
@@ -7339,12 +7412,32 @@ function lowerHttpsModuleCall(
         "the supported form is createServer({ cert, key }, (req, res) => ...)",
       );
     }
+    const optionsNode = args[0]!;
+    // https.createServer's options bag is http.createServer's plus the TLS
+    // keys, so parse the modeled HTTP side here — before the TLS lowering
+    // decides its path — and wrap whatever server that path constructs. A
+    // literal the TLS side sends through the runtime walk skips this: the
+    // walk reads the same HTTP members from the record.
+    const walkLiteral =
+      ts.isObjectLiteralExpression(optionsNode) &&
+      (tlsLiteralNeedsRuntimeWalk(optionsNode, false, TLS_CLIENT_AUTH_OPTIONS) ||
+        httpsLiteralOptionsNeedWalk(optionsNode));
+    let httpOpts: HttpServerOptionPlan | null = null;
+    if (ts.isObjectLiteralExpression(optionsNode) && !walkLiteral) {
+      httpOpts = lowerHttpServerOptions(lowerer, optionsNode, "https.createServer", (key) =>
+        TLS_SERVER_DOCUMENTED_OPTIONS.has(key),
+      );
+    }
+    const withHttpOptions = (server: IrExpr): IrExpr =>
+      httpOpts !== null ? applyHttpServerOptions(lowerer, httpOpts, server, loc) : server;
     const opts = lowerTlsServerOptionsOrDyn(
       lowerer,
-      args[0]!,
+      optionsNode,
       "https.createServer",
-      true,
+      false,
       TLS_CLIENT_AUTH_OPTIONS,
+      false,
+      walkLiteral,
     );
     if (args.length === 1) {
       // The handler-less form: 'request' listeners arrive later via
@@ -7352,13 +7445,13 @@ function lowerHttpsModuleCall(
       // NULL-handler shape, here for the runtime-options record only
       // (the literal path keeps its historical two-argument surface).
       if (opts.dyn !== undefined) {
-        return {
+        return withHttpOptions({
           kind: "libCall",
           fn: "https.createServerDyn",
           args: [opts.dyn],
           type: NETSERVER_T,
           loc,
-        };
+        });
       }
       lowerer.noLowering(
         "createServer with 1 arguments",
@@ -7367,21 +7460,23 @@ function lowerHttpsModuleCall(
       );
     }
     const cb = lowerRequestHandlerArg(lowerer, args[1]!);
-    return opts.dyn !== undefined
-      ? {
-          kind: "libCall",
-          fn: "https.createServerDynCb",
-          args: [opts.dyn, cb],
-          type: NETSERVER_T,
-          loc,
-        }
-      : {
-          kind: "libCall",
-          fn: "https.createServer",
-          args: [opts.cert, opts.key, cb],
-          type: NETSERVER_T,
-          loc,
-        };
+    return withHttpOptions(
+      opts.dyn !== undefined
+        ? {
+            kind: "libCall",
+            fn: "https.createServerDynCb",
+            args: [opts.dyn, cb],
+            type: NETSERVER_T,
+            loc,
+          }
+        : {
+            kind: "libCall",
+            fn: "https.createServer",
+            args: [opts.cert, opts.key, cb],
+            type: NETSERVER_T,
+            loc,
+          },
+    );
   }
   if (bi.member === "request" || bi.member === "get") {
     return lowerHttpClientCall(lowerer, expr, bi.member, loc, true);
@@ -9279,9 +9374,20 @@ function lowerHttpClientMethodCall(
   }
   if (name === "destroy" && args.length === 1) {
     // destroy(err): err is the request's 'error' (an Error value here).
+    // destroy(undefined) and destroy(null) are destroy(), as in Node.
     requireStatementPosition(lowerer, call, "request.destroy(err)");
     const receiver = lowerer.lowerExpr(access.expression);
-    const err = lowerer.lowerExpr(args[0]!);
+    const arg = args[0]!;
+    if (arg.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(arg) && arg.text === "undefined")) {
+      return {
+        kind: "libCall",
+        fn: "http.clientDestroy",
+        args: [receiver],
+        type: VOID,
+        loc,
+      };
+    }
+    const err = lowerer.lowerExpr(arg);
     if (err.type.kind !== "object") {
       lowerer.noLowering(
         `destroy with a '${lowerer.fmt(err.type)}' argument`,
@@ -10006,7 +10112,62 @@ function lowerHttpResMethodCall(
       }
       return { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
     };
+    /** Whether a headers record's slots may hold an array (`string[]`).
+     * Informational headers stringify each value with String(value), which
+     * joins an array with commas, while the env.pairs helper the static form
+     * uses expands an array into one line per element (writeHead's rule). A
+     * record that can hold an array takes the dynamic ladder, which coerces
+     * the value the way Node does. */
+    const recordHasArrayHeaderSlot = (shapeId: string): boolean => {
+      const seen = new Set<string>();
+      const isArray = (t: IrType): boolean => {
+        if (t.kind === "array") return true;
+        if (t.kind !== "union" || seen.has(t.unionId)) return false;
+        seen.add(t.unionId);
+        return (lowerer.unions.get(t.unionId)?.arms ?? []).some(isArray);
+      };
+      const shape = lowerer.shapes.get(shapeId);
+      if (shape === undefined) return true;
+      return (
+        shape.fields.some((f) => isArray(f.type)) ||
+        (shape.indexValue !== undefined && isArray(shape.indexValue))
+      );
+    };
+    /** Whether a writeInformation call's arguments are the shapes the static
+     * lowering reads: the status alone, or headers as an object literal of
+     * static keys and string values, or a record the env.pairs helper
+     * flattens. A JavaScript call site holding anything else — the callback
+     * form, a flat array, an array of entries, or a headers value whose
+     * shape only the run time knows — walks the runtime's own ladder over
+     * the checked-dynamic arguments, exactly as a call through an untyped
+     * value does. */
+    const informationArgsAreStatic = (): boolean => {
+      if (args.length === 0 || args.length > 2) return false;
+      if (args.length === 1) return lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "f64";
+      const headers = args[1]!;
+      if (ts.isObjectLiteralExpression(headers)) {
+        return headers.properties.nodes.every((prop) => {
+          if (!ts.isPropertyAssignment(prop)) return false;
+          if (staticHeaderKeyOf(lowerer, prop) === null) return false;
+          return lowerer.mapTypeOf(lowerer.typeOf(prop.initializer))?.kind === "string";
+        });
+      }
+      const t = lowerer.mapTypeOf(lowerer.typeOf(headers));
+      if (t?.kind !== "record" || recordHasArrayHeaderSlot(t.shapeId)) return false;
+      return lowerer.envToPairsHelper(t.shapeId, loc) !== null;
+    };
     if (name === "writeInformation") {
+      if (isJsSourceFile(ts.getSourceFileOfNode(call)) && !informationArgsAreStatic()) {
+        return {
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(receiver, DYN),
+          method: "writeInformation",
+          calleeName: ts.getTextOfNode(access),
+          args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        };
+      }
       if (args.length < 1 || args.length > 2) {
         lowerer.noLowering(
           `res.writeInformation with ${args.length} arguments`,

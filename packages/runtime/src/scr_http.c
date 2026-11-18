@@ -248,6 +248,7 @@ struct ScrHttpReq {
   char version[2]; /* the parsed version's digits ("09", "10", "11", "20") */
   bool http2;    /* an h2 compat request (httpVersion "2.0") */
   bool aborted;  /* the connection or h2 stream died with the response unfinished */
+  ScrDyn *abort_controller; /* req.signal's controller, +1; NULL until read */
   bool close_queued;
   bool close_emitted; /* settled: err/close listeners dropped */
   bool join_dup; /* joinDuplicateHeaders: repeated names read joined ", " */
@@ -315,6 +316,36 @@ void scr_http_req_set_encoding(ScrHttpReq *r, ScrStr *enc /*borrowed*/) {
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_UNKNOWN_ENCODING");
 }
 
+/* IncomingMessage.signal's abort controller comes from the abort unit
+ * (scr_abort.c or fetch). Weak bindings keep a program that never reads
+ * req.signal from linking it. */
+extern ScrDyn *scr_abort_signal_controller_new(void) __attribute__((weak));
+extern ScrDyn *scr_abort_signal_signal(ScrDyn *controller) __attribute__((weak));
+extern void scr_abort_signal_abort(ScrDyn *controller) __attribute__((weak));
+extern void scr_abort_signal_drop_listeners(ScrDyn *controller) __attribute__((weak));
+
+static void scr_http_req_abort_signal(ScrHttpReq *r) {
+  if (r != NULL && r->abort_controller != NULL && scr_abort_signal_abort != NULL)
+    scr_abort_signal_abort(r->abort_controller);
+}
+
+/* req.signal (+1): one native AbortSignal per request, created on first
+ * read and aborted when the request is destroyed before it completes. */
+ScrDyn *scr_http_req_signal(ScrHttpReq *r) {
+  if (scr_abort_signal_controller_new == NULL || scr_abort_signal_signal == NULL) {
+    static const char msg[] = "IncomingMessage.signal is not supported by this runtime build";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    return NULL;
+  }
+  if (r->abort_controller == NULL) {
+    ScrDyn *controller = scr_abort_signal_controller_new();
+    if (controller == NULL) return NULL;
+    r->abort_controller = controller;
+    if (r->aborted || (r->destroyed && !r->received)) scr_abort_signal_abort(controller);
+  }
+  return scr_abort_signal_signal(r->abort_controller);
+}
+
 void scr_http_req_release(ScrHttpReq *r) {
   if (!r || r->rc == SIZE_MAX) return;
   if (--r->rc == 0) {
@@ -339,6 +370,7 @@ void scr_http_req_release(ScrHttpReq *r) {
     free(r->tvalues);
     scr_str_release(r->status_msg);
     if (r->headers_view != NULL) scr_dyn_release(r->headers_view);
+    if (r->abort_controller != NULL) scr_dyn_release(r->abort_controller);
     scr_net_ls_drop(&r->data_ls);
     scr_net_ls_drop(&r->end_ls);
     scr_net_ls_drop(&r->err_ls);
@@ -763,12 +795,25 @@ bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
 /* destroy(): tears the underlying connection down NOW; the teardown
  * events flow through the socket's native hooks like a peer close. */
 void scr_http_req_destroy(ScrHttpReq *r) {
+  /* Abort listeners run user code: hold the request across the abort and the
+   * teardown so a listener that destroys the connection cannot free it while
+   * this call still reads its fields. */
+  scr_http_req_retain(r);
   r->destroyed = true;
+  /* Node aborts the request's signal when an incomplete message is
+   * destroyed, before the socket teardown runs; the request reads as
+   * aborted from that moment. */
+  if (!r->received || !r->ended) {
+    r->aborted = true;
+    scr_http_req_abort_signal(r);
+  }
   if (r->h2_stream != NULL) {
     scr_http_h2_ops->destroy(r->h2_stream);
+    scr_http_req_release(r);
     return;
   }
   if (r->sock) scr_net_sock_destroy(r->sock);
+  scr_http_req_release(r);
 }
 
 void scr_http_req_on_error(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
@@ -2109,7 +2154,12 @@ void scr_http_res_write_information_dyn(ScrHttpRes *r, const ScrDyn *status /*bo
       snprintf(line, sizeof line, "HTTP/1.1 %d %s\r\n", (int)code, scr_http_reason((int)code));
   scr_http_buf_append(&b, line, (size_t)line_len);
   ScrDyn *headers_plain = NULL;
-  if (headers != NULL && headers->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(headers)) {
+  /* A headers value that crossed in from a typed module arrives as a typed
+   * reference (a Record<string, string> imported by a JavaScript file, for
+   * one): materialize it into the plain dyn array or object the shape
+   * ladder below reads. Materializing only arrays left a record reference
+   * to fail the Object check below with a TypeError Node never throws. */
+  if (headers != NULL && headers->kind == SCR_DYN_TYPED_REF) {
     headers_plain = scr_dyn_typed_ref_materialize(headers);
     if (headers_plain == NULL) {
       free(b.data);
@@ -3418,6 +3468,11 @@ static void scr_http_proto_sweep(void) {
         scr_net_ls_drop(&req->close_ls);
         scr_net_ls_drop(&req->timeout_ls);
         scr_net_ls_drop(&req->aborted_ls);
+        /* The signal's abort listeners captured the request (and usually the
+         * response); release them so the settled request is collectable once
+         * the program drops it. */
+        if (req->abort_controller != NULL && scr_abort_signal_drop_listeners != NULL)
+          scr_abort_signal_drop_listeners(req->abort_controller);
       }
       break;
     }
@@ -5256,6 +5311,8 @@ static void scr_http_conn_abort_request(ScrHttpConn *conn) {
   }
   scr_http_queue_req_aborted(req);
   scr_http_req_retain(req);
+  /* the signal's abort listeners are user code: run them under the retain */
+  scr_http_req_abort_signal(req);
   scr_net_fire0_this(&req->aborted_ls, req, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&req->aborted_ls);
   if (res != NULL) scr_http_res_release(res);
@@ -5439,6 +5496,59 @@ void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/) {
   scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
 }
 
+/* The createServer option checks Node's constructor runs as it reads each
+ * option, ahead of reading the next one; they leave Node's error pending
+ * without needing a server to apply the value to. */
+bool scr_http_server_max_header_size_check(double value) {
+  return scr_http_max_header_size_valid(value);
+}
+
+void scr_http_server_timeout_option_check(double field, const ScrDyn *value /*borrowed*/) {
+  static const char *const names[] = {
+    "timeout", "keepAliveTimeout", "headersTimeout", "requestTimeout",
+    "keepAliveTimeoutBuffer",
+  };
+  int i = (int)field;
+  if (i < 0 || i >= 5) abort(); /* compiler/runtime ABI violation */
+  if (value->kind == SCR_DYN_UNDEF) return;
+  if (value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail(names[i], "of type number", value);
+    return;
+  }
+  scr_net_server_timeout_option_check(field, value->v.num);
+}
+
+/* headersTimeout's relation to the request timeout: Node's default,
+ * min(60000, requestTimeout), never exceeds it, so only a given headers
+ * timeout can fail this check. The condition matches the setter's. */
+void scr_http_server_headers_timeout_check(const ScrDyn *request_timeout /*borrowed, nullable*/,
+                                           const ScrDyn *headers_timeout /*borrowed, nullable*/) {
+  double request = 300000;
+  if (request_timeout != NULL && request_timeout->kind == SCR_DYN_NUM)
+    request = request_timeout->v.num;
+  else if (request_timeout != NULL && request_timeout->kind != SCR_DYN_UNDEF)
+    return; /* the type error is pending */
+  if (headers_timeout == NULL || headers_timeout->kind == SCR_DYN_UNDEF) return;
+  if (headers_timeout->kind != SCR_DYN_NUM) return; /* the type error is pending */
+  double headers = headers_timeout->v.num;
+  if (request > 0 && headers > 0 && headers > request) {
+    char shown[48];
+    scr_num_received(headers, shown);
+    char msg[192];
+    int n = snprintf(msg, sizeof msg,
+                     "The value of \"headersTimeout\" is out of range. It must be <= requestTimeout. Received %s",
+                     shown);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  }
+}
+
+/* Node's validateBoolean for a createServer option; `name` carries the
+ * property name Node's message shows. */
+void scr_http_server_boolean_option_check(const char *name, const ScrDyn *value /*borrowed*/) {
+  if (value->kind == SCR_DYN_UNDEF) return;
+  if (value->kind != SCR_DYN_BOOL) scr_dyn_arg_type_fail(name, "of type boolean", value);
+}
+
 /* createServer({ maxHeaderSize }): the server's header size bound. */
 void scr_http_server_max_header_size(ScrNetServer *s, double value) {
   if (!scr_http_max_header_size_valid(value)) return;
@@ -5484,27 +5594,37 @@ void scr_http_server_headers_timeout_default(ScrNetServer *s,
 }
 
 /* createServer({ connectionsCheckingInterval }): Node's validateInteger
- * ladder; an explicit undefined is the absent option. */
-void scr_http_server_connections_checking_interval(ScrNetServer *s,
-                                                    const ScrDyn *value /*borrowed*/) {
-  if (value->kind == SCR_DYN_UNDEF) return;
+ * ladder; an explicit undefined is the absent option. False with the
+ * exception pending. */
+static bool scr_http_connections_checking_interval_valid(const ScrDyn *value /*borrowed*/) {
+  if (value->kind == SCR_DYN_UNDEF) return true;
   if (value->kind != SCR_DYN_NUM) {
     scr_dyn_arg_type_fail("connectionsCheckingInterval", "of type number", value);
-    return;
+    return false;
   }
   double interval = value->v.num;
   bool integer = isfinite(interval) && interval == floor(interval);
-  if (!(integer && interval >= 0 && interval <= 9007199254740991.0)) {
-    char shown[48];
-    scr_num_received(interval, shown);
-    char msg[224];
-    int n = snprintf(msg, sizeof msg,
-                     integer ? "The value of \"connectionsCheckingInterval\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s"
-                             : "The value of \"connectionsCheckingInterval\" is out of range. It must be an integer. Received %s",
-                     shown);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
-    return;
-  }
+  if (integer && interval >= 0 && interval <= 9007199254740991.0) return true;
+  char shown[48];
+  scr_num_received(interval, shown);
+  char msg[224];
+  int n = snprintf(msg, sizeof msg,
+                   integer ? "The value of \"connectionsCheckingInterval\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s"
+                           : "The value of \"connectionsCheckingInterval\" is out of range. It must be an integer. Received %s",
+                   shown);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+void scr_http_server_connections_checking_interval_check(const ScrDyn *value /*borrowed*/) {
+  scr_http_connections_checking_interval_valid(value);
+}
+
+void scr_http_server_connections_checking_interval(ScrNetServer *s,
+                                                    const ScrDyn *value /*borrowed*/) {
+  if (!scr_http_connections_checking_interval_valid(value)) return;
+  if (value->kind == SCR_DYN_UNDEF) return;
+  double interval = value->v.num;
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
   if (ctx != NULL && ctx->proto == SCR_NET_PROTO_HTTP1) ctx->connections_checking_interval = interval;
 }
@@ -5699,10 +5819,15 @@ bool scr_http_req_complete(ScrHttpReq *r) {
 }
 
 /* The stream died with the response side open: 'aborted' fires NOW (the
- * teardown macrotask, Node's position), then the close rides the sweep. */
+ * teardown macrotask, Node's position), then the close rides the sweep.
+ * `aborted` may already be set: destroy() marks an incomplete message
+ * aborted so its signal and flag are right from that moment, and this is
+ * the event that reports the abort the destroy started. The listener list
+ * drops after the first fire, so a repeat call emits nothing. */
 void scr_http_h2_req_aborted(ScrHttpReq *r) {
-  if (r->close_emitted || r->aborted) return;
+  if (r->close_emitted) return;
   r->aborted = true;
+  scr_http_req_abort_signal(r);
   scr_net_fire0_this(&r->aborted_ls, r, SCR_DYNH_HTTP_REQ);
   scr_net_ls_drop(&r->aborted_ls);
 }
@@ -5953,7 +6078,8 @@ struct ScrHttpClientReq {
                                * unset): the response parser's header-line budget,
                                * captured when the socket is assigned */
   bool reused;                /* req.reusedSocket: the socket came from an agent's free list */
-  bool sock_pooled;           /* the socket went back to the agent after the response */
+  bool sock_pooled;
+  bool handed_over; /* a CONNECT or upgrade response took the socket */           /* the socket went back to the agent after the response */
   ScrStr *pool_key;           /* https: TLS options a pooled socket must match (+1), or NULL */
   ScrClosure *abort_listener; /* its closure (borrowed); caps[0] points back here */
   struct ScrHttpAgentEnt *agent_ent; /* its entry in the agent's list while listed */
@@ -6948,7 +7074,9 @@ void scr_http_client_abort(ScrHttpClientReq *c) {
 bool scr_http_client_aborted(ScrHttpClientReq *c) { return c->aborted; }
 
 bool scr_http_client_destroyed(ScrHttpClientReq *c) {
-  return c->destroyed || c->close_emitted;
+  /* Node marks the request destroyed as the socket is handed back to the
+   * agent (responseKeepAlive) — the pooled state — and when it closes. */
+  return c->destroyed || c->close_emitted || c->sock_pooled;
 }
 
 void scr_http_client_on_response(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrHttpRespFn fn, bool once) {
@@ -7214,6 +7342,7 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
    * same path as 'connect'. */
   if (connect || (status == 101 && scr_http_client_response_upgrades(res))) {
     ScrNetLs *handover = connect ? &c->connect_ls : &c->upgrade_ls;
+    c->handed_over = true;
     conn->client_resp_started = true;
     c->response_started = true;
     c->response_done = true; /* the exchange settled: no timeout/hang-up paths */
@@ -8865,6 +8994,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
   if (strcmp(key, "aborted") == 0) return scr_dyn_new_bool(r->aborted);
   if (strcmp(key, "complete") == 0) return scr_dyn_new_bool(r->ended);
   if (strcmp(key, "destroyed") == 0) return scr_dyn_new_bool(scr_http_req_destroyed_flag(r));
+  if (strcmp(key, "signal") == 0) return scr_http_req_signal(r);
   if (strcmp(key, "readable") == 0) return scr_dyn_new_bool(scr_http_req_readable(r));
   if (strcmp(key, "readableEnded") == 0) return scr_dyn_new_bool(r->ended);
   if (strcmp(key, "closed") == 0) return scr_dyn_new_bool(r->close_emitted);
@@ -9832,7 +9962,9 @@ static ScrDyn *scr_http_dynh_client_get(void *h, const char *key, size_t key_len
     return scr_dyn_new_handle(c->sock, SCR_DYNH_NET_SOCKET);
   }
   if (strcmp(key, "destroyed") == 0) return scr_dyn_new_bool(scr_http_client_destroyed(c));
-  if (strcmp(key, "writableEnded") == 0) return scr_dyn_new_bool(c->ended);
+  /* writableEnded, and its deprecated alias `finished` */
+  if (strcmp(key, "writableEnded") == 0 || strcmp(key, "finished") == 0)
+    return scr_dyn_new_bool(c->ended);
   if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_http_client_writable_length(c));
   if (strcmp(key, "writableNeedDrain") == 0)
     return scr_dyn_new_bool(scr_http_client_writable_need_drain(c));

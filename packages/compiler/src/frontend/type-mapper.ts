@@ -1201,6 +1201,8 @@ export function formatIrType(
         return append("FileHandle");
       case "dir":
         return append("Dir");
+      case "mkdtempResult":
+        return append("DisposableTempDir");
       case "spawnRes":
         return append("SpawnSyncReturns");
       case "child":
@@ -5529,6 +5531,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "secureCtx" };
+  }
+  // The object mkdtempDisposable answers: @types/node declares
+  // `interface DisposableTempDir` in both node:fs and node:fs/promises, and
+  // the shipped fallback mirrors it. It is the created path plus the removal
+  // and disposal hooks, so it maps to one handle.
+  if (
+    psym !== undefined &&
+    psymName === "DisposableTempDir" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        (isDeclaredInAmbientModule(d, "fs") || isDeclaredInAmbientModule(d, "fs/promises")),
+    )
+  ) {
+    return { kind: "mkdtempResult" };
   }
   // Scrypt's runtime options retain property accessors and aliases. Use
   // checked values so presence probes and repeated getter reads match Node.

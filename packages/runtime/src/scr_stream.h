@@ -206,6 +206,10 @@ struct ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags);
 /* The same over a checked-dynamic value (a boxed native stream unwraps; any
  * other value throws the not-supported Error). */
 struct ScrDyn *scr_stream_to_web_readable_dyn(const struct ScrDyn *value, double flags);
+/* Writable.toWeb(writable) (scr_stream_writable_to_web.c): a web
+ * WritableStream over the writable, +1. */
+struct ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags);
+
 /* Writable.fromWeb(writableStream[, options]) (scr_stream_from_web_writable.c):
  * a Writable over the web stream's writer, +1, or NULL with
  * ERR_INVALID_ARG_TYPE pending for a value that is not a WritableStream. */

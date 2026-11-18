@@ -328,6 +328,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
+  "webstream.writableToWeb",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -414,6 +415,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
+  "webstream.writableToWeb",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -1923,6 +1925,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
+      "webstream.writableToWeb",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
       // method value.
@@ -2165,10 +2168,19 @@ const RUNTIME_FEATURE_RULES = {
       // A test's t.signal (scr_test.c): the abort unit supplies its
       // controller through scr_abort.c's helpers.
       "test.ctxSignal",
+      // IncomingMessage.signal (scr_http.c) uses the same helpers.
+      "http.reqSignal",
     ],
     // A program that reads the AbortController class as a value may build
     // one (dyn.globalConstructor), and the construction runs this unit.
     libCall: (node) => readsGlobalConstructor(node, "AbortController"),
+    // A checked-dynamic read of a `signal` member (IncomingMessage.signal in
+    // a JavaScript source) reaches the abort unit through the handle's dyn
+    // dispatch, where no libCall names it.
+    // A runtime key can name signal, so every dynamic member read selects
+    // the unit the handle's dispatch needs.
+    expr: (node) =>
+      node.kind === "dynKeyGet" && (node.key.kind !== "strLit" || node.key.value === "signal"),
   }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
@@ -2234,6 +2246,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
+      "webstream.writableToWeb",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",

@@ -54,7 +54,16 @@ static ScrDyn *scr_tty_env_read(ScrTtyEnv *e, const char *name) {
     scr_str_release(value);
     return boxed;
   }
-  /* A primitive has none of these members. */
+  /* An array answers its own named properties, as Node's property read
+   * does; other non-object kinds have none of these members. */
+  if (e->env->kind == SCR_DYN_ARR) {
+    ScrDyn *named = scr_dyn_arr_custom_member(e->env, name, length);
+    if (scr_exc_pending()) {
+      e->failed = true;
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    return named ? named : scr_dyn_retain(scr_dyn_undefined());
+  }
   if (e->env->kind != SCR_DYN_OBJ && e->env->kind != SCR_DYN_PROXY) return scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *value = scr_dyn_obj_read(e->env, name, length);
   if (scr_exc_pending()) {
@@ -108,9 +117,17 @@ static bool scr_tty_env_has(ScrTtyEnv *e, const char *name, bool own) {
     ScrStr *value = scr_env_get(key);
     found = value != NULL;
     scr_str_release(value);
+  } else if (e->env->kind == SCR_DYN_ARR) {
+    ScrDyn *named = scr_dyn_arr_custom_member(e->env, name, strlen(name));
+    found = named != NULL;
+    scr_dyn_release(named);
+    if (scr_exc_pending()) {
+      e->failed = true;
+      found = false;
+    }
   } else if (e->env->kind != SCR_DYN_OBJ && e->env->kind != SCR_DYN_PROXY) {
-    /* An array, a Map or a function holds none of the environment's own
-     * variables; Node's `in`/hasOwn answer false for them too. */
+    /* A Map or a function holds none of the environment's variables; Node's
+     * `in`/hasOwn answer false for them too. */
     found = false;
   } else {
     found = own ? scr_dyn_has_own(e->env, key) : scr_dyn_in(e->env, key);

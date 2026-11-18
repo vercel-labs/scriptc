@@ -34,3 +34,8 @@ try {
   console.log("failedRequire", e.message);
 }
 console.log("keptChildren", keptCount, keptKids.length, module.children.length, keptKids === module.children);
+const mainAlias = require.main;
+const moduleAliasValue = module;
+const parentAlias = module.children[0].parent;
+console.log("aliases", mainAlias === module, moduleAliasValue === require.main,
+  parentAlias === require.main, moduleAliasValue.children.length);

@@ -2676,6 +2676,10 @@ function buildLibFnSignatures() {
     // ERR_TEST_FAILURE wrapper over the failure, or null.
     "test.ctxSignal": { argTypes: [TESTCTX_T], result: DYN },
     "test.ctxError": { argTypes: [TESTCTX_T], result: DYN },
+    /** mock.getter/mock.setter's descriptor along the prototype chain, and
+     * Node's check that it carries the mocked accessor. */
+    "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
+    "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for

@@ -3474,6 +3474,51 @@ static void scr_mt_free_all(void) {
   scr_mt_module = NULL;
 }
 
+/* Node's findMethodOnPrototypeChain over checked-dynamic objects: the first
+ * own property descriptor of `key` along the object's prototype chain (+1),
+ * or undefined. An inherited accessor is the common case (a shared
+ * prototype's getter/setter). */
+ScrDyn *scr_test_accessor_descriptor(ScrDyn *object /*borrowed*/, ScrDyn *key /*borrowed*/) {
+  ScrDyn *cur = scr_dyn_retain(object);
+  for (;;) {
+    ScrDyn *desc = scr_dyn_get_own_property_descriptor(cur, key);
+    if (scr_exc_pending()) {
+      scr_dyn_release(desc);
+      scr_dyn_release(cur);
+      return NULL;
+    }
+    if (desc && desc->kind != SCR_DYN_UNDEF) {
+      scr_dyn_release(cur);
+      return desc;
+    }
+    scr_dyn_release(desc);
+    ScrDyn *next = scr_dyn_get_prototype(cur);
+    if (scr_exc_pending()) {
+      scr_dyn_release(next);
+      scr_dyn_release(cur);
+      return NULL;
+    }
+    scr_dyn_release(cur);
+    if (next == NULL || next->kind == SCR_DYN_NULL || next->kind == SCR_DYN_UNDEF) {
+      scr_dyn_release(next);
+      return scr_dyn_undefined();
+    }
+    cur = next;
+  }
+}
+
+/* Node's `typeof original !== 'function'` gate for a mocked accessor: the
+ * descriptor found on the chain must carry the getter (or setter) the mock
+ * replaces, else ERR_INVALID_ARG_VALUE. */
+void scr_test_accessor_require(ScrDyn *descriptor /*borrowed*/, bool setter) {
+  const ScrDyn *fn = descriptor && descriptor->kind == SCR_DYN_OBJ
+                         ? scr_dyn_obj_get(descriptor, setter ? "set" : "get", 3)
+                         : NULL;
+  if (fn && fn->kind == SCR_DYN_FUNC) return;
+  scr_dyn_arg_value_fail("methodName", "must be a method",
+                         fn ? (ScrDyn *)fn : scr_dyn_undefined());
+}
+
 void scr_test_mock_track(ScrClosure *restore /*moves*/) {
   scr_test_mocks_add(&scr_test_mocks, restore);
 }

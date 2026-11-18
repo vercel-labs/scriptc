@@ -39,3 +39,6 @@ const moduleAliasValue = module;
 const parentAlias = module.children[0].parent;
 console.log("aliases", mainAlias === module, moduleAliasValue === require.main,
   parentAlias === require.main, moduleAliasValue.children.length);
+const aliasOfAlias = mainAlias;
+console.log("aliasOfAlias", aliasOfAlias === module, aliasOfAlias.children[0].id.endsWith("child.cjs"),
+  typeof aliasOfAlias.id);

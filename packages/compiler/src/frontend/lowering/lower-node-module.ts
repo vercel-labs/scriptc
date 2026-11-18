@@ -742,6 +742,19 @@ export function lowerNodeModuleProperty(
       };
     }
   }
+  if (moduleRef && moduleRef.type.kind === "dyn") {
+    // A JavaScript binding holds the checked-dynamic Module object (an alias
+    // of `module`, `require.main` or `module.children[i]`), so its members
+    // read from that object.
+    const memberLoc = locOf(expr);
+    return {
+      kind: "dynKeyGet",
+      value: moduleRef,
+      key: strLit(member, memberLoc),
+      type: DYN,
+      loc: memberLoc,
+    };
+  }
   if (!moduleRef || moduleRef.type.kind !== "f64") return null;
   const loc = locOf(expr);
   const call = (

@@ -217,6 +217,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // cursor methods use it to reach the same object process.stdio answers.
   "process.stdioOf",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
+  // readable.iterator builds the async iterator object; its members run later.
+  "readable.iterator",
   "readable.encodingName",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
   // path that is not there is the answer false, and the probe reports no

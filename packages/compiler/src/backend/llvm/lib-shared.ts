@@ -1821,6 +1821,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "rl.uiClearScreenDown": "scr_rl_ui_clear_screen_down",
   "rl.uiRollback": "scr_rl_ui_rollback",
   "rl.uiCommit": "scr_rl_ui_commit",
+  "readable.iterator": "scr_stream_iterator",
   "readable.nextChunk": "scr_stream_next_chunk",
   "readable.nextChunkDyn": "scr_stream_next_chunk_dyn",
   "readable.fromArr": "scr_stream_from_arr",

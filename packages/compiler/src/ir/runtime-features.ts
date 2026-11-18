@@ -335,6 +335,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "readable.iterator",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -422,6 +423,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "readable.iterator",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -2470,7 +2472,7 @@ const RUNTIME_FEATURE_RULES = {
    * the unit makes (scr_sym_well_known_make_hook). */
   symbol: rule({
     initial: (mod) => (mod.records ?? []).some(isDirentShape),
-    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew"],
+    fns: [...SYMBOL_LIB_FNS, "dir.readCb", "dyn.proxyNew", "readable.iterator"],
     // %Iterator.prototype% (scr_js_iterator.c) defines its Symbol.iterator,
     // Symbol.toStringTag and Symbol.dispose members with the well-known
     // symbols scr_sym_well_known makes. An island symbol the program

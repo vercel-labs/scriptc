@@ -6186,6 +6186,9 @@ function buildLibFnSignatures() {
      * readable.fromIter is Readable.from over a class iterator, already
      * opened: [checked-dynamic { next } object, flags, highWaterMark];
      * readable.fromAsyncIter is the async class iterator's twin. */
+    /** readable.iterator (scr_stream_iterator.c): the readable and the
+     * destroyOnReturn flag; the async iterator object. */
+    "readable.iterator": { argTypes: [null, BOOL], result: DYN },
     "readable.nextChunk": { argTypes: [null], result: VOID },
     "readable.nextChunkDyn": { argTypes: [null], result: VOID },
     "readable.fromArr": { argTypes: [null, F64, F64], result: VOID },

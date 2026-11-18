@@ -51,6 +51,12 @@ void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
  * surface); NULL with the exception pending. Borrows both. */
 typedef struct ScrStream ScrStream;
 ScrStream *scr_file_handle_read_stream(ScrFileHandle *h, ScrDyn *options);
+/* FileHandle.readableWebStream([options]): the handle's content as Node's
+ * type: "bytes" web stream (scr_fs_web_stream.c). A closed handle throws
+ * Node's ERR_INVALID_STATE; `options.autoClose` closes the handle when the
+ * stream is cancelled or finishes. +1 checked-dynamic stream, or NULL with
+ * the exception pending. */
+ScrDyn *scr_file_handle_readable_web_stream(ScrFileHandle *h, ScrDyn *options);
 ScrStream *scr_file_handle_write_stream(ScrFileHandle *h, ScrDyn *options);
 ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_datasync_promise(ScrFileHandle *h);

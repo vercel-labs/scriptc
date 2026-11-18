@@ -376,6 +376,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
+  // filehandle.readableWebStream's byte stream over the handle's reads,
+  // its own gate (it links the FileHandle and web stream units with it).
+  unit((u) => u.opts.fsWebStream === true, "scr_fs_web_stream.c"),
   // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
   // dns/promises' Resolver need (scr_dns_resolve.c's own class row).
   unit((u) => u.opts.webStreams === true || u.opts.dnsResolve === true, "scr_dyn_handle_class.c"),

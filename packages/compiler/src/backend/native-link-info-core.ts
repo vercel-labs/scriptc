@@ -27,6 +27,8 @@ export interface NativeLinkFeatures {
    * jsObjectModelFact ORs this fact into. */
   bigintBytes: boolean;
   fileHandle: boolean;
+  /** filehandle.readableWebStream: scr_fs_web_stream.c. */
+  fsWebStream?: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
@@ -483,6 +485,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // listeners), so the iterator unit brings the checked-dynamic async unit
   // with it.
   { feature: "watchEvents", requires: ["watch", "dynAsync"] },
+  // scr_fs_web_stream.c reads through the FileHandle unit; the web stream
+  // unit comes with it through executable-features' webStreams OR.
+  { feature: "fsWebStream", requires: ["fileHandle"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

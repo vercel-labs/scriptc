@@ -46896,6 +46896,7 @@
           "tests/corpus/fs-filehandle-controls.ts",
           "tests/corpus/fs-filehandle-data-options.ts",
           "tests/corpus/fs-filehandle-lines.ts",
+          "tests/corpus/fs-filehandle-web-stream.ts",
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
@@ -47417,8 +47418,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.filehandle.readableWebStream",
+        "tests": [
+          "tests/corpus/fs-filehandle-web-stream.ts"
+        ]
       },
       "anchorSource": "exact"
     },

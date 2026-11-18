@@ -2196,6 +2196,9 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
+   * content as a byte-oriented web stream, its own gated unit. */
+  fsWebStream: rule({ fns: ["fileHandle.readableWebStream"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
@@ -2774,6 +2777,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsWebStream: false,
     fnMemberProps: false,
     fsFlags: false,
     fsExistsValue: false,

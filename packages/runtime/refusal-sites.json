@@ -48,6 +48,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_async_dyn.c",
+  "function": "scr_process_emit_error",
+  "message": "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_blob.c",
   "function": "scr_blob_source_list",
   "message": "new Blob(sources) over this iterable has no lowering; pass an array",
@@ -343,8 +349,32 @@
  },
  {
   "file": "scr_dgram.c",
-  "function": "scr_dgram_membership",
-  "message": "dgram.Socket.%s before bind() is not supported yet",
+  "function": "scr_dgram_block_list_fail",
+  "message": "a receiveBlockList or sendBlockList is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_create_chk",
+  "message": "abort-driven close is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_create_chk",
+  "message": "a custom lookup function is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_bind_opts",
+  "message": "opening an existing descriptor is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_dgram.c",
+  "function": "scr_dgram_bind_sync_chk",
+  "message": "opening an existing descriptor is not supported yet",
   "code": "SC2020"
  },
  {
@@ -747,6 +777,12 @@
   "file": "scr_http.c",
   "function": "scr_http_req_set_encoding",
   "message": "setEncoding('%s') is not supported yet (only 'utf8' here)",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_req_signal",
+  "message": "IncomingMessage.signal is not supported by this runtime build",
   "code": "SC2020"
  },
  {
@@ -1748,6 +1784,12 @@
  {
   "file": "scr_stream.c",
   "function": "scr_stream_dyn_call",
+  "message": "'readable.iterator' has no native lowering in this program",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dyn_call",
   "message": "Native stream method values with write encodings or callbacks have no lowering",
   "code": "SC2020"
  },
@@ -1785,6 +1827,12 @@
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream_to_web.c",
+  "function": "scr_stream_to_web_readable_dyn",
+  "message": "Readable.toWeb over a checked-dynamic value that is not a native readable stream is not supported yet",
   "code": "SC2020"
  },
  {
@@ -2035,32 +2083,14 @@
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_view_get",
-  "message": "worker.resourceLimits is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
   "function": "scr_broadcast_invoke",
   "message": "This BroadcastChannel method is not supported yet",
   "code": "SC2020"
  },
  {
   "file": "scr_worker_events.c",
-  "function": "scr_worker_resource_limits",
-  "message": "resourceLimits in a worker is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
   "function": "scr_worker_arguments",
   "message": "Worker argv strings containing null bytes are not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_worker_events.c",
-  "function": "scr_worker_stack_size",
-  "message": "Worker resourceLimits heap limits are not supported yet",
   "code": "SC2020"
  },
  {
@@ -2379,6 +2409,12 @@
   "file": "scr_string.c",
   "function": "scr_qs_escape_value",
   "message": "querystring.escape of a function converts its source text, which a compiled binary does not keep",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_srv_opts_walk_ex",
+  "message": "the https.createServer options record changed while its members were read",
   "code": "SC2020"
  },
  {

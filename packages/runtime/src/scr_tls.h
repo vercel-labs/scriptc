@@ -91,6 +91,7 @@ ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which);
 ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const struct ScrDyn *length,
                                               const struct ScrDyn *label,
                                               const struct ScrDyn *context, bool has_context);
+bool scr_tls_server_is_dyn(const struct ScrDyn *v);
 void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
 /* The 'secure' event: fires when the handshake completes (after the
  * secureConnect listeners on a client); released unread on a plain socket

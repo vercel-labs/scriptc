@@ -19,6 +19,12 @@ declare module "tls" {
     /* new connections serve a context made from `options` */
     setSecureContext(options: TlsOptions): void;
   }
+  /** The value side of the class: `new tls.Server(options[, listener])`
+   * builds the same server createServer does. */
+  export const Server: new (
+    options: TlsOptions,
+    secureConnectionListener?: (socket: TLSSocket) => void,
+  ) => Server;
   export interface TlsOptions {
     /* Optional in the DECLARATION only (real Node programs build these
      * literals with every TLS knob): the lowering still requires both —

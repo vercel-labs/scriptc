@@ -2,10 +2,20 @@
  * reaching SC0001 in a JavaScript source has exactly one decision — an
  * admission row in JS_OPINIONS or a decision in JS_TSC_CODE_TRIAGE
  * (tsc-codes.ts) — so a new code cannot slip in undecided. */
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { JS_OPINIONS, JS_TSC_CODE_TRIAGE, jsOpinion, jsTscCodeTriage } from "./tsc-codes.js";
+import { loadProgram } from "./program-node.js";
+import {
+  JS_OPINIONS,
+  JS_TSC_CODE_TRIAGE,
+  jsOpinion,
+  jsTscCodeTriage,
+  untypedReceiverCall,
+} from "./tsc-codes.js";
+import * as ts from "./ts7/adapter.js";
 
 /** The distinct codes the 2026-10-31 journals recorded for in-scope
  * SC0001 variants in JavaScript. The W1.1/W1.2 codes (2695, 7032, 18050,
@@ -240,4 +250,60 @@ describe("the JavaScript checker decisions", () => {
           `TS${code} ${program}`,
         ).toBe(true);
   });
+});
+
+test("a descriptor accessor's .call/.apply is admitted whichever node TS2684 marks", () => {
+  // A standard accessor wrapper reads a property descriptor's `get`/`set`
+  // and calls it with another receiver. The checker's `this` type rejects
+  // the call (TS2684) because the descriptor member is possibly undefined;
+  // JavaScript binds whatever receiver the call names. Checker builds mark
+  // the callee, the `.call` access or the whole call, so every anchor has to
+  // name the same site.
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-receiver-call-"));
+  writeFileSync(join(directory, "package.json"), '{"type":"module"}');
+  const library = join(directory, "library.js");
+  writeFileSync(
+    library,
+    `export function writeValue(el, value) {
+  prototypeValue(el).set.call(el, value);
+}
+export function writeAgain(el, value) {
+  const base = prototypeValue(el);
+  base.set.apply(el, [value]);
+}
+function prototypeValue(el) {
+  return Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value");
+}
+`,
+  );
+  writeFileSync(
+    join(directory, "main.ts"),
+    'import { writeValue, writeAgain } from "./library.js";\nconst el: any = {};\nwriteValue(el, "a");\nwriteAgain(el, "b");\n',
+  );
+  const load = loadProgram(join(directory, "main.ts"));
+  try {
+    const program = load.program;
+    const source = program.getSourceFile(library);
+    expect(source).toBeDefined();
+    const calls: ts.CallExpression[] = [];
+    ts.walkPreorder(source!, (node) => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        (node.expression.name.text === "call" || node.expression.name.text === "apply")
+      )
+        calls.push(node);
+    });
+    expect(calls.length).toBe(2);
+    const diagnostic = { code: 2684 } as ts.Diagnostic;
+    for (const call of calls) {
+      const access = call.expression as ts.PropertyAccessExpression;
+      expect(untypedReceiverCall(access.expression, diagnostic, program)).toBe(true);
+      expect(untypedReceiverCall(access, diagnostic, program)).toBe(true);
+      expect(untypedReceiverCall(call, diagnostic, program)).toBe(true);
+    }
+  } finally {
+    load.dispose();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

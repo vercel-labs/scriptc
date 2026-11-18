@@ -4668,6 +4668,18 @@ function validateFunction(
         );
       return true;
     }
+    if (e.fn === "webstream.toWebReadable") {
+      // Readable.toWeb: (readable, flags) → a web ReadableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (readable, flags) and return a web stream`, e.loc);
+      return true;
+    }
+
     if (e.fn === "webstream.writableFromWeb") {
       // Writable.fromWeb: (writableStream, flags) → a Writable.
       if (
@@ -4677,6 +4689,28 @@ function validateFunction(
         e.type.kind !== "object"
       )
         err(`libCall ${e.fn} must take (writableStream, flags) and return a Writable`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.toWebReadableDyn") {
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
+      return true;
+    }
+
+    if (e.fn === "webstream.writableToWeb") {
+      // Writable.toWeb: (writable, flags) → a web WritableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (writable, flags) and return a web stream`, e.loc);
       return true;
     }
     if (e.fn === "fetch.readerRead") {
@@ -5342,7 +5376,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "dgram.address") {
+    if (e.fn === "dgram.address" || e.fn === "dgram.remoteAddress" || e.fn === "dgram.bindSync") {
       // Result is the {address, family, port} record.
       const shape = e.type.kind === "record" ? records.get(e.type.shapeId) : undefined;
       const ok =
@@ -5355,7 +5389,7 @@ function validateFunction(
         shape.fields[2]!.name === "port" &&
         shape.fields[2]!.type.kind === "f64";
       if (!ok) {
-        err(`libCall dgram.address must return the {address, family, port} record`, e.loc);
+        err(`libCall ${e.fn} must return the {address, family, port} record`, e.loc);
       }
       return true;
     }

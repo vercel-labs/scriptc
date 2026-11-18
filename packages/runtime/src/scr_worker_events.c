@@ -17,6 +17,16 @@ typedef struct ScrTermWait {
   ScrPromise *promise;
   struct ScrTermWait *next;
 } ScrTermWait;
+/* worker.cpuUsage()'s unanswered request: the promise, and the `prev`
+ * reading its delta is taken from. */
+typedef struct ScrCpuWait {
+  int seq;
+  bool delta;
+  double prev_user;
+  double prev_system;
+  ScrPromise *promise;
+  struct ScrCpuWait *next;
+} ScrCpuWait;
 
 typedef struct ScrWorkerView {
   size_t rc;
@@ -61,11 +71,19 @@ typedef struct ScrWorkerView {
   ScrStream *stdin_stream;
   ScrDyn *stdin_box;
   bool stdin_captured;
-  /* worker.performance: { eventLoopUtilization }, made on first read, and
-   * whether the worker's 'online' event has been delivered: Node answers the
-   * zero object until then, even when the thread already published metrics */
+  /* worker.performance: { eventLoopUtilization }, made on first read. */
   ScrDyn *performance_box;
+  /* resourceLimits as this Worker's constructor requested them, in Node's
+   * key order (young, old, codeRange, stack): -1 for an unset V8 heap
+   * limit, 4 for an unset stack. */
+  double limits[4];
+  /* its 'online' event was delivered: worker.performance answers the zero
+   * object until then, even when the thread already published metrics, and
+   * cpuUsage() answers only from then */
   bool online;
+  /* cpuUsage() requests in flight, and the last sequence number given out */
+  ScrCpuWait *cpu_wait;
+  int cpu_seq;
   struct ScrWorkerView *next;
 } ScrWorkerView;
 
@@ -107,13 +125,17 @@ static bool scr_worker_batch_next(void) {
 static const char *const scr_worker_method_names[] = {
   "ref", "unref", "hasRef", "terminate", "postMessage", "on", "once", "addListener",
   "prependListener", "prependOnceListener", "off", "removeListener", "removeAllListeners",
-  "listenerCount", "close", "start",
+  "listenerCount", "close", "start", "cpuUsage", "addEventListener", "removeEventListener",
+  "dispatchEvent",
 };
 static SCR_TL ScrDyn *scr_worker_methods[sizeof scr_worker_method_names / sizeof scr_worker_method_names[0]];
 static const char *const scr_broadcast_method_names[] = {
   "postMessage", "close", "ref", "unref", "addEventListener", "removeEventListener", "dispatchEvent",
 };
 static SCR_TL ScrDyn *scr_broadcast_methods[sizeof scr_broadcast_method_names / sizeof scr_broadcast_method_names[0]];
+
+/* a port's EventTarget core, created on first use (defined below) */
+static ScrEventTargetCore *scr_port_core(ScrWorkerView *view);
 
 
 /* The stream unit's half of worker.stdout, worker.stderr and
@@ -186,6 +208,7 @@ static void scr_worker_view_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   visit(view->stdin_stream, ctx);
   visit(view->stdin_box, ctx);
   visit(view->performance_box, ctx);
+  for (ScrCpuWait *wait = view->cpu_wait; wait; wait = wait->next) visit(wait->promise, ctx);
 }
 
 static void scr_worker_view_gcfree(void *ptr) {
@@ -215,6 +238,12 @@ static void scr_worker_view_destroy(void *ptr) {
   }
   scr_promise_release(view->disposal);
   scr_dyn_release(view->performance_box);
+  while (view->cpu_wait) {
+    ScrCpuWait *wait = view->cpu_wait;
+    view->cpu_wait = wait->next;
+    scr_promise_release(wait->promise);
+    free(wait);
+  }
   for (int i = 0; i < 2; i++) {
     if (view->stdio[i]) scr_worker_stdio_ops->release(view->stdio[i]);
     scr_dyn_release(view->stdio_box[i]);
@@ -246,13 +275,29 @@ static void scr_worker_view_release(void *ptr) {
  * listener refs that port and leaves the thread handle's own ref alone, so
  * a Worker that was never unref()ed keeps the loop alive without listeners
  * and one that was unref()ed stays unreferenced when a listener leaves. */
+/* Node's setupPortReferencing for a port: it is referenced while any
+ * 'message' listener exists (Node's port keeps the emitter surface and the
+ * EventTarget surface in one registry) and the first listener starts it.
+ * The emitter's own on/off and the EventTarget attribute/listeners both
+ * end here, so removing one kind while the other remains keeps the port
+ * referenced, as Node's does. */
+static void scr_port_message_refs(ScrWorkerView *view) {
+  double listeners = view->et && scr_et_broadcast_ops->listener_count
+                         ? scr_et_broadcast_ops->listener_count(view->et, "message")
+                         : 0;
+  ScrStr *name = scr_str_new("message", 7);
+  listeners += scr_emitter_listener_count(view->events, name);
+  scr_str_release(name);
+  bool present = listeners > 0;
+  view->started = present || view->started;
+  view->referenced = present;
+}
+
 static void scr_worker_message_listeners(void *ptr, const ScrStr *name, bool present) {
   ScrWorkerView *view = ptr;
   if (name->len != 7 || memcmp(name->data, "message", 7)) return;
-  if (view->port) {
-    view->started = present || view->started;
-    view->referenced = present;
-  } else view->message_port_ref = present;
+  if (!view->port) view->message_port_ref = present;
+  else scr_port_message_refs(view);
 }
 
 /** The internal 'newListener'/'removeListener' listeners Node registers at
@@ -568,6 +613,130 @@ ScrDyn *scr_worker_performance(ScrDyn *value) {
   return scr_dyn_retain(view->performance_box);
 }
 
+/* ── worker.cpuUsage() ──────────────────────────────────────────────── */
+
+/* Node's cpuUsage() answers a rejection with ERR_WORKER_NOT_RUNNING when
+ * its handle cannot be asked: before the worker's thread runs and after it
+ * stopped. */
+static void scr_worker_cpu_reject(ScrPromise *promise) {
+  static const char message[] = "Worker instance not running";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "ERR_WORKER_NOT_RUNNING");
+  scr_promise_reject_pending(promise);
+}
+
+/* validateObject(prev, 'prev') + validateNumber(prev.user|system, 0,
+ * Number.MAX_SAFE_INTEGER), with Node's latest error shapes: a non-object is
+ * ERR_INVALID_ARG_TYPE on the argument, a non-number field is
+ * ERR_INVALID_ARG_TYPE on the property, and a field outside the bound is
+ * ERR_OUT_OF_RANGE. */
+static bool scr_worker_cpu_prev(ScrDyn *prev, double *user, double *system) {
+  /* A static value crossing into the checked-dynamic tree reads its fields
+   * through the materialized view. */
+  ScrDyn *materialized = NULL;
+  if (prev->kind == SCR_DYN_TYPED_REF) {
+    materialized = scr_dyn_typed_ref_materialize(prev);
+    if (!materialized || scr_exc_pending()) {
+      scr_dyn_release(materialized);
+      return false;
+    }
+    prev = materialized;
+  }
+  if (prev->kind == SCR_DYN_NULL || prev->kind == SCR_DYN_ARR || !scr_dyn_is_object(prev)) {
+    char detail[64], msg[192];
+    const char *received = scr_dyn_specific_type(prev, detail, sizeof detail);
+    int len = snprintf(msg, sizeof msg,
+                       "The \"prev\" argument must be of type object. Received %s", received);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_TYPE");
+    scr_dyn_release(materialized);
+    return false;
+  }
+  static const char *const names[] = {"user", "system"};
+  double *out[2] = {user, system};
+  for (int i = 0; i < 2; i++) {
+    char name[16];
+    snprintf(name, sizeof name, "prev.%s", names[i]);
+    ScrDyn *value = scr_dyn_obj_read(prev, names[i], strlen(names[i]));
+    bool number = value && !scr_exc_pending() && value->kind == SCR_DYN_NUM;
+    if (!number) {
+      if (!scr_exc_pending())
+        scr_dyn_prop_type_fail(name, "of type number", value ? value : scr_dyn_undefined());
+      scr_dyn_release(value);
+      scr_dyn_release(materialized);
+      return false;
+    }
+    double n = value->v.num;
+    scr_dyn_release(value);
+    if (!(n == n && n >= 0 && n <= 9007199254740991.0)) {
+      char received[48], msg[192];
+      scr_num_received(n, received);
+      int len = snprintf(msg, sizeof msg,
+                         "The value of \"%s\" is out of range. It must be >= 0 && <= "
+                         "9007199254740991. Received %s",
+                         name, received);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      scr_dyn_release(materialized);
+      return false;
+    }
+    *out[i] = n;
+  }
+  scr_dyn_release(materialized);
+  return true;
+}
+
+/* Fulfills the request with Node's {user, system}, in microseconds; with a
+ * `prev` reading, the difference from it. */
+static void scr_worker_cpu_fulfill(ScrCpuWait *wait, double user, double system) {
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "user", 4,
+                  scr_dyn_new_num(wait->delta ? user - wait->prev_user : user));
+  scr_dyn_obj_set(object, "system", 6,
+                  scr_dyn_new_num(wait->delta ? system - wait->prev_system : system));
+  scr_promise_fulfill_ref(wait->promise, object, scr_dyn_retain_v, scr_dyn_release_v,
+                          scr_dyn_trace_v);
+}
+
+/* Answers the request whose sequence number is `seq`; a request that is not
+ * in flight (the worker exited first) leaves nothing to settle. */
+static bool scr_worker_cpu_settle(ScrWorkerView *view, int seq, double user, double system) {
+  ScrCpuWait **slot = &view->cpu_wait;
+  while (*slot && (*slot)->seq != seq) slot = &(*slot)->next;
+  ScrCpuWait *wait = *slot;
+  if (!wait) return false;
+  *slot = wait->next;
+  scr_worker_cpu_fulfill(wait, user, system);
+  scr_promise_release(wait->promise);
+  free(wait);
+  return true;
+}
+
+/* worker.cpuUsage([prev]): the worker's thread measures its own CPU usage,
+ * which Node reads from the worker's isolate. */
+static ScrDyn *scr_worker_cpu_usage(ScrWorkerView *view, ScrDyn *prev) {
+  double prev_user = 0;
+  double prev_system = 0;
+  bool delta = scr_dyn_truthy(prev);
+  if (delta && !scr_worker_cpu_prev(prev, &prev_user, &prev_system)) return NULL;
+  ScrPromise *promise = scr_promise_new();
+  ScrDyn *result = scr_dyn_new_promise(promise);
+  int seq = ++view->cpu_seq;
+  if (!view->online || view->closed || !scr_worker_thread_post_cputime(view->thread, seq)) {
+    scr_worker_cpu_reject(promise);
+    scr_promise_release(promise);
+    return result;
+  }
+  ScrCpuWait *wait = malloc(sizeof *wait);
+  if (!wait) scr_trap("scriptc: out of memory\n");
+  wait->seq = seq;
+  wait->delta = delta;
+  wait->prev_user = prev_user;
+  wait->prev_system = prev_system;
+  wait->promise = scr_promise_retain(promise);
+  wait->next = view->cpu_wait;
+  view->cpu_wait = wait;
+  scr_promise_release(promise);
+  return result;
+}
+
 static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *method,
                                      ScrDyn *const *args, size_t argc, const char *what) {
   (void)what;
@@ -581,6 +750,8 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
   }
   if (view->port && method_is(method, "hasRef"))
     return scr_dyn_new_bool(view->referenced && (!view->closed || (view->channel && view->closing)));
+  if (!view->port && method_is(method, "cpuUsage"))
+    return scr_worker_cpu_usage(view, argc ? args[0] : scr_dyn_undefined());
   if (!view->port && method_is(method, "terminate")) {
     /* Node's terminate() returns a fresh promise per call. It refs the worker
      * before stopping the thread, so the loop stays up until the exit event
@@ -740,6 +911,20 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     view->started = true;
     return scr_dyn_retain(scr_dyn_undefined());
   }
+  /* A MessagePort's EventTarget surface: addEventListener, removeEventListener
+   * and dispatchEvent run on its listener core. A 'message' listener starts
+   * the port, as Node does. */
+  if (view->port && (method_is(method, "addEventListener") ||
+                     method_is(method, "removeEventListener") || method_is(method, "dispatchEvent"))) {
+    ScrDyn *out = NULL;
+    ScrEventTargetCore *core = scr_port_core(view);
+    if (core && scr_et_broadcast_ops->method(core, self, method, args, argc, &out)) {
+      if (argc > 0 && args[0]->kind == SCR_DYN_STR && args[0]->v.str->len == 7 &&
+          !memcmp(args[0]->v.str->data, "message", 7))
+        scr_port_message_refs(view);
+      return out;
+    }
+  }
   return scr_worker_refusal("This Worker or MessagePort method is not supported yet");
 }
 
@@ -785,12 +970,33 @@ static ScrDyn *scr_worker_async_dispose_call(ScrClosure *closure, ScrDyn *const 
   return result;
 }
 
+/* Node's makeResourceLimits: a fresh object with the four limits in its
+ * key order. */
+static ScrDyn *scr_worker_limits_object(const double limits[4]) {
+  static const char *const names[] = {"maxYoungGenerationSizeMb", "maxOldGenerationSizeMb",
+                                      "codeRangeSizeMb", "stackSizeMb"};
+  ScrDyn *object = scr_dyn_new_obj();
+  for (size_t i = 0; i < 4; i++)
+    scr_dyn_obj_set(object, names[i], strlen(names[i]), scr_dyn_new_num(limits[i]));
+  return object;
+}
+
 /* worker[Symbol.asyncDispose] */
 static ScrDyn *scr_worker_symbol_get(void *ptr, const ScrDyn *key) {
   (void)ptr;
   if (!scr_dyn_is_async_dispose_symbol(key)) return NULL;
   ScrClosure *closure = scr_closure_new((void *)&scr_worker_async_dispose_call, 0);
   return scr_dyn_new_func(closure, &scr_worker_async_dispose_call, 0, "()", "[Symbol.asyncDispose]");
+}
+
+/* A port's EventTarget core, created on first use (Node's MessagePort is an
+ * EventTarget beside its EventEmitter surface). */
+static ScrEventTargetCore *scr_port_core(ScrWorkerView *view) {
+  /* A program that never names BroadcastChannel or MessageChannel does not
+   * link the EventTarget unit; its ports keep the emitter surface only. */
+  if (!scr_et_broadcast_ops) return NULL;
+  if (!view->et) view->et = scr_et_broadcast_ops->core_new("MessagePort");
+  return view->et;
 }
 
 static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
@@ -830,12 +1036,25 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
     return scr_dyn_retain(view->performance_box);
   }
   if (!view->port && length == 14 && !memcmp(key, "resourceLimits", 14))
-    return view->closed ? scr_dyn_new_obj() : scr_worker_refusal("worker.resourceLimits is not supported yet");
+    /* Node's getter: the limits the constructor asked for, or {} once the
+     * worker stopped. */
+    return view->closed ? scr_dyn_new_obj() : scr_worker_limits_object(view->limits);
+  if (view->port &&
+      ((length == 9 && !memcmp(key, "onmessage", 9)) ||
+       (length == 14 && !memcmp(key, "onmessageerror", 14)))) {
+    char type[16];
+    memcpy(type, key + 2, length - 2);
+    type[length - 2] = '\0';
+    ScrEventTargetCore *core = scr_port_core(view);
+    return core ? scr_et_broadcast_ops->handler_get(core, type) : NULL;
+  }
   for (size_t i = 0; i < sizeof scr_worker_methods / sizeof scr_worker_methods[0]; i++) {
     const char *name = scr_worker_method_names[i];
     if (strlen(name) != length || memcmp(name, key, length)) continue;
-    if ((view->port && !strcmp(name, "terminate")) ||
-        (!view->port && (!strcmp(name, "start") || !strcmp(name, "close") || !strcmp(name, "hasRef")))) return NULL;
+    if ((view->port && (!strcmp(name, "terminate") || !strcmp(name, "cpuUsage"))) ||
+        (!view->port && (!strcmp(name, "start") || !strcmp(name, "close") || !strcmp(name, "hasRef") ||
+                         !strcmp(name, "addEventListener") || !strcmp(name, "removeEventListener") ||
+                         !strcmp(name, "dispatchEvent")))) return NULL;
     if (!scr_worker_methods[i]) {
       ScrClosure *closure = scr_closure_new(NULL, 1);
       closure->caps[0] = scr_box_new(SCR_BOX_F64);
@@ -847,9 +1066,27 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
   return NULL;
 }
 
+/* port.onmessage = fn / port.onmessageerror = fn: the EventTarget handler,
+ * and Node starts the port when a 'message' handler is set. */
+static bool scr_worker_view_set(void *ptr, const char *key, size_t length, const ScrDyn *value) {
+  ScrWorkerView *view = ptr;
+  if (!view->port) return false;
+  if ((length == 9 && !memcmp(key, "onmessage", 9)) ||
+      (length == 14 && !memcmp(key, "onmessageerror", 14))) {
+    char type[16];
+    memcpy(type, key + 2, length - 2);
+    type[length - 2] = '\0';
+    ScrEventTargetCore *core = scr_port_core(view);
+    if (!core) return false;
+    scr_et_broadcast_ops->handler_set(core, type, value);
+    if (!strcmp(type, "message")) scr_port_message_refs(view);
+    return true;
+  }
+  return false;
+}
+
 static bool scr_workers_pending(void) {
-  /* a worker's process.stdin waiting for worker.stdin chunks */
-  if (scr_stdin_fed && scr_stdin_fed_waiting && scr_stdin_fed_waiting()) return true;
+  /* a worker's process.stdin waiting for worker.stdin chunks */  if (scr_stdin_fed && scr_stdin_fed_waiting && scr_stdin_fed_waiting()) return true;
   for (ScrWorkerView *view = scr_worker_views; view; view = view->next)
     if (view->referenced || view->message_port_ref) return true;
   for (ScrWorkerView *view = scr_channel_ports; view; view = view->next)
@@ -885,12 +1122,31 @@ static void scr_worker_events_wait(double milliseconds) {
   if (!scr_worker_events_ready()) scr_mailbox_wait(scr_worker_events, milliseconds);
 }
 
+/* The EventTarget form of one delivered value (a 'message' MessageEvent). */
+static void scr_port_dispatch_message(ScrWorkerView *view, ScrDyn *argument) {
+  if (!view->et) return;
+  ScrDyn *self = scr_dyn_new_handle(view, SCR_DYNH_MESSAGE_PORT);
+  scr_et_broadcast_ops->dispatch_message(view->et, self, argument);
+  scr_dyn_release(self);
+}
+
 static void scr_worker_port_emit(ScrWorkerView *view, const char *event, ScrDyn *argument) {
   ScrStr *name = scr_str_new(event, strlen(event));
   scr_dyn_this_push(view, SCR_DYNH_MESSAGE_PORT);
   scr_emitter_emit_flex(view->events, name, argument ? &argument : NULL, argument ? 1 : 0);
   scr_dyn_this_pop();
   scr_str_release(name);
+  /* A MessagePort is an EventTarget as well: its onmessage/addEventListener
+   * listeners receive the event form (a MessageEvent for 'message', an
+   * Event for 'close'). */
+  if (!view->et) return;
+  if (!strcmp(event, "message") || !strcmp(event, "messageerror"))
+    scr_port_dispatch_message(view, argument ? argument : scr_dyn_undefined());
+  else {
+    ScrDyn *self = scr_dyn_new_handle(view, SCR_DYNH_MESSAGE_PORT);
+    scr_et_broadcast_ops->dispatch_type(view->et, self, event);
+    scr_dyn_release(self);
+  }
 }
 
 /* The channel ports' turn, one event per call, in Node's phase order:
@@ -950,12 +1206,22 @@ static bool scr_channel_dispatch(void) {
     }
     scr_worker_view_retain(view);
     if (event->message && !view->broadcast && scr_message_readable(event->message)) {
-      /* Compiled listeners with a typed message entry read the message. */
+      /* Compiled listeners with a typed message entry read the message; the
+       * EventTarget listeners receive the same decoded value as the emitter
+       * listeners, as Node's dispatch does. */
       ScrStr *name = scr_str_new("message", 7);
       scr_dyn_this_push(view, SCR_DYNH_MESSAGE_PORT);
-      scr_emitter_emit_message(view->events, name, event->message, scr_message_decode);
+      ScrDyn *argument = NULL;
+      scr_emitter_emit_message_out(view->events, name, event->message, scr_message_decode, &argument);
       scr_dyn_this_pop();
       scr_str_release(name);
+      if (view->port && !argument && !scr_exc_pending()) argument = scr_message_decode(event->message);
+      if (argument && !scr_exc_pending()) {
+        scr_port_dispatch_message(view, argument);
+        scr_dyn_release(argument);
+      } else if (argument) {
+        scr_dyn_release(argument);
+      }
       scr_mail_event_free(event);
       scr_worker_view_release(view);
       return true;
@@ -1084,6 +1350,25 @@ static void scr_worker_dispatch(void) {
   }
   if (!event) return;
   if (event->kind == SCR_WORKER_WAKE) { scr_mail_event_free(event); return; }
+  if (event->kind == SCR_WORKER_CPUTIME) {
+    /* this thread is the worker: measure its own usage and answer */
+    uint64_t user = 0, system = 0;
+    scr_worker_thread_cpu_usage(&user, &system);
+    scr_worker_post_parent_cputime(event->code, user, system);
+    scr_mail_event_free(event);
+    return;
+  }
+  if (event->kind == SCR_WORKER_CPUTIME_RESULT) {
+    ScrWorkerView *target = scr_worker_views;
+    while (target && scr_worker_thread_id(target->thread) != event->source) target = target->next;
+    if (target && event->data && event->length == 2 * sizeof(uint64_t)) {
+      uint64_t values[2];
+      memcpy(values, event->data, sizeof values);
+      scr_worker_cpu_settle(target, event->code, (double)values[0], (double)values[1]);
+    }
+    scr_mail_event_free(event);
+    return;
+  }
   if (event->kind == SCR_WORKER_STDIN) {
     ScrBytes *chunk = NULL;
     if (event->data) {
@@ -1141,13 +1426,26 @@ static void scr_worker_dispatch(void) {
   }
   scr_worker_view_retain(view);
   if (event->kind == SCR_WORKER_MESSAGE && event->message && scr_message_readable(event->message)) {
-    /* Compiled listeners with a typed message entry read the message. */
+    /* Compiled listeners with a typed message entry read the message; a
+     * port's EventTarget listeners receive the same decoded value. */
     if (!scr_exc_pending()) {
       ScrStr *name = scr_str_new("message", 7);
       scr_dyn_this_push(view, view->port ? SCR_DYNH_MESSAGE_PORT : SCR_DYNH_WORKER);
-      scr_emitter_emit_message(view->events, name, event->message, scr_message_decode);
+      ScrDyn *argument = NULL;
+      scr_emitter_emit_message_out(view->events, name, event->message, scr_message_decode, &argument);
       scr_dyn_this_pop();
       scr_str_release(name);
+      if (view->port) {
+        if (!argument && !scr_exc_pending()) argument = scr_message_decode(event->message);
+        if (argument && !scr_exc_pending()) {
+          scr_port_dispatch_message(view, argument);
+          scr_dyn_release(argument);
+        } else if (argument) {
+          scr_dyn_release(argument);
+        }
+      } else {
+        scr_dyn_release(argument);
+      }
     }
     scr_worker_view_release(view);
     scr_mail_event_free(event);
@@ -1158,6 +1456,7 @@ static void scr_worker_dispatch(void) {
     event->kind == SCR_WORKER_EXIT ? "exit" : event->kind == SCR_WORKER_ERROR ? "error" : "message";
   ScrDyn *argument = event->message ? scr_message_decode(event->message) :
     event->kind == SCR_WORKER_EXIT ? scr_dyn_new_num(event->code) : NULL;
+  if (event->kind == SCR_WORKER_ONLINE) view->online = true;
   if (event->kind == SCR_WORKER_EXIT) {
     scr_worker_thread_join(view->thread);
     view->closed = true;
@@ -1179,6 +1478,15 @@ static void scr_worker_dispatch(void) {
       scr_promise_release(wait->promise);
       free(wait);
     }
+    /* Node's cpuUsage() handle is gone with the worker: a request still in
+     * flight rejects rather than waiting for an answer that cannot come. */
+    while (view->cpu_wait) {
+      ScrCpuWait *wait = view->cpu_wait;
+      view->cpu_wait = wait->next;
+      scr_worker_cpu_reject(wait->promise);
+      scr_promise_release(wait->promise);
+      free(wait);
+    }
     if (view->disposal) scr_promise_fulfill_ref(view->disposal,
       scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
     ScrWorkerView **slot = &scr_worker_views;
@@ -1194,6 +1502,11 @@ static void scr_worker_dispatch(void) {
     else scr_emitter_emit_flex(view->events, name, argument ? &argument : NULL, argument ? 1 : 0);
     scr_dyn_this_pop();
     scr_str_release(name);
+    /* A message the typed entry cannot read (cyclic, aliased, transferred
+     * ports) still reaches the port's EventTarget listeners, with the same
+     * decoded value the emitter listeners got. */
+    if (event->kind == SCR_WORKER_MESSAGE && view->port && argument)
+      scr_port_dispatch_message(view, argument);
   }
   /* Node ends worker.stdout and worker.stderr as the worker exits: their
    * 'end' events follow 'exit'. */
@@ -1266,6 +1579,17 @@ static ScrEventTargetCore *scr_broadcast_core_of(const ScrDyn *value) {
 
 static void scr_worker_stdin_attach(void) { (void)scr_worker_events_install(); }
 
+/* A worker thread's exit (scr_worker.c, before scr_context_cleanup): the
+ * thread's worker-event state goes before the reference-count audit, which
+ * the exit stack would otherwise run first. */
+static void scr_worker_events_detach(void) {
+  if (scr_worker_events) scr_worker_events_cleanup();
+}
+
+/* A worker thread installs its own machinery before its script runs
+ * (scr_worker.c calls this through the attach hook). */
+static void scr_worker_events_attach(void) { (void)scr_worker_events_install(); }
+
 /* The node:events helpers' NodeEventTarget accessor (scr_event_target.c
  * accepts a Worker or MessagePort through this). */
 static ScrEmitter *scr_node_event_target_emitter_of(const ScrDyn *self) {
@@ -1308,13 +1632,19 @@ static bool scr_worker_events_install(void) {
   };
   static const ScrDynHandleOps port_ops = {
     .cls = "MessagePort", .retain = scr_worker_view_retain, .release = scr_worker_view_release,
-    .invoke = scr_worker_view_invoke, .get = scr_worker_view_get,
+    .invoke = scr_worker_view_invoke, .get = scr_worker_view_get, .set = scr_worker_view_set,
   };
   scr_dyn_handle_install(SCR_DYNH_WORKER, &worker_ops);
   scr_dyn_handle_install(SCR_DYNH_MESSAGE_PORT, &port_ops);
   scr_port_ops_install();
   scr_node_event_target_ops = &scr_node_event_target_ops_value;
-  if (scr_context_atexit(scr_worker_events_cleanup) != 0) scr_trap("scriptc: out of memory\n");
+  scr_worker_set_events_attach(scr_worker_events_attach);
+  scr_worker_set_events_detach(scr_worker_events_detach);
+  /* A worker thread releases its worker-event state explicitly before the
+   * reference-count audit runs (the detach hook above); only the main
+   * thread's cleanup rides the context's exit stack. */
+  if (scr_context_is_main() && scr_context_atexit(scr_worker_events_cleanup) != 0)
+    scr_trap("scriptc: out of memory\n");
   scr_loop_set_workers(scr_workers_pending, scr_worker_events_ready, scr_worker_dispatch,
     scr_worker_events_pollfd, scr_worker_events_wait);
   scr_loop_set_workers_more(scr_workers_more);
@@ -1383,6 +1713,15 @@ ScrDyn *scr_worker_message_channel(void) {
   scr_dyn_obj_set(object, "port1", 5, scr_dyn_new_handle(a, SCR_DYNH_MESSAGE_PORT));
   scr_dyn_obj_set(object, "port2", 5, scr_dyn_new_handle(b, SCR_DYNH_MESSAGE_PORT));
   return object;
+}
+
+/* new MessagePort(...args): Node's constructor exists but refuses every
+ * call this way, after its arguments evaluate (the compiler passes them). */
+ScrDyn *scr_worker_port_construct(ScrDyn *args) {
+  (void)args;
+  static const char message[] = "Constructor cannot be called";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_CONSTRUCT_CALL_INVALID");
+  return NULL;
 }
 
 /* ── BroadcastChannel ───────────────────────────────────────────────── */
@@ -1660,11 +1999,15 @@ static ScrMessage *scr_worker_start_message(ScrDyn *data, ScrDyn *transfer, bool
   return message;
 }
 
-/* worker_threads.resourceLimits: {} in the main thread, as Node; a worker's
- * values are its V8 heap configuration. */
+/* worker_threads.resourceLimits: {} in the main thread, as Node; in a worker
+ * the limits its Worker was created with, -1 for an unset heap limit and 4
+ * for an unset stack. Node reports its isolate's V8 heap configuration
+ * there; a compiled program has one heap for every thread. */
 ScrDyn *scr_worker_resource_limits(void) {
-  if (scr_context_is_main()) return scr_dyn_new_obj();
-  return scr_worker_refusal("resourceLimits in a worker is not supported yet");
+  double limits[4];
+  if (scr_context_is_main() || !scr_worker_thread_current_limits(limits))
+    return scr_dyn_new_obj();
+  return scr_worker_limits_object(limits);
 }
 
 ScrDyn *scr_worker_parent_port(void) {
@@ -1709,27 +2052,45 @@ static ScrArr *scr_worker_arguments(ScrStr *filename, ScrDyn *argv) {
   return arguments;
 }
 
-/* resourceLimits: Node reads the four numbers when the option is an object
- * and ignores other values. stackSizeMb sizes the thread's stack (at least
- * 192 KiB, as Node); the V8 heap limits are refused. */
-static bool scr_worker_stack_size(ScrDyn *limits, size_t *stack_size) {
+/* The resourceLimits option: the thread's stack size in bytes (0 = the
+ * default stack) and, always, the limits the Worker reports back in Node's
+ * key order (young, old, codeRange, stack). Node reports -1 for an unset
+ * V8 heap limit and 4 for an unset stack, and the option's own value
+ * otherwise; a non-positive stack size is the default. A compiled program
+ * has one heap for every thread, so the heap limits are answered and not
+ * enforced. */
+static bool scr_worker_limits(ScrDyn *limits, size_t *stack_size, double out[4]) {
+  out[0] = -1;
+  out[1] = -1;
+  out[2] = -1;
+  out[3] = 4;
   if (limits->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(limits);
-    bool ok = view && !scr_exc_pending() && scr_worker_stack_size(view, stack_size);
+    bool ok = view && !scr_exc_pending() && scr_worker_limits(view, stack_size, out);
     scr_dyn_release(view);
     return ok;
   }
   if (limits->kind != SCR_DYN_OBJ) return true;
-  static const char *const heap[] = {"maxOldGenerationSizeMb", "maxYoungGenerationSizeMb", "codeRangeSizeMb"};
+  static const char *const heap[] = {"maxYoungGenerationSizeMb", "maxOldGenerationSizeMb", "codeRangeSizeMb"};
   for (size_t i = 0; i < sizeof heap / sizeof heap[0]; i++) {
     const ScrDyn *value = scr_dyn_obj_get(limits, heap[i], strlen(heap[i]));
-    if (value && value->kind == SCR_DYN_NUM) {
-      scr_worker_refusal("Worker resourceLimits heap limits are not supported yet");
-      return false;
-    }
+    if (!value || value->kind != SCR_DYN_NUM) continue;
+    /* A compiled program has one heap for every thread, so a heap limit
+     * cannot be enforced. Requesting one is refused rather than accepted
+     * and ignored: a caller that asked for a memory bound must not get a
+     * worker that runs without one. The literal form of the same request
+     * is refused at build time (lowering's refuseHeapLimits); this answers
+     * the options object a program computes. */
+    char msg[192];
+    int len = snprintf(msg, sizeof msg,
+                       "worker threads share the process heap, so resourceLimits.%s cannot be enforced",
+                       heap[i]);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, "ERR_SCRIPTC_WORKER_HEAP_LIMITS");
+    return false;
   }
   const ScrDyn *megabytes = scr_dyn_obj_get(limits, "stackSizeMb", 11);
   if (megabytes && megabytes->kind == SCR_DYN_NUM && megabytes->v.num > 0) {
+    out[3] = megabytes->v.num;
     double bytes = megabytes->v.num * 1048576.0;
     if (bytes < 192.0 * 1024) bytes = 192.0 * 1024;
     *stack_size = bytes >= (double)(SIZE_MAX / 2) ? SIZE_MAX / 2 : (size_t)bytes;
@@ -1864,7 +2225,8 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
    * the process's own output by the dispatcher, as Node pipes it. */
   capture |= 3;
   size_t stack_size = 0;
-  if (!scr_worker_stack_size(limits, &stack_size)) return NULL;
+  double limits_out[4];
+  if (!scr_worker_limits(limits, &stack_size, limits_out)) return NULL;
   ScrArr *arguments = scr_worker_arguments(filename, argv);
   if (!arguments) return NULL;
   ScrContextEnv *environment;
@@ -1906,13 +2268,14 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
   /* The thread record owns the environment; a shared one is the retained
    * reference to the creating thread's environment. */
   ScrWorkerThread *thread = scr_worker_thread_start(sc_worker_entry, (uint32_t)root, wire, environment_data,
-                                                    scr_worker_events, arguments, stack_size, thread_name,
-                                                    capture, environment, share_environment);
+                                                    scr_worker_events, arguments, stack_size, limits_out,
+                                                    thread_name, capture, environment, share_environment);
   scr_str_release(thread_name);
   scr_arr_release(arguments);
   if (!thread) return NULL;
   ScrWorkerView *view = scr_worker_view_new(false);
   view->thread = thread;
+  memcpy(view->limits, limits_out, sizeof view->limits);
   for (int i = 0; i < 2; i++) {
     view->stdio_captured[i] = i == 0 ? option_stdout : option_stderr;
     /* without the stream unit nothing can read the stream: the output is dropped */

@@ -163,6 +163,10 @@ ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
 /* new BroadcastChannel(...args) (scr_worker_events.c): args is the argument
  * vector as one array (borrowed); may throw. */
 ScrDyn *scr_worker_broadcast_channel(ScrDyn *args);
+/* new MessagePort(...args) (scr_worker_events.c): Node's constructor always
+ * throws ERR_CONSTRUCT_CALL_INVALID; args is the argument vector as one
+ * array (borrowed). */
+ScrDyn *scr_worker_port_construct(ScrDyn *args);
 /* setEnvironmentData(key, value) and getEnvironmentData(key) (+1); both
  * borrow their arguments. */
 void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);

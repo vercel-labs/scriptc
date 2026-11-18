@@ -77,6 +77,9 @@ declare module "worker_threads" {
     prependListener(event: string, listener: (...args: any[]) => void): this;
     prependOnceListener(event: string, listener: (...args: any[]) => void): this;
     postMessage(value: unknown, transferList?: readonly unknown[]): void;
+    /* the worker thread's own CPU usage (process.threadCpuUsage's values),
+     * a rejection with ERR_WORKER_NOT_RUNNING before 'online' or after exit */
+    cpuUsage(prev?: { user: number; system: number }): Promise<{ user: number; system: number }>;
     ref(): void;
     unref(): void;
     terminate(): Promise<number>;
@@ -106,6 +109,9 @@ declare module "worker_threads" {
     ref(): void;
     unref(): void;
     hasRef(): boolean;
+    /* The EventTarget form of the events: a MessageEvent for 'message'. */
+    onmessage: ((event: MessageEvent) => void) | null;
+    onmessageerror: ((event: MessageEvent) => void) | null;
     removeAllListeners(event?: string): this;
     listenerCount(event: string, listener?: (...args: any[]) => void): number;
   }

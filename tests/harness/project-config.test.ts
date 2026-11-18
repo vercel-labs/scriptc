@@ -148,6 +148,10 @@ for (const [name, title] of [
     "child-held-exit-listeners",
     "a function passed by name as an exit or close listener keeps its number code under @types/node",
   ],
+  [
+    "async-resource",
+    "AsyncResource's constructor, runInAsyncScope, bind and static bind under @types/node",
+  ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
     const outDir = outDirFor(name);
@@ -268,6 +272,27 @@ test("node-types: dgram socket options under @types/node", async () => {
   const entry = join(nodeTypesDir, "dgram-options.ts");
   const result = await compile(entry, {
     outPath: join(outDir, process.platform === "win32" ? "dgram-options.exe" : "dgram-options"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: dgram.Socket members under @types/node", async () => {
+  const outDir = outDirFor("dgram-socket-members");
+  const entry = join(nodeTypesDir, "dgram-socket-members.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32" ? "dgram-socket-members.exe" : "dgram-socket-members",
+    ),
     outDir,
     sanitize,
   });

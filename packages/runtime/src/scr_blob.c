@@ -361,12 +361,21 @@ typedef struct ScrBlobChain {
 
 static bool scr_blob_chain_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
   ScrBlobChain *c = ctx;
-  /* Every file part is asked, even an empty one whose bytes the range walk
-   * never reaches: the part's own check is what turns a changed or removed
-   * file into NotReadableError. */
+  /* A read of the whole Blob asks every file part, an empty one included:
+   * the part's own check is what turns a changed or removed file into
+   * NotReadableError. A read of a window inside it (a slice, which shares
+   * this chain) asks only the file parts the window covers, so a slice of
+   * copied bytes does not depend on a file outside it. */
+  bool whole = off == 0 && len == c->len;
+  size_t at = 0;
   for (size_t i = 0; i < c->nsegs; i++) {
-    ScrBlobSource *source = c->segs[i].source;
-    if (source != NULL && !source->read(source->ctx, c->segs[i].source_off, 0, NULL)) return false;
+    ScrBlobSeg *seg = &c->segs[i];
+    bool asked = whole || (seg->len != 0 && at < off + len && off < at + seg->len);
+    if (asked && seg->source != NULL &&
+        !seg->source->read(seg->source->ctx, seg->source_off, 0, NULL)) {
+      return false;
+    }
+    at += seg->len;
   }
   size_t pos = 0, done = 0;
   for (size_t i = 0; i < c->nsegs && done < len; i++) {

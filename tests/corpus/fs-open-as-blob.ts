@@ -263,4 +263,31 @@ try {
   console.log("composed removed", (err as Error).name);
 }
 
+// 18. A slice of a composed Blob that holds only copied bytes does not
+// depend on the file parts outside it.
+const headFile = join(dir, "head-empty.bin");
+const tailFile = join(dir, "tail.bin");
+fs.writeFileSync(headFile, "");
+fs.writeFileSync(tailFile, "ABCDE");
+const composedFull = new Blob([
+  await fs.openAsBlob(headFile),
+  "tail",
+  await fs.openAsBlob(tailFile),
+]);
+const copiedOnly = composedFull.slice(0, 4);
+console.log(
+  "composed whole",
+  JSON.stringify(await composedFull.text()),
+  JSON.stringify(await copiedOnly.text()),
+);
+fs.rmSync(headFile);
+fs.rmSync(tailFile);
+console.log("copied slice", JSON.stringify(await copiedOnly.text()));
+try {
+  await composedFull.text();
+  console.log("composed after", "read");
+} catch (err) {
+  console.log("composed after", (err as Error).name);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });

@@ -67148,7 +67148,7 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }
@@ -67194,7 +67194,7 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }

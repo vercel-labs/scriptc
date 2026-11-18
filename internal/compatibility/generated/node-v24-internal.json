@@ -106185,7 +106185,7 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-dedicated:writeStream.getColorDepth",
         "tests": [
           "tests/corpus/tty-write-stream-color-methods.ts",
@@ -106242,7 +106242,7 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-dedicated:writeStream.hasColors",
         "tests": [
           "tests/corpus/tty-write-stream-color-methods.ts",

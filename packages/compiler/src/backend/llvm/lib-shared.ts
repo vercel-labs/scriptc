@@ -1017,6 +1017,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.accessorValue": "scr_insp_accessor_result",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
+  "insp.property": "scr_insp_property",
+  "insp.propChild": "scr_insp_prop_child",
   "insp.moreItems": "scr_insp_more_items",
   "insp.end": "scr_insp_end",
   "insp.nestedBegin": "scr_insp_nested_begin",

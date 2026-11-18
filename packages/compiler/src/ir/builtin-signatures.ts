@@ -6682,6 +6682,8 @@ function buildLibFnSignatures() {
      * The first is a record type, the second dyn (borrowed). Never throws. */
     "record.sourceNote": { argTypes: [null, DYN], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
+    "insp.property": { argTypes: [STRING, STRING, BOOL], result: STRING },
+    "insp.propChild": { argTypes: [BOOL], result: VOID },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },
     /** A nested inspect inside a custom rendering (PerformanceEntry's

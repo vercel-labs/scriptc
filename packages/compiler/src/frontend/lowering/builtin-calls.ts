@@ -2,6 +2,7 @@ import { lowerReadlineCursorCall } from "./builtins/readline.js";
 import {
   lowerFsPromisesWatchCall,
   lowerFsWatchFileCall,
+  lowerFsOpenAsBlobCall,
   lowerMkdtempDisposableCall,
 } from "./builtins/filesystem.js";
 import {
@@ -262,6 +263,10 @@ export function lowerBuiltinCall(
       expr,
       "the iterator is consumed by `for await (const info of fsPromises.watch(path, options))`, which is the only supported shape",
     );
+  }
+  // fs.openAsBlob: Node's Blob over a file's bytes, read on demand.
+  if (bi.module === "fs" && bi.member === "openAsBlob") {
+    return lowerFsOpenAsBlobCall(lowerer, expr, loc);
   }
   const fsLadder = lowerer.lowerFsLadderCall(expr, bi, loc);
   if (fsLadder) return fsLadder;

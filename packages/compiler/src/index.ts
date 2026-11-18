@@ -877,6 +877,7 @@ async function compileExecutableNative(
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.fsOpenAsBlob ? { fsOpenAsBlob: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),

@@ -4800,6 +4800,7 @@ function buildLibFnSignatures() {
       result: { kind: "promise", inner: MKDTEMPRESULT_T },
     },
     "fs.mkdtempDisposableSync": { argTypes: [STRING], result: MKDTEMPRESULT_T },
+    "fs.openAsBlob": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "mkdtempResult.path": { argTypes: [MKDTEMPRESULT_T], result: STRING },
     "mkdtempResult.remove": {
       argTypes: [MKDTEMPRESULT_T],

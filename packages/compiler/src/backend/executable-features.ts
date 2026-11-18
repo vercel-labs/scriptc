@@ -66,7 +66,7 @@ export function executableLinkFeatures(
     ...(features.zstd ? { zstd: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
-    dynInvoke: features.dynInvoke,
+    dynInvoke: features.dynInvoke || features.fsOpenAsBlob,
     dc: features.dc,
     dynAsync: features.dynAsync,
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
@@ -130,8 +130,9 @@ export function executableLinkFeatures(
     // (utilPromisify): both build their symbol in scr_symbol.c.
     symbol:
       features.symbol || features.inspectFunctionValue === true || features.utilPromisify === true,
+    ...(features.fsOpenAsBlob ? { fsOpenAsBlob: true } : {}),
     bigint: features.bigint,
-    ...(features.bigstats ? { bigstats: true } : {}),
+    ...(features.bigstats || features.fsOpenAsBlob ? { bigstats: true } : {}),
     searchParams: features.searchParams,
     qs: features.qs,
     utilPromisify: features.utilPromisify,

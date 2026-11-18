@@ -2203,6 +2203,9 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** fs.openAsBlob: the Blob over a file's bytes (scr_fs_blob.c), which
+   * reads the file on demand through the file handle unit. */
+  fsOpenAsBlob: rule({ fns: ["fs.openAsBlob"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
@@ -2781,6 +2784,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsOpenAsBlob: false,
     fnMemberProps: false,
     fsFlags: false,
     fsExistsValue: false,

@@ -27,6 +27,9 @@ typedef struct ScrBlobStore {
 typedef struct ScrBlob {
   size_t rc;
   ScrBlobStore *store;
+  /* Set instead of store when the bytes are produced on demand
+   * (fs.openAsBlob's file); off is then the byte offset in the source. */
+  ScrBlobSource *source;
   size_t off, len; /* this Blob's window into store */
   size_t nparts;
   size_t *parts; /* byte length of each part, in order; they sum to len */
@@ -54,6 +57,10 @@ static void scr_blob_release_v(void *h) {
   if (--b->rc) return;
   scr_weak_dispose_inline(b);
   scr_blob_store_release(b->store);
+  if (b->source && --b->source->rc == 0) {
+    if (b->source->release) b->source->release(b->source->ctx);
+    free(b->source);
+  }
   free(b->parts);
   scr_str_release(b->type);
   if (b->name) scr_str_release(b->name);
@@ -440,8 +447,13 @@ static ScrBlob *scr_blob_slice_of(ScrBlob *b, ScrDyn *const *args, size_t argc) 
   size_t from = (size_t)start;
   size_t span = end > start ? (size_t)(end - start) : 0;
   ScrBlob *out = scr_blob_alloc();
-  b->store->rc++;
-  out->store = b->store;
+  if (b->source) {
+    b->source->rc++;
+    out->source = b->source;
+  } else {
+    b->store->rc++;
+    out->store = b->store;
+  }
   out->off = b->off + from;
   out->len = span;
   out->type = type;
@@ -496,9 +508,27 @@ ScrDyn *scr_buffer_resolve_object_url(const ScrDyn *id) {
   return out;
 }
 
+/* NotReadableError: the source of a file-backed Blob changed or could not
+ * be read (Node's DOMException for exactly this). */
+static void scr_blob_not_readable(void) {
+  scr_throw_domex("NotReadableError", "The blob could not be read");
+}
+
+/* The blob's bytes (+1), or NULL with NotReadableError pending when a
+ * file-backed source no longer answers its range. */
 static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)b->len);
-  if (b->len) memcpy(bytes->data, b->store->data + b->off, b->len);
+  if (b->len) {
+    if (b->source) {
+      if (!b->source->read(b->source->ctx, b->off, b->len, bytes->data)) {
+        scr_bytes_release(bytes);
+        scr_blob_not_readable();
+        return NULL;
+      }
+    } else {
+      memcpy(bytes->data, b->store->data + b->off, b->len);
+    }
+  }
   return bytes;
 }
 
@@ -507,9 +537,29 @@ static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
 bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type) {
   ScrBlob *b = scr_blob_of(value);
   if (!b) return false;
-  *bytes = scr_blob_copy_bytes(b);
+  ScrBytes *copied = scr_blob_copy_bytes(b);
+  if (copied == NULL) return false; /* NotReadableError pending */
+  *bytes = copied;
   *type = b->type ? scr_str_retain(b->type) : NULL;
   return true;
+}
+
+/* A Blob over bytes another unit produces on demand (fs.openAsBlob): one
+ * part, Node's file blob shape — the size the source reported when the
+ * Blob was created. */
+ScrDyn *scr_blob_from_source(ScrBlobSource *source, double size, ScrStr *type) {
+  scr_blob_install();
+  ScrBlob *b = scr_blob_alloc();
+  b->source = source; /* moves the source's reference */
+  b->len = size > 0 ? (size_t)size : 0;
+  if (b->len) {
+    b->nparts = 1;
+    b->parts = malloc(sizeof *b->parts);
+    if (!b->parts) scr_trap("scriptc: out of memory\n");
+    b->parts[0] = b->len;
+  }
+  b->type = type ? scr_str_retain(type) : scr_str_new("", 0);
+  return scr_blob_box(b);
 }
 
 /* Settled `p` seen `turns` microtask turns later (consumes p). */
@@ -541,6 +591,12 @@ static ScrPromise *scr_blob_read(const ScrDyn *self, ScrBlobRead mode, bool boxe
     return p;
   }
   ScrBytes *bytes = scr_blob_copy_bytes(b);
+  if (bytes == NULL) {
+    /* A file-backed source that changed: Node rejects the read. */
+    ScrPromise *failed = scr_promise_new();
+    scr_promise_reject_pending(failed);
+    return failed;
+  }
   ScrPromise *p;
   size_t turns = scr_blob_read_turns(b);
   if (mode == SCR_BLOB_READ_TEXT) {
@@ -687,15 +743,41 @@ static void *scr_blob_share(void *h) {
   ScrBlob *b = h;
   ScrBlobPayload *payload = calloc(1, sizeof *payload);
   if (!payload) scr_trap("scriptc: out of memory\n");
-  payload->store = scr_blob_store_retain(b->store);
-  payload->off = b->off;
-  payload->len = b->len;
-  payload->last_modified = b->last_modified;
-  payload->nparts = b->nparts;
-  if (b->nparts && b->parts) {
-    payload->parts = malloc(b->nparts * sizeof *payload->parts);
-    if (!payload->parts) scr_trap("scriptc: out of memory\n");
-    memcpy(payload->parts, b->parts, b->nparts * sizeof *payload->parts);
+  if (b->store) {
+    payload->store = scr_blob_store_retain(b->store);
+    payload->off = b->off;
+    payload->len = b->len;
+    payload->last_modified = b->last_modified;
+    payload->nparts = b->nparts;
+    if (b->nparts && b->parts) {
+      payload->parts = malloc(b->nparts * sizeof *payload->parts);
+      if (!payload->parts) scr_trap("scriptc: out of memory\n");
+      memcpy(payload->parts, b->parts, b->nparts * sizeof *payload->parts);
+    }
+  } else {
+    /* A file-backed Blob (fs.openAsBlob) is read once for the transfer:
+     * the copy cannot consult the other thread's file source. A source
+     * that changed shares an empty blob rather than throwing here, as a
+     * transfer has no failure path. */
+    ScrBytes *bytes = scr_blob_copy_bytes(b);
+    if (scr_exc_pending()) { scr_exc_clear(); scr_bytes_release(bytes); bytes = NULL; }
+    size_t len = bytes ? (size_t)scr_bytes_byte_len(bytes) : 0;
+    ScrBlobStore *copy = malloc(sizeof *copy + len);
+    if (!copy) scr_trap("scriptc: out of memory\n");
+    copy->rc = 1;
+    copy->len = len;
+    if (len) memcpy(copy->data, bytes->data, len);
+    scr_bytes_release(bytes);
+    payload->store = copy;
+    payload->off = 0;
+    payload->len = len;
+    payload->last_modified = b->last_modified;
+    if (len) {
+      payload->nparts = 1;
+      payload->parts = malloc(sizeof *payload->parts);
+      if (!payload->parts) scr_trap("scriptc: out of memory\n");
+      payload->parts[0] = len;
+    }
   }
   payload->type = scr_blob_payload_text(b->type, &payload->type_len);
   payload->name = scr_blob_payload_text(b->name, &payload->name_len);

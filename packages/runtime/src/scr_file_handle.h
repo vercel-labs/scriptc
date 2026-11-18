@@ -52,6 +52,12 @@ void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
 typedef struct ScrStream ScrStream;
 ScrStream *scr_file_handle_read_stream(ScrFileHandle *h, ScrDyn *options);
 ScrStream *scr_file_handle_write_stream(ScrFileHandle *h, ScrDyn *options);
+/* fs.openAsBlob(path[, options]): Node's Blob over the file's bytes
+ * (scr_fs_blob.c) — the open and fstat happen here, so their errors throw
+ * at the call, and every read of the Blob re-checks the file's size and
+ * modification time. +1 promise of the Blob, or NULL with the exception
+ * pending. */
+ScrDyn *scr_fs_open_as_blob(ScrDyn *path, ScrDyn *options);
 ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_datasync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_truncate_promise(ScrFileHandle *h, double length);

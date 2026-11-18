@@ -27,6 +27,8 @@ export interface NativeLinkFeatures {
    * jsObjectModelFact ORs this fact into. */
   bigintBytes: boolean;
   fileHandle: boolean;
+  /** fs.openAsBlob: scr_fs_blob.c, the Blob unit over a file's reads. */
+  fsOpenAsBlob?: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
@@ -483,6 +485,7 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // listeners), so the iterator unit brings the checked-dynamic async unit
   // with it.
   { feature: "watchEvents", requires: ["watch", "dynAsync"] },
+  { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

@@ -3235,7 +3235,8 @@ enum {
   SCR_HTTP_EMIT_CLIENT_SOCKET = 8, /* ScrHttpClientReq: assigned socket */
   SCR_HTTP_EMIT_CLIENT_FINISH = 9, /* ScrHttpClientReq: outgoing body flushed */
   SCR_HTTP_EMIT_CLIENT_ABORT = 10, /* ScrHttpClientReq: abort() notification */
-  SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR = 11 /* ScrHttpClientReq: destroy(err) before a dial */
+  SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR = 11, /* ScrHttpClientReq: destroy(err) before a dial */
+  SCR_HTTP_EMIT_CLIENT_WAE = 12 /* ScrHttpClientReq: a write after end() */
 };
 
 typedef struct {
@@ -3251,6 +3252,7 @@ static void scr_http_client_settle(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_socket(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_finish(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_destroy_error(struct ScrHttpClientReq *c);
+static void scr_http_client_emit_write_after_end(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_abort(struct ScrHttpClientReq *c);
 
 /* Exit-time flag (set by the atexit cleanup, which runs BEFORE the net
@@ -3299,6 +3301,7 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_CLIENT_SOCKET:
   case SCR_HTTP_EMIT_CLIENT_FINISH:
   case SCR_HTTP_EMIT_CLIENT_ABORT:
+  case SCR_HTTP_EMIT_CLIENT_WAE:
   case SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR:
     scr_http_client_release_internal((struct ScrHttpClientReq *)e->h);
     break;
@@ -3524,6 +3527,9 @@ static void scr_http_proto_sweep(void) {
       break;
     case SCR_HTTP_EMIT_CLIENT_FINISH:
       scr_http_client_emit_finish((struct ScrHttpClientReq *)e.h);
+      break;
+    case SCR_HTTP_EMIT_CLIENT_WAE:
+      scr_http_client_emit_write_after_end((struct ScrHttpClientReq *)e.h);
       break;
     case SCR_HTTP_EMIT_CLIENT_ABORT:
       scr_http_client_emit_abort((struct ScrHttpClientReq *)e.h);
@@ -6736,6 +6742,10 @@ static bool scr_http_client_write_backpressure(ScrHttpClientReq *c);
 static void scr_http_client_maybe_drain(ScrHttpClientReq *c);
 
 bool scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
+  if (c->ended && !c->destroyed && !c->close_emitted) {
+    scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_WAE, scr_http_client_retain(c));
+    return false;
+  }
   scr_http_client_autocork(c);
   char *owned;
   const char *bytes = scr_str_utf8(data, &owned);
@@ -6745,6 +6755,10 @@ bool scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
 }
 
 bool scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/) {
+  if (c->ended && !c->destroyed && !c->close_emitted) {
+    scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_WAE, scr_http_client_retain(c));
+    return false;
+  }
   SCR_BYTES_SNAPSHOT(data);
   scr_http_client_autocork(c);
   scr_http_client_write_raw(c, (const char *)data->data, (data->len * scr_bytes_elem_size(data->elem)));
@@ -6968,6 +6982,26 @@ void scr_http_client_destroy(ScrHttpClientReq *c) {
   c->destroyed = true;
   /* a socket already back in the agent's pool belongs to the agent */
   if (c->sock && !c->sock_pooled) scr_net_sock_destroy(c->sock);
+}
+
+/* Node's write_(): a write after end() on a message that still has its
+ * socket answers ERR_STREAM_WRITE_AFTER_END, whose 'error' is uncaught when
+ * the caller has no listener. */
+static void scr_http_client_emit_write_after_end(struct ScrHttpClientReq *c) {
+  /* Node's deferred error: a message destroyed before the deferred call runs
+   * reports to the write callback only (the default callback is a noop, so
+   * nothing is emitted), and a settled message has no listeners left. */
+  if (c->destroyed || c->close_emitted) return;
+  ScrStr *text = scr_str_new("write after end", 15);
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, text);
+  scr_error_set_code(err, "ERR_STREAM_WRITE_AFTER_END");
+  ScrError *saved = scr_event_error_payload;
+  scr_event_error_payload = err;
+  c->had_error = true;
+  scr_net_fire_err(&c->err_ls, text);
+  scr_event_error_payload = saved;
+  scr_error_release(err);
+  scr_str_release(text);
 }
 
 static void scr_http_client_emit_destroy_error(ScrHttpClientReq *c) {

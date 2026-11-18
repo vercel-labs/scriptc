@@ -354,6 +354,8 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "webstream.toWebDuplex",
+  "webstream.toWebDuplexDyn",
   "readable.iterator",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
@@ -373,6 +375,9 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexifyReadable",
   "stream.duplexifyWritable",
   "stream.duplexifyPair",
+  "stream.duplexPair",
+  "stream.wrap",
+  "stream.wrapDyn",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -442,6 +447,8 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "webstream.toWebDuplex",
+  "webstream.toWebDuplexDyn",
   "readable.iterator",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
@@ -1954,6 +1961,8 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
+      "webstream.toWebDuplex",
+      "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
       // method value.
@@ -1988,7 +1997,14 @@ const RUNTIME_FEATURE_RULES = {
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
   streamDyn: rule({
-    fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
+    fns: [
+      "stream.dynNative",
+      "stream.dynNativePipe",
+      "stream.pipeDyn",
+      "stream.unpipeDyn",
+      "stream.wrapDyn",
+      "webstream.toWebDuplexDyn",
+    ],
   }),
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
@@ -2294,6 +2310,8 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
+      "webstream.toWebDuplex",
+      "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",

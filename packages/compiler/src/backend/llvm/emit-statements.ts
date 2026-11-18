@@ -1097,6 +1097,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.br(lc);
         B.startBlock(lc);
         enterLoopHeader(emitter, lc);
+        emitter.emitPositionForExpr(s.cond);
         B.condBr(emitter.emitCondition(s.cond), lb, exit);
         B.startBlock(lb);
         emitter.jumpTargets.push({
@@ -1149,6 +1150,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.br(lc);
         B.startBlock(lc);
         emitter.emitWorkerLoopCheck(workerBudget);
+        emitter.emitPositionForExpr(s.cond);
         B.condBr(emitter.emitCondition(s.cond), lb, exit);
       });
       B.startBlock(le);
@@ -1574,8 +1576,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.line(`${high} = load i64, ptr ${pairedSlots[1]}`);
           B.line(`${open} = icmp ${pairedLoop.inclusive ? "sle" : "slt"} i64 ${low}, ${high}`);
           B.condBr(open, lb, exit);
-        } else if (s.cond) B.condBr(emitter.emitCondition(s.cond), lb, exit);
-        else B.br(lb);
+        } else if (s.cond) {
+          emitter.emitPositionForExpr(s.cond);
+          B.condBr(emitter.emitCondition(s.cond), lb, exit);
+        } else B.br(lb);
         B.startBlock(lb);
         emitter.jumpTargets.push({
           kind: "loop",
@@ -1620,7 +1624,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               B.line(`${next} = add nsw i64 ${old}, ${counter.step}`);
               B.line(`store i64 ${next}, ptr ${pairedSlots[i]}`);
             });
-          } else if (s.update) emitter.emitStmt(s.update);
+          } else if (s.update) {
+            emitter.emitPositionForStmt(s.update);
+            emitter.emitStmt(s.update);
+          }
           B.br(lc, backEdge);
         }
       };

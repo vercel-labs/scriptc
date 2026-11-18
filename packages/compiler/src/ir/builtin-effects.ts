@@ -65,6 +65,11 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // t.error builds Node's wrapper over the failure through the inspect
   // unit's rendering, which can raise.
   "test.ctxError",
+  // The accessor descriptor walk can throw (a fenced class reflection, a
+  // throwing getter trap), and the accessor requirement throws Node's
+  // ERR_INVALID_ARG_VALUE for a missing method.
+  "test.accessorDescriptor",
+  "test.accessorRequire",
   "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
@@ -685,6 +690,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
   "webstream.toWebReadableDyn",
+  "webstream.toWebDuplexDyn",
+  // The option walk behind duplexPair throws the not-supported Error for an
+  // option it cannot apply; wrap refuses a stream that already carries native
+  // state and wrapDyn a value that is not a native readable stream.
+  "stream.duplexPair",
+  "stream.wrap",
+  "stream.wrapDyn",
   "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",

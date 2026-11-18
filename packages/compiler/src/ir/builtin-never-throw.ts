@@ -189,6 +189,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Writable.toWeb builds the sink object and the web WritableStream over it;
   // the sink's functions run later, on the web stream's calls.
   "webstream.writableToWeb",
+  // Duplex.toWeb builds both adapters over the duplex; their functions run
+  // later, on the web streams' calls.
+  "webstream.toWebDuplex",
   // stream.getDefaultHighWaterMark reads the runtime's default for the mode:
   // no allocation, no coercion and no program code.
   "stream.getDefaultHwm",
@@ -240,6 +243,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_insp_numeric_separator stores one flag and answers its previous
   // value.
   "insp.numericSeparator",
+  // scr_insp_prop_child stores one flag; scr_insp_property builds a string.
+  "insp.propChild",
+  "insp.property",
   // scr_worker_share_env answers the thread's SHARE_ENV symbol and makes it
   // on first use; it takes no argument, and running out of memory ends the
   // process.

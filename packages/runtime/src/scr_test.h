@@ -67,6 +67,12 @@ void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags
  * carried the property; a shortfall then waits that many ms for the
  * assertions still running before it fails. */
 void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait);
+/* mock.getter/mock.setter: the accessor's descriptor along the object's
+ * prototype chain (+1; undefined without one), and Node's check that the
+ * descriptor carries the accessor the mock replaces (throws
+ * ERR_INVALID_ARG_VALUE otherwise). */
+ScrDyn *scr_test_accessor_descriptor(ScrDyn *object, ScrDyn *key);
+void scr_test_accessor_require(ScrDyn *descriptor, bool setter);
 /* mock.fn's and mock.method's { times }: Node's non-negative-integer check,
  * which throws ERR_OUT_OF_RANGE; answers the count. */
 double scr_test_mock_times_checked(double times);

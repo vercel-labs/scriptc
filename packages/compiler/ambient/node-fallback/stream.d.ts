@@ -230,6 +230,11 @@ declare module "stream" {
     resume(): this;
     isPaused(): boolean;
     setEncoding(encoding: string): this;
+    /* Reads the old-style stream into this one: its 'data' chunks are
+     * pushed (pausing it while this readable is full), its 'end' ends this
+     * one, and its 'error' destroys it. The source must be a native
+     * readable stream. */
+    wrap(stream: Readable): this;
     pipe<T extends NodeJS.WritableStream>(destination: T, options?: { end?: boolean }): T;
     unpipe(destination?: NodeJS.WritableStream): this;
     destroy(error?: Error): this;
@@ -452,6 +457,15 @@ declare module "stream" {
     /* Duplex.from: an async generator function, an iterable, a string or
      * a stream (duplexify.js). */
     static from(body: unknown): Duplex;
+    /* The web { writable, readable } pair over this duplex: a writer's
+     * write() completes when the duplex accepts the chunk and rejects with
+     * its error when that write fails, and the readable side ends with the
+     * duplex. The result is `any`: Duplex here extends Readable, so a pair
+     * return type would make typeof Duplex — and every stream subclass in a
+     * `(typeof Readable)[]` — fail against Readable.toWeb's ReadableStream.
+     * The lowering answers a checked-dynamic pair, so member reads stay
+     * dynamic. The options have no lowering yet. */
+    static toWeb(streamDuplex: Duplex, options?: {}): any;
     constructor(opts: ObjectDuplexOptions);
     constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);
@@ -606,6 +620,9 @@ declare module "stream" {
   /* compose(...streams): a Duplex that writes to the first stage and
    * reads from the last, with the stages running as a pipeline. */
   function compose(...streams: ComposeStage[]): Duplex;
+  /* Two Duplexes connected to each other: whatever one is written, the
+   * other reads. A write completes once the other side reads the chunk. */
+  function duplexPair(options?: DuplexOptions): [Duplex, Duplex];
   /* finished's options: readable/writable choose which ends count,
    * error: false ignores 'error' events, signal aborts the wait. */
   interface FinishedOptions {
@@ -670,6 +687,7 @@ declare module "stream" {
     addAbortSignal,
     pipeline,
     compose,
+    duplexPair,
     finished,
     getDefaultHighWaterMark,
     setDefaultHighWaterMark,

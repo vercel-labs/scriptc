@@ -492,6 +492,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // with it.
   { feature: "watchEvents", requires: ["watch", "dynAsync"] },
   { feature: "fsWebStream", requires: ["fileHandle"] },
+  // scr_stream_dyn.c tests values and calls JavaScript stream members through
+  // the dyn-invoke unit (the checked-dynamic stream slots).
+  { feature: "streamDyn", requires: ["dynInvoke"] },
   { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
 ];
 

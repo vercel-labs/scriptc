@@ -7147,6 +7147,10 @@ ScrDyn *scr_stream_chunk_value(ScrStream *s, ScrBytes *chunk) {
   return scr_dyn_new_buffer(chunk);
 }
 
+const ScrStreamTypedDesc *scr_stream_write_desc(const ScrStream *s) {
+  return s != NULL && s->st != NULL ? s->st->w.cur_desc : NULL;
+}
+
 void *scr_stream_chunk_typed(ScrStream *s, ScrBytes *chunk, const ScrStreamTypedDesc *desc) {
   const ScrStreamTypedDesc *cur = s->st->w.cur_desc;
   return cur && scr_stream_desc_same(cur, desc) ? desc->retain(chunk) : NULL;

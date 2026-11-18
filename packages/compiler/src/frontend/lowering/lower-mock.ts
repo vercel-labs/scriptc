@@ -33,7 +33,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import { boolLit, countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { mockContextType } from "../mock-shapes.js";
 import { findMethodOn, type ClassInfo } from "./lower-classes.js";
@@ -1260,6 +1260,467 @@ export function lowerMockMethod(
   const wrapper = varRef(wrapperLocal.id, fn!, loc);
   defineMockProps(lowerer, stmts, call, wrapper, ctx(), loc);
   return { kind: "seqExpr", stmts, result: wrapper, type: fn!, loc };
+}
+
+/** The function type a property accessor mock has: the getter takes no
+ * arguments and answers the property's type, the setter takes it and
+ * answers nothing. Null when the object's static type does not declare the
+ * property or its type has no lowering. */
+function mockAccessorFnType(
+  lowerer: Lowerer,
+  objectNode: ts.Expression,
+  field: string,
+  kind: "get" | "set",
+): FuncType | null {
+  const objectType = lowerer.checker.getNonNullableType(lowerer.typeOf(objectNode));
+  const property = lowerer.checker.getPropertyOfType(objectType, field);
+  if (property === undefined) return null;
+  const propertyTs = lowerer.checker.getTypeOfSymbolAtLocation(property, objectNode);
+  const propertyType = lowerer.mapTypeOf(propertyTs);
+  if (propertyType === null) return null;
+  return kind === "get"
+    ? { kind: "func", params: [], ret: propertyType }
+    : { kind: "func", params: [propertyType], ret: VOID };
+}
+
+/** `%mock.unmock.accessor.N(object, key, descriptor)`: the closure that
+ * puts the original property descriptor back, which restores the accessor
+ * the mock replaced. */
+function mockAccessorUnmockFactory(lowerer: Lowerer, ctxType: IrType, loc: SrcLoc): string {
+  return liftOnce(lowerer, ctxType, "unmockAccessor", (name) => {
+    const impl = `${name}.impl`;
+    const captures = [
+      { localId: "obj.0", name: "object", type: DYN },
+      { localId: "key.0", name: "key", type: DYN },
+      { localId: "desc.0", name: "descriptor", type: DYN },
+    ];
+    const boxedLocals = captures.map((c) => boxedLocal(c.localId, c.name, c.type));
+    lowerer.liftedFns.push({
+      name: impl,
+      params: [],
+      returnType: VOID,
+      captures,
+      locals: [...boxedLocals, { id: "out.0", name: "restored", type: DYN, mutable: false }],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "out.0",
+          init: {
+            kind: "libCall",
+            fn: "dyn.defineProperty",
+            args: [
+              varRef("obj.0", DYN, loc),
+              varRef("key.0", DYN, loc),
+              varRef("desc.0", DYN, loc),
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: captures,
+      returnType: RESTORE_FN,
+      locals: boxedLocals,
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "closure",
+            fnName: impl,
+            captures: ["obj.0", "key.0", "desc.0"],
+            type: RESTORE_FN,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  });
+}
+
+/** mock.getter/mock.setter on a typed object literal: the record stores the
+ * accessor in a %get:name / %set:name slot of a function type, and every
+ * read or write of the property calls that slot, so replacing it with the
+ * mock (and restore() writing the original back) intercepts the property. */
+function lowerMockAccessorRecord(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  what: string,
+  tracker: MockTracker,
+  objectValue: IrExpr,
+  objectNode: ts.Expression,
+  field: string,
+  implementationNode: ts.Expression,
+  timesOption: { times: IrExpr; check: IrStmt[] },
+  kind: "get" | "set",
+): IrExpr {
+  const loc = locOf(call);
+  const record = objectValue.type as IrType & { kind: "record" };
+  const slotName = kind === "get" ? `%get:${field}` : `%set:${field}`;
+  const shape = lowerer.shapes.get(record.shapeId);
+  const slot = shape?.fields.find((f) => f.name === slotName);
+  if (!slot || slot.type.kind !== "func") {
+    lowerer.noLowering(
+      `${what} of '${field}'`,
+      objectNode,
+      "the object's type declares no such accessor; Node throws ERR_INVALID_ARG_VALUE (\"The argument 'methodName' must be a method. Received undefined\") when the property is not an accessor",
+    );
+  }
+  const fn = slot.type;
+  const ctxType = mockContextType(fn, lowerer.typeCtx);
+  if (!ctxType || !isMockContextType(lowerer, ctxType)) {
+    lowerer.noLowering(
+      `${what} of a '${lowerer.fmt(fn)}' accessor`,
+      call,
+      "mock accessors lower for properties whose type has a function form with fixed parameters",
+    );
+  }
+  const fields = mockContextFields(lowerer, ctxType!)!;
+  if (kind === "get") requireUndefinedResultArm(lowerer, fields, call, what);
+  const stmts: IrStmt[] = [];
+  const objLocal = lowerer.declareHiddenLocal("%mockObject", record);
+  const obj = () => varRef(objLocal.id, record, loc);
+  stmts.push({ kind: "varDecl", localId: objLocal.id, init: objectValue, loc });
+  /* The arguments evaluate before the mock is set up (Node's method()
+   * reads the current accessor only after them). */
+  const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: implLocal.id,
+    init: lowerer.lowerExprExpecting(implementationNode, fn),
+    loc,
+  });
+  stmts.push(...timesOption.check);
+  const originalLocal = lowerer.declareHiddenLocal("%mockOriginal", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: originalLocal.id,
+    init: recordGet(obj(), slotName, fn, loc),
+    loc,
+  });
+  const unmock: IrExpr = {
+    kind: "call",
+    callee: mockUnmockFactory(lowerer, ctxType!, record, slotName, loc),
+    args: [obj(), varRef(originalLocal.id, fn, loc)],
+    type: RESTORE_FN,
+    loc,
+  };
+  const ctxLocal = lowerer.declareHiddenLocal("%mockContext", ctxType!);
+  const ctx = () => varRef(ctxLocal.id, ctxType!, loc);
+  stmts.push(
+    {
+      kind: "varDecl",
+      localId: ctxLocal.id,
+      init: mockContextLiteral(
+        ctxType!,
+        fields,
+        varRef(implLocal.id, fn, loc),
+        varRef(originalLocal.id, fn, loc),
+        [unmock],
+        timesOption.times,
+        loc,
+      ),
+      loc,
+    },
+    trackMock(lowerer, tracker, ctxType!, ctx(), loc),
+  );
+  const wrapperLocal = lowerer.declareHiddenLocal("%mockWrapper", fn);
+  stmts.push({
+    kind: "varDecl",
+    localId: wrapperLocal.id,
+    init: {
+      kind: "call",
+      callee: mockWrapperFactory(lowerer, ctxType!, loc),
+      args: [ctx()],
+      type: fn,
+      loc,
+    },
+    loc,
+  });
+  stmts.push(recordSet(obj(), slotName, varRef(wrapperLocal.id, fn, loc), loc));
+  defineMockProps(lowerer, stmts, call, varRef(wrapperLocal.id, fn, loc), ctx(), loc);
+  return { kind: "seqExpr", stmts, result: varRef(wrapperLocal.id, fn, loc), type: fn, loc };
+}
+
+/** mock.getter/mock.setter (and mock.method with { getter }/{ setter }) on
+ * an object held as a checked-dynamic value: Node redefines the property
+ * with the mock as its accessor, keeping the original descriptor for
+ * restore(). The object's accessors live in the checked-dynamic property
+ * machinery here (an object literal with accessors is that object), so the
+ * descriptor rewrite intercepts every read and write of the property. */
+function lowerMockAccessorCore(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  what: string,
+  tracker: MockTracker,
+  objectNode: ts.Expression,
+  field: string,
+  implementationNode: ts.Expression,
+  timesOption: { times: IrExpr; check: IrStmt[] },
+  kind: "get" | "set",
+): IrExpr {
+  const loc = locOf(call);
+  const objectValue = lowerer.lowerExpr(objectNode);
+  if (objectValue.type.kind === "record") {
+    /* A typed object literal inside a function is a record with accessor
+     * slots (%get:name / %set:name); the mock replaces the slot, which every
+     * read and write of the property calls. */
+    return lowerMockAccessorRecord(
+      lowerer,
+      call,
+      what,
+      tracker,
+      objectValue,
+      objectNode,
+      field,
+      implementationNode,
+      timesOption,
+      kind,
+    );
+  }
+  if (objectValue.type.kind !== "dyn" && objectValue.type.kind !== "jsval") {
+    lowerer.noLowering(
+      `${what} on this object`,
+      objectNode,
+      "a property accessor mock lowers for an object held as a checked-dynamic value (an object literal with accessors, or an untyped object); a static record's or a class instance's property cannot be intercepted",
+    );
+  }
+  /* The accessor's function type comes from the object's declaration; an
+   * untyped object (a JavaScript value) has none, so the implementation's
+   * own type stands for it — Node calls that function for the property
+   * either way. */
+  let fn = mockAccessorFnType(lowerer, objectNode, field, kind);
+  let loweredImpl: IrExpr | null = null;
+  if (fn === null) {
+    loweredImpl = lowerer.lowerExpr(implementationNode);
+    if (loweredImpl.type.kind !== "func") {
+      lowerer.noLowering(
+        `${what} with this implementation`,
+        implementationNode,
+        "pass the accessor's function as the implementation",
+      );
+    }
+    fn = loweredImpl.type;
+  }
+  const ctxType = mockContextType(fn!, lowerer.typeCtx);
+  if (!ctxType || !isMockContextType(lowerer, ctxType)) {
+    lowerer.noLowering(
+      `${what} of a '${lowerer.fmt(fn!)}' accessor`,
+      call,
+      "mock accessors lower for properties whose type has a function form with fixed parameters",
+    );
+  }
+  const fields = mockContextFields(lowerer, ctxType!)!;
+  if (kind === "get") requireUndefinedResultArm(lowerer, fields, call, what);
+  const stmts: IrStmt[] = [];
+  const objLocal = lowerer.declareHiddenLocal("%mockObject", DYN);
+  const obj = () => varRef(objLocal.id, DYN, loc);
+  stmts.push({
+    kind: "varDecl",
+    localId: objLocal.id,
+    init:
+      objectValue.type.kind === "dyn" ? objectValue : lowerer.coerceToExpected(objectValue, DYN),
+    loc,
+  });
+  const keyLocal = lowerer.declareHiddenLocal("%mockKey", DYN);
+  const key = () => varRef(keyLocal.id, DYN, loc);
+  stmts.push({
+    kind: "varDecl",
+    localId: keyLocal.id,
+    init: lowerer.coerceToExpected(strLit(field, loc), DYN),
+    loc,
+  });
+  /* The call's arguments evaluate before Node's method() runs: the
+   * implementation (and the options' times check) come before the accessor
+   * lookup, so their side effects are never skipped by a rejection and the
+   * descriptor read is not stale. */
+  const implLocal = lowerer.declareHiddenLocal("%mockImplementation", fn!);
+  stmts.push({
+    kind: "varDecl",
+    localId: implLocal.id,
+    init: loweredImpl ?? lowerer.lowerExprExpecting(implementationNode, fn!),
+    loc,
+  });
+  stmts.push(...timesOption.check);
+  /* The original descriptor the restore() closure redefines, and a second
+   * copy the mock rewrites and installs (Node keeps the original intact). */
+  const originalDesc = lowerer.declareHiddenLocal("%mockOriginalDescriptor", DYN);
+  const mockDesc = lowerer.declareHiddenLocal("%mockDescriptor", DYN);
+  for (const slot of [originalDesc, mockDesc]) {
+    stmts.push({
+      kind: "varDecl",
+      localId: slot.id,
+      init: {
+        kind: "libCall",
+        fn: "test.accessorDescriptor",
+        args: [obj(), key()],
+        type: DYN,
+        loc,
+      },
+      loc,
+    });
+  }
+  /* Node finds the accessor on the prototype chain and requires it to be a
+   * function: a data property, or the opposite half of an accessor pair,
+   * throws ERR_INVALID_ARG_VALUE before the mock exists. */
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "test.accessorRequire",
+      args: [varRef(originalDesc.id, DYN, loc), boolLit(kind === "set", loc)],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  const unmock: IrExpr = {
+    kind: "call",
+    callee: mockAccessorUnmockFactory(lowerer, ctxType!, loc),
+    args: [obj(), key(), varRef(originalDesc.id, DYN, loc)],
+    type: RESTORE_FN,
+    loc,
+  };
+  const ctxLocal = lowerer.declareHiddenLocal("%mockContext", ctxType!);
+  const ctx = () => varRef(ctxLocal.id, ctxType!, loc);
+  stmts.push(
+    {
+      kind: "varDecl",
+      localId: ctxLocal.id,
+      init: mockContextLiteral(
+        ctxType!,
+        fields,
+        varRef(implLocal.id, fn!, loc),
+        varRef(implLocal.id, fn!, loc),
+        [unmock],
+        timesOption.times,
+        loc,
+      ),
+      loc,
+    },
+    trackMock(lowerer, tracker, ctxType!, ctx(), loc),
+  );
+  const wrapperLocal = lowerer.declareHiddenLocal("%mockWrapper", fn!);
+  stmts.push({
+    kind: "varDecl",
+    localId: wrapperLocal.id,
+    init: {
+      kind: "call",
+      callee: mockWrapperFactory(lowerer, ctxType!, loc),
+      args: [ctx()],
+      type: fn!,
+      loc,
+    },
+    loc,
+  });
+  const wrapper = () => varRef(wrapperLocal.id, fn!, loc);
+  const boxedLocal = lowerer.declareHiddenLocal("%mockAccessor", DYN);
+  stmts.push({
+    kind: "varDecl",
+    localId: boxedLocal.id,
+    init: lowerer.coerceToExpected(wrapper(), DYN),
+    loc,
+  });
+  stmts.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "dyn.keySet",
+      args: [
+        varRef(mockDesc.id, DYN, loc),
+        strLit(kind === "get" ? "get" : "set", loc),
+        varRef(boxedLocal.id, DYN, loc),
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  });
+  const installed = lowerer.declareHiddenLocal("%mockInstalled", DYN);
+  stmts.push({
+    kind: "varDecl",
+    localId: installed.id,
+    init: {
+      kind: "libCall",
+      fn: "dyn.defineProperty",
+      args: [obj(), key(), varRef(mockDesc.id, DYN, loc)],
+      type: DYN,
+      loc,
+    },
+    loc,
+  });
+  defineMockProps(lowerer, stmts, call, wrapper(), ctx(), loc);
+  return { kind: "seqExpr", stmts, result: wrapper(), type: fn!, loc };
+}
+
+/** mock.getter(object, name, implementation[, options]) and its setter
+ * twin. The implementation is required: calling the original accessor
+ * through the mock is not lowered. */
+export function lowerMockAccessor(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  what: string,
+  tracker: MockTracker,
+  kind: "get" | "set",
+): IrExpr {
+  const loc = locOf(call);
+  const args = call.arguments.nodes;
+  if (args.length < 2 || args.length > 4 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `${what} with ${args.length} arguments`,
+      call,
+      "the supported forms are mock.getter(object, methodName, implementation) and the same with a trailing { times } options object",
+    );
+  }
+  const nameArg = args[1]!;
+  if (!ts.isStringLiteralLike(nameArg)) {
+    lowerer.noLowering(
+      `${what} with a computed property name`,
+      nameArg,
+      "pass the property name as a string literal",
+    );
+  }
+  const field = (nameArg as ts.StringLiteralLike).text;
+  const isOptions = (arg: ts.Expression | undefined): boolean =>
+    arg !== undefined &&
+    ts.isObjectLiteralExpression(arg) &&
+    lowerer.checker.getCallSignatures(lowerer.typeOf(arg)).length === 0;
+  const trailing = args[2];
+  const implementationNode = trailing === undefined || isOptions(trailing) ? undefined : trailing;
+  const optionsNode = args.length === 4 ? args[3] : isOptions(trailing) ? trailing : undefined;
+  if (args.length === 4 && trailing !== undefined && isOptions(trailing)) {
+    lowerer.noLowering(
+      `${what} with an options object before its implementation`,
+      trailing,
+      "pass the implementation, then the { times } options object",
+    );
+  }
+  if (implementationNode === undefined) {
+    lowerer.noLowering(
+      `${what} without an implementation`,
+      call,
+      `pass the ${kind === "get" ? "getter" : "setter"} function as the third argument (calling the original accessor through the mock is not lowered)`,
+    );
+  }
+  const timesOption = mockTimesOption(lowerer, optionsNode, what, loc);
+  return lowerMockAccessorCore(
+    lowerer,
+    call,
+    what,
+    tracker,
+    args[0]!,
+    field,
+    implementationNode,
+    timesOption,
+    kind,
+  );
 }
 
 /** The trackers' restoreAll() and reset(): `mock.restoreAll()`,

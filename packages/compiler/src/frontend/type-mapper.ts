@@ -5,6 +5,7 @@ import { CRYPTO_CONSTANTS } from "./lowering/crypto-tables.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
+import { isFallbackDtsPath } from "./dts-paths.js";
 import type { EnumObjectEntry } from "./enum-object-layout.js";
 import type {
   IrRecordField,
@@ -2739,7 +2740,9 @@ function isWorkerHandleSymbol(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-        isDeclaredInAmbientModule(d, "worker_threads"),
+        (isDeclaredInAmbientModule(d, "worker_threads") ||
+          (ts.symbolName(symbol) === "BroadcastChannel" &&
+            isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName))),
     )
   );
 }

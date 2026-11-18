@@ -14,5 +14,6 @@ second.onmessage = (event) => {
 first.postMessage("hello");
 await new Promise((resolve) => setTimeout(resolve, 10));
 console.log("broadcast", seen.join(","), first.name, second.name);
+console.log("ref", first.ref().unref() === first, second.ref() === second);
 first.close();
 second.close();

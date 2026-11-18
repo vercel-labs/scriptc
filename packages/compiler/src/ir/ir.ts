@@ -2065,6 +2065,17 @@ export function isDirentShape(shape: IrRecordShape): boolean {
  * perfEntryShape). */
 export const PERF_ENTRY_MARKER = "%perfEntry";
 
+/** PerformanceEntry's toJSON field order (the entry row's shape also
+ * carries the resource-timing fields; JSON.stringify runs the entry's
+ * toJSON, so only these serialize). */
+export const PERF_ENTRY_JSON_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "detail",
+] as const;
+
 /** perf_hooks entry rows: the marker field names the shape (nothing else
  * interns a '%perfEntry' field; user object literals with a '%' key get a
  * shape of their own, as the spread fence assumes). A dyn conversion of

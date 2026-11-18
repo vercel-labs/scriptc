@@ -730,6 +730,16 @@ function buildLibFnSignatures() {
     "perf.entryStart": { argTypes: [F64], result: F64 },
     "perf.entryDuration": { argTypes: [F64], result: F64 },
     "perf.entryDetail": { argTypes: [F64], result: DYN },
+    /** performance.markResourceTiming: the call's dyn argument vector in,
+     * the resource entry (view index 0) out (MAY THROW). clearResourceTimings
+     * and setResourceTimingBufferSize take their argument vector too.
+     * entryResourceNum/Str read a view entry's resource fields by the
+     * selector order builtins/performance.ts defines. */
+    "perf.resourceMark": { argTypes: [DYN], result: F64 },
+    "perf.resourceClear": { argTypes: [DYN], result: VOID },
+    "perf.resourceBufferSize": { argTypes: [DYN], result: VOID },
+    "perf.entryResourceNum": { argTypes: [F64, F64], result: F64 },
+    "perf.entryResourceStr": { argTypes: [F64, F64], result: STRING },
     "perf.entryKeep": { argTypes: [DYN], result: VOID },
     "perf.entryRef": { argTypes: [F64], result: DYN },
     /** new PerformanceMark(name, options?): Node's constructor (MAY

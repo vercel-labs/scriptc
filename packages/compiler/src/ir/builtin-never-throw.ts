@@ -104,6 +104,11 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // The resource-timing field accessors read a view entry's own numbers and
+  // strings; no program code runs.
+  "perf.entryResourceNum",
+  "perf.entryResourceStr",
+
   // publish runs every subscriber and catches its throw: like Node's
   // process.nextTick(triggerUncaughtException), the exception is delivered
   // on a later tick instead of leaving the call, so publish itself raises

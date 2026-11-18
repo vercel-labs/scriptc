@@ -1944,6 +1944,35 @@ declare module "node:perf_hooks" {
     ): void;
     takeRecords(): PerformanceEntry[];
   }
+  export class PerformanceResourceTiming extends PerformanceEntry {
+    readonly entryType: "resource";
+    protected constructor();
+    readonly initiatorType: string;
+    readonly nextHopProtocol: string;
+    readonly workerStart: number;
+    readonly redirectStart: number;
+    readonly redirectEnd: number;
+    readonly fetchStart: number;
+    readonly domainLookupStart: number;
+    readonly domainLookupEnd: number;
+    readonly connectStart: number;
+    readonly connectEnd: number;
+    readonly secureConnectionStart: number;
+    readonly requestStart: number;
+    readonly finalResponseHeadersStart: number;
+    readonly firstInterimResponseStart: number;
+    readonly responseStart: number;
+    readonly responseEnd: number;
+    readonly transferSize: number;
+    readonly encodedBodySize: number;
+    readonly decodedBodySize: number;
+    readonly deliveryType: string;
+    readonly responseStatus: number;
+    readonly renderBlockingStatus: string;
+    readonly contentType: string;
+    readonly contentEncoding: string;
+    toJSON(): any;
+  }
   export interface MarkOptions {
     detail?: unknown | undefined;
     startTime?: number | undefined;
@@ -1966,6 +1995,22 @@ declare module "node:perf_hooks" {
     getEntriesByType(type: EntryType): PerformanceEntry[];
     clearMarks(name?: string): void;
     clearMeasures(name?: string): void;
+    /* The resource timeline: markResourceTiming builds a
+     * PerformanceResourceTiming from fetch timing info and buffers it;
+     * clearResourceTimings removes all entries (or one name), and
+     * setResourceTimingBufferSize sets the buffer limit (250 by default). */
+    clearResourceTimings(name?: string): void;
+    markResourceTiming(
+      timingInfo: object,
+      requestedUrl: string,
+      initiatorType: string,
+      global: object,
+      cacheMode: "" | "local",
+      bodyInfo: object,
+      responseStatus: number,
+      deliveryType?: string,
+    ): PerformanceResourceTiming;
+    setResourceTimingBufferSize(maxSize: number): void;
     /* performance.toJSON(): nodeTiming, timeOrigin and the event-loop
      * utilization, in that key order. */
     toJSON(): any;
@@ -2053,6 +2098,7 @@ declare var PerformanceMark: typeof import("node:perf_hooks").PerformanceMark;
 declare var PerformanceMeasure: typeof import("node:perf_hooks").PerformanceMeasure;
 declare var PerformanceObserver: typeof import("node:perf_hooks").PerformanceObserver;
 declare var PerformanceObserverEntryList: typeof import("node:perf_hooks").PerformanceObserverEntryList;
+declare var PerformanceResourceTiming: typeof import("node:perf_hooks").PerformanceResourceTiming;
 
 /* Node 24's navigator global (no import needed): the platform facts a
  * browser exposes, over Node's own values. hardwareConcurrency is

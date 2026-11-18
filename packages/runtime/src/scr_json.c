@@ -3516,6 +3516,7 @@ static SCR_TL ScrDyn *scr_dyn_perf_entry_base_proto;
 static SCR_TL ScrDyn *scr_dyn_perf_mark_proto;
 static SCR_TL ScrDyn *scr_dyn_perf_measure_proto;
 static SCR_TL ScrDyn *scr_dyn_perf_node_timing_proto;
+static SCR_TL ScrDyn *scr_dyn_perf_resource_proto;
 
 /* PerformanceNodeTiming.prototype.toJSON: a plain object with the eleven
  * fields Node's toJSON answers, uvMetricsInfo left out. */
@@ -3543,6 +3544,71 @@ static ScrDyn *scr_dyn_perf_node_timing_to_json(ScrClosure *closure, ScrDyn *con
   return result;
 }
 
+/* PerformanceEntry.prototype.toJSON (marks and measures include detail;
+ * resource timings answer their timing fields in Node's order instead). A
+ * checked-dynamic JSON.stringify therefore serializes the entry's own
+ * fields, never the extra ones the shared record carries for the other
+ * entry classes. */
+static ScrDyn *scr_dyn_perf_entry_to_json(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  static const char *const base[] = {"name", "entryType", "startTime", "duration"};
+  static const char *const resource[] = {
+      "initiatorType", "nextHopProtocol", "workerStart", "redirectStart",
+      "redirectEnd", "fetchStart", "domainLookupStart", "domainLookupEnd",
+      "connectStart", "connectEnd", "secureConnectionStart", "requestStart",
+      "finalResponseHeadersStart", "firstInterimResponseStart", "responseStart",
+      "responseEnd", "transferSize", "encodedBodySize", "decodedBodySize",
+      "deliveryType", "responseStatus", "renderBlockingStatus", "contentType",
+      "contentEncoding"};
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *view = self && self->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(self) : NULL;
+  if (self && !view && scr_exc_pending()) {
+    scr_dyn_release(self);
+    return NULL;
+  }
+  const ScrDyn *source = view ? view : self;
+  ScrDyn *result = scr_dyn_new_obj();
+  ScrDyn *entry_type = NULL;
+  for (size_t i = 0; i < sizeof base / sizeof base[0] && result != NULL; i++) {
+    ScrDyn *value = scr_dyn_obj_read(source, base[i], strlen(base[i]));
+    if (value == NULL) {
+      scr_dyn_release(result);
+      result = NULL;
+      break;
+    }
+    if (strcmp(base[i], "entryType") == 0) entry_type = scr_dyn_retain(value);
+    scr_dyn_obj_set(result, base[i], strlen(base[i]), value);
+  }
+  bool is_resource = entry_type && entry_type->kind == SCR_DYN_STR &&
+                     entry_type->v.str->len == 8 &&
+                     memcmp(entry_type->v.str->data, "resource", 8) == 0;
+  scr_dyn_release(entry_type);
+  if (result != NULL && is_resource) {
+    for (size_t i = 0; i < sizeof resource / sizeof resource[0] && result != NULL; i++) {
+      ScrDyn *value = scr_dyn_obj_read(source, resource[i], strlen(resource[i]));
+      if (value == NULL) {
+        scr_dyn_release(result);
+        result = NULL;
+        break;
+      }
+      scr_dyn_obj_set(result, resource[i], strlen(resource[i]), value);
+    }
+  } else if (result != NULL) {
+    ScrDyn *detail = scr_dyn_obj_read(source, "detail", 6);
+    if (detail == NULL) {
+      scr_dyn_release(result);
+      result = NULL;
+    } else {
+      scr_dyn_obj_set(result, "detail", 6, detail);
+    }
+  }
+  scr_dyn_release(view);
+  scr_dyn_release(self);
+  return result;
+}
+
 static void scr_dyn_perf_entry_init(void) {
   if (scr_dyn_perf_entry_base_proto) return;
   ScrDyn *base = scr_dyn_new_obj();
@@ -3556,6 +3622,10 @@ static void scr_dyn_perf_entry_init(void) {
   measure->prototype = scr_dyn_retain(base);
   measure->v.obj.class_name = "PerformanceMeasure";
   scr_dyn_fix_prototype(measure);
+  ScrDyn *resource = scr_dyn_new_obj();
+  resource->prototype = scr_dyn_retain(base);
+  resource->v.obj.class_name = "PerformanceResourceTiming";
+  scr_dyn_fix_prototype(resource);
   ScrDyn *node_timing = scr_dyn_new_obj();
   node_timing->prototype = scr_dyn_retain(base);
   node_timing->v.obj.class_name = "PerformanceNodeTiming";
@@ -3564,10 +3634,18 @@ static void scr_dyn_perf_entry_init(void) {
       scr_dyn_new_func(scr_closure_new(NULL, 0), scr_dyn_perf_node_timing_to_json, 0,
                        "native:PerformanceNodeTiming", "toJSON"));
   scr_error_prototype_hide(node_timing, "toJSON", 6);
+  ScrDyn *entry_protos[4] = {base, mark, measure, resource};
+  for (size_t i = 0; i < 4; i++) {
+    scr_dyn_obj_set(entry_protos[i], "toJSON", 6,
+        scr_dyn_new_func(scr_closure_new(NULL, 0), scr_dyn_perf_entry_to_json, 0,
+                         "native:PerformanceEntry", "toJSON"));
+    scr_error_prototype_hide(entry_protos[i], "toJSON", 6);
+  }
   scr_dyn_perf_entry_base_proto = base;
   scr_dyn_perf_mark_proto = mark;
   scr_dyn_perf_measure_proto = measure;
   scr_dyn_perf_node_timing_proto = node_timing;
+  scr_dyn_perf_resource_proto = resource;
   /* The registry's references are the ones that outlive the program; the
    * statics borrow them. The creation references drop here, or the three
    * values would never reach zero and the RC audit would report them at
@@ -3575,6 +3653,7 @@ static void scr_dyn_perf_entry_init(void) {
    * registry's release either way (scr_dyn_release is counted). */
   scr_dyn_release(mark);
   scr_dyn_release(measure);
+  scr_dyn_release(resource);
   scr_dyn_release(node_timing);
   scr_dyn_release(base);
 }
@@ -3582,7 +3661,7 @@ static void scr_dyn_perf_entry_init(void) {
 void scr_dyn_perf_entry_finish(ScrDyn *object) {
   if (!object || object->kind != SCR_DYN_OBJ) return;
   scr_dyn_perf_entry_init();
-  bool measure = false, node = false;
+  bool measure = false, node = false, resource = false;
   size_t i = scr_dyn_obj_index_of(object, "entryType", 9);
   if (i != SIZE_MAX) {
     ScrDynProp prop = scr_dyn_obj_prop_at(object, i);
@@ -3591,18 +3670,22 @@ void scr_dyn_perf_entry_finish(ScrDyn *object) {
               memcmp(type->v.str->data, "measure", 7) == 0;
     node = type && type->kind == SCR_DYN_STR && type->v.str->len == 4 &&
            memcmp(type->v.str->data, "node", 4) == 0;
+    resource = type && type->kind == SCR_DYN_STR && type->v.str->len == 8 &&
+               memcmp(type->v.str->data, "resource", 8) == 0;
   }
   scr_dyn_region_store(object, NULL); /* a prototype store (ScrDynRegion) */
   scr_dyn_release(object->prototype);
-  object->prototype = scr_dyn_retain(node ? scr_dyn_perf_node_timing_proto
-                                   : measure ? scr_dyn_perf_measure_proto
-                                             : scr_dyn_perf_mark_proto);
+  object->prototype = scr_dyn_retain(node        ? scr_dyn_perf_node_timing_proto
+                                     : resource  ? scr_dyn_perf_resource_proto
+                                     : measure   ? scr_dyn_perf_measure_proto
+                                                 : scr_dyn_perf_mark_proto);
 }
 
 bool scr_dyn_perf_entry_is(const ScrDyn *value, double which) {
   static const char *const classes[] = {"PerformanceEntry", "PerformanceMark",
-                                        "PerformanceMeasure", "PerformanceNodeTiming"};
-  if (!value || !(which >= 0 && which <= 3)) return false;
+                                        "PerformanceMeasure", "PerformanceNodeTiming",
+                                        "PerformanceResourceTiming"};
+  if (!value || !(which >= 0 && which <= 4)) return false;
   if (value->kind == SCR_DYN_TYPED_REF) {
     /* A live record capsule carries the brand on its view, whose converter
      * runs the finish hook (the compiler's materializer), so ask that. */

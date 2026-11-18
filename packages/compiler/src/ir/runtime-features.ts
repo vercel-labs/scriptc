@@ -175,6 +175,12 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.entryType",
   "perf.mark",
   "perf.measure",
+  // Resource timing entries and their buffer (scr_perf.c).
+  "perf.resourceMark",
+  "perf.resourceClear",
+  "perf.resourceBufferSize",
+  "perf.entryResourceNum",
+  "perf.entryResourceStr",
   // new PerformanceMark and the PerformanceObserver family: their
   // callbacks run from an immediate (scr_perf.c).
   "perf.markNew",

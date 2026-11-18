@@ -735,6 +735,11 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // perf_hooks user timing: Node's argument validation, the unset-mark
   // SyntaxError DOMException, and the detail's DataCloneError.
   "perf.mark",
+  // markResourceTiming's argument reads and clearResourceTimings /
+  // setResourceTimingBufferSize validation.
+  "perf.resourceMark",
+  "perf.resourceClear",
+  "perf.resourceBufferSize",
   "perf.measure",
   "perf.entries",
   "perf.clearMarks",

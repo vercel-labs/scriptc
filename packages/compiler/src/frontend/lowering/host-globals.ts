@@ -47,7 +47,6 @@ export const NODE_GLOBALS_WITHOUT_NATIVE: ReadonlySet<string> = new Set([
   "FormData",
   "Navigator",
   "Performance",
-  "PerformanceResourceTiming",
   "URLPattern",
   "WebSocket",
 ]);

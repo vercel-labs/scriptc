@@ -7161,12 +7161,17 @@ static ScrMkdtempResult *scr_mkdtemp_result_new(ScrStr *created /* +1 moves in *
   r->path = created;
   /* Node resolves the created path against the cwd at creation, and
    * path.resolve already supplies the cwd as its final argument: one part is
-   * the whole answer, resolved by the platform's own rules (a drive-
-   * qualified or UNC path is absolute on Windows, which a leading-'/'
-   * test would miss). */
+   * the whole answer. The variant has to be the host platform's — win32
+   * absolutises a drive-qualified or UNC path and the POSIX rules do not —
+   * so the removal never points at a working directory joined to a path
+   * that was already absolute. */
   ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 1);
   scr_arr_push_ref(parts, scr_str_retain(created));
+#ifdef _WIN32
+  r->full = scr_path_win32_resolve(parts);
+#else
   r->full = scr_path_resolve(parts);
+#endif
   scr_arr_release(parts);
   return r;
 }

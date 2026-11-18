@@ -1586,10 +1586,35 @@ export function lowerHistogramMethodCall(
     const comparison = lowerHistogramComparison(lowerer, expr, access, name, loc);
     if (comparison !== null) return comparison;
   }
+  if (name === "linearBuckets" && args.length <= 1 && !args.some(ts.isSpreadElement)) {
+    return histoBucketMap(
+      lowerer,
+      expr,
+      "linear",
+      handle(),
+      [args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc)],
+      lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? mapOf(F64, F64),
+      loc,
+    );
+  }
+  if (name === "logBuckets" && args.length <= 2 && !args.some(ts.isSpreadElement)) {
+    return histoBucketMap(
+      lowerer,
+      expr,
+      "log",
+      handle(),
+      [
+        args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc),
+        args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc),
+      ],
+      lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? mapOf(F64, F64),
+      loc,
+    );
+  }
   lowerer.noLowering(
     `IntervalHistogram.${name}`,
     expr,
-    "enable(), disable(), reset(), percentile(p), ksTest, cohensD, cliffsD, mannWhitneyTest and the min, max, mean, stddev, count and exceeds readings are the lowered surface",
+    "enable(), disable(), reset(), percentile(p), linearBuckets(stepSize), logBuckets(firstBucket, base), ksTest, cohensD, cliffsD, mannWhitneyTest and the min, max, mean, stddev, count and exceeds readings are the lowered surface",
   );
 }
 
@@ -1986,6 +2011,124 @@ function histoPercentilesMap(
   return { kind: "call", callee: helper, args: [handle], type: result, loc };
 }
 
+/** linearBuckets(stepSize) / logBuckets(firstBucket, base): the runtime
+ * validates each argument with Node's messages and rebuilds the bucket
+ * view, then the lifted helper stores each (boundary, count) pair in Node's
+ * Map order. */
+function histoBucketMap(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  kind: "linear" | "log",
+  handle: IrExpr,
+  args: IrExpr[],
+  result: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  if (result.kind !== "map") lowerer.noLowering(`Histogram.${kind}Buckets`, node);
+  const key = `perf.histo${kind}Buckets:${typeKey(result)}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, `%perf.histo${kind}Buckets`, key);
+    lowerer.valueHelpers.set(key, helper);
+    const h = varRef("h.0", DYN, loc);
+    const a = varRef("a.0", F64, loc);
+    const b = varRef("b.0", F64, loc);
+    const n = varRef("n.0", F64, loc);
+    const i = varRef("i.0", F64, loc);
+    const out = varRef("out.0", result, loc);
+    const call = (fn: IrLibFn, type: IrType, ...callArgs: IrExpr[]): IrExpr => ({
+      kind: "libCall",
+      fn,
+      args: callArgs,
+      type,
+      loc,
+    });
+    const params = [{ localId: "h.0", name: "h", type: DYN }];
+    const locals = [
+      { id: "h.0", name: "h", type: DYN, mutable: false },
+      { id: "a.0", name: "a", type: F64, mutable: false },
+      { id: "n.0", name: "n", type: F64, mutable: false },
+      { id: "out.0", name: "out", type: result, mutable: false },
+      { id: "i.0", name: "i", type: F64, mutable: true },
+    ] as { id: string; name: string; type: IrType; mutable: boolean }[];
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: "a.0",
+        init: call(
+          "perf.histoBucketArg",
+          F64,
+          varRef("a0.0", DYN, loc),
+          numLit(kind === "linear" ? 0 : 1, loc),
+        ),
+        loc,
+      },
+    ];
+    locals.push({ id: "a0.0", name: "a0", type: DYN, mutable: false });
+    params.push({ localId: "a0.0", name: "a0", type: DYN });
+    let countArgs: IrExpr[] = [h, a];
+    if (kind === "log") {
+      params.push({ localId: "b0.0", name: "b0", type: DYN });
+      locals.push({ id: "b0.0", name: "b0", type: DYN, mutable: false });
+      locals.push({ id: "b.0", name: "b", type: F64, mutable: false });
+      body.push({
+        kind: "varDecl",
+        localId: "b.0",
+        init: call("perf.histoBucketArg", F64, varRef("b0.0", DYN, loc), numLit(2, loc)),
+        loc,
+      });
+      countArgs = [h, a, b];
+    }
+    body.push(
+      {
+        kind: "varDecl",
+        localId: "n.0",
+        init: call(
+          kind === "linear" ? "perf.histoLinearBucketsCount" : "perf.histoLogBucketsCount",
+          F64,
+          ...countArgs,
+        ),
+        loc,
+      },
+      {
+        kind: "varDecl",
+        localId: "out.0",
+        init: { kind: "mapNew", type: result, loc },
+        loc,
+      },
+      {
+        kind: "for",
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: i, right: n, type: BOOL, loc },
+        update: {
+          kind: "assign",
+          localId: "i.0",
+          value: { kind: "bin", op: "+", left: i, right: numLit(1, loc), type: F64, loc },
+          loc,
+        },
+        body: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "mapIntrinsic",
+              method: "set",
+              receiver: out,
+              args: [call("perf.histoBucketsKey", F64, i), call("perf.histoBucketsValue", F64, i)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      },
+      { kind: "return", value: out, loc },
+    );
+    lowerer.liftedFns.push({ name: helper, params, returnType: result, locals, body, loc });
+  }
+  return { kind: "call", callee: helper, args: [handle, ...args], type: result, loc };
+}
+
 /** The property reads on a RecordableHistogram: the numeric and BigInt
  * readings and the percentiles Map. */
 export function lowerRecordableHistogramProperty(
@@ -2213,6 +2356,31 @@ export function lowerRecordableHistogramMethodCall(
       "Histogram.percentilesBigInt",
       call,
       "the numeric percentiles getter is the lowered form",
+    );
+  }
+  if (name === "linearBuckets" && args.length <= 1 && !args.some(ts.isSpreadElement)) {
+    return histoBucketMap(
+      lowerer,
+      call,
+      "linear",
+      handle(),
+      [args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc)],
+      lowerer.mapTypeOf(lowerer.typeOf(call)) ?? mapOf(F64, F64),
+      loc,
+    );
+  }
+  if (name === "logBuckets" && args.length <= 2 && !args.some(ts.isSpreadElement)) {
+    return histoBucketMap(
+      lowerer,
+      call,
+      "log",
+      handle(),
+      [
+        args[0] ? lowerer.lowerExprExpecting(args[0], DYN) : dynUndefinedExpr(loc),
+        args[1] ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc),
+      ],
+      lowerer.mapTypeOf(lowerer.typeOf(call)) ?? mapOf(F64, F64),
+      loc,
     );
   }
   lowerer.noLowering(

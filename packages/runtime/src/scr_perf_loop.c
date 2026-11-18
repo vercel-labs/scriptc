@@ -1529,3 +1529,253 @@ void scr_histo_dispose(ScrDyn *handle) {
   h->max_value = 0;
   scr_histo_clear_view(h);
 }
+
+/* ── histogram.linearBuckets / histogram.logBuckets ─────────────────────
+ * Node walks the HdrHistogram buckets: a non-empty bucket is placed by its
+ * lowest equivalent value, and each key is that layout's lowest equivalent
+ * of the bucket boundary (an aligned value at this resolution). The count
+ * entry rebuilds a per-thread view; the key and value accessors read it. */
+static SCR_TL struct {
+  double *key;
+  int64_t *count;
+  size_t len;
+  size_t cap;
+} scr_buckets_view;
+
+static void scr_buckets_cleanup(void) {
+  free(scr_buckets_view.key);
+  free(scr_buckets_view.count);
+  scr_buckets_view.key = NULL;
+  scr_buckets_view.count = NULL;
+  scr_buckets_view.len = scr_buckets_view.cap = 0;
+}
+
+static bool scr_buckets_push(double key, int64_t count) {
+  if (scr_buckets_view.len == scr_buckets_view.cap) {
+    size_t cap = scr_buckets_view.cap ? scr_buckets_view.cap * 2 : 32;
+    double *keys = realloc(scr_buckets_view.key, cap * sizeof *keys);
+    int64_t *counts = realloc(scr_buckets_view.count, cap * sizeof *counts);
+    if (keys != NULL) scr_buckets_view.key = keys;
+    if (counts != NULL) scr_buckets_view.count = counts;
+    if (keys == NULL || counts == NULL) {
+      static const char msg[] = "Memory allocation failed";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+      return false;
+    }
+    scr_buckets_view.cap = cap;
+  }
+  scr_buckets_view.key[scr_buckets_view.len] = key;
+  scr_buckets_view.count[scr_buckets_view.len] = count;
+  scr_buckets_view.len++;
+  return true;
+}
+
+/* The bucket layout both histogram classes record in. */
+typedef struct {
+  const void *owner;
+  const int64_t *counts;
+  size_t len;
+  int64_t (*value_at)(const void *owner, size_t index);
+  int64_t (*lowest)(const void *owner, int64_t value);
+} ScrBucketLayout;
+
+static int64_t scr_bucket_histo_value_at(const void *owner, size_t index) {
+  return scr_histo_value_at_index((const ScrHisto *)owner, (int64_t)index);
+}
+
+static int64_t scr_bucket_histo_lowest(const void *owner, int64_t value) {
+  return scr_histo_lowest_equivalent((const ScrHisto *)owner, value);
+}
+
+static int64_t scr_bucket_eld_value_at(const void *owner, size_t index) {
+  (void)owner;
+  return scr_hdr_value_at_index(index);
+}
+
+static int64_t scr_bucket_eld_lowest(const void *owner, int64_t value) {
+  (void)owner;
+  return scr_hdr_lowest_equivalent(value);
+}
+
+static bool scr_buckets_layout(ScrDyn *handle, ScrBucketLayout *layout) {
+  memset(layout, 0, sizeof *layout);
+  ScrEld *eld = scr_eld_of(handle);
+  if (eld != NULL) {
+    layout->owner = eld;
+    layout->counts = eld->counts;
+    layout->len = eld->counts_len;
+    layout->value_at = scr_bucket_eld_value_at;
+    layout->lowest = scr_bucket_eld_lowest;
+    return true;
+  }
+  ScrHisto *h = scr_histo_of(handle);
+  if (h != NULL) {
+    layout->owner = h;
+    layout->counts = h->counts;
+    layout->len = (size_t)h->counts_len;
+    layout->value_at = scr_bucket_histo_value_at;
+    layout->lowest = scr_bucket_histo_lowest;
+    return true;
+  }
+  return false;
+}
+
+/* The helper arguments' Node validation (validateInteger for stepSize and
+ * firstBucket, validateNumber then > 1 for base). */
+double scr_histo_bucket_arg(ScrDyn *value, double which) {
+  const char *name = which == 0 ? "stepSize" : which == 1 ? "firstBucket" : "base";
+  if (value == NULL || value->kind != SCR_DYN_NUM) {
+    char detail[128];
+    char msg[224];
+    int n = snprintf(msg, sizeof msg, "The \"%s\" argument must be of type number. Received %s",
+                     name, scr_dyn_specific_type(value != NULL ? value : scr_dyn_undefined(), detail,
+                                                 sizeof detail));
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+    return 0;
+  }
+  double v = value->v.num;
+  if (which == 2) {
+    if (!(v > 1)) {
+      char num[48];
+      char msg[160];
+      scr_num_received(v, num);
+      int n = snprintf(msg, sizeof msg,
+                       "The value of \"base\" is out of range. It must be > 1. Received %s", num);
+      scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)n);
+      return 0;
+    }
+    return v;
+  }
+  if (!(isfinite(v) && trunc(v) == v)) {
+    char num[48];
+    char msg[192];
+    scr_num_received(v, num);
+    int n = snprintf(msg, sizeof msg,
+                     "The value of \"%s\" is out of range. It must be an integer. Received %s", name,
+                     num);
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)n);
+    return 0;
+  }
+  if (!(v >= 1 && v <= 9007199254740991.0)) {
+    char num[48];
+    char msg[224];
+    scr_num_received(v, num);
+    int n = snprintf(msg, sizeof msg,
+                     "The value of \"%s\" is out of range. It must be >= 1 && <= 9007199254740991. "
+                     "Received %s",
+                     name, num);
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, (size_t)n);
+    return 0;
+  }
+  return v;
+}
+
+double scr_histo_linear_buckets_count(ScrDyn *handle, double step_d) {
+  scr_buckets_view.len = 0;
+  ScrBucketLayout layout;
+  if (!scr_buckets_layout(handle, &layout)) return 0;
+  int64_t step = (int64_t)step_d;
+  /* Node emits every bucket from the first (index 1) to the last recorded
+   * one, so the keys start at one step whatever the smallest value is. */
+  int64_t max_index = 0;
+  for (size_t i = 0; i < layout.len; i++) {
+    if (layout.counts[i] <= 0) continue;
+    int64_t repr = layout.value_at(layout.owner, i);
+    int64_t index = (repr + step - 1) / step;
+    if (index > max_index) max_index = index;
+  }
+  if (max_index == 0) return 0;
+  size_t slots = (size_t)max_index;
+  int64_t *counts = calloc(slots, sizeof *counts);
+  if (counts == NULL) {
+    static const char msg[] = "Memory allocation failed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return 0;
+  }
+  for (size_t i = 0; i < layout.len; i++) {
+    if (layout.counts[i] <= 0) continue;
+    int64_t repr = layout.value_at(layout.owner, i);
+    int64_t index = (repr + step - 1) / step;
+    counts[index - 1] += layout.counts[i];
+  }
+  bool ok = true;
+  for (size_t s = 0; ok && s < slots; s++) {
+    int64_t index = (int64_t)s + 1;
+    ok = scr_buckets_push((double)layout.lowest(layout.owner, index * step), counts[s]);
+  }
+  free(counts);
+  return ok ? (double)scr_buckets_view.len : 0;
+}
+
+double scr_histo_log_buckets_count(ScrDyn *handle, double first_d, double base_d) {
+  scr_buckets_view.len = 0;
+  ScrBucketLayout layout;
+  if (!scr_buckets_layout(handle, &layout)) return 0;
+  int64_t first = (int64_t)first_d;
+  int64_t base = (int64_t)base_d;
+  if (base < 2) base = 2;
+  int64_t max_repr = 0;
+  bool any = false;
+  for (size_t i = 0; i < layout.len; i++) {
+    if (layout.counts[i] <= 0) continue;
+    int64_t repr = layout.value_at(layout.owner, i);
+    if (!any || repr > max_repr) max_repr = repr;
+    any = true;
+  }
+  if (!any) return 0;
+  size_t nbounds = 0, cap = 16;
+  int64_t *bounds = malloc(cap * sizeof *bounds);
+  if (bounds == NULL) {
+    static const char msg[] = "Memory allocation failed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return 0;
+  }
+  int64_t b = first;
+  for (;;) {
+    if (nbounds == cap) {
+      cap *= 2;
+      int64_t *grown = realloc(bounds, cap * sizeof *bounds);
+      if (grown == NULL) {
+        free(bounds);
+        static const char msg[] = "Memory allocation failed";
+        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+        return 0;
+      }
+      bounds = grown;
+    }
+    bounds[nbounds++] = b;
+    if (b >= max_repr) break;
+    if (b > INT64_MAX / base) break; /* the next boundary would overflow */
+    b *= base;
+  }
+  int64_t *counts = calloc(nbounds, sizeof *counts);
+  if (counts == NULL) {
+    free(bounds);
+    static const char msg[] = "Memory allocation failed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return 0;
+  }
+  for (size_t i = 0; i < layout.len; i++) {
+    if (layout.counts[i] <= 0) continue;
+    int64_t repr = layout.value_at(layout.owner, i);
+    size_t j = 0;
+    while (j + 1 < nbounds && bounds[j] < repr) j++;
+    counts[j] += layout.counts[i];
+  }
+  bool ok = true;
+  for (size_t j = 0; ok && j < nbounds; j++)
+    ok = scr_buckets_push((double)layout.lowest(layout.owner, bounds[j]), counts[j]);
+  free(counts);
+  free(bounds);
+  return ok ? (double)scr_buckets_view.len : 0;
+}
+
+double scr_histo_buckets_key(double index) {
+  size_t i = (size_t)index;
+  return i < scr_buckets_view.len ? scr_buckets_view.key[i] : 0;
+}
+
+double scr_histo_buckets_value(double index) {
+  size_t i = (size_t)index;
+  return i < scr_buckets_view.len ? (double)scr_buckets_view.count[i] : 0;
+}

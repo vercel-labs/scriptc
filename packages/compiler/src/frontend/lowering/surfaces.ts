@@ -3277,6 +3277,11 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoPercentilesCount",
         "perf.histoPercentilesKey",
         "perf.histoPercentilesValue",
+        "perf.histoBucketArg",
+        "perf.histoLinearBucketsCount",
+        "perf.histoLogBucketsCount",
+        "perf.histoBucketsKey",
+        "perf.histoBucketsValue",
         "perf.histoDispose",
         "perf.histoKsTest",
         "perf.histoCohensD",
@@ -3285,7 +3290,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoMannWhitneyZ",
         "perf.histoMannWhitneyP",
       ],
-      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
+      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map, the linearBuckets/logBuckets maps and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
     },
     // ── the process global's ambient reads and authority calls
     // (lowerProcessProperty/lowerProcessMethodCall — process is a

@@ -80640,6 +80640,7 @@
           "tests/corpus/5214-perf-entry-inspect.ts",
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/corpus/9977-histogram-bucket-helpers.js",
           "tests/corpus/9990-histogram-comparison.ts",
           "tests/corpus/9993-resource-timing-buffered.ts",
           "tests/corpus/9994-histogram-short-lived.ts",
@@ -82904,8 +82905,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.linearBuckets",
+        "tests": [
+          "tests/corpus/9977-histogram-bucket-helpers.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -82927,8 +82931,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.logBuckets",
+        "tests": [
+          "tests/corpus/9977-histogram-bucket-helpers.js"
+        ]
       },
       "anchorSource": "exact"
     },

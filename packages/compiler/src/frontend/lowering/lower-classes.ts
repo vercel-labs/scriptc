@@ -10282,8 +10282,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
       // again afterwards, while a value return's answer is left as it is.
       const returnsValue = (constructorReturnPlan(lowerer, info)?.returns.size ?? 0) !== 0;
       const ctorBody = info.ctor?.body;
-      const needsValueFlag =
-        returnsValue && ctorBody !== undefined && hasOwnFinallyBlock(ctorBody);
+      const needsValueFlag = returnsValue && ctorBody !== undefined && hasOwnFinallyBlock(ctorBody);
       let valueReturn: IrLocal | null = null;
       if (needsValueFlag) {
         valueReturn = { id: "%valueReturn.0", name: "%valueReturn", type: BOOL, mutable: true };

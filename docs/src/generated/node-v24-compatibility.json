@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 57,
-    "matrixRows": 3763,
+    "matrixRows": 3762,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 126,
+      "not-applicable": 127,
       "chapters": 6
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 396,
-      "apiEntries": 396
+      "entries": 395,
+      "apiEntries": 395
     },
     {
       "slug": "events",
@@ -17572,7 +17572,7 @@
       "anchor": "class-assertionerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -17863,24 +17863,6 @@
         "status": "partial",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "errors:244449227555",
-      "chapter": "errors",
-      "kind": "section",
-      "name": "function",
-      "signature": "`error.function`",
-      "label": "error.function",
-      "apiSymbol": "error.function",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "errorfunction",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -18256,9 +18238,9 @@
       "anchor": "err_construct_call_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19516,9 +19498,9 @@
       "anchor": "err_fs_watch_queue_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20398,9 +20380,9 @@
       "anchor": "err_http_body_not_allowed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20488,9 +20470,9 @@
       "anchor": "err_http_request_timeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -21424,9 +21406,9 @@
       "anchor": "err_ipc_channel_closed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22446,9 +22428,9 @@
       "anchor": "err_socket_bad_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23238,9 +23220,9 @@
       "anchor": "err_trace_events_category_required",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23924,9 +23906,9 @@
       "anchor": "err_worker_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24140,9 +24122,9 @@
       "anchor": "cert_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {

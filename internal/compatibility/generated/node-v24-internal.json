@@ -34561,18 +34561,23 @@
           "tests/corpus/8783-child-max-buffer-refused-arguments.ts",
           "tests/corpus/8922-child-max-buffer-async.ts",
           "tests/corpus/9872-child-stream-pause-max-buffer.ts",
+          "tests/corpus/9984-message-port-construct.js",
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/compat-error-capture-stack-trace.mjs",
+          "tests/corpus/compat-error-class-fidelity.mjs",
           "tests/corpus/compat-error-class-surface.mjs",
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
           "tests/corpus/compat-error-validation-codes.mjs",
+          "tests/corpus/compat-errors-cert-expired.mjs",
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
           "tests/corpus/compat-errors-http.mjs",
           "tests/corpus/compat-errors-net.mjs",
+          "tests/corpus/compat-errors-socket-types.mjs",
           "tests/corpus/compat-errors-stream.mjs",
+          "tests/corpus/compat-errors-tracing-categories.mjs",
           "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-system-error-fields.mjs",
@@ -34586,8 +34591,11 @@
           "tests/corpus/error-stack-limit.ts",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-dir-listing.ts",
+          "tests/corpus/fs-promises-watch-overflow.cjs",
           "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
+          "tests/corpus/http-server-reject-body-writes.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts",
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
           "tests/corpus/node-dns-resolve-errors.cjs",
@@ -34595,10 +34603,12 @@
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/os-error-codes.cjs",
           "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/process-ipc-surface/main.ts",
           "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-value-types.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/zlib-codec-invalid-params.cjs",
           "tests/corpus/zstd-compress.cjs",
           "tests/diagnostics/compat-absent-node-apis.ts",
@@ -34781,12 +34791,13 @@
       "anchor": "class-assertionerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.AssertionError",
         "tests": [
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
-          "tests/corpus/compat-error-class-surface.mjs"
+          "tests/corpus/compat-error-class-surface.mjs",
+          "tests/corpus/compat-error-class-fidelity.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -35239,8 +35250,11 @@
       "anchor": "errorfunction",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.error.function",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35698,8 +35712,12 @@
       "anchor": "err_construct_call_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_CONSTRUCT_CALL_INVALID"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_CONSTRUCT_CALL_INVALID",
+        "tests": [
+          "tests/corpus/9984-message-port-construct.js",
+          "tests/corpus/worker-cpu-usage.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37186,8 +37204,11 @@
       "anchor": "err_fs_watch_queue_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_FS_WATCH_QUEUE_OVERFLOW"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_FS_WATCH_QUEUE_OVERFLOW",
+        "tests": [
+          "tests/corpus/fs-promises-watch-overflow.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38083,8 +38104,12 @@
       "anchor": "err_http_body_not_allowed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP_BODY_NOT_ALLOWED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP_BODY_NOT_ALLOWED",
+        "tests": [
+          "tests/corpus/http-server-reject-body-writes.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38185,8 +38210,12 @@
       "anchor": "err_http_request_timeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP_REQUEST_TIMEOUT"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP_REQUEST_TIMEOUT",
+        "tests": [
+          "tests/corpus/http-server-reject-body-writes.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39277,8 +39306,11 @@
       "anchor": "err_ipc_channel_closed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_IPC_CHANNEL_CLOSED",
+        "tests": [
+          "tests/corpus/process-ipc-surface/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40580,8 +40612,11 @@
       "anchor": "err_socket_bad_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_TYPE"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_TYPE",
+        "tests": [
+          "tests/corpus/compat-errors-socket-types.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41495,8 +41530,11 @@
       "anchor": "err_trace_events_category_required",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TRACE_EVENTS_CATEGORY_REQUIRED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TRACE_EVENTS_CATEGORY_REQUIRED",
+        "tests": [
+          "tests/corpus/compat-errors-tracing-categories.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -42325,8 +42363,12 @@
       "anchor": "err_worker_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_WORKER_NOT_RUNNING"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_WORKER_NOT_RUNNING",
+        "tests": [
+          "tests/corpus/9984-message-port-construct.js",
+          "tests/corpus/worker-cpu-usage.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -43818,8 +43860,11 @@
       "anchor": "cert_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CERT_HAS_EXPIRED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-expired.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

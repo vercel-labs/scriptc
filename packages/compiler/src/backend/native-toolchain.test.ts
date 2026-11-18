@@ -3078,7 +3078,11 @@ exec "$SCRIPTC_TEST_REAL_CLANG" "$@"
         outPath: firstOut,
         cacheIdentity: TEST_CACHE_IDENTITY,
       });
-      const deadline = Date.now() + 10_000;
+      // This is a hang detector, not a latency bound: the runtime compile
+      // that reaches scr_number.c shares the machine with every other test
+      // worker in the shard, and a loaded runner can take far longer than
+      // the ten seconds this used to allow.
+      const deadline = Date.now() + 120_000;
       while (!existsSync(signal)) {
         if (Date.now() > deadline) throw new Error("timed out waiting for runtime compile");
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));

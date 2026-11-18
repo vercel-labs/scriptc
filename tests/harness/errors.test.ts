@@ -3608,16 +3608,15 @@ console.log(count(require("./lib.cjs")));
 
 describe("builtin constructor values (JS lane)", () => {
   test("constructing one without a lowering throws the refusal that names it", async () => {
-    // `AsyncResource` has no lowering, so a JavaScript source reads the
-    // import as a function value that refuses when it is used
+    // `Intl.PluralRules` has no lowering, so a JavaScript source reads the
+    // global class as a value that refuses when it is constructed
     // (builtin-function-fences.ts). Node constructs the class, so "… is not
     // a constructor" would be the wrong error class and a fabricated
     // message: the construction is refused by name where it is written.
     const r = await compileAndRun(
       "builtin-token-construction",
-      `import { AsyncResource } from "node:async_hooks";
-function run() {
-  return new AsyncResource("demo");
+      `function run() {
+  return new Intl.PluralRules("en");
 }
 console.log("before");
 run();
@@ -3627,7 +3626,7 @@ run();
     expect(r.stdout).toBe("before\n");
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'new async_hooks\.AsyncResource' is part of the standard library types but has no scriptc lowering yet \[SC2020 at .*builtin-token-construction\.mjs:3\]\n$/,
+      /^Uncaught Error: 'new Intl\.PluralRules' is part of the standard library types but has no scriptc lowering yet \[SC2020 at .*builtin-token-construction\.mjs:2\]\n$/,
     );
   });
 

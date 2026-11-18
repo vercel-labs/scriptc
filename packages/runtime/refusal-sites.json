@@ -1836,6 +1836,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_stream_wrap_dyn.c",
+  "function": "scr_stream_wrap_dyn",
+  "message": "readable.wrap over a checked-dynamic value that is not a native readable stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_symbol.c",
   "function": "scr_dyn_using_method",
   "message": "disposing a class instance through a Disposable- or unknown-typed value has no lowering yet (declare the variable with the class type)",

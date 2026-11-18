@@ -1728,6 +1728,24 @@ function buildLibFnSignatures() {
     /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
      * option flags; a web WritableStream. */
     "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
+    /** Duplex.toWeb (scr_stream_to_web_pair.c): the duplex and the option
+     * flags; the { writable, readable } pair. */
+    "webstream.toWebDuplex": { argTypes: [null, F64], result: DYN },
+    /** Duplex.toWeb over a checked-dynamic value: a boxed native duplex
+     * unwraps, anything else throws ERR_INVALID_ARG_TYPE. */
+    "webstream.toWebDuplexDyn": { argTypes: [DYN, F64], result: DYN },
+    /** stream.duplexPair (scr_stream_pair.c): the options value (borrowed;
+     * NULL means none) and the two connected Duplexes. */
+    "stream.duplexPair": {
+      argTypes: [DYN],
+      result: { kind: "array", elem: { kind: "object", className: "%Duplex" } },
+    },
+    /** readable.wrap(stream) (scr_stream_wrap.c): the readable and the
+     * native source; answers the readable. */
+    "stream.wrap": { argTypes: [null, null], result: VOID },
+    /** The same over a checked-dynamic source: a boxed native readable
+     * unwraps, anything else throws the not-supported Error. */
+    "stream.wrapDyn": { argTypes: [null, DYN], result: VOID },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },

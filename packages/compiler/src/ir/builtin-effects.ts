@@ -690,6 +690,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
   "webstream.toWebReadableDyn",
+  "webstream.toWebDuplexDyn",
+  // The option walk behind duplexPair throws the not-supported Error for an
+  // option it cannot apply; wrap refuses a stream that already carries native
+  // state and wrapDyn a value that is not a native readable stream.
+  "stream.duplexPair",
+  "stream.wrap",
+  "stream.wrapDyn",
   "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",

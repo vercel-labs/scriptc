@@ -3139,6 +3139,10 @@ void scr_stream_set_native(ScrStream *s, void *state /*moves*/, void (*release)(
   st->native_release = release;
 }
 
+bool scr_stream_has_native_state(const ScrStream *s) {
+  return s != NULL && s->st != NULL && s->st->native != NULL;
+}
+
 void *scr_stream_native(ScrStream *s, void (*release)(void *)) {
   ScrStreamState *st = s->st;
   return st != NULL && st->native != NULL && st->native_release == release ? st->native : NULL;
@@ -7145,6 +7149,10 @@ ScrDyn *scr_stream_chunk_value(ScrStream *s, ScrBytes *chunk) {
   if (desc) return desc->box(chunk);
   if (scr_stream_writes_values(s)) return scr_dyn_retain((ScrDyn *)chunk);
   return scr_dyn_new_buffer(chunk);
+}
+
+const ScrStreamTypedDesc *scr_stream_write_desc(const ScrStream *s) {
+  return s != NULL && s->st != NULL ? s->st->w.cur_desc : NULL;
 }
 
 void *scr_stream_chunk_typed(ScrStream *s, ScrBytes *chunk, const ScrStreamTypedDesc *desc) {

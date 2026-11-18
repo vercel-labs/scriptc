@@ -77,6 +77,11 @@ typed("string key", () => encapsulate("x" as unknown as typeof pubk768));
 const ed = generateKeyPairSync("ed25519");
 typed("ed25519 key", () => encapsulate(ed.publicKey));
 typed("wrong level ciphertext", () => decapsulate(priv768, ct512));
+typed("number ciphertext", () => decapsulate(priv768, 5 as never));
+typed("object ciphertext", () => decapsulate(priv768, {} as never));
+log("string ciphertext", decapsulate(priv768, "x".repeat(1088) as never).length,
+  decapsulate(priv768, "α".repeat(544) as never).length);
+typed("string wrong length", () => decapsulate(priv768, "x".repeat(1087) as never));
 for (const level of [512, 768, 1024] as const) {
   const kp = generateKeyPairSync(level === 512 ? "ml-kem-512" : level === 768 ? "ml-kem-768" : "ml-kem-1024");
   log("gen", level, kp.privateKey.asymmetricKeyType, kp.publicKey.export({ type: "spki", format: "der" }).length, kp.privateKey.export({ type: "pkcs8", format: "der" }).length);

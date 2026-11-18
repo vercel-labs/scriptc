@@ -6798,20 +6798,20 @@ ScrDyn *scr_crypto_decapsulate_dyn(ScrDyn *key, ScrDyn *ciphertext, ScrDyn *call
     scr_pki_key_release(material);
     return NULL;
   }
-  if (!scr_pki_key_is_mlkem(material)) {
-    scr_pki_key_release(material);
-    if (async) {
-      scr_crypto_kem_fail_async(callback);
-      return scr_dyn_undefined();
-    }
-    scr_pki_mlkem_decapsulate_failed();
-    return NULL;
-  }
-  ScrBytes *bytes = ciphertext->kind == SCR_DYN_BYTES || scr_buffer_storage_is(ciphertext)
-                        ? scr_bytes_buffer_source(ciphertext)
-                        : NULL;
+  /* Node's getArrayBufferOrView: a string is its UTF-8 bytes, a
+   * BufferSource its bytes, and anything else an argument error (before
+   * the operation runs, callback form included). */
+  ScrBytes *bytes = sp_source_bytes(ciphertext, NULL);
   if (!bytes) {
     scr_pki_key_release(material);
+    scr_dyn_arg_type_fail(
+        "ciphertext",
+        "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", ciphertext);
+    return NULL;
+  }
+  if (!scr_pki_key_is_mlkem(material)) {
+    scr_pki_key_release(material);
+    scr_bytes_release(bytes);
     if (async) {
       scr_crypto_kem_fail_async(callback);
       return scr_dyn_undefined();

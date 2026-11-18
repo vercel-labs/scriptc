@@ -27,6 +27,11 @@ const refused = encapsulate(ed.publicKey, (error: Error | null, value?: unknown)
       report("string ciphertext", textError, textValue);
       decapsulate(kp.privateKey, ct, (lastError: Error | null, lastValue?: unknown) => {
         report("valid ciphertext", lastError, lastValue);
+        // A string ciphertext is its UTF-8 bytes: 1088 ASCII characters are
+        // a well-formed ML-KEM-768 ciphertext, so the callback gets a key.
+        decapsulate(kp.privateKey, "x".repeat(1088) as never, (stringError: Error | null, stringValue?: unknown) => {
+          report("string valid ciphertext", stringError, stringValue);
+        });
       });
     });
     console.log("string call returned", text === undefined);
@@ -34,5 +39,14 @@ const refused = encapsulate(ed.publicKey, (error: Error | null, value?: unknown)
   console.log("short call returned", short === undefined);
 });
 console.log("refused call returned", refused === undefined);
+
+// An unusable ciphertext type is an argument error before the operation
+// runs, callback form included.
+try {
+  decapsulate(kp.privateKey, 5 as never);
+} catch (error) {
+  const typed = error as Failure;
+  console.log("number ciphertext threw", typed.name, typed.code);
+}
 
 setTimeout(() => console.log("end"), 50);

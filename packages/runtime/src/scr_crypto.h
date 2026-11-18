@@ -263,6 +263,11 @@ void scr_kmac_final(const ScrKeccakCtx *ctx, size_t out_bytes, size_t bits, unsi
  * `domain` (0x01..0x7f), squeezing `out_bytes`. */
 void scr_turboshake_hash(bool t256, unsigned char domain, const unsigned char *data, size_t len,
                          unsigned char *out, size_t out_bytes);
+/* KangarooTwelve KT128/KT256 (RFC 9861): the tree hash over `data` with the
+ * optional customization, squeezing `out_bytes`. */
+void scr_k12_hash(bool kt256, const unsigned char *custom, size_t custom_len,
+                  const unsigned char *data, size_t data_len, unsigned char *out,
+                  size_t out_bytes);
 void scr_cshake_hash(bool cshake256, const unsigned char *func, size_t func_len,
                      const unsigned char *custom, size_t custom_len, const unsigned char *data,
                      size_t data_len, unsigned char *out, size_t out_bytes, size_t bits);

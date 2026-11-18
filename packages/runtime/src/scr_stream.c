@@ -2485,7 +2485,7 @@ static void scr_stream_error_buffer(ScrStream *s) {
     ScrClosure *cb = st->w.end_cbs[0];
     memmove(st->w.end_cbs, st->w.end_cbs + 1, (st->w.end_cbs_n - 1) * sizeof *st->w.end_cbs);
     st->w.end_cbs_n--;
-    ((void (*)(ScrClosure *))cb->fn)(cb);
+    SCR_WCB_CALL(cb, NULL);
     scr_closure_release(cb);
   }
 }
@@ -7878,7 +7878,16 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s, ScrC
   }
   if (cb) {
     if (st->w.finished) {
-      scr_st_tick(s, SCR_ST_WCB_ERR, NULL, cb); /* already finished: plain call */
+      /* Node's end(): a finished stream reports ERR_STREAM_ALREADY_FINISHED
+       * to the callback (an error-first callback; a plain one takes the
+       * call with no error under SCR_STREAM_WRITE_ERRORS' plain-call form). */
+#ifdef SCR_STREAM_WRITE_ERRORS
+      ScrError *e = scr_stream_mkerr("ERR_STREAM_ALREADY_FINISHED",
+                                     "Cannot call end after a stream was finished");
+      scr_st_tick(s, SCR_ST_WCB_ERR, e, cb);
+#else
+      scr_st_tick(s, SCR_ST_WCB_ERR, NULL, cb);
+#endif
     } else {
       if (st->w.end_cbs_n == st->w.end_cbs_cap) {
         st->w.end_cbs_cap = st->w.end_cbs_cap ? st->w.end_cbs_cap * 2 : 2;

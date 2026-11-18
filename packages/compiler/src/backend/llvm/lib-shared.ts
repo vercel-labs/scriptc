@@ -2554,6 +2554,7 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "writable.writeEnc",
   "writable.writeEcb",
   "writable.end",
+  "writable.endEcb",
   "writable.uncork",
   "stream.destroy",
   "stream.destroyErr",

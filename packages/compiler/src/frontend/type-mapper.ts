@@ -2813,7 +2813,9 @@ function isWorkerHandleSymbol(
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
         (isDeclaredInAmbientModule(d, "worker_threads") ||
-          (ts.symbolName(symbol) === "BroadcastChannel" &&
+          ((ts.symbolName(symbol) === "MessagePort" ||
+            ts.symbolName(symbol) === "MessageChannel" ||
+            ts.symbolName(symbol) === "BroadcastChannel") &&
             isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName))),
     )
   );

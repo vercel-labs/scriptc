@@ -1908,10 +1908,32 @@ static ScrDyn *scr_et_broadcast_method_value(const char *name, size_t length) {
   return scr_et_method_value(name, length, true);
 }
 
+static void scr_et_broadcast_dispatch_event(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *event) {
+  scr_et_dispatch(core, self, event);
+}
+
+/* a plain (untrusted) Event of the type, as Node's MessagePort sends for
+ * 'close' */
+static void scr_et_broadcast_dispatch_type(ScrEventTargetCore *core, ScrDyn *self, const char *type) {
+  ScrEvent *ev = scr_event_alloc(scr_str_new(type, strlen(type)), false);
+  ScrDyn *event = scr_dyn_new_handle(ev, SCR_DYNH_EVENT);
+  scr_event_release_v(ev);
+  scr_et_broadcast_dispatch_event(core, self, event);
+  scr_dyn_release(event);
+}
+
+static double scr_et_broadcast_listener_count(ScrEventTargetCore *core, const char *type) {
+  ScrStr *name = scr_str_new(type, strlen(type));
+  ScrEtRoot *root = scr_et_root_find(core, name);
+  scr_str_release(name);
+  return root ? (double)root->size : 0;
+}
+
 static const ScrEtBroadcastOps scr_et_broadcast_table = {
-    &scr_et_broadcast_core_new,     &scr_et_broadcast_core_free, &scr_et_broadcast_dispatch,
-    &scr_et_target_method,          &scr_et_broadcast_method_value,
-    &scr_et_handler_get,            &scr_et_handler_set,
+    &scr_et_broadcast_core_new,  &scr_et_broadcast_core_free, &scr_et_broadcast_dispatch,
+    &scr_et_broadcast_dispatch_type, &scr_et_broadcast_listener_count,
+    &scr_et_target_method,       &scr_et_broadcast_method_value,
+    &scr_et_handler_get,         &scr_et_handler_set,
 };
 
 void scr_et_broadcast_install(void) {
@@ -1930,7 +1952,7 @@ bool scr_event_is(const ScrDyn *v, double kind) {
   if (kind == 0)
     return tag == SCR_DYNH_EVENT || tag == SCR_DYNH_CUSTOM_EVENT || tag == SCR_DYNH_MESSAGE_EVENT;
   if (kind == 1) return tag == SCR_DYNH_CUSTOM_EVENT;
-  return tag == SCR_DYNH_EVENT_TARGET ||
+  return tag == SCR_DYNH_EVENT_TARGET || tag == SCR_DYNH_MESSAGE_PORT ||
          (scr_et_signal_core_fn != NULL && tag == SCR_DYNH_ABORT_SIGNAL);
 }
 

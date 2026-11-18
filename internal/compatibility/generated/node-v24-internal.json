@@ -55657,6 +55657,7 @@
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/9917-structured-clone-errors.ts",
+          "tests/corpus/9988-message-port-events.js",
           "tests/corpus/9991-global-channels.ts",
           "tests/corpus/9993-resource-timing-buffered.ts",
           "tests/corpus/9996-resource-timing.ts",
@@ -55701,7 +55702,6 @@
           "tests/corpus/webassembly-typed.ts",
           "tests/corpus/webassembly-worker.ts",
           "tests/corpus/webassembly-wpt-jsapi.mjs",
-          "tests/diagnostics/compat-absent-lowerings.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
@@ -56478,10 +56478,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.MessageChannel",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/9988-message-port-events.js"
         ]
       },
       "anchorSource": "exact"
@@ -56527,10 +56527,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.MessagePort",
         "tests": [
-          "tests/diagnostics/compat-absent-lowerings.ts"
+          "tests/corpus/9988-message-port-events.js"
         ]
       },
       "anchorSource": "exact"

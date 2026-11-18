@@ -1378,8 +1378,7 @@ declare var EventTarget: {
  * that class (a fallback global of that name). The members mirror
  * node-fallback/worker_threads.d.ts, whose file loads only when the program
  * imports the module; ref()/unref() answer the channel, as Node's do.
- * MessageChannel and MessagePort stay the global interfaces above: their
- * event-side members still refuse, so their rows remain unimplemented. */
+ * MessageChannel and MessagePort below are the module classes too. */
 interface BroadcastChannel extends EventTarget {
   readonly name: string;
   postMessage(message: unknown): void;
@@ -1408,6 +1407,8 @@ interface MessageChannel {
   readonly port2: MessagePort;
 }
 declare var MessagePort: {
+  /* Node's constructor exists but throws ERR_CONSTRUCT_CALL_INVALID. */
+  new (): MessagePort;
   readonly prototype: MessagePort;
 };
 declare var MessageChannel: {

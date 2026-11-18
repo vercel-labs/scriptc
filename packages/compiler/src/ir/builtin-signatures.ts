@@ -2139,6 +2139,7 @@ function buildLibFnSignatures() {
     /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
      * (scr_worker_events.c; the latter may throw). */
     "worker.channel": { argTypes: [], result: DYN },
+    "worker.portConstruct": { argTypes: [DYN], result: DYN },
     "worker.receiveMessageOnPort": { argTypes: [DYN], result: DYN },
     /** setEnvironmentData(key, value) and getEnvironmentData(key)
      * (scr_worker_events.c; arguments borrowed). */

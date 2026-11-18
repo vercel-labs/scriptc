@@ -3915,9 +3915,43 @@ export class LlEmitter {
    * stack read: its throw site, or its deepest call that is not a
    * never-throwing runtime call. Null when nothing in it can raise or
    * capture a stack, which keeps hot loops over pure calls store-free. */
+  /** The statements that are this statement's own control-flow children
+   * (a branch body, a loop body, a case body): they run on their own and
+   * record their own positions, so a call inside one must not stand for
+   * this statement's execution point. Statements embedded in an expression
+   * are not listed: they run as part of it. */
+  private directChildStatements(s: IrStmt): IrStmt[] {
+    switch (s.kind) {
+      case "block":
+        return s.body;
+      case "if":
+        return [...s.then, ...(s.else_ ?? [])];
+      case "while":
+      case "doWhile":
+        return s.body;
+      case "for":
+        return [
+          ...(s.init !== null ? [s.init] : []),
+          ...(s.update !== null ? [s.update] : []),
+          ...s.body,
+        ];
+      case "forOf":
+        return s.body;
+      case "switch":
+        return s.cases.flatMap((entry) => entry.body);
+      case "tryCatch":
+        return [...s.tryBody, ...(s.catchBody ?? []), ...(s.finallyBody ?? [])];
+      default:
+        return [];
+    }
+  }
+
   private positionSite(s: IrStmt): SrcLoc | null {
     // V8 names the thrown expression's position, not the `throw` keyword.
     if (s.kind === "throw") return s.value.loc;
+    const children = this.directChildStatements(s).map((child) => child.loc);
+    const inChild = (loc: SrcLoc): boolean =>
+      children.some((span) => loc.start >= span.start && loc.start < span.end);
     let best: SrcLoc | null = null;
     let canThrow = false;
     const raise = (loc: SrcLoc): void => {
@@ -3948,6 +3982,10 @@ export class LlEmitter {
           e.kind === "arrIntrinsic" ||
           e.kind === "bytesIntrinsic";
         if (!call) return true;
+        // A call in a branch or loop body has not run yet when this
+        // statement's condition or header does: it names its own line when
+        // its statement runs.
+        if (inChild(e.loc)) return true;
         if (e.kind === "libCall" && NEVER_THROW_LIB_FNS.has(e.fn)) return true;
         // A direct call to a function that mints no Error and cannot raise
         // cannot observe this frame either: hot loops over pure helpers stay

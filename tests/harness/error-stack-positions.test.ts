@@ -71,6 +71,18 @@ function captureConstructor(): string {
   return new CapturedError().stack ?? "";
 }
 
+function branchy(): string {
+  let out = "";
+  if (frames(middle()) !== "") {
+    middle();
+    out = "then";
+  } else {
+    middle();
+    out = "else";
+  }
+  return out;
+}
+
 function sequenced(): string {
   let note = "";
   const stack = (note = "x", middle());
@@ -93,6 +105,7 @@ console.log("capture", frames(middle()));
 console.log("method", frames(new Holder().fetch()));
 console.log("throw", frames(caughtThrow()));
 console.log("module", frames(new Error("top").stack ?? ""));
+console.log("if condition", branchy());
 console.log("sequence", frames(sequenced()));
 console.log("constructor", frames(captureConstructor()));
 console.log("loop", loopCondition(middle));

@@ -70,6 +70,12 @@ test("AsyncResource bindings own their payload and release it", async () => {
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
+test("a store and a resource that hold each other are collected", async () => {
+  const result = await execFileAsync(bin, ["cycle"]);
+  expect(result.stdout).toBe("a store and a resource that hold each other are collected\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("an AsyncResource handle owns its payload", async () => {
   const result = await execFileAsync(bin, ["resources"]);
   expect(result.stdout).toBe("async resource handles own their payload\n");

@@ -488,18 +488,48 @@ static void *scr_ar_retain(void *h) {
   return h;
 }
 
-static void scr_ar_release(void *h) {
-  ScrAsyncResource *r = h;
-  if (r == NULL || --r->rc > 0) return;
-  for (ScrAsyncResource **link = &scr_ar_live; link != NULL; link = &(*link)->next) {
+/* Unlink a resource from the live list. Its last reference calls this once; a
+ * collector pass that frees the resource calls it too. */
+static void scr_ar_unlink(ScrAsyncResource *r) {
+  for (ScrAsyncResource **link = &scr_ar_live; link != NULL && *link != NULL;
+       link = &(*link)->next) {
     if (*link == r) {
       *link = r->next;
       break;
     }
   }
-  scr_ar_release_payload(r);
   scr_ar_live_count--;
-  free(r);
+}
+
+/* A resource is a collector object. Its children are the type it was created
+ * with and the snapshot it captured; a snapshot's entries are traced as well,
+ * so a store that holds a bound callback of a resource that captured that store
+ * is one loop the collector can walk and reclaim. A collected resource releases
+ * nothing itself — the collector accounted for both children — beyond its
+ * live-list entry. */
+static void scr_ar_trace(void *o, ScrTraceVisit visit, void *ctx) {
+  ScrAsyncResource *r = o;
+  visit(r->type, ctx);
+  visit(r->ctx, ctx);
+}
+
+static void scr_ar_gcfree(void *o) {
+  ScrAsyncResource *r = o;
+  scr_ar_unlink(r);
+  scr_cyc_free(r);
+}
+
+static void scr_ar_release(void *h) {
+  ScrAsyncResource *r = h;
+  if (r == NULL) return;
+  if (--r->rc != 0) {
+    scr_cyc_released(r); /* possible cycle root; may collect — r is done */
+    return;
+  }
+  scr_cyc_dead(r);
+  scr_ar_unlink(r);
+  scr_ar_release_payload(r);
+  scr_cyc_free(r);
 }
 
 /* The resource behind a handle box. A value asserted past the type can carry
@@ -646,7 +676,8 @@ ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options) {
     teardown_registered = true;
     scr_atexit(scr_ar_teardown);
   }
-  ScrAsyncResource *r = calloc(1, sizeof *r);
+  static ScrCycType cyc_type = {&scr_ar_trace, &scr_ar_gcfree, SCR_CYC_KIND_NONE};
+  ScrAsyncResource *r = scr_cyc_alloc(sizeof *r, &cyc_type);
   if (!r) scr_ad_oom();
   r->rc = 1;
   r->type = scr_dyn_retain(type);
@@ -731,7 +762,7 @@ static ScrDyn *scr_ar_make_bound(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg) {
   /* The bound function owns the resource payload itself (retained by the
    * box), not a dynamic handle value: no dyn value is left behind for the
    * exit audit to find, and the payload's context is released at exit. */
-  closure->caps[2] = scr_box_new_obj(scr_ar_retain, scr_ar_release, NULL);
+  closure->caps[2] = scr_box_new_obj(scr_ar_retain, scr_ar_release, scr_ar_trace);
   scr_box_set_ref(closure->caps[2], scr_ar_retain(scr_ar_payload(handle)));
   uint32_t arity = fn->kind == SCR_DYN_FUNC ? fn->v.fn.arity : 0;
   const char *name = this_arg->kind == SCR_DYN_UNDEF ? "bound" : "bound runInAsyncScope";

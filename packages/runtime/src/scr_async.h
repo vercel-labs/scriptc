@@ -272,6 +272,9 @@ ScrAlsCtx **scr_als_slot(void);
 #endif
 ScrAlsCtx *scr_als_ctx_retain(ScrAlsCtx *c);
 void scr_als_ctx_release(ScrAlsCtx *c);
+/* Live snapshots on this thread (the runtime tests assert a store <-> resource
+ * loop returns to its baseline). */
+long scr_als_live_contexts(void);
 /* After an enterWith: on the main stack, queues the tick that ends it. */
 void scr_als_entered_with(void);
 ScrAlsCtx *scr_als_ctx_alloc(size_t len);

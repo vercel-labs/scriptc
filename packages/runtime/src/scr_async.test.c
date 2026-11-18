@@ -335,6 +335,43 @@ static void async_resource_destroy_keeps_its_context(void) {
   printf("a destroyed async resource keeps its context until the resource is freed\n");
 }
 
+/* A store that holds a bound callback of a resource that captured that store is
+ * one loop: store value -> callback -> resource -> snapshot -> store value.
+ * Nothing in it is reference-counted to zero once the program lets go, so one
+ * collector pass has to reclaim the resource and the snapshot — for many
+ * requests, the live counts come back to where they started. */
+static void async_resource_store_cycle_is_collected(void) {
+  const size_t live_before = scr_ar_live_resources();
+  const long ctx_before = scr_als_live_contexts();
+  const double store_id = scr_als_new();
+  ScrStr *name = scr_str_new("CYCLE", 5);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < 64; i++) {
+    ScrDyn *store_value = scr_dyn_new_obj();
+    ScrAlsCtx *prev = scr_als_enter(store_id, store_value);
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    ScrClosure *closure = scr_closure_new(NULL, 0);
+    ScrDyn *target = scr_dyn_new_func(closure, ar_test_target, 0, "()", "target");
+    ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
+    assert(bound != NULL);
+    scr_dyn_obj_set(store_value, "cb", 2, scr_dyn_retain(bound));
+    scr_als_restore(prev);
+    /* The program lets go of every direct reference; the loop stays. */
+    scr_dyn_release(resource);
+    scr_dyn_release(bound);
+    scr_dyn_release(target);
+    scr_dyn_release(store_value);
+  }
+  scr_dyn_release(type);
+  /* The loop is unreachable: one pass reclaims it, snapshots included. */
+  scr_collect_cycles();
+  assert(scr_ar_live_resources() == live_before);
+  assert(scr_als_live_contexts() == ctx_before);
+  printf("a store and a resource that hold each other are collected\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
@@ -343,6 +380,10 @@ int main(int argc, char **argv) {
   }
   if (argc > 1 && strcmp(argv[1], "destroy") == 0) {
     async_resource_destroy_keeps_its_context();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "cycle") == 0) {
+    async_resource_store_cycle_is_collected();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "bindings") == 0) {

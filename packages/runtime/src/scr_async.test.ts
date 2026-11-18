@@ -56,6 +56,12 @@ test("fiber stacks commit on demand and preserve large frames across suspension"
 // With every deadline already passed, the order is the timer heap's and the
 // loop's, not the clock's: tests/corpus/timers-cross-kind-clears.ts once
 // showed the first of these only when its own script ran fast enough.
+test("a destroyed AsyncResource releases its captured context", async () => {
+  const result = await execFileAsync(bin, ["destroy"]);
+  expect(result.stdout).toBe("a destroyed async resource releases its captured context\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("AsyncResource bindings own their payload and release it", async () => {
   const result = await execFileAsync(bin, ["bindings"]);
   expect(result.stdout).toBe("async resource bindings own and release their payload\n");

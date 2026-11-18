@@ -776,7 +776,15 @@ ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg) {
 
 ScrDyn *scr_ar_emit_destroy(ScrDyn *handle) {
   ScrAsyncResource *r = scr_ar_payload(handle);
-  if (r != NULL) r->destroyed = true; /* destroy hooks dispatch here */
+  if (r != NULL && !r->destroyed) {
+    r->destroyed = true; /* destroy hooks dispatch here */
+    /* The resource is done: the store context it captured is released now,
+     * not held until the handle itself dies, so a per-request resource does
+     * not keep its request's stores alive for as long as the handle (or a
+     * bound callback) is referenced. A second destroy is a no-op. */
+    scr_als_ctx_release(r->ctx);
+    r->ctx = NULL;
+  }
   return scr_dyn_retain(handle);
 }
 

@@ -297,10 +297,44 @@ static void async_resource_bindings_own_and_release_their_payload(void) {
   printf("async resource bindings own and release their payload\n");
 }
 
+/* A destroyed resource releases the store context it captured: the context
+ * a per-request resource would otherwise hold for its handle's lifetime. */
+static void async_resource_destroy_releases_its_context(void) {
+  const size_t live_before = scr_ar_live_resources();
+  ScrStr *value_name = scr_str_new("v", 1);
+  ScrDyn *store_value = scr_dyn_new_str(value_name);
+  scr_str_release(value_name);
+  ScrAlsCtx *prev = scr_als_enter(1, store_value);
+  scr_dyn_release(store_value);
+  ScrAlsCtx *ctx = scr_als_capture(); /* the active slot's context (+1) */
+  assert(ctx != NULL);
+  const size_t rc_before = ctx->rc; /* the slot's reference and ours */
+  ScrStr *name = scr_str_new("DESTROYED", 9);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *resource = scr_ar_new(type, NULL); /* captures the context (+1) */
+  assert(resource != NULL);
+  scr_als_restore(prev); /* the slot lets go; the resource and we hold it */
+  assert(ctx->rc == rc_before);
+  ScrDyn *same = scr_ar_emit_destroy(resource);
+  assert(same != NULL);
+  scr_dyn_release(same);
+  assert(ctx->rc == rc_before - 1); /* released at destroy */
+  scr_dyn_release(resource);
+  scr_dyn_release(type);
+  assert(scr_ar_live_resources() == live_before);
+  scr_als_ctx_release(ctx);
+  printf("a destroyed async resource releases its captured context\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
     due_timers_run_by_deadline_before_immediates();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "destroy") == 0) {
+    async_resource_destroy_releases_its_context();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "bindings") == 0) {

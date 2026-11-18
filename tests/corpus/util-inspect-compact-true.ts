@@ -28,6 +28,12 @@ console.log(inspect({ a: [1, 2], b: { c: 3 } }, { compact: true, breakLength: 30
 const parsed = JSON.parse('{"obj":{"a":1},"list":[1,2,3]}');
 console.log(inspect(parsed, { compact: true, breakLength: 15 }));
 console.log(inspect({ wide: "日本語日本語" }, { compact: true, breakLength: 12 }));
+const colorOptions: any = { compact: true, colors: true, breakLength: 8 };
+console.log(JSON.stringify(inspect({ s: "abcdef" }, colorOptions)));
+const symbol = Symbol("tag");
+const withSymbol: any = { a: 1 };
+withSymbol[symbol] = { nested: 12345 };
+console.log(inspect(withSymbol, { compact: true, breakLength: 12 }));
 class CompactView {
   [custom](_depth: number, options: { compact?: boolean }): string {
     return `compact=${String(options.compact)}`;

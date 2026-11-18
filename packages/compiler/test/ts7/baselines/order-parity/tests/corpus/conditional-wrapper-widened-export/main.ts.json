@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/conditional-wrapper-widened-export/a.cjs",
+  "<repo>/tests/corpus/conditional-wrapper-widened-export/b.cjs",
+  "<repo>/tests/corpus/conditional-wrapper-widened-export/w.cjs",
+  "<repo>/tests/corpus/conditional-wrapper-widened-export/main.ts"
+ ],
+ "diags": []
+}

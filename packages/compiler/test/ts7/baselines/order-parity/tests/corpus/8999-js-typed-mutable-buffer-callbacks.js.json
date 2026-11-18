@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8999-js-typed-mutable-buffer-callbacks.js"
+ ],
+ "diags": []
+}

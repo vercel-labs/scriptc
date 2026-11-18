@@ -3500,16 +3500,24 @@ typedef struct ScrHttpConn {
   struct ScrHttpClientReq *client; /* +1 in client mode; released at close */
 } ScrHttpConn;
 
+static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name);
+static struct ScrHttpAgent *scr_http_agent_retain(struct ScrHttpAgent *a);
+static void scr_http_agent_release(struct ScrHttpAgent *a);
+
 /* The connection's socket joins an agent's totalSocketCount when it starts
- * to dial, and leaves it when it closes. */
-static void scr_http_conn_count(ScrHttpConn *conn, ScrHttpSockCount *k) {
+ * to dial, and leaves it when it closes. The connection holds its own
+ * reference on the agent for that window: a socket that outlives the
+ * program's last reference (the exit sweep runs before the sockets close)
+ * still lowers a live count, and the wake it serves the queue with never
+ * reaches a freed agent. */
+static void scr_http_conn_count(ScrHttpConn *conn, ScrHttpSockCount *k,
+                                 struct ScrHttpAgent *ag) {
   if (conn == NULL || conn->sock_count != NULL) return;
   k->rc++;
   k->n++;
   conn->sock_count = k;
+  conn->count_agent = ag != NULL ? scr_http_agent_retain(ag) : NULL;
 }
-
-static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name);
 
 static void scr_http_conn_uncount(ScrHttpConn *conn) {
   ScrHttpSockCount *k = conn != NULL ? conn->sock_count : NULL;
@@ -3523,6 +3531,7 @@ static void scr_http_conn_uncount(ScrHttpConn *conn) {
     struct ScrHttpAgent *ag = conn->count_agent;
     conn->count_agent = NULL;
     scr_http_agent_pump(ag, NULL);
+    scr_http_agent_release(ag);
   }
 }
 
@@ -7808,8 +7817,10 @@ static ScrHttpAgentFree *scr_http_agent_free_take(ScrHttpAgent *a, const ScrStr 
     ScrHttpAgentFree *dead = dead_list;
     dead_list = dead->next;
     if (dead->conn != NULL) {
-      scr_http_conn_uncount(dead->conn);
+      /* leave the pool before the slot does: the wake may run a teardown
+       * that reaches this connection again */
       dead->conn->pool_agent = NULL;
+      scr_http_conn_uncount(dead->conn);
     }
     ScrStr *dead_name = dead->name; /* ownership moves to the pump */
     ScrStr *dead_key = dead->pool_key;
@@ -8048,8 +8059,7 @@ static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
           e->queued = false;
           ag->nqueued--;
           if (e->client->sock) {
-            scr_http_conn_count(e->client->conn, ag->sock_count);
-            e->client->conn->count_agent = ag;
+            scr_http_conn_count(e->client->conn, ag->sock_count, ag);
             scr_net_sock_dial_start(e->client->sock);
           }
           started = true;
@@ -8067,8 +8077,7 @@ static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
         e->queued = false;
         ag->nqueued--;
         if (e->client->sock) {
-          scr_http_conn_count(e->client->conn, ag->sock_count);
-          e->client->conn->count_agent = ag;
+          scr_http_conn_count(e->client->conn, ag->sock_count, ag);
           scr_net_sock_dial_start(e->client->sock);
         }
         break;
@@ -8289,8 +8298,7 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
   }
   if (reuse != NULL) scr_http_client_rebind(c, reuse, true);
   else if (!queue) {
-    scr_http_conn_count(c->conn, ag->sock_count); /* dialed now */
-    c->conn->count_agent = ag;
+    scr_http_conn_count(c->conn, ag->sock_count, ag); /* dialed now */
   }
   c->agent = scr_http_agent_retain(ag);
   ScrHttpAgentEnt *e = calloc(1, sizeof *e);

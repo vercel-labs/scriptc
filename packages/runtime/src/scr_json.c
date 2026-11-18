@@ -22277,8 +22277,7 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     scr_throw_error_msg(SCR_ERR_TYPE, m, strlen(m));
     return false;
   }
-  if (v->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(v))
-    return scr_dyn_handle_own_name(v, key);
+
 
   if (v->kind == SCR_DYN_OBJ) {
     /* Object.prototype's builtin members are its own properties (zod's
@@ -22315,6 +22314,9 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     bool out;
     if (SCR_HP(v) && scr_dyn_handle_props_hooks->has_own(v, key, false, &out)) return out;
 #endif
+    /* A class's declared own properties answer next (a database's limits
+     * object); a handle with a property table answered above. */
+    if (!scr_ni_dyn_handle(v)) return scr_dyn_handle_own_name(v, key);
     /* An island object: Node answers, by its own intrinsic. */
     if (scr_ni_dyn_handle(v)) {
       ScrDyn *k = scr_dyn_new_str((ScrStr *)key);

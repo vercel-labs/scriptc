@@ -698,6 +698,7 @@ struct ScrH2Stream {
    * 'wantTrailers'/'trailers' pair of events. */
   bool want_trailers;   /* the response waits for a trailer block */
   bool trailers_ready;  /* 'wantTrailers' fired: sendTrailers may go out */
+  bool wanttrailers_queued; /* the deferred 'wantTrailers' visit is queued */
   bool sent_trailers;
   bool got_response;    /* client: the final response HEADERS arrived */
   bool got_trailers;    /* the request/response trailer block arrived */
@@ -962,6 +963,7 @@ enum {
   SCR_H2_EMIT_SESSION_CONNECT, /* client 'connect' */
   SCR_H2_EMIT_SESSION_PINGS,   /* cancelled ping() callbacks */
   SCR_H2_EMIT_STREAM_DRAIN,    /* deliver buffered data (+ maybe 'end') */
+  SCR_H2_EMIT_STREAM_WANT_TRAILERS, /* the body drained: fire 'wantTrailers' */
 };
 
 typedef struct {
@@ -985,6 +987,7 @@ static void scr_h2_emit_release(ScrH2Emit *e) {
     break;
   case SCR_H2_EMIT_STREAM_CLOSED:
   case SCR_H2_EMIT_STREAM_DRAIN:
+  case SCR_H2_EMIT_STREAM_WANT_TRAILERS:
     scr_http2_stream_release((ScrH2Stream *)e->h);
     break;
   default:
@@ -1339,6 +1342,8 @@ static void scr_h2_stream_fire_close(ScrH2Stream *st) {
   scr_h2_stream_drop_lists(st);
 }
 
+static void scr_h2_stream_want_trailers(ScrH2Stream *st);
+
 static bool scr_h2_proto_pending(void) { return scr_h2_emits_head < scr_h2_emits_len; }
 
 static void scr_h2_proto_sweep(void) {
@@ -1346,7 +1351,8 @@ static void scr_h2_proto_sweep(void) {
     ScrH2Emit e = scr_h2_emits[scr_h2_emits_head++];
     ScrAlsCtx *prev = scr_als_dispatch_enter(
         e.kind == SCR_H2_EMIT_STREAM_CLOSE || e.kind == SCR_H2_EMIT_STREAM_CLOSED ||
-                e.kind == SCR_H2_EMIT_STREAM_DRAIN
+                e.kind == SCR_H2_EMIT_STREAM_DRAIN ||
+                e.kind == SCR_H2_EMIT_STREAM_WANT_TRAILERS
             ? ((ScrH2Stream *)e.h)->als
             : ((ScrH2Session *)e.h)->als);
     bool yield = false;
@@ -1379,6 +1385,9 @@ static void scr_h2_proto_sweep(void) {
       break;
     case SCR_H2_EMIT_STREAM_DRAIN:
       scr_h2_stream_drain((ScrH2Stream *)e.h);
+      break;
+    case SCR_H2_EMIT_STREAM_WANT_TRAILERS:
+      scr_h2_stream_want_trailers((ScrH2Stream *)e.h);
       break;
     case SCR_H2_EMIT_SESSION_PINGS:
       scr_h2_session_cancel_pings((ScrH2Session *)e.h);
@@ -2121,7 +2130,8 @@ static void scr_h2_send_trailers_block(ScrH2Stream *st, ScrArr *pairs /*borrowed
  * listeners run, and a stream nobody listens on finishes with an empty
  * block (Node's auto-send). */
 static void scr_h2_stream_want_trailers(ScrH2Stream *st) {
-  if (st->trailers_ready) return;
+  st->wanttrailers_queued = false;
+  if (st->trailers_ready || st->destroyed || scr_h2_stream_local_closed(st)) return;
   st->trailers_ready = true;
   if (st->compat_res != NULL) {
     ScrArr *pairs = scr_http_h2_res_trailer_pairs(st->compat_res);
@@ -2171,8 +2181,14 @@ static void scr_h2_stream_flush(ScrH2Stream *st) {
   }
   if (st->wbuf.len == 0 && st->want_end && !scr_h2_stream_local_closed(st)) {
     if (trailers_expected) {
-      /* the END_STREAM follows the trailer block */
-      scr_h2_stream_want_trailers(st);
+      /* The END_STREAM follows the trailer block. The flush runs inside
+       * end(), while the program may not have registered its
+       * 'wantTrailers' listener yet; Node's emission is a write-completion
+       * callback, so defer it to the next sweep like Node's next tick. */
+      if (!st->trailers_ready && !st->wanttrailers_queued) {
+        st->wanttrailers_queued = true;
+        scr_h2_emit_push(SCR_H2_EMIT_STREAM_WANT_TRAILERS, scr_http2_stream_retain(st));
+      }
     } else {
       scr_h2_send_frame(s, SCR_H2_F_DATA, SCR_H2_FLAG_END_STREAM, st->id, NULL, 0);
       scr_h2_stream_mark_local_closed(st);

@@ -78,4 +78,30 @@ const lines: string[] = [];
   });
 }
 
+// A listener registered immediately AFTER end() still hears the event:
+// Node emits 'wantTrailers' from the write completion, not inside the
+// synchronous end() call, so the subsequent registration is in place.
+{
+  const server = http2.createServer();
+  server.on("stream", (stream) => {
+    stream.respond({ ":status": 200 }, { waitForTrailers: true });
+    stream.end("after");
+    stream.on("wantTrailers", () => {
+      lines.push("after wantTrailers");
+      stream.sendTrailers({ "x-after": "1" });
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const client = http2.connect(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const request = client.request({ ":path": "/after" });
+      request.on("trailers", (trailers) => lines.push(`after trailers ${trailers["x-after"]}`));
+      request.resume();
+      request.on("end", () => lines.push("after end"));
+      request.on("close", () => client.close(() => server.close(() => resolve())));
+      request.end();
+    });
+  });
+}
+
 for (const line of lines.sort()) console.log(line);

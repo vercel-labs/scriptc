@@ -580,6 +580,10 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
             },
           ]
         : []),
+      // A value that is not an object answers the constructed `this`
+      // (spec 10.2.2). A constructor whose `this` a base rebound publishes
+      // that instance here, exactly as a bare return does.
+      ...(lowerer.ctx.constructorEpilogue?.("return") ?? []),
       { kind: "return", value: null, loc },
     ],
     loc,
@@ -990,14 +994,31 @@ export function constructedFromValue(
         {
           kind: "if",
           cond: {
-            kind: "unionIsTag",
-            unionId: (slot.type as Extract<IrType, { kind: "union" }>).unionId,
-            tag: lowerer.armTag(
-              (slot.type as Extract<IrType, { kind: "union" }>).unionId,
-              UNDEFINED_T,
-            ),
-            negated: true,
-            value: varRef(held.id, slot.type, loc),
+            kind: "logical",
+            op: "&&",
+            // The slot answers this construction only when the object this
+            // construction allocated is that descendant: a sibling class
+            // constructed and abandoned while the arguments ran leaves its
+            // own slot set, and that instance is not this one.
+            left: {
+              kind: "instanceOf",
+              value: varRef(instance.id, type, loc),
+              className: sub.def.name,
+              type: BOOL,
+              loc,
+            },
+            right: {
+              kind: "unionIsTag",
+              unionId: (slot.type as Extract<IrType, { kind: "union" }>).unionId,
+              tag: lowerer.armTag(
+                (slot.type as Extract<IrType, { kind: "union" }>).unionId,
+                UNDEFINED_T,
+              ),
+              negated: true,
+              value: varRef(held.id, slot.type, loc),
+              type: BOOL,
+              loc,
+            },
             type: BOOL,
             loc,
           },

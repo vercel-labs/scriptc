@@ -94,6 +94,9 @@ function classEligible(lowerer: Lowerer, className: string, visiting: Set<string
       // A function-valued field is dropped from the output, like any
       // function-valued property; the writer skips it.
       if (field.type.kind === "func") continue;
+      // A record value that declares toJSON answers for the whole value in
+      // Node's walk; the type-directed record writer would skip the call.
+      if (recordDeclaresToJson(lowerer, field.type)) return false;
       if (!fieldJsonSafe(lowerer, field.type, visiting)) return false;
     }
   }
@@ -168,6 +171,42 @@ function fieldJsonSafe(lowerer: Lowerer, t: IrType, visiting: Set<string>): bool
       );
       visiting.delete(key);
       return safe;
+    }
+    default:
+      return false;
+  }
+}
+
+/** Whether a record reachable from `t` declares a toJSON method. Such a type
+ * cannot be serialized field by field: Node calls the method (with the record
+ * as receiver) and serializes what it answers, so the value takes the runtime
+ * walker. */
+export function recordDeclaresToJson(
+  lowerer: Lowerer,
+  t: IrType,
+  visiting: Set<string> = new Set(),
+): boolean {
+  switch (t.kind) {
+    case "array":
+      return recordDeclaresToJson(lowerer, t.elem, visiting);
+    case "record": {
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (shape === undefined || visiting.has(t.shapeId)) return false;
+      visiting.add(t.shapeId);
+      for (const field of shape.fields) {
+        if (field.name === "toJSON" && field.type.kind === "func") return true;
+        if (recordDeclaresToJson(lowerer, field.type, visiting)) return true;
+      }
+      return shape.indexValue !== undefined
+        ? recordDeclaresToJson(lowerer, shape.indexValue, visiting)
+        : false;
+    }
+    case "union": {
+      const def = lowerer.unions.get(t.unionId);
+      const key = `union:${t.unionId}`;
+      if (def === undefined || visiting.has(key)) return false;
+      visiting.add(key);
+      return def.arms.some((arm) => recordDeclaresToJson(lowerer, arm, visiting));
     }
     default:
       return false;

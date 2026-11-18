@@ -998,6 +998,11 @@ export class LlWalkers {
       case "record": {
         const shape = host.recordsById.get(t.shapeId);
         if (!shape) return false;
+        // A shape realized as a view over a checked-dynamic object reads its
+        // fields through the runtime, where accessors (installed on undeclared
+        // keys or on the declared ones) can run user code and change the
+        // containers of the walk.
+        if (host.recordViews?.targets.has(t.shapeId) === true) return true;
         return (
           shape.fields.some((field) => this.serializationMayCallUserCode(field.type, seen)) ||
           (shape.indexValue !== undefined &&

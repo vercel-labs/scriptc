@@ -1011,7 +1011,10 @@ interface SubtleCrypto {
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
-  digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
+  digest(
+    algorithm: AlgorithmIdentifier | CShakeParams | TurboShakeParams,
+    data: BufferSource,
+  ): Promise<ArrayBuffer>;
   encrypt(
     algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,

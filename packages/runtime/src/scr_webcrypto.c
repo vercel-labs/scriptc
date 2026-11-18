@@ -373,7 +373,7 @@ ScrStr *scr_wc_algorithm_name(ScrDyn *identifier, const char *dict) {
  * process-warning unit is linked, and otherwise to the default report. It
  * does not go through scr_emit_warning, which would make every WebCrypto
  * program link that unit. */
-static SCR_TL bool scr_wc_experimental_warned[10];
+static SCR_TL bool scr_wc_experimental_warned[14];
 
 static void scr_wc_warning_tick(ScrClosure *self) {
   ScrStr *type = (ScrStr *)scr_box_get_ref(self->caps[0]);
@@ -399,7 +399,8 @@ static void scr_wc_warning_tick(ScrClosure *self) {
 static void scr_wc_warn_experimental_algorithm(const char *canonical) {
   static const char *const names[] = {"SHA3-256", "SHA3-384",      "SHA3-512", "AES-OCB",
                                       "ChaCha20-Poly1305", "KMAC128", "KMAC256", "Argon2d",
-                                      "Argon2i", "Argon2id"};
+                                      "Argon2i", "Argon2id", "cSHAKE128", "cSHAKE256",
+                                      "TurboSHAKE128", "TurboSHAKE256"};
   for (size_t i = 0; i < SCR_WC_COUNT(names); i++) {
     if (strcmp(canonical, names[i]) != 0) continue;
     if (scr_wc_experimental_warned[i]) return;
@@ -1953,6 +1954,120 @@ done:
   return result ? result : scr_wc_rejected();
 }
 
+/* A CShakeParams BufferSource member: absent leaves *out NULL; a view on a
+ * SharedArrayBuffer draws Node's TypeError. */
+static bool scr_wc_cshake_buffer(const ScrDyn *dict, const char *member, ScrBytes **out) {
+  ScrDyn *value = scr_wc_member(dict, member);
+  bool ok = true;
+  if (value->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(value);
+    return true;
+  }
+  if (value->kind == SCR_DYN_BYTES && value->v.bytes->backing && value->v.bytes->backing->shared) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE",
+                      "%s: %s in passed algorithm is a view on a SharedArrayBuffer, which is not "
+                      "allowed.",
+                      scr_wc_normalize_prefix, member);
+    ok = false;
+  } else {
+    ScrDyn *plain = scr_wc_plain(value);
+    if (!plain) ok = false;
+    else if (plain->kind == SCR_DYN_BYTES || scr_array_buffer_is(plain)) {
+      *out = scr_bytes_buffer_source(plain);
+    } else {
+      scr_wc_type_error("ERR_INVALID_ARG_TYPE",
+                        "%s: %s in passed algorithm is not instance of ArrayBuffer, Buffer, "
+                        "TypedArray, or DataView.",
+                        scr_wc_normalize_prefix, member);
+      ok = false;
+    }
+    if (plain) scr_dyn_release(plain);
+  }
+  scr_dyn_release(value);
+  return ok;
+}
+
+/* TurboShakeParams: the required outputLength in bits (a positive whole
+ * number of bytes) and the optional domainSeparation in 0x01..0x7f,
+ * defaulting to 0x1f. */
+static bool scr_wc_turboshake_params(ScrDyn *identifier, const char *canonical, double *bits_out,
+                                     double *domain_out) {
+  *domain_out = 0x1f;
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("TurboShakeParams", "outputLength");
+    return false;
+  }
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  bool ok = true;
+  ScrDyn *length = scr_wc_member(plain, "outputLength");
+  if (length->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("TurboShakeParams", "outputLength");
+    ok = false;
+  } else if (!scr_wc_enforce_range(scr_wc_normalize_prefix, "outputLength in passed algorithm",
+                                   length, 4294967295.0, bits_out)) {
+    ok = false;
+  }
+  scr_dyn_release(length);
+  if (ok) {
+    ScrDyn *domain = scr_wc_member(plain, "domainSeparation");
+    if (domain->kind != SCR_DYN_UNDEF &&
+        !scr_wc_enforce_range(scr_wc_normalize_prefix, "domainSeparation in passed algorithm",
+                              domain, 255.0, domain_out))
+      ok = false;
+    scr_dyn_release(domain);
+  }
+  scr_dyn_release(plain);
+  if (ok && (*bits_out < 8 || fmod(*bits_out, 8) != 0 || *bits_out > 4294967288.0)) {
+    scr_throw_domex("OperationError", "Invalid TurboShakeParams outputLength");
+    ok = false;
+  }
+  if (ok && (*domain_out < 1 || *domain_out > 127)) {
+    scr_throw_domex("OperationError", "TurboShakeParams.domainSeparation must be in range 0x01-0x7f");
+    ok = false;
+  }
+  if (ok) scr_wc_warn_experimental_algorithm(canonical);
+  return ok;
+}
+
+/* CShakeParams: the required outputLength in bits (at most 2^32 - 8, which
+ * Node's cSHAKE accepts) and the optional functionName and customization,
+ * whose only supported function name is "KMAC" (and the empty one). */
+static bool scr_wc_cshake_params(ScrDyn *identifier, const char *canonical, double *bits_out,
+                                 ScrBytes **func_out, ScrBytes **custom_out) {
+  if (!scr_wc_is_object(identifier)) {
+    scr_wc_missing_member("CShakeParams", "outputLength");
+    return false;
+  }
+  ScrDyn *plain = scr_wc_plain(identifier);
+  if (!plain) return false;
+  bool ok = true;
+  ScrDyn *length = scr_wc_member(plain, "outputLength");
+  if (length->kind == SCR_DYN_UNDEF) {
+    scr_wc_missing_member("CShakeParams", "outputLength");
+    ok = false;
+  } else if (!scr_wc_enforce_range(scr_wc_normalize_prefix, "outputLength in passed algorithm",
+                                   length, 4294967295.0, bits_out)) {
+    ok = false;
+  }
+  scr_dyn_release(length);
+  if (ok) ok = scr_wc_cshake_buffer(plain, "functionName", func_out);
+  if (ok) ok = scr_wc_cshake_buffer(plain, "customization", custom_out);
+  scr_dyn_release(plain);
+  if (!ok) return false;
+  if (*func_out && scr_bytes_byte_len(*func_out) != 0 &&
+      !(scr_bytes_byte_len(*func_out) == 4 && memcmp((*func_out)->data, "KMAC", 4) == 0)) {
+    scr_throw_domex("NotSupportedError", "Unsupported CShakeParams functionName");
+    return false;
+  }
+  if (*bits_out > 4294967288.0) {
+    scr_throw_domex("OperationError", "Invalid CShakeParams outputLength");
+    return false;
+  }
+  scr_wc_warn_experimental_algorithm(canonical);
+  return true;
+}
+
 /* digest(algorithm, data). */
 ScrPromise *scr_webcrypto_digest(ScrDyn *args) {
   static const char prefix[] = "Failed to execute 'digest' on 'SubtleCrypto'";
@@ -1968,6 +2083,49 @@ ScrPromise *scr_webcrypto_digest(ScrDyn *args) {
   }
   data = scr_wc_buffer_source(prefix, 1, a.v[1]);
   if (!data) goto done;
+  {
+    ScrStr *name = scr_wc_algorithm_name(a.v[0], "Algorithm");
+    if (!name) goto done;
+    const char *canonical =
+        scr_wc_lookup(scr_wc_digest_names, SCR_WC_COUNT(scr_wc_digest_names), name);
+    scr_str_release(name);
+    if (canonical != NULL &&
+        (strcmp(canonical, "cSHAKE128") == 0 || strcmp(canonical, "cSHAKE256") == 0)) {
+      double bits = 0;
+      ScrBytes *func = NULL;
+      ScrBytes *custom = NULL;
+      if (!scr_wc_cshake_params(a.v[0], canonical, &bits, &func, &custom)) {
+        if (func) scr_bytes_release(func);
+        if (custom) scr_bytes_release(custom);
+        goto done;
+      }
+      size_t out_bytes = (size_t)((bits + 7) / 8);
+      ScrBytes *view = data;
+      SCR_BYTES_SNAPSHOT(view);
+      out = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
+      scr_cshake_hash(strcmp(canonical, "cSHAKE256") == 0, func ? func->data : NULL,
+                      func ? (size_t)scr_bytes_byte_len(func) : 0,
+                      custom ? custom->data : NULL,
+                      custom ? (size_t)scr_bytes_byte_len(custom) : 0, view->data,
+                      (size_t)scr_bytes_byte_len(view), out->data, out_bytes, (size_t)bits);
+      if (func) scr_bytes_release(func);
+      if (custom) scr_bytes_release(custom);
+      goto done;
+    }
+    if (canonical != NULL &&
+        (strcmp(canonical, "TurboSHAKE128") == 0 || strcmp(canonical, "TurboSHAKE256") == 0)) {
+      double bits = 0;
+      double domain = 0x1f;
+      if (!scr_wc_turboshake_params(a.v[0], canonical, &bits, &domain)) goto done;
+      size_t out_bytes = (size_t)(bits / 8);
+      ScrBytes *view = data;
+      SCR_BYTES_SNAPSHOT(view);
+      out = scr_bytes_new(SCR_BYTES_U8, (double)out_bytes);
+      scr_turboshake_hash(strcmp(canonical, "TurboSHAKE256") == 0, (unsigned char)domain,
+                          view->data, (size_t)scr_bytes_byte_len(view), out->data, out_bytes);
+      goto done;
+    }
+  }
   const char *hash = scr_wc_digest_algorithm(a.v[0], "digest");
   if (!hash) goto done;
   {

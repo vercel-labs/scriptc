@@ -292,7 +292,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.streamOnError":
       runtime = "scr_http2_stream_on_error";
-      thunk = arity === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
+      thunk = arity === 0 ? "scr_child_err_thunk0" : "scr_http2_stream_err_thunk";
       break;
     case "http2.sessionOnSettings0":
       runtime = "scr_http2_session_on_settings";

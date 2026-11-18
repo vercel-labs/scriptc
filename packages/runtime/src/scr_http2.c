@@ -3669,6 +3669,15 @@ void scr_http2_resp_thunk(ScrClosure *cb, ScrArr *pairs, double status, double f
   ((void (*)(ScrClosure *, ScrArr *, double, double))cb->fn)(cb, pairs, status, flags);
 }
 
+/* A stream that closed with a nonzero code: Node raises an Error whose
+ * code is ERR_HTTP2_STREAM_ERROR and whose message carries the code name
+ * ("Stream closed with error code NGHTTP2_PROTOCOL_ERROR"). */
+void scr_http2_stream_err_thunk(ScrClosure *cb, ScrStr *msg) {
+  ScrError *error = scr_error_new(0 /* Error */, msg);
+  scr_error_set_code(error, "ERR_HTTP2_STREAM_ERROR");
+  ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, error);
+}
+
 void scr_http2_session_thunk(ScrClosure *cb, ScrH2Session *sess) {
   ((void (*)(ScrClosure *, ScrH2Session *))cb->fn)(cb, sess);
 }
@@ -3766,6 +3775,20 @@ static void scr_h2_dyn_fire_stream(ScrClosure *cb, ScrH2Stream *st, ScrArr *pair
   scr_dyn_release(fn);
   scr_http2_stream_release(st);
   scr_arr_release(pairs);
+}
+
+/* A stream error for a dyn listener: Node's ERR_HTTP2_STREAM_ERROR. */
+static void scr_h2_dyn_fire_stream_err(ScrClosure *cb, ScrStr *msg) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);
+  ScrError *e = scr_error_new(0 /* Error */, msg);
+  scr_error_set_code(e, "ERR_HTTP2_STREAM_ERROR");
+  ScrDyn *arg = scr_dyn_from_error(e);
+  ScrDyn *args[1] = { arg };
+  ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");
+  scr_dyn_release(r);
+  scr_dyn_release(arg);
+  scr_error_release(e);
+  scr_dyn_release(fn);
 }
 
 static void scr_h2_dyn_fire_resp(ScrClosure *cb, ScrArr *pairs, double status, double flags) {
@@ -3934,7 +3957,7 @@ static ScrDyn *scr_h2_dynh_stream_invoke(void *h, ScrDyn *self, const char *meth
     } else if (strcmp(ev, "aborted") == 0) {
       scr_http2_stream_on_aborted(st, scr_dyn_listener_closure0(args[1]), once);
     } else if (strcmp(ev, "error") == 0) {
-      scr_http2_stream_on_error(st, scr_dyn_listener_closure_err(args[1]), (ScrChildErrFn)&scr_dyn_listener_fire_err, once);
+      scr_http2_stream_on_error(st, scr_dyn_listener_closure_err(args[1]), (ScrChildErrFn)&scr_h2_dyn_fire_stream_err, once);
     } else if (strcmp(ev, "response") == 0) {
       scr_http2_stream_on_response(st, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_resp), (ScrH2RespFn)&scr_h2_dyn_fire_resp, once);
     } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {

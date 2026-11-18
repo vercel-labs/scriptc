@@ -18,4 +18,28 @@ await t("L -1", () => crypto.subtle.digest({ name: "cSHAKE128", outputLength: -1
 await t("L max", () => crypto.subtle.digest({ name: "cSHAKE128", outputLength: 4294967295 }, d));
 await t("fn bad", () => crypto.subtle.digest({ name: "cSHAKE128", outputLength: 64, functionName: Buffer.from("Email") }, d));
 await t("fn str", () => crypto.subtle.digest({ name: "cSHAKE128", outputLength: 64, functionName: "KMAC" as unknown as BufferSource }, d));
+await t("custom512", () =>
+  crypto.subtle.digest({ name: "cSHAKE128", outputLength: 256, customization: Buffer.alloc(512, 1) }, d),
+);
+await t("custom513", () =>
+  crypto.subtle.digest({ name: "cSHAKE128", outputLength: 256, customization: Buffer.alloc(513, 1) }, d),
+);
+await t("tuplehash", () =>
+  crypto.subtle.digest(
+    { name: "cSHAKE256", outputLength: 256, functionName: Buffer.from("TupleHash"), customization: Buffer.from("S") },
+    d,
+  ),
+);
+await t("parallelhash", () =>
+  crypto.subtle.digest(
+    { name: "cSHAKE128", outputLength: 256, functionName: Buffer.from("ParallelHash") },
+    d,
+  ),
+);
+await t("fn precedence", () =>
+  crypto.subtle.digest(
+    { name: "cSHAKE128", outputLength: 64, functionName: Buffer.from("X"), customization: Buffer.alloc(513) },
+    d,
+  ),
+);
 for (const row of out) console.log(row);

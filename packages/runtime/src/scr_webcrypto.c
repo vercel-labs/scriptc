@@ -2055,10 +2055,20 @@ static bool scr_wc_cshake_params(ScrDyn *identifier, const char *canonical, doub
   if (ok) ok = scr_wc_cshake_buffer(plain, "customization", custom_out);
   scr_dyn_release(plain);
   if (!ok) return false;
-  if (*func_out && scr_bytes_byte_len(*func_out) != 0 &&
-      !(scr_bytes_byte_len(*func_out) == 4 && memcmp((*func_out)->data, "KMAC", 4) == 0)) {
-    scr_throw_domex("NotSupportedError", "Unsupported CShakeParams functionName");
+  if (*custom_out && scr_bytes_byte_len(*custom_out) > 512) {
+    scr_throw_domex("OperationError", "CShakeParams.customization must be at most 512 bytes");
     return false;
+  }
+  if (*func_out && scr_bytes_byte_len(*func_out) != 0) {
+    size_t len = (size_t)scr_bytes_byte_len(*func_out);
+    const unsigned char *name = (*func_out)->data;
+    bool kmac = len == 4 && memcmp(name, "KMAC", 4) == 0;
+    bool tuple = len == 9 && memcmp(name, "TupleHash", 9) == 0;
+    bool parallel = len == 12 && memcmp(name, "ParallelHash", 12) == 0;
+    if (!kmac && !tuple && !parallel) {
+      scr_throw_domex("NotSupportedError", "Unsupported CShakeParams functionName");
+      return false;
+    }
   }
   if (*bits_out > 4294967288.0) {
     scr_throw_domex("OperationError", "Invalid CShakeParams outputLength");

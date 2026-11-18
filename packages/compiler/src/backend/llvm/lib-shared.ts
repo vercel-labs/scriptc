@@ -2130,6 +2130,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sc.json": "scr_sc_json",
   "sc.buffer": "scr_sc_buffer",
   "sc.bytes": "scr_sc_bytes",
+  "sc.blob": "scr_sc_blob",
   "sc.arrayBuffer": "scr_sc_array_buffer",
   "dc.channel": "scr_dc_channel",
   "dc.subscribe": "scr_dc_subscribe",

@@ -3949,11 +3949,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
     promisify:
       "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly",
   },
-  "stream/consumers": {
-    blob:
-      "collecting a stream into a Blob is not supported yet — " +
-      "buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text",
-  },
   module: {
     createRequire:
       "the lowered shape is a const binding (or a proven stable top-level let/var) over createRequire(import.meta.url) (or __filename) " +

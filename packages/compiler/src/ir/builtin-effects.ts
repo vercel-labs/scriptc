@@ -641,6 +641,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "sc.json",
   "sc.buffer",
   "sc.bytes",
+  "sc.blob",
   "sc.arrayBuffer",
   "readable.newDyn",
   "writable.newDyn",

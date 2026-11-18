@@ -6141,6 +6141,8 @@ function buildLibFnSignatures() {
     "sc.text": { argTypes: [null], result: { kind: "promise", inner: STRING } },
     "sc.json": { argTypes: [null], result: { kind: "promise", inner: DYN } },
     "sc.buffer": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
+    /** blob(stream): the concatenated chunks as a Blob (dyn). */
+    "sc.blob": { argTypes: [null], result: { kind: "promise", inner: DYN } },
     /** bytes(stream): sc.buffer's bytes as a plain Uint8Array. */
     "sc.bytes": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
     "sc.arrayBuffer": { argTypes: [null], result: { kind: "promise", inner: DYN } },

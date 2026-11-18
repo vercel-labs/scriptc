@@ -2950,14 +2950,6 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
-      "id": "node-builtin.stream.consumers.blob",
-      "kind": "node-builtin",
-      "name": "stream/consumers.blob",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "collecting a stream into a Blob is not supported yet — buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text"
-    },
-    {
       "id": "node-builtin.stream.promises",
       "kind": "node-builtin",
       "name": "stream/promises",

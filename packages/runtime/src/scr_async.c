@@ -475,6 +475,16 @@ ScrPromise *scr_promise_new(void) {
   return p;
 }
 
+/* The entries scr_lib.c's fs.mkdtempDisposable helpers reach the promise
+ * unit through, installed whenever this unit is linked (scr_lib.h's
+ * scr_mkdtemp_promise_* pointers). */
+__attribute__((constructor)) static void scr_mkdtemp_promise_bridge_install(void) {
+  scr_mkdtemp_promise_new = scr_promise_new;
+  scr_mkdtemp_promise_reject_pending = scr_promise_reject_pending;
+  scr_mkdtemp_promise_settled_ref = scr_promise_settled_ref;
+  scr_mkdtemp_promise_settled_void = scr_promise_settled_void;
+}
+
 /* Makes `dst` a view of `src`: the same promise to the program, at another
  * inner type. The view copies the source's settlement and, for a rejection,
  * becomes the promise that is tracked as unhandled (scr_promise_settle_from).

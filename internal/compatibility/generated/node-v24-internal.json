@@ -98093,6 +98093,7 @@
           "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn-default.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
+          "tests/fixtures/node-test/cases/mock-getter-setter.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
           "tests/fixtures/node-test/cases/mock-timers-behavior.ts",
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
@@ -99571,8 +99572,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.getter",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-getter-setter.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99730,8 +99735,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "partial",
+        "evidence": "compiler-feature:test.mock.setter",
+        "tests": [
+          "tests/fixtures/node-test/cases/mock-getter-setter.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

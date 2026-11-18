@@ -1206,15 +1206,20 @@ static bool scr_channel_dispatch(void) {
     }
     scr_worker_view_retain(view);
     if (event->message && !view->broadcast && scr_message_readable(event->message)) {
-      /* Compiled listeners with a typed message entry read the message. */
+      /* Compiled listeners with a typed message entry read the message; the
+       * EventTarget listeners receive the same decoded value as the emitter
+       * listeners, as Node's dispatch does. */
       ScrStr *name = scr_str_new("message", 7);
       scr_dyn_this_push(view, SCR_DYNH_MESSAGE_PORT);
-      scr_emitter_emit_message(view->events, name, event->message, scr_message_decode);
+      ScrDyn *argument = NULL;
+      scr_emitter_emit_message_out(view->events, name, event->message, scr_message_decode, &argument);
       scr_dyn_this_pop();
       scr_str_release(name);
-      ScrDyn *argument = scr_message_decode(event->message);
+      if (view->port && !argument && !scr_exc_pending()) argument = scr_message_decode(event->message);
       if (argument && !scr_exc_pending()) {
         scr_port_dispatch_message(view, argument);
+        scr_dyn_release(argument);
+      } else if (argument) {
         scr_dyn_release(argument);
       }
       scr_mail_event_free(event);
@@ -1421,19 +1426,25 @@ static void scr_worker_dispatch(void) {
   }
   scr_worker_view_retain(view);
   if (event->kind == SCR_WORKER_MESSAGE && event->message && scr_message_readable(event->message)) {
-    /* Compiled listeners with a typed message entry read the message. */
+    /* Compiled listeners with a typed message entry read the message; a
+     * port's EventTarget listeners receive the same decoded value. */
     if (!scr_exc_pending()) {
       ScrStr *name = scr_str_new("message", 7);
       scr_dyn_this_push(view, view->port ? SCR_DYNH_MESSAGE_PORT : SCR_DYNH_WORKER);
-      scr_emitter_emit_message(view->events, name, event->message, scr_message_decode);
+      ScrDyn *argument = NULL;
+      scr_emitter_emit_message_out(view->events, name, event->message, scr_message_decode, &argument);
       scr_dyn_this_pop();
       scr_str_release(name);
       if (view->port) {
-        ScrDyn *argument = scr_message_decode(event->message);
+        if (!argument && !scr_exc_pending()) argument = scr_message_decode(event->message);
         if (argument && !scr_exc_pending()) {
           scr_port_dispatch_message(view, argument);
           scr_dyn_release(argument);
+        } else if (argument) {
+          scr_dyn_release(argument);
         }
+      } else {
+        scr_dyn_release(argument);
       }
     }
     scr_worker_view_release(view);
@@ -1491,6 +1502,11 @@ static void scr_worker_dispatch(void) {
     else scr_emitter_emit_flex(view->events, name, argument ? &argument : NULL, argument ? 1 : 0);
     scr_dyn_this_pop();
     scr_str_release(name);
+    /* A message the typed entry cannot read (cyclic, aliased, transferred
+     * ports) still reaches the port's EventTarget listeners, with the same
+     * decoded value the emitter listeners got. */
+    if (event->kind == SCR_WORKER_MESSAGE && view->port && argument)
+      scr_port_dispatch_message(view, argument);
   }
   /* Node ends worker.stdout and worker.stderr as the worker exits: their
    * 'end' events follow 'exit'. */

@@ -62,6 +62,20 @@ await tick();
 global.port1.close();
 global.port2.close();
 
+const { port1: h1, port2: h2 } = new ModuleChannel();
+let emitterValue = null;
+h2.on("message", (value) => {
+  emitterValue = value;
+  value.seen = "emitter";
+});
+h2.addEventListener("message", (event) => {
+  console.log("shared", event.data === emitterValue, event.data.seen);
+});
+h1.postMessage({ tag: 1 });
+await tick();
+h1.close();
+h2.close();
+
 const { port1: g1, port2: g2 } = new ModuleChannel();
 g1.unref();
 g2.unref();

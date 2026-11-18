@@ -1494,7 +1494,7 @@ ScrStr *scr_insp_property(ScrStr *key, ScrStr *value, bool object_type) {
   ib_bytes(&out, key->data, key->len);
   ib_char(&out, ':');
   if (g_compact == -2 && object_type &&
-      (double)insp_utf16_len(value->data, value->len) > g_break_length) {
+      (double)insp_width((const char *)value->data, value->len) > g_break_length) {
     ib_char(&out, '\n');
     ib_spaces(&out, g_indent);
   } else {
@@ -3466,6 +3466,7 @@ static ScrStr *scr_insp_obj(ScrDyn *d, ScrDyn *owner, double recurse, double dep
     if (!insp_obj_shows(&ent)) continue;
     ScrStr *own_key = NULL;
     ScrDynProp held = insp_prop_hold(&ent, &own_key);
+    if (!held.accessor) scr_insp_prop_child(true);
     ScrStr *val = held.accessor ? insp_accessor_value(&held, owner, recurse + 1, depth)
                                 : scr_insp_dyn(held.value, recurse + 1, depth);
     if (!val) {
@@ -3481,11 +3482,11 @@ static ScrStr *scr_insp_obj(ScrDyn *d, ScrDyn *owner, double recurse, double dep
       insp_key_into(&eb, own_key->data, own_key->len);
       ib_char(&eb, ']');
     }
-    ib_cstr(&eb, ": ");
-    ib_bytes(&eb, val->data, val->len);
+    ScrStr *key_text = ib_take(&eb);
+    ScrStr *entry = scr_insp_property(key_text, val, !held.accessor);
+    scr_str_release(key_text);
     scr_str_release(val);
     insp_prop_drop(&held, own_key);
-    ScrStr *entry = ib_take(&eb);
     scr_insp_entry(entry, false);
     scr_str_release(entry);
     if (scr_exc_pending()) break;
@@ -4282,7 +4283,9 @@ static ScrDyn *insp_user_options(double depth) {
   insp_opt_set(options, "maxArrayLength", scr_dyn_new_num(g_max_array_length));
   insp_opt_set(options, "maxStringLength", scr_dyn_new_num(g_max_string_length));
   insp_opt_set(options, "breakLength", scr_dyn_new_num(g_break_length));
-  insp_opt_set(options, "compact", g_compact < 0 ? scr_dyn_new_bool(false) : scr_dyn_new_num(g_compact));
+  if (g_compact == -2) insp_opt_set(options, "compact", scr_dyn_new_bool(true));
+  else insp_opt_set(options, "compact",
+                    g_compact < 0 ? scr_dyn_new_bool(false) : scr_dyn_new_num(g_compact));
   insp_opt_set(options, "sorted", scr_dyn_new_bool(g_sorted));
   {
     /* Node hands the custom functions ctx.getters as it was given. */

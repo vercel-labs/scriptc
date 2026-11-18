@@ -162,6 +162,8 @@ static ScrStr *scr_blob_type_of(ScrStr *s) {
   return out;
 }
 
+ScrStr *scr_blob_type_normalized(ScrStr *raw) { return scr_blob_type_of(scr_str_retain(raw)); }
+
 /* One source part: a Blob contributes its own parts, an ArrayBuffer or
  * view its bytes, and anything else its UTF-8 string (line endings
  * rewritten to the platform's when `native`). */

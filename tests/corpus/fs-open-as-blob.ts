@@ -69,4 +69,36 @@ const falsyType: any = JSON.parse("0");
 const falsy = await fs.openAsBlob(file, { type: falsyType });
 console.log("falsy type", JSON.stringify(falsy.type));
 
+// 7. The Blob reads the file its first read opened: a symlink repointed to
+// another file afterwards no longer answers, whether or not the new target
+// keeps the size.
+const link = join(dir, "link.bin");
+const firstTarget = join(dir, "first.bin");
+const otherTarget = join(dir, "other.bin");
+const sameSizeTarget = join(dir, "same-size.bin");
+fs.writeFileSync(firstTarget, "linked");
+fs.writeFileSync(otherTarget, "a longer file");
+fs.writeFileSync(sameSizeTarget, "SAME SIZE");
+fs.symlinkSync(firstTarget, link);
+const linked = await fs.openAsBlob(link);
+console.log("link", await linked.text());
+fs.rmSync(link);
+fs.symlinkSync(otherTarget, link);
+try {
+  await linked.text();
+  console.log("link swapped", "read");
+} catch (err) {
+  console.log("link swapped", (err as Error).name);
+}
+const linkedSameSize = await fs.openAsBlob(link);
+console.log("link another", await linkedSameSize.text());
+fs.rmSync(link);
+fs.symlinkSync(sameSizeTarget, link);
+try {
+  await linkedSameSize.text();
+  console.log("link same size", "read");
+} catch (err) {
+  console.log("link same size", (err as Error).name);
+}
+
 fs.rmSync(dir, { recursive: true, force: true });

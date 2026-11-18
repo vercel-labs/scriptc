@@ -45,6 +45,9 @@ typedef struct ScrBlobSource {
   void (*release)(void *ctx);
 } ScrBlobSource;
 ScrDyn *scr_blob_from_source(ScrBlobSource *source, double size, ScrStr *type);
+/* Node's Blob type rule over `raw` (borrowed): lowercased, and empty when
+ * it holds a character outside U+0020..U+007E (+1). */
+ScrStr *scr_blob_type_normalized(ScrStr *raw);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`

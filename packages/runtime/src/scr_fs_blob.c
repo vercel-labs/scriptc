@@ -19,6 +19,12 @@ typedef struct ScrFsBlob {
   ScrStr *path;
   size_t size;
   uint64_t mtime_ns;
+  /* The file the Blob reads is the one its first read opened: the
+   * descriptor is held, and every read checks that the path still names
+   * that file (its device and inode), so a path swapped under a Blob
+   * cannot change the bytes it answers. */
+  ScrFileHandle *handle; /* +1, opened on the first read */
+  double dev, ino;
 } ScrFsBlob;
 
 /* openAsBlob's options.type: Node's `options.type || ''` then
@@ -45,7 +51,10 @@ static ScrStr *scr_fs_blob_type(const ScrDyn *options) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_TYPE");
     return NULL;
   }
-  return scr_str_retain(value->v.str);
+  /* The type reaches Content-Type on a fetch body: Node's Blob type rule
+   * (empty when a character is outside U+0020..U+007E, otherwise
+   * lowercased) keeps control characters from crossing into a header. */
+  return scr_blob_type_normalized(value->v.str);
 }
 
 static bool scr_fs_blob_options_object(const ScrDyn *options) {
@@ -71,29 +80,53 @@ static uint64_t scr_fs_blob_mtime_ns(ScrStats *st) {
   return value;
 }
 
-/* ScrBlobSource.read: the file's [off, off + len) bytes, opened fresh and
- * checked against the stat the Blob was created with. */
+/* ScrBlobSource.read: the file's [off, off + len) bytes. The first read
+ * opens the path and holds the descriptor; every read then takes the
+ * held file's stat (it must still have the size and modification time the
+ * Blob was created with), checks the path still names that same file, and
+ * reads from the held descriptor — never from a path opened afterwards. */
 static bool scr_fs_blob_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
   ScrFsBlob *b = ctx;
-  ScrStr *flags = scr_str_new("r", 1);
-  ScrFileHandle *h = scr_file_handle_open(b->path, flags, 0);
-  scr_str_release(flags);
-  if (h == NULL) {
-    scr_exc_clear(); /* the read reports NotReadableError instead */
-    return false;
+  int error = 0;
+  if (b->handle == NULL) {
+    ScrStr *flags = scr_str_new("r", 1);
+    ScrFileHandle *opened = scr_file_handle_open(b->path, flags, 0);
+    scr_str_release(flags);
+    if (opened == NULL) {
+      scr_exc_clear(); /* the read reports NotReadableError instead */
+      return false;
+    }
+    b->handle = opened;
+    ScrStats *held = scr_stats_of_fd((int)scr_file_handle_fd(b->handle), &error);
+    if (held == NULL) {
+      scr_exc_clear();
+      return false;
+    }
+    b->dev = scr_stats_dev(held);
+    b->ino = scr_stats_ino(held);
+    scr_stats_release(held);
   }
   bool ok = true;
-  int error = 0;
-  ScrStats *st = scr_stats_of_fd((int)scr_file_handle_fd(h), &error);
+  ScrStats *st = scr_stats_of_fd((int)scr_file_handle_fd(b->handle), &error);
   if (st == NULL) {
     ok = false;
   } else {
     if ((size_t)scr_stats_size(st) != b->size || scr_fs_blob_mtime_ns(st) != b->mtime_ns) ok = false;
     scr_stats_release(st);
   }
+  if (ok) {
+    /* The path must still name the file the descriptor holds: a symlink
+     * swapped to another file, or one removed, is not this Blob's file. */
+    int path_error = 0;
+    ScrStats *path_st = scr_stats_poll_path(b->path, &path_error);
+    if (path_st == NULL || scr_stats_dev(path_st) != b->dev || scr_stats_ino(path_st) != b->ino) {
+      ok = false;
+    }
+    if (path_st != NULL) scr_stats_release(path_st);
+  }
   if (ok && len) {
     ScrBytes *buf = scr_bytes_new(SCR_BYTES_U8, (double)len);
-    double got = scr_file_handle_read(h, buf, 0, (double)len, (double)off, false);
+    double got = scr_file_handle_read(b->handle, buf, 0, (double)len, (double)off, false);
     if (scr_exc_pending()) {
       scr_exc_clear();
       ok = false;
@@ -104,8 +137,6 @@ static bool scr_fs_blob_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
     }
     scr_bytes_release(buf);
   }
-  scr_file_handle_close(h);
-  scr_file_handle_release(h);
   return ok;
 }
 
@@ -113,6 +144,11 @@ static bool scr_fs_blob_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
  * it), so the hook only drops what the context owns. */
 static void scr_fs_blob_source_release(void *ctx) {
   ScrFsBlob *b = ctx;
+  if (b->handle != NULL) {
+    scr_file_handle_close(b->handle);
+    if (scr_exc_pending()) scr_exc_clear();
+    scr_file_handle_release(b->handle);
+  }
   scr_str_release(b->path);
 }
 

@@ -204,6 +204,7 @@ export interface EarlyExecutableNativeFeatures {
   cipher: boolean;
   ecdh: boolean;
   argon2: boolean;
+  mlkem: boolean;
   dh: boolean;
   pki: boolean;
   ed25519: boolean;

@@ -84,6 +84,8 @@ import {
   currentVendorCacheBuildIdentity,
   vendorBuildCacheRoot,
   tlsArchivePath,
+  mlkemArchivePath,
+  ensureMlkemArchive,
   brotliArchivePath,
   vendorSqliteDir,
   sqliteArchivePath,
@@ -135,6 +137,7 @@ interface RuntimeUnitContext {
   zlibObjects: readonly string[];
   zstdObjects: readonly string[];
   tlsArchive: string | null;
+  mlkemArchive: string | null;
   brotliArchive: string | null;
   sqliteArchive: string | null;
   icuArchive: string | null;
@@ -342,6 +345,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       ? []
       : ["-I", join(vendorZstdDir(), "lib"), u.rt(join(u.rtDir, "scr_zstd.c")), ...u.zstdObjects],
   ),
+  // ML-KEM (scr_mlkem.c): the vendored mlkem-native archive.
+  unitArgs((u) => (u.mlkemArchive === null ? [] : [u.mlkemArchive])),
   // node:sqlite (scr_sqlite.c) over the vendored SQLite amalgamation.
   unitArgs((u) =>
     u.sqliteArchive === null
@@ -695,6 +700,7 @@ export async function compileCInternal(
   const ecdh = opts.ecdh ?? false;
   const dh = opts.dh ?? false;
   const argon2 = opts.argon2 ?? false;
+  const mlkem = opts.mlkem ?? false;
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
   const brotli = (opts.zlib ?? false) && opts.brotli === true;
@@ -941,6 +947,9 @@ export async function compileCInternal(
   let tlsArchive = mbedtls
     ? tlsArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
+  let mlkemArchive = mlkem
+    ? mlkemArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : null;
   let brotliArchive = brotli
     ? brotliArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
@@ -1006,6 +1015,23 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "tls"));
       tlsArchive = paths[0]!;
+    }
+    if (mlkem) {
+      const cachedArchive = mlkemArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      );
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureMlkemArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "mlkem"));
+      mlkemArchive = paths[0]!;
     }
     if (brotli) {
       const cachedArchive = brotliArchivePath(
@@ -1156,6 +1182,7 @@ export async function compileCInternal(
       zlibObjects,
       zstdObjects,
       tlsArchive,
+      mlkemArchive,
       brotliArchive,
       sqliteArchive,
       icuArchive,

@@ -1,15 +1,6 @@
 import type { IrLibFn } from "./builtin-signatures.js";
 
-/** The may-throw seed: libCall members that can raise. Every fs.* member
- * except existsSync (which, like Node's, swallows path errors and returns
- * false) throws a catchable error on failure; fs.existsSyncValue is here
- * because reporting DEP0187 for an invalid argument type runs
- * process.emitWarning, whose replacement may throw. json.parse throws a
- * catchable SyntaxError-shaped string on malformed input. Backends' may-throw
- * analyses must treat a function containing one of these as throwing, exactly
- * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
- * nodes, which throw on validation failure / promise rejection). */
-export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // The copied error of a synchronous call into Node (@scriptc/node).
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
@@ -59,22 +50,37 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.dhGroupNew",
   // Node's nameOrNid and options errors.
   "crypto.getCipherInfo",
+  // Reading the deprecated crypto.fips reports DEP0093 through
+  // process.emitWarning, whose replacement may throw.
+  "crypto.fipsGet",
   // Node's candidate, size, options, add and rem errors, and OpenSSL's
   // generation errors.
   "crypto.checkPrimeSync",
   "crypto.checkPrimeCb",
   "crypto.generatePrimeSync",
   "crypto.generatePrimeCb",
-  // node:test's { timeout } and { concurrency } range checks.
+  // node:test's { timeout } and { concurrency } range checks, and the
+  // mock { times } integer check.
   "test.register",
+  // t.error builds Node's wrapper over the failure through the inspect
+  // unit's rendering, which can raise.
+  "test.ctxError",
+  "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
   "test.subEmpty",
   "test.suite",
+  // t.plan's second-plan failure and { wait } range check.
+  "test.ctxPlan",
   // mock.timers: Node's ERR_INVALID_STATE and ERR_INVALID_ARG_VALUE, and
   // the throws of the timer callbacks tick and runAll run.
   "test.ctxSnapshot",
   "test.fileSnapshot",
+  // snapshot.setDefaultSnapshotSerializers validates its list (Node's
+  // ERR_INVALID_ARG_TYPE).
+  "test.snapshotSetDefaultSerializers",
+  // The snapshot path resolver is program code and may throw.
+  "test.snapshotPath",
   "test.snapshotSerialize",
   "test.mockTimersEnable",
   "test.mockTimersTick",
@@ -91,6 +97,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "console.label",
   "console.countReset",
   "console.table",
+  // Console construction validates its options in the runtime, and the
+  // instance twins of the throwing members share their fences.
+  "console.new",
+  "console.instCount",
+  "console.instCountReset",
+  "console.instTable",
+  "console.instTrace",
   "console.dirDyn",
   "console.dirHidden",
   "worker.new",
@@ -98,11 +111,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "worker.parentPort",
   "worker.resourceLimits",
   "worker.channel",
+  "worker.portConstruct",
   "worker.receiveMessageOnPort",
   "worker.setEnvironmentData",
   "worker.getEnvironmentData",
   "worker.broadcastChannel",
   "process.exit",
+  // process.exit(expr) and the exitCode writes convert the value with
+  // Node's setter rules: the non-numeric-string TypeError, the Symbol and
+  // BigInt conversion TypeErrors, and the integer ERR_OUT_OF_RANGE.
+  "process.exitDyn",
   "text.encodeInto",
   "buffer.isAscii",
   "buffer.isUtf8",
@@ -195,6 +213,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "atomics.opDyn",
   "atomics.waitDyn",
   "atomics.notifyDyn",
+  // The typed-array builtins' detached-receiver guard (t262-dc2): Node's
+  // TypeError, raised at the entry of sort/toSorted and the iterator
+  // factories. Emitted only under the mutableBuffers fact, but the check
+  // belongs to the call like every other runtime error.
+  "bytes.requireLive",
   "arrayBuffer.byteLengthGetter",
   "arrayBuffer.viewU8C",
   "arrayBuffer.viewI8",
@@ -236,6 +259,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "abort.any",
   "event.new",
   "event.customNew",
+  "event.messageNew",
+  "event.closeNew",
   "event.init",
   "event.targetCall",
   "event.targetDispatch",
@@ -293,6 +318,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "icu.numberFormatNew",
   "icu.numberFormatFormat",
   "icu.numberFormatFormatDyn",
+];
+
+const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "icu.dateTimeFormatFormatDyn",
   "icu.numToLocaleString",
   "icu.dateTimeFormatNew",
@@ -327,13 +355,22 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // %o's showHidden walk refuses the kinds whose hidden entries it cannot
   // render.
   "insp.dynHidden",
-  // diagnostics_channel: publish runs subscribers synchronously (a throw
-  // propagates — the documented divergence from triggerUncaughtException);
-  // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
-  // non-function subscribers.
-  "dc.publish",
+  // diagnostics_channel: the subscribe/unsubscribe forms validate the name
+  // and the subscriber in the runtime (Node's ERR_INVALID_ARG_TYPE), and
+  // the bind-store/run-stores calls run program code.
+  // trace_events.createTracing validates its options object and its
+  // categories array.
+  "te.createTracing",
   "dc.subscribe",
   "dc.unsubscribe",
+  // The name validators raise Node's ERR_INVALID_ARG_TYPE, and a symbol
+  // name fences with SC2020.
+  "dc.channel",
+  "dc.tracingChannel",
+  /** The collection form validates each event member (Node's
+   * "must be an instance of Channel"), so a value asserted past the type
+   * raises here rather than indexing the channel table with it. */
+  "dc.tracingChannelOf",
   "dc.chanSubscribe",
   "dc.chanUnsubscribe",
   "dc.tcSubscribe",
@@ -347,21 +384,34 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onSignal",
   "process.offSignal",
   "process.prependSignal",
+  "process.onBeforeExit",
+  "process.offBeforeExit",
+  "process.prependBeforeExit",
   "process.onUnhandledRejection",
   "process.onRejectionHandled",
+  "process.onMultipleResolves",
+  "process.offMultipleResolves",
   "async.awaitDyn",
   "als.run",
   "als.exitRun",
   "als.newOptions",
   "als.bindCallbackDyn",
+  // AsyncResource: the constructor's type/options checks, the traced call
+  // itself, and the bound function's argument check all throw.
+  "ar.new",
+  "ar.runInScope",
+  "ar.bind",
+  "ar.bindStatic",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
+  "http.resWriteHeadObject",
   "http.resSetHeader",
   "http.resSetHeaderDyn",
   "http.resRemoveHeader",
   "http.clientSignal",
   "http.clientSignalCheck",
+  "http.reqSignal",
   "http.clientProtocolCheck",
   "http.clientProtocolCheckAgent",
   "http.serverMaxHeaderSize",
@@ -370,6 +420,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resWriteContinue",
   "http.resWriteProcessing",
   "http.resWriteEarlyHints",
+  // writeInformation validates the status (ERR_OUT_OF_RANGE, and
+  // ERR_HTTP_INVALID_STATUS_CODE for 101), the state
+  // (ERR_HTTP_HEADERS_SENT) and every header name and value.
+  "http.resWriteInformation",
+  "http.resWriteContinueCb",
+  "http.resWriteProcessingCb",
+  "http.resWriteEarlyHintsCb",
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
@@ -377,10 +434,22 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.resOnPrefinish",
   "http.serverTimeoutGet",
   "http.serverTimeoutOptionSet",
+  "http.serverHeadersTimeoutDefault",
+  "http.serverConnectionsCheckingInterval",
+  "http.serverRejectNonStandardBodyWrites",
   "net.sockSetEncoding",
+  "net.sockSetEncodingDyn",
+  // setKeepAlive's positional coercions and its object form run ToNumber
+  // (~~), which calls a value's valueOf/toString.
+  "net.sockSetKeepAlive",
   "http.reqSetEncoding",
   "fs.readFileSyncBuf",
   "fs.readFileSyncDyn",
+  "fs.statSyncDyn",
+  "fs.lstatSyncDyn",
+  "fs.fstatSyncDyn",
+  "fs.readFileSyncStrOpts",
+  "fs.readFileSyncBytesOpts",
   "fs.readFileEncoded",
   "fs.readFdEncoded",
   // tls/https runtime options records: the walks throw the catchable
@@ -397,6 +466,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http2.createSecureServerDynCb",
   "tls.connect",
   "tls.connectCb",
+  // tls.connect(path...) dials and validates like the other forms.
+  "tls.connectPath",
   "tls.wrapSocket",
   "tls.wrapSocketCtx",
   // addContext's ERR_TLS_REQUIRED_SERVER_NAME and the context's errors,
@@ -451,6 +522,14 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.sockEndDyn",
   "http.resWriteDyn",
   "http.resEndDyn",
+  // setHeaders walks the argument (a Map's entries) and throws Node's
+  // ERR_INVALID_ARG_TYPE for anything else, ERR_HTTP_HEADERS_SENT once the
+  // head is out, and the header name/value checks. pipe() emits
+  // ERR_STREAM_CANNOT_PIPE, whose unhandled 'error' is the throw at the
+  // call.
+  "http.resSetHeaders",
+  "http.resPipe",
+  "http.clientPipe",
   "http.resAddTrailers",
   "http.resFlushHeaders",
   "http.resUncork",
@@ -594,6 +673,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
+];
+
+const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
+  "stream.setDefaultHwm",
+  "webstream.toWebReadableDyn",
+  "webstream.writableFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -608,16 +693,35 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "http.requestConnCb",
   "process.kill",
   "process.killNum",
+  // The dynamic pid/signal forms: Node's loose pid guard, unknown-signal
+  // TypeError, and the ToNumber/ToString conversion errors.
+  "process.killSigDyn",
+  "process.killDyn",
   // A replaced process.stdout/stderr.write runs JavaScript: what it throws
   // propagates from the call.
   "process.stdioWriteStr",
   "process.setExitCode",
   "process.setExitCodeTracked",
+  "process.setExitCodeDyn",
+  "process.setExitCodeDynTracked",
+  // process.env's proxy ToStrings dynamic keys and values, so a Symbol or a
+  // toString that throws throws from the read/write.
+  "process.envGetDyn",
+  "process.envSetDyn",
+  "process.envSetKeyDyn",
+  "process.envUnsetDyn",
+  // process.title = expr ToStrings (a Symbol throws).
+  "process.setTitleDyn",
   // Node's argument grammar throws ERR_INVALID_ARG_TYPE at the call.
   "process.emitWarning",
+  // A listener the emit reaches may throw; the exception is the call's.
+  "process.emit",
+  "process.emitError",
   // cpuUsage(prev)'s field validation: negative/non-finite prev fields
   // throw Node's ERR_INVALID_ARG_VALUE RangeError, catchably.
   "process.cpuPrevValidate",
+  // The dynamic prev path runs the same validation on any value.
+  "process.cpuDynPrepare",
   // An unreadable resident set throws Node's uv_resident_set_memory
   // error; the Windows credential members throw the missing-member
   // TypeError.
@@ -626,9 +730,25 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.geteuid",
   "process.getegid",
   "process.getgroups",
+  "process.setuid",
+  "process.seteuid",
+  "process.setgid",
+  "process.setegid",
+  "process.setgroups",
+  "process.initgroups",
+  "process.setUncaughtCapture",
+  "process.setDebugPort",
+  "process.setSourceMapsEnabled",
+  "process.ref",
+  "process.unref",
   // perf_hooks user timing: Node's argument validation, the unset-mark
   // SyntaxError DOMException, and the detail's DataCloneError.
   "perf.mark",
+  // markResourceTiming's argument reads and clearResourceTimings /
+  // setResourceTimingBufferSize validation.
+  "perf.resourceMark",
+  "perf.resourceClear",
+  "perf.resourceBufferSize",
   "perf.measure",
   "perf.entries",
   "perf.clearMarks",
@@ -643,6 +763,23 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
+  // createHistogram's options and RecordableHistogram's record forms: Node's
+  // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
+  "perf.histoNew",
+  "perf.histoRecord",
+  "perf.histoRecordBig",
+  "perf.histoRecordCorrected",
+  // add/subtract reject a non-RecordableHistogram argument.
+  "perf.histoAdd",
+  "perf.histoSubtract",
+  // The comparisons reject an `other` that is not a Histogram with Node's
+  // ERR_INVALID_ARG_TYPE.
+  "perf.histoKsTest",
+  "perf.histoCohensD",
+  "perf.histoCliffsD",
+  "perf.histoMannWhitneyU",
+  "perf.histoMannWhitneyZ",
+  "perf.histoMannWhitneyP",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
@@ -712,14 +849,25 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.hasKey",
   "dyn.in",
   "child.kill",
+  // child.dispose sends SIGTERM through the same kill path; a Node-island
+  // child's kill may emit the synchronous 'error' that path can raise.
+  "child.dispose",
   // The caller's lookup runs synchronously inside the connect call — a
   // throw there propagates like Node's.
   "net.connectLookup",
   "net.connectLookupDyn",
   "cp.execSync",
+  // The unencoded form throws the same spawn, maxBuffer and command errors.
+  "cp.execSyncBytes",
   "cp.execCapture",
   // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
   "cp.maxBuffer",
+  // exec/execFile's option checks: validateTimeout's ERR_OUT_OF_RANGE and
+  // sanitizeKillSignal's ERR_UNKNOWN_SIGNAL, before the child starts.
+  "cp.execFileOpts",
+  // spawn's own: the same validateTimeout and sanitizeKillSignal, plus
+  // validateAbortSignal's ERR_INVALID_ARG_TYPE, before the child starts.
+  "cp.spawnArmed",
   // The client request constructors validate the method token
   // synchronously (Node's ClientRequest ctor throw:
   // ERR_INVALID_HTTP_TOKEN).
@@ -815,6 +963,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.throttle",
   "mime.typeNew",
   "mime.typeParse",
+  // node:sqlite opens (or validates) a connection; every option it reads
+  // can refuse the call, as can sqlite.backup's arguments.
+  "sqlite.dbNew",
+  "sqlite.backup",
   "util.callbackify",
   "util.promisifyDyn",
   // The typed promisify's custom protocol: a truthy non-function throws
@@ -892,6 +1044,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.classTestPrototype",
+];
+
+const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [
   "dyn.setPrototype",
   // ES2025 Set compositions run the set-like protocol: reading and calling
   // `size`/`has`/`keys` can throw, and so can a user `has` or iterator.
@@ -924,6 +1079,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "regex.new",
   "regex.resetLastIndex",
   "regex.newChecked",
+  "regex.callChecked",
   "regex.replaceCallback",
   "dyn.keySet",
   "dyn.fnOwnSet",
@@ -951,6 +1107,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.iterPack",
   // ToNumber of each element can run valueOf
   "dyn.mathFold",
+  "dyn.mathFoldMany",
   "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
@@ -1011,8 +1168,21 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
   "dyn.arrayLikeProtoCall",
   "process.chdir",
+  "process.chdirDyn",
+  // A worker's scr_process_abort raises Node's catchable
+  // ERR_WORKER_UNSUPPORTED_OPERATION, which the program may catch; the main
+  // thread settles stdout and raises SIGABRT, so the check after the call
+  // never runs there.
+  "process.abort",
+  // The umask argument validators: parseFileMode's ERR_INVALID_ARG_VALUE for
+  // a non-octal string and the ERR_INVALID_ARG_TYPE for other types, then
+  // validateUint32's integer/range RangeErrors.
+  "process.umaskDyn",
+  "process.umaskChk",
   "os.getPriority",
   "os.setPriority",
+  "os.getPriorityChk",
+  "os.setPriorityChk",
   // Node's SystemError when the passwd entry of the effective uid answers
   // nothing: os.homedir() with HOME unset, and os.userInfo()'s fields, which
   // take their own lookup when the record's begin call did not run.
@@ -1044,6 +1214,13 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readdirSync",
   "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
+  "fs.readdirTypesRecursiveSync",
+  "fsp.readdirTypesRecursive",
+  "fs.readdirBytesSync",
+  "fs.readdirEncodedSync",
+  "fsp.readdirBytes",
+  "fsp.readdirRecursive",
+  "fsp.readdirEncoded",
   "fs.globSync",
   "fs.globTypesSync",
   "fs.callbackGlob",
@@ -1085,6 +1262,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "sp.newChecked",
   "fs.statSync",
   "fs.statProbeSync",
+  // The checked-dynamic Stats extraction: a value outside the Stats type
+  // throws the checked conversion's TypeError.
+  "fs.statsFromDyn",
+  "fs.statsFromDynOpt",
   "crypto.randomBytesToString",
   "crypto.randomBytes",
   "crypto.hashDigestStr",
@@ -1115,6 +1296,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.hashDigestDyn",
   "crypto.hmacDigestDyn",
   "crypto.hashOneshot",
+  // The checked-dynamic constructors and the callback pbkdf2 run Node's
+  // argument validation and can raise catchable TypeErrors; the callback
+  // form also runs program code.
+  "crypto.hashNewAny",
+  "crypto.hmacNewAny",
+  "crypto.hashOneshotAny",
+  "crypto.pbkdf2Any",
+  "crypto.pbkdf2AnyCb",
+  "crypto.hkdfAny",
+  "crypto.hkdfAnyCb",
+  "crypto.scryptAny",
+  "crypto.scryptAnyCb",
   "crypto.timingSafeEqual",
   "crypto.timingSafeEqualDyn",
   "crypto.randomFill",
@@ -1133,15 +1326,21 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createSecretKey",
   "crypto.generateKeySync",
   "crypto.generateKeyCb",
+  "crypto.checkCallback",
   "crypto.keyObjectInput",
   "crypto.randomUUIDv7",
   "crypto.pbkdf2",
   "crypto.randomBytesCb",
+  "crypto.randomBytesAny",
+  "crypto.randomBytesAnyCb",
+  "crypto.randomIntAny",
+  "crypto.randomIntAnyCb",
   "crypto.pbkdf2Cb",
   "crypto.hkdf",
   "crypto.hkdfCb",
   "crypto.scrypt",
   "crypto.scryptCb",
+  "buffer.resolveObjectURL",
   "buffer.concat",
   "buffer.concatLen",
   "buffer.concatDyn",
@@ -1158,7 +1357,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
+];
+
+const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "buffer.poolFromDynRange",
+  "buffer.copyBytesFrom",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
@@ -1180,8 +1383,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readChk",
   "fs.streamOptsChk",
   "net.connectAttempt",
-  "net.connectOptsChk",
+  "net.connectDyn",
+  "net.connectDynCb",
   "net.setAutoSelTimeout",
+  "net.setDefaultAutoSel",
   "error.argTypeThrow",
   "error.propTypeThrow",
   "array.foreignThrow",
@@ -1203,6 +1408,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.appendFileData",
   "fsp.writeFileDataFlags",
   "fileHandle.writeFileData",
+  // fchown(2) over the handle raises for a closed descriptor and for an id
+  // outside Node's range.
+  "fileHandle.chown",
   "zlib.inflateSync",
   "zlib.inflateRawSync",
   "zlib.gunzipSync",
@@ -1240,6 +1448,18 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.promisesLookup",
   "dns.promisesLookupService",
   "dns.setDefaultResultOrder",
+  // The stub resolver's checks (ERR_INVALID_ARG_TYPE/VALUE for a name,
+  // callback, options or rrtype; ERR_INVALID_IP_ADDRESS and
+  // ERR_SOCKET_BAD_PORT for setServers' entries; ERR_OUT_OF_RANGE for a
+  // Resolver's options), and reverse's synchronous EINVAL for an address
+  // c-ares cannot parse.
+  "dns.resolveChk",
+  "dns.resolvePromise",
+  "dns.resolveRrChk",
+  "dns.resolveRrPromise",
+  "dns.resolverNew",
+  "dns.setServers",
+  "dns.promisesSetServers",
   "net.connect",
   "net.connectCb",
   "net.connectPath",
@@ -1265,9 +1485,19 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // before it binds, so a 'newListener' handler can throw out of the call
   // and the server does not listen.
   "net.listenCb",
+  "net.listenDyn",
+  "net.listenDynCb",
   "net.listenOptsCb",
   "net.listenOptsReusePortCb",
   "net.listenPathCb",
+  // listen(port) and listen(path) on a server that is already listening
+  // throw ERR_SERVER_ALREADY_LISTEN at the call (Node's throw is
+  // catchable), so every listen entry point can leave an exception.
+  "net.listen",
+  "net.listenDyn",
+  "net.listenPath",
+  "net.listenOpts",
+  "net.listenOptsReusePort",
   "http.serverOnRequest",
   "http.serverOnCheck",
   "http.serverOnConnect",
@@ -1283,9 +1513,28 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // SocketAddress's option checks and parse()'s input check.
   "net.socketAddressNew",
   "net.socketAddressParse",
+  // BoundSocket's option checks and bind errors, and listen(bound)'s
+  // already-listening and already-adopted errors (Node throws both
+  // synchronously).
+  "net.boundSocketNew",
+  "net.listenBound",
+  "net.listenBoundCb",
   // node:dgram state errors (Node throws synchronously): bind on a bound
   // socket, connect on a connected one, send/close/address on a closed or
   // never-bound one.
+  // createSocket's constructor ladder (ERR_SOCKET_BAD_TYPE, validateUint32,
+  // the options' type checks, and the SC2020s for options with no native
+  // behavior yet), the options-object bind forms, the synchronous pair,
+  // the source-specific joins and remoteAddress()'s state errors.
+  "dgram.createSocket",
+  "dgram.createSocketCb",
+  "dgram.bindOpts",
+  "dgram.bindOptsCb",
+  "dgram.bindSync",
+  "dgram.connectSync",
+  "dgram.addSourceMembership",
+  "dgram.dropSourceMembership",
+  "dgram.remoteAddress",
   "dgram.bind",
   "dgram.bindCb",
   "dgram.connect",
@@ -1336,6 +1585,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.throwsNone",
   "assert.throwsMismatch",
   "assert.throwsRegex",
+  "assert.throwsAmbiguous",
   "assert.shapeEnd",
   "assert.unwantedRejection",
   "assert.unwantedError",
@@ -1354,6 +1604,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // The wider sync fs slice: same catchable errno throws as the rest.
   "fs.unlinkSync",
   "fs.chmodSync",
+  "fs.chmodSyncStr",
+  "fs.chmodSyncDyn",
+  "fs.fchmodSyncStr",
+  "fs.fchmodSyncDyn",
   "fs.chownSync",
   "fs.lchownSync",
   "fs.fchownSync",
@@ -1372,6 +1626,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dir.readSync",
   "dir.readCb",
   "dir.closeSync",
+  // close(callback) validates the callback before the closed check, so a
+  // non-function argument throws synchronously.
+  "dir.closeCb",
   // Symbol.dispose is closeSync on an open Dir: ERR_DIR_CONCURRENT_OPERATION
   // while an operation is queued.
   "dir.dispose",
@@ -1406,14 +1663,48 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.appendFileBytesOptionsSync",
   "fs.writeFileDataOptionsSync",
   "fs.appendFileDataOptionsSync",
+  "fs.writeFileOptionsDynModeSync",
+  "fs.appendFileOptionsDynModeSync",
+  "fs.writeFileBytesOptionsDynModeSync",
+  "fs.appendFileBytesOptionsDynModeSync",
+  "fs.writeFileDataOptionsDynModeSync",
+  "fs.appendFileDataOptionsDynModeSync",
   "fs.mkdirModeSync",
   "fs.mkdirRecursiveModeSync",
+  "fs.mkdirModeStrSync",
+  "fs.mkdirObjSync",
+  "fs.mkdirObjStrSync",
+  "fs.mkdirDynSync",
+];
+
+const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
+  "fs.mkdirDynVoidSync",
+  "fs.mkdirModeValueSync",
+  "fs.mkdirModeStrValueSync",
+  "fs.mkdirObjVoidSync",
+  "fs.mkdirObjStrVoidSync",
   "fs.openSync",
   "fs.openNumericSync",
+  "fs.openNumericStrSync",
+  "fs.openNumericDynSync",
+  "fs.openStrModeSync",
+  "fs.openNativeSync",
+  "fs.openDynSync",
+  "fs.openModeDynSync",
+  "fs.openNativeStrSync",
+  "fs.openNativeDynSync",
   "fs.readSync",
-  "fs.readSyncDyn",
+  "fs.readSyncArgs",
   "fs.writeSync",
   "fs.writeStrSync",
+  "fs.writeSyncArgs",
+  "fs.readvSyncDyn",
+  "fs.writevSyncDyn",
+  "fs.ftruncateSyncDyn",
+  "fs.closeSyncDyn",
+  "fs.fsyncSyncDyn",
+  "fs.fdatasyncSyncDyn",
+  "fs.fchownSyncDyn",
   "fs.closeSync",
   "fs.watch",
   "fs.watchCb",
@@ -1421,6 +1712,23 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "watcher.off",
   "fs.watchFile",
   "fs.unwatchFile",
+  // fsPromises.watch opens the path now and throws Node's fs error
+  // (ENOENT, EACCES, a null byte) from scr_watch_events_new.
+  "fsp.watch",
+  // watchEvents.take raises ERR_FS_WATCH_QUEUE_OVERFLOW when the queue
+  // overflowed under overflow: "error".
+  "watchEvents.take",
+  // readableWebStream throws Node's ERR_INVALID_STATE for a closed handle.
+  "fileHandle.readableWebStream",
+  // The disposable temp directory: creating it validates the options and
+  // can fail in mkdtemp, and its removal raises rm's errors (the promise
+  // form turns them into a rejection, the sync form throws them).
+  "fsp.mkdtempDisposable",
+  "fs.mkdtempDisposableSync",
+  "mkdtempResult.remove",
+  "mkdtempResult.removeSync",
+  "mkdtempResult.asyncDispose",
+  "mkdtempResult.dispose",
   "crypto.x509Fingerprint",
   "crypto.x509FingerprintStr",
   "crypto.x509ValidFrom",
@@ -1431,8 +1739,28 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createPublicKey",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
+  // Argon2 reads its parameters object (whose members convert strings and
+  // BufferSources) and may run program code through those conversions.
+  "crypto.argon2Sync",
+  "crypto.argon2Cb",
+  // getPublicKey converts its keyUsages sequence (whose strings' conversions
+  // run program code) and reads the key's members through the handle.
+  "webcrypto.getPublicKey",
+  // The KeyObject conversions normalize their algorithm (reading its members)
+  // and convert the keyUsages sequence.
+  "webcrypto.keyObjectToCryptoKey",
+  "webcrypto.keyObjectFrom",
   "crypto.signOneshot",
+  "crypto.signOneshotCb",
+  "crypto.signOneshotMaybe",
   "crypto.verifyOneshot",
+  "crypto.verifyOneshotCb",
+  "crypto.verifyOneshotMaybe",
+  "crypto.publicEncrypt",
+  "crypto.privateDecrypt",
+  "crypto.privateEncrypt",
+  "crypto.publicDecrypt",
+  "crypto.setEngine",
   "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
@@ -1446,9 +1774,40 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",
+  // Certificate's SPKAC argument errors, and the key parse behind
+  // verifySpkac and exportPublicKey.
+  "crypto.spkacVerify",
+  "crypto.spkacChallenge",
+  "crypto.spkacPublicKey",
   // ReadableStream.from's iterability and iterator-method errors, which
   // Node raises from the call itself.
   "webstream.from",
+];
+
+/** The may-throw seed: libCall members that can raise. Every fs.* member
+ * except existsSync (which, like Node's, swallows path errors and returns
+ * false) throws a catchable error on failure; fs.existsSyncValue is here
+ * because reporting DEP0187 for an invalid argument type runs
+ * process.emitWarning, whose replacement may throw. json.parse throws a
+ * catchable SyntaxError-shaped string on malformed input. Backends' may-throw
+ * analyses must treat a function containing one of these as throwing, exactly
+ * like a `throw` statement (and must ALSO seed on `dynCheck` and `awaitExpr`
+ * nodes, which throw on validation failure / promise rejection).
+ *
+ * The names come in parts so each part is checked against the closed set of
+ * builtin names on its own. A list this long is compared member by member
+ * against every name in a single check, which costs the checker its whole
+ * comparison budget, and then each new builtin entry risks a spurious
+ * "Excessive complexity comparing types" error. Every part is checked as
+ * fully as the whole list was, and the set holds the same names in the same
+ * order. */
+export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  ...MAY_THROW_LIB_FNS_PART_1,
+  ...MAY_THROW_LIB_FNS_PART_2,
+  ...MAY_THROW_LIB_FNS_PART_3,
+  ...MAY_THROW_LIB_FNS_PART_4,
+  ...MAY_THROW_LIB_FNS_PART_5,
+  ...MAY_THROW_LIB_FNS_PART_6,
 ]);
 
 /** libCall members that always throw. Their result type is the replaced
@@ -1470,7 +1829,6 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.lchmodChk",
   "fs.readChk",
   "fs.streamOptsChk",
-  "net.connectOptsChk",
   "tls.caCertsChk",
   "sea.getAsset",
   "sea.getRawAsset",

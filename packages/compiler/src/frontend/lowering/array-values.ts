@@ -1093,6 +1093,24 @@ export function arraySnapshotValue(
   };
 }
 
+/** Coerce `value` for storage in `arrType`'s element slot. A checked-dynamic
+ * value in an array that admits a present undefined (`(T | undefined)[]` of
+ * a primitive T, `optionalElements`) can hold that undefined even though its
+ * static type says `dyn`. A member read on an indexed object whose index
+ * signature value is not tracked statically is one: `JsonWebKey`'s
+ * `alg?: string` beside `[key: string]: unknown`. Converting it straight to
+ * T throws "expected string at $, got undefined" where Node keeps the
+ * present undefined, so it converts against the optional element type
+ * instead. Every other value, and every other array, is returned unchanged. */
+export function optionalSlotValue(
+  lowerer: Lowerer,
+  value: IrExpr,
+  arrType: IrType & { kind: "array" },
+): IrExpr {
+  if (value.type.kind !== "dyn" || arrType.optionalElements !== true) return value;
+  return lowerer.coerceToExpected(value, arrayValueType(lowerer, arrType.elem));
+}
+
 /** Store a stabilized value without changing the array's element ABI. */
 export function arrayValueStore(
   lowerer: Lowerer,

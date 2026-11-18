@@ -4452,9 +4452,14 @@ function validateFunction(
       e.fn === "text.encodeIntoStr";
     if (!variableResult && !typeEquals(e.type, sig.result)) {
       // The stat calls answer the SAME snapshot under either member table:
-      // their `bigint` option picks BigIntStats' reads over Stats'.
+      // their `bigint` option picks BigIntStats' reads over Stats'. The
+      // checked-dynamic extraction answers the handle the slot's member
+      // table reads, so it takes either table's type too.
       const statsVariant =
-        (e.fn === "fs.statSync" || e.fn === "fs.lstatSync" || e.fn === "fs.fstatSync") &&
+        (e.fn === "fs.statSync" ||
+          e.fn === "fs.lstatSync" ||
+          e.fn === "fs.fstatSync" ||
+          e.fn === "fs.statsFromDyn") &&
         typeEquals(sig.result, STATS_T) &&
         typeEquals(e.type, BIGINT_STATS_T);
       if (!statsVariant)
@@ -4663,6 +4668,51 @@ function validateFunction(
         );
       return true;
     }
+    if (e.fn === "webstream.toWebReadable") {
+      // Readable.toWeb: (readable, flags) → a web ReadableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (readable, flags) and return a web stream`, e.loc);
+      return true;
+    }
+
+    if (e.fn === "webstream.writableFromWeb") {
+      // Writable.fromWeb: (writableStream, flags) → a Writable.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (writableStream, flags) and return a Writable`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.toWebReadableDyn") {
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
+      return true;
+    }
+
+    if (e.fn === "webstream.writableToWeb") {
+      // Writable.toWeb: (writable, flags) → a web WritableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (writable, flags) and return a web stream`, e.loc);
+      return true;
+    }
     if (e.fn === "fetch.readerRead") {
       if (e.type.kind !== "promise" || e.type.inner.kind !== "record") {
         err(`libCall fetch.readerRead must return a promise of a read-result record`, e.loc);
@@ -4690,7 +4740,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "process.envGet") {
+    if (e.fn === "process.envGet" || e.fn === "process.envGetDyn") {
       // Result is the module's interned `string | undefined` union.
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const ok =
@@ -5205,7 +5255,29 @@ function validateFunction(
   }
 
   function checkLibFileCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
+    // mkdirSync's value forms answer the first directory a recursive walk
+    // created, or undefined; the lowering fills the call site's union.
+    if (
+      e.fn === "fs.mkdirObjSync" ||
+      e.fn === "fs.mkdirObjStrSync" ||
+      e.fn === "fs.mkdirDynSync" ||
+      e.fn === "fs.mkdirModeValueSync" ||
+      e.fn === "fs.mkdirModeStrValueSync"
+    ) {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def !== undefined &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "string") &&
+        def.arms.some((a) => a.kind === "undefinedT");
+      if (!ok) err(`libCall ${e.fn} must return the 'string | undefined' union`, e.loc);
+      return true;
+    }
+    if (
+      e.fn === "fs.statProbeSync" ||
+      e.fn === "fs.lstatProbeSync" ||
+      e.fn === "fs.statsFromDynOpt"
+    ) {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const ok =
         def &&
@@ -5304,7 +5376,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "dgram.address") {
+    if (e.fn === "dgram.address" || e.fn === "dgram.remoteAddress" || e.fn === "dgram.bindSync") {
       // Result is the {address, family, port} record.
       const shape = e.type.kind === "record" ? records.get(e.type.shapeId) : undefined;
       const ok =
@@ -5317,13 +5389,15 @@ function validateFunction(
         shape.fields[2]!.name === "port" &&
         shape.fields[2]!.type.kind === "f64";
       if (!ok) {
-        err(`libCall dgram.address must return the {address, family, port} record`, e.loc);
+        err(`libCall ${e.fn} must return the {address, family, port} record`, e.loc);
       }
       return true;
     }
     if (
       e.fn === "fs.readdirTypesSync" ||
+      e.fn === "fs.readdirTypesRecursiveSync" ||
       e.fn === "fsp.readdirTypes" ||
+      e.fn === "fsp.readdirTypesRecursive" ||
       e.fn === "fs.globTypesSync" ||
       e.fn === "fsp.globTypes"
     ) {
@@ -5331,12 +5405,8 @@ function validateFunction(
       // name: string, parentPath: string} rows (canonical field
       // order; the structure lowerFsReaddirTypesCall pinned). The glob
       // forms answer the array itself.
-      const result =
-        e.fn === "fsp.readdirTypes"
-          ? e.type.kind === "promise"
-            ? e.type.inner
-            : undefined
-          : e.type;
+      const promiseForm = e.fn === "fsp.readdirTypes" || e.fn === "fsp.readdirTypesRecursive";
+      const result = promiseForm ? (e.type.kind === "promise" ? e.type.inner : undefined) : e.type;
       const shape =
         result?.kind === "array" && result.elem.kind === "record"
           ? records.get(result.elem.shapeId)
@@ -5344,7 +5414,7 @@ function validateFunction(
       const ok = shape !== undefined && isDirentShape(shape);
       if (!ok) {
         err(
-          `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          `libCall ${e.fn} must return ${promiseForm ? "a promise of " : ""}the Dirent record array`,
           e.loc,
         );
       }
@@ -5378,6 +5448,12 @@ function validateFunction(
           e.loc,
         );
       }
+      return true;
+    }
+    if (e.fn === "watchEvents.take") {
+      // Result: the dynamic `{ eventType, filename }` record the iterator
+      // queued (the loop checks it into the binding's record type).
+      if (e.type.kind !== "dyn") err(`libCall ${e.fn} must return a dynamic record`, e.loc);
       return true;
     }
     if (e.fn === "os.networkInterfaces") {
@@ -5457,7 +5533,7 @@ function validateFunction(
   }
 
   function checkLibProcessCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
+    if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd" || e.fn === "cp.execFileOpts") {
       const cb = e.args[2]?.type;
       if (
         cb?.kind !== "func" ||
@@ -5555,6 +5631,8 @@ function validateFunction(
     if (
       e.fn === "process.onExit" ||
       e.fn === "process.offExit" ||
+      e.fn === "process.onBeforeExit" ||
+      e.fn === "process.offBeforeExit" ||
       e.fn === "stdin.onData" ||
       e.fn === "stdin.onError" ||
       e.fn === "stdin.onReadable"
@@ -5770,6 +5848,17 @@ function validateFunction(
           e.loc,
         );
       }
+      return true;
+    }
+    if (e.fn === "child.channel") {
+      // subprocess.channel is a checked-dynamic value: the Control handle,
+      // undefined without an IPC channel, or null after a disconnect.
+      if (e.type.kind !== "dyn") err("libCall child.channel must return dyn", e.loc);
+      return true;
+    }
+    if (e.fn === "child.stdioArray") {
+      // The child's cached stdio array, at the call site's own array type.
+      if (e.type.kind !== "array") err(`libCall ${e.fn} must return the stdio array type`, e.loc);
       return true;
     }
     return false;

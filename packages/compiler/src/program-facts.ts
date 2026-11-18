@@ -216,7 +216,8 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     symbol: "unixListenReachable",
     source: "types",
     scope: "program",
-    setBy: "a `.listen(path)` call with a string argument on a server or an untyped value",
+    setBy:
+      "a `.listen(path)` call with a string argument, or a `.listen(boundSocket)` adopting a net.BoundSocket, on a server or an untyped value",
     gates: "every `server.address()` checks for a socket path",
     narrower: "the server",
     tracked: null,
@@ -291,6 +292,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "reprototyped-classes",
+    file: `${SRC}/frontend/lowering/class-method-mutations.ts`,
+    symbol: "mayReplacePrototype",
+    source: "types",
+    scope: "type",
+    setBy:
+      "an Object.setPrototypeOf or Reflect.setPrototypeOf call whose target's type admits instances of the class; a target whose type bounds nothing (`any`, `unknown`, a type parameter) or a reference to the function that is not a call sets it for every class",
+    gates:
+      "method calls and instanceof on instances of those classes test at run time whether the instance's prototype was replaced (after one global test), and take the checked-dynamic call or prototype walk when it was",
+    narrower:
+      "the instances that reach the call, by value flow; what is left is the run-time test on the instance",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
     name: "member-assigned",
     file: `${SRC}/frontend/lowering/lower-classes.ts`,
     symbol: "memberAssigned",
@@ -300,6 +316,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
       "an assignment, delete or reflective definition of a member with a method's name, on any receiver",
     gates: "the static answer for that method of every class that declares the name",
     narrower: "the receiver's class",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
+    name: "void-method-written",
+    file: `${SRC}/frontend/tsc-codes.ts`,
+    symbol: "methodNameWritten",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "in any implementation file, a write or `delete` of a member with a class method's name (by property access or string key, on any receiver), a call argument that is that name, or an object literal argument with a member of that name",
+    gates:
+      "in an unchecked JavaScript source, a truthiness test of a call of that method, when the checker types it `void` because the method's body returns no value, keeps its SC1090 refusal instead of testing `undefined`",
+    narrower:
+      "the receiver's class, for a write through a typed receiver; a write through an untyped receiver can reach any class",
     tracked: null,
     lowererFields: [],
   },
@@ -541,6 +572,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["importsNodeApi"],
   },
   {
+    name: "js-widened-fields",
+    file: `${SRC}/frontend/lowering/lowerer.ts`,
+    symbol: "jsWidenedFields",
+    source: "types",
+    scope: "shape",
+    setBy:
+      "a write of a value the checker cannot show fits the JSDoc type of a class field, in an unchecked JavaScript source",
+    gates:
+      "the field's storage is checked-dynamic for every instance of the class and every reader of its layout",
+    narrower:
+      "the write sites, where the receiver's class is known; a write the scan cannot type as a field of one class keeps the declared storage",
+    tracked: null,
+    lowererFields: ["jsWidenedFields"],
+  },
+  {
     name: "global-object-writes",
     file: `${SRC}/frontend/lowering/global-object-writes.ts`,
     symbol: "globalObjectWrites",
@@ -706,6 +752,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "where the program requires or imports one module whose export object is an accessor",
   ),
   scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsRuntimeWholeExportValueWritesOf",
+    1,
+    "prefilter",
+    "a module whose whole export is chosen at run time has to spell `module.exports`; every write it finds is decided from its target's symbol and its value's type",
+  ),
+  scan(
     "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
     1,
     "prefilter",
@@ -728,12 +780,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "a file that never spells `extends` declares no derived class",
-  ),
-  scan(
-    "frontend/lowering/cycle-initialization.ts#earlyHeritageReference",
-    1,
-    "closed-world",
-    "references to one class of an import cycle",
   ),
   scan(
     "frontend/lowering/cycle-initialization.ts#classLocalNames",
@@ -789,6 +835,18 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "only JavaScript adds properties to handles, so a program without a JavaScript file skips the census",
+  ),
+  scan(
+    "frontend/lowering/inert-reads.ts#bindingNeverWritten",
+    1,
+    "closed-world",
+    "whether one global binding is written after its declaration; it decides only whether a call that builds a class in an argument may read that name ahead of the class's statics",
+  ),
+  scan(
+    "frontend/lowering/inert-reads.ts#propertyMayBeWritten",
+    1,
+    "closed-world",
+    "whether one property of one receiver's type may be written, by name, by a computed key or through reflection; it decides only whether a call that builds a class in an argument may read that property ahead of the class's statics",
   ),
   scan(
     "frontend/lowering/js-collection-types.ts#inferProgram",
@@ -921,6 +979,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "program roots named by createRequire calls",
   ),
   scan(
+    "frontend/lowering/cycle-initialization.ts#earlyHeritageReferences",
+    1,
+    "closed-world",
+    "the `extends` clauses that read a class of an import cycle before its declaration, each of which carries the class's initialization check at its own statement",
+  ),
+  scan(
     "frontend/program.ts#boundedDynamicImportRoots7",
     1,
     "discovery",
@@ -931,6 +995,18 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots of the entry package",
+  ),
+  scan(
+    "frontend/program.ts#declarationTwinRoots7",
+    1,
+    "discovery",
+    "program roots for the runtime implementation of each project declaration the program holds (a `.d.ts` beside the JavaScript it describes)",
+  ),
+  scan(
+    "frontend/program.ts#cjsStarReexportSources",
+    2,
+    "discovery",
+    "the files whose `export *` re-exports a CommonJS module, which the lowering rewrites with the Node lexer's names; the text test picks a helper binding the file does not already spell",
   ),
   decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
   scan(
@@ -970,6 +1046,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "discovery",
     "the module graph, the evaluation order and the dynamic imports it covers",
   ),
+  decides("frontend/tsc-codes.ts#methodNameWritten", 2, "void-method-written"),
   scan(
     "frontend/shape-inference/analyze.ts#Analyzer",
     1,

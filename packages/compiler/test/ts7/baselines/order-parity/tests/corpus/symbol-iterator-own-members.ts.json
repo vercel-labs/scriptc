@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/symbol-iterator-own-members.ts"],
+  "diags": []
+}

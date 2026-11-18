@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/worker-process-abort.ts"
+ ],
+ "diags": []
+}

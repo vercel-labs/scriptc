@@ -37,9 +37,18 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { streamTypedRefEligible } from "../../ir/analysis.js";
-import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
+import {
+  everyExprChild,
+  everyStmtChild,
+  everyStmtList,
+  mapExprChildren,
+  mapStmtChildren,
+  transformExpr,
+  transformStmtList,
+} from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { isSloppyAt } from "./frozen-records.js";
+import type { FunctionCensus } from "./function-census.js";
 import {
   erasedGenericInstance,
   implicitDefaultInstance,
@@ -63,10 +72,18 @@ import {
   classPrototypeData,
   hasClassPrototypeData,
   prototypeReflectedFlag,
+  prototypeViewable,
+  prototypeViewStart,
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
 import { runtimeStaticDefines } from "./class-runtime-statics.js";
+import {
+  classStaticsRepresentable,
+  insertClassStaticsInstall,
+  staticTableFields,
+  staticTableReadyGlobal,
+} from "./class-static-tables.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
@@ -1011,6 +1028,11 @@ function mergePositions(left: readonly number[], right: readonly number[]): numb
  * against a test of every receiver. */
 const CHECK_CANDIDATES = process.env["SCRIPTC_CHECK_DISPATCH_CANDIDATES"] === "1";
 
+/** Inherited names a class table repeats before it is worth sharing them with
+ * a base class's table: below this, the per-read delegation call costs more
+ * than the branches it saves. */
+const INHERITED_NAMES_TO_SHARE = 32;
+
 export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = false): IrFunction {
   const name = readOnly ? READ_PROPERTIES : "%dyn.class.properties";
   lowerer.shareHelper(name);
@@ -1249,7 +1271,11 @@ export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction
 /** Record field creation after the dispatch worklist closes, including writes
  * in generated member tables. Native values stay in their slots; the bag
  * owns only their property presence, attributes, and insertion position. */
-export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[]): void {
+export function trackClassFieldCreation(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   if (![...lowerer.classes.values()].some((info) => info.def.tracksOwnFields)) return;
   const loc = functions[0]!.loc;
   const name = "%dyn.class.fieldCreated";
@@ -1414,6 +1440,8 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
     (isClassOwnEnumerableFieldName(field) ||
       symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc) !== null);
   for (const fn of functions) {
+    // Only a field write or update can be instrumented.
+    if (!census.hasStmt(fn, "fieldSet") && !census.hasExpr(fn, "fieldIncDec")) continue;
     // The transform revisits the replacement it returns. An instrumented
     // write is recognized by its receiver, a temporary created here.
     const receivers = new Set<string>();
@@ -1631,6 +1659,105 @@ export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
  * continue through their existing runtime implementation. */
+/** `key = ToPropertyKey(key)` when `target` is a function (a class value):
+ * the first statement of a helper whose static-field refusals compare the
+ * key. */
+function staticKeyConversion(target: IrExpr, key: IrExpr, loc: SrcLoc): IrStmt {
+  if (key.kind !== "varRef")
+    throw new InternalCompilerError("static key conversion needs a local key");
+  return {
+    kind: "if",
+    cond: { kind: "dynTest", test: "function", value: target, type: BOOL, loc },
+    then: [
+      {
+        kind: "assign",
+        localId: key.localId,
+        value: { kind: "libCall", fn: "dyn.propertyKey", args: [key], type: DYN, loc },
+        loc,
+      },
+    ],
+    else_: null,
+    loc,
+  };
+}
+
+function isStaticKeyConversion(statement: IrStmt | undefined): boolean {
+  return (
+    statement?.kind === "if" &&
+    statement.then.length === 1 &&
+    statement.then[0]!.kind === "assign" &&
+    statement.then[0]!.value.kind === "libCall" &&
+    statement.then[0]!.value.fn === "dyn.propertyKey"
+  );
+}
+
+/** The deletes a listed static field can meet: each runs the static delete
+ * guard first once a table is installed. */
+const STATIC_DELETE_CALLS = new Set<IrLibFn>([
+  "dyn.keyDelete",
+  "dyn.keyDeleteComputed",
+  "dyn.reflectDeleteProperty",
+]);
+
+/** The copies and definitions that can write a listed static field from a
+ * source object: each runs a static source guard first once a table is
+ * installed. */
+const STATIC_SOURCE_CALLS = new Set<IrLibFn>(["dyn.assign", "dyn.assignAll", "dyn.defineProps"]);
+
+/** A native static write the table sync already rewrote: its first
+ * statement declares the sync's temporary. */
+function isStaticTableSync(node: IrStmt): boolean {
+  return (
+    node.kind === "block" &&
+    node.body[0]?.kind === "varDecl" &&
+    node.body[0].localId.startsWith("%staticTableWrite.")
+  );
+}
+
+/** A native static increment the table sync already rewrote. */
+function isStaticTableSyncExpr(node: IrExpr): boolean {
+  return (
+    node.kind === "seqExpr" &&
+    node.stmts.some(
+      (statement) =>
+        statement.kind === "varDecl" && statement.localId.startsWith("%staticTableWrite."),
+    )
+  );
+}
+
+/** Whether `value`, a class value boxed as `keyClass`, holds exactly the
+ * class `actual`. The boxed type only bounds the class: a slot typed with a
+ * base class can hold any of its subclasses. */
+function classValueIdentity(value: IrExpr, keyClass: string, actual: string, loc: SrcLoc): IrExpr {
+  const keyType: IrType = { kind: "classval", className: keyClass };
+  return {
+    kind: "logical",
+    op: "&&",
+    left: {
+      kind: "libCall",
+      fn: "dyn.classIs",
+      args: [value, { kind: "strLit", value: typeKey(keyType), type: STRING, loc }],
+      type: BOOL,
+      loc,
+    },
+    right: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "dynCheck", value, type: keyType, loc },
+      right: {
+        kind: "classRef",
+        className: actual,
+        type: { kind: "classval", className: actual },
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
+}
+
 export class ClassDynamicDispatch {
   constructor(private readonly asyncFree = false) {}
 
@@ -1651,6 +1778,886 @@ export class ClassDynamicDispatch {
    * pass found them (dynamic-class-report.ts reads them). */
   boxedClasses(): ReadonlySet<string> {
     return this.boxed;
+  }
+  /** The class values whose static property table this pass installed. */
+  private readonly staticTablesInstalled = new Set<string>();
+
+  /** The static-field writes a value boxed as `keyClass` can receive for
+   * `name`: one per class the value can hold (`keyClass` or a descendant
+   * whose table is installed) on which `name` is a static field of a class
+   * whose table is installed. `own` says the class itself declares it. */
+  private staticWriteTargets(
+    lowerer: Lowerer,
+    keyClass: string,
+    name: string,
+  ): { actual: string; own: boolean; globalId: string; type: IrType; field: string }[] {
+    const keyInfo = lowerer.classes.get(keyClass);
+    if (!keyInfo || runtimeStaticDefines(lowerer, keyInfo, name)) return [];
+    if (findGenericStaticOn(lowerer, keyInfo, name)) return [];
+    const actuals = [
+      keyClass,
+      ...[...this.staticTablesInstalled].filter((other) => lowerer.isSubclassOf(other, keyClass)),
+    ];
+    const targets: {
+      actual: string;
+      own: boolean;
+      globalId: string;
+      type: IrType;
+      field: string;
+    }[] = [];
+    for (const actual of actuals) {
+      const info = lowerer.classes.get(actual);
+      if (!info || !this.staticTablesInstalled.has(actual)) continue;
+      const found = findStaticOn(lowerer, info, name);
+      const field = found?.field;
+      if (!found || !field || !this.staticTablesInstalled.has(found.declarer.def.name)) continue;
+      targets.push({
+        actual,
+        own: found.declarer === info,
+        globalId: field.globalId,
+        type: field.type,
+        field: name,
+      });
+    }
+    return targets;
+  }
+
+  /** The statements of a static-field write through a class value. For the
+   * class's own field: the value is checked against the field's type, the
+   * table write (`tableWrite`, which throws for a non-writable property)
+   * runs, and only then does the native storage take the value, so a write
+   * the property refuses leaves the class's state as it was. For an
+   * inherited field: a run-time refusal, because through a subclass Node
+   * defines an OWN property on the subclass and leaves the base's field
+   * alone, while the subclass's compiled code reads the inherited field
+   * from the base's storage. */
+  private staticWriteStatements(
+    lowerer: Lowerer,
+    fn: IrFunction,
+    target: { actual: string; own: boolean; globalId: string; type: IrType; field: string },
+    stored: IrExpr,
+    tableWrite: IrStmt[],
+    loc: SrcLoc,
+  ): IrStmt[] {
+    if (!target.own) {
+      const info = lowerer.classes.get(target.actual)!;
+      return [
+        {
+          kind: "runtimeFence",
+          code: "SC1090",
+          message: `assigning the inherited static '${target.field}' through the subclass '${info.def.jsName ?? info.def.name}' as a dynamic value is not supported yet (JavaScript creates an own property on the subclass, which the subclass's compiled reads do not see)`,
+          loc,
+        },
+      ];
+    }
+    const checked = `%staticTableWrite.${this.staticTableTemps++}`;
+    fn.locals.push({ id: checked, name: checked, type: target.type, mutable: false });
+    // One block led by the temporary: the table sync recognizes it as a
+    // write that already stores to the table.
+    return [
+      {
+        kind: "block",
+        body: [
+          {
+            kind: "varDecl",
+            localId: checked,
+            init: { kind: "dynCheck", value: stored, type: target.type, loc },
+            loc,
+          },
+          ...tableWrite,
+          {
+            kind: "assign",
+            localId: target.globalId,
+            value: varRef(checked, target.type, loc),
+            loc,
+          },
+        ],
+        loc,
+      },
+    ];
+  }
+
+  /** The table store of a static-field write: the class value's property
+   * table takes `stored` under `name`. */
+  private staticTableStore(value: IrExpr, name: IrExpr, stored: IrExpr, loc: SrcLoc): IrStmt {
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.keySet",
+        args: [
+          { kind: "call", callee: this.propertyBag!.name, args: [value], type: DYN, loc },
+          name,
+          stored,
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
+
+  /** Numbers the temporaries the static-table writes declare. */
+  private staticTableTemps = 0;
+
+  /** The (helper, boxed class, held class, field) branches of the
+   * computed-key writes already emitted. */
+  private readonly computedStaticWrites = new Set<string>();
+
+  /** A computed-key write (`C[key] = v`, `Reflect.set(C, key, v)`) through a
+   * class value lands in the class's property table. When the key names a
+   * static field the table lists, the class's native storage takes the
+   * value first (or the write is refused for an inherited field), so the
+   * compiled code that reads the field sees what reflection sees. */
+  private branchComputedStaticWrites(lowerer: Lowerer): boolean {
+    if (this.staticTablesInstalled.size === 0) return false;
+    const names = new Set<string>();
+    for (const className of this.staticTablesInstalled) {
+      const info = lowerer.classes.get(className);
+      if (info) for (const field of staticTableFields(lowerer, info)) names.add(field.name);
+    }
+    let changed = false;
+    for (const dispatch of this.computed.values()) {
+      const fn = dispatch.fn;
+      if (!fn.params.some((param) => param.localId === "p.1")) continue;
+      if (fn.params.some((param) => param.localId === "p.index")) continue;
+      const reflect = fn.params.some((param) => param.localId === "p.reflectReceiver");
+      const loc = fn.loc;
+      const value = varRef("p.0", DYN, loc);
+      const stored = varRef("p.1", DYN, loc);
+      const keyRead = varRef(dispatch.keyLocal, STRING, loc);
+      for (const keyClass of this.boxedConstructors)
+        for (const name of names)
+          for (const target of this.staticWriteTargets(lowerer, keyClass, name)) {
+            const id = `${fn.name}\0${keyClass}\0${target.actual}\0${name}`;
+            if (this.computedStaticWrites.has(id)) continue;
+            this.computedStaticWrites.add(id);
+            // The branch runs the whole write and returns: the table store
+            // first, then the native storage.
+            const stmts: IrStmt[] = reflect
+              ? (() => {
+                  const ok = `%staticTableWrite.${this.staticTableTemps++}`;
+                  fn.locals.push({ id: ok, name: ok, type: BOOL, mutable: true });
+                  return [
+                    ...this.staticWriteStatements(
+                      lowerer,
+                      fn,
+                      target,
+                      stored,
+                      [
+                        {
+                          kind: "varDecl",
+                          localId: ok,
+                          init: {
+                            kind: "libCall",
+                            fn: "dyn.reflectSet",
+                            args: [
+                              {
+                                kind: "call",
+                                callee: this.propertyBag!.name,
+                                args: [value],
+                                type: DYN,
+                                loc,
+                              },
+                              lowerer.coerceToExpected(keyRead, DYN),
+                              stored,
+                              varRef("p.reflectReceiver", DYN, loc),
+                            ],
+                            type: BOOL,
+                            loc,
+                          },
+                          loc,
+                        },
+                        // A refused store returns false and leaves the
+                        // native storage alone.
+                        {
+                          kind: "if",
+                          cond: {
+                            kind: "unary",
+                            op: "!",
+                            operand: varRef(ok, BOOL, loc),
+                            type: BOOL,
+                            loc,
+                          },
+                          then: [{ kind: "return", value: varRef(ok, BOOL, loc), loc }],
+                          else_: null,
+                          loc,
+                        },
+                      ],
+                      loc,
+                    ),
+                    { kind: "return", value: varRef(ok, BOOL, loc), loc },
+                  ];
+                })()
+              : [
+                  ...this.staticWriteStatements(
+                    lowerer,
+                    fn,
+                    target,
+                    stored,
+                    [this.staticTableStore(value, keyRead, stored, loc)],
+                    loc,
+                  ),
+                  { kind: "return", value: null, loc },
+                ];
+            const then: IrStmt[] = reflect
+              ? [
+                  {
+                    kind: "if",
+                    cond: {
+                      kind: "dynScalarEq",
+                      left: varRef("p.reflectReceiver", DYN, loc),
+                      right: value,
+                      type: BOOL,
+                      loc,
+                    },
+                    then: stmts,
+                    // A receiver other than the class stores on the
+                    // receiver in Node, which this write does not model.
+                    else_: [
+                      {
+                        kind: "runtimeFence",
+                        code: "SC1090",
+                        message: `'Reflect.set' of the static '${name}' with a receiver other than the class is not supported yet`,
+                        loc,
+                      },
+                    ],
+                    loc,
+                  },
+                ]
+              : stmts;
+            const branch: IrStmt = {
+              kind: "if",
+              cond: {
+                kind: "logical",
+                op: "&&",
+                left: {
+                  kind: "strEq",
+                  negated: false,
+                  left: keyRead,
+                  right: { kind: "strLit", value: name, type: STRING, loc },
+                  type: BOOL,
+                  loc,
+                },
+                right: classValueIdentity(value, keyClass, target.actual, loc),
+                type: BOOL,
+                loc,
+              },
+              then,
+              else_: null,
+              loc,
+            };
+            // After the statement that computes the key's string, if any.
+            const at = fn.body.findIndex(
+              (statement) =>
+                statement.kind === "varDecl" && statement.localId === dispatch.keyLocal,
+            );
+            fn.body = [...fn.body.slice(0, at + 1), branch, ...fn.body.slice(at + 1)];
+            changed = true;
+          }
+    }
+    return changed;
+  }
+
+  /** `Object.defineProperty` on a class value redefines a property of its
+   * table. For a static field the table lists, the class's compiled code
+   * keeps reading the field's native storage, which a redefinition (a new
+   * value, a non-writable or accessor property, an own property on a
+   * subclass) would leave behind: those are refused at run time before the
+   * table changes. */
+  private branchStaticDescriptorWrites(lowerer: Lowerer): boolean {
+    let changed = false;
+    if (this.descriptorHelper)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          this.descriptorHelper,
+          (field, owner) =>
+            `redefining the static field '${field}' of '${owner}' with 'Object.defineProperty' is not supported yet (the class's compiled code reads the field's own storage)`,
+        ) || changed;
+    if (this.staticDeleteHelper)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          this.staticDeleteHelper,
+          (field, owner) =>
+            `deleting the static field '${field}' of '${owner}' is not supported yet (the class's compiled code keeps reading the field's own storage)`,
+        ) || changed;
+    // Object.assign and Object.defineProperties act on the source's (the
+    // descriptor map's) own enumerable keys.
+    // A null or undefined source has no keys: Object.assign skips it, and
+    // Object.defineProperties throws its own TypeError for it afterwards.
+    const sourceHas = (field: string, loc: SrcLoc): IrExpr => ({
+      kind: "logical",
+      op: "&&",
+      left: {
+        kind: "dynTest",
+        test: "nullish",
+        negated: true,
+        value: varRef("source", DYN, loc),
+        type: BOOL,
+        loc,
+      },
+      right: {
+        kind: "libCall",
+        fn: "dyn.propertyIsEnumerable",
+        args: [varRef("source", DYN, loc), { kind: "strLit", value: field, type: STRING, loc }],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    });
+    for (const [fn, guard] of this.staticSourceGuards)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          guard,
+          (field, owner) =>
+            `${fn === "dyn.defineProps" ? "redefining" : "assigning"} the static field '${field}' of '${owner}' with '${fn === "dyn.defineProps" ? "Object.defineProperties" : "Object.assign"}' is not supported yet (the class's compiled code reads the field's own storage)`,
+          sourceHas,
+        ) || changed;
+    return changed;
+  }
+
+  /** Guards that run ahead of Object.assign and Object.defineProperties once a
+   * static table is installed (parameters `target` and `source`): a source
+   * that would write or redefine a listed static field is refused there. */
+  private readonly staticSourceGuards = new Map<IrLibFn, IrFunction>();
+
+  /** Runs the Object.assign guard over each source of a run-time list. */
+  private staticSourceList: IrFunction | null = null;
+
+  private staticSourceListGuard(lowerer: Lowerer, guard: string, loc: SrcLoc): IrFunction {
+    if (this.staticSourceList) return this.staticSourceList;
+    const listType: IrType = { kind: "array", elem: DYN };
+    this.staticSourceList = {
+      name: "%dyn.class.staticAssignAll",
+      params: [
+        { localId: "target", name: "target", type: DYN },
+        { localId: "sources", name: "sources", type: DYN },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "target", name: "target", type: DYN, mutable: false },
+        { id: "sources", name: "sources", type: DYN, mutable: false },
+        { id: "list", name: "list", type: listType, mutable: false },
+        { id: "source", name: "source", type: DYN, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "list",
+          init: { kind: "dynCheck", value: varRef("sources", DYN, loc), type: listType, loc },
+          loc,
+        },
+        {
+          kind: "forOf",
+          localId: "source",
+          iterable: varRef("list", listType, loc),
+          body: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "call",
+                callee: guard,
+                args: [varRef("target", DYN, loc), varRef("source", DYN, loc)],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    };
+    this.generated.add(this.staticSourceList);
+    lowerer.liftedFns.push(this.staticSourceList);
+    return this.staticSourceList;
+  }
+
+  private staticSourceGuard(lowerer: Lowerer, call: IrLibFn, loc: SrcLoc): IrFunction {
+    // Object.assign's two forms share one guard.
+    const fn: IrLibFn = call === "dyn.assignAll" ? "dyn.assign" : call;
+    const known = this.staticSourceGuards.get(fn);
+    if (known) return known;
+    const params = ["target", "source"].map((name) => ({ localId: name, name, type: DYN }));
+    const guard: IrFunction = {
+      name:
+        fn === "dyn.defineProps" ? "%dyn.class.staticDefineProperties" : "%dyn.class.staticAssign",
+      params,
+      returnType: VOID,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: DYN,
+        mutable: false,
+      })),
+      body: [{ kind: "return", value: null, loc }],
+      loc,
+    };
+    this.staticSourceGuards.set(fn, guard);
+    this.generated.add(guard);
+    lowerer.liftedFns.push(guard);
+    return guard;
+  }
+
+  /** Refuses, at the head of `helper` (parameters `target` and `key`), an
+   * operation on a static field an installed table lists: one branch per
+   * class object the target can hold and field visible on it. */
+  private fenceStaticFieldKeys(
+    lowerer: Lowerer,
+    helper: IrFunction,
+    message: (field: string, owner: string) => string,
+    matches?: (field: string, loc: SrcLoc) => IrExpr,
+  ): boolean {
+    if (this.staticTablesInstalled.size === 0) return false;
+    let changed = false;
+    const loc = helper.loc;
+    const target = varRef("target", DYN, loc);
+    const key = varRef("key", DYN, loc);
+    const keyIs = (field: string, at: SrcLoc): IrExpr => ({
+      kind: "dynScalarEq",
+      left: key,
+      right: lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc: at }, DYN),
+      type: BOOL,
+      loc: at,
+    });
+    const match = matches ?? keyIs;
+    for (const keyClass of this.boxedConstructors)
+      for (const actual of [keyClass, ...this.staticTablesInstalled]) {
+        if (actual !== keyClass && !lowerer.isSubclassOf(actual, keyClass)) continue;
+        const info = lowerer.classes.get(actual);
+        if (!info || !this.staticTablesInstalled.has(actual)) continue;
+        for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
+          if (!this.staticTablesInstalled.has(owner.def.name)) continue;
+          for (const field of staticTableFields(lowerer, owner)) {
+            const id = `${helper.name}\0${keyClass}\0${actual}\0${field.name}`;
+            if (this.computedStaticWrites.has(id)) continue;
+            this.computedStaticWrites.add(id);
+            // After the key's conversion, which leads the helper's body.
+            const at = isStaticKeyConversion(helper.body[0]) ? 1 : 0;
+            helper.body.splice(at, 0, {
+              kind: "if",
+              cond: {
+                kind: "logical",
+                op: "&&",
+                // The target test runs first: the key test may read the
+                // source, which only a write onto this class may observe.
+                left: {
+                  kind: "logical",
+                  op: "&&",
+                  // The installer defines the table's own entries through
+                  // the defineProperty helper before the table is ready.
+                  left: varRef(staticTableReadyGlobal(info), BOOL, loc),
+                  right: classValueIdentity(target, keyClass, actual, loc),
+                  type: BOOL,
+                  loc,
+                },
+                right: match(field.name, loc),
+                type: BOOL,
+                loc,
+              },
+              then: [
+                {
+                  kind: "runtimeFence",
+                  code: "SC1090",
+                  message: message(field.name, info.def.jsName ?? info.def.name),
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            });
+            changed = true;
+          }
+        }
+      }
+    return changed;
+  }
+
+  /** Runs ahead of every property delete once a static table is installed
+   * (syncStaticTableWrites): a delete of a listed static field is refused
+   * there, because the table entry would go while the class's compiled
+   * code kept reading the field's native storage. */
+  private staticDeleteHelper: IrFunction | null = null;
+
+  private staticDeleteGuard(lowerer: Lowerer, loc: SrcLoc): IrFunction {
+    if (this.staticDeleteHelper) return this.staticDeleteHelper;
+    const params = ["target", "key"].map((name) => ({ localId: name, name, type: DYN }));
+    this.staticDeleteHelper = {
+      name: "%dyn.class.staticDelete",
+      params,
+      returnType: VOID,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: DYN,
+        mutable: false,
+      })),
+      body: [{ kind: "return", value: null, loc }],
+      loc,
+    };
+    this.generated.add(this.staticDeleteHelper);
+    lowerer.liftedFns.push(this.staticDeleteHelper);
+    return this.staticDeleteHelper;
+  }
+
+  /** Native writes to a field an installed table lists, by global id. */
+  private staticTableGlobals(
+    lowerer: Lowerer,
+  ): Map<string, { info: ClassInfo; name: string; type: IrType }> {
+    const globals = new Map<string, { info: ClassInfo; name: string; type: IrType }>();
+    for (const className of this.staticTablesInstalled) {
+      const info = lowerer.classes.get(className);
+      if (!info) continue;
+      for (const field of staticTableFields(lowerer, info)) {
+        const type = info.staticFields.find(
+          (candidate) => candidate.globalId === field.globalId,
+        )?.type;
+        if (type) globals.set(field.globalId, { info, name: field.name, type });
+      }
+    }
+    return globals;
+  }
+
+  /** Per function, the body whose native static writes already update the
+   * tables and the number of installed tables it was synced for. */
+  private readonly syncedBodies = new Map<IrFunction, { body: IrStmt[]; version: number }>();
+
+  /** Keeps each installed table's data properties equal to the native
+   * storage. The table holds a static field as an own data property, as
+   * Node's class object does, but the class's compiled code reads and writes
+   * the field's native global: every native write to a listed field also
+   * stores the new value in the table, once the table is installed (the
+   * class statement's static initializers run before it). */
+  private syncStaticTableWrites(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
+    if (this.staticTablesInstalled.size === 0) return false;
+    const globals = this.staticTableGlobals(lowerer);
+    if (globals.size === 0) return false;
+    const version = this.staticTablesInstalled.size;
+    let changed = false;
+    if (!this.propertyBag) {
+      this.propertyBag = classPropertiesHelper(lowerer, functions[0]!.loc);
+      this.generated.add(this.propertyBag);
+      changed = true;
+    }
+    for (const fn of functions) {
+      const synced = this.syncedBodies.get(fn);
+      if (synced?.body === fn.body && synced.version === version) continue;
+      const writes = (body: IrStmt[]): boolean => {
+        let found = false;
+        const stmt = (node: IrStmt): boolean => {
+          if (found) return false;
+          if (isStaticTableSync(node)) return true;
+          if (node.kind === "assign" && globals.has(node.localId)) found = true;
+          return !found && everyStmtChild(node, expr, stmt);
+        };
+        const expr = (node: IrExpr): boolean => {
+          if (found) return false;
+          if (isStaticTableSyncExpr(node)) return true;
+          if (node.kind === "incDec" && globals.has(node.localId)) found = true;
+          if (
+            node.kind === "libCall" &&
+            (STATIC_DELETE_CALLS.has(node.fn) || STATIC_SOURCE_CALLS.has(node.fn))
+          )
+            found = true;
+          return !found && everyExprChild(node, expr, stmt);
+        };
+        body.every(stmt);
+        return found;
+      };
+      if (!writes(fn.body)) {
+        this.syncedBodies.set(fn, { body: fn.body, version });
+        continue;
+      }
+      const tableStore = (globalId: string, stored: IrExpr, loc: SrcLoc): IrStmt => {
+        const { info, name } = globals.get(globalId)!;
+        return {
+          kind: "if",
+          cond: varRef(staticTableReadyGlobal(info), BOOL, loc),
+          then: [
+            this.staticTableStore(
+              lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl!), DYN),
+              { kind: "strLit", value: name, type: STRING, loc },
+              lowerer.coerceToExpected(stored, DYN),
+              loc,
+            ),
+          ],
+          else_: null,
+          loc,
+        };
+      };
+      const temp = (type: IrType, mutable = false): string => {
+        const id = `%staticTableWrite.${this.staticTableTemps++}`;
+        fn.locals.push({ id, name: id, type, mutable });
+        return id;
+      };
+      // The new value goes to the table first: a property the program made
+      // non-writable throws there, before the native storage changes.
+      const stmt = (node: IrStmt): IrStmt => {
+        if (isStaticTableSync(node)) return node;
+        const mapped = mapStmtChildren(node, expr, stmt);
+        if (mapped.kind !== "assign" || !globals.has(mapped.localId)) return mapped;
+        const { type } = globals.get(mapped.localId)!;
+        const next = temp(type);
+        const loc = mapped.loc;
+        return {
+          kind: "block",
+          body: [
+            { kind: "varDecl", localId: next, init: mapped.value, loc },
+            tableStore(mapped.localId, varRef(next, type, loc), loc),
+            { ...mapped, value: varRef(next, type, loc) },
+          ],
+          loc,
+        };
+      };
+      const expr = (node: IrExpr): IrExpr => {
+        if (isStaticTableSyncExpr(node)) return node;
+        const mapped = mapExprChildren(node, expr, stmt);
+        if (mapped.kind === "libCall" && STATIC_SOURCE_CALLS.has(mapped.fn)) {
+          // The target and every source, evaluated in order, pass the guard
+          // before the copy or the definition runs.
+          const loc = mapped.loc;
+          const [target, sources] = mapped.args;
+          const guard = this.staticSourceGuard(lowerer, mapped.fn, loc).name;
+          const targetLocal = temp(target!.type);
+          const targetRead = (): IrExpr =>
+            lowerer.coerceToExpected(varRef(targetLocal, target!.type, loc), DYN);
+          const stmts: IrStmt[] = [{ kind: "varDecl", localId: targetLocal, init: target!, loc }];
+          const check = (source: IrExpr): IrStmt => ({
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: guard,
+              args: [targetRead(), lowerer.coerceToExpected(source, DYN)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          });
+          let sourcesArg: IrExpr;
+          if (mapped.fn === "dyn.assignAll" && sources!.kind === "dynArrLit") {
+            const elems = sources!.elems.map((elem) => {
+              const local = temp(elem.type);
+              stmts.push({ kind: "varDecl", localId: local, init: elem, loc });
+              return varRef(local, elem.type, loc);
+            });
+            for (const elem of elems) stmts.push(check(elem));
+            sourcesArg = { ...sources!, elems };
+          } else if (mapped.fn === "dyn.assignAll") {
+            // A source list built at run time (Object.assign as a value,
+            // with its rest array): each source passes the guard in turn.
+            const local = temp(sources!.type);
+            stmts.push({ kind: "varDecl", localId: local, init: sources!, loc });
+            stmts.push({
+              kind: "exprStmt",
+              expr: {
+                kind: "call",
+                callee: this.staticSourceListGuard(lowerer, guard, loc).name,
+                args: [
+                  targetRead(),
+                  lowerer.coerceToExpected(varRef(local, sources!.type, loc), DYN),
+                ],
+                type: VOID,
+                loc,
+              },
+              loc,
+            });
+            sourcesArg = varRef(local, sources!.type, loc);
+          } else {
+            const local = temp(sources!.type);
+            stmts.push({ kind: "varDecl", localId: local, init: sources!, loc });
+            stmts.push(check(varRef(local, sources!.type, loc)));
+            sourcesArg = varRef(local, sources!.type, loc);
+          }
+          return {
+            kind: "seqExpr",
+            stmts,
+            result: {
+              ...mapped,
+              args: [varRef(targetLocal, target!.type, loc), sourcesArg, ...mapped.args.slice(2)],
+            },
+            type: mapped.type,
+            loc,
+          };
+        }
+        if (mapped.kind === "libCall" && STATIC_DELETE_CALLS.has(mapped.fn)) {
+          // The delete's target and key, evaluated once, pass the guard first.
+          const loc = mapped.loc;
+          const [target, key, ...rest] = mapped.args;
+          const targetLocal = temp(target!.type);
+          const keyLocal = temp(key!.type);
+          const targetRead = varRef(targetLocal, target!.type, loc);
+          // A key of any other kind converts with ToPropertyKey once, here,
+          // when the target is a function (a class value): the guard and the
+          // delete then see the same key, and its conversion runs once.
+          const keyInit: IrExpr =
+            key!.type.kind === "dyn"
+              ? {
+                  kind: "ternary",
+                  cond: {
+                    kind: "dynTest",
+                    test: "function",
+                    value: lowerer.coerceToExpected(targetRead, DYN),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: { kind: "libCall", fn: "dyn.propertyKey", args: [key!], type: DYN, loc },
+                  else_: key!,
+                  type: DYN,
+                  loc,
+                }
+              : key!;
+          return {
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: targetLocal, init: target!, loc },
+              { kind: "varDecl", localId: keyLocal, init: keyInit, loc },
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "call",
+                  callee: this.staticDeleteGuard(lowerer, loc).name,
+                  args: [
+                    lowerer.coerceToExpected(varRef(targetLocal, target!.type, loc), DYN),
+                    lowerer.coerceToExpected(varRef(keyLocal, key!.type, loc), DYN),
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            result: {
+              ...mapped,
+              args: [
+                varRef(targetLocal, target!.type, loc),
+                varRef(keyLocal, key!.type, loc),
+                ...rest,
+              ],
+            },
+            type: mapped.type,
+            loc,
+          };
+        }
+        if (mapped.kind !== "incDec" || !globals.has(mapped.localId)) return mapped;
+        const { type } = globals.get(mapped.localId)!;
+        const loc = mapped.loc;
+        const { info, name } = globals.get(mapped.localId)!;
+        if (type.kind !== "f64") {
+          // A non-number update has no store to run ahead of the native one.
+          const result = temp(type);
+          return {
+            kind: "seqExpr",
+            stmts: [
+              {
+                kind: "if",
+                cond: varRef(staticTableReadyGlobal(info), BOOL, loc),
+                then: [
+                  {
+                    kind: "runtimeFence",
+                    code: "SC1090",
+                    message: `'${mapped.op}${mapped.op}' on the non-number static field '${name}' of a class whose statics are reflected is not supported yet`,
+                    loc,
+                  },
+                ],
+                else_: null,
+                loc,
+              },
+              { kind: "varDecl", localId: result, init: mapped, loc },
+            ],
+            result: varRef(result, type, loc),
+            type,
+            loc,
+          };
+        }
+        const old = temp(type);
+        const next = temp(type);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: old, init: varRef(mapped.localId, type, loc), loc },
+            {
+              kind: "varDecl",
+              localId: next,
+              init: {
+                kind: "bin",
+                op: mapped.op,
+                left: varRef(old, type, loc),
+                right: { kind: "numLit", value: 1, type: F64, loc },
+                type,
+                loc,
+              },
+              loc,
+            },
+            tableStore(mapped.localId, varRef(next, type, loc), loc),
+            { kind: "assign", localId: mapped.localId, value: varRef(next, type, loc), loc },
+          ],
+          result: varRef(mapped.prefix ? next : old, type, loc),
+          type,
+          loc,
+        };
+      };
+      fn.body = fn.body.map(stmt);
+      this.syncedBodies.set(fn, { body: fn.body, version });
+      this.sites.forget(fn);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Installs the static property table of every class value the program
+   * boxes (class-static-tables.ts): a keyed read through `any`, Reflect and
+   * the descriptor APIs answer from it. The table links to the base's and a
+   * slot typed with a class can hold any program descendant, so the program
+   * ancestors and descendants of each boxed class get one too. */
+  private installStaticTables(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
+    if (this.boxedConstructors.size === 0) return false;
+    const candidates = new Map<string, ClassInfo>();
+    const add = (info: ClassInfo | null): void => {
+      if (info) candidates.set(info.def.name, info);
+    };
+    for (const name of this.boxedConstructors) {
+      const info = lowerer.classes.get(name);
+      if (!info) continue;
+      add(info);
+      for (let base = info.base; base; base = base.base) add(base);
+      for (const other of lowerer.classes.values()) {
+        if (other === info || !lowerer.isSubclassOf(other.def.name, info.def.name)) continue;
+        // A slot typed with the boxed class can only hold a descendant this
+        // build retains (classCanBeConstructed). A descendant whose
+        // constructor the reachable graph dropped has no instance and no
+        // class value to reflect on, and installing its table would name its
+        // class value — pulling its declaration-time code into a library
+        // graph that does not reach it.
+        if (lowerer.classCanBeConstructed(other)) add(other);
+      }
+    }
+    // Ancestors install first: a table links to its base's, so the base's
+    // members are there when an inherited name resolves through it.
+    const depth = (info: ClassInfo): number => {
+      let n = 0;
+      for (let base = info.base; base; base = base.base) n++;
+      return n;
+    };
+    let changed = false;
+    for (const info of [...candidates.values()].sort((left, right) => depth(left) - depth(right))) {
+      if (this.staticTablesInstalled.has(info.def.name)) continue;
+      // A base this pass did not install (an ineligible one, whose fence
+      // stays) leaves the chain incomplete: this class keeps its fence.
+      let ready = true;
+      for (let base = info.base; base; base = base.base)
+        if (!this.staticTablesInstalled.has(base.def.name)) ready = false;
+      if (!ready || !classStaticsRepresentable(lowerer, info)) continue;
+      if (!insertClassStaticsInstall(lowerer, info, functions)) continue;
+      this.staticTablesInstalled.add(info.def.name);
+      changed = true;
+    }
+    return changed;
   }
   private readonly boxedConstructors = new Set<string>();
   /** Every class a boxed value was statically typed as, runtime error
@@ -1825,6 +2832,10 @@ export class ClassDynamicDispatch {
     // the order the scan met them.
     sortAdded(lowerer, this.boxed, boxedBefore);
     sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
+    changed = this.installStaticTables(lowerer, functions) || changed;
+    changed = this.branchComputedStaticWrites(lowerer) || changed;
+    changed = this.branchStaticDescriptorWrites(lowerer) || changed;
+    changed = this.syncStaticTableWrites(lowerer, functions) || changed;
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
@@ -2946,9 +3957,13 @@ export class ClassDynamicDispatch {
                 id: param.localId,
                 name: param.name,
                 type: DYN,
-                mutable: false,
+                mutable: param.localId === "key",
               })),
               body: [
+                // A class value's key converts with ToPropertyKey once, before
+                // the static-field refusals (fenceStaticFieldKeys) compare it
+                // and the define reads it.
+                staticKeyConversion(target, key, loc),
                 {
                   kind: "if",
                   cond: { kind: "dynTest", test: "symbol", value: key, type: BOOL, loc },
@@ -4237,6 +5252,84 @@ export class ClassDynamicDispatch {
           });
           changed = true;
         }
+      if (!dispatch.write)
+        // A value boxed as a class can hold one of its subclasses. A subclass
+        // that declares its own static field of the name answers from its own
+        // storage: those branches test the class object itself and run ahead
+        // of the boxed class's branch.
+        for (const name of this.boxedConstructors) {
+          if (!dispatch.classes.has(`constructor:${name}`)) continue;
+          const info = lowerer.classes.get(name);
+          const general = info && findStaticOn(lowerer, info, dispatch.name)?.field;
+          for (const actual of this.staticTablesInstalled) {
+            if (actual === name || !lowerer.isSubclassOf(actual, name)) continue;
+            const key = `constructor:${name}:${actual}`;
+            if (dispatch.classes.has(key)) continue;
+            const actualInfo = lowerer.classes.get(actual);
+            const field = actualInfo && findStaticOn(lowerer, actualInfo, dispatch.name)?.field;
+            if (!field || field.globalId === general?.globalId) continue;
+            dispatch.classes.add(key);
+            const loc = dispatch.fn.loc;
+            dispatch.fn.body.unshift({
+              kind: "if",
+              cond: classValueIdentity(varRef("p.0", DYN, loc), name, actual, loc),
+              then: [
+                {
+                  kind: "return",
+                  value: lowerer.coerceToExpected(varRef(field.globalId, field.type, loc), DYN),
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            });
+            changed = true;
+          }
+        }
+      if (dispatch.write)
+        // A write to a static field of a class value updates the native
+        // storage the class's own code reads, and the field's own data
+        // property in the installed table (Node's class object holds the
+        // field; the descriptor read and util.inspect answer from that
+        // entry). The branch tests the class object the value holds, not
+        // the type it was boxed as: a subclass boxed through a slot typed
+        // with its base must not write the base's storage.
+        for (const name of this.boxedConstructors) {
+          if (dispatch.name.startsWith("#")) continue;
+          const loc = dispatch.fn.loc;
+          for (const branch of this.staticWriteTargets(lowerer, name, dispatch.name)) {
+            const key = `constructor:${name}:${branch.actual}`;
+            if (dispatch.classes.has(key)) continue;
+            dispatch.classes.add(key);
+            const value = varRef("p.0", DYN, loc);
+            const stored = varRef("p.1", DYN, loc);
+            dispatch.fn.body.unshift({
+              kind: "if",
+              cond: classValueIdentity(value, name, branch.actual, loc),
+              then: [
+                ...this.staticWriteStatements(
+                  lowerer,
+                  dispatch.fn,
+                  branch,
+                  stored,
+                  [
+                    this.staticTableStore(
+                      value,
+                      { kind: "strLit", value: dispatch.name, type: STRING, loc },
+                      stored,
+                      loc,
+                    ),
+                  ],
+                  loc,
+                ),
+                { kind: "return", value: null, loc },
+              ],
+              else_: null,
+              loc,
+            });
+            changed = true;
+          }
+        }
       // Only the receivers that declare or hold the name, and the rooted
       // ones, can pass the test, except for names it decides on every
       // receiver. Fields added while bodies lower (the property bag and the
@@ -4308,7 +5401,11 @@ export class ClassDynamicDispatch {
     }
     for (const dispatch of this.computed.values()) {
       if (!dispatch.instances) continue;
-      for (const plan of this.propertyReceivers(lowerer, true)) {
+      const plans = this.propertyReceivers(lowerer, true);
+      // The classes that get a table of their own for this dispatch, which a
+      // class may delegate to.
+      const tableClasses = new Set(plans.map((plan) => plan.info.def.name));
+      for (const plan of plans) {
         if (dispatch.classes.has(plan.key)) continue;
         const { info } = plan;
         dispatch.classes.add(plan.key);
@@ -4632,7 +5729,92 @@ export class ClassDynamicDispatch {
           changed = true;
           continue;
         }
-        const names = new Set([...info.fields.keys()].filter(isClassOwnEnumerableFieldName));
+        // A class with enough inherited names delegates the ones it does not
+        // declare to a base class that has a table of its own for this
+        // operation, so the inherited branches are not repeated. A runtime
+        // base (Error, EventTarget, Date, a stream) has no table, so the
+        // first program class in the chain answers its runtime members
+        // itself. The base's table takes the same value, key, stored value
+        // and Reflect receiver; the instance is upcast to it, whose fields
+        // are an identical prefix of this class's layout.
+        const collectNames = (): Set<string> => {
+          const found = new Set<string>();
+          for (const field of info.fields.keys())
+            if (isClassOwnEnumerableFieldName(field)) found.add(field);
+          const addMethods = (owner: ClassInfo): void => {
+            const methodNames = [...owner.methods.keys()];
+            if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
+            for (const method of methodNames) {
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
+              if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) found.add(name);
+            }
+          };
+          for (let owner: ClassInfo | null = info; owner; owner = owner.base) addMethods(owner);
+          return found;
+        };
+        let delegate: ClassInfo | null = null;
+        for (let owner = info.base; owner !== null; owner = owner.base) {
+          if (owner.decl !== null && !owner.def.runtime && tableClasses.has(owner.def.name)) {
+            delegate = owner;
+            break;
+          }
+        }
+        if (delegate !== null) {
+          // Only the names above the delegating base are shared, so they are
+          // only worth sharing when this class would otherwise repeat them
+          // and some other table would repeat them too.
+          let inheritedNames = 0;
+          for (let owner: ClassInfo | null = delegate; owner !== null; owner = owner.base) {
+            inheritedNames += [...owner.fields.keys()].filter(isClassOwnEnumerableFieldName).length;
+            inheritedNames += owner.methods.size + (owner.genericMethods?.size ?? 0);
+          }
+          let siblings = 0;
+          for (const name of tableClasses) {
+            if (name === info.def.name || name === delegate.def.name) continue;
+            if (lowerer.isSubclassOf(name, delegate.def.name)) siblings++;
+          }
+          if (inheritedNames < INHERITED_NAMES_TO_SHARE || siblings === 0) delegate = null;
+        }
+        const names = delegate === null ? collectNames() : new Set<string>();
+        if (delegate !== null) {
+          for (
+            let owner: ClassInfo | null = info;
+            owner !== null && owner !== delegate;
+            owner = owner.base
+          ) {
+            for (const field of owner.fieldOrder)
+              if (isClassOwnEnumerableFieldName(field.name)) names.add(field.name);
+            const methodNames = [...owner.methods.keys()];
+            if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
+            for (const method of methodNames) {
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
+              if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) names.add(name);
+            }
+          }
+          // A name the program reflects on some class prototype answers from
+          // the receiver's own class's prototype view, which the base's table
+          // cannot do: keep it in every table so the view starts at the
+          // receiver's class.
+          if (lowerer.prototypeMethodAccesses.size > 0) {
+            for (const name of collectNames()) {
+              if (!lowerer.prototypeMethodAccesses.has(name)) continue;
+              const accessor =
+                findMethodOn(lowerer, info, `get:${name}`) ??
+                findMethodOn(lowerer, info, `set:${name}`);
+              if (accessor !== null && prototypeViewable(accessor.declarer)) names.add(name);
+            }
+          }
+        }
+        const delegateName =
+          delegate === null
+            ? null
+            : keyedHelperName(
+                lowerer,
+                "%dyn.class.keys",
+                JSON.stringify([dispatch.operation, delegate.def.name]),
+              );
         // A class rooted at Error also has the own properties its runtime
         // base keeps in slots (`stack`, `cause`), which are neither declared
         // fields nor bag entries. A read or a presence test of a name the
@@ -4645,29 +5827,42 @@ export class ClassDynamicDispatch {
         // `stack` is read and written through the native slot, as the
         // by-name dispatch does.
         const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
-        if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
-        if (info.builtinStream)
-          for (const name of [
-            ...STREAM_BOOL_PROPERTIES,
-            ...STREAM_NUM_PROPERTIES,
-            ...STREAM_STATE_GETTERS.keys(),
-          ])
-            names.add(name);
-        const inherited = eventTargetApiMembers(info);
-        if (inherited) for (const name of inherited) names.add(name);
-        if (dateRootOf(info))
-          for (const name of DATE_PROTOTYPE_METHOD_NAMES)
-            if (dateInheritedMember(lowerer, info, name)) names.add(name);
-
-        for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
-          const methodNames = [...owner.methods.keys()];
-          if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
-          for (const method of methodNames) {
-            const name =
-              method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
-            if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) names.add(name);
-          }
+        if (delegateName === null) {
+          if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
+          if (info.builtinStream)
+            for (const name of [
+              ...STREAM_BOOL_PROPERTIES,
+              ...STREAM_NUM_PROPERTIES,
+              ...STREAM_STATE_GETTERS.keys(),
+            ])
+              names.add(name);
+          const inherited = eventTargetApiMembers(info);
+          if (inherited) for (const name of inherited) names.add(name);
+          if (dateRootOf(info))
+            for (const name of DATE_PROTOTYPE_METHOD_NAMES)
+              if (dateInheritedMember(lowerer, info, name)) names.add(name);
         }
+        const delegateTo = (table: string): IrStmt[] => {
+          const call: IrExpr = {
+            kind: "call",
+            callee: table,
+            args: [
+              varRef("p.0", DYN, loc),
+              varRef(TABLE_KEY, STRING, loc),
+              ...(dispatch.write ? [varRef("p.1", DYN, loc)] : []),
+              ...(dispatch.reflect ? [varRef("p.reflectReceiver", DYN, loc)] : []),
+              lowerer.upcastTo(receiver, delegate!.def.name),
+            ],
+            type: dispatch.fn.returnType,
+            loc,
+          };
+          return dispatch.write && !dispatch.reflect
+            ? [
+                { kind: "exprStmt", expr: call, loc },
+                { kind: "return", value: null, loc },
+              ]
+            : [{ kind: "return", value: call, loc }];
+        };
         const branch: IrStmt[] = [];
         for (const name of names) {
           if (dispatch.numericKey && String(Number(name)) !== name) continue;
@@ -4772,23 +5967,25 @@ export class ClassDynamicDispatch {
           })),
           body: [
             ...branch,
-            ...(errorRooted && !dispatch.write
-              ? dispatch.probe || dispatch.reflect
-                ? viewFallthrough()
-                : [
-                    {
-                      kind: "if" as const,
-                      cond: transformExpr(dispatch.bagHas(), {
-                        stmt: (statement) => statement,
-                        expr: inTable,
-                      }),
-                      then: bagFallthrough(),
-                      else_: null,
-                      loc,
-                    },
-                    ...viewFallthrough(),
-                  ]
-              : bagFallthrough()),
+            ...(delegateName !== null
+              ? delegateTo(delegateName)
+              : errorRooted && !dispatch.write
+                ? dispatch.probe || dispatch.reflect
+                  ? viewFallthrough()
+                  : [
+                      {
+                        kind: "if" as const,
+                        cond: transformExpr(dispatch.bagHas(), {
+                          stmt: (statement) => statement,
+                          expr: inTable,
+                        }),
+                        then: bagFallthrough(),
+                        else_: null,
+                        loc,
+                      },
+                      ...viewFallthrough(),
+                    ]
+                : bagFallthrough()),
           ],
           loc,
         };
@@ -7413,6 +8610,34 @@ export class ClassDynamicDispatch {
       if (accessor) {
         const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+        // A name the program reflects on some class prototype: the shared
+        // prototype view may hold a replaced accessor (Object.defineProperty
+        // on the prototype), so the read runs from the view with the
+        // instance as the receiver, after the instance's own properties.
+        const viewStart = prototypeViewStart(lowerer, info, accessor.declarer);
+        let prototype =
+          lowerer.prototypeMethodAccesses.has(name) && prototypeViewable(accessor.declarer)
+            ? reflectClassPrototype(
+                lowerer,
+                viewStart,
+                loc,
+                lowerer.coerceToExpected(receiver, DYN),
+              )
+            : null;
+        if (prototype && viewStart.prototypeReflectionRefusal !== undefined) prototype = null;
+        const answer: IrExpr = prototype
+          ? {
+              kind: "libCall",
+              fn: "dyn.reflectGet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected(key, DYN),
+                lowerer.coerceToExpected(receiver, DYN),
+              ],
+              type: DYN,
+              loc,
+            }
+          : boxed;
         return [
           {
             kind: "if",
@@ -7433,7 +8658,7 @@ export class ClassDynamicDispatch {
             else_: null,
             loc,
           },
-          { kind: "return", value: boxed, loc },
+          { kind: "return", value: answer, loc },
         ];
       }
       if (field && info.def.tracksOwnFields) {
@@ -7535,13 +8760,44 @@ export class ClassDynamicDispatch {
     if (!checkable(type)) return fence();
     const value = lowerer.coerceToExpected(varRef("p.1", DYN, loc), type);
     if (!typeEquals(value.type, type)) return fence();
+    // A name the program reflects on some class prototype: a replaced
+    // setter (or a data property the definition put there) answers through
+    // the shared prototype view, with the instance as the receiver.
+    const viewStart =
+      accessor === null ? null : prototypeViewStart(lowerer, info, accessor.declarer);
+    let prototype =
+      !field &&
+      lowerer.prototypeMethodAccesses.has(name) &&
+      accessor !== null &&
+      prototypeViewable(accessor.declarer)
+        ? reflectClassPrototype(lowerer, viewStart!, loc, lowerer.coerceToExpected(receiver, DYN))
+        : null;
+    if (prototype && viewStart && viewStart.prototypeReflectionRefusal !== undefined)
+      prototype = null;
     const store: IrStmt = field
       ? { kind: "fieldSet", obj: receiver, className: info.def.name, field: name, value, loc }
-      : {
-          kind: "exprStmt",
-          expr: accessorCall(lowerer, info.def.name, member, receiver, [value], VOID, loc),
-          loc,
-        };
+      : prototype
+        ? {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.reflectSet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected({ kind: "strLit", value: name, type: STRING, loc }, DYN),
+                lowerer.coerceToExpected(value, DYN),
+                lowerer.coerceToExpected(receiver, DYN),
+              ],
+              type: BOOL,
+              loc,
+            },
+            loc,
+          }
+        : {
+            kind: "exprStmt",
+            expr: accessorCall(lowerer, info.def.name, member, receiver, [value], VOID, loc),
+            loc,
+          };
     return [store, { kind: "return", value: null, loc }];
   }
 

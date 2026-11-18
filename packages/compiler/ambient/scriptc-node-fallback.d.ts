@@ -107,7 +107,9 @@ declare namespace NodeJS {
     reportOnFatalError: boolean;
     reportOnSignal: boolean;
     reportOnUncaughtException: boolean;
+    excludeEnv: boolean;
     getReport(error?: Error): object;
+    writeReport(filename?: string, error?: Error): string;
   }
   interface ResourceUsage {
     userCPUTime: number;
@@ -228,14 +230,35 @@ declare const console: {
 
 // node:console exports the global instance's bound methods and the Console
 // constructor: instances over process.stdout/process.stderr or node:stream
-// writables lower their log/info/debug/error/warn members; their remaining
-// methods are declared so unsupported uses reach named fences.
+// writables lower every member — the output members through util.format,
+// and count/time/group/table/trace/assert/clear over the instance's own
+// counters, timers and group indentation, written to its own streams.
 type ScriptcConsoleMethods = typeof console;
 declare module "node:console" {
+  export interface ConsoleConstructorOptions {
+    stdout?: unknown;
+    stderr?: unknown;
+    ignoreErrors?: boolean;
+    /** 'auto' colors only a terminal's inspect output, which this runtime
+     * never styles; false turns colors off — the two lower identically,
+     * and true is refused (the util.inspect colors boundary). */
+    colorMode?: boolean | "auto";
+    /** Spaces per open group (default 2), validated like Node's
+     * validateInteger(0..1000). */
+    groupIndentation?: number;
+  }
   export class Console {
+    /** The options form. Node destructures the known keys and ignores the
+     * rest; every initializer still evaluates, in source order. */
+    constructor(options: ConsoleConstructorOptions);
     constructor(stdout: unknown, stderr?: unknown, ignoreErrors?: boolean);
   }
-  export interface Console extends ScriptcConsoleMethods {}
+  /** Node's Console instances define the global console's members except
+   * the inspector-only three, which exist on the global console alone. */
+  export interface Console extends Omit<
+    ScriptcConsoleMethods,
+    "profile" | "profileEnd" | "timeStamp"
+  > {}
   export const log: ScriptcConsoleMethods["log"];
   export const info: ScriptcConsoleMethods["info"];
   export const debug: ScriptcConsoleMethods["debug"];
@@ -282,6 +305,22 @@ declare module "console" {
  * default, signal 0 as an existence probe, and Node's error shapes
  * (`kill ESRCH`/`kill EPERM` Errors, TypeErrors for unknown signals and
  * non-int32 pids). */
+/* The IPC channel of a forked child — an owned runtime handle, so a
+ * binding or parameter carrying one stays a checked-dynamic value and its
+ * ref()/unref() dispatch at run time (type-mapper's channel mapping). */
+interface ProcessChannel {
+  ref(): void;
+  unref(): void;
+}
+
+/* Node's permission model queries (--permission), which a compiled binary
+ * cannot enable: process.permission is undefined, the same as Node's
+ * without the flag. */
+interface ProcessPermission {
+  has(scope: string, reference?: string): boolean;
+  drop(scope: string, reference?: string): void;
+}
+
 declare var process: {
   getBuiltinModule(id: string): unknown;
   hrtime: {
@@ -313,6 +352,11 @@ declare var process: {
   /* Node's feature flags with the values that hold for a compiled binary
    * (see NodeJS.ProcessFeatures). */
   readonly features: NodeJS.ProcessFeatures;
+  /* The permission model's object. Node defines it only under
+   * --permission, a Node command-line mode a compiled binary cannot run
+   * with, so the member is undefined exactly as in Node without the flag;
+   * a member read on it throws Node's TypeError. */
+  readonly permission: ProcessPermission | undefined;
   /* umask(2) — sets the file-mode creation mask and returns the previous
    * one; the no-argument form reads without setting (Node's shape). */
   umask(mask?: number): number;
@@ -341,6 +385,35 @@ declare var process: {
   geteuid?(): number;
   getegid?(): number;
   getgroups?(): number[];
+  /* The POSIX credential setters: a numeric id (validated as Node's
+   * uint32) or a user/group NAME resolved through getpwnam(3)/getgrnam(3);
+   * an unknown id throws Node's ERR_UNKNOWN_CREDENTIAL, an unusable one is
+   * the getpwnam-side error. Like the getters they are optional members
+   * (absent on Windows), so POSIX programs probe before calling. */
+  setuid?(id: number | string): void;
+  seteuid?(id: number | string): void;
+  setgid?(id: number | string): void;
+  setegid?(id: number | string): void;
+  setgroups?(groups: ReadonlyArray<string | number>): void;
+  /* initgroups(3): the user's base groups plus the extra group.
+   * @types/node does not declare this member; the runtime implements it. */
+  initgroups?(user: number | string, extraGroup: number | string): void;
+  /* The capture-callback pair: a function receives every uncaught
+   * exception (the 'uncaughtException' event then does not fire), null
+   * unsets it, and a second function while one is set throws. */
+  hasUncaughtExceptionCaptureCallback(): boolean;
+  setUncaughtExceptionCaptureCallback(cb: ((err: Error) => void) | null): void;
+  /* The inspector port, 9229 until a write; a write keeps the previous
+   * value unless it is 0 or 1024..65535 (Node's ERR_OUT_OF_RANGE). */
+  debugPort: number;
+  /* Source-map support for stack traces: false until enabled. */
+  readonly sourceMapsEnabled: boolean;
+  setSourceMapsEnabled(value: boolean): void;
+  /* The "Refable protocol": call the value's Symbol.for("nodejs.ref") /
+   * Symbol.for("nodejs.unref") method (or its ref/unref member) with the
+   * value as the receiver; null and undefined are no-ops. */
+  ref(maybeRefable: any): void;
+  unref(maybeRefable: any): void;
   readonly ppid: number;
   /* libuv's process title: argv[0] until set; a write is truncated to
    * the original argument area on POSIX and sets the console title on
@@ -350,6 +423,17 @@ declare var process: {
   readonly release: NodeJS.ProcessRelease;
   /* The diagnostic report (Node islands only; see NodeJS.ProcessReport). */
   readonly report: NodeJS.ProcessReport;
+  /* Exit and beforeExit callbacks for objects the program registers. The
+   * callback receives the object and the event name. */
+  readonly finalization: {
+    register(ref: object, callback: (ref: object, event: "exit") => void): void;
+    registerBeforeExit(ref: object, callback: (ref: object, event: "beforeExit") => void): void;
+    unregister(ref: object): void;
+  };
+  /* Terminate the process with SIGABRT after its output is flushed
+   * (Node's diagnostics dump names its own addresses and is not
+   * reproduced; the signal and the flush are). */
+  abort(): never;
   /* signal admits null (Node treats it as the SIGTERM default) — real
    * callers forward a `string | null` result field. */
   kill(pid: number, signal?: string | number | null): true;
@@ -360,6 +444,11 @@ declare var process: {
    * process.emitWarning); undefined until assigned. */
   noDeprecation?: boolean;
   throwDeprecation?: boolean;
+  /* Show the stack trace of a warning in place of its one-line report
+   * (Node's --trace-deprecation and --trace-warnings): undefined until
+   * assigned, since no command-line flag reaches a compiled binary. */
+  traceDeprecation?: boolean;
+  traceProcessWarnings?: boolean;
   /* `never`, like @types/node: code behind an early-exit guard narrows
    * (`if (!x) process.exit(1)` proves x afterwards) — typed `void` the
    * guard narrows nothing and correct programs fail preflight. The
@@ -455,19 +544,25 @@ declare var process: {
   /* Process events, the CLI slice: SIGINT/SIGTERM handlers (watching a
    * signal replaces its default disposition; removing the last listener
    * restores it; signal listeners never keep the loop alive — all Node's
-   * rules) and the 'exit' hook (runs synchronously at termination with
-   * the exit code; scheduling anything from it is too late, like Node).
-   * `once` auto-removes after the first delivery; `off` removes by
-   * listener identity — bind the listener to a const so registration and
-   * removal see the same value. */
+   * rules), the 'exit' hook (runs synchronously at termination with the
+   * exit code; scheduling anything from it is too late, like Node) and
+   * the 'beforeExit' hook (runs each time the loop runs out of ref'd work,
+   * with process.exitCode; work it schedules runs, and Node emits it again
+   * at the next exhaustion while listeners remain — scheduling only
+   * nextTicks or microtasks does not re-emit it). `once` auto-removes
+   * after the first delivery; `off` removes by listener identity — bind
+   * the listener to a const so registration and removal see the same
+   * value. */
   on(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   on(event: "exit", listener: (code: number) => void): void;
+  on(event: "beforeExit", listener: (code: number) => void): void;
   /* prependListener — the same registration at the FRONT of the event's
    * listener list (Node's EventEmitter order), for the registries that
    * own a prepend entry ('exit' and the signal family). prependOnceListener
    * has no lowering. */
   prependListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   prependListener(event: "exit", listener: (code: number) => void): void;
+  prependListener(event: "beforeExit", listener: (code: number) => void): void;
   prependListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
@@ -483,6 +578,13 @@ declare var process: {
    * (promise payload, Node's shape). */
   on(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   on(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  /* 'multipleResolves' — a resolution or rejection that reached a promise
+   * which already resolved: (type, promise, value), delivered on the tick
+   * queued at that settle, with Node's one-time DEP0160 warning. */
+  on(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   /* 'uncaughtException' and 'uncaughtExceptionMonitor' — Node's process
    * error channel: the monitor listener observes a thrown error before the
    * default report, the handler listener replaces it, and origin names the
@@ -493,17 +595,27 @@ declare var process: {
   ): void;
   once(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   once(event: "exit", listener: (code: number) => void): void;
+  once(event: "beforeExit", listener: (code: number) => void): void;
   once(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   once(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  once(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   once(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
   ): void;
   off(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   off(event: "exit", listener: (code: number) => void): void;
+  off(event: "beforeExit", listener: (code: number) => void): void;
   off(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   off(event: "unhandledRejection", listener: (reason: unknown, promise: unknown) => void): void;
   off(event: "rejectionHandled", listener: (promise: unknown) => void): void;
+  off(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
   off(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
@@ -511,6 +623,7 @@ declare var process: {
   /* removeListener IS off — Node aliases them; both lower identically. */
   removeListener(event: "SIGINT" | "SIGTERM", listener: () => void): void;
   removeListener(event: "exit", listener: (code: number) => void): void;
+  removeListener(event: "beforeExit", listener: (code: number) => void): void;
   removeListener(event: "warning", listener: (warning: Error & { code?: string }) => void): void;
   removeListener(
     event: "unhandledRejection",
@@ -518,19 +631,41 @@ declare var process: {
   ): void;
   removeListener(event: "rejectionHandled", listener: (promise: unknown) => void): void;
   removeListener(
+    event: "multipleResolves",
+    listener: (type: "resolve" | "reject", promise: unknown, value: unknown) => void,
+  ): void;
+  removeListener(
     event: "uncaughtException" | "uncaughtExceptionMonitor",
     listener: (err: unknown, origin: string) => void,
   ): void;
   /* emitWarning — Node's full grammar (string or Error warning; type/
    * ctor/options second; code/ctor third). */
   emitWarning(warning: string | Error, ...args: any[]): void;
+  /* process.emit — the exception events (uncaughtException and
+   * uncaughtExceptionMonitor) run their listeners and answer whether any
+   * existed; a custom event answers false. The other process event
+   * families' listeners are typed closures and are refused at lowering. */
+  emit(event: string, ...args: any[]): boolean;
   /** Present in a child created by child_process.fork(). */
   readonly connected: boolean;
-  send?(message: object, callback?: (error: Error | null) => void): boolean;
+  /* The IPC channel of a forked child — Node's Control: `undefined` in a
+   * process that never had a channel, null once the channel is gone
+   * (local or remote disconnect), and otherwise the channel object.
+   * `ref()` keeps the channel's messages feeding the loop alive even
+   * without a listener, `unref()` lets the process exit with the channel
+   * open (an explicit call overrides the listener-driven ref state);
+   * both return undefined. */
+  channel?: ProcessChannel;
+  send?(
+    message: object,
+    sendHandleOrCallback?: null | ((error: Error | null) => void),
+    optionsOrCallback?: object | null | ((error: Error | null) => void),
+    callback?: (error: Error | null) => void,
+  ): boolean;
   disconnect(): void;
-  on(event: "message", listener: (message: any) => void): void;
+  on(event: "message", listener: (message: any, sendHandle?: any) => void): void;
   on(event: "disconnect", listener: () => void): void;
-  once(event: "message", listener: (message: any) => void): void;
+  once(event: "message", listener: (message: any, sendHandle?: any) => void): void;
   once(event: "disconnect", listener: () => void): void;
 };
 
@@ -829,7 +964,8 @@ interface KmacKeyGenParams extends Algorithm {
   length?: number;
 }
 interface KmacParams extends Algorithm {
-  algorithm: string;
+  /* Node's runtime reads the dictionary's name and ignores this member. */
+  algorithm?: string;
   outputLength: number;
   customization?: BufferSource;
 }
@@ -853,61 +989,89 @@ interface CryptoKeyPair {
   publicKey: CryptoKey;
 }
 /* HMAC and AES keys generate, import and export as 'raw' and 'jwk'
- * (PBKDF2 and HKDF keys import as 'raw'); ECDSA and RSA keys generate,
- * import and export as 'spki', 'pkcs8' and 'jwk', and ECDSA public keys as
- * 'raw'. */
+ * (PBKDF2 and HKDF keys import as 'raw'); ECDSA, ECDH, X25519 and RSA keys
+ * generate, import and export as 'spki', 'pkcs8' and 'jwk', ECDSA and
+ * ECDH public keys as 'raw', and X25519 public keys as 'raw'. RSA-OAEP
+ * encrypts and decrypts. */
 interface SubtleCrypto {
   decrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   deriveBits(
-    algorithm: Pbkdf2Params | HkdfParams,
+    algorithm: Argon2Params | Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     length?: number | null,
   ): Promise<ArrayBuffer>;
   deriveKey(
-    algorithm: Pbkdf2Params | HkdfParams,
+    algorithm: Argon2Params | Pbkdf2Params | HkdfParams | EcdhKeyDeriveParams,
     baseKey: CryptoKey,
     derivedKeyType: AlgorithmIdentifier | AesDerivedKeyParams | HmacImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
-  digest(algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer>;
+  digest(
+    algorithm: AlgorithmIdentifier | CShakeParams | KangarooTwelveParams | TurboShakeParams,
+    data: BufferSource,
+  ): Promise<ArrayBuffer>;
   encrypt(
-    algorithm: AesGcmParams | AesCbcParams | AesCtrParams,
+    algorithm: AesGcmParams | AesCbcParams | AesCtrParams | AeadParams | RsaOaepParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
   exportKey(format: "jwk", key: CryptoKey): Promise<JsonWebKey>;
   exportKey(format: Exclude<KeyFormat, "jwk">, key: CryptoKey): Promise<ArrayBuffer>;
+  getPublicKey(key: CryptoKey, keyUsages: readonly KeyUsage[]): Promise<CryptoKey>;
   generateKey(
-    algorithm: EcKeyGenParams | RsaHashedKeyGenParams | "Ed25519" | { name: "Ed25519" },
+    algorithm:
+      | EcKeyGenParams
+      | RsaHashedKeyGenParams
+      | "Ed25519"
+      | { name: "Ed25519" }
+      | "X25519"
+      | { name: "X25519" }
+      | "X448"
+      | { name: "X448" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;
   generateKey(
-    algorithm: AesKeyGenParams | HmacKeyGenParams,
+    algorithm:
+      | AesKeyGenParams
+      | HmacKeyGenParams
+      | KmacKeyGenParams
+      | "ChaCha20-Poly1305"
+      | { name: "ChaCha20-Poly1305" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   importKey(
     format: "jwk",
     keyData: JsonWebKey,
-    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
+    algorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   importKey(
     format: Exclude<KeyFormat, "jwk">,
     keyData: BufferSource,
-    algorithm: AlgorithmIdentifier | HmacImportParams | EcKeyImportParams | RsaHashedImportParams,
+    algorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   sign(
-    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    algorithm: AlgorithmIdentifier | EcdsaParams | KmacParams | RsaPssParams,
     key: CryptoKey,
     data: BufferSource,
   ): Promise<ArrayBuffer>;
@@ -921,7 +1085,7 @@ interface SubtleCrypto {
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
   verify(
-    algorithm: AlgorithmIdentifier | EcdsaParams | RsaPssParams,
+    algorithm: AlgorithmIdentifier | EcdsaParams | KmacParams | RsaPssParams,
     key: CryptoKey,
     signature: BufferSource,
     data: BufferSource,
@@ -1099,6 +1263,24 @@ interface BufferConstructor {
   /* The pool slab size for allocUnsafe, from, and concat. */
   poolSize: number;
   concat(list: readonly Uint8Array[], totalLength?: number): Buffer;
+  /* A pooled copy of a typed array's underlying bytes over
+   * [offset, offset + length) in element indices. */
+  copyBytesFrom(
+    view:
+      | Int8Array
+      | Uint8Array
+      | Uint8ClampedArray
+      | Int16Array
+      | Uint16Array
+      | Int32Array
+      | Uint32Array
+      | Float32Array
+      | Float64Array
+      | BigInt64Array
+      | BigUint64Array,
+    offset?: number,
+    length?: number,
+  ): Buffer;
   isBuffer(obj: unknown): obj is Buffer;
   byteLength(input: string | Uint8Array, encoding?: BufferEncoding): number;
   isEncoding(encoding: string): boolean;
@@ -1162,9 +1344,37 @@ interface MessageEvent<T = unknown> extends Event {
 declare var MessageEvent: {
   new <T = unknown>(
     type: string,
-    eventInitDict?: { data?: T; origin?: string; lastEventId?: string },
+    eventInitDict?: {
+      data?: T;
+      origin?: string;
+      lastEventId?: string;
+      source?: unknown;
+      ports?: readonly MessagePort[];
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+    },
   ): MessageEvent<T>;
   readonly prototype: MessageEvent;
+};
+interface CloseEvent extends Event {
+  readonly code: number;
+  readonly reason: string;
+  readonly wasClean: boolean;
+}
+declare var CloseEvent: {
+  new (
+    type: string,
+    eventInitDict?: {
+      code?: number;
+      reason?: string;
+      wasClean?: boolean;
+      bubbles?: boolean;
+      cancelable?: boolean;
+      composed?: boolean;
+    },
+  ): CloseEvent;
+  readonly prototype: CloseEvent;
 };
 interface AddEventListenerOptions {
   capture?: boolean;
@@ -1190,6 +1400,26 @@ declare var EventTarget: {
   readonly prototype: EventTarget;
 };
 
+/* Node's BroadcastChannel global is the worker_threads class itself: the
+ * global value is declared here so the global form is typed without the
+ * program importing node:worker_threads, and the lowering recognises it as
+ * that class (a fallback global of that name). The members mirror
+ * node-fallback/worker_threads.d.ts, whose file loads only when the program
+ * imports the module; ref()/unref() answer the channel, as Node's do.
+ * MessageChannel and MessagePort below are the module classes too. */
+interface BroadcastChannel extends EventTarget {
+  readonly name: string;
+  postMessage(message: unknown): void;
+  close(): void;
+  ref(): this;
+  unref(): this;
+  onmessage: ((event: MessageEvent) => void) | null;
+  onmessageerror: ((event: MessageEvent) => void) | null;
+}
+declare var BroadcastChannel: {
+  new (name: string): BroadcastChannel;
+  readonly prototype: BroadcastChannel;
+};
 interface MessagePort extends EventTarget {
   postMessage(value: unknown, transferOrOptions?: unknown): void;
   start(): void;
@@ -1200,13 +1430,15 @@ interface MessagePort extends EventTarget {
   onmessageerror: ((event: MessageEvent) => void) | null;
   onclose: ((event: Event) => void) | null;
 }
-declare var MessagePort: {
-  readonly prototype: MessagePort;
-};
 interface MessageChannel {
   readonly port1: MessagePort;
   readonly port2: MessagePort;
 }
+declare var MessagePort: {
+  /* Node's constructor exists but throws ERR_CONSTRUCT_CALL_INVALID. */
+  new (): MessagePort;
+  readonly prototype: MessagePort;
+};
 declare var MessageChannel: {
   new (): MessageChannel;
   readonly prototype: MessageChannel;
@@ -1219,10 +1451,11 @@ interface AbortSignal extends EventTarget {
   throwIfAborted(): void;
 }
 declare var AbortSignal: {
-  timeout(ms: number): AbortSignal;
+  readonly prototype: AbortSignal;
+  new (): AbortSignal;
   abort(reason?: unknown): AbortSignal;
   any(signals: readonly AbortSignal[]): AbortSignal;
-  readonly prototype: AbortSignal;
+  timeout(ms: number): AbortSignal;
 };
 
 interface QueuingStrategySize<T = unknown> {
@@ -1577,11 +1810,11 @@ interface Request {
   readonly headers: Headers;
   readonly destination: string;
   readonly referrer: string;
-  readonly referrerPolicy: string;
-  readonly mode: string;
-  readonly credentials: string;
-  readonly cache: string;
-  readonly redirect: "follow" | "error" | "manual";
+  readonly referrerPolicy: ReferrerPolicy;
+  readonly mode: RequestMode;
+  readonly credentials: RequestCredentials;
+  readonly cache: RequestCache;
+  readonly redirect: RequestRedirect;
   readonly integrity: string;
   readonly keepalive: boolean;
   readonly isReloadNavigation: boolean;
@@ -1596,19 +1829,49 @@ interface Request {
   bytes(): Promise<Uint8Array>;
   clone(): Request;
 }
+type RequestCache =
+  | "default"
+  | "force-cache"
+  | "no-cache"
+  | "no-store"
+  | "only-if-cached"
+  | "reload";
+type RequestCredentials = "include" | "omit" | "same-origin";
+type RequestMode = "cors" | "navigate" | "no-cors" | "same-origin";
+type RequestPriority = "auto" | "high" | "low";
+type RequestRedirect = "error" | "follow" | "manual";
+type ReferrerPolicy =
+  | ""
+  | "no-referrer"
+  | "no-referrer-when-downgrade"
+  | "origin"
+  | "origin-when-cross-origin"
+  | "same-origin"
+  | "strict-origin"
+  | "strict-origin-when-cross-origin"
+  | "unsafe-url";
 interface RequestInit {
-  method?: string;
-  headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
   body?: string | Uint8Array | ReadableStream<Uint8Array> | Blob | null;
+  cache?: RequestCache;
+  credentials?: RequestCredentials;
   duplex?: "half";
-  redirect?: "follow" | "error" | "manual";
-  signal?: AbortSignal;
+  headers?: Headers | Record<string, string> | readonly (readonly [string, string])[];
+  integrity?: string;
+  keepalive?: boolean;
+  method?: string;
+  mode?: RequestMode;
+  priority?: RequestPriority;
+  redirect?: RequestRedirect;
+  referrer?: string;
+  referrerPolicy?: ReferrerPolicy;
+  signal?: AbortSignal | null;
+  window?: null;
 }
 declare var Request: {
   new (input: RequestInfo, init?: RequestInit): Request;
   readonly prototype: Request;
 };
-declare function fetch(input: string | URL, init?: RequestInit): Promise<Response>;
+declare function fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
 
 /* The repeating timer pair (setTimeout lives in scriptc.d.ts — always
  * shipped). The handle is the Timeout interface, like Node's — it maps to
@@ -1710,6 +1973,35 @@ declare module "node:perf_hooks" {
     ): void;
     takeRecords(): PerformanceEntry[];
   }
+  export class PerformanceResourceTiming extends PerformanceEntry {
+    readonly entryType: "resource";
+    protected constructor();
+    readonly initiatorType: string;
+    readonly nextHopProtocol: string;
+    readonly workerStart: number;
+    readonly redirectStart: number;
+    readonly redirectEnd: number;
+    readonly fetchStart: number;
+    readonly domainLookupStart: number;
+    readonly domainLookupEnd: number;
+    readonly connectStart: number;
+    readonly connectEnd: number;
+    readonly secureConnectionStart: number;
+    readonly requestStart: number;
+    readonly finalResponseHeadersStart: number;
+    readonly firstInterimResponseStart: number;
+    readonly responseStart: number;
+    readonly responseEnd: number;
+    readonly transferSize: number;
+    readonly encodedBodySize: number;
+    readonly decodedBodySize: number;
+    readonly deliveryType: string;
+    readonly responseStatus: number;
+    readonly renderBlockingStatus: string;
+    readonly contentType: string;
+    readonly contentEncoding: string;
+    toJSON(): any;
+  }
   export interface MarkOptions {
     detail?: unknown | undefined;
     startTime?: number | undefined;
@@ -1732,6 +2024,22 @@ declare module "node:perf_hooks" {
     getEntriesByType(type: EntryType): PerformanceEntry[];
     clearMarks(name?: string): void;
     clearMeasures(name?: string): void;
+    /* The resource timeline: markResourceTiming builds a
+     * PerformanceResourceTiming from fetch timing info and buffers it;
+     * clearResourceTimings removes all entries (or one name), and
+     * setResourceTimingBufferSize sets the buffer limit (250 by default). */
+    clearResourceTimings(name?: string): void;
+    markResourceTiming(
+      timingInfo: object,
+      requestedUrl: string,
+      initiatorType: string,
+      global: object,
+      cacheMode: "" | "local",
+      bodyInfo: object,
+      responseStatus: number,
+      deliveryType?: string,
+    ): PerformanceResourceTiming;
+    setResourceTimingBufferSize(maxSize: number): void;
     /* performance.toJSON(): nodeTiming, timeOrigin and the event-loop
      * utilization, in that key order. */
     toJSON(): any;
@@ -1759,12 +2067,29 @@ declare module "node:perf_hooks" {
   }
   export interface Histogram {
     readonly count: number;
+    readonly countBigInt: bigint;
     readonly exceeds: number;
+    readonly exceedsBigInt: bigint;
     readonly max: number;
+    readonly maxBigInt: bigint;
     readonly mean: number;
     readonly min: number;
+    readonly minBigInt: bigint;
+    readonly percentiles: Map<number, number>;
     readonly stddev: number;
     percentile(percentile: number): number;
+    percentileBigInt(percentile: number): bigint;
+    countAt(value: number): number;
+    cdf(value: number): number;
+    ccdf(value: number): number;
+    ksTest(other: Histogram): number;
+    cohensD(other: Histogram): number;
+    cliffsD(other: Histogram): number;
+    mannWhitneyTest(other: Histogram): {
+      readonly uStatistic: number;
+      readonly zScore: number;
+      readonly pValue: number;
+    };
     reset(): void;
   }
   export interface IntervalHistogram extends Histogram {
@@ -1772,6 +2097,22 @@ declare module "node:perf_hooks" {
     disable(): boolean;
   }
   export function monitorEventLoopDelay(options?: EventLoopMonitorOptions): IntervalHistogram;
+  /* createHistogram's options and the RecordableHistogram its histograms
+   * add recording to (record, recordDelta, recordCorrected, add and
+   * subtract); the readings are the Histogram interface's. */
+  export interface CreateHistogramOptions {
+    lowest?: number | bigint | undefined;
+    highest?: number | bigint | undefined;
+    figures?: number | undefined;
+  }
+  export interface RecordableHistogram extends Histogram {
+    record(val: number | bigint): void;
+    recordDelta(): void;
+    recordCorrected(val: number | bigint, expectedInterval: number | bigint): void;
+    add(other: RecordableHistogram): void;
+    subtract(other: RecordableHistogram): void;
+  }
+  export function createHistogram(options?: CreateHistogramOptions): RecordableHistogram;
 }
 declare module "perf_hooks" {
   export * from "node:perf_hooks";
@@ -1794,6 +2135,25 @@ declare var PerformanceMark: typeof import("node:perf_hooks").PerformanceMark;
 declare var PerformanceMeasure: typeof import("node:perf_hooks").PerformanceMeasure;
 declare var PerformanceObserver: typeof import("node:perf_hooks").PerformanceObserver;
 declare var PerformanceObserverEntryList: typeof import("node:perf_hooks").PerformanceObserverEntryList;
+declare var PerformanceResourceTiming: typeof import("node:perf_hooks").PerformanceResourceTiming;
+
+/* Node 24's navigator global (no import needed): the platform facts a
+ * browser exposes, over Node's own values. hardwareConcurrency is
+ * os.availableParallelism(), language the default locale as a BCP 47 tag,
+ * languages the one frozen array of it, platform Node's name for the
+ * process platform and architecture, and userAgent `Node.js/<major>`.
+ * Every member is a getter, so the object owns no properties.
+ * navigator.locks (the Web Locks API) has no lowering and is not declared;
+ * @types/node's own declaration stands in when adopted, and the lowered
+ * surface is the same either way. */
+interface Navigator {
+  readonly hardwareConcurrency: number;
+  readonly language: string;
+  readonly languages: readonly string[];
+  readonly platform: string;
+  readonly userAgent: string;
+}
+declare var navigator: Navigator;
 
 /* import.meta: module-loader metadata with no value representation —
  * direct file-backed fields lower to constants, while the object and
@@ -2228,6 +2588,14 @@ declare module "tty" {
     off(event: string, listener: (...args: any[]) => void): this;
     removeListener(event: string, listener: (...args: any[]) => void): this;
     getWindowSize(): [number, number];
+    /* The cursor methods Node's tty.WriteStream implements with escape
+     * sequences through the stream's own write; a stream whose descriptor is
+     * no terminal has none of them. */
+    cursorTo(x: number, y?: number, callback?: () => void): boolean;
+    cursorTo(x: number, callback?: () => void): boolean;
+    moveCursor(dx: number, dy: number, callback?: () => void): boolean;
+    clearLine(dir: number, callback?: () => void): boolean;
+    clearScreenDown(callback?: () => void): boolean;
   }
   export function isatty(fd: number): boolean;
 }

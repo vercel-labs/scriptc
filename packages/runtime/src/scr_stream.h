@@ -199,6 +199,29 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
     ScrClosure *flush_fb, ScrStreamPlainInv flush_fb_inv,
     ScrClosure *destroy_fb, ScrStreamErrInv destroy_fb_inv);
 
+/* Readable.toWeb(readable[, options]) (scr_stream_to_web.c): a web
+ * ReadableStream over the readable's chunks. +1. flags bit 1 asks for a byte
+ * stream. */
+struct ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags);
+/* The same over a checked-dynamic value (a boxed native stream unwraps; any
+ * other value throws the not-supported Error). */
+struct ScrDyn *scr_stream_to_web_readable_dyn(const struct ScrDyn *value, double flags);
+/* Writable.toWeb(writable) (scr_stream_writable_to_web.c): a web
+ * WritableStream over the writable, +1. */
+struct ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags);
+
+/* Writable.fromWeb(writableStream[, options]) (scr_stream_from_web_writable.c):
+ * a Writable over the web stream's writer, +1, or NULL with
+ * ERR_INVALID_ARG_TYPE pending for a value that is not a WritableStream. */
+ScrStream *scr_stream_writable_from_web(struct ScrDyn *web, double flags);
+
+/* stream.setDefaultHighWaterMark(objectMode, value) and
+ * stream.getDefaultHighWaterMark(objectMode): what a stream created without
+ * a highWaterMark takes (64 KiB bytes on every platform except win32's
+ * 16 KiB; 16 objects), and what a program can change them to. */
+void scr_stream_set_default_hwm(bool object_mode, double value);
+double scr_stream_get_default_hwm(bool object_mode);
+
 /* stream.finished(s, cb) — the callback form: cb fires once at the
  * stream's terminal point (right after 'close'; asynchronously when
  * already closed) through the ErrInv ABI with the finish status (NULL /
@@ -207,6 +230,10 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
  * watcher marks lifecycle errors handled (no unhandled-'error' crash —
  * Node's eos registers listeners). */
 ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv);
+/* finished() for a watcher that must report at the stream's close step even
+ * when the stream does not emit 'close' (emitClose off), so an owner such as
+ * an adapter can let go of the stream. */
+ScrClosure *scr_stream_finished_always(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv);
 /* The dyn-valued finished/pipeline callback inv (a mustCall wrapper in
  * the slot): success calls with NO arguments, errors box through the
  * boundary encoding. cb's cap boxes the dyn callable. */
@@ -327,8 +354,25 @@ bool scr_stream_write_dyn(ScrStream *s, const ScrDyn *d, ScrClosure *cb); /* cb 
 bool scr_stream_write_enc(ScrStream *s, const ScrDyn *chunk, ScrDyn *enc, ScrClosure *cb);
 ScrPromise *scr_stream_next_chunk(ScrStream *s);
 ScrPromise *scr_stream_next_chunk_dyn(ScrStream *s);
+/* One buffered chunk per read (Readable.toWeb's 'data' granularity). */
+ScrPromise *scr_stream_next_chunk_dyn_single(ScrStream *s);
+/* Whether the readable side buffers object entries (objectMode). */
+bool scr_stream_readable_object_entries(ScrStream *s);
 /* The same step resolving with an iterator result ({ value, done }). */
 ScrPromise *scr_stream_next_result_dyn(ScrStream *s);
+/* readable.iterator([options]) (scr_stream_iterator.c): the async iterator
+ * over the readable's chunks, +1. */
+struct ScrDyn *scr_stream_iterator(ScrStream *s, bool destroy_on_return);
+/* The same for a checked-dynamic receiver, validating the options. */
+/* Installed by the iterator unit (scr_stream_iterator.c) so the stream unit's
+ * checked-dynamic dispatch links it only when the unit is present. */
+/* Marks the stream's next error as consumed by an internal listener (the
+ * iterator's throw): it still reaches stream.errored and user listeners but is
+ * not an unhandled 'error' event. */
+void scr_stream_next_error_consumed(ScrStream *s);
+extern struct ScrDyn *(*scr_stream_iterator_hook)(ScrStream *s, struct ScrDyn *const *args,
+                                                 size_t argc);
+struct ScrDyn *scr_stream_dyn_iterator(ScrStream *s, struct ScrDyn *const *args, size_t argc);
 /* The native readable stream behind a checked-dynamic value (+1), or NULL. */
 ScrStream *scr_stream_native_readable_of_dyn(const struct ScrDyn *value);
 /* for await over a checked-dynamic value in a program with streams
@@ -412,6 +456,10 @@ ScrStream *scr_stream_from_async_gen(struct ScrGen *g, ScrClosure *next, ScrClos
                                      double hwm);
 ScrDyn *scr_stream_from_done(void); /* +1, the process-lived marker (scr_stream.c) */
 ScrStream *scr_stream_pause(ScrStream *s);            /* recv +1 */
+/* Whether the stream's lifecycle emits 'close' (the emitClose option). */
+bool scr_stream_emits_close(ScrStream *s);
+/* Whether the stream's lifecycle emits 'close' (the emitClose option). */
+bool scr_stream_emits_close(ScrStream *s);
 ScrStream *scr_stream_resume(ScrStream *s);           /* recv +1 */
 bool scr_stream_is_paused(ScrStream *s);
 double scr_stream_flowing(ScrStream *s); /* -1 = null, 0 = false, 1 = true */

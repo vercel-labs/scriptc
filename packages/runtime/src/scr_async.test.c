@@ -243,10 +243,206 @@ static void clearing_the_newest_immediate_does_not_walk_the_cleared_ones(void) {
   puts("clearing the newest immediate does not walk the cleared ones");
 }
 
+/* A handle the program drops frees the resource it named: the live count
+ * returns to what it was, and (under the sanitized build's leak check) the
+ * type string and captured context are released too. */
+static void async_resource_handles_own_their_payload(void) {
+  const size_t before = scr_ar_live_resources();
+  ScrStr *name = scr_str_new("TEST", 4);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < 32; i++) {
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    assert(scr_ar_async_id(resource) >= 1.0);
+    scr_dyn_release(resource);
+  }
+  scr_dyn_release(type);
+  assert(scr_ar_live_resources() == before);
+  printf("async resource handles own their payload\n");
+}
+
+static ScrDyn *ar_test_target(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  return scr_dyn_undefined();
+}
+
+/* A resource the program drops is reclaimed; a binding keeps its payload alive
+ * only while the binding itself is reachable, and the loop leaves the live
+ * count where it started (no growing registry of finished resources). Calling
+ * the binding takes and gives back its own reference, so a called binding is
+ * reclaimed like an uncalled one. */
+static void async_resource_bindings_own_and_release_their_payload(void) {
+  const size_t before = scr_ar_live_resources();
+  ScrStr *name = scr_str_new("BOUND", 5);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < 64; i++) {
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    ScrClosure *closure = scr_closure_new(NULL, 0);
+    ScrDyn *target = scr_dyn_new_func(closure, ar_test_target, 0, "()", "target");
+    ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
+    assert(bound != NULL);
+    ScrDyn *called = scr_dyn_call(bound, NULL, 0, "bound");
+    assert(called != NULL);
+    scr_dyn_release(called);
+    /* Dropping the value leaves the binding's reference in place... */
+    scr_dyn_release(resource);
+    assert(scr_ar_live_resources() == before + 1);
+    /* ...and dropping the binding reclaims the payload. */
+    scr_dyn_release(bound);
+    scr_dyn_release(target);
+    assert(scr_ar_live_resources() == before);
+  }
+  scr_dyn_release(type);
+  assert(scr_ar_live_resources() == before);
+  printf("async resource bindings own and release their payload\n");
+}
+
+/* Node keeps a resource's captured store context after emitDestroy — a later
+ * runInAsyncScope call or bound callback still runs inside that store — so the
+ * destroy does not release it; the context goes with the resource itself when
+ * its last reference does. */
+static void async_resource_destroy_keeps_its_context(void) {
+  const size_t live_before = scr_ar_live_resources();
+  ScrStr *value_name = scr_str_new("v", 1);
+  ScrDyn *store_value = scr_dyn_new_str(value_name);
+  scr_str_release(value_name);
+  ScrAlsCtx *prev = scr_als_enter(1, store_value);
+  scr_dyn_release(store_value);
+  ScrAlsCtx *ctx = scr_als_capture(); /* the active slot's context (+1) */
+  assert(ctx != NULL);
+  const size_t rc_before = ctx->rc; /* the slot's reference and ours */
+  ScrStr *name = scr_str_new("DESTROYED", 9);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *resource = scr_ar_new(type, NULL); /* captures the context (+1) */
+  assert(resource != NULL);
+  scr_als_restore(prev); /* the slot lets go; the resource and we hold it */
+  assert(ctx->rc == rc_before);
+  ScrDyn *same = scr_ar_emit_destroy(resource);
+  assert(same != NULL);
+  scr_dyn_release(same);
+  assert(ctx->rc == rc_before); /* Node keeps it after the destroy */
+  scr_dyn_release(resource);    /* the last reference frees the resource */
+  assert(ctx->rc == rc_before - 1); /* and releases the context with it */
+  scr_dyn_release(type);
+  assert(scr_ar_live_resources() == live_before);
+  scr_als_ctx_release(ctx);
+  printf("a destroyed async resource keeps its context until the resource is freed\n");
+}
+
+/* A store that holds a bound callback of a resource that captured that store is
+ * one loop: store value -> callback -> resource -> snapshot -> store value.
+ * Nothing in it is reference-counted to zero once the program lets go, so one
+ * collector pass has to reclaim the resource and the snapshot — for many
+ * requests, the live counts come back to where they started. */
+static void async_resource_store_cycle_is_collected(void) {
+  const size_t live_before = scr_ar_live_resources();
+  const long ctx_before = scr_als_live_contexts();
+  const double store_id = scr_als_new();
+  ScrStr *name = scr_str_new("CYCLE", 5);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < 64; i++) {
+    ScrDyn *store_value = scr_dyn_new_obj();
+    ScrAlsCtx *prev = scr_als_enter(store_id, store_value);
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    ScrClosure *closure = scr_closure_new(NULL, 0);
+    ScrDyn *target = scr_dyn_new_func(closure, ar_test_target, 0, "()", "target");
+    ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
+    assert(bound != NULL);
+    scr_dyn_obj_set(store_value, "cb", 2, scr_dyn_retain(bound));
+    scr_als_restore(prev);
+    /* The program lets go of every direct reference; the loop stays. */
+    scr_dyn_release(resource);
+    scr_dyn_release(bound);
+    scr_dyn_release(target);
+    scr_dyn_release(store_value);
+  }
+  scr_dyn_release(type);
+  /* The loop is unreachable: one pass reclaims it, snapshots included. */
+  scr_collect_cycles();
+  assert(scr_ar_live_resources() == live_before);
+  assert(scr_als_live_contexts() == ctx_before);
+  printf("a store and a resource that hold each other are collected\n");
+}
+
+#define TEARDOWN_CYCLES 256
+
+#ifdef SCR_RC_AUDIT
+/* The pass the snapshot probe runs: the snapshot's first entry has just been
+ * released, so a resource still pointing at that snapshot would be traced into
+ * freed memory. */
+static void teardown_cycles_pass(void) { scr_collect_cycles(); }
+#endif
+
+/* Exit teardown releases each resource's type and snapshot, and a collection
+ * pass must be safe inside that sequence: the resource's children are detached
+ * before they are released, and no release in the window asks for a pass. Many
+ * cyclic stores left live at exit give the teardown real work; the sanitized
+ * build's probe forces a pass at the exact point one snapshot's first entry
+ * has been released. */
+static void async_resource_teardown_releases_cyclic_stores(void) {
+  const size_t before = scr_ar_live_resources();
+  ScrStr *name = scr_str_new("TEARDOWN", 8);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < TEARDOWN_CYCLES; i++) {
+    const double store_id = scr_als_new();
+    ScrDyn *store_value = scr_dyn_new_obj();
+    ScrAlsCtx *prev = scr_als_enter(store_id, store_value);
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    ScrClosure *closure = scr_closure_new(NULL, 0);
+    ScrDyn *target = scr_dyn_new_func(closure, ar_test_target, 0, "()", "target");
+    ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
+    assert(bound != NULL);
+    scr_dyn_obj_set(store_value, "cb", 2, scr_dyn_retain(bound));
+    scr_als_restore(prev);
+    scr_dyn_release(resource);
+    scr_dyn_release(bound);
+    scr_dyn_release(target);
+    scr_dyn_release(store_value);
+  }
+  scr_dyn_release(type);
+  /* The loops are unreachable now; whatever the collector has not reclaimed
+   * yet is what the exit teardown releases. */
+  assert(scr_ar_live_resources() > before);
+#ifdef SCR_RC_AUDIT
+  scr_als_ctx_release_probe = teardown_cycles_pass;
+#endif
+  printf("teardown releases cyclic stores without walking a disposed snapshot\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
     due_timers_run_by_deadline_before_immediates();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "destroy") == 0) {
+    async_resource_destroy_keeps_its_context();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "cycle") == 0) {
+    async_resource_store_cycle_is_collected();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "teardown") == 0) {
+    async_resource_teardown_releases_cyclic_stores();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "bindings") == 0) {
+    async_resource_bindings_own_and_release_their_payload();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "resources") == 0) {
+    async_resource_handles_own_their_payload();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "immediates") == 0) {

@@ -72,3 +72,26 @@ console.log(
   })(),
 );
 
+
+// A callback's body cannot be proven from its void annotation. Its result
+// still does not matter when the whole negation chain is discarded.
+/** @param {() => void} callback */
+function invoke(callback) {
+  !!callback();
+  !!!callback();
+  !(!((callback())));
+  ((!!(callback())));
+}
+invoke(() => console.log("callback"));
+invoke(() => {
+  console.log("value callback");
+  return true;
+});
+try {
+  invoke(() => {
+    console.log("before callback boom");
+    throw new Error("callback boom");
+  });
+} catch (error) {
+  console.log(error.message);
+}

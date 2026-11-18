@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-exec-sync-buffer.ts"
+ ],
+ "diags": []
+}

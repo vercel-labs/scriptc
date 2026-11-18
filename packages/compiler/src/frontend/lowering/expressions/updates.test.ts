@@ -6,17 +6,20 @@ import { analyze } from "../../../index.js";
 import { Lowerer } from "../lowerer.js";
 
 test.for([
-  ["consumed", "console.log(", ");"],
-  ["discarded", "", ";"],
-])("a %s negation chain does linear work around an independently admitted IIFE body", (row) => {
+  { use: "consumed", before: "console.log(", after: ");", sites: 1 },
+  { use: "discarded", before: "", after: ";", sites: 1 },
+  { use: "consumed", before: "console.log(", after: ");", sites: 32 },
+  { use: "discarded", before: "", after: ";", sites: 32 },
+])("a $use negation chain bounds exact-site queries with $sites unrelated sites", (row) => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-negation-work-"));
   const query = vi.spyOn(Lowerer.prototype, "opinionAtNode");
   try {
+    const statements = "!effect();".repeat(row.sites);
     const counts = [16, 32].map((length) => {
       const entry = join(directory, `chain-${length}.mjs`);
       writeFileSync(
         entry,
-        `function effect() { console.log("effect"); }\n${row[1]}${"!".repeat(length)}(() => { !effect(); return false; })()${row[2]}`,
+        `function effect() { console.log("effect"); }\n${row.before}${"!".repeat(length)}(() => { ${statements} return false; })()${row.after}`,
       );
       query.mockClear();
       const { coverage } = analyze(entry);
@@ -24,9 +27,11 @@ test.for([
       expect(coverage.diagnostics).toEqual([]);
       expect(coverage.runtimeFences ?? []).toEqual([]);
       expect(coverage.stats.statementsFailed).toBe(0);
-      return query.mock.calls.length;
+      return query.mock.calls.filter(([, code]) => code === 1345).length;
     });
-    expect(counts[1]!).toBeLessThanOrEqual(counts[0]! * 2 + 8);
+    // An exact query scans the file's admitted sites. More outer bangs
+    // must not multiply those scans when the sites belong to the IIFE.
+    expect(counts[1]!).toBeLessThanOrEqual(counts[0]! + 2);
   } finally {
     query.mockRestore();
     rmSync(directory, { recursive: true, force: true });

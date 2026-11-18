@@ -291,6 +291,637 @@ ScrDyn *scr_als_snapshot(void) {
   return scr_dyn_new_func(scr_als_context_closure(NULL, 1), scr_als_snapshot_call, 1, "(cb, ...args)", "bound");
 }
 
+/* ── AsyncLocalStorage.withScope (node:async_hooks — RunScope) ────────
+ * Node's RunScope keeps the value getStore() answered before the scope
+ * (defaultValue included) and a dispose() that enters THAT value again on
+ * the same storage — so only this store changes, and a second dispose is
+ * a no-op. The store is installed through enterWith's rules (it lasts for
+ * the rest of the current callback on the main stack). The scope is a
+ * native handle: typeof "object", Object.keys empty, util.inspect prints
+ * `RunScope {}`, dispose is a method value, and [Symbol.dispose] answers
+ * the same disposal (`using`). */
+typedef struct {
+  size_t rc;
+  double storage;   /* the AsyncLocalStorage handle */
+  ScrDyn *previous; /* owned: the effective store getStore() answered */
+  bool disposed;
+} ScrRunScope;
+
+static void *scr_rs_retain(void *h) {
+  ((ScrRunScope *)h)->rc++;
+  return h;
+}
+
+static void scr_rs_release(void *h) {
+  ScrRunScope *s = h;
+  if (!s || --s->rc > 0) return;
+  scr_dyn_release(s->previous);
+  free(s);
+}
+
+static void scr_rs_dispose(ScrRunScope *s) {
+  if (s->disposed) return;
+  s->disposed = true;
+  scr_als_enter_with(s->storage, s->previous);
+}
+
+static ScrDyn *scr_rs_dispose_value(ScrRunScope *s) {
+  scr_rs_dispose(s);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *scr_rs_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  (void)what;
+  if (strcmp(method, "dispose") == 0) return scr_rs_dispose_value(h);
+  static const char message[] = "RunScope member is not a function: ";
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, message);
+  scr_jb_puts(&b, method);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+static ScrDyn *scr_rs_empty_view(void *h) {
+  (void)h;
+  return scr_dyn_new_obj();
+}
+
+/* `scope[Symbol.dispose]`: Node's RunScope.prototype[Symbol.dispose] calls
+ * the instance's dispose; a distinct function from the dispose method
+ * value, as in Node. */
+static ScrDyn *scr_rs_symbol_dispose_call(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrRunScope *s = scr_box_get_ref(self->caps[0]);
+  ScrDyn *result = scr_rs_dispose_value(s);
+  scr_rs_release(s);
+  return result;
+}
+
+static ScrDyn *scr_rs_symbol_get(void *h, const ScrDyn *key) {
+  if (!scr_dyn_is_dispose_symbol(key)) return NULL;
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  /* The RunScope payload is a plain allocation with no cycle header, so the
+   * box treats it as acyclic: a trace here would send the collector through a
+   * header that does not exist (memory corruption). */
+  closure->caps[0] = scr_box_new_obj(scr_rs_retain, scr_rs_release, NULL);
+  scr_box_set_ref(closure->caps[0], scr_rs_retain(h));
+  return scr_dyn_new_func(closure, scr_rs_symbol_dispose_call, 0, "()", "[Symbol.dispose]");
+}
+
+static const ScrDynHandleMethod scr_rs_methods[] = {{"dispose", 0, false}, {NULL, 0, false}};
+
+static ScrDyn *scr_rs_box(ScrRunScope *s) {
+  static SCR_TL bool installed;
+  if (!installed) {
+    installed = true;
+    static const ScrDynHandleOps ops = {
+        .cls = "RunScope",
+        .retain = scr_rs_retain,
+        .release = scr_rs_release,
+        .invoke = scr_rs_invoke,
+        .inspect_view = scr_rs_empty_view,
+        .json_empty_object = true,
+        .inspect_view_empty = true,
+        .symbol_get = scr_rs_symbol_get,
+        .methods = scr_rs_methods,
+    };
+    scr_dyn_handle_install(SCR_DYNH_RUN_SCOPE, &ops);
+  }
+  ScrDyn *box = scr_dyn_new_handle(s, SCR_DYNH_RUN_SCOPE);
+  scr_rs_release(s);
+  return box;
+}
+
+ScrDyn *scr_als_with_scope(double id, ScrDyn *store) {
+  ScrRunScope *s = malloc(sizeof *s);
+  if (!s) scr_ad_oom();
+  s->rc = 1;
+  s->storage = id;
+  s->previous = scr_als_get(id); /* the effective store (defaultValue too) */
+  s->disposed = false;
+  scr_als_enter_with(id, store);
+  return scr_rs_box(s);
+}
+
+/* ── AsyncResource (node:async_hooks) ─────────────────────────────────
+ * Node's ids number every async resource from one root: the program's
+ * top-level execution is id 1 with trigger id 0. This unit allocates the
+ * ids its own resources take. A resource created inside another's scope
+ * answers that resource's id as its trigger — the execution-id pair is
+ * saved and restored around runInAsyncScope, like the context.
+ *
+ * Resources are 1-based f64 handles into a process-lived registry (the
+ * Channel story): a handle carries no ownership the runtime could watch, so
+ * an entry keeps its type and its captured store context until the process
+ * exits, where Node releases them with the resource. The limitations page
+ * states this. */
+static SCR_TL double scr_ar_next_id = 1;
+static SCR_TL double scr_ar_exec_id = 1;
+static SCR_TL double scr_ar_exec_trigger = 0;
+
+double scr_ar_execution_id(void) { return scr_ar_exec_id; }
+
+double scr_ar_execution_trigger(void) { return scr_ar_exec_trigger; }
+
+static double scr_ar_next_async_id(void) { return ++scr_ar_next_id; }
+
+typedef struct ScrAsyncResource {
+  size_t rc;
+  ScrDyn *type;   /* owned: the validated type string */
+  ScrAlsCtx *ctx; /* owned: the store snapshot at construction (NULL: none) */
+  double async_id;
+  double trigger_id;
+  bool destroyed;
+  /* The live list, only so the process releases what a program still holds
+   * at exit (the resource itself is reclaimed by its last reference). */
+  struct ScrAsyncResource *next;
+} ScrAsyncResource;
+
+static SCR_TL ScrAsyncResource *scr_ar_live = NULL;
+
+static SCR_TL size_t scr_ar_live_count = 0;
+
+/* Live resources: a handle that the program drops must take its payload
+ * (type, captured store context) with it. */
+size_t scr_ar_live_resources(void) { return scr_ar_live_count; }
+
+static void *scr_ar_retain(void *h);
+static void scr_ar_release(void *h);
+
+/* Release what a resource still owns without freeing it: the audit at exit
+ * wants every string and context released, and a box released by a later
+ * atexit handler still owns the (now empty) struct. */
+static void scr_ar_release_payload(ScrAsyncResource *r) {
+  if (r->type != NULL) {
+    scr_dyn_release(r->type);
+    r->type = NULL;
+  }
+  if (r->ctx != NULL) {
+    scr_als_ctx_release(r->ctx);
+    r->ctx = NULL;
+  }
+}
+
+static void scr_ar_teardown(void) {
+  /* Releasing a resource's captured store can release the resource itself — a
+   * store that holds its own resource — which unlinks and frees that entry
+   * from inside the release. Hold every entry for the walk, so each release
+   * below is the only thing that can free its node, then drop it. */
+  scr_cyc_suspend(); /* no collection pass over a half-released snapshot */
+  for (ScrAsyncResource *r = scr_ar_live; r != NULL; r = r->next) scr_ar_retain(r);
+  for (ScrAsyncResource *r = scr_ar_live; r != NULL;) {
+    ScrAsyncResource *next = r->next;
+    /* Detach the children before releasing them: a release below can run a
+     * collector pass, and the pass must not walk this resource into the
+     * snapshot it is in the middle of disposing (its entries are released one
+     * by one, and a binding the store holds can release this very resource
+     * mid-walk). A pass that misses an edge only over-retains. */
+    ScrDyn *type = r->type;
+    ScrAlsCtx *ctx = r->ctx;
+    r->type = NULL;
+    r->ctx = NULL;
+    scr_dyn_release(type);
+    scr_als_ctx_release(ctx);
+    scr_ar_release(r);
+    r = next;
+  }
+  scr_cyc_resume();
+}
+
+
+static void *scr_ar_retain(void *h) {
+  ScrAsyncResource *r = h;
+  if (r != NULL) r->rc++;
+  return h;
+}
+
+/* Unlink a resource from the live list. Its last reference calls this once; a
+ * collector pass that frees the resource calls it too. */
+static void scr_ar_unlink(ScrAsyncResource *r) {
+  for (ScrAsyncResource **link = &scr_ar_live; link != NULL && *link != NULL;
+       link = &(*link)->next) {
+    if (*link == r) {
+      *link = r->next;
+      break;
+    }
+  }
+  scr_ar_live_count--;
+}
+
+/* A resource is a collector object. Its children are the type it was created
+ * with and the snapshot it captured; a snapshot's entries are traced as well,
+ * so a store that holds a bound callback of a resource that captured that store
+ * is one loop the collector can walk and reclaim. A collected resource releases
+ * nothing itself — the collector accounted for both children — beyond its
+ * live-list entry. */
+static void scr_ar_trace(void *o, ScrTraceVisit visit, void *ctx) {
+  ScrAsyncResource *r = o;
+  visit(r->type, ctx);
+  visit(r->ctx, ctx);
+}
+
+static void scr_ar_gcfree(void *o) {
+  ScrAsyncResource *r = o;
+  scr_ar_unlink(r);
+  scr_cyc_free(r);
+}
+
+static void scr_ar_release(void *h) {
+  ScrAsyncResource *r = h;
+  if (r == NULL) return;
+  if (--r->rc != 0) {
+    scr_cyc_released(r); /* possible cycle root; may collect — r is done */
+    return;
+  }
+  scr_cyc_dead(r);
+  scr_ar_unlink(r);
+  scr_ar_release_payload(r);
+  scr_cyc_free(r);
+}
+
+/* The resource behind a handle box. A value asserted past the type can carry
+ * anything, so a value that is not a live resource handle answers NULL and
+ * the member that needed it raises Node's argument error. */
+static ScrDyn *scr_ar_box(ScrAsyncResource *r);
+
+static ScrAsyncResource *scr_ar_payload(const ScrDyn *h) {
+  if (h == NULL || h->kind != SCR_DYN_HANDLE || h->v.handle.tag != SCR_DYNH_ASYNC_RESOURCE)
+    return NULL;
+  return (ScrAsyncResource *)h->v.handle.ptr;
+}
+
+/* NumberIsSafeInteger: a finite integer within ±(2^53 - 1). */
+static bool scr_ar_safe_integer(double v) {
+  return isfinite(v) && v == floor(v) && fabs(v) <= 9007199254740991.0;
+}
+
+/* ERR_INVALID_ASYNC_ID's value text: a string prints bare and the scalars
+ * as String() renders them (Node's template shows primitives that way); an
+ * object renders as the dyn core's inspect bracket sketch, which is the
+ * only rendering available without linking the inspect unit. */
+static void scr_ar_put_value(ScrJsonBuf *b, const ScrDyn *v) {
+  if (v->kind == SCR_DYN_STR) {
+    scr_jb_put_str(b, v->v.str);
+    return;
+  }
+  char detail[64];
+  scr_jb_puts(b, scr_dyn_inspect_lite(v, detail, sizeof detail));
+}
+
+static void scr_ar_invalid_trigger(const ScrDyn *value) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Invalid triggerAsyncId value: ");
+  scr_ar_put_value(&b, value);
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message->data, message->len, "ERR_INVALID_ASYNC_ID");
+  scr_str_release(message);
+}
+
+static void scr_ar_invalid_trigger_number(double value) {
+  char text[40];
+  size_t len = scr_f64_to_str(value, text);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Invalid triggerAsyncId value: ");
+  scr_jb_write(&b, text, len);
+  ScrStr *message = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message->data, message->len, "ERR_INVALID_ASYNC_ID");
+  scr_str_release(message);
+}
+
+/* V8's TypeError for ReflectApply on a value that is not callable —
+ * runInAsyncScope's and a bound function's check, verbatim. */
+static void scr_ar_apply_type_error(const ScrDyn *fn) {
+  const char *kind;
+  switch (fn->kind) {
+  case SCR_DYN_NULL: kind = "null"; break;
+  case SCR_DYN_UNDEF: kind = "a undefined"; break;
+  case SCR_DYN_NUM: kind = "a number"; break;
+  case SCR_DYN_STR: kind = "a string"; break;
+  case SCR_DYN_BOOL: kind = "a boolean"; break;
+  case SCR_DYN_SYMBOL: kind = "a symbol"; break;
+  case SCR_DYN_BIGINT: kind = "a bigint"; break;
+  default: kind = "an object"; break;
+  }
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Function.prototype.apply was called on ");
+  switch (fn->kind) {
+  case SCR_DYN_NULL: scr_jb_puts(&b, "null"); break;
+  case SCR_DYN_UNDEF: scr_jb_puts(&b, "undefined"); break;
+  case SCR_DYN_NUM: {
+    char buf[40];
+    size_t n = scr_f64_to_str(fn->v.num, buf);
+    scr_jb_write(&b, buf, n);
+    break;
+  }
+  case SCR_DYN_STR: scr_jb_put_str(&b, fn->v.str); break;
+  case SCR_DYN_BOOL: scr_jb_puts(&b, fn->v.b ? "true" : "false"); break;
+  case SCR_DYN_ARR: scr_jb_puts(&b, "[object Array]"); break;
+  default: scr_jb_puts(&b, "#<Object>"); break;
+  }
+  scr_jb_puts(&b, ", which is ");
+  scr_jb_puts(&b, kind);
+  scr_jb_puts(&b, " and not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* new AsyncResource(type[, opts]): Node's checks in its order — `type`
+ * first, then the trigger (a number opts is the legacy trigger form; an
+ * object reads triggerAsyncId, defaulting to executionAsyncId(), and
+ * requireManualDestroy). The resource is a checked-dynamic handle whose
+ * payload is refcounted: dropping the last reference to the value releases
+ * the type and the captured store context, so a program that creates
+ * resources per request does not grow for the life of the process. */
+ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options) {
+  if (type->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("type", "of type string", type);
+    return NULL;
+  }
+  double trigger = scr_ar_exec_id;
+  if (options != NULL && options->kind != SCR_DYN_UNDEF) {
+    if (options->kind == SCR_DYN_NUM) {
+      trigger = options->v.num;
+    } else {
+      ScrStr *key_name = scr_str_new("triggerAsyncId", 14);
+      ScrDyn *key = scr_dyn_new_str(key_name);
+      scr_str_release(key_name);
+      ScrDyn *value = scr_dyn_reflect_get(options, key, options);
+      scr_dyn_release(key);
+      if (value == NULL) return NULL; /* pending: a null receiver's read */
+      /* Node reads requireManualDestroy before it validates the trigger,
+       * so a throwing getter here answers before the trigger's error. */
+      ScrStr *manual_name = scr_str_new("requireManualDestroy", 20);
+      ScrDyn *manual_key = scr_dyn_new_str(manual_name);
+      scr_str_release(manual_name);
+      ScrDyn *manual = scr_dyn_reflect_get(options, manual_key, options);
+      scr_dyn_release(manual_key);
+      if (manual == NULL) {
+        scr_dyn_release(value);
+        return NULL;
+      }
+      scr_dyn_release(manual);
+      if (value->kind == SCR_DYN_UNDEF) trigger = scr_ar_exec_id;
+      else if (value->kind == SCR_DYN_NUM) trigger = value->v.num;
+      if ((value->kind != SCR_DYN_UNDEF && value->kind != SCR_DYN_NUM) ||
+          !scr_ar_safe_integer(trigger) || trigger < -1) {
+        scr_ar_invalid_trigger(value);
+        scr_dyn_release(value);
+        return NULL;
+      }
+      scr_dyn_release(value);
+    }
+  }
+  /* The legacy numeric options form takes the same trigger check. */
+  if (!scr_ar_safe_integer(trigger) || trigger < -1) {
+    scr_ar_invalid_trigger_number(trigger);
+    return NULL;
+  }
+  static SCR_TL bool teardown_registered = false;
+  if (!teardown_registered) {
+    teardown_registered = true;
+    scr_atexit(scr_ar_teardown);
+  }
+  static ScrCycType cyc_type = {&scr_ar_trace, &scr_ar_gcfree, SCR_CYC_KIND_NONE};
+  ScrAsyncResource *r = scr_cyc_alloc(sizeof *r, &cyc_type);
+  if (!r) scr_ad_oom();
+  r->rc = 1;
+  r->type = scr_dyn_retain(type);
+  r->ctx = scr_als_capture();
+  r->async_id = scr_ar_next_async_id();
+  r->trigger_id = trigger;
+  r->destroyed = false;
+  r->next = scr_ar_live;
+  scr_ar_live = r;
+  scr_ar_live_count++;
+  return scr_ar_box(r);
+}
+
+/* The call inside a resource's scope: its store snapshot and ids for the
+ * synchronous extent, restored afterwards (the finally — a throw still
+ * restores). */
+static ScrDyn *scr_ar_call_in_scope(ScrAsyncResource *r, ScrDyn *fn, ScrDyn *this_arg,
+                                    ScrDyn *const *args, size_t argc) {
+  ScrAlsCtx *prev_ctx = scr_als_dispatch_enter(r->ctx);
+  double saved_id = scr_ar_exec_id;
+  double saved_trigger = scr_ar_exec_trigger;
+  scr_ar_exec_id = r->async_id;
+  scr_ar_exec_trigger = r->trigger_id;
+  scr_dyn_this_push_dyn(this_arg);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, "fn");
+  scr_dyn_this_pop();
+  scr_ar_exec_id = saved_id;
+  scr_ar_exec_trigger = saved_trigger;
+  scr_als_dispatch_leave(prev_ctx);
+  return result;
+}
+
+ScrDyn *scr_ar_run_in_scope(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args) {
+  ScrAsyncResource *r = scr_ar_payload(handle);
+  if (r == NULL) {
+    if (!scr_exc_pending()) scr_dyn_arg_type_fail("this", "an instance of AsyncResource", handle);
+    return NULL;
+  }
+  if (!scr_dyn_is_callable(fn)) {
+    scr_ar_apply_type_error(fn);
+    return NULL;
+  }
+  size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
+  return scr_ar_call_in_scope(r, fn, this_arg, items, argc);
+}
+
+/* The bound function: caps[0] the function (owned), caps[1] its receiver
+ * (owned; an absent receiver is the undefined value), caps[2] the resource
+ * handle (owned). Node names the result "bound", or "bound runInAsyncScope"
+ * when the receiver is given, and gives it the bound function's length. Its
+ * no-receiver form is a plain function Node calls with the receiver the
+ * bound function was INVOKED with (ArrayPrototypeUnshift(args, fn, this)),
+ * so `obj.f()` runs fn with `this` === obj; the receiver-given form always
+ * runs it with that receiver instead. */
+static ScrDyn *scr_ar_bound_call(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  ScrDyn *fn = scr_box_get_ref(self->caps[0]);
+  ScrDyn *this_arg = scr_box_get_ref(self->caps[1]);
+  ScrAsyncResource *r = scr_box_get_ref(self->caps[2]);
+  ScrDyn *result = NULL;
+  if (!scr_dyn_is_callable(fn)) {
+    scr_ar_apply_type_error(fn);
+  } else if (r != NULL) {
+    ScrDyn *call_this = this_arg->kind == SCR_DYN_UNDEF ? scr_dyn_this_get() : NULL;
+    result = scr_ar_call_in_scope(r, fn, call_this != NULL ? call_this : this_arg, args, argc);
+    if (call_this != NULL) scr_dyn_release(call_this);
+  }
+  scr_dyn_release(fn);
+  scr_dyn_release(this_arg);
+  /* scr_box_get_ref hands out its own reference; the call only borrowed the
+   * payload, so the bound function holds exactly the box's one. */
+  scr_ar_release(r);
+  return result;
+}
+
+static ScrDyn *scr_ar_make_bound(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg) {
+  ScrClosure *closure = scr_closure_new(NULL, 3);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_dyn_retain(fn));
+  closure->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[1], scr_dyn_retain(this_arg));
+  /* The bound function owns the resource payload itself (retained by the
+   * box), not a dynamic handle value: no dyn value is left behind for the
+   * exit audit to find, and the payload's context is released at exit. */
+  closure->caps[2] = scr_box_new_obj(scr_ar_retain, scr_ar_release, scr_ar_trace);
+  scr_box_set_ref(closure->caps[2], scr_ar_retain(scr_ar_payload(handle)));
+  uint32_t arity = fn->kind == SCR_DYN_FUNC ? fn->v.fn.arity : 0;
+  const char *name = this_arg->kind == SCR_DYN_UNDEF ? "bound" : "bound runInAsyncScope";
+  return scr_dyn_new_func(closure, scr_ar_bound_call, arity, "(...args)", name);
+}
+
+ScrDyn *scr_ar_bind(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg) {
+  if (!scr_dyn_is_callable(fn)) {
+    scr_dyn_arg_type_fail("fn", "of type function", fn);
+    return NULL;
+  }
+  if (scr_ar_payload(handle) == NULL) {
+    if (!scr_exc_pending()) scr_dyn_arg_type_fail("this", "an instance of AsyncResource", handle);
+    return NULL;
+  }
+  return scr_ar_make_bound(handle, fn, this_arg);
+}
+
+ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg) {
+  ScrDyn *chosen = NULL;
+  bool owned = false;
+  if (scr_dyn_truthy(type)) {
+    chosen = type;
+  } else if (fn->kind == SCR_DYN_NULL) {
+    /* Node reads fn.name before it validates fn: a null one throws the
+     * property read, not the argument check. */
+    static const char message[] = "Cannot read properties of null (reading 'name')";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  } else {
+    const char *name = fn->kind == SCR_DYN_FUNC ? fn->v.fn.name : NULL;
+    ScrStr *text = name && name[0] ? scr_str_new(name, strlen(name))
+                                   : scr_str_new("bound-anonymous-fn", 18);
+    chosen = scr_dyn_new_str(text);
+    scr_str_release(text);
+    owned = true;
+  }
+  ScrDyn *handle = scr_ar_new(chosen, NULL);
+  if (owned) scr_dyn_release(chosen);
+  if (handle == NULL) return NULL;
+  ScrDyn *bound = scr_ar_bind(handle, fn, this_arg);
+  scr_dyn_release(handle);
+  return bound;
+}
+
+ScrDyn *scr_ar_emit_destroy(ScrDyn *handle) {
+  ScrAsyncResource *r = scr_ar_payload(handle);
+  if (r != NULL && !r->destroyed) {
+    /* Node's emitDestroy marks the resource destroyed and fires the destroy
+     * hook; it keeps the captured store context, so a runInAsyncScope call or
+     * a bound callback made after the destroy still runs inside the resource's
+     * stores. The context is released with the resource itself — when the
+     * value and every binding that holds it are gone, or at exit — so a
+     * per-request resource stops holding its request's stores as soon as the
+     * program drops it. A second destroy is a no-op. */
+    r->destroyed = true;
+  }
+  return scr_dyn_retain(handle);
+}
+
+double scr_ar_async_id(ScrDyn *handle) {
+  ScrAsyncResource *r = scr_ar_payload(handle);
+  return r != NULL ? r->async_id : NAN;
+}
+
+double scr_ar_trigger_id(ScrDyn *handle) {
+  ScrAsyncResource *r = scr_ar_payload(handle);
+  return r != NULL ? r->trigger_id : NAN;
+}
+
+static const ScrDynHandleMethod scr_ar_methods[] = {{"runInAsyncScope", 0, false},
+                                                    {"bind", 0, false},
+                                                    {"emitDestroy", 0, false},
+                                                    {"asyncId", 0, false},
+                                                    {"triggerAsyncId", 0, false},
+                                                    {NULL, 0, false}};
+
+static ScrDyn *scr_ar_empty_view(void *h) {
+  (void)h;
+  return scr_dyn_new_obj();
+}
+
+/* Dynamic member calls (`resource.runInAsyncScope(...)` on a value the
+ * program holds as checked-dynamic): the same helpers the lowered calls
+ * use. */
+static ScrDyn *scr_ar_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  ScrAsyncResource *r = h;
+  (void)what;
+  if (strcmp(method, "runInAsyncScope") == 0 && argc >= 1) {
+    /* The dynamic call takes the same checks as the lowered one: Node's
+     * own apply error for a value that is not a function. */
+    if (!scr_dyn_is_callable(args[0])) {
+      scr_ar_apply_type_error(args[0]);
+      return NULL;
+    }
+    ScrDyn *args_array = scr_dyn_new_arr();
+    for (size_t i = 2; i < argc; i++) scr_dyn_arr_push(args_array, scr_dyn_retain(args[i]));
+    ScrDyn *result = scr_ar_call_in_scope(
+        r, args[0], argc >= 2 ? args[1] : scr_dyn_undefined(), args_array->v.arr.items,
+        args_array->v.arr.len);
+    scr_dyn_release(args_array);
+    return result;
+  }
+  if (strcmp(method, "bind") == 0 && argc >= 1) {
+    /* bind validates the function at the call, as the lowered form does. */
+    if (!scr_dyn_is_callable(args[0])) {
+      scr_dyn_arg_type_fail("fn", "of type function", args[0]);
+      return NULL;
+    }
+    return scr_ar_make_bound(self, args[0], argc >= 2 ? args[1] : scr_dyn_undefined());
+  }
+  if (strcmp(method, "emitDestroy") == 0) return scr_dyn_retain(self);
+  if (strcmp(method, "asyncId") == 0) return scr_dyn_new_num(r->async_id);
+  if (strcmp(method, "triggerAsyncId") == 0) return scr_dyn_new_num(r->trigger_id);
+  static const char message[] = "AsyncResource member is not a function: ";
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, message);
+  scr_jb_puts(&b, method);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+static ScrDyn *scr_ar_box(ScrAsyncResource *r) {
+  static SCR_TL bool installed;
+  if (!installed) {
+    installed = true;
+    static const ScrDynHandleOps ops = {
+        .cls = "AsyncResource",
+        .retain = scr_ar_retain,
+        .release = scr_ar_release,
+        .invoke = scr_ar_invoke,
+        .inspect_view = scr_ar_empty_view,
+        .json_empty_object = true,
+        .inspect_view_empty = true,
+        .methods = scr_ar_methods,
+    };
+    scr_dyn_handle_install(SCR_DYNH_ASYNC_RESOURCE, &ops);
+  }
+  ScrDyn *box = scr_dyn_new_handle(r, SCR_DYNH_ASYNC_RESOURCE);
+  scr_ar_release(r);
+  return box;
+}
+
+
 /* The two rejection-event registries share one shape: listeners with a
  * `once` flag (auto-removed after one delivery, Node's once) and
  * identity-based removal (the offWarning stance). */
@@ -496,12 +1127,58 @@ static bool scr_rej_fire(ScrRejListener **list, size_t *n, ScrDyn **args, size_t
 static SCR_TL ScrRejListener *scr_uncaught_ls[2];
 static SCR_TL size_t scr_uncaught_n[2], scr_uncaught_cap[2];
 static int scr_uncaught_dispatch(bool from_promise);
+static void scr_uncaught_sync_hook(void);
+
+/* process.setUncaughtExceptionCaptureCallback's callback: when set, it
+ * handles every uncaught exception INSTEAD of the 'uncaughtException'
+ * listeners (after the monitors), and its own throw is the fatal error. */
+static SCR_TL ScrDyn *scr_capture_fn = NULL;
+
+static void scr_capture_teardown(void) {
+  scr_dyn_release(scr_capture_fn);
+  scr_capture_fn = NULL;
+}
+
+bool scr_process_has_uncaught_capture(void) { return scr_capture_fn != NULL; }
+
+/* node:internal/process/execution's setUncaughtExceptionCaptureCallback:
+ * null clears (checked first, so it never validates); anything that is not
+ * a function throws ERR_INVALID_ARG_TYPE; a second callback while one is
+ * active throws ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET. */
+void scr_process_set_uncaught_capture(ScrDyn *fn) {
+  if (fn->kind == SCR_DYN_NULL) {
+    scr_dyn_release(scr_capture_fn);
+    scr_capture_fn = NULL;
+    scr_uncaught_sync_hook();
+    return;
+  }
+  if (!scr_dyn_is_callable(fn)) {
+    scr_dyn_arg_type_fail("fn", "of type function or null", fn);
+    return;
+  }
+  if (scr_capture_fn != NULL) {
+    static const char msg[] =
+        "`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                             "ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET");
+    return;
+  }
+  static SCR_TL bool armed = false;
+  if (!armed) {
+    armed = true;
+    scr_atexit(scr_capture_teardown);
+  }
+  scr_capture_fn = scr_dyn_retain(fn);
+  scr_uncaught_sync_hook();
+}
 
 static void scr_uncaught_sync_hook(void) {
 #ifdef SCR_NODE_ISLANDS
   if (scr_pe_node) return; /* the hook raises through Node's process */
 #endif
-  scr_uncaught_exception_hook = (scr_uncaught_n[0] || scr_uncaught_n[1]) ? scr_uncaught_dispatch : NULL;
+  scr_uncaught_exception_hook = (scr_uncaught_n[0] || scr_uncaught_n[1] || scr_capture_fn)
+                                    ? scr_uncaught_dispatch
+                                    : NULL;
 }
 
 static void scr_uncaught_teardown(void) {
@@ -658,8 +1335,26 @@ static int scr_uncaught_dispatch(bool from_promise) {
   ScrDyn *args[2] = {error, scr_dyn_new_str(text)};
   scr_str_release(text);
   bool ok = scr_rej_fire(&scr_uncaught_ls[1], &scr_uncaught_n[1], args, 2);
-  bool handled = ok && scr_uncaught_n[0] > 0;
-  if (handled) ok = scr_rej_fire(&scr_uncaught_ls[0], &scr_uncaught_n[0], args, 2);
+  bool handled;
+  if (ok && scr_capture_fn != NULL) {
+    /* The capture callback replaces the 'uncaughtException' listeners: it
+     * receives the error alone, and answering handles the exception. Its
+     * own throw is the fatal one (the pending exception the fatal path
+     * below prints). */
+    ScrDyn *capture_args[1] = {error};
+    /* The call holds its own reference: a callback that clears itself
+     * (setUncaughtExceptionCaptureCallback(null)) drops the registry's,
+     * and its body still reads what it captured. */
+    ScrDyn *capture = scr_dyn_retain(scr_capture_fn);
+    ScrDyn *result = scr_dyn_call(capture, capture_args, 1, "callback");
+    ok = !scr_exc_pending();
+    scr_dyn_release(result);
+    scr_dyn_release(capture);
+    handled = ok;
+  } else {
+    handled = ok && scr_uncaught_n[0] > 0;
+    if (handled) ok = scr_rej_fire(&scr_uncaught_ls[0], &scr_uncaught_n[0], args, 2);
+  }
   scr_dyn_release(args[0]);
   scr_dyn_release(args[1]);
   scr_uncaught_sync_hook();
@@ -715,6 +1410,144 @@ static void scr_rjh_dispatch(ScrPromise *p) {
   scr_dyn_release(boxed);
   scr_rjh_sync_hook(); /* a once-consumed-to-empty registry disarms */
   SCR_PE_LEAVE();
+}
+
+/* ── process 'multipleResolves' ────────────────────────────────────────
+ * V8 reports a resolution or rejection that arrives at a promise which
+ * already resolved to Node's promiseRejectHandler, which — while a listener
+ * is registered — queues a nextTick emitting ('resolve' | 'reject',
+ * promise, value) and then, if that emit reached a listener, warns DEP0160
+ * ONCE per process. Node checks `hasMultipleResolvesListener` (its cached
+ * listener count) at the settle, so an unlistened promise schedules
+ * nothing; the tick re-checks the registry, so a listener removed before
+ * it runs sees nothing and warns nothing. The settle paths in scr_async.c
+ * call the hook; this unit owns the registry, the queued events and the
+ * deprecation. */
+static SCR_TL ScrRejListener *scr_mr_listeners = NULL;
+static SCR_TL size_t scr_nmr = 0, scr_mr_cap = 0;
+
+typedef struct {
+  ScrPromise *promise; /* +1 */
+  ScrDyn *value;       /* +1 */
+  int type;            /* 0 = resolve, 1 = reject */
+} ScrMrEvent;
+
+static SCR_TL ScrMrEvent *scr_mr_events = NULL;
+static SCR_TL size_t scr_mr_head = 0, scr_mr_len = 0, scr_mr_events_cap = 0;
+static SCR_TL bool scr_mr_events_armed = false;
+static SCR_TL bool scr_mr_warned = false;
+
+static void scr_mr_events_teardown(void) {
+  for (size_t i = scr_mr_head; i < scr_mr_len; i++) {
+    scr_promise_release(scr_mr_events[i].promise);
+    scr_dyn_release(scr_mr_events[i].value);
+  }
+  free(scr_mr_events);
+  scr_mr_events = NULL;
+  scr_mr_head = scr_mr_len = scr_mr_events_cap = 0;
+}
+
+static void scr_mr_teardown(void) {
+  for (size_t i = 0; i < scr_nmr; i++) scr_rej_release(&scr_mr_listeners[i]);
+  free(scr_mr_listeners);
+  scr_mr_listeners = NULL;
+  scr_nmr = scr_mr_cap = 0;
+}
+
+static void scr_mr_tick(void);
+
+/* A losing settle's value, already dyn (+1): dropped when nobody
+ * listens (scr_async.c's typed note has the same contract). */
+static void scr_mr_note_dyn(ScrPromise *p, int type, ScrDyn *value) {
+  if (scr_multiple_resolves_fn == NULL) {
+    scr_dyn_release(value);
+    return;
+  }
+  scr_multiple_resolves_fn(p, type, value);
+}
+
+/* The settle-time hook: the losing value moves into a queued event. */
+static void scr_mr_note(ScrPromise *p, int type, ScrDyn *value) {
+  if (!scr_mr_events_armed) {
+    scr_mr_events_armed = true;
+    scr_atexit(scr_mr_events_teardown);
+  }
+  if (scr_mr_len == scr_mr_events_cap) {
+    size_t cap = scr_mr_events_cap ? scr_mr_events_cap * 2 : 4;
+    ScrMrEvent *grown = realloc(scr_mr_events, cap * sizeof *grown);
+    if (!grown) scr_ad_oom();
+    scr_mr_events = grown;
+    scr_mr_events_cap = cap;
+  }
+  scr_mr_events[scr_mr_len++] = (ScrMrEvent){scr_promise_retain(p), value, type};
+  scr_next_tick_raw(scr_mr_tick);
+}
+
+static void scr_mr_sync_hook(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_pe_node) return; /* Node's own promise hooks report these */
+#endif
+  scr_multiple_resolves_fn = scr_nmr > 0 ? scr_mr_note : NULL;
+}
+
+void scr_process_on_multiple_resolves(ScrDyn *fn, bool once) {
+  if (!scr_rej_check_listener(fn)) return;
+  if (scr_pe_listen(once ? 1 : 0, "multipleResolves", fn)) return;
+  static SCR_TL bool teardown_armed = false;
+  if (!teardown_armed) {
+    teardown_armed = true;
+    scr_atexit(scr_mr_teardown);
+  }
+  scr_rej_push(&scr_mr_listeners, &scr_nmr, &scr_mr_cap, fn, once);
+  scr_mr_sync_hook();
+}
+
+void scr_process_off_multiple_resolves(ScrDyn *fn) {
+  if (scr_pe_listen(3, "multipleResolves", fn)) return;
+  scr_rej_remove(scr_mr_listeners, &scr_nmr, fn);
+  scr_mr_sync_hook();
+}
+
+/* The DEP0160 report Node's deprecate() wrapper makes after a delivery
+ * reached a listener: once per process, dropped outright while
+ * process.noDeprecation is set (and then not marked, so a later delivery
+ * under a cleared flag still warns — Node's deprecated() wrapper checks
+ * the flag before its own once guard). */
+static void scr_mr_deprecate(void) {
+  if (scr_mr_warned || scr_process_deprecation_flag_on(0)) return;
+  scr_mr_warned = true;
+  static const char text[] = "The multipleResolves event has been deprecated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0160", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
+/* One queued event per losing settle, in settle order (Node's nextTick
+ * FIFO). The registry is re-read now: no listener left, no event. */
+static void scr_mr_tick(void) {
+  if (scr_mr_head == scr_mr_len) return;
+  ScrMrEvent ev = scr_mr_events[scr_mr_head++];
+  if (scr_mr_head == scr_mr_len) scr_mr_head = scr_mr_len = 0;
+  const char *name = ev.type == 0 ? "resolve" : "reject";
+  ScrStr *text = scr_str_new(name, ev.type == 0 ? 7 : 6);
+  ScrDyn *kind = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrDyn *boxed = scr_dyn_new_promise(ev.promise);
+  ScrDyn *args[3] = {kind, boxed, ev.value};
+  SCR_PE_ENTER();
+  bool listened = scr_nmr > 0;
+  bool ok = !listened || scr_rej_fire(&scr_mr_listeners, &scr_nmr, args, 3);
+  scr_mr_sync_hook(); /* a once-consumed-to-empty registry disarms */
+  SCR_PE_LEAVE();
+  scr_dyn_release(kind);
+  scr_dyn_release(boxed);
+  if (listened && ok) scr_mr_deprecate();
+  scr_dyn_release(ev.value);
+  scr_promise_release(ev.promise);
 }
 
 /* `new Promise(setImmediate)` (the Node-suite early-exit shape): the
@@ -1027,6 +1860,7 @@ void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value) {
 static void scr_resolve_dyn_thunk(ScrClosure *self, ScrDyn *value) {
   ScrPromise *p = (ScrPromise *)scr_box_get_ref(self->caps[0]);
   if (!scr_promise_is_pending(p)) {
+    scr_mr_note_dyn(p, 0, scr_dyn_retain(value));
     scr_dyn_release(value);
   } else {
     scr_promise_resolve_dyn(p, value); /* moves value in */
@@ -1066,7 +1900,12 @@ void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *r
   if (scr_exc_pending()) {
     ScrPromise *now = (ScrPromise *)scr_box_get_ref(target);
     if (now == p) scr_promise_reject_pending(p);
-    else scr_exc_clear();
+    else {
+      /* The box swapped on a thenable adoption: the throw is the losing
+       * settle V8 reports as reject-after-resolve. */
+      scr_promise_multiple_resolves_note(p, 1, scr_exc_current_cell());
+      scr_exc_clear();
+    }
     scr_promise_release(now);
   }
   scr_box_release(target);
@@ -1124,6 +1963,9 @@ void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source) {
       scr_promise_fulfill_void(resolved);
       scr_box_set_ref(box, resolved);
     }
+  } else {
+    /* resolve() again after the first resolution (any kind). */
+    scr_mr_note_dyn(p, 0, scr_dyn_new_promise(source));
   }
   scr_promise_release(p);
 }
@@ -1225,22 +2067,29 @@ void scr_process_off_warning(ScrDyn *fn) {
   }
 }
 
-/* process.noDeprecation (0) and process.throwDeprecation (1): ordinary
- * writable process properties, undefined until the program assigns them.
- * A compiled binary takes no Node command-line flags, so only those
- * assignments set them. */
-static SCR_TL ScrDyn *scr_deprecation_flags[2] = {NULL, NULL};
+/* process.noDeprecation (0), process.throwDeprecation (1),
+ * process.traceDeprecation (2) and process.traceProcessWarnings (3):
+ * ordinary writable process properties, undefined until the program
+ * assigns them. A compiled binary takes no Node command-line flags, so
+ * only those assignments set them. */
+static SCR_TL ScrDyn *scr_deprecation_flags[4] = {NULL, NULL, NULL, NULL};
 static SCR_TL bool scr_deprecation_flags_registered = false;
 
+static size_t scr_deprecation_flag_slot(double which) {
+  if (which == 0) return 0;
+  if (which == 1) return 1;
+  return which == 2 ? 2 : 3;
+}
+
 static void scr_deprecation_flags_teardown(void) {
-  for (size_t i = 0; i < 2; i++) {
+  for (size_t i = 0; i < 4; i++) {
     scr_dyn_release(scr_deprecation_flags[i]);
     scr_deprecation_flags[i] = NULL;
   }
 }
 
 ScrDyn *scr_process_deprecation_flag(double which) {
-  ScrDyn *value = scr_deprecation_flags[which != 0];
+  ScrDyn *value = scr_deprecation_flags[scr_deprecation_flag_slot(which)];
   return scr_dyn_retain(value ? value : scr_dyn_undefined());
 }
 
@@ -1249,15 +2098,23 @@ void scr_process_set_deprecation_flag(double which, ScrDyn *value) {
     scr_deprecation_flags_registered = true;
     scr_atexit(scr_deprecation_flags_teardown);
   }
-  size_t slot = which != 0;
+  size_t slot = scr_deprecation_flag_slot(which);
   ScrDyn *previous = scr_deprecation_flags[slot];
   scr_deprecation_flags[slot] = scr_dyn_retain(value);
   scr_dyn_release(previous);
 }
 
 bool scr_process_deprecation_flag_on(int which) {
-  const ScrDyn *value = scr_deprecation_flags[which != 0];
+  const ScrDyn *value = scr_deprecation_flags[scr_deprecation_flag_slot((double)which)];
   return value != NULL && scr_dyn_truthy(value);
+}
+
+/* Node's onWarning trace test: process.traceProcessWarnings for every
+ * warning, process.traceDeprecation for deprecations too. A set flag makes
+ * the report print the warning's own stack in place of its one-line
+ * "Name: message" and drops the one-time hint. */
+static bool scr_warning_trace_on(bool deprecation) {
+  return scr_process_deprecation_flag_on(3) || (deprecation && scr_process_deprecation_flag_on(2));
 }
 
 /* The warning's name as warning.toString() reads it: the own property, or
@@ -1328,7 +2185,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
     ScrDyn *detail = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
     if (!scr_exc_pending())
       (void)scr_ni_warning(w, code, detail,
-                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0));
+                           scr_warning_is_deprecation(w) && scr_process_deprecation_flag_on(0),
+                           scr_process_deprecation_flag_on(3) != 0,
+                           scr_process_deprecation_flag_on(2) != 0);
     scr_dyn_release(code);
     scr_dyn_release(detail);
     return;
@@ -1343,15 +2202,23 @@ static void scr_warning_dispatch(ScrDyn *w) {
   if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
   if (scr_warnings_silenced()) goto listeners;
   ScrStr *name = scr_warning_name(w);
+  /* process.traceProcessWarnings / process.traceDeprecation: the report
+   * prints the warning's own stack instead of the one-line heading (Node's
+   * onWarning). The stack carries the heading too, so the name and message
+   * reads stay for the untraced report and for a warning whose stack was
+   * deleted. */
+  bool trace = scr_warning_trace_on(deprecation);
   ScrDyn *em = scr_warning_field(w, "message", 7);
   ScrDyn *ec = scr_exc_pending() ? NULL : scr_warning_field(w, "code", 4);
   ScrDyn *ed = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
+  ScrDyn *es = trace && !scr_exc_pending() ? scr_warning_field(w, "stack", 5) : NULL;
   if (scr_exc_pending()) {
     /* A read that threw reports nothing; the exception propagates. */
     scr_str_release(name);
     scr_dyn_release(em);
     scr_dyn_release(ec);
     scr_dyn_release(ed);
+    scr_dyn_release(es);
     return;
   }
   ScrJsonBuf report;
@@ -1364,11 +2231,18 @@ static void scr_warning_dispatch(ScrDyn *w) {
     scr_jb_put_str(&report, ec->v.str);
     scr_jb_puts(&report, "] ");
   }
-  if (name) scr_jb_put_str(&report, name);
-  else scr_jb_puts(&report, "Warning");
+  if (es && es->kind == SCR_DYN_STR) {
+    /* The stack starts with the "Name: message" heading Node's untraced
+     * report spells out below. */
+    scr_jb_put_str(&report, es->v.str);
+  } else {
+    if (name) scr_jb_put_str(&report, name);
+    else scr_jb_puts(&report, "Warning");
+    scr_jb_puts(&report, ": ");
+    if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  }
   scr_str_release(name);
-  scr_jb_puts(&report, ": ");
-  if (em && em->kind == SCR_DYN_STR) scr_jb_put_str(&report, em->v.str);
+  scr_dyn_release(es);
   if (ed && ed->kind == SCR_DYN_STR) {
     scr_jb_puts(&report, "\n");
     scr_jb_put_str(&report, ed->v.str);
@@ -1376,9 +2250,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
   scr_dyn_release(em);
   scr_dyn_release(ec);
   scr_dyn_release(ed);
-  /* Node's one-time trace hint, after the first report; deprecations
-   * name their own trace flag. */
-  if (!scr_warning_trace_hint_shown) {
+  /* Node's one-time trace hint, after the first untraced report;
+   * deprecations name their own trace flag. */
+  if (!trace && !scr_warning_trace_hint_shown) {
     scr_warning_trace_hint_shown = true;
     scr_jb_puts(&report, deprecation
                              ? "\n(Use `node --trace-deprecation ...` to show where the warning was created)"
@@ -1436,6 +2310,7 @@ static void scr_pe_move_all(void) {
               SCR_UNCAUGHT_EVENT(false), front);
   scr_pe_move(&scr_urj_listeners, &scr_nurj, &scr_urj_cap, "unhandledRejection", front);
   scr_pe_move(&scr_rjh_listeners, &scr_nrjh, &scr_rjh_cap, "rejectionHandled", front);
+  scr_pe_move(&scr_mr_listeners, &scr_nmr, &scr_mr_cap, "multipleResolves", front);
   ScrDyn **warn = scr_warn_listeners;
   size_t nwarn = scr_nwarn;
   scr_warn_listeners = NULL;
@@ -1533,15 +2408,19 @@ void scr_process_set_emit_warning(ScrDyn *fn) {
 
 /* A runtime-built warning while a replacement is installed: Node's modules
  * call process.emitWarning(message, type, code), so the replacement sees
- * those arguments; nothing is reported. A throw stays pending. */
-static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code) {
-  ScrDyn *args[3];
+ * those arguments; nothing is reported. A throw stays pending.
+ * `undefined_ctor` adds Node's fourth argument (the deprecation
+ * constructor) as undefined, which getDeprecationWarningEmitter's callers
+ * pass that way (DEP0203). */
+static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code, bool undefined_ctor) {
+  ScrDyn *args[4];
   size_t argc = 0;
   args[argc++] = scr_dyn_new_str(message);
   ScrStr *fallback = type ? NULL : scr_str_new("Warning", 7);
   args[argc++] = scr_dyn_new_str(type ? type : fallback);
   scr_str_release(fallback);
   if (code) args[argc++] = scr_dyn_new_str(code);
+  if (undefined_ctor) args[argc++] = scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *r = scr_dyn_call(scr_emit_warning_override, args, argc, "process.emitWarning");
   scr_dyn_release(r);
   for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
@@ -1551,12 +2430,12 @@ static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *cod
 /* A warning built from C parts (the runtime deprecation sites): name
  * defaults to "Warning"; code/detail optional. Reported synchronously.
  * Borrows message. */
-void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+static void scr_emit_warning_impl(const char *name, const char *code, ScrStr *message) {
 #ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     ScrStr *type_text = scr_str_new(name ? name : "Warning", strlen(name ? name : "Warning"));
     ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
-    scr_emit_warning_replaced(message, type_text, code_text);
+    scr_emit_warning_replaced(message, type_text, code_text, false);
     scr_str_release(type_text);
     scr_str_release(code_text);
     return;
@@ -1567,6 +2446,38 @@ void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
   scr_str_release(code_text);
   scr_warning_dispatch(w);
   scr_dyn_release(w);
+}
+
+void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+  scr_emit_warning_impl(name, code, message);
+}
+
+/* DEP0203: node:crypto converting a CryptoKey key argument is deprecated.
+ * Node reports it once per process through
+ * getDeprecationWarningEmitter('DEP0203'), so a replacement sees it at the
+ * call (with the emitter's four arguments) and the default report comes on
+ * the next tick, dropped while process.noDeprecation is set and thrown
+ * while process.throwDeprecation is set, as for the other runtime
+ * deprecations. Every program that can hold a CryptoKey links this unit:
+ * the WebCrypto calls that produce one settle through an awaited or
+ * then-reaction value that selects it. */
+static SCR_TL bool scr_dep0203_emitted = false;
+
+static void scr_dep0203(void) {
+  if (scr_dep0203_emitted) return;
+  scr_dep0203_emitted = true;
+  static const char text[] = "Passing a CryptoKey to node:crypto functions is deprecated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0203", sizeof "DEP0203" - 1);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred_undefined_ctor(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
+__attribute__((constructor)) static void scr_dep0203_install(void) {
+  scr_crypto_deprecate_crypto_key = scr_dep0203;
 }
 
 /* Node's emitWarning tail for runtime-built warnings: deprecations are
@@ -1592,18 +2503,21 @@ static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
   scr_next_tick(c);
 }
 
-void scr_warning_emit_deferred(ScrDyn *w) {
+static void scr_warning_emit_deferred_impl(ScrDyn *w, bool undefined_ctor) {
 #ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
     const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
     const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
     ScrStr *name = scr_warning_name(w);
     ScrStr *message = em && em->kind == SCR_DYN_STR ? scr_str_retain(em->v.str) : scr_str_new("", 0);
-    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL);
+    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL,
+                              undefined_ctor);
     scr_str_release(message);
     scr_str_release(name);
     return;
   }
+#else
+  (void)undefined_ctor;
 #endif
   if (scr_warning_is_deprecation(w)) {
     if (scr_process_deprecation_flag_on(0)) return;
@@ -1613,6 +2527,15 @@ void scr_warning_emit_deferred(ScrDyn *w) {
     }
   }
   scr_warning_defer(w, scr_warning_tick);
+}
+
+void scr_warning_emit_deferred(ScrDyn *w) { scr_warning_emit_deferred_impl(w, false); }
+
+/* The same, for a deprecation Node emits through getDeprecationWarningEmitter:
+ * a replacement sees its fourth argument (the deprecation constructor) as
+ * undefined. */
+void scr_warning_emit_deferred_undefined_ctor(ScrDyn *w) {
+  scr_warning_emit_deferred_impl(w, true);
 }
 
 static SCR_TL bool scr_punycode_loaded = false;
@@ -1835,7 +2758,112 @@ void scr_process_emit_warning(ScrDyn *args) {
   scr_dyn_release(options);
 }
 
+/* Whether `name` spells `lit` (a length-and-bytes compare; event names are
+ * ASCII). */
+static bool scr_emit_name_is(const ScrStr *name, const char *lit, size_t len) {
+  return name->len == len && memcmp(name->data, lit, len) == 0;
+}
 
+#define SCR_EMIT_IS(name, lit) scr_emit_name_is((name), (lit), sizeof(lit) - 1)
+
+/* process.emit(event, ...args): Node's EventEmitter emit on process for the
+ * exception families, whose listeners this unit registers as checked-dynamic
+ * callbacks. The compiler lowers only these two names here; a custom name
+ * becomes the literal false and every other family is refused (its listeners
+ * are typed closures, or its emit carries default handling of its own), so
+ * an unknown name cannot reach this entry. Answers whether any listener
+ * existed, Node's return value; a listener's throw stays pending for the
+ * call's check. */
+bool scr_process_emit_named(ScrDyn *event, ScrDyn *args) {
+#ifdef SCR_NODE_ISLANDS
+  /* Node's own `process` owns the listeners in an island program; the
+   * compiler refuses the call there rather than dispatch the wrong list. */
+  if (scr_pe_node) return false;
+#endif
+  if (event == NULL || event->kind != SCR_DYN_STR) return false;
+  size_t argc = args != NULL && args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  ScrDyn **items = args != NULL && args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
+  const ScrStr *name = event->v.str;
+  if (SCR_EMIT_IS(name, "uncaughtException") || SCR_EMIT_IS(name, "uncaughtExceptionMonitor")) {
+    size_t k = SCR_EMIT_IS(name, "uncaughtExceptionMonitor") ? 1 : 0;
+    if (scr_uncaught_n[k] == 0) return false;
+    SCR_PE_ENTER();
+    (void)scr_rej_fire(&scr_uncaught_ls[k], &scr_uncaught_n[k], items, argc);
+    scr_uncaught_sync_hook();
+    SCR_PE_LEAVE();
+    return true;
+  }
+  return false;
+}
+
+/* process.emit('error', ...): no 'error' listener can be registered on
+ * process here, so Node's EventEmitter contract throws. An Error payload
+ * throws itself; any other payload throws ERR_UNHANDLED_ERROR whose message
+ * quotes it (the primitive payloads this unit renders, as the events unit
+ * does; an object payload is refused there and here). */
+void scr_process_emit_error(ScrDyn *args) {
+  const ScrDyn *er =
+      args != NULL && args->kind == SCR_DYN_ARR && args->v.arr.len > 0
+          ? args->v.arr.items[0]
+          : scr_dyn_undefined();
+  if (scr_dyn_err_instanceof(er, SCR_ERR_ERROR)) {
+    scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
+    return;
+  }
+  ScrJsonBuf shown_buf;
+  scr_jb_init(&shown_buf);
+  bool shown = true;
+  switch (er->kind) {
+  case SCR_DYN_UNDEF: scr_jb_puts(&shown_buf, "undefined"); break;
+  case SCR_DYN_NULL: scr_jb_puts(&shown_buf, "null"); break;
+  case SCR_DYN_BOOL: scr_jb_puts(&shown_buf, er->v.b ? "true" : "false"); break;
+  case SCR_DYN_NUM: {
+    char num[32];
+    if (er->v.num == 0 && 1 / er->v.num < 0) {
+      scr_jb_puts(&shown_buf, "-0");
+    } else {
+      size_t len = scr_f64_to_str(er->v.num, num);
+      scr_jb_write(&shown_buf, num, len);
+    }
+    break;
+  }
+  case SCR_DYN_STR: {
+    const ScrStr *s = er->v.str;
+    for (size_t i = 0; i < s->len && shown; i++) {
+      unsigned char c = (unsigned char)s->data[i];
+      if (c < 0x20 || c == 0x7f || c == '\'' || c == '\\') shown = false;
+    }
+    if (s->len > 10000) shown = false;
+    if (shown) {
+      scr_jb_putc(&shown_buf, '\'');
+      scr_jb_write(&shown_buf, s->data, s->len);
+      scr_jb_putc(&shown_buf, '\'');
+    }
+    break;
+  }
+  default: shown = false; break;
+  }
+  ScrStr *shown_text = scr_jb_finish(&shown_buf);
+  if (!shown) {
+    scr_str_release(shown_text);
+    static const char refusal[] =
+        "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, refusal, sizeof refusal - 1, "SC2020");
+    return;
+  }
+  ScrJsonBuf text;
+  scr_jb_init(&text);
+  scr_jb_puts(&text, "Unhandled error. (");
+  scr_jb_write(&text, shown_text->data, shown_text->len);
+  scr_jb_putc(&text, ')');
+  ScrStr *message = scr_jb_finish(&text);
+  scr_str_release(shown_text);
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(err, "ERR_UNHANDLED_ERROR");
+  scr_error_set_prop(err, "context", 7, scr_dyn_retain((ScrDyn *)er));
+  scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
 
 /* A caught-exception snapshot as a dyn value — identity-preserving for
  * dyn payloads (a dyn-thrown value is retained, not copied), the
@@ -2374,4 +3402,264 @@ ScrDyn *scr_crypto_native(void) {
   ScrDyn *subtle = scr_dyn_new_obj();
   scr_dyn_obj_set(subtle, "digest", 6, scr_dyn_new_func(scr_closure_new(NULL, 0), scr_crypto_digest_call, 2, "crypto.subtle.digest", "digest"));
   ScrDyn *result = scr_dyn_new_obj(); scr_dyn_obj_set(result, "subtle", 6, subtle); return result;
+}
+
+/* ── node:trace_events (trace_events.Tracing) ─────────────────────────
+ * A compiled binary carries no trace-event agent, which is what Node's
+ * tracing objects drive. Without the agent — Node run without the
+ * --trace-event-* flags — what a program observes is the object's own
+ * bookkeeping: its categories string, its enabled flag, and the
+ * process-wide enabled-categories list. The object is a native handle
+ * (typeof "object", no own keys, `Tracing { enabled: false, categories:
+ * 'v8,node' }`), with member reads and calls through the checked-dynamic
+ * tree; enable()/disable() flip the flag, as Node's do when no agent is
+ * recording. */
+typedef struct {
+  size_t rc;
+  ScrStr *categories; /* owned: the options' categories joined by ',' */
+  bool enabled;
+} ScrTraceEvents;
+
+/* Only ENABLED tracers are referenced here (Node's tracing agent holds the
+ * enabled ones the same way): getEnabledCategories walks this list, and a
+ * tracer the program discards while disabled is freed with its handle —
+ * creating and dropping tracers in a loop retains and slows nothing. */
+static SCR_TL ScrTraceEvents **scr_te_enabled = NULL;
+static SCR_TL size_t scr_te_enabled_count = 0, scr_te_enabled_cap = 0;
+
+static void *scr_te_retain(void *h) {
+  ((ScrTraceEvents *)h)->rc++;
+  return h;
+}
+
+static void scr_te_release(void *h) {
+  ScrTraceEvents *t = h;
+  if (!t || --t->rc > 0) return;
+  scr_str_release(t->categories);
+  free(t);
+}
+
+static void scr_te_teardown(void) {
+  for (size_t i = 0; i < scr_te_enabled_count; i++) scr_te_release(scr_te_enabled[i]);
+  free(scr_te_enabled);
+  scr_te_enabled = NULL;
+  scr_te_enabled_count = scr_te_enabled_cap = 0;
+}
+
+static void scr_te_set_enabled(ScrTraceEvents *t, bool enabled) {
+  if (t->enabled == enabled) return;
+  t->enabled = enabled;
+  if (enabled) {
+    if (scr_te_enabled_count == scr_te_enabled_cap) {
+      scr_te_enabled_cap = scr_te_enabled_cap ? scr_te_enabled_cap * 2 : 4;
+      ScrTraceEvents **grown = realloc(scr_te_enabled, scr_te_enabled_cap * sizeof *grown);
+      if (!grown) scr_ad_oom();
+      scr_te_enabled = grown;
+      if (scr_te_enabled_count == 0) scr_atexit(scr_te_teardown);
+    }
+    scr_te_retain(t);
+    scr_te_enabled[scr_te_enabled_count++] = t;
+    return;
+  }
+  for (size_t i = 0; i < scr_te_enabled_count; i++) {
+    if (scr_te_enabled[i] != t) continue;
+    scr_te_enabled[i] = scr_te_enabled[--scr_te_enabled_count];
+    scr_te_release(t);
+    return;
+  }
+}
+
+static ScrDyn *scr_te_member(void *h, const char *key, size_t len);
+static ScrDyn *scr_te_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what);
+static ScrDyn *scr_te_inspect_view(void *h);
+static const ScrDynHandleMethod scr_te_methods[];
+
+static ScrDyn *scr_te_box(ScrTraceEvents *t) {
+  static const ScrDynHandleOps ops = {
+      .cls = "Tracing",
+      .retain = scr_te_retain,
+      .release = scr_te_release,
+      .invoke = scr_te_invoke,
+      .get = scr_te_member,
+      .inspect_view = scr_te_inspect_view,
+      .methods = scr_te_methods,
+  };
+  scr_dyn_handle_install(SCR_DYNH_TRACING, &ops);
+  /* The handle owns the resource; nothing else references a disabled
+   * tracer, so dropping the handle frees it. */
+  ScrDyn *box = scr_dyn_new_handle(t, SCR_DYNH_TRACING);
+  scr_te_release(t);
+  return box;
+}
+
+/* `tracing.enabled` / `tracing.categories` as Node's prototype getters
+ * answer them; any other name is no member (undefined). */
+static ScrDyn *scr_te_member(void *h, const char *key, size_t len) {
+  ScrTraceEvents *t = h;
+  if (len == 7 && memcmp(key, "enabled", 7) == 0) return scr_dyn_new_bool(t->enabled);
+  if (len == 10 && memcmp(key, "categories", 10) == 0)
+    return scr_dyn_new_str(t->categories); /* the box retains its own */
+  return NULL;
+}
+
+static ScrDyn *scr_te_undefined(void) { return scr_dyn_retain(scr_dyn_undefined()); }
+
+static ScrDyn *scr_te_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *const *args,
+                             size_t argc, const char *what) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  (void)what;
+  ScrTraceEvents *t = h;
+  if (strcmp(method, "enable") == 0) {
+    scr_te_set_enabled(t, true);
+    return scr_te_undefined();
+  }
+  if (strcmp(method, "disable") == 0) {
+    scr_te_set_enabled(t, false);
+    return scr_te_undefined();
+  }
+  static const char message[] = "Tracing member is not a function: ";
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, message);
+  scr_jb_puts(&b, method);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+  return NULL;
+}
+
+static ScrDyn *scr_te_inspect_view(void *h) {
+  ScrTraceEvents *t = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_dyn_obj_set(view, "enabled", 7, scr_dyn_new_bool(t->enabled));
+  scr_dyn_obj_set(view, "categories", 10, scr_dyn_new_str(t->categories));
+  return view;
+}
+
+static const ScrDynHandleMethod scr_te_methods[] = {
+    {"enable", 0, false}, {"disable", 0, false}, {NULL, 0, false}};
+
+ScrDyn *scr_te_create(ScrDyn *options) {
+  bool object_kind = options != NULL && (options->kind == SCR_DYN_OBJ ||
+                                         options->kind == SCR_DYN_TYPED_REF ||
+                                         options->kind == SCR_DYN_PROXY);
+  if (!object_kind) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NULL;
+  }
+  /* scr_dyn_obj_get borrows: only the undefined stand-in is ours to free.
+   * The array itself is retained rather than borrowed: the element reads
+   * below run program code (an index the array does not own is answered
+   * through its prototype chain), and a getter there can remove
+   * options.categories — the object's reference — leaving the array dead
+   * under the reads that follow. */
+  ScrDyn *cats = scr_dyn_obj_get(options, "categories", 10);
+  bool cats_owned = false;
+  if (cats == NULL) {
+    if (scr_exc_pending()) return NULL;
+    /* An absent member reads as undefined, which is not an Array. */
+    cats = scr_dyn_retain(scr_dyn_undefined());
+    cats_owned = true;
+  } else {
+    cats = scr_dyn_retain(cats);
+    cats_owned = true;
+  }
+  if (cats->kind != SCR_DYN_ARR) {
+    scr_dyn_prop_type_fail("options.categories", "an instance of Array", cats);
+    if (cats_owned) scr_dyn_release(cats);
+    return NULL;
+  }
+  double len = scr_dyn_arr_len(cats);
+  if (len >= 1) {
+    ScrJsonBuf joined;
+    scr_jb_init(&joined);
+    for (double i = 0; i < len; i++) {
+      ScrDyn *item = scr_dyn_arr_at(cats, i);
+      if (item == NULL) {
+        scr_jb_abandon(&joined); /* the joined string is never built */
+        if (cats_owned) scr_dyn_release(cats);
+        return NULL;
+      }
+      if (item->kind != SCR_DYN_STR) {
+        char name[40];
+        snprintf(name, sizeof name, "options.categories[%d]", (int)i);
+        scr_dyn_prop_type_fail(name, "of type string", item);
+        scr_dyn_release(item);
+        scr_jb_abandon(&joined); /* the joined string is never built */
+        if (cats_owned) scr_dyn_release(cats);
+        return NULL;
+      }
+      if (i > 0) scr_jb_putc(&joined, ',');
+      scr_jb_put_str(&joined, item->v.str);
+      scr_dyn_release(item);
+    }
+    if (cats_owned) scr_dyn_release(cats);
+    ScrTraceEvents *t = malloc(sizeof *t);
+    if (!t) scr_ad_oom();
+    t->rc = 1;
+    t->categories = scr_jb_finish(&joined);
+    t->enabled = false;
+    return scr_te_box(t);
+  }
+  if (cats_owned) scr_dyn_release(cats);
+  static const char message[] = "At least one category is required";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
+                           "ERR_TRACE_EVENTS_CATEGORY_REQUIRED");
+  return NULL;
+}
+
+static int scr_te_name_cmp(const void *a, const void *b) {
+  const ScrStr *x = *(const ScrStr *const *)a;
+  const ScrStr *y = *(const ScrStr *const *)b;
+  size_t n = x->len < y->len ? x->len : y->len;
+  int c = memcmp(x->data, y->data, n);
+  if (c != 0) return c;
+  return x->len < y->len ? -1 : x->len > y->len ? 1 : 0;
+}
+
+/* getEnabledCategories(): every enabled tracing object's categories, split
+ * on ',', de-duplicated and sorted, joined back — Node's answer, and the
+ * undefined value when nothing is enabled. */
+ScrDyn *scr_te_get_enabled_categories(void) {
+  ScrStr **names = NULL;
+  size_t n = 0, cap = 0;
+  for (size_t i = 0; i < scr_te_enabled_count; i++) {
+    ScrTraceEvents *t = scr_te_enabled[i];
+    size_t start = 0;
+    for (size_t at = 0; at <= t->categories->len; at++) {
+      if (at < t->categories->len && t->categories->data[at] != ',') continue;
+      ScrStr *part = scr_str_new(t->categories->data + start, at - start);
+      start = at + 1;
+      bool seen = false;
+      for (size_t j = 0; j < n && !seen; j++) seen = scr_str_eq(names[j], part);
+      if (seen) {
+        scr_str_release(part);
+        continue;
+      }
+      if (n == cap) {
+        cap = cap ? cap * 2 : 8;
+        names = realloc(names, cap * sizeof *names);
+        if (!names) scr_ad_oom();
+      }
+      names[n++] = part;
+    }
+  }
+  if (n == 0) {
+    free(names);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  qsort(names, n, sizeof *names, scr_te_name_cmp);
+  ScrJsonBuf joined;
+  scr_jb_init(&joined);
+  for (size_t i = 0; i < n; i++) {
+    if (i > 0) scr_jb_putc(&joined, ',');
+    scr_jb_put_str(&joined, names[i]);
+    scr_str_release(names[i]);
+  }
+  free(names);
+  ScrStr *text = scr_jb_finish(&joined);
+  ScrDyn *result = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return result;
 }

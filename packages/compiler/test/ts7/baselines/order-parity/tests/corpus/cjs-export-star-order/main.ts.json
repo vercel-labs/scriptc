@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-export-star-order/first.ts",
+  "<repo>/tests/corpus/cjs-export-star-order/leaf.cjs",
+  "<repo>/tests/corpus/cjs-export-star-order/runtime.cjs",
+  "<repo>/tests/corpus/cjs-export-star-order/last.ts",
+  "<repo>/tests/corpus/cjs-export-star-order/barrel.ts",
+  "<repo>/tests/corpus/cjs-export-star-order/main.ts"
+ ],
+ "diags": []
+}

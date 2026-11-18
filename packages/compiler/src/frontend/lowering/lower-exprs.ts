@@ -83,7 +83,11 @@ import {
   locOf,
   orderedImportsOf,
 } from "../program.js";
-import { cjsExportChangesAfterInit, cjsNamespaceTargetOf } from "./cjs-inline-require.js";
+import {
+  cjsExportChangesAfterInit,
+  cjsNamespaceTargetOf,
+  cjsRuntimeOptionalExportStorage,
+} from "./cjs-inline-require.js";
 import { npmStaticLexerVisibleNames } from "../npm-static.js";
 import {
   ARRAY_CALLBACK_METHODS,
@@ -2402,8 +2406,9 @@ export function runtimeOptionalLocalOf(lowerer: Lowerer, node: ts.Expression): I
 /** JS ToBoolean: bool passes through; f64/string get a `toBool` wrapper
  * (falsy: 0, -0, NaN, ""); unions get the same wrapper answered by a
  * per-union interned helper (unit arms falsy; scalar/string arms by
- * value; ref arms always truthy). Anything else (void) cannot be
- * tested. */
+ * value; ref arms always truthy). A `void`-typed operand reaches here
+ * only where it is `undefined` at run time, so ToBoolean of it is false:
+ * the operand evaluates once for its effects, as Node evaluates it. */
 export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): IrExpr {
   if (e.type.kind === "bool") return e;
   if (e.type.kind === "f64" || e.type.kind === "string") {
@@ -2433,6 +2438,22 @@ export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): Ir
   // no effectful producers, so folding the read away loses nothing.
   if (isUnitType(e.type)) {
     return { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+  }
+  // A `void`-typed operand (ADMITTED `if (fn())` / `!fn()` in an unchecked
+  // JavaScript source, tsc-codes.ts TS1345): the row admits only operands
+  // that are `undefined` whenever they run (a call of a function whose body
+  // returns no value), so Node's ToBoolean is false, and the operand still
+  // runs once for its effects and any exception. Typed sources and every
+  // other void-typed operand never reach this: TS1345 stops them at
+  // preflight.
+  if (e.type.kind === "void") {
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: e, loc: e.loc }],
+      result: { kind: "boolLit", value: false, type: BOOL, loc: e.loc },
+      type: BOOL,
+      loc: e.loc,
+    };
   }
   lowerer.badType(node, lowerer.typeOf(node));
 }
@@ -2724,6 +2745,25 @@ export function runtimeOptionalStorageOperand(
 ): IrExpr | null {
   let expr = node;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  // A CommonJS module member whose export the module may leave unassigned:
+  // its slot holds the undefined arm even though the checker's type for the
+  // import names none.
+  if (
+    ts.isPropertyAccessExpression(expr) &&
+    expr.questionDotToken === undefined &&
+    ts.isIdentifier(expr.name)
+  ) {
+    const storage = cjsRuntimeOptionalExportStorage(lowerer, expr);
+    if (storage !== null) {
+      const checked = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (
+        checked === null ||
+        (checked.kind === "union" && lowerer.armTag(checked.unionId, UNDEFINED_T) >= 0)
+      )
+        return null;
+      return storage;
+    }
+  }
   if (!ts.isIdentifier(expr)) return null;
   // Only storage that can actually receive an absent value without the
   // checker seeing it qualifies; other declared-optional bindings keep the
@@ -3079,6 +3119,7 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "AbortSignal",
   "Blob",
   "BroadcastChannel",
+  "CloseEvent",
   "CustomEvent",
   "DOMException",
   "Event",
@@ -3397,6 +3438,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "httpClientReq":
     case "secureCtx":
     case "fsWatcher":
+    case "statWatcher":
     case "cryptoHash":
     case "cryptoHmac":
     case "childStream":

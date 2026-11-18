@@ -27,6 +27,7 @@ import { keyedHelperName } from "./stable-names.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   BUILTIN_MODULE_CONSTS,
+  builtinModuleFnOf,
   builtinModuleFns,
   OBJECT_CALLABLE_VALUES,
   builtinConstLit,
@@ -38,6 +39,7 @@ import {
 } from "./surfaces.js";
 import { CRYPTO_CONSTANTS } from "./crypto-tables.js";
 import { isDynIteratorValue } from "./iterator-prototype.js";
+import type { FunctionCensus } from "./function-census.js";
 
 const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Date: ["getTime", "valueOf", "toISOString", "toJSON"],
@@ -159,6 +161,17 @@ export function isNativeBuiltinValueInitializer(
     ["stripVTControlCharacters", "toUSVString", "isDeepStrictEqual", "styleText"].includes(
       builtin.member,
     )
+  )
+    return true;
+  // fs's error-first functions read as values answer the checked-dynamic
+  // callable the runtime validates each argument of (fs.callbackValue).
+  // npm code binds them at file scope (`var origRealpath = fs.realpath`)
+  // and calls the binding from separately declared functions; the shared
+  // slot keeps that call on the dispatcher instead of cascading to a
+  // per-reference fence.
+  if (
+    builtin?.module === "fs" &&
+    builtinModuleFnOf(lowerer, builtin.module, builtin.member)?.fn === "fs.callbackCall"
   )
     return true;
   // JS global snapshots may use an opaque builtin identity rather than
@@ -1285,7 +1298,11 @@ export function shareBuiltinValueIdentities(lowerer: Lowerer, functions: IrFunct
  * An untyped caller then holds the value that validates its arguments as
  * Node does, and it compares equal to the same builtin read anywhere else.
  * A binding read keeps its own evaluation, so its TDZ check still runs. */
-export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[]): void {
+export function boxBuiltinValuesChecked(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   const names = lowerer.builtinCallableValueNames;
   if (names.size === 0) return;
   const lengths = lowerer.builtinCallableValueLengths;
@@ -1340,6 +1357,8 @@ export function boxBuiltinValuesChecked(lowerer: Lowerer, functions: IrFunction[
   }
   const lifted = lowerer.liftedFns.length;
   for (const fn of functions) {
+    // The rewrite only changes a `dynFrom` boxing a builtin value.
+    if (!census.hasExpr(fn, "dynFrom")) continue;
     fn.body = transformStmtList(fn.body, {
       stmt: (stmt) => stmt,
       expr: (expr) => {

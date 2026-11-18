@@ -65,6 +65,10 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_builtin_values.c -> scr_symbol.c": ["scr_dyn_new_symbol", "scr_sym_new", "scr_sym_release"],
   "scr_dyn_builtin_stream.c -> scr_stream_dyn.c": ["scr_stream_dyn_native"],
   "scr_dyn_handle_props.c -> scr_async_dyn.c": ["scr_dyn_promise_resolve"],
+  // sqlite.backup is the only function of the unit that mints a promise
+  // (scr_dyn_new_promise). Its section is dropped from every program that
+  // does not call backup, and a program that does selects dynAsync with it.
+  "scr_sqlite.c -> scr_async_dyn.c": ["scr_dyn_new_promise"],
   "scr_dyn_handle_props.c -> scr_dyn_invoke.c": [
     "scr_dyn_define_props",
     "scr_dyn_define_props_pending",
@@ -78,20 +82,30 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   // symbol keys are scr_symbol.c's, which every feature selecting the unit
   // requires (LINK_FEATURE_REQUIREMENTS).
   "scr_event_target.c -> scr_dyn_invoke.c": ["scr_dyn_invoke"],
+  // process.finalization's one-per-feature ExperimentalWarning asks the
+  // deferred warning queue, and every call that reaches the finalization
+  // registration selects dynAsync (runtime-features.ts). An events program
+  // without the registration (a held procStream type) links neither.
+  "scr_events.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
   // createSecureServer and connect's TLS path: every http2.* call selects
   // the tls units, and a held session or stream type reaches neither.
   // The checked-data writes with a mode, a flag or an options record
   // (scr_fs_write_file_flags_data, scr_fs_write_file_data_options,
-  // scr_fs_append_file_data_options) call the string and byte writers of
-  // scr_fs_flags.c: every call that reaches them (fs.writeFileSyncDataFlags,
-  // fsp.writeFileDataFlags, fs.writeFileDataOptionsSync,
-  // fs.appendFileDataOptionsSync) selects fsFlags as well as fsBytesWrites.
+  // scr_fs_append_file_data_options, and their dynamic-mode twins) call the
+  // string and byte writers of scr_fs_flags.c: every call that reaches them
+  // (fs.writeFileSyncDataFlags, fsp.writeFileDataFlags,
+  // fs.writeFileDataOptionsSync, fs.appendFileDataOptionsSync, and the
+  // DynMode forms) selects fsFlags as well as fsBytesWrites.
   "scr_fs_bytes_write.c -> scr_fs_flags.c": [
     "scr_fs_append_file_bytes_options",
+    "scr_fs_append_file_bytes_options_dyn_mode",
     "scr_fs_append_file_options",
+    "scr_fs_append_file_options_dyn_mode",
     "scr_fs_write_file_bytes_options",
+    "scr_fs_write_file_bytes_options_dyn_mode",
     "scr_fs_write_file_flags",
     "scr_fs_write_file_options",
+    "scr_fs_write_file_options_dyn_mode",
   ],
   "scr_http2.c -> scr_tls.c": [
     "scr_https_create_server",
@@ -101,7 +115,14 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_js_wrapper.c -> scr_dyn_invoke.c": ["scr_dyn_invoke", "scr_dyn_object_tag_of"],
   "scr_json.c -> scr_dyn_invoke.c": ["scr_dyn_inherited_read"],
-  "scr_pki.c -> scr_async_dyn.c": ["scr_warning_emit_deferred", "scr_warning_new"],
+  // crypto.fipsGet reports DEP0093 through scr_emit_warning; every call
+  // that reaches it (the deprecated crypto.fips read) selects the
+  // dyn-async unit as well.
+  "scr_pki.c -> scr_async_dyn.c": [
+    "scr_emit_warning",
+    "scr_warning_emit_deferred",
+    "scr_warning_new",
+  ],
   // readline reading from a stream: creating the interface (rl.create)
   // selects the events units.
   "scr_stream.c -> scr_readline.c": [
@@ -117,8 +138,14 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_stream.c -> scr_readline_tty.c": ["scr_rl_keypress_events"],
   "scr_stream.c -> scr_stream_ops.c": ["scr_stream_from_dyn_iter"],
   // A failing test's message: every test.* call selects the inspect unit,
-  // and a held TestContext type reaches neither.
-  "scr_test.c -> scr_inspect.c": ["scr_insp_dyn", "scr_insp_str"],
+  // and a held TestContext type reaches neither. The custom-inspector retry
+  // renders through the same functions the message does.
+  "scr_test.c -> scr_inspect.c": [
+    "scr_insp_custom_inspect",
+    "scr_insp_dyn",
+    "scr_insp_layout",
+    "scr_insp_str",
+  ],
   // The module tables the compiler emits into a program that uses
   // WebAssembly (backend/llvm/wasm-modules.ts).
   "scr_wasm.c -> (the program)": ["scr_wasm_registry", "scr_wasm_untranslated"],

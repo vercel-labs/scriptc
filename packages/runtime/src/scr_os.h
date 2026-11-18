@@ -40,6 +40,13 @@ double scr_os_get_priority(double pid);
  * -20..19), then the scheduling priority; failures throw Node's RangeError
  * or SystemError (ERR_SYSTEM_ERROR). */
 void scr_os_set_priority(double pid, double priority);
+/* The checked-dynamic forms: os.getPriority/os.setPriority called with
+ * arguments that are not statically numbers (untyped JavaScript). Node's
+ * whole argument ladder runs in the runtime — the default pid, the
+ * one-argument shift, validateInteger's type error rendered from the boxed
+ * value, then the range checks and the call. May throw. */
+double scr_os_get_priority_chk(const struct ScrDyn *pid);
+void scr_os_set_priority_chk(const struct ScrDyn *pid, const struct ScrDyn *priority);
 /* os.cpus(): take answers the CPU count of a fresh snapshot; model and
  * field (0 speed, 1 user, 2 nice, 3 sys, 4 idle, 5 irq) read it. */
 double scr_os_cpus_take(void);
@@ -87,6 +94,19 @@ typedef struct ScrScandir ScrScandir;
 ScrScandir *scr_fs_scandir(ScrStr *path); /* or throws (NULL) */
 size_t scr_fs_scandir_count(const ScrScandir *s); /* NULL -> 0 */
 ScrStr *scr_fs_scandir_name(const ScrScandir *s, size_t i); /* +1 */
+/* The entry name's raw bytes — the `encoding: 'buffer'` form, which Node
+ * answers untouched (malformed names included). +1. */
+ScrBytes *scr_fs_scandir_bytes(const ScrScandir *s, size_t i);
+/* The recursive Dirent walk (`readdir(path, { recursive: true,
+ * withFileTypes: true })`): the same snapshot over every entry below the
+ * path, each name a basename and each parent the directory holding it
+ * (relative to the path; the path itself for the top level). */
+ScrScandir *scr_fs_scandir_recursive(ScrStr *path);
+/* fs/promises' recursive forms: Node's async walk keeps a stack, so the
+ * order differs from the synchronous one once a directory has several
+ * subdirectories; `follow_links` is false for the withFileTypes form. */
+ScrScandir *scr_fs_scandir_recursive_async(ScrStr *path, bool follow_links);
+ScrStr *scr_fs_scandir_parent(const ScrScandir *s, size_t i); /* +1 */
 double scr_fs_scandir_type(const ScrScandir *s, size_t i);
 void scr_fs_scandir_free(ScrScandir *s); /* NULL-tolerant */
 

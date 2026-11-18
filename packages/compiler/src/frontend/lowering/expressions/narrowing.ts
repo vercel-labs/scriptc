@@ -1,4 +1,5 @@
 /* Type narrowing of lowered values, conditional and as-expressions, and runtime-optional receiver reads. */
+import { heritageArmReaches } from "./relational.js";
 import { consoleInto, isConsoleObjectRead, isConsoleTyped } from "../coercions/console-records.js";
 import { declBoundaryOrigin } from "../../decl-projection.js";
 import {
@@ -68,6 +69,7 @@ import {
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { isConstAssertionTypeNode, unitOnlyUnion } from "../../type-mapper.js";
+import { guessedOverloadValue } from "../overload-choice.js";
 import { assertsGlobalObject, extractionCopiesReference } from "../assertion-identity.js";
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
@@ -849,6 +851,22 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // check can produce an uninhabited value.
     if ((lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0) return expr;
     const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
+    // A read whose type rests on an undecided overload
+    // (guessedOverloadValue): the mapped type is the resolved overload's
+    // guess — `generateKeyPairSync("rsa-pss", options)` resolves to the PEM
+    // overload, so `.publicKey` maps to `string` although the call may
+    // answer the KeyObject pair — and the read keeps the actual value. The
+    // conversions below validate against the guess and would throw on the
+    // value the other overload answers.
+    if (
+      narrowed !== null &&
+      (ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node) ||
+        ts.isIdentifier(node)) &&
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      guessedOverloadValue(lowerer, node)
+    )
+      return expr;
     if (
       narrowed &&
       (narrowed.kind === "f64" ||
@@ -906,6 +924,18 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         const checked = checkedClassAssertion(lowerer, expr, narrowed, expr.loc);
         if (checked) return checked;
       }
+      // An instance of a class whose conditional heritage selected the
+      // narrowed class's arm passes the test without being laid out, or
+      // dispatched, as the narrowed class: a downcast would fail its check,
+      // and calls through the narrowed type could skip the instance's
+      // overrides.
+      if (heritageArmReaches(lowerer, expr.type.className, narrowed.className))
+        lowerer.unsupported(
+          "SC1090",
+          node,
+          `narrowing a '${lowerer.fmt(expr.type)}' to '${lowerer.fmt(narrowed)}', a class that a conditional heritage's selected arm can make it an instance of`,
+          "the instance keeps the layout of the class it was built as: use the value at its declared type (the 'instanceof' test itself answers as Node does)",
+        );
       return { kind: "downcast", value: expr, type: narrowed, loc: expr.loc };
     }
     return expr;
@@ -1488,6 +1518,17 @@ export function runtimeOptionalReceiverRead(
   }
   const narrowed = lowerer.mapTypeOf(lowerer.typeOf(narrowedNode));
   if (!narrowed || isUnitType(narrowed)) {
+    // A CALL of the capture (`createRoot(container)` on a named import of a
+    // module whose export table is chosen at run time) does not need the
+    // checker's narrowed signature: Node reads the value the slot holds and
+    // calls it. A signature type can be unrepresentable only in its
+    // parameters or result (a DOM class in a package's declarations), which
+    // the checked-dynamic call carries — the callee is a boxed function the
+    // runtime invokes with the arguments as dyn values, and an undefined
+    // slot throws Node's "<callee> is not a function" at the call.
+    if (property === null && lowerer.dynConvertible(local.type)) {
+      return lowerer.coerceToExpected(varRef(local.id, local.type, loc), DYN);
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -2561,6 +2602,34 @@ export function sharedDynConversion(
   );
   if (!adopts || unsharedDynValue(value)) return { kind: "dynCheck", value, type: target, loc };
   return { kind: "dynCheck", value, shared: true, type: target, loc };
+}
+
+/** The checked conversion of a Stats/BigIntStats value held as a
+ * checked-dynamic object. The stat calls' run-time options ladder answers
+ * Node's Stats or BigIntStats object — the member table its call-time
+ * `bigint` option chose — and a typed slot reads it through a snapshot
+ * extraction (scr_stats_from_dyn), which copies the object's fields and
+ * throws the checked conversion's TypeError for a value outside the type.
+ * A `Stats | undefined` slot keeps the dynamic undefined as its absent arm
+ * (the runtime answers +1-or-NULL, the call site builds the arms). Null for
+ * every other target, so the checked-cast domain keeps deciding them. */
+export function statsDynConversion(
+  lowerer: Lowerer,
+  value: IrExpr,
+  expected: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (expected.kind === "stats" || expected.kind === "bigintStats")
+    return { kind: "libCall", fn: "fs.statsFromDyn", args: [value], type: expected, loc };
+  if (expected.kind !== "union") return null;
+  const def = lowerer.unions.get(expected.unionId);
+  if (
+    def?.arms.length !== 2 ||
+    !def.arms.some((a) => a.kind === "stats" || a.kind === "bigintStats") ||
+    !def.arms.some((a) => a.kind === "undefinedT")
+  )
+    return null;
+  return { kind: "libCall", fn: "fs.statsFromDynOpt", args: [value], type: expected, loc };
 }
 
 /** A dynamic value no other holder can reference when it converts: parsed

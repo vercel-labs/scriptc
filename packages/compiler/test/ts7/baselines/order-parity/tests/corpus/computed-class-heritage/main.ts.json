@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/computed-class-heritage/base.ts",
+  "<repo>/tests/corpus/computed-class-heritage/main.ts"
+ ],
+ "diags": []
+}

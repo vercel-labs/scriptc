@@ -221,6 +221,7 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
   X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
+  X(STAT_WATCHER, 103) /* fs.watchFile's StatWatcher (scr_watch_file.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -261,11 +262,27 @@ typedef enum {
  * objects are pinned above at the values they had (100 to 102), so the two
  * Intl formatters could join without renumbering them. */
 #define SCR_DYNH_NEW_TAGS(Y) \
+  Y(ASYNC_RESOURCE) /* async_hooks AsyncResource (scr_async_dyn.c) */ \
+  Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
+  Y(CLOSE_EVENT) /* CloseEvent (scr_event_target.c) */ \
+  Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
+  Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
+  Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
+  Y(HISTOGRAM) /* createHistogram RecordableHistogram (scr_perf_loop.c) */ \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
   Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \
+  Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
+  Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
+  Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
+  Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
+  Y(SQLITE_SESSION) /* node:sqlite Session (scr_sqlite.c) */ \
+  Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
+  Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
+  Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
@@ -378,6 +395,10 @@ typedef enum {
   SCR_MESSAGE_PORT,
   /* A native handle cloned through its unit's ScrDynHandleTransfer. */
   SCR_MESSAGE_HANDLE,
+  /* A Map: entries as decimal-keyed children, key then value per entry. */
+  SCR_MESSAGE_MAP,
+  /* A Set: one child per entry, in insertion order. */
+  SCR_MESSAGE_SET,
 } ScrMessageKind;
 
 /* Readers for compiled 'message' listeners (ScrDynMessageListener), which
@@ -1189,6 +1210,7 @@ ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed);
 bool scr_dyn_native_map_is(const ScrDyn *value);
 void scr_regex_reset_last_index(ScrRegex *re, double index);
 ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags);
+ScrRegex *scr_regex_call_checked(const ScrDyn *pattern, const ScrDyn *flags);
 ScrDyn *scr_dyn_native_url(ScrUrl *value);
 bool scr_dyn_native_url_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
@@ -1316,12 +1338,11 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
-#ifdef SCR_JS_OBJECT_MODEL
-/* That table as the object model build reaches it: this unit installs the
- * hook when a program links both builds, and scr_json.c keeps its named
- * refusal where it is NULL. */
+/* That table as another unit reaches it: scr_dyn_invoke.c installs the hook
+ * at startup when a program links it, and scr_json.c answers a value's
+ * `constructor` (a DataView's, a DOMException's) with the global's own value
+ * where it is set and keeps its named refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
-#endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
@@ -1345,6 +1366,11 @@ void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key);
  * ordinary read's +1 result and answers the inherited member in place of
  * an undefined one (scr_dyn_invoke.c). */
 ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
+/* The same answer for a program's non-constant-key read of an ordinary
+ * object (the backend's keyed-read helper), through the dyn-invoke unit's
+ * table when the program links it (scr_json.c). Takes `read`; +1, or NULL
+ * with the exception pending. The runtime's own reads do not call it. */
+ScrDyn *scr_dyn_computed_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read);
 /* The member `key` read on Object.prototype itself, or NULL for any other
  * receiver (scr_dyn_invoke.c). */
 ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key);
@@ -1383,6 +1409,9 @@ ScrDyn *scr_dyn_open_iterator(const ScrDyn *value, int *kind, bool generators);
  * for-of protocol reads it. +1, or NULL with the error pending. */
 ScrDyn *scr_dyn_iterator_result_get(const ScrDyn *result, const char *key, size_t len);
 void scr_dyn_install_iterator_symbol(ScrDyn *key);
+/* Whether key is Symbol.iterator (false before the symbol unit registered
+ * it). Handle symbol_get ops outside that unit use it for their iterators. */
+bool scr_dyn_is_iterator_symbol(const ScrDyn *key);
 /* Symbol.for('nodejs.util.inspect.custom'): the symbol unit installs it
  * when the registry creates it; NULL (borrowed) until then. */
 void scr_dyn_install_inspect_custom_symbol(ScrDyn *key);
@@ -1393,6 +1422,11 @@ ScrDyn *scr_dyn_inspect_custom_symbol(void);
  * as a value (RuntimeFeatures bufferPrototypeObject). Borrows key; +1. */
 extern ScrSym *(*scr_sym_for_fn)(ScrStr *key);
 void scr_sym_for_install(void);
+/* Makes the well-known symbol `name` (Symbol.<name>), installing it as a
+ * program's own read does; set by the symbol unit's constructor, NULL in a
+ * program without the unit. A Proxy conversion makes Symbol.toPrimitive and
+ * Symbol.toStringTag through it. */
+extern void (*scr_sym_well_known_make_hook)(const char *name, size_t len);
 /* Installs ToNumber's Symbol.toPrimitive step (scr_dyn_number_coerce_js).
  * The program calls it before its entry when it reads Symbol.toPrimitive
  * (RuntimeFeatures toPrimitiveNumber). */
@@ -1400,6 +1434,7 @@ void scr_dyn_to_primitive_number_install(void);
 void scr_dyn_install_has_instance_symbol(ScrDyn *key);
 void scr_dyn_install_async_iterator_symbol(ScrDyn *key);
 void scr_dyn_install_async_dispose_symbol(ScrDyn *key);
+void scr_dyn_install_dispose_symbol(ScrDyn *key);
 void scr_dyn_install_species_symbol(ScrDyn *key);
 /* Records each well-known symbol the symbol unit creates. */
 void scr_dyn_install_well_known_symbol(ScrDyn *key);
@@ -1414,6 +1449,9 @@ ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
+/* Whether key is Symbol.dispose (registered by the symbol unit when the
+ * program names it). */
+bool scr_dyn_is_dispose_symbol(const ScrDyn *key);
 ScrDyn *scr_dyn_array_values_function(void);
 ScrDyn *scr_dyn_array_from_iterator(const ScrDyn *value);
 ScrDyn *scr_dyn_iterator_result(ScrDyn *value);
@@ -1433,6 +1471,12 @@ double scr_dyn_collection_iterator_index(const ScrDyn *iterator);
  * than 2 and 3) and the index its next step reads from. */
 void scr_dyn_native_iterator_state(const ScrDyn *iterator, unsigned *kind, unsigned *selection,
                                    ScrMap **collection, double *index);
+/* For util.inspect: a retained (+1) reference to the collection a Map or Set
+ * iterator reads, or NULL once the iterator is exhausted. A render invokes
+ * program code between entries, and that code can consume the iterator, which
+ * drops the iterator's own reference to the collection; a render that keeps
+ * reading the collection holds it through this accessor. */
+ScrDyn *scr_dyn_native_iterator_source(const ScrDyn *iterator);
 /* A compiled program that boxes generators and calls iterator helpers on
  * untyped values registers the checked functions that read a generator
  * capsule's next and return methods (each takes the capsule). The
@@ -1564,6 +1608,9 @@ ScrDyn *scr_dyn_new_typed_ref_observed(
 bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
+bool scr_dyn_typed_ref_brand_is_key(const ScrDyn *d, const ScrStr *type_key);
+bool scr_dyn_prototypes_replaced(void);
+bool scr_dyn_prototype_replaced(const ScrDyn *d);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
 /* Record views (scr_json.c): a checked conversion's view of the record a
  * capsule holds, or NULL. */
@@ -1810,6 +1857,10 @@ bool scr_js_wrapper_instance_of(ScrDyn *value, double kind);
 ScrStr *scr_js_wrapper_object_tag(ScrDyn *value);
 bool scr_js_wrapper_type_is(ScrDyn *value, ScrStr *probe);
 ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
+/* structuredClone's clone of a wrapper (scr_json.c's hook): +1 the same kind
+ * over the same primitive, or NULL when `value` is not a wrapper. Installed
+ * by the wrapper unit, so a program without one keeps the refusal. */
+extern SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
@@ -2078,6 +2129,21 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key);
 ScrStr *scr_dyn_typeof(const ScrDyn *d);
 /* Object.prototype.toString.call over the native checked-dynamic tree; +1. */
 ScrStr *scr_dyn_object_tag(const ScrDyn *d);
+/* The member `key` an ordinary object of `d`'s kind inherits from its
+ * builtin prototype (Object.prototype, Array.prototype, ...), or NULL when
+ * its own chain defines the name or nothing builtin does. +1. */
+ScrDyn *scr_dyn_inherited_member(const ScrDyn *d, const ScrStr *key);
+/* That table as scr_json.c reaches it: this unit installs the hook at
+ * startup when a program links it, and a JSON-only program keeps the
+ * undefined read. */
+extern ScrDyn *(*scr_dyn_inherited_member_hook)(const ScrDyn *d, const ScrStr *key);
+/* ToString of a native Proxy: ToPrimitive with the string hint runs
+ * through the Proxy's traps, as Node's does — @@toPrimitive first, then
+ * OrdinaryToPrimitive over 'toString' and 'valueOf', each member read with
+ * the get trap and called with the Proxy as `this`. Borrows; +1, or NULL
+ * with the exception pending (a trap threw, or no method answered a
+ * primitive). */
+ScrStr *scr_dyn_proxy_to_string(const ScrDyn *proxy);
 /* Receiver-kind-dispatched toString() (Buffer-flavored bytes decode per
  * enc — utf8 default; strings/numbers/booleans/arrays/objects answer
  * JS-exactly; undefined/null throw the catchable TypeError). Borrows; +1. */
@@ -2262,6 +2328,11 @@ bool scr_dyn_truthy(const ScrDyn *d);
 /* Math.max/Math.min(...src) over an untyped iterable; `what` names the
  * source in V8's null/undefined spread TypeError. NaN with it pending. */
 double scr_dyn_math_fold(const ScrDyn *src, bool max, const ScrStr *what);
+/* Math.max/Math.min/Math.hypot over a call's argument pack, whose spread
+ * operands only the run time knows: every value converts through ToNumber
+ * once, in pack order; mode 0 max, 1 min, 2 hypot. NaN with an exception
+ * pending when a conversion throws. */
+double scr_dyn_math_fold_many(const ScrDyn *pack, double mode);
 int scr_dyn_has_instance_hook(const ScrDyn *value, const ScrDyn *callee);
 /* JS String() over a dyn value (arrays join, [object Object], the error
  * encoding renders "name: message"); borrowed, result +1, never throws. */
@@ -2993,6 +3064,10 @@ SCR_COLD void scr_dyn_arg_value_fail(const char *name, const char *reason, const
 /* The ERR_INVALID_ARG_VALUE/%j "Received" renderer (inspect-lite:
  * strings quote, scalars print plain, deep shapes sketch). */
 const char *scr_dyn_inspect_lite(const ScrDyn *v, char *buf, size_t cap);
+/* Node's inspect of an empty ArrayBufferView (`<Buffer >`, `Uint16Array(0)
+ * []`, or the DataView body), cut to 128 characters plus "..." — the
+ * "Received" half of the empty-view ERR_INVALID_ARG_VALUE messages (+1). */
+ScrStr *scr_dyn_empty_view_inspect(const ScrDyn *value);
 ScrStr *scr_str_inspect_quoted(const ScrStr *s, bool truncate);
 /* A ladder's post-validation refuse: throws the compiler-rendered SC2020
  * statement-fence text verbatim (Node's validation errors run first). */

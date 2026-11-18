@@ -139,7 +139,11 @@ export interface EarlyExecutableNativeFeatures {
   arrJoinStr?: boolean;
   eventsOnceSignal?: boolean;
   mime?: boolean;
+  /** node:sqlite: scr_sqlite.c and the vendored SQLite archive. */
+  sqlite?: boolean;
   webStreams?: boolean;
+  /** filehandle.readableWebStream: scr_fs_web_stream.c. */
+  fsWebStream?: boolean;
   webBodies?: boolean;
   abortSignal?: boolean;
   utilTiming?: boolean;
@@ -189,15 +193,20 @@ export interface EarlyExecutableNativeFeatures {
   http2: boolean;
   dgram: boolean;
   dnsPromises: boolean;
+  dnsResolve: boolean;
   dgramDyn: boolean;
   textCodecDyn: boolean;
   watch: boolean;
   watchFile: boolean;
+  /** fsPromises.watch: scr_watch_async.c (with scr_watch.c). */
+  watchEvents: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
   cipher: boolean;
   ecdh: boolean;
+  argon2: boolean;
+  mlkem: boolean;
   dh: boolean;
   pki: boolean;
   ed25519: boolean;

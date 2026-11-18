@@ -51,10 +51,15 @@ export function emitParallelIntrinsic(host: LlvmEmitterContext, e: ExprOf<"intri
     return arg.name;
   };
   // A Worker program's helper threads hold none of the runtime's state, so
-  // the chunks always run on the calling thread there. The flag is the last
-  // number the frontend passes before the callbacks.
+  // the chunks always run on the calling thread there. Neither may they in a
+  // program that reads stacks: each framed function pushes its source frame
+  // onto the frame chain of the one active exception cell and restores it on
+  // return, so callbacks returning on two threads would leave the chain
+  // naming another thread's expired frame. The flag is the last number the
+  // frontend passes before the callbacks.
   const parallelAt = e.name === "par.for" ? 3 : 4;
-  const parallel = host.mod.workers === true ? f64Lit(0) : number(parallelAt);
+  const sharedFrames = host.stackTraces && !host.wasi;
+  const parallel = host.mod.workers === true || sharedFrames ? f64Lit(0) : number(parallelAt);
   switch (e.name) {
     case "par.into": {
       if (args.length < 6) throw new InternalCompilerError("llvm emitter bug: par.into operands");

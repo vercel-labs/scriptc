@@ -221,4 +221,23 @@ function renameRounds(source: Blob): number {
 const rounds = renameRounds(fileBase);
 console.log("rename rounds", rounds > 0);
 
+// 16. Several parts and native endings keep a file part lazy: the new Blob
+// reads the file when it is read, not when it is built.
+const partFile = join(dir, "parts.bin");
+fs.writeFileSync(partFile, "0123456789");
+const partBlob = await fs.openAsBlob(partFile);
+const mixed = new Blob([partBlob, "!"]);
+const nativeEndings = new Blob([partBlob], { endings: "native" });
+const mixedNative = new Blob([partBlob, "a\r\nb"], { endings: "native" });
+const mixedFile = new File([partBlob, "-tail"], "mix.bin");
+console.log("mixed", JSON.stringify(await mixed.text()), mixed.size);
+console.log("native endings", JSON.stringify(await nativeEndings.text()));
+console.log("mixed native", JSON.stringify(await mixedNative.text()));
+console.log("mixed file", JSON.stringify(await mixedFile.text()), mixedFile.name, mixedFile.size);
+fs.rmSync(partFile);
+try { await mixed.text(); console.log("parts mixed", "read"); } catch (err) { console.log("parts mixed", (err as Error).name); }
+try { await nativeEndings.text(); console.log("parts native", "read"); } catch (err) { console.log("parts native", (err as Error).name); }
+try { await mixedNative.text(); console.log("parts mixed native", "read"); } catch (err) { console.log("parts mixed native", (err as Error).name); }
+try { await mixedFile.text(); console.log("parts file", "read"); } catch (err) { console.log("parts file", (err as Error).name); }
+
 fs.rmSync(dir, { recursive: true, force: true });

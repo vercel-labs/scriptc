@@ -44,6 +44,12 @@ void scr_file_handle_close(ScrFileHandle *h);
 typedef struct ScrFileHandleHook ScrFileHandleHook;
 void scr_file_handle_ref(ScrFileHandle *h);
 int scr_file_handle_stream_unref(ScrFileHandle *h);
+
+/* readableWebStream's lock: a handle can open one stream, and its later calls
+ * answer Node's "The FileHandle is locked" instead of splitting the file
+ * between competing streams. */
+bool scr_file_handle_is_locked(const ScrFileHandle *h);
+void scr_file_handle_lock(ScrFileHandle *h);
 ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx);
 void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
 /* FileHandle.createReadStream / createWriteStream(options): +1 runtime
@@ -51,11 +57,20 @@ void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
  * surface); NULL with the exception pending. Borrows both. */
 typedef struct ScrStream ScrStream;
 ScrStream *scr_file_handle_read_stream(ScrFileHandle *h, ScrDyn *options);
+/* FileHandle.readableWebStream([options]): the handle's content as Node's
+ * type: "bytes" web stream (scr_fs_web_stream.c). A closed handle throws
+ * Node's ERR_INVALID_STATE; `options.autoClose` closes the handle when the
+ * stream is cancelled or finishes. +1 checked-dynamic stream, or NULL with
+ * the exception pending. */
+ScrDyn *scr_file_handle_readable_web_stream(ScrFileHandle *h, ScrDyn *options);
 ScrStream *scr_file_handle_write_stream(ScrFileHandle *h, ScrDyn *options);
 ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_datasync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_truncate_promise(ScrFileHandle *h, double length);
 ScrPromise *scr_file_handle_chmod_promise(ScrFileHandle *h, double mode);
+/* FileHandle.chown(uid, gid): fchown(2) on the handle; the ids are checked
+ * by the fs chown ladder before the descriptor. */
+ScrPromise *scr_file_handle_chown_promise(ScrFileHandle *h, double uid, double gid);
 double scr_file_handle_readv(ScrFileHandle *h, ScrArr *buffers, double position);
 double scr_file_handle_writev(ScrFileHandle *h, ScrArr *buffers, double position);
 double scr_file_handle_read(ScrFileHandle *h, ScrBytes *buf, double offset,

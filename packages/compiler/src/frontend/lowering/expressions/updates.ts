@@ -14,6 +14,7 @@ import {
 } from "../undefined-index.js";
 import { isStrictCode } from "../strict-mode.js";
 import { isPrivateWriteReceiver } from "../private-brands.js";
+import { prototypeViewable, receiverPrototypeView } from "../class-prototypes.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   type FieldTarget,
@@ -855,6 +856,32 @@ export function fieldSetStmt(
   loc: SrcLoc,
   blame: ts.Node,
 ): IrStmt {
+  // A class- or accessor-typed receiver whose value is checked-dynamic (an
+  // object made from the class's prototype, whose storage holds the created
+  // object): the write is the dynamic keyed store, with Node's [[Set]]
+  // semantics. An own property shadows the prototype, a setter runs with the
+  // object as `this`, and a data property on the prototype is written
+  // through its writability.
+  if (
+    (target.container === "class" || target.container === "accessor") &&
+    target.obj.type.kind === "dyn"
+  ) {
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.keySet",
+        args: [
+          target.obj,
+          { kind: "strLit", value: target.field, type: STRING, loc },
+          lowerer.coerceToExpected(value, DYN),
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
   // A write through a brand-checked receiver (checkedPrivateReceiver): the
   // value evaluates first, then the brand check throws, as in Node.
   if (isPrivateWriteReceiver(target.obj) && value.kind !== "varRef") {
@@ -1023,6 +1050,58 @@ export function fieldSetStmt(
         `assignment to the getter-only property '${target.field}'`,
       );
     checkRefusedMemberUse(lowerer, setF.declarer, `set:${target.field}`, blame);
+    // A name the program reflects on some class prototype: the shared
+    // prototype view may hold a replaced setter (or a data property a
+    // definition put there), so write through it with the instance as the
+    // receiver, as Node's [[Set]] walks the prototype chain.
+    if (lowerer.prototypeMethodAccesses.has(target.field) && prototypeViewable(setF.declarer)) {
+      // The write names the receiver twice; an effectful expression
+      // (`make().x = 1`) runs once, into a hidden local.
+      const receiverValue = lowerer.coerceToExpected(target.obj, DYN);
+      const stable =
+        isSafeToRepeat(receiverValue) || lowerer.fnStack.length === 0
+          ? null
+          : lowerer.declareHiddenLocal("%prototypeReceiver", DYN);
+      const receiver = (): IrExpr =>
+        stable === null ? receiverValue : varRef(stable.id, DYN, loc);
+      // Node's [[Set]] starts at the receiver: the receiver's own class's
+      // prototype may replace what the class that declares the setter put
+      // there, and a base-class parameter can hold any subclass instance.
+      const view = receiverPrototypeView(
+        lowerer,
+        lowerer.classes.get(target.className) ?? null,
+        setF.declarer,
+        receiver(),
+        loc,
+      );
+      if (view && view.start.prototypeReflectionRefusal === undefined) {
+        const store: IrStmt = {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.reflectSet",
+            args: [
+              view.prototype,
+              lowerer.coerceToExpected(
+                { kind: "strLit", value: target.field, type: STRING, loc },
+                DYN,
+              ),
+              lowerer.coerceToExpected(value, DYN),
+              receiver(),
+            ],
+            type: BOOL,
+            loc,
+          },
+          loc,
+        };
+        if (stable === null) return store;
+        return {
+          kind: "block",
+          body: [{ kind: "varDecl", localId: stable.id, init: receiverValue, loc }, store],
+          loc,
+        };
+      }
+    }
     return {
       kind: "exprStmt",
       expr: lowerer.accessorCall(

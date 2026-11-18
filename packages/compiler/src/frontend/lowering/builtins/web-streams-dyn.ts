@@ -203,11 +203,22 @@ function typedWebStreamClassKindOf(lowerer: Lowerer, node: ts.Expression): numbe
  * builds its streams through the web stream classes
  * (programUsesTypedWebStreams): the same brand test the JavaScript path
  * runs, since those values are checked-dynamic handles. */
-function typedStreamInstanceClassKindOf(lowerer: Lowerer, node: ts.Expression): number | null {
+function typedStreamInstanceClassKindOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  dynValue = false,
+): number | null {
   const expr = withoutParentheses(node);
   if (!ts.isIdentifier(expr)) return null;
   const name = stdlibGlobalNameOf(lowerer, expr);
-  if (name === null || !TYPED_CLASSES.has(name) || !programUsesTypedWebStreams(lowerer))
+  // A checked-dynamic value (Readable.toWeb's stream, for one) is a handle
+  // whatever else the program builds, so its brand test reads the handle
+  // class even when no other typed web stream use selected the classes.
+  if (
+    name === null ||
+    !TYPED_CLASSES.has(name) ||
+    (!dynValue && !programUsesTypedWebStreams(lowerer))
+  )
     return null;
   const index = CLASS_NAMES.indexOf(name);
   return index < 0 ? null : index;
@@ -322,15 +333,16 @@ export function lowerWebStreamInstanceof(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,
 ): IrExpr | null {
+  const left = lowerer.lowerExprExpecting(expr.left, DYN);
   const kind =
     webStreamClassKindOf(lowerer, expr.right) ??
-    typedStreamInstanceClassKindOf(lowerer, expr.right);
+    typedStreamInstanceClassKindOf(lowerer, expr.right, left.type.kind === "dyn");
   if (kind === null) return null;
   const loc = locOf(expr);
   return {
     kind: "libCall",
     fn: "webstream.instanceOf",
-    args: [lowerer.lowerExprExpecting(expr.left, DYN), numLit(kind, loc)],
+    args: [left, numLit(kind, loc)],
     type: BOOL,
     loc,
   };

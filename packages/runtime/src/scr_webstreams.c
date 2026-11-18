@@ -6246,3 +6246,112 @@ ScrDyn *scr_webstream_from(ScrDyn *iterable) {
   ws_install();
   return ws_readable_from(iterable);
 }
+
+/* ── a native source as a type: "bytes" stream ──────────────────────
+ * Node's file streams are byte streams: a reader may hand the stream a view
+ * of its own (a BYOB reader), and the controller's auto-allocated reads park
+ * a destination view too. The default-type adapter above enqueues whole
+ * chunks; this one writes each chunk into the pending read's destination and
+ * answers through the BYOB request, which is what a bytes controller's pull
+ * waits for. EOF closes the stream once its queued bytes drain. */
+static void ws_bytes_over_chunk(void *ctx, ScrDyn *value) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) {
+    WsPullInto *d = c->into_head;
+    ScrBytes *bytes = scr_dyn_bytes_is(value, SCR_BYTES_U8)
+                          ? scr_dyn_bytes_unbox(value) /* +1 */
+                          : NULL;
+    if (bytes != NULL && d != NULL && c->byob != NULL) {
+      /* The read's view is filled where its fill stopped and answered
+       * through the BYOB request, whose respond advances the fill and
+       * commits the read; the adapter must not advance it itself. The
+       * source was asked for no more than the view holds, so the chunk
+       * fits whole. */
+      size_t take = ws_pull_into_remaining(d);
+      if (take > (size_t)scr_bytes_byte_len(bytes)) take = (size_t)scr_bytes_byte_len(bytes);
+      if (take > 0) {
+        ws_copy_bytes(d->view, d->filled, bytes, 0, take);
+        ScrDyn *count = scr_dyn_new_num((double)take);
+        ScrDyn *answer = ws_byob_respond(c->byob, count);
+        scr_dyn_release(count);
+        if (answer) scr_dyn_release(answer);
+      } else {
+        /* A chunk that fits nowhere (an empty one, or a filled read): the
+         * next pull takes it. */
+        ws_pull_fulfilled(c, NULL);
+      }
+    } else if (bytes != NULL && d == NULL) {
+      /* No parked destination: queue the bytes as a chunk, as the
+       * default-type adapter does. */
+      if (ws_rcontroller_enqueue(c, value)) ws_pull_fulfilled(c, NULL);
+      else {
+        ScrDyn *error = ws_take_pending();
+        ws_rcontroller_error(c, error);
+        scr_dyn_release(error);
+      }
+    }
+    scr_bytes_release(bytes);
+    /* The parked read is answered: let the controller start the next pull
+     * (a read issued meanwhile waits in pull_again for exactly this). */
+    ws_pull_fulfilled(c, NULL);
+  }
+  ws_release(o);
+}
+
+static void ws_bytes_over_close(void *ctx) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) {
+    ws_bytes_close(c);
+    ws_pull_fulfilled(c, NULL);
+  }
+  ws_release(o);
+}
+
+static void ws_bytes_over_error(void *ctx, ScrDyn *reason) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) ws_rcontroller_error(c, reason ? reason : scr_dyn_undefined());
+  ws_release(o);
+}
+
+static const ScrFetchReadSink ws_bytes_over_sink = {ws_bytes_over_chunk, ws_bytes_over_close,
+                                                    ws_bytes_over_error};
+
+static ScrDyn *ws_bytes_over_pull(void *ctx, WsRController *c) {
+  WsOver *o = ctx;
+  /* Ask the source for no more than the pending read's view still needs,
+   * so a view smaller than a whole chunk does not discard the rest. */
+  if (o->source->set_read_limit) {
+    WsPullInto *d = c->into_head;
+    o->source->set_read_limit(o->ctx, d ? ws_pull_into_remaining(d) : 0);
+  }
+  if (!o->source->read_into(o->ctx, &ws_bytes_over_sink, ws_retain(o))) {
+    ws_release(o);
+    return NULL;
+  }
+  return WS_PARKED;
+}
+
+static ScrPromise *ws_bytes_over_cancel(void *ctx, WsRController *c, ScrDyn *reason) {
+  (void)c;
+  WsOver *o = ctx;
+  return o->source->cancel(o->ctx, reason);
+}
+
+static const WsSourceOps ws_bytes_over_source_ops = {ws_bytes_over_pull, ws_bytes_over_cancel};
+
+ScrDyn *scr_webstream_bytes_over(const ScrWebStreamSource *source, void *ctx) {
+  ws_install();
+  WsOver *o = ws_obj_new(sizeof *o, &ws_over_type);
+  o->source = source;
+  o->ctx = ctx;
+  WsReadable *s = ws_readable_create_native(&ws_bytes_over_source_ops, o, 0, 0, true);
+  /* Node's auto-allocated byte reads are 16 KiB (its file stream's chunk). */
+  if (s->controller) s->controller->auto_allocate = 16384;
+  o->stream = ws_readable_retain(s);
+  ScrDyn *box = ws_stream_box(s);
+  ws_readable_release(s);
+  return box;
+}

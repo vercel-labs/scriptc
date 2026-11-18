@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/runtime-chosen-export-snapshots/dual.cjs",
+  "<repo>/tests/corpus/runtime-chosen-export-snapshots/late.cjs",
+  "<repo>/tests/corpus/runtime-chosen-export-snapshots/main.cjs"
+ ],
+ "diags": []
+}

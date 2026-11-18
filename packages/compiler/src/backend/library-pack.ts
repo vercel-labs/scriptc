@@ -66,6 +66,7 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     textCodecDyn: false,
     watch: false,
     watchFile: false,
+    watchEvents: false,
     foreignFfi: false,
     nodeTest: false,
     tls: false,
@@ -76,6 +77,8 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     ed25519: false,
     x509: options.x509 ?? false,
     webcrypto: false,
+    argon2: false,
+    mlkem: false,
     perfLoop: false,
     tlsCa: false,
   };

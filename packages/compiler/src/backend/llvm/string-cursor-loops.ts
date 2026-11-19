@@ -131,10 +131,12 @@ interface Declaration {
  * wrote, so that starting the cursor at unit 0 reads the right string: the
  * local is declared inside the loop `loop` sits in, so each pass of that
  * loop makes a fresh binding before the scan, or a statement directly
- * before `loop` in that loop's body assigns it in full. A declaration in an
- * outer ancestor loop is not rerun by a pass of an inner loop: entering
- * `loop` again there would start from the string the previous pass left in
- * the slot. */
+ * before `loop` in that loop's body assigns a value that does not read it.
+ * A declaration in an outer ancestor loop is not rerun by a pass of an inner
+ * loop: entering `loop` again there would start from the string the previous
+ * pass left in the slot. An assignment whose value reads the local is
+ * relative to what the local holds, which the cursor does not keep in the
+ * slot, so it does not start a new value either. */
 function freshEachEntry(
   loop: AnyLoop,
   enclosing: readonly AnyLoop[],
@@ -149,14 +151,31 @@ function freshEachEntry(
   const at = parent.body.indexOf(loop);
   return (
     at > 0 &&
-    parent.body
-      .slice(0, at)
-      .some(
-        (stmt) =>
-          (stmt.kind === "varDecl" && stmt.localId === id) ||
-          (stmt.kind === "assign" && stmt.localId === id),
-      )
+    parent.body.slice(0, at).some((stmt) => {
+      // A declaration of the same local cannot read it (TDZ), so its
+      // initializer always starts a new value.
+      if (stmt.kind === "varDecl" && stmt.localId === id) return true;
+      // An assignment that reads the local is relative to its current value.
+      // The cursor keeps that value out of the slot, so the assignment would
+      // not see the suffix the source leaves; it starts nothing new.
+      return stmt.kind === "assign" && stmt.localId === id && !readsLocal(stmt.value, id);
+    })
   );
+}
+
+/** Whether `e` reads the local `id`. */
+function readsLocal(e: IrExpr, id: string): boolean {
+  if (e.kind === "varRef") return e.localId === id;
+  let found = false;
+  everyExprChild(
+    e,
+    (child) => {
+      if (!found && readsLocal(child, id)) found = true;
+      return !found;
+    },
+    () => true,
+  );
+  return found;
 }
 
 /** The versioned loops of `fn`, keyed by statement. `facts` decides which

@@ -136,6 +136,24 @@ function forInitializerDeclaration(text: string): number {
   return n;
 }
 
+// A relative assignment before the scan is not a reinitialization: the
+// cursor keeps the consumed suffix out of the slot, so slicing the local
+// itself would start from the string the loop entered with.
+function relativePrefix(text: string, prefix: number, rounds: number): number {
+  let rest = text;
+  let tokens = 0;
+  let round = 0;
+  while (round < rounds) {
+    rest = rest.slice(prefix);
+    while (rest.length > 0) {
+      tokens += 1;
+      rest = rest.slice(1);
+    }
+    round += 1;
+  }
+  return tokens;
+}
+
 const text = "abc;def;ghijkl;mn";
 const other = "aaabbbccc";
 console.log(reentered(text, 2), reentered(text, 5), reentered("", 3));
@@ -150,3 +168,4 @@ console.log(
   forInitializerDeclaration(""),
   forInitializerDeclaration("abc"),
 );
+console.log(relativePrefix("abc", 0, 3), relativePrefix("abcdef", 2, 3), relativePrefix("abcde", 3, 2));

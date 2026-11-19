@@ -45,6 +45,25 @@ attempt("3des unicode", () => createPrivateKey({ key: uniPass, passphrase: "séc
 attempt("3des unicode buffer", () => createPrivateKey({ key: uniPass, passphrase: Buffer.from("sécrét", "utf8") }));
 attempt("3des latin1 buffer", () =>
   createPrivateKey({ key: uniPass, passphrase: Buffer.from([0x73, 0xe9, 0x63, 0x72, 0xe9, 0x74]) }));
+const mixedPass = `-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIGxMBwGCiqGSIb3DQEMAQMwDgQIcqK5ujKVUE0CAggABIGQ/zPtyLcSZHYRp9Ns
+A2Y2CTbCMxkzhAvw+V4wRFMDFsTPVaTmHGv+ESD48VO4jPj7vG2qfyNWPy/zDqG6
++9+nS+KLOmQ87EAVoZBYQtQM0N2NiU0sBUaVN5VM1gtUXEZ4+/eB4GAaHPk0z2De
+/si+OvWzdX0WvyjYGbRjySUTMau+iw5sAJTFBwSB/sINNIRP
+-----END ENCRYPTED PRIVATE KEY-----\n`;
+attempt("3des mixed buffer", () =>
+  createPrivateKey({ key: mixedPass, passphrase: Buffer.from([0xc3, 0xa9, 0xff, 0x78]) }));
+const emojiPass = `-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIGxMBwGCiqGSIb3DQEMAQMwDgQIaFKrQ9alXf0CAggABIGQUVMX4L/ka7JO2xwl
+z8qf/cuOjpmnrCcKSZS36BnVqAc65tst72q+rFGo+Wi/XwuEVaG5nen5eWJUnzMS
+zZ+yQHM9KlgFr74azPyEiEsRHgL5NrYDXTS2eL9X40wOBH4WRJ22yf1GSreaaniM
+LQCuJ4gQmt7PLW4DcGm22Stk6UCsYPsbB7j4ell68zB6PqHA
+-----END ENCRYPTED PRIVATE KEY-----\n`;
+attempt("3des emoji", () => createPrivateKey({ key: emojiPass, passphrase: "\u{1F600}" }));
+attempt("3des emoji buffer", () =>
+  createPrivateKey({ key: emojiPass, passphrase: Buffer.from([0xf0, 0x9f, 0x98, 0x80]) }));
+attempt("3des surrogate bytes", () =>
+  createPrivateKey({ key: emojiPass, passphrase: Buffer.from([0xed, 0xa0, 0x80]) }));
 attempt("3des", () => createPrivateKey({ key: threeDes, passphrase: "secret" }));
 attempt("2des", () => createPrivateKey({ key: twoDes, passphrase: "secret" }));
 attempt("rc2", () => createPrivateKey({ key: rc2, passphrase: "secret" }));

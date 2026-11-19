@@ -10,7 +10,7 @@ import { moduleUsesDynTier } from "../src/ir/runtime-features.js";
 function body(llvm: string, name: string): string {
   const match = llvm.match(
     new RegExp(
-      `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+      `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{([\\s\\S]*?)\\n\\}`,
     ),
   );
   expect(match, `${name} LLVM function`).not.toBeNull();

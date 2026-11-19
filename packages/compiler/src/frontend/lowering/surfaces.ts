@@ -1754,6 +1754,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       privateEncrypt: { fn: "crypto.privateEncrypt", params: [], result: DYN },
       publicDecrypt: { fn: "crypto.publicDecrypt", params: [], result: DYN },
       diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
+      encapsulate: { fn: "crypto.encapsulate", params: [], result: DYN },
+      decapsulate: { fn: "crypto.decapsulate", params: [], result: DYN },
       pbkdf2Sync: {
         fn: "crypto.pbkdf2",
         params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -2412,6 +2414,15 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // into the checked-dynamic tree (special-cased in lowerBuiltinModuleCall — the entries
     // carry canonical shapes and route the dispatch). The Channel method
     // surface lowers through lowerDiagnosticsChannelMethodCall/lowerDiagnosticsChannelProperty.
+    // node:async_hooks — the hook registry and the execution-id reads. The
+    // callbacks object crosses as a dyn value and AsyncHook values are f64
+    // handles (type-mapper.ts), so the members lower in
+    // lowerAsyncHooksMethodCall/lowerAsyncHooksCall.
+    async_hooks: {
+      createHook: { fn: "ah.createHook", params: [DYN], result: F64 },
+      executionAsyncId: { fn: "ah.executionId", params: [], result: F64 },
+      triggerAsyncId: { fn: "ah.triggerId", params: [], result: F64 },
+    },
     diagnostics_channel: {
       channel: { fn: "dc.channel", params: [STRING], result: F64 },
       subscribe: { fn: "dc.subscribe", params: [STRING, DYN], result: VOID },
@@ -3287,6 +3298,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       ],
       note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
     },
+    {
+      id: "node-builtin.perf_hooks.timerify",
+      kind: "node-builtin",
+      name: "perf_hooks.timerify",
+      fns: ["perf.timerify"],
+      note: "performance.timerify and perf_hooks.timerify are the same wrapper: a timed call records a 'function' entry, delivered to the observers watching that type",
+    },
     // ── the process global's ambient reads and authority calls
     // (lowerProcessProperty/lowerProcessMethodCall — process is a
     // provenance-checked global here, not an importable module).
@@ -3948,11 +3966,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   util: {
     promisify:
       "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly",
-  },
-  "stream/consumers": {
-    blob:
-      "collecting a stream into a Blob is not supported yet — " +
-      "buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text",
   },
   module: {
     createRequire:

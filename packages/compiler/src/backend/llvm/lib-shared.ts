@@ -121,6 +121,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "arrayBuffer.viewDV": "scr_array_buffer_view_dv",
 
   "util.parseArgs": "scr_util_parse_args",
+  "util.getCallSites": "scr_util_call_sites",
   "util.parseEnv": "scr_util_parse_env",
   "util.getSystemErrorName": "scr_util_system_error_name",
   "util.getSystemErrorMessage": "scr_util_system_error_message",
@@ -438,6 +439,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.entryDuration": "scr_perf_entry_duration",
   "perf.entryDetail": "scr_perf_entry_detail",
   "perf.resourceMark": "scr_perf_resource_mark",
+  "perf.timerify": "scr_perf_timerify",
   "perf.resourceClear": "scr_perf_resource_clear",
   "perf.resourceBufferSize": "scr_perf_resource_buffer_size",
   "perf.entryResourceNum": "scr_perf_entry_resource_num",
@@ -621,6 +623,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // node:assert (scr_assert.c): all args borrowed; failures throw the
   // catchable AssertionError. The never-throwing members ride along.
   "assert.ok": "scr_assert_ok",
+  "assert.failDeprecated": "scr_assert_deprecated_fail",
+  "assert.failDeprecation": "scr_assert_fail_deprecation",
   "assert.record": "scr_assert_record_dyn",
   "assert.errorNew": "scr_assert_error_new",
   "assert.eqF64": "scr_assert_eq_f64",
@@ -679,6 +683,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.concatLen": "scr_buffer_concat_len",
   "buffer.concatDyn": "scr_buffer_concat_dyn",
   "buffer.concatLenDyn": "scr_buffer_concat_len_dyn",
+  "buffer.concatLenDynOpt": "scr_buffer_concat_len_dyn_opt",
   "buffer.alloc": "scr_buffer_alloc",
   "buffer.allocValue": "scr_buffer_alloc_value",
   "buffer.allocUnsafe": "scr_buffer_alloc_unsafe",
@@ -1017,6 +1022,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "insp.accessorValue": "scr_insp_accessor_result",
   "insp.entry": "scr_insp_entry",
   "insp.key": "scr_insp_key",
+  "insp.property": "scr_insp_property",
+  "insp.propChild": "scr_insp_prop_child",
   "insp.moreItems": "scr_insp_more_items",
   "insp.end": "scr_insp_end",
   "insp.nestedBegin": "scr_insp_nested_begin",
@@ -1601,6 +1608,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.signOneshotCb": "scr_crypto_sign_oneshot_async",
   "crypto.signOneshotMaybe": "scr_crypto_sign_oneshot_maybe",
   "crypto.diffieHellman": "scr_crypto_diffie_hellman",
+  "crypto.encapsulate": "scr_crypto_encapsulate_dyn",
+  "crypto.decapsulate": "scr_crypto_decapsulate_dyn",
   "crypto.verifyOneshot": "scr_crypto_verify_oneshot",
   "crypto.verifyOneshotCb": "scr_crypto_verify_oneshot_async",
   "crypto.verifyOneshotMaybe": "scr_crypto_verify_oneshot_maybe",
@@ -1753,6 +1762,10 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.duplexifyReadable": "scr_stream_duplexify_readable",
   "stream.duplexifyWritable": "scr_stream_duplexify_writable",
   "stream.duplexifyPair": "scr_stream_duplexify_pair",
+  "stream.duplexifyPairHalf": "scr_stream_duplexify_pair_opt",
+  "stream.duplexPair": "scr_stream_duplexpair",
+  "stream.wrap": "scr_stream_wrap",
+  "stream.wrapDyn": "scr_stream_wrap_dyn",
   "stream.duplexFromPromise": "scr_stream_duplex_from_promise",
   "stream.duplexFromAsyncFn": "scr_stream_duplex_from_async_fn",
   "stream.duplexFromGenSignal": "scr_stream_duplex_from_gen_signal",
@@ -1762,6 +1775,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "webstream.toWebReadableDyn": "scr_stream_to_web_readable_dyn",
   "webstream.writableFromWeb": "scr_stream_writable_from_web",
   "webstream.writableToWeb": "scr_stream_writable_to_web",
+  "webstream.duplexFromWeb": "scr_stream_duplex_from_web",
+  "webstream.toWebDuplex": "scr_stream_to_web_duplex",
+  "webstream.toWebDuplexDyn": "scr_stream_to_web_duplex_dyn",
   "writable.writeEncoding": "scr_stream_write_encoding",
   "writable.setDefaultEncoding": "scr_stream_set_default_encoding",
   "stream.chunkDone": "scr_stream_chunk_done",
@@ -2052,6 +2068,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.serverRejectNonStandardBodyWrites": "scr_http_server_reject_non_standard_body_writes",
   "http.clientWrite": "scr_http_client_write_str",
   "http.clientSetHeader": "scr_http_client_set_header",
+  "http.clientSetHeaderDyn": "scr_http_client_set_header_dyn",
+  "http.clientAppendHeaderDyn": "scr_http_client_append_header_dyn",
   "http.clientHasHeader": "scr_http_client_has_header_named",
   "http.clientRemoveHeader": "scr_http_client_remove_header",
   "http.clientGetHeaderNames": "scr_http_client_get_header_names",
@@ -2123,6 +2141,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sc.json": "scr_sc_json",
   "sc.buffer": "scr_sc_buffer",
   "sc.bytes": "scr_sc_bytes",
+  "sc.blob": "scr_sc_blob",
   "sc.arrayBuffer": "scr_sc_array_buffer",
   "dc.channel": "scr_dc_channel",
   "dc.subscribe": "scr_dc_subscribe",
@@ -2172,6 +2191,15 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "ar.asyncId": "scr_ar_async_id",
   "ar.triggerAsyncId": "scr_ar_trigger_id",
   "dc.chanBindStore": "scr_dc_chan_bind_store",
+  // node:async_hooks (scr_async_dyn.c / scr_async.c): the hook registry and
+  // the execution-id pair.
+  "ah.createHook": "scr_ah_create",
+  "ah.createHookParts": "scr_ah_parts",
+  "ah.enable": "scr_ah_enable",
+  "ah.disable": "scr_ah_disable",
+  "ah.providers": "scr_ah_providers",
+  "ah.executionId": "scr_async_execution_id",
+  "ah.triggerId": "scr_async_execution_trigger",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",
   // node:trace_events (scr_async_dyn.c): native Tracing handles.
@@ -2372,6 +2400,8 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.verifyOneshotCb",
   "crypto.verifyOneshotMaybe",
   "crypto.diffieHellman",
+  "crypto.encapsulate",
+  "crypto.decapsulate",
   "crypto.checkPrimeCb",
   "crypto.generatePrimeCb",
   // The checked-dynamic KDF and random entries deliver a callback from the
@@ -2413,6 +2443,9 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   // The deprecated Buffer constructor reports DEP0005, and SlowBuffer
   // DEP0030, on the next tick.
   "buffer.deprecation",
+  // assert.fail's deprecated form reports DEP0094 through the same warning
+  // machinery on the first multi-argument call.
+  "assert.failDeprecation",
   "buffer.slowBuffer",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
@@ -2547,6 +2580,7 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "writable.writeEnc",
   "writable.writeEcb",
   "writable.end",
+  "writable.endEcb",
   "writable.uncork",
   "stream.destroy",
   "stream.destroyErr",

@@ -1510,15 +1510,30 @@ static void scr_h2_proto_sweep(void) {
         free(snap);
         scr_net_ls_drop(&s->connect_ls); /* fires once */
         /* The streams a program requested while the session connected
-         * become ready now, after the 'connect' listeners. */
-        for (size_t i = 0; i < s->nstreams; i++) {
-          ScrH2Stream *stream = scr_http2_stream_retain(s->streams[i]);
-          if (stream->ready_ls.n > 0) {
-            scr_net_fire0_this(&stream->ready_ls, stream, SCR_DYNH_H2_STREAM);
-            scr_net_ls_drop(&stream->ready_ls);
+         * become ready now, after the 'connect' listeners. A listener may
+         * destroy streams (including later ones), so walk a retained
+         * snapshot rather than the live vector. */
+        size_t ready_count = s->nstreams;
+        ScrH2Stream **ready_streams = NULL;
+        if (ready_count > 0) {
+          ready_streams = malloc(ready_count * sizeof *ready_streams);
+          if (ready_streams == NULL) scr_h2_oom();
+          for (size_t i = 0; i < ready_count; i++)
+            ready_streams[i] = scr_http2_stream_retain(s->streams[i]);
+          for (size_t i = 0; i < ready_count; i++) {
+            ScrH2Stream *stream = ready_streams[i];
+            if (!stream->destroyed && !stream->close_emitted && stream->ready_ls.n > 0) {
+              scr_net_fire0_this(&stream->ready_ls, stream, SCR_DYNH_H2_STREAM);
+              scr_net_ls_drop(&stream->ready_ls);
+            }
+            scr_http2_stream_release(stream);
+            if (scr_exc_pending()) {
+              for (size_t j = i + 1; j < ready_count; j++)
+                scr_http2_stream_release(ready_streams[j]);
+              break;
+            }
           }
-          scr_http2_stream_release(stream);
-          if (scr_exc_pending()) break;
+          free(ready_streams);
         }
       }
       break;

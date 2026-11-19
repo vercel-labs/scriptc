@@ -65,6 +65,11 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // t.error builds Node's wrapper over the failure through the inspect
   // unit's rendering, which can raise.
   "test.ctxError",
+  // The accessor descriptor walk can throw (a fenced class reflection, a
+  // throwing getter trap), and the accessor requirement throws Node's
+  // ERR_INVALID_ARG_VALUE for a missing method.
+  "test.accessorDescriptor",
+  "test.accessorRequire",
   "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
@@ -355,6 +360,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // %o's showHidden walk refuses the kinds whose hidden entries it cannot
   // render.
   "insp.dynHidden",
+  // diagnostics_channel: publish runs subscribers synchronously (a throw
+  // propagates — the documented divergence from triggerUncaughtException);
+  // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
+  // non-function subscribers.
+  // async_hooks.createHook validates its callbacks (ERR_ASYNC_CALLBACK).
+  "ah.createHook",
+  "ah.createHookParts",
   // diagnostics_channel: the subscribe/unsubscribe forms validate the name
   // and the subscriber in the runtime (Node's ERR_INVALID_ARG_TYPE), and
   // the bind-store/run-stores calls run program code.
@@ -425,6 +437,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // (ERR_HTTP_HEADERS_SENT) and every header name and value.
   "http.resWriteInformation",
   "http.resWriteContinueCb",
+  "http.resOnWriteFlush",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",
   "http.validateHeaderName",
@@ -521,6 +534,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // getCipher throws the "not supported yet" error for a suite without a
   // known OpenSSL name.
   "tls.sockGetCipher",
+  // exportKeyingMaterial throws Node's validation ladder (ERR_OUT_OF_RANGE,
+  // ERR_INVALID_ARG_TYPE) and the TLS state error.
+  "tls.sockExportKeyingMaterial",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",
@@ -551,6 +567,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // out (flushHeaders(), a first write, or an Expect header at
   // construction), and setHeader throws Node's name and value checks.
   "http.clientSetHeader",
+  "http.clientSetHeaderDyn",
+  "http.clientAppendHeaderDyn",
   "http.clientRemoveHeader",
   "http.clientFlushHeaders",
   "http.clientUncork",
@@ -645,6 +663,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "sc.json",
   "sc.buffer",
   "sc.bytes",
+  "sc.blob",
   "sc.arrayBuffer",
   "readable.newDyn",
   "writable.newDyn",
@@ -680,6 +699,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "writable.writeEnc",
   "writable.writeEcb",
   "writable.end",
+  "writable.endEcb",
   "writable.uncork",
   "writable.setDefaultEncoding",
   "stream.duplexFromGen",
@@ -694,7 +714,15 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
   "webstream.toWebReadableDyn",
+  "webstream.toWebDuplexDyn",
+  // The option walk behind duplexPair throws the not-supported Error for an
+  // option it cannot apply; wrap refuses a stream that already carries native
+  // state and wrapDyn a value that is not a native readable stream.
+  "stream.duplexPair",
+  "stream.wrap",
+  "stream.wrapDyn",
   "webstream.writableFromWeb",
+  "webstream.duplexFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -763,6 +791,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // markResourceTiming's argument reads and clearResourceTimings /
   // setResourceTimingBufferSize validation.
   "perf.resourceMark",
+  "perf.timerify",
   "perf.resourceClear",
   "perf.resourceBufferSize",
   "perf.measure",
@@ -958,6 +987,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "date.argumentsTime",
   "date.checkedValue",
   "util.parseArgs",
+  "util.getCallSites",
   "util.parseEnv",
   "util.getSystemErrorName",
   "util.getSystemErrorMessage",
@@ -1361,6 +1391,7 @@ const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [
   "buffer.concatLen",
   "buffer.concatDyn",
   "buffer.concatLenDyn",
+  "buffer.concatLenDynOpt",
   "buffer.fromDyn",
   "buffer.fromStrChecked",
   "buffer.alloc",
@@ -1555,6 +1586,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "dgram.bindCb",
   "dgram.connect",
   "dgram.connectCb",
+  "dgram.connectDyn",
   "dgram.sendStr",
   "dgram.sendBytes",
   "dgram.sendChk",
@@ -1582,6 +1614,9 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   // and the shape accumulator's begin/slot/test calls throws the
   // catchable AssertionError on failure.
   "assert.ok",
+  "assert.failDeprecated",
+  // The warning runs process.emitWarning, which a program can replace.
+  "assert.failDeprecation",
   "assert.errorNew",
   "assert.eqF64",
   "assert.eqBigInt",
@@ -1755,6 +1790,8 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.createPublicKey",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
+  "crypto.encapsulate",
+  "crypto.decapsulate",
   // Argon2 reads its parameters object (whose members convert strings and
   // BufferSources) and may run program code through those conversions.
   "crypto.argon2Sync",

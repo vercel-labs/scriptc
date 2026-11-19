@@ -5,6 +5,7 @@ import {
   DYN,
   F64,
   STRING,
+  UNDEFINED_T,
   shapeHasAccessorSlots,
   typeEquals,
   type IrExpr,
@@ -97,13 +98,57 @@ export function keyedFieldTarget(
   const indexed = shape.fields.length === 0;
   const staticKey =
     !indexed && keys?.length === 1 && (ts.isStringLiteralLike(keyNode) || ts.isIdentifier(keyNode));
-  const key = staticKey ? null : (lowered?.key ?? lowerer.lowerExpr(keyNode));
+  let key = staticKey ? null : (lowered?.key ?? lowerer.lowerExpr(keyNode));
   if (key && key.type.kind !== "string") {
-    lowerer.unsupported(
-      "SC1090",
-      keyNode,
-      `updating a record through a '${lowerer.fmt(key.type)}' key (convert the key to a string first)`,
-    );
+    // An INDEX-SIGNATURE record stores entries under string property
+    // names, so JavaScript's ToPropertyKey decides the name: the hidden
+    // undefined arm of an unchecked element read names the property
+    // "undefined", exactly as a read would. A declared-field record has no
+    // storage for a name outside its fields, so its fence stays.
+    const present = key.type.kind === "union" ? lowerer.stripUndefinedArm(key.type) : null;
+    const undefinedTag =
+      key.type.kind === "union" ? lowerer.armTag(key.type.unionId, UNDEFINED_T) : -1;
+    if (indexed && present?.kind === "string" && undefinedTag >= 0 && key.type.kind === "union") {
+      const unionId = key.type.unionId;
+      const presentTag = lowerer.armTag(unionId, present);
+      const local = lowerer.declareHiddenLocal("%recordKey", key.type);
+      const ref: IrExpr = { kind: "varRef", localId: local.id, type: key.type, loc: key.loc };
+      key = {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: local.id, init: key, loc: key.loc }],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId,
+            tag: undefinedTag,
+            negated: false,
+            value: ref,
+            type: BOOL,
+            loc: key.loc,
+          },
+          then: { kind: "strLit", value: "undefined", type: STRING, loc: key.loc },
+          else_: {
+            kind: "unionNarrow",
+            unionId,
+            tag: presentTag,
+            value: ref,
+            type: present,
+            loc: key.loc,
+          },
+          type: STRING,
+          loc: key.loc,
+        },
+        type: STRING,
+        loc: key.loc,
+      };
+    } else {
+      lowerer.unsupported(
+        "SC1090",
+        keyNode,
+        `updating a record through a '${lowerer.fmt(key.type)}' key (convert the key to a string first)`,
+      );
+    }
   }
   if (keys && !indexed) {
     const fields = keys.map((k) => shape.fields.find((f) => f.name === k));

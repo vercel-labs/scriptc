@@ -365,6 +365,11 @@ void scr_http_client_end_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/);
 void scr_http_client_end_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/);
 void scr_http_client_flush_headers(ScrHttpClientReq *c);
 void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/, ScrStr *value /*borrowed*/);
+/* setHeader / appendHeader for a string, number, null or array value. */
+void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
+                                    ScrDyn *raw /*borrowed*/);
+void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
+                                       ScrDyn *raw /*borrowed*/);
 ScrStr *scr_http_client_get_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/); /* +1 or NULL */
 bool scr_http_client_has_header_named(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);
 void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);

@@ -13,8 +13,11 @@
  * The socket options throw Node's errors (EBADF before bind);
  * add/dropMembership implicitly binds an unbound socket, like Node.
  * 'error' with no listener exits 1 (the unhandled EventEmitter 'error'
- * behavior). The options with no native behavior yet (signal, lookup,
- * the block lists) are refused at run time with an SC2020 Error. */
+ * behavior). receiveBlockList drops packets from a blocked source before
+ * they reach 'message'; sendBlockList makes a blocked send fail its
+ * callback with ERR_IP_BLOCKED and never reach the wire. The options with
+ * no native behavior yet (signal, lookup) are refused at run time with an
+ * SC2020 Error. */
 declare module "dgram" {
   export interface AddressInfo {
     address: string;
@@ -39,6 +42,14 @@ declare module "dgram" {
     reusePort?: boolean;
     recvBufferSize?: number;
     sendBufferSize?: number;
+    signal?: AbortSignal;
+    lookup?: (
+      hostname: string,
+      options: unknown,
+      callback: (err: Error | null, address: string, family: number) => void,
+    ) => void;
+    receiveBlockList?: import("net").BlockList;
+    sendBlockList?: import("net").BlockList;
   }
   export interface Socket {
     type: "udp4" | "udp6";

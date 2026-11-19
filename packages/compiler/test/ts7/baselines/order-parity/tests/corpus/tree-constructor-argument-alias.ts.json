@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tree-constructor-argument-alias.ts"
+ ],
+ "diags": []
+}

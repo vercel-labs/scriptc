@@ -9,6 +9,13 @@
 #include "libregexp.h"
 #include "scr_regex_native.h"
 
+#if defined(__APPLE__)
+/* scr_dyn_invoke.c defines this weakly for Mach-O's linker: the regex
+ * unit's strong definition tells a linked program that RegExp construction
+ * is available. */
+int scr_dyn_regex_unit_linked = 1;
+#endif
+
 static void scr_regex_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }

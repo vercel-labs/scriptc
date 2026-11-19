@@ -138,7 +138,8 @@ typedef struct ScrWatchSub {
 struct ScrWatcher {
   size_t rc;
   int fd;       /* -1 once closed, or after a failed reopen (no further events) */
-  bool recursive; /* watch the whole directory subtree (Linux and Windows) */
+  bool recursive; /* watch the whole directory subtree */
+  ScrStr *abs_root; /* its canonical path: child paths must not move with the cwd */
 #ifdef SCR_WATCH_DIR_NAMES_REFUSED
   bool is_dir;  /* the opened path is a directory (the F3 gap) */
 #endif
@@ -149,8 +150,7 @@ struct ScrWatcher {
                       * the root watch is the only one) */
 #endif
 #if defined(__APPLE__)
-  void *fse;      /* the FSEvents stream of a recursive directory watch */
-  char *fse_root; /* its canonical path: FSEvents reports real paths */
+  void *fse; /* the FSEvents stream of a recursive directory watch */
 #endif
 #ifdef SCR_HAVE_RDCW
   HANDLE dh;       /* the watched directory handle; INVALID once closed or
@@ -389,8 +389,10 @@ static bool scr_fse_wake_pipe(void) {
 static bool scr_fse_start(ScrWatcher *w) {
   ScrFseApi *a = &scr_fse_api_state;
   if (!scr_fse_load() || !scr_fse_wake_pipe()) return false;
-  void *path = a->cf_string_create(NULL, (const uint8_t *)w->path->data, (long)w->path->len,
-                                   SCR_FSE_UTF8, 0);
+  /* FSEvents needs an absolute path: the root's canonical spelling is
+   * also the one events come back under. */
+  const ScrStr *root = w->abs_root != NULL ? w->abs_root : w->path;
+  void *path = a->cf_string_create(NULL, (const uint8_t *)root->data, (long)root->len, SCR_FSE_UTF8, 0);
   if (path == NULL) return false;
   const void *values[1] = {path};
   void *paths = a->cf_array_create(NULL, values, 1, a->array_callbacks);
@@ -407,11 +409,6 @@ static bool scr_fse_start(ScrWatcher *w) {
     return false;
   }
   w->fse = stream;
-  char resolved[PATH_MAX];
-  const char *root = realpath(w->path->data, resolved) != NULL ? resolved : w->path->data;
-  size_t root_len = strlen(root);
-  w->fse_root = malloc(root_len + 1);
-  if (w->fse_root != NULL) memcpy(w->fse_root, root, root_len + 1);
   return true;
 }
 
@@ -453,7 +450,7 @@ static void scr_fse_drain(void) {
     if (rename || change) {
       for (ScrWatcher *w = scr_watchers; w != NULL; w = w->next) {
         if (w->closed || !w->recursive) continue;
-        const char *roots[2] = {w->path->data, w->fse_root};
+        const char *roots[2] = {w->abs_root != NULL ? w->abs_root->data : NULL, w->path->data};
         for (int r = 0; r < 2; r++) {
           if (roots[r] == NULL) continue;
           size_t rlen = strlen(roots[r]);
@@ -671,10 +668,8 @@ void scr_watcher_release(ScrWatcher *w) {
       free(sub);
     }
 #endif
-#if defined(__APPLE__)
-    free(w->fse_root);
-    w->fse_root = NULL;
-#endif
+    scr_str_release(w->abs_root);
+    w->abs_root = NULL;
     scr_str_release(w->path);
     free(w);
   }
@@ -775,6 +770,14 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
   w->rc = 1;
   w->recursive = recursive;
   w->path = scr_str_retain(path);
+  if (recursive) {
+    /* A recursive walk builds child paths long after the watch starts, so
+     * it holds the root's canonical spelling: a later chdir must not move
+     * where a new subdirectory's path resolves. */
+    char resolved[PATH_MAX];
+    const char *root = realpath(path->data, resolved) != NULL ? resolved : path->data;
+    w->abs_root = scr_str_new(root, strlen(root));
+  }
   if (cb != NULL) {
     w->ls = malloc(sizeof *w->ls);
     if (!w->ls) scr_watch_oom();
@@ -830,7 +833,8 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
 #ifdef SCR_HAVE_INOTIFY
   if (recursive) {
     struct stat st;
-    if (stat(path->data, &st) == 0 && S_ISDIR(st.st_mode)) scr_watch_walk(w, path->data, "");
+    const char *root = w->abs_root != NULL ? w->abs_root->data : path->data;
+    if (stat(root, &st) == 0 && S_ISDIR(st.st_mode)) scr_watch_walk(w, root, "");
   }
 #endif
   w->next = scr_watchers;
@@ -1188,10 +1192,11 @@ static void scr_watch_dispatch(void) {
           /* A directory arriving in the tree gets watches for itself and
            * everything below it (a moved-in tree included); one leaving
            * loses them. */
-          size_t alen = w->path->len, nlen = strlen(name);
+          const char *base = w->abs_root != NULL ? w->abs_root->data : w->path->data;
+          size_t alen = strlen(base), nlen = strlen(name);
           char *abs = malloc(alen + 1 + nlen + 1);
           if (!abs) scr_watch_oom();
-          memcpy(abs, w->path->data, alen);
+          memcpy(abs, base, alen);
           abs[alen] = '/';
           memcpy(abs + alen + 1, name, nlen + 1);
           if (e->mask & (IN_CREATE | IN_MOVED_TO)) {

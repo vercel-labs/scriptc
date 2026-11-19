@@ -44,8 +44,7 @@ function startLaterDirectory(): void {
     clearInterval(kick);
     console.log("later directory", event === "change" || event === "rename");
     if (watcher) watcher.close();
-    fs.rmSync(dir, { recursive: true, force: true });
-    console.log("done");
+    startRelativeRoot();
   });
   let n = 0;
   const kick = setInterval(() => {
@@ -59,6 +58,41 @@ function startLaterDirectory(): void {
       fs.mkdirSync(join(dir, "later"));
     }
     fs.writeFileSync(join(dir, "later", "inner.txt"), String(n));
+  }, 20);
+}
+
+// A watch started on a RELATIVE path keeps building child paths where the
+// root was opened, not where the process later changes to.
+function startRelativeRoot(): void {
+  const relativeRoot = join(dir, "relative");
+  fs.mkdirSync(relativeRoot);
+  process.chdir(relativeRoot);
+  let fired = false;
+  let watcher: fs.FSWatcher | null = null;
+  watcher = fs.watch(".", { recursive: true }, (event, filename) => {
+    if (fired || typeof filename !== "string") return;
+    if (filename.replaceAll("\\", "/") !== "sub/x.txt") return;
+    fired = true;
+    clearInterval(kick);
+    process.chdir("/");
+    console.log("relative root", event === "change" || event === "rename");
+    if (watcher) watcher.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+    console.log("done");
+  });
+  process.chdir("/");
+  let n = 0;
+  const kick = setInterval(() => {
+    if (fired) return;
+    n += 1;
+    if (n > 400) {
+      console.error("relative-root event never delivered");
+      process.exit(1);
+    }
+    if (n === 1) {
+      fs.mkdirSync(join(relativeRoot, "sub"));
+    }
+    fs.writeFileSync(join(relativeRoot, "sub", "x.txt"), String(n));
   }, 20);
 }
 

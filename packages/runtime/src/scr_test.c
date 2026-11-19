@@ -154,6 +154,10 @@ struct ScrTestCtx {
   ScrPromise *abort_promise;   /* settles when the { signal } fires */
   SfSignalWatch *signal_watch; /* the node's watch on that signal */
   bool timed_out;        /* the async body was still pending when the timeout elapsed */
+  /* The runner itself raised the failure (a plan mismatch or a plan that
+   * timed out): its message string is Node's ERR_TEST_FAILURE error, which
+   * tracing subscribers receive as the error object Node builds. */
+  bool fail_runner;
   bool cancelled_parent; /* a suite { timeout } above cut this suite's run short */
   /* { concurrency }: how many subtests run at once (1 runs them in order),
    * the parent's value without the option. Above 1, each subtest runs on
@@ -600,6 +604,24 @@ static ScrDyn *scr_test_tr_roster(ScrTestCtx *t) {
 /** The error event's payload: Node's `{ ...channelContext, error }`, a
  * shallow copy of the shared context — a start subscriber may have attached
  * its own fields there — plus the thrown value (+1). */
+/* The error event's `error`: the thrown value as it was thrown, except for
+ * the failures the runner raises itself (a test's timeout, a plan mismatch
+ * or a plan that timed out). Node records those as an ERR_TEST_FAILURE
+ * error whose message is the text the spec reporter prints, and tracing
+ * subscribers receive that error object (+1). */
+static ScrDyn *scr_test_tr_error_value(ScrTestCtx *t) {
+  if ((t->fail_runner || t->timed_out) && t->err->kind == SCR_EXC_STR) {
+    ScrStr *message = scr_str_retain(t->err->payload);
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+    scr_str_release(message);
+    scr_error_set_code(e, "ERR_TEST_FAILURE");
+    ScrDyn *value = scr_dyn_from_error(e);
+    scr_error_release(e);
+    return value;
+  }
+  return scr_caught_to_dyn(t->err);
+}
+
 static ScrDyn *scr_test_tr_error_ctx(ScrTestCtx *t, ScrDyn *ctx /*borrowed*/) {
   ScrDyn *out = scr_dyn_new_obj();
   /* Object.assign semantics: the own enumerable members of the shared
@@ -607,7 +629,7 @@ static ScrDyn *scr_test_tr_error_ctx(ScrTestCtx *t, ScrDyn *ctx /*borrowed*/) {
   ScrDyn *target = scr_dyn_assign(out, ctx);
   scr_dyn_release(out);
   if (!target) return NULL;
-  scr_test_tr_put(target, "error", 5, scr_caught_to_dyn(t->err));
+  scr_test_tr_put(target, "error", 5, scr_test_tr_error_value(t));
   return target;
 }
 
@@ -1730,9 +1752,12 @@ static void scr_test_run_node(ScrTestCtx *t) {
       scr_test_await_plan(t);
       if (scr_exc_pending()) {
         /* The test's { timeout } fired while the plan waited: that timeout
-         * is the failure, as Node's stopTest wins the race. */
+         * is the failure, as Node's stopTest wins the race, and tracing
+         * subscribers see it as the test's error event before its end. */
         t->err = scr_exc_take();
         failed = true;
+        t->fail_runner = true;
+        scr_test_tr_error(t);
       }
     }
     if (!failed && t->plan_count != t->plan) {
@@ -1757,6 +1782,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
       scr_throw_str(scr_str_new(buf, (size_t)n));
       t->err = scr_exc_take();
       failed = true;
+      t->fail_runner = true;
       scr_test_tr_error(t);
     }
   }

@@ -3651,10 +3651,15 @@ export function lowerDestructuringDecl(
   // the hidden source temp cannot hold it. The checked-dynamic form of
   // the same value can, and the pattern lowering below throws Node's
   // destructuring TypeError before any binding, spelled the way V8
-  // spells the source.
+  // spells the source. A call whose inferred return type is `void` holds
+  // `undefined` at run time, so it takes the undefined arm the same way
+  // (and never gives the temp a `void` slot, which has no LLVM type).
   const unitSource =
-    isJsSourceFile(ts.getSourceFileOfNode(decl)) && isUnitType(init.type)
-      ? (init.type.kind as "nullT" | "undefinedT")
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    (isUnitType(init.type) || init.type.kind === "void")
+      ? init.type.kind === "void"
+        ? "undefinedT"
+        : (init.type.kind as "nullT" | "undefinedT")
       : null;
   if (unitSource !== null) init = lowerer.coerceToExpected(init, DYN);
   const out: IrStmt[] = [];
@@ -13203,10 +13208,12 @@ function destructuringAssignInto(
   // the object path's RequireObjectCoercible throw Node's TypeError
   // before any target assigns.
   const unitSource =
-    (init.type.kind === "nullT" || init.type.kind === "undefinedT") &&
+    (init.type.kind === "nullT" || init.type.kind === "undefinedT" || init.type.kind === "void") &&
     rhs !== null &&
     isJsSourceFile(ts.getSourceFileOfNode(rhs))
-      ? (init.type.kind as "nullT" | "undefinedT")
+      ? init.type.kind === "void"
+        ? "undefinedT"
+        : (init.type.kind as "nullT" | "undefinedT")
       : null;
   if (unitSource !== null) init = lowerer.coerceToExpected(init, DYN);
   const tmp = lowerer.declareHiddenLocal("%destr", init.type);

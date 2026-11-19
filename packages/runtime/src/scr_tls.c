@@ -831,6 +831,7 @@ typedef struct ScrTlsSock {
   bool vrfy_expired;
   bool vrfy_future;
   bool vrfy_bad_sig;
+  bool vrfy_pathlen;
   bool vrfy_cn_mismatch;
   /* the leaf's subjectAltName rendered the way OpenSSL prints it, recorded
    * while the peer chain is alive for Node's altname-failure message */
@@ -1143,6 +1144,33 @@ static void scr_tls_record_altnames(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
   if (t->vrfy_altnames == NULL) scr_tls_oom();
 }
 
+/* OpenSSL's path length check: a CA certificate's basicConstraints
+ * pathlen caps the number of non-self-issued CA certificates below it.
+ * mbedTLS refuses the over-long parent as a candidate and reports the
+ * chain as untrusted, and its callback runs top-down, so the constraint is
+ * checked per certificate against the depth mbedTLS reports (stored
+ * pathlen is one higher than the limit; the trust anchor sits one level
+ * above the topmost presented certificate). */
+static bool scr_tls_pathlen_exceeded(ScrTlsSock *t, mbedtls_x509_crt *crt, int depth) {
+  const mbedtls_x509_crt *anchor = NULL;
+  if (crt->next == NULL && t->vrfy_trust != NULL && crt->issuer_raw.len > 0) {
+    for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+      if (ca->subject_raw.len == crt->issuer_raw.len &&
+          memcmp(ca->subject_raw.p, crt->issuer_raw.p, crt->issuer_raw.len) == 0) {
+        anchor = ca;
+        break;
+      }
+    }
+  }
+  if (crt->MBEDTLS_PRIVATE(ca_istrue) && crt->MBEDTLS_PRIVATE(max_pathlen) > 0 &&
+      depth > crt->MBEDTLS_PRIVATE(max_pathlen))
+    return true;
+  if (anchor != NULL && anchor->MBEDTLS_PRIVATE(max_pathlen) > 0 &&
+      depth + 1 > anchor->MBEDTLS_PRIVATE(max_pathlen))
+    return true;
+  return false;
+}
+
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   t->vrfy_seen = true;
@@ -1212,6 +1240,9 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     if (depth == 0 && self) t->vrfy_leaf_self = true;
     if (depth > 0 && self) t->vrfy_chain_self = true;
     if (depth == 0 && !self && scr_tls_leaf_bad_sig(t, crt)) t->vrfy_bad_sig = true;
+    if ((*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) != 0 && !self &&
+      scr_tls_pathlen_exceeded(t, crt, depth))
+    t->vrfy_pathlen = true;
   }
   return 0;
 }
@@ -1395,6 +1426,10 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
   }
   if (t->vrfy_bad_sig) {
     snprintf(out, n, "certificate signature failure");
+    return;
+  }
+  if (t->vrfy_pathlen) {
+    snprintf(out, n, "path length constraint exceeded");
     return;
   }
   /* Node appends the --use-system-ca hint for exactly these two codes
@@ -4273,6 +4308,7 @@ static const char *scr_tls_auth_code(ScrTlsSock *t) {
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
   if (t->vrfy_future) return "CERT_NOT_YET_VALID";
   if (t->vrfy_bad_sig) return "CERT_SIGNATURE_FAILURE";
+  if (t->vrfy_pathlen) return "PATH_LENGTH_EXCEEDED";
   if (t->vrfy_leaf_self) return "DEPTH_ZERO_SELF_SIGNED_CERT";
   if (t->vrfy_chain_self) return "SELF_SIGNED_CERT_IN_CHAIN";
   if (vr & MBEDTLS_X509_BADCERT_NOT_TRUSTED) return "UNABLE_TO_VERIFY_LEAF_SIGNATURE";

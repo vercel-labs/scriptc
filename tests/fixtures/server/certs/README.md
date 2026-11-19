@@ -48,3 +48,16 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
     open("badsig.pem", "w").write("-----BEGIN CERTIFICATE-----\n" + "\n".join(b[i:i+64] for i in range(0, len(b), 64)) + "\n-----END CERTIFICATE-----\n")
     PY
     cp localhost-key.pem badsig-key.pem
+
+`rootpl.pem`/`rootpl-key.pem`, `intpl.pem`/`intpl-key.pem` and `leafpl.pem`/`leafpl-key.pem` are the PATH_LENGTH_EXCEEDED chain: a root whose basicConstraints carries `pathlen:0`, a CA intermediate signed by it, and a localhost leaf signed by the intermediate. Verification fails at the root's path length constraint, which the client sees as PATH_LENGTH_EXCEEDED:
+
+    openssl ecparam -genkey -name prime256v1 -noout -out rootpl-key.pem
+    openssl req -new -x509 -key rootpl-key.pem -out rootpl.pem -days 3650 -config rootpl.cnf -extensions v3_ca
+    openssl ecparam -genkey -name prime256v1 -noout -out intpl-key.pem
+    openssl req -new -key intpl-key.pem -out intpl.csr -config intpl.cnf
+    openssl x509 -req -in intpl.csr -CA rootpl.pem -CAkey rootpl-key.pem -CAcreateserial -out intpl.pem -days 3650 -extfile intpl.cnf -extensions v3_ca
+    openssl ecparam -genkey -name prime256v1 -noout -out leafpl-key.pem
+    openssl req -new -key leafpl-key.pem -subj "/CN=localhost" -out leafpl.csr
+    openssl x509 -req -in leafpl.csr -CA intpl.pem -CAkey intpl-key.pem -CAcreateserial -out leafpl.pem -days 3650 -extfile san.cnf -extensions ext
+
+(`rootpl.cnf` and `intpl.cnf` carry `basicConstraints=critical,CA:TRUE,pathlen:0` and `keyUsage=critical,keyCertSign,cRLSign`.)

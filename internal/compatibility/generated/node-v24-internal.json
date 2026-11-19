@@ -34792,6 +34792,7 @@
           "tests/corpus/compat-errors-cert-altname.mjs",
           "tests/corpus/compat-errors-cert-badsig.mjs",
           "tests/corpus/compat-errors-cert-future.mjs",
+          "tests/corpus/compat-errors-cert-pathlen.mjs",
           "tests/corpus/compat-errors-cli-tools.mjs",
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
@@ -44378,8 +44379,11 @@
       "anchor": "path_length_exceeded",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.PATH_LENGTH_EXCEEDED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.PATH_LENGTH_EXCEEDED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-pathlen.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

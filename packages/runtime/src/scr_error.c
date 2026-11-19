@@ -431,6 +431,7 @@ const char *scr_error_message_code(const ScrStr *msg) {
     { "certificate has expired", true, "CERT_HAS_EXPIRED" },
     { "certificate is not yet valid", true, "CERT_NOT_YET_VALID" },
     { "certificate signature failure", true, "CERT_SIGNATURE_FAILURE" },
+    { "path length constraint exceeded", true, "PATH_LENGTH_EXCEEDED" },
     { "certificate revoked", true, "CERT_REVOKED" },
     { "self-signed certificate in certificate chain", true, "SELF_SIGNED_CERT_IN_CHAIN" },
     { "self-signed certificate", false, "DEPTH_ZERO_SELF_SIGNED_CERT" },

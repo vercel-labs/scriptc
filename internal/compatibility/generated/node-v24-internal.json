@@ -19706,6 +19706,7 @@
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
           "tests/corpus/console-instance-state.ts",
+          "tests/corpus/console-instance-table-options.ts",
           "tests/corpus/console-method-format.ts",
           "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
@@ -19844,7 +19845,8 @@
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
           "tests/corpus/console-instance-state.ts",
-          "tests/corpus/console-instance-inspect-options.ts"
+          "tests/corpus/console-instance-inspect-options.ts",
+          "tests/corpus/console-instance-table-options.ts"
         ]
       },
       "anchorSource": "exact"

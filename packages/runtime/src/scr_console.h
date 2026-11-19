@@ -102,9 +102,11 @@ void scr_console_table(ScrDyn *data, ScrDyn *properties);
 ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);
 ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth);
 /* console.table's cell rendering (scr_inspect.c): Node's _inspect — depth
- * 0 (-1 for objects with more than two keys), maxArrayLength 3, breakLength
- * Infinity. +1. */
-ScrStr *scr_insp_table_cell(ScrDyn *value);
+ * 0 (-1 for objects that are not arrays and hold more than two enumerable
+ * keys), maxArrayLength 3, breakLength Infinity, then the console's own
+ * inspectOptions and colorMode answer. +1, or NULL with the exception
+ * pending. */
+ScrStr *scr_insp_table_cell(ScrDyn *value, ScrDyn *inspect_options, int colors_mode);
 /* Node's getStringWidth over UTF-8 text (the non-ICU tables). */
 size_t scr_insp_display_width(const char *data, size_t len);
 /* process.emitWarning(message) with the default Warning type, emitted on

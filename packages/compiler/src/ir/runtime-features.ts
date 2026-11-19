@@ -2360,10 +2360,14 @@ const RUNTIME_FEATURE_RULES = {
   icu: rule({ prefixes: ["icu."] }),
   /** A Console built with inspectOptions or colorMode formats its methods
    * through the runtime's option-aware entries: scr_inspect.c's console
-   * entries with scr_console_native.c's argument forms. colorMode 'auto'
-   * reads the environment's color depth (scr_tty_colors.c). */
+   * entries with scr_console_native.c's argument forms. console.table
+   * inspects its cells over the same options, and both tables color per
+   * colorMode, so colorMode 'auto' reads the environment's color depth
+   * (scr_tty_colors.c). */
   consoleOptions: rule({
     fns: [
+      "console.table",
+      "console.instTable",
       "console.instWriteArgs",
       "console.instDirxmlArgs",
       "console.instDirArgs",

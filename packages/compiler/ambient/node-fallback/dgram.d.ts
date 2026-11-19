@@ -142,8 +142,11 @@ declare module "dgram" {
     new (type: "udp4" | "udp6", listener?: (msg: Buffer, rinfo: RemoteInfo) => void): Socket;
     new (options: SocketOptions, listener?: (msg: Buffer, rinfo: RemoteInfo) => void): Socket;
   };
+  /** Any string is accepted: a value that is not "udp4" or "udp6" throws
+   * Node's ERR_SOCKET_BAD_TYPE at run time, as a non-literal type does in
+   * JavaScript. */
   export function createSocket(
-    type: "udp4" | "udp6",
+    type: string,
     callback?: (msg: Buffer, rinfo: RemoteInfo) => void,
   ): Socket;
   export function createSocket(

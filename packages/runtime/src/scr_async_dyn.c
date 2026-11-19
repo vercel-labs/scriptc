@@ -455,6 +455,11 @@ struct ScrAsyncResource {
   double async_id;
   double trigger_id;
   bool destroyed;
+  /* Node registers a GC destroy hook for a resource built without
+   * requireManualDestroy while destroy hooks exist; this runtime's disposal
+   * point is the last reference, which is where that destroy is emitted. */
+  bool manual_destroy;
+  bool destroy_registered;
   /* The live list, only so the process releases what a program still holds
    * at exit (the resource itself is reclaimed by its last reference). */
   struct ScrAsyncResource *next;
@@ -491,6 +496,9 @@ static void scr_ar_release_payload(ScrAsyncResource *r) {
 static SCR_TL double *scr_ar_destroy_queue = NULL;
 static SCR_TL size_t scr_ar_destroy_len = 0, scr_ar_destroy_cap = 0;
 static SCR_TL bool scr_ar_destroy_scheduled = false;
+/* The exit walk releases every live resource; the automatic destroy must not
+ * queue a tick from an atexit handler. */
+static SCR_TL bool scr_ar_tearing_down = false;
 
 static void scr_ar_queue_destroy(double id) {
   if (scr_ar_destroy_len == scr_ar_destroy_cap) {
@@ -518,6 +526,7 @@ static void scr_ar_ensure_teardown(void) {
 }
 
 static void scr_ar_teardown(void) {
+  scr_ar_tearing_down = true;
   free(scr_ar_destroy_queue);
   scr_ar_destroy_queue = NULL;
   scr_ar_destroy_len = scr_ar_destroy_cap = 0;
@@ -595,6 +604,14 @@ static void scr_ar_release(void *h) {
   }
   scr_cyc_dead(r);
   scr_ar_unlink(r);
+  /* The last reference going away is this runtime's disposal point, so the
+   * destroy a registered GC hook would emit for Node fires here (unless an
+   * explicit emitDestroy already queued one, or the process is tearing
+   * down). */
+  if (r->destroy_registered && !r->destroyed && !scr_ar_tearing_down) {
+    r->destroyed = true;
+    scr_ar_queue_destroy(r->async_id);
+  }
   scr_ar_release_payload(r);
   scr_cyc_free(r);
 }
@@ -700,6 +717,7 @@ ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options) {
     return NULL;
   }
   double trigger = scr_async_execution_id();
+  bool manual_destroy = false;
   if (options != NULL && options->kind != SCR_DYN_UNDEF) {
     if (options->kind == SCR_DYN_NUM) {
       trigger = options->v.num;
@@ -721,6 +739,7 @@ ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options) {
         scr_dyn_release(value);
         return NULL;
       }
+      manual_destroy = scr_dyn_truthy(manual);
       scr_dyn_release(manual);
       if (value->kind == SCR_DYN_UNDEF) trigger = scr_async_execution_id();
       else if (value->kind == SCR_DYN_NUM) trigger = value->v.num;
@@ -756,6 +775,8 @@ ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options) {
   r->async_id = scr_ar_next_async_id();
   r->trigger_id = trigger;
   r->destroyed = false;
+  r->manual_destroy = manual_destroy;
+  r->destroy_registered = false;
   r->next = scr_ar_live;
   scr_ar_live = r;
   scr_ar_live_count++;
@@ -763,6 +784,12 @@ ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options) {
   /* Node fires init at construction, before the constructor answers, with
    * the resource itself as the fourth argument. */
   scr_ah_dispatch_init(r->async_id, type->v.str->data, type->v.str->len, r->trigger_id, box);
+  /* Node registers its GC destroy hook for a resource built while destroy
+   * hooks exist unless requireManualDestroy asked otherwise, and it does so
+   * after emitInit: a hook enabled by an init callback counts, and a
+   * throwing init skips the registration. */
+  if (!scr_exc_pending())
+    r->destroy_registered = !manual_destroy && scr_ah_has_enabled_callback(3);
   return box;
 }
 
@@ -910,7 +937,12 @@ ScrDyn *scr_ar_emit_destroy(ScrDyn *handle) {
  * handle box for the same payload — handle identity is payload identity), or
  * the shared plain object outside such a scope. */
 ScrDyn *scr_ar_execution_resource(void) {
-  if (scr_ar_current_resource != NULL) return scr_ar_box(scr_ar_current_resource);
+  /* scr_ar_box takes ownership of one reference; the current resource is
+   * borrowed from the scope that installed it, so retain it for the box. */
+  if (scr_ar_current_resource != NULL) {
+    scr_ar_retain(scr_ar_current_resource);
+    return scr_ar_box(scr_ar_current_resource);
+  }
   scr_ar_ensure_teardown();
   if (scr_ar_default_resource == NULL) scr_ar_default_resource = scr_dyn_new_obj();
   return scr_dyn_retain(scr_ar_default_resource);

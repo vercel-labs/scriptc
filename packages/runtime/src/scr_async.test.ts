@@ -102,6 +102,18 @@ test("an AsyncResource handle owns its payload", async () => {
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
+test("executionAsyncResource answers a handle that owns its reference", async () => {
+  const result = await execFileAsync(bin, ["execres"]);
+  expect(result.stdout).toBe("async resource execution resource owns its reference\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("disposing an AsyncResource queues its destroy", async () => {
+  const result = await execFileAsync(bin, ["autodestroy"]);
+  expect(result.stdout).toBe("async resource disposal queues its destroy\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("due timers run by deadline, then by creation, before the turn's immediates", async () => {
   const result = await execFileAsync(bin, ["timers"]);
   expect(result.stdout).toBe(

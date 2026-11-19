@@ -31,6 +31,13 @@ console.log(
   ),
 );
 
+// Dropping a handle that executionAsyncResource answered must not release the
+// resource the scope itself owns.
+let borrowed = res.runInAsyncScope(() => ah.executionAsyncResource());
+console.log('borrowed same:', borrowed === res);
+borrowed = null;
+console.log('after drop:', res.asyncId() > 1);
+
 // A resource built inside another one's scope takes its trigger from it.
 let nestedTrigger = false;
 const outer = new AsyncResource('OUTER');

@@ -55,7 +55,11 @@ import { noLoweringDiag } from "../../diagnostics/diagnostic.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { threadsImportOf } from "../threads-import.js";
 import { nodeApiCalleeOf } from "../node-api-import.js";
-import { lowerIslandSuperCall, lowerIslandSuperMethodCall } from "./lower-node-island.js";
+import {
+  islandArgument,
+  lowerIslandSuperCall,
+  lowerIslandSuperMethodCall,
+} from "./lower-node-island.js";
 import { lowerNodeApiCall } from "./lower-node-island.js";
 import {
   adaptZeroArgTimerCallback,
@@ -2383,7 +2387,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
           callee: staticField,
           receiver: lowerer.lowerExprExpecting(expr.expression.expression, DYN),
           calleeName: v8CalleeText(expr.expression),
-          args: expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          args: expr.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
           type: DYN,
           loc: locOf(expr),
         };
@@ -2409,7 +2413,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         callee.type.kind === "dyn" &&
         !expr.arguments.nodes.some((arg) => ts.isSpreadElement(arg))
       ) {
-        const args = expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+        const args = expr.arguments.nodes.map((arg) => islandArgument(lowerer, arg));
         return {
           kind: "dynCall",
           callee,
@@ -2455,7 +2459,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         !expr.arguments.nodes.some((arg) => ts.isSpreadElement(arg))
       ) {
         const callee = lowerer.fieldGetExpr(target, locOf(expr.expression), expr.expression);
-        const args = expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+        const args = expr.arguments.nodes.map((arg) => islandArgument(lowerer, arg));
         return {
           kind: "dynCall",
           callee,
@@ -2614,7 +2618,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
               callee,
               receiver,
               calleeName: v8CalleeText(access),
-              args: expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+              args: expr.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
               type: DYN,
               loc,
             };
@@ -3179,7 +3183,7 @@ function lowerCallThroughValueRaw(
       kind: "dynCall",
       callee: lowerer.coerceToExpected(callee, DYN),
       calleeName: v8CalleeText(expr.expression),
-      args: expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      args: expr.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
       type: DYN,
       loc,
     };
@@ -3290,7 +3294,7 @@ function lowerCheckedCallableValue(
     kind: "dynCall",
     callee,
     calleeName: v8CalleeText(call.expression),
-    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
     type: DYN,
     loc,
   };
@@ -5000,7 +5004,7 @@ function lowerSearchParamsIteratorElementCall(
     recv: lowerer.coerceInto(access.expression, lowerer.lowerExpr(access.expression), DYN),
     method: "entries",
     calleeName: v8CalleeText(access),
-    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
     type: DYN,
     loc,
   };
@@ -5077,7 +5081,7 @@ function lowerUnionReceiverMethodCall(
       callee: member,
       receiver,
       calleeName: v8CalleeText(access),
-      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
       type: DYN,
       loc,
     },
@@ -5410,7 +5414,7 @@ function lowerDynReceiverMethodCall(
           callee: member,
           receiver,
           calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
           type: DYN,
           loc,
         },
@@ -5867,7 +5871,7 @@ function lowerDynReceiverMethodCall(
       return { kind: "seqExpr", stmts, result: { ...spread, receiver }, type: DYN, loc };
     lowerer.unsupported("SC1090", call, "spread arguments in calls through 'unknown' values");
   }
-  const args = call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN));
+  const args = call.arguments.nodes.map((a) => islandArgument(lowerer, a));
   return {
     kind: "seqExpr",
     stmts,
@@ -8024,7 +8028,7 @@ export function lowerPromiseMethodCall(
         recv: lowerer.coerceToExpected(receiver, DYN),
         method: member,
         calleeName: v8CalleeText(access),
-        args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
         type: DYN,
         loc,
       };
@@ -12514,7 +12518,7 @@ export function lowerRecordFieldCall(
           callee,
           ...(receiver ? { receiver } : {}),
           calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
           type: DYN,
           loc,
         };
@@ -12624,7 +12628,7 @@ export function lowerRecordFieldCall(
       callee: boxed,
       ...(restReceiver ? { receiver: restReceiver } : {}),
       calleeName: v8CalleeText(call.expression),
-      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
       type: DYN,
       loc,
     };
@@ -13133,8 +13137,7 @@ function lowerSignatureOnlyGenericMemberCall(
     const result = mapped && mapped.kind !== "void" ? mapped : DYN;
     return nsUndefRead(lowerer, ambient.text, call, result);
   }
-  const args = (): IrExpr[] =>
-    call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  const args = (): IrExpr[] => call.arguments.nodes.map((arg) => islandArgument(lowerer, arg));
   const root = memberChainRoot(access.expression);
   const chain = memberChainSegments(access.expression);
   const dep = root === null || chain === null ? null : lowerer.cjsModuleBindingDepOf(root);
@@ -13446,7 +13449,7 @@ function lowerObjLitGenericMethodCall(
           recv: receiver,
           method: name,
           calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
           type: DYN,
           loc,
         };
@@ -13579,7 +13582,7 @@ function lowerFieldValueCall(
       const boxed: IrExpr = { kind: "dynFrom", value: callee, type: DYN, loc };
       const spread = lowerSpreadArgsCall(lowerer, call, boxed, loc);
       if (spread?.kind === "dynCall") return finish({ ...spread, ...receiver });
-      const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+      const args = call.arguments.nodes.map((arg) => islandArgument(lowerer, arg));
       return finish({
         kind: "dynCall",
         callee: boxed,
@@ -13933,7 +13936,7 @@ function lowerObjectMethodCallOn(
               callee,
               receiver,
               calleeName: v8CalleeText(access),
-              args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+              args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
               type: DYN,
               loc,
             };
@@ -14243,7 +14246,7 @@ function lowerUnionObjectMethodCall(
             callee,
             receiver,
             calleeName: v8CalleeText(access),
-            args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+            args: call.arguments.nodes.map((arg) => islandArgument(lowerer, arg)),
             type: DYN,
             loc,
           };
@@ -14396,7 +14399,7 @@ function lowerUnionObjectDynFieldCall(
     lowerer.liftedFns.push({ name: helper, params, returnType: DYN, locals, body, loc });
   }
   const callee: IrExpr = { kind: "call", callee: helper, args: [receiverRef], type: DYN, loc };
-  const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  const args = call.arguments.nodes.map((arg) => islandArgument(lowerer, arg));
   return {
     kind: "seqExpr",
     stmts: [{ kind: "varDecl", localId: receiverLocal.id, init: receiver, loc }],

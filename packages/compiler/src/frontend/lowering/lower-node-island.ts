@@ -27,6 +27,8 @@ import { extendsElementOf } from "../heritage-elements.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
+import type { ClassInfo } from "./lower-classes.js";
+import { exactClassCrossing } from "./exact-class.js";
 import { genericOverrideBelow } from "./lower-classes.js";
 import { isOptionalChainTail } from "./expressions/optional-chains.js";
 import {
@@ -1921,6 +1923,21 @@ function workerOnlyValueFence(lowerer: Lowerer, node: ts.Expression, inner: ts.E
   if (kind !== null) lowerer.refuseIslandWorkerValue(node, kind);
 }
 
+/** An argument of a call whose callee is a checked-dynamic (island) value: a class-typed argument
+ * crosses with the class it has at run time, and that class's method table is registered beside
+ * it. Everything else crosses as it always did. (This runs before the island analysis a full
+ * crossing needs, so it uses the class tables directly rather than toIsland.) */
+export function islandArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const lowered = lowerer.lowerExpr(node);
+  if (lowered.type.kind === "object") {
+    const exact = exactClassCrossing(lowerer, lowered, locOf(node), (v, className) =>
+      withClassMethods(lowerer, lowerer.coerceInto(node, v, DYN), className, node),
+    );
+    if (exact !== null) return exact;
+  }
+  return lowerer.coerceInto(node, lowered, DYN);
+}
+
 function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const islands = lowerer.nodeIslands!;
   const inner = withoutParenthesesTypeWrappers(node);
@@ -1948,6 +1965,14 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   // that is the named refusal, where the unboxed value reached the IR
   // validator as an internal error.
   const boxed = (lowered: IrExpr): IrExpr => {
+    // A class-typed value crosses at the class it has at run time, and each branch registers that
+    // class's method table beside the value (an app class's table exists nowhere else).
+    if (lowered.type.kind === "object") {
+      const exact = exactClassCrossing(lowerer, lowered, locOf(node), (v, className) =>
+        withClassMethods(lowerer, lowerer.coerceToExpected(v, DYN), className, node),
+      );
+      if (exact !== null) return exact;
+    }
     const value = lowerer.coerceToExpected(lowered, DYN);
     if (value.type.kind !== "dyn")
       boundaryFail(
@@ -2106,7 +2131,9 @@ function classMethodsBuilderOf(
       // class decides — and the lowering refuses the value: the table leaves
       // the member out instead of failing the build that shares the class.
       if (genericOverrideBelow(info, m)) continue;
-      const method = classMethodValue(lowerer, blame, info, m, loc);
+      // A method an island calls returns its class-typed result with the class it has at run
+      // time, so a canvas obtained as HTMLElement answers getContext and its fields.
+      const method = classMethodValue(lowerer, blame, info, m, loc, { exactReturn: true });
       if (method === null) continue;
       fields.push({
         key: { kind: "strLit", value: m, type: STRING, loc },

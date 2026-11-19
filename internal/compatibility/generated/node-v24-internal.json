@@ -91666,6 +91666,7 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-serialize.ts",
           "tests/corpus/sqlite-sessions.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
           "tests/corpus/sqlite-tag-store.ts",
           "tests/corpus/sqlite-user-functions.ts"
         ]
@@ -91719,7 +91720,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -91774,7 +91776,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -91855,7 +91858,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -91884,7 +91888,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -91913,7 +91918,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -91994,7 +92000,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92075,7 +92082,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92183,7 +92191,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92212,7 +92221,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -92241,7 +92251,8 @@
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -92429,7 +92440,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92483,7 +92495,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92514,7 +92527,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92545,7 +92559,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92576,7 +92591,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92607,7 +92623,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92638,7 +92655,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92669,7 +92687,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92700,7 +92719,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92731,7 +92751,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92762,7 +92783,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92793,7 +92815,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -92824,7 +92847,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -92855,7 +92879,8 @@
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-class-reflection.ts"
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs"
         ]
       },
       "anchorSource": "ancestor"

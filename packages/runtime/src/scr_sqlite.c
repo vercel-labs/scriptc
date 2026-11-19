@@ -3659,8 +3659,8 @@ static ScrDyn *scr_sqlite_inspect_of(ScrDynHandleTag tag, const char *const *nam
 }
 
 /* A write of a class accessor: V8's getter-only TypeError, as Node's
- * class accessors raise (no code). Any other key is added as an ordinary
- * data property. */
+ * class accessors raise (no code), which sloppy-mode code ignores. Any
+ * other key is added as an ordinary data property. */
 static bool scr_sqlite_own_set(const char *const *names, size_t count, const char *cls,
                                const char *key, size_t len, const ScrDyn *value,
                                ScrDyn **expandos) {
@@ -3669,6 +3669,9 @@ static bool scr_sqlite_own_set(const char *const *names, size_t count, const cha
     snprintf(message, sizeof message, "Cannot set property %.*s of #<%s> which has only a getter",
              (int)len, key, cls);
     scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    /* The failure is noted so a sloppy-mode write drops it (V8 ignores a
+     * getter-only assignment outside strict code). */
+    scr_dyn_assign_failure_note();
     return true;
   }
   if (*expandos == NULL) *expandos = scr_dyn_new_obj();

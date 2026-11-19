@@ -88,6 +88,13 @@ show("symbol-read", Reflect.get(db as unknown as object, Symbol.for("sqlite-type
 show("symbol-other", Reflect.get(stmt as unknown as object, Symbol.for("sqlite-type")));
 show("values", Object.values(db).slice(0, 2));
 
+dbRecord.meta = "top-secret";
+const redact = (key: string, value: unknown): unknown =>
+  key === "meta" || key === "length" ? undefined : value;
+show("redacted", JSON.stringify(db, redact));
+show("allowlist", JSON.stringify(db, ["isOpen", "isTransaction", "limits", "length"]));
+delete dbRecord.meta;
+
 try {
   dbRecord.isOpen = false;
   show("write-accessor", "none");

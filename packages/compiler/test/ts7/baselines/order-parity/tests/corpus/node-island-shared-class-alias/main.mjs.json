@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-shared-class-alias/classes.ts",
+  "<repo>/tests/corpus/node-island-shared-class-alias/shared.ts",
+  "<repo>/tests/corpus/node-island-shared-class-alias/main.mjs"
+ ],
+ "diags": []
+}

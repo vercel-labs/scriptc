@@ -485,7 +485,8 @@ export class ShapeRegistry {
         indexes = new Map();
         indexed = 0;
       }
-      for (; indexed < this.shapes.length; indexed++) indexes.set(this.shapes[indexed]!.id, indexed);
+      for (; indexed < this.shapes.length; indexed++)
+        indexes.set(this.shapes[indexed]!.id, indexed);
       const index = indexes.get(id);
       return index !== undefined && this.shapes[index]?.id === id ? index : undefined;
     };
@@ -555,11 +556,7 @@ export class ShapeRegistry {
   }
 
   /** Notes `id`'s change at the end of the journal. */
-  private journalChange(
-    id: string,
-    encode: () => ShapeJournalOp | null,
-    undo: () => void,
-  ): void {
+  private journalChange(id: string, encode: () => ShapeJournalOp | null, undo: () => void): void {
     if (!this.journaling) return;
     this.journalLog.push({ encode, undo });
     const at = this.journalLog.length - 1;
@@ -605,7 +602,9 @@ export class ShapeRegistry {
         const shape = this.byId.get(op.id);
         if (shape === undefined) return false;
         return op.fields.every((field) =>
-          shape.fields.some((held) => held.name === field.name && typeEquals(held.type, field.type)),
+          shape.fields.some(
+            (held) => held.name === field.name && typeEquals(held.type, field.type),
+          ),
         );
       }
     }
@@ -664,9 +663,7 @@ export class ShapeRegistry {
         const shape = this.byId.get(op.id);
         if (shape === undefined)
           throw new InternalCompilerError(`shape record names unknown shape ${op.id}`);
-        this.withDeclaredOrderPriority(op.priority, () =>
-          this.adoptDeclaredOrder(shape, op.order),
-        );
+        this.withDeclaredOrderPriority(op.priority, () => this.adoptDeclaredOrder(shape, op.order));
         break;
       }
       case "accessor": {
@@ -706,8 +703,7 @@ export class ShapeRegistry {
         }
       },
       changed: () => {
-        for (const [id, text] of texts)
-          if (differs(id, text) && !explained(id)) return id;
+        for (const [id, text] of texts) if (differs(id, text) && !explained(id)) return id;
         return null;
       },
       changedAmong: (keys) => {

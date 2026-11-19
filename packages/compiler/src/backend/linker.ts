@@ -421,7 +421,8 @@ async function startupOrderingFile(plan: NativeLinkPlan, dir: string): Promise<s
 
 /** Extensions the driver compiles as source. A link that names one reads
  * headers its preprocessor opens, which the driver's trace does not list. */
-const COMPILED_SOURCE = /\.(?:c|cc|cpp|cxx|m|mm|cu|s)$/i;
+const COMPILED_SOURCE =
+  /\.(?:c|i|ii|m|mi|mm|mii|cc|cp|cpp|c\+\+|cxx|cppm|ccm|cxxm|c\+\+m|mpp|cu|hip|s)$/i;
 
 export async function linkNativeExecutable(
   plan: NativeLinkPlan,

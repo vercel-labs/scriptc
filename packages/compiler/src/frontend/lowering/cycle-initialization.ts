@@ -691,11 +691,100 @@ export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void
     return;
   const fileOfInit = new Map<string, ts.SourceFile>();
   for (const [sf, name] of lowerer.initNameOf) fileOfInit.set(name, sf);
+  // Most functions run early, so the flags, classes and statics they check
+  // are the same for all of them: build that state once instead of copying
+  // every flagged binding per function.
+  const shared = sharedCycleChecks(lowerer);
   for (const fn of mod.functions) {
     if (fn.name.startsWith(GENERATED_CLASS_HELPER)) continue;
-    rewriteFunction(lowerer, fn, fileOfInit.get(fn.name));
+    rewriteFunction(lowerer, fn, fileOfInit.get(fn.name), shared);
   }
   markUninitializedWrites(lowerer, mod);
+}
+
+/** The check state of a function that can run before any declaration: every
+ * flag applies. Class members omit their own class's flag, whose state the
+ * class's creation sets; the maps without each class's flag are built on the
+ * first function of that class and reused by the rest. */
+interface SharedCycleChecks {
+  active: Map<string, CycleInitFlag>;
+  classes: Map<string, CycleInitFlag>;
+  statics: Map<string, CycleInitFlag[]>;
+  called: readonly CycleInitFlag[];
+  /** The class names, and the first segments of any that carry a dot: a
+   * function name's class is its text between the leading `%` and the first
+   * `.`, which is the whole name for an ordinary class. */
+  classNames: ReadonlySet<string>;
+  dottedHeads: ReadonlySet<string>;
+  withoutClass: Map<string, { classes: Map<string, CycleInitFlag>; statics: Map<string, CycleInitFlag[]> }>;
+}
+
+function sharedCycleChecks(lowerer: Lowerer): SharedCycleChecks {
+  const classes = new Map<string, CycleInitFlag>();
+  const statics = new Map<string, CycleInitFlag[]>();
+  for (const [className, flag] of lowerer.classInitFlags) {
+    classes.set(className, flag);
+    for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
+      statics.set(id, [...(statics.get(id) ?? []), flag]);
+  }
+  const classNames = new Set<string>();
+  const dottedHeads = new Set<string>();
+  for (const name of lowerer.classInitFlags.keys()) {
+    classNames.add(name);
+    const dot = name.indexOf(".");
+    if (dot > 0) dottedHeads.add(name.slice(0, dot));
+  }
+  return {
+    active: lowerer.cycleInitFlags,
+    classes,
+    statics,
+    called: lowerer.calledBindingInitFlags,
+    classNames,
+    dottedHeads,
+    withoutClass: new Map(),
+  };
+}
+
+/** The classes whose member function `fnName` is: the class itself, and a
+ * dotted class name it is also a prefix of, as the per-function filter
+ * (startsWith(`%$class.`)) would exclude both. */
+function owningClasses(shared: SharedCycleChecks, fnName: string): string[] {
+  if (!fnName.startsWith("%")) return [];
+  const dot = fnName.indexOf(".", 1);
+  if (dot < 0) return [];
+  const head = fnName.slice(1, dot);
+  const owners: string[] = [];
+  if (shared.classNames.has(head)) owners.push(head);
+  if (shared.dottedHeads.has(head)) {
+    for (const name of shared.classNames) {
+      if (name !== head && fnName.startsWith(`%${name}.`)) owners.push(name);
+    }
+  }
+  return owners;
+}
+
+function classChecksWithout(
+  shared: SharedCycleChecks,
+  owners: readonly string[],
+): { classes: Map<string, CycleInitFlag>; statics: Map<string, CycleInitFlag[]> } {
+  const key = owners.join("\0");
+  const cached = shared.withoutClass.get(key);
+  if (cached !== undefined) return cached;
+  const excluded = new Set<CycleInitFlag>();
+  for (const name of owners) {
+    const flag = shared.classes.get(name);
+    if (flag !== undefined) excluded.add(flag);
+  }
+  const classes = new Map(shared.classes);
+  for (const name of owners) classes.delete(name);
+  const statics = new Map<string, CycleInitFlag[]>();
+  for (const [id, flags] of shared.statics) {
+    const rest = flags.filter((flag) => !excluded.has(flag));
+    if (rest.length > 0) statics.set(id, rest);
+  }
+  const entry = { classes, statics };
+  shared.withoutClass.set(key, entry);
+  return entry;
 }
 
 /** The helpers class dispatch and class reflection generate
@@ -770,27 +859,47 @@ function rewriteFunction(
   lowerer: Lowerer,
   fn: IrFunction,
   initOf: ts.SourceFile | undefined,
+  shared: SharedCycleChecks,
 ): void {
-  const active = new Map<string, CycleInitFlag>();
-  const runsEarly = (flag: CycleInitFlag): boolean =>
-    initOf === undefined || initOf === flag.module || !flag.settled.has(initOf);
-  for (const [id, flag] of lowerer.cycleInitFlags) {
-    if (runsEarly(flag)) active.set(id, flag);
+  let active: Map<string, CycleInitFlag>;
+  let classes: Map<string, CycleInitFlag>;
+  let statics: Map<string, CycleInitFlag[]>;
+  let called: readonly CycleInitFlag[];
+  if (initOf === undefined) {
+    // Every function that is not a module %init runs early: reuse the state
+    // built once for the pass. A class's own members run only once the class
+    // exists, or inside its own definition, where the inner binding is
+    // initialized, so they omit their class's flag and its static storage.
+    const owners = owningClasses(shared, fn.name);
+    const filtered = owners.length === 0 ? null : classChecksWithout(shared, owners);
+    active = shared.active;
+    classes = filtered === null ? shared.classes : filtered.classes;
+    statics = filtered === null ? shared.statics : filtered.statics;
+    called = shared.called;
+  } else {
+    const runsEarly = (flag: CycleInitFlag): boolean =>
+      initOf === flag.module || !flag.settled.has(initOf);
+    active = new Map<string, CycleInitFlag>();
+    for (const [id, flag] of lowerer.cycleInitFlags) {
+      if (runsEarly(flag)) active.set(id, flag);
+    }
+    // Classes, by name, and the static field storage each reaches (a base
+    // class's statics through a subclass too). A class's own members run
+    // only once the class exists, or inside its own definition, where the
+    // inner binding is initialized.
+    const ownClasses = new Map<string, CycleInitFlag>();
+    const ownStatics = new Map<string, CycleInitFlag[]>();
+    for (const [className, flag] of lowerer.classInitFlags) {
+      if (!runsEarly(flag) || fn.name.startsWith(`%${className}.`)) continue;
+      ownClasses.set(className, flag);
+      for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
+        ownStatics.set(id, [...(ownStatics.get(id) ?? []), flag]);
+    }
+    classes = ownClasses;
+    statics = ownStatics;
+    // Bindings without storage, by the calls that name them.
+    called = lowerer.calledBindingInitFlags.filter(runsEarly);
   }
-  // Classes, by name, and the static field storage each reaches (a base
-  // class's statics through a subclass too). A class's own members run only
-  // once the class exists, or inside its own definition, where the inner
-  // binding is initialized.
-  const classes = new Map<string, CycleInitFlag>();
-  const statics = new Map<string, CycleInitFlag[]>();
-  for (const [className, flag] of lowerer.classInitFlags) {
-    if (!runsEarly(flag) || fn.name.startsWith(`%${className}.`)) continue;
-    classes.set(className, flag);
-    for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
-      statics.set(id, [...(statics.get(id) ?? []), flag]);
-  }
-  // Bindings without storage, by the calls that name them.
-  const called = lowerer.calledBindingInitFlags.filter(runsEarly);
   if (active.size === 0 && classes.size === 0 && called.length === 0) return;
   const flagOf = (localId: string, loc: SrcLoc): CycleInitFlag | undefined =>
     active.get(localId) ?? statics.get(localId)?.find((flag) => coversReference(flag, loc));

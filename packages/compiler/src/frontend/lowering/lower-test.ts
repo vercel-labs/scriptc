@@ -1300,17 +1300,34 @@ export function lowerTestMethodCall(
       member === "snapshot" || member === "fileSnapshot"
         ? lowerSnapshotAssert(lowerer, call, member, access.expression.expression)
         : lowerer.lowerAssertModuleCall(call, { module: "assert", member }, loc);
-    // Each t.assert call counts against the test's plan (t.plan).
-    if (served)
+    // Reading t.assert fixes this context's assertion set (Node builds the
+    // test's assertion object from the registry on that read), and each
+    // t.assert call counts against the test's plan (t.plan).
+    if (served) {
+      const receiver = lowerer.lowerExpr(access.expression.expression);
+      const ctxLocal = lowerer.declareHiddenLocal("%assertCtx", receiver.type);
+      const ctxRef = varRef(ctxLocal.id, receiver.type, loc);
       return {
         kind: "seqExpr",
         stmts: [
+          { kind: "varDecl", localId: ctxLocal.id, init: receiver, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "test.ctxAssertTouch",
+              args: [ctxRef],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
           {
             kind: "exprStmt",
             expr: {
               kind: "libCall",
               fn: "test.ctxCount",
-              args: [lowerer.lowerExpr(access.expression.expression)],
+              args: [ctxRef],
               type: VOID,
               loc,
             },
@@ -1321,6 +1338,7 @@ export function lowerTestMethodCall(
         type: served.type,
         loc,
       };
+    }
     if (!ASSERT_MODULE_MEMBERS.has(member)) {
       /* Not an assert-module member: a custom assertion registered through
        * node:test's assert.register(name, fn). The lookup is the runtime
@@ -1342,6 +1360,17 @@ export function lowerTestMethodCall(
       );
       const stmts: IrStmt[] = [
         { kind: "varDecl", localId: ctxLocal.id, init: receiver, loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "test.ctxAssertTouch",
+            args: [ctxRef],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
         {
           kind: "exprStmt",
           expr: {

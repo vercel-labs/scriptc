@@ -2703,6 +2703,9 @@ function buildLibFnSignatures() {
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
+    // The first `t.assert` read fixes this context's assertion set (Node
+    // builds the test's assertion object from the registry at that moment).
+    "test.ctxAssertTouch": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
     // mock.fn's and mock.method's { times }: Node's non-negative-integer

@@ -34,6 +34,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "test.ctxSignal",
   // scr_test_ctx_log writes the ℹ line at once; printing cannot raise.
   "test.ctxLog",
+  // scr_test_ctx_assert_touch copies the custom-assertion registry (plain
+  // objects and functions) into the context's snapshot; it runs no program
+  // code and raises no catchable error.
+  "test.ctxAssertTouch",
   // Console instance state that answers text: the timer labels are already
   // strings, the stores are the instance's own tables, and no program code
   // runs. (The counters and the table can throw, so they are not here.)

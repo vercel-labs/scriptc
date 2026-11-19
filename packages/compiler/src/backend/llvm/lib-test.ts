@@ -83,6 +83,8 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       host.emitPendingCheck(out);
       return out;
     }
+    case "test.ctxAssertTouch":
+      return finishRuntimeCall(host, e, "scr_test_ctx_assert_touch", a);
     case "test.ctxCount":
       return finishRuntimeCall(host, e, "scr_test_ctx_count", a);
     case "test.mockTimes":

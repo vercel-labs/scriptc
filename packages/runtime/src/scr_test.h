@@ -59,6 +59,7 @@ ScrDyn *scr_test_ctx_error(ScrTestCtx *t);
  * function is called without a bound `this`. */
 void scr_test_assert_register(ScrStr *name, ScrDyn *fn);
 ScrDyn *scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name, ScrDyn *args);
+void scr_test_ctx_assert_touch(ScrTestCtx *t);
 /* snapshot.setDefaultSnapshotSerializers(serializers): the list every later
  * snapshot assertion without its own serializers runs through. */
 void scr_test_snapshot_set_default_serializers(ScrDyn *serializers);

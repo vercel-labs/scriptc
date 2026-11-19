@@ -1097,26 +1097,33 @@ static void ws_rcontroller_close(WsRController *c) {
  * (closeRequested names the controller afterwards); with the queue empty the
  * stream closes without that flag, so a later close() names the stream. A read
  * still waiting for its first byte is answered as an end here; Node leaves it
- * unsettled forever. */
-static void ws_bytes_close(WsRController *c) {
-  if (!ws_rcontroller_can_close_or_enqueue(c)) return;
+ * unsettled forever.
+ *
+ * Only the close() a program calls itself re-throws. The internal closers (a
+ * teed branch's EOF, a source adapter's sink) run inside a reaction, where
+ * Node's throw becomes that reaction's rejection while the stream stays
+ * errored, so `surface = false` leaves the pending read the error and raises
+ * nothing. Answers true when a partially filled BYOB read was errored. */
+static bool ws_bytes_close(WsRController *c, bool surface) {
+  if (!ws_rcontroller_can_close_or_enqueue(c)) return false;
   WsPullInto *d = c->into_head;
   if (d && d->filled) {
     size_t width = scr_bytes_elem_size(d->view->elem);
     if (d->byob && width && d->filled % width) {
       ScrDyn *error = ws_state_error_value("Partial read");
       ws_rcontroller_error(c, error);
-      if (!scr_exc_pending()) scr_dyn_throw(scr_dyn_retain(error));
+      if (surface && !scr_exc_pending()) scr_dyn_throw(scr_dyn_retain(error));
       scr_dyn_release(error);
-      return;
+      return true;
     }
   }
   if (c->queue.length) {
     c->close_requested = true;
-    return;
+    return false;
   }
   ws_rcontroller_clear_algorithms(c);
   ws_readable_close(c->stream);
+  return false;
 }
 
 /* readableStreamDefaultControllerEnqueue: false with the exception pending
@@ -1888,9 +1895,11 @@ static void ws_rcontroller_deliver(WsRController *c, ScrDyn *chunk) {
   else ws_rcontroller_enqueue(c, chunk);
 }
 
-static void ws_rcontroller_deliver_end(WsRController *c) {
-  if (c->bytes) ws_bytes_close(c);
-  else ws_rcontroller_close(c);
+/* A teed branch's end: the internal close form (no exception surfaces). */
+static bool ws_rcontroller_deliver_end(WsRController *c) {
+  if (c->bytes) return ws_bytes_close(c, false);
+  ws_rcontroller_close(c);
+  return false;
 }
 
 static void ws_tee_forward_chunk(void *ctx, ScrDyn *unused) {
@@ -1918,9 +1927,15 @@ static void ws_tee_close_tick(void *ctx, ScrDyn *unused) {
   (void)unused;
   WsTee *t = ctx;
   t->reading = false;
-  if (!t->canceled1) ws_rcontroller_deliver_end(t->branch1->controller);
-  if (!t->canceled2) ws_rcontroller_deliver_end(t->branch2->controller);
-  if (!t->canceled1 || !t->canceled2) ws_deferred_resolve_undefined(&t->cancel_promise);
+  /* Node's byte-tee close callback closes the branches in turn; a partial
+   * BYOB read makes the first close throw, which drops the rest of the
+   * callback (the second branch's close and the cancel promise). Mirror
+   * that order without surfacing the throw. */
+  bool stopped = false;
+  if (!t->canceled1) stopped = ws_rcontroller_deliver_end(t->branch1->controller);
+  if (!stopped && !t->canceled2) stopped = ws_rcontroller_deliver_end(t->branch2->controller);
+  if (!stopped && (!t->canceled1 || !t->canceled2))
+    ws_deferred_resolve_undefined(&t->cancel_promise);
 }
 
 static void ws_tee_request_close(WsReadRequest *q) {
@@ -5246,7 +5261,7 @@ static ScrDyn *ws_rcontroller_method(void *ptr, ScrDyn *self, const char *method
       ws_rcontroller_closed_error(c);
       return NULL;
     }
-    if (c->bytes) ws_bytes_close(c);
+    if (c->bytes) ws_bytes_close(c, true);
     else ws_rcontroller_close(c);
     return ws_undef();
   }
@@ -6326,7 +6341,7 @@ static void ws_bytes_over_close(void *ctx) {
   WsOver *o = ctx;
   WsRController *c = ws_over_controller(o);
   if (c) {
-    ws_bytes_close(c);
+    ws_bytes_close(c, false); /* a source's EOF inside a reaction */
     ws_pull_fulfilled(c, NULL);
   }
   ws_release(o);

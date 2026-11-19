@@ -39,7 +39,15 @@ server.on("upgrade", (req: IncomingMessage, socket: Socket) => {
     socket.write(Buffer.from([0x88, 0x05, 0x03, 0xe8, 0xc3, 0x28, 0x41]));
   }
   socket.on("data", (chunk: Buffer) => {
-    // Decode the client's masked close frame and report its code.
+    // A client masks every frame it sends: an unmasked close is a protocol
+    // violation, so report it instead of decoding it.
+    if ((chunk[1] & 0x80) === 0) {
+      serverLines[which - 1] = "case " + String(which) + " unmasked client frame";
+      socket.end();
+      casePending -= 1;
+      finish();
+      return;
+    }
     let length = chunk[1] & 0x7f;
     let offset = 2;
     if (length === 126) {

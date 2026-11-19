@@ -96,6 +96,8 @@ typedef struct ScrWs {
  * network callbacks below). */
 static void scr_ws_on_data(void *ctx, const char *buf, size_t n);
 static void scr_ws_on_eof(void *ctx);
+static size_t scr_ws_send_frame(ScrWs *ws, int opcode, const unsigned char *payload,
+                                size_t length);
 
 static void *scr_ws_retain_v(void *p) {
   ((ScrWs *)p)->rc++;
@@ -239,8 +241,9 @@ static void scr_ws_fail_impl(ScrWs *ws) {
 static void scr_ws_fail_protocol_impl(ScrWs *ws) {
   if (ws->discard) return;
   if (ws->sock != NULL && !ws->close_sent) {
-    static const unsigned char frame[4] = {0x88, 0x02, 0x03, 0xea}; /* close 1002 */
-    scr_net_sock_write_native(ws->sock, (const char *)frame, sizeof frame);
+    /* A client masks every frame it sends, close frames included. */
+    static const unsigned char payload[2] = {0x03, 0xea}; /* close 1002 */
+    scr_ws_send_frame(ws, SCR_WS_OP_CLOSE, payload, sizeof payload);
     ws->close_sent = true;
   }
   ws->discard = true;
@@ -294,8 +297,9 @@ static bool scr_ws_utf8_valid(const unsigned char *p, size_t n) {
 static void scr_ws_fail_utf8_impl(ScrWs *ws) {
   if (ws->discard) return;
   if (ws->sock != NULL && !ws->close_sent) {
-    static const unsigned char frame[4] = {0x88, 0x02, 0x03, 0xEF}; /* close 1007 */
-    scr_net_sock_write_native(ws->sock, (const char *)frame, sizeof frame);
+    /* A client masks every frame it sends, close frames included. */
+    static const unsigned char payload[2] = {0x03, 0xEF}; /* close 1007 */
+    scr_ws_send_frame(ws, SCR_WS_OP_CLOSE, payload, sizeof payload);
     ws->close_sent = true;
   }
   ws->discard = true;

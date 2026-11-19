@@ -67,6 +67,38 @@ function isConsoleCtor(lowerer: Lowerer, callee: ts.Expression): boolean {
   );
 }
 
+/** Whether any module constructs a Console with inspectOptions or
+ * colorMode. Such a Console's methods format through the runtime's
+ * option-aware entries wherever their call sites sit, so the answer is a
+ * program-wide fact, not a lowering-order one (a call lowered before the
+ * constructor would otherwise keep the static path). Scanned once; the
+ * answer is cached on the lowerer. */
+function programConstructsOptionConsole(lowerer: Lowerer): boolean {
+  if (lowerer.consoleOptionsFact !== undefined) return lowerer.consoleOptionsFact;
+  const modules = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
+  let found = false;
+  for (const sf of modules) {
+    if (found) break;
+    ts.walkPreorder(sf, (node) => {
+      if (!ts.isNewExpression(node) || !isConsoleCtor(lowerer, node.expression)) return undefined;
+      const first = node.arguments?.nodes[0];
+      if (first === undefined || !ts.isObjectLiteralExpression(first)) return undefined;
+      for (const prop of first.properties.nodes) {
+        if (!ts.isPropertyAssignment(prop)) continue;
+        const key = prop.name;
+        const text = ts.isIdentifier(key) || ts.isStringLiteral(key) ? key.text : null;
+        if (text === "inspectOptions" || text === "colorMode") {
+          found = true;
+          return "stop";
+        }
+      }
+      return undefined;
+    });
+  }
+  lowerer.consoleOptionsFact = found;
+  return found;
+}
+
 function isUndefinedArg(node: ts.Expression | undefined): boolean {
   return (
     node === undefined ||
@@ -241,7 +273,6 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
       );
       if (entry.role === "inspectOptions") inspectOptions = value;
       else colorMode = value;
-      lowerer.consoleDynamicArgs = true;
     } else if (entry.role === "ignored") {
       // Node destructures the known keys and ignores the rest; the
       // unknown initializer still evaluates, in source order.
@@ -415,7 +446,7 @@ function lowerConsoleInstanceMemberCall(
    * console entries). The members Node's Console methods do not format
    * (count/time labels use String, table cells have their own renderer)
    * keep the static lowering. */
-  if (lowerer.consoleDynamicArgs) {
+  if (programConstructsOptionConsole(lowerer)) {
     const args = call.arguments.nodes;
     const packed = (at: SrcLoc): { stmts: IrStmt[]; pack: () => IrExpr } =>
       dynArgumentPack(lowerer, args, at, { blame: call });

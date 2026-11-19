@@ -368,8 +368,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
   // getColorDepth and hasColors of the process stream object, for a program
-  // that holds a process stream as a value and names one of them.
-  unit((u) => u.opts.events && u.opts.ttyColors === true, "scr_tty_colors.c"),
+  // that holds a process stream as a value and names one of them; and a
+  // Console built with inspectOptions or colorMode, whose 'auto' mode reads
+  // the same tables.
+  unit(
+    (u) => (u.opts.events && u.opts.ttyColors === true) || u.opts.consoleOptions === true,
+    "scr_tty_colors.c",
+  ),
   // readline's terminal mode: rl.terminal sets the regex unit it
   // measures with.
   unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),

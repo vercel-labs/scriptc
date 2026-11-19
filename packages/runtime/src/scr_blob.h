@@ -139,6 +139,9 @@ bool scr_dyn_process_stdio_is(const ScrDyn *value);
  * stream object's getColorDepth or hasColors function for that member name
  * (+1), NULL for any other name; and the release of both at exit. */
 ScrDyn *scr_tty_colors_method(const char *key, size_t length);
+/* Console colorMode 'auto': Node's shouldColorize over the target — the
+ * environment's FORCE_COLOR first, then the terminal's color depth. */
+bool scr_tty_console_auto_colors(bool is_tty);
 void scr_tty_colors_cleanup(void);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);
 

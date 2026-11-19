@@ -57,3 +57,31 @@ const auto = streamOf();
 const automatic = new Console({ stdout: auto.stream, colorMode: "auto" });
 automatic.log({ a: 1 });
 console.log("auto output", JSON.stringify(auto.sink.out));
+
+// A Console-typed global console receiver prints like the global console,
+// even when the program also builds an option-bearing instance.
+const globalAlias = console;
+globalAlias.log("via the global alias");
+
+// A method lowered before any option-bearing constructor still formats with
+// the instance's options when it runs.
+function report(target: Console): void {
+  target.log({ a: 1 });
+}
+const early = streamOf();
+const earlyConsole = new Console({ stdout: early.stream, stderr: early.stream, colorMode: true });
+report(earlyConsole);
+console.log("early output", JSON.stringify(early.sink.out));
+
+// colorMode 'auto' follows Node's shouldColorize: FORCE_COLOR decides on
+// its own, so a stream that is not a terminal colors when it is set.
+process.env.FORCE_COLOR = "1";
+const forced = streamOf();
+new Console({ stdout: forced.stream, colorMode: "auto" }).log({ a: 1 });
+delete process.env.FORCE_COLOR;
+console.log("forced output", JSON.stringify(forced.sink.out));
+process.env.FORCE_COLOR = "0";
+const disabled = streamOf();
+new Console({ stdout: disabled.stream, colorMode: "auto" }).log({ a: 1 });
+delete process.env.FORCE_COLOR;
+console.log("disabled output", JSON.stringify(disabled.sink.out));

@@ -816,16 +816,62 @@ void scr_console_inst_trace(ScrDyn *console, ScrStr *text) {
  * Node's Console methods format their arguments with
  * util.formatWithOptions(kGetInspectOptions(stream), ...args): the
  * instance's inspectOptions, then the colorMode answer (forced colors,
- * forced none, or 'auto' over the target's terminal). These entries take
- * the raw checked-dynamic arguments so the options apply per call. */
+ * forced none, or 'auto' — Node's shouldColorize over the target: the
+ * environment's FORCE_COLOR first, then a terminal's color depth). These
+ * entries take the raw checked-dynamic arguments so the options apply per
+ * call. A Console-typed value can also hold the global console (Node's
+ * global console is a Console), whose options are the defaults and whose
+ * colorMode is 'auto' over process stdio. */
+
+/* The instance behind `console`, or NULL when it is not an instance. */
+static ScrConsoleInst *scr_console_inst_peek(ScrDyn *console) {
+  if (console->kind == SCR_DYN_HANDLE && console->v.handle.tag == SCR_DYNH_CONSOLE_INSTANCE)
+    return console->v.handle.ptr;
+  return NULL;
+}
+
+static bool scr_console_is_global_value(ScrDyn *console) {
+  return console->kind == SCR_DYN_HANDLE && console->v.handle.tag == SCR_DYNH_CONSOLE;
+}
+
+/* The value is neither a Console instance nor the global console: the
+ * refusal the static lowerings give for a receiver that cannot print. */
+static ScrConsoleInst *scr_console_inst_require(ScrDyn *console, const char *surface) {
+  ScrConsoleInst *inst = scr_console_inst_peek(console);
+  if (inst != NULL) return inst;
+  char message[96];
+  int len = snprintf(message, sizeof message, "Calling %s on this value has no lowering", surface);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)len, "SC2020");
+  return NULL;
+}
+
+/* The global console's target line, through the writers its static
+ * lowering uses. */
+static void scr_console_global_write(int which, ScrStr *line) {
+  ScrLogArg arg = {.tag = SCR_ARG_STR};
+  arg.v.s = line;
+  if (which) scr_console_error(1, &arg);
+  else scr_console_log(1, &arg);
+}
 
 /* The colorMode answer for a target: 1 forces colors, 2 forces none, 0
  * leaves the options' own answer. */
-static int scr_console_inst_colors_mode(ScrConsoleInst *inst, int which) {
-  if (inst->color_mode == 1) return 1;
-  if (inst->color_mode == 2)
-    return (!inst->stream[which] && scr_process_is_tty((int)inst->fd[which])) ? 1 : 2;
+static int scr_console_target_colors_mode(int color_mode, bool is_tty) {
+  if (color_mode == 1) return 1;
+  if (color_mode == 2) return scr_tty_console_auto_colors(is_tty) ? 1 : 2;
   return 2;
+}
+
+static int scr_console_inst_colors_mode(ScrConsoleInst *inst, int which) {
+  bool is_tty = inst->stream[which] == NULL && scr_process_is_tty((int)inst->fd[which]);
+  return scr_console_target_colors_mode(inst->color_mode, is_tty);
+}
+
+/* The global console: no options, colorMode 'auto' over its stdio target. */
+static ScrStr *scr_console_global_format(ScrDyn *pack, const char *surface, int which) {
+  bool is_tty = scr_process_is_tty(which ? 2 : 1);
+  return scr_insp_console_format(pack, NULL, surface,
+                                 scr_console_target_colors_mode(2, is_tty));
 }
 
 static ScrStr *scr_console_inst_format(ScrConsoleInst *inst, int which, const char *surface,
@@ -840,25 +886,41 @@ static ScrStr *scr_console_inst_format(ScrConsoleInst *inst, int which, const ch
 void scr_console_inst_write_args(ScrDyn *console, double member, ScrDyn *pack) {
   static const char *const surfaces[] = {"console.log", "console.info", "console.debug",
                                          "console.warn", "console.error"};
-  ScrConsoleInst *inst = scr_console_inst_of(console, "Console method");
-  if (!inst) return;
   int index = (int)member;
   if (index < 0 || index > 4) index = 0;
   int which = index >= 3 ? 1 : 0;
-  ScrStr *line = scr_console_inst_format(inst, which, surfaces[index], pack);
+  ScrConsoleInst *inst = scr_console_inst_peek(console);
+  ScrStr *line;
+  if (inst != NULL) {
+    line = scr_console_inst_format(inst, which, surfaces[index], pack);
+  } else if (scr_console_is_global_value(console)) {
+    line = scr_console_global_format(pack, surfaces[index], which);
+  } else {
+    scr_console_inst_require(console, "Console method");
+    return;
+  }
   if (line == NULL) return;
-  scr_console_inst_print(inst, which, line);
+  if (inst != NULL) scr_console_inst_print(inst, which, line);
+  else scr_console_global_write(which, line);
   scr_str_release(line);
 }
 
 /* console.dirxml over a run-time argument pack: log's formatting to
  * stdout. */
 void scr_console_inst_write_args_dirxml(ScrDyn *console, ScrDyn *pack) {
-  ScrConsoleInst *inst = scr_console_inst_of(console, "console.dirxml");
-  if (!inst) return;
-  ScrStr *line = scr_console_inst_format(inst, 0, "console.dirxml", pack);
+  ScrConsoleInst *inst = scr_console_inst_peek(console);
+  ScrStr *line;
+  if (inst != NULL) {
+    line = scr_console_inst_format(inst, 0, "console.dirxml", pack);
+  } else if (scr_console_is_global_value(console)) {
+    line = scr_console_global_format(pack, "console.dirxml", 0);
+  } else {
+    scr_console_inst_require(console, "console.dirxml");
+    return;
+  }
   if (line == NULL) return;
-  scr_console_inst_print(inst, 0, line);
+  if (inst != NULL) scr_console_inst_print(inst, 0, line);
+  else scr_console_global_write(0, line);
   scr_str_release(line);
 }
 
@@ -866,92 +928,129 @@ void scr_console_inst_write_args_dirxml(ScrDyn *console, ScrDyn *pack) {
  * instance's inspectOptions, then the call's own options. +1, or NULL with
  * the exception pending. */
 ScrStr *scr_console_inst_dir_args(ScrDyn *console, ScrDyn *pack) {
-  ScrConsoleInst *inst = scr_console_inst_of(console, "console.dir");
-  if (!inst) return NULL;
   size_t argc = pack->kind == SCR_DYN_ARR ? pack->v.arr.len : 0;
   ScrDyn *value = argc > 0 ? pack->v.arr.items[0] : scr_dyn_undefined();
   ScrDyn *call_options = argc > 1 ? pack->v.arr.items[1] : scr_dyn_undefined();
-  return scr_insp_console_inspect(value, inst->inspect_options, call_options, (double)argc,
-                                  scr_console_inst_colors_mode(inst, 0));
+  ScrConsoleInst *inst = scr_console_inst_peek(console);
+  if (inst != NULL)
+    return scr_insp_console_inspect(value, inst->inspect_options, call_options, (double)argc,
+                                    scr_console_inst_colors_mode(inst, 0));
+  if (scr_console_is_global_value(console))
+    return scr_insp_console_inspect(value, NULL, call_options, (double)argc,
+                                    scr_console_target_colors_mode(2,
+                                                                   scr_process_is_tty(1)));
+  scr_console_inst_require(console, "console.dir");
+  return NULL;
+}
+
+/* "Trace[: text]" plus the captured frames, one line. Borrows text. */
+static ScrStr *scr_console_trace_line(ScrStr *text) {
+  ScrStr *head = text->len == 0 ? scr_str_new("Trace", 5) : scr_str_new("Trace: ", 7);
+  ScrStr *body = scr_str_concat(head, text);
+  ScrStr *frames = scr_stack_capture();
+  ScrStr *line = frames ? scr_str_concat(body, frames) : scr_str_retain(body);
+  scr_str_release(frames);
+  scr_str_release(body);
+  scr_str_release(head);
+  return line;
 }
 
 /* console.trace: the heading from formatWithOptions over the arguments,
  * then the captured frames, to the instance's stderr. */
 void scr_console_inst_trace_args(ScrDyn *console, ScrDyn *pack) {
-  ScrConsoleInst *inst = scr_console_inst_of(console, "console.trace");
-  if (!inst) return;
+  ScrConsoleInst *inst = scr_console_inst_peek(console);
+  bool global = inst == NULL && scr_console_is_global_value(console);
+  if (inst == NULL && !global) {
+    scr_console_inst_require(console, "console.trace");
+    return;
+  }
   ScrStr *text;
   if (pack->kind == SCR_DYN_ARR && pack->v.arr.len == 0) {
     text = scr_str_new("", 0);
   } else {
-    text = scr_console_inst_format(inst, 1, "console.trace", pack);
+    text = inst != NULL ? scr_console_inst_format(inst, 1, "console.trace", pack)
+                        : scr_console_global_format(pack, "console.trace", 1);
     if (text == NULL) return;
   }
-  /* The same "Trace[: text]" line the static lowering builds. */
-  ScrStr *head = text->len == 0 ? scr_str_new("Trace", 5) : scr_str_new("Trace: ", 7);
-  ScrStr *body = scr_str_concat(head, text);
-  ScrStr *frames = scr_stack_capture();
-  ScrStr *line = frames ? scr_str_concat(body, frames) : scr_str_retain(body);
-  scr_console_inst_print(inst, 1, line);
+  ScrStr *line = scr_console_trace_line(text);
+  if (inst != NULL) scr_console_inst_print(inst, 1, line);
+  else scr_console_global_write(1, line);
   scr_str_release(line);
-  scr_str_release(frames);
-  scr_str_release(body);
-  scr_str_release(head);
   scr_str_release(text);
 }
 
-/* console.assert(value, ...args): a falsy value logs "Assertion failed"
- * with the remaining arguments formatted (Node prefixes the colon only
- * when the first message argument is a string), to stderr. */
-void scr_console_inst_assert_args(ScrDyn *console, ScrDyn *pack) {
-  ScrConsoleInst *inst = scr_console_inst_of(console, "console.assert");
-  if (!inst) return;
+/* The assertion's line, or NULL when the value is truthy: "Assertion
+ * failed" with the remaining arguments formatted (Node prefixes the colon
+ * only when the first message argument is a string). */
+static ScrStr *scr_console_assert_line(ScrDyn *pack, ScrDyn *inspect_options, int colors_mode) {
   size_t argc = pack->kind == SCR_DYN_ARR ? pack->v.arr.len : 0;
   ScrDyn *first = argc > 0 ? pack->v.arr.items[0] : scr_dyn_undefined();
-  if (scr_dyn_truthy(first)) return;
-  ScrStr *line;
-  if (argc <= 1) {
-    line = scr_str_new("Assertion failed", 16);
+  if (scr_dyn_truthy(first)) return NULL;
+  if (argc <= 1) return scr_str_new("Assertion failed", 16);
+  ScrDyn *rest = scr_dyn_new_arr();
+  ScrDyn *message = pack->v.arr.items[1];
+  if (message->kind == SCR_DYN_STR) {
+    static const char lead[] = "Assertion failed: ";
+    ScrStr *prefix = scr_str_new(lead, sizeof lead - 1);
+    ScrStr *prefixed = scr_str_concat(prefix, message->v.str);
+    scr_str_release(prefix);
+    scr_dyn_arr_push(rest, scr_dyn_new_str(prefixed));
+    scr_str_release(prefixed);
   } else {
-    ScrDyn *rest = scr_dyn_new_arr();
-    ScrDyn *message = pack->v.arr.items[1];
-    if (message->kind == SCR_DYN_STR) {
-      static const char lead[] = "Assertion failed: ";
-      ScrStr *prefix = scr_str_new(lead, sizeof lead - 1);
-      ScrStr *prefixed = scr_str_concat(prefix, message->v.str);
-      scr_str_release(prefix);
-      scr_dyn_arr_push(rest, scr_dyn_new_str(prefixed));
-      scr_str_release(prefixed);
-    } else {
-      static const char lead[] = "Assertion failed";
-      ScrStr *head = scr_str_new(lead, sizeof lead - 1);
-      scr_dyn_arr_push(rest, scr_dyn_new_str(head));
-      scr_str_release(head);
-      scr_dyn_arr_push(rest, scr_dyn_retain(message));
-    }
-    for (size_t i = 2; i < argc; i++) scr_dyn_arr_push(rest, scr_dyn_retain(pack->v.arr.items[i]));
-    line = scr_console_inst_format(inst, 1, "console.assert", rest);
-    scr_dyn_release(rest);
-    if (line == NULL) return;
+    static const char lead[] = "Assertion failed";
+    ScrStr *head = scr_str_new(lead, sizeof lead - 1);
+    scr_dyn_arr_push(rest, scr_dyn_new_str(head));
+    scr_str_release(head);
+    scr_dyn_arr_push(rest, scr_dyn_retain(message));
   }
-  scr_console_inst_print(inst, 1, line);
+  for (size_t i = 2; i < argc; i++) scr_dyn_arr_push(rest, scr_dyn_retain(pack->v.arr.items[i]));
+  ScrStr *line =
+      scr_insp_console_format(rest, inspect_options, "console.assert", colors_mode);
+  scr_dyn_release(rest);
+  return line;
+}
+
+/* console.assert(value, ...args): a falsy value logs the assertion line to
+ * stderr. */
+void scr_console_inst_assert_args(ScrDyn *console, ScrDyn *pack) {
+  ScrConsoleInst *inst = scr_console_inst_peek(console);
+  bool global = inst == NULL && scr_console_is_global_value(console);
+  if (inst == NULL && !global) {
+    scr_console_inst_require(console, "console.assert");
+    return;
+  }
+  ScrStr *line = inst != NULL ? scr_console_assert_line(pack, inst->inspect_options,
+                                                       scr_console_inst_colors_mode(inst, 1))
+                              : scr_console_assert_line(pack, NULL,
+                                                        scr_console_target_colors_mode(
+                                                            2, scr_process_is_tty(2)));
+  if (line == NULL) return;
+  if (inst != NULL) scr_console_inst_print(inst, 1, line);
+  else scr_console_global_write(1, line);
   scr_str_release(line);
 }
 
 /* console.group(...data) / console.groupCollapsed(...data): the formatted
  * label line (when there is data), then one more indentation level. */
 void scr_console_inst_group_args(ScrDyn *console, ScrDyn *pack, bool collapsed) {
-  ScrConsoleInst *inst = scr_console_inst_of(console, "console.group");
-  if (!inst) return;
+  ScrConsoleInst *inst = scr_console_inst_peek(console);
+  bool global = inst == NULL && scr_console_is_global_value(console);
+  if (inst == NULL && !global) {
+    scr_console_inst_require(console, "console.group");
+    return;
+  }
   if (pack->kind == SCR_DYN_ARR && pack->v.arr.len > 0) {
-    ScrStr *line = scr_console_inst_format(inst, 0, "console.group", pack);
+    ScrStr *line = inst != NULL ? scr_console_inst_format(inst, 0, "console.group", pack)
+                                : scr_console_global_format(pack, "console.group", 0);
     if (line == NULL) return;
-    scr_console_inst_print(inst, 0, line);
+    if (inst != NULL) scr_console_inst_print(inst, 0, line);
+    else scr_console_global_write(0, line);
     scr_str_release(line);
     if (scr_exc_pending()) return;
   }
   (void)collapsed; /* the same rendering and indent: Node's label differs in devtools only */
-  scr_console_state_group(&inst->state, 1);
+  if (inst != NULL) scr_console_state_group(&inst->state, 1);
+  else scr_console_group(1);
 }
 
 /* console.dir over a dyn value: inspect with custom inspection off. The

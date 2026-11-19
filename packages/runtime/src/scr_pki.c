@@ -1344,9 +1344,132 @@ static bool sp_pem_dek_check(const unsigned char *data, size_t len, const ScrByt
   return false;
 }
 
-/* The PKCS#8 inside a PBES2 EncryptedPrivateKeyInfo `der` (+1 malloc'd,
- * *out_len): 1 decrypted, 0 another scheme or cipher, -1 a passphrase
- * that does not decrypt it. */
+/* ── PBES1 (PKCS#12 PBE) ────────────────────────────────────────────────
+ * pkcs-12PbeIds: pbeWithSHAAnd3-KeyTripleDES-CBC and
+ * pbeWithSHAAnd2-KeyTripleDES-CBC, the two PKCS#12 PBE schemes OpenSSL's
+ * default provider decrypts (the RC2 and RC4 ones need the legacy
+ * provider, as they do for Node). Key and IV come from the PKCS#12 KDF
+ * with SHA-1 over the passphrase's BMPString (OpenSSL's ASCII variant:
+ * each byte is one UTF-16 code unit). */
+
+static const unsigned char sp_pbes1_3des_oid[] = {0x2a, 0x86, 0x48, 0x86, 0xf7,
+                                                  0x0d, 0x01, 0x0c, 0x01, 0x03};
+static const unsigned char sp_pbes1_2des_oid[] = {0x2a, 0x86, 0x48, 0x86, 0xf7,
+                                                  0x0d, 0x01, 0x0c, 0x01, 0x04};
+static const SpKeyCipher sp_pbes1_3des = {"pbeWithSHAAnd3-KeyTripleDES-CBC", "DES-EDE3-CBC",
+                                          MBEDTLS_CIPHER_DES_EDE3_CBC, NULL, 0, 24, 8, false};
+static const SpKeyCipher sp_pbes1_2des = {"pbeWithSHAAnd2-KeyTripleDES-CBC", "DES-EDE-CBC",
+                                          MBEDTLS_CIPHER_DES_EDE_CBC, NULL, 0, 16, 8, false};
+
+/* RFC 7292 Appendix B.2 with SHA-1 (u = 20, v = 64). Each password byte is
+ * one BMP unit (OpenSSL's ASCII variant), and the string carries the KDF's
+ * trailing zero unit. */
+static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsigned char *salt,
+                          size_t salt_len, unsigned id, unsigned iterations, unsigned char *out,
+                          size_t out_len) {
+  enum { U = 20, V = 64 };
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA1);
+  if (info == NULL) return false;
+  size_t pass16_len = pass_len * 2 + 2;
+  unsigned char *pass16 = malloc(pass16_len);
+  if (!pass16) scr_trap("scriptc: out of memory\n");
+  for (size_t i = 0; i < pass_len; i++) {
+    pass16[2 * i] = 0;
+    pass16[2 * i + 1] = pass[i];
+  }
+  pass16[2 * pass_len] = 0;
+  pass16[2 * pass_len + 1] = 0;
+  size_t p_pad = (pass16_len + V - 1) / V * V;
+  size_t s_pad = salt_len == 0 ? 0 : (salt_len + V - 1) / V * V;
+  size_t i_len = p_pad + s_pad;
+  unsigned char *I = malloc(i_len ? i_len : 1);
+  if (!I) scr_trap("scriptc: out of memory\n");
+  /* RFC 7292 B.2: I = S || P, each padded to a v-byte multiple by
+   * repetition. */
+  for (size_t i = 0; i < s_pad; i++) I[i] = salt[i % salt_len];
+  for (size_t i = 0; i < p_pad; i++) I[s_pad + i] = pass16[i % pass16_len];
+  mbedtls_platform_zeroize(pass16, pass16_len);
+  free(pass16);
+  unsigned char D[V], A[U], B[V];
+  memset(D, (int)id, sizeof D);
+  size_t produced = 0;
+  bool ok = true;
+  while (ok && produced < out_len) {
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    int r = mbedtls_md_setup(&ctx, info, 0);
+    if (r == 0) r = mbedtls_md_starts(&ctx);
+    if (r == 0) r = mbedtls_md_update(&ctx, D, sizeof D);
+    if (r == 0) r = mbedtls_md_update(&ctx, I, i_len);
+    if (r == 0) r = mbedtls_md_finish(&ctx, A);
+    mbedtls_md_free(&ctx);
+    for (unsigned iter = 1; r == 0 && iter < iterations; iter++) {
+      mbedtls_md_init(&ctx);
+      r = mbedtls_md_setup(&ctx, info, 0);
+      if (r == 0) r = mbedtls_md_starts(&ctx);
+      if (r == 0) r = mbedtls_md_update(&ctx, A, sizeof A);
+      if (r == 0) r = mbedtls_md_finish(&ctx, A);
+      mbedtls_md_free(&ctx);
+    }
+    if (r != 0) {
+      ok = false;
+      break;
+    }
+    size_t n = out_len - produced < U ? out_len - produced : U;
+    memcpy(out + produced, A, n);
+    produced += n;
+    for (size_t j = 0; j < V; j++) B[j] = A[j % U];
+    for (size_t block = 0; block < i_len; block += V) {
+      unsigned carry = 1;
+      for (int j = V - 1; j >= 0; j--) {
+        unsigned sum = (unsigned)I[block + j] + B[j] + carry;
+        I[block + j] = (unsigned char)sum;
+        carry = sum >> 8;
+      }
+    }
+  }
+  mbedtls_platform_zeroize(A, sizeof A);
+  mbedtls_platform_zeroize(B, sizeof B);
+  mbedtls_platform_zeroize(I, i_len);
+  free(I);
+  return ok;
+}
+
+/* A PBES1 EncryptedPrivateKeyInfo's plaintext: 1 decrypted, 0 an unusable
+ * structure, -1 a passphrase that does not decrypt it. */
+static int sp_decrypt_pbes1(const SpKeyCipher *ci, const mbedtls_asn1_buf *params,
+                            const unsigned char *ct, size_t ct_len, const unsigned char *pass,
+                            size_t pass_len, unsigned char **out, size_t *out_len) {
+  unsigned char *q = params->p;
+  const unsigned char *q_end = params->p + params->len;
+  size_t salt_len;
+  int iterations;
+  if (params->tag != (MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) ||
+      mbedtls_asn1_get_tag(&q, q_end, &salt_len, MBEDTLS_ASN1_OCTET_STRING) != 0)
+    return 0;
+  const unsigned char *salt = q;
+  q += salt_len;
+  if (mbedtls_asn1_get_int(&q, q_end, &iterations) != 0 || iterations < 1) return 0;
+  /* The key comes from the id-1 run and the IV from the id-2 run
+   * (PKCS12_pbe_keyivgen's two PKCS12_key_gen calls). */
+  unsigned char key[24], iv[8];
+  bool ok = sp_pkcs12_kdf(pass, pass_len, salt, salt_len, 1, (unsigned)iterations, key, ci->key_len) &&
+            sp_pkcs12_kdf(pass, pass_len, salt, salt_len, 2, (unsigned)iterations, iv, ci->iv_len);
+  if (!ok) {
+    mbedtls_platform_zeroize(key, sizeof key);
+    return 0;
+  }
+  *out = sp_key_cipher_run(ci, false, key, iv, ct, ct_len, out_len);
+  mbedtls_platform_zeroize(key, sizeof key);
+  mbedtls_platform_zeroize(iv, sizeof iv);
+  return *out ? 1 : -1;
+}
+
+/* The PKCS#8 inside an encrypted EncryptedPrivateKeyInfo `der` (+1
+ * malloc'd, *out_len): PBES2 (PBKDF2 with any HMAC-SHA PRF and one of the
+ * AES ciphers) and PBES1 (the PKCS#12 3DES schemes) decrypt; 1 decrypted,
+ * 0 an unsupported scheme or cipher, -1 a passphrase that does not
+ * decrypt it. */
 static int sp_decrypt_pkcs8(const unsigned char *der, size_t len, const unsigned char *pass, size_t pass_len,
                             unsigned char **out, size_t *out_len) {
   unsigned char *p = (unsigned char *)der;
@@ -1355,10 +1478,22 @@ static int sp_decrypt_pkcs8(const unsigned char *der, size_t len, const unsigned
   mbedtls_asn1_buf alg, params;
   if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return 0;
   end = p + n;
-  if (mbedtls_asn1_get_alg(&p, end, &alg, &params) != 0 || alg.len != MBEDTLS_OID_SIZE(MBEDTLS_OID_PKCS5_PBES2) ||
-      memcmp(alg.p, MBEDTLS_OID_PKCS5_PBES2, alg.len) != 0 ||
-      params.tag != (MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE))
-    return 0;
+  if (mbedtls_asn1_get_alg(&p, end, &alg, &params) != 0) return 0;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_OCTET_STRING) != 0) return 0;
+  const unsigned char *ct = p;
+  size_t ct_len = n;
+  if (alg.len == sizeof sp_pbes1_3des_oid && memcmp(alg.p, sp_pbes1_3des_oid, alg.len) == 0)
+    return sp_decrypt_pbes1(&sp_pbes1_3des, &params, ct, ct_len, pass, pass_len, out, out_len);
+  if (alg.len == sizeof sp_pbes1_2des_oid && memcmp(alg.p, sp_pbes1_2des_oid, alg.len) == 0)
+    return sp_decrypt_pbes1(&sp_pbes1_2des, &params, ct, ct_len, pass, pass_len, out, out_len);
+  if (alg.len != MBEDTLS_OID_SIZE(MBEDTLS_OID_PKCS5_PBES2) ||
+      memcmp(alg.p, MBEDTLS_OID_PKCS5_PBES2, alg.len) != 0) {
+    /* A well-formed EncryptedPrivateKeyInfo naming an algorithm this build
+     * does not decrypt: Node answers the EVP unsupported error, not the
+     * decoder one. */
+    return -2;
+  }
+  if (params.tag != (MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) return 0;
   unsigned char *q = params.p;
   const unsigned char *params_end = params.p + params.len;
   mbedtls_asn1_buf kdf, kdf_params, scheme, scheme_params;
@@ -1370,7 +1505,8 @@ static int sp_decrypt_pkcs8(const unsigned char *der, size_t len, const unsigned
   for (size_t i = 0; i < sizeof sp_key_ciphers / sizeof sp_key_ciphers[0]; i++)
     if (scheme.len == sp_key_ciphers[i].oid_len && memcmp(scheme.p, sp_key_ciphers[i].oid, scheme.len) == 0)
       ci = &sp_key_ciphers[i];
-  if (!ci || scheme_params.tag != MBEDTLS_ASN1_OCTET_STRING || scheme_params.len != ci->iv_len) return 0;
+  if (!ci) return -2;
+  if (scheme_params.tag != MBEDTLS_ASN1_OCTET_STRING || scheme_params.len != ci->iv_len) return 0;
   /* PBKDF2-params ::= SEQUENCE { salt OCTET STRING, iterationCount
    * INTEGER, keyLength INTEGER OPTIONAL, prf AlgorithmIdentifier DEFAULT
    * hmacWithSHA1 } */
@@ -1393,15 +1529,15 @@ static int sp_decrypt_pkcs8(const unsigned char *der, size_t len, const unsigned
     if (mbedtls_asn1_get_alg(&k, k_end, &prf_oid, &prf_params) != 0 || mbedtls_oid_get_md_hmac(&prf_oid, &prf) != 0)
       return 0;
   }
-  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_OCTET_STRING) != 0) return 0;
   unsigned char key[32];
   if (mbedtls_pkcs5_pbkdf2_hmac_ext(prf, pass, pass_len, salt, salt_len, (unsigned)iterations,
                                     (uint32_t)ci->key_len, key) != 0)
     return 0;
-  *out = sp_key_cipher_run(ci, false, key, scheme_params.p, p, n, out_len);
+  *out = sp_key_cipher_run(ci, false, key, scheme_params.p, ct, ct_len, out_len);
   mbedtls_platform_zeroize(key, sizeof key);
   return *out ? 1 : -1;
 }
+
 
 static ScrDyn *sp_dyn_buffer(const unsigned char *data, size_t len) {
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)len);
@@ -1416,6 +1552,37 @@ static ScrDyn *sp_dyn_str(ScrStr *s) {
   ScrDyn *d = scr_dyn_new_str(s);
   scr_str_release(s);
   return d;
+}
+
+/* Node's ERR_OSSL_UNSUPPORTED with the DECODER reason: a key file using an
+ * algorithm the build's providers do not offer (a PBES1 cipher outside the
+ * PKCS#12 3DES pair, say). */
+static void sp_decoder_unsupported(void) {
+  static const char message[] = "error:1E08010C:DECODER routines::unsupported";
+  static const char code[] = "ERR_OSSL_UNSUPPORTED";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, sp_dyn_str(scr_str_new("DECODER routines", 16)));
+  scr_error_set_prop(e, "reason", 6, sp_dyn_str(scr_str_new("unsupported", 11)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, sp_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* Node's ERR_OSSL_EVP_UNSUPPORTED for an encrypted key whose algorithm the
+ * build's providers do not offer (a PBES1 RC2 or MD5-DES file, say). */
+static void sp_evp_unsupported(void) {
+  static const char message[] = "error:0308010C:digital envelope routines::unsupported";
+  static const char code[] = "ERR_OSSL_EVP_UNSUPPORTED";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, sp_dyn_str(scr_str_new("digital envelope routines", 26)));
+  scr_error_set_prop(e, "reason", 6, sp_dyn_str(scr_str_new("unsupported", 11)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, sp_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
 /* ── JWK ──────────────────────────────────────────────────────────────── */
@@ -2309,7 +2476,8 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
         else sp_throw(SCR_ERR_TYPE, "ERR_MISSING_PASSPHRASE", "Passphrase required for encrypted key");
       } else {
         r = sp_decrypt_pkcs8(der, der_len, pass->data, (size_t)scr_bytes_byte_len(pass), &plain, &plain_len);
-        if (r < 0) sp_throw_bad_decrypt(from_pem ? 0 : 1);
+        if (r == -2) sp_evp_unsupported();
+        else if (r < 0) sp_throw_bad_decrypt(from_pem ? 0 : 1);
       }
       if (r > 0) {
         k = sp_parse_with(plain, plain_len, private_key, NULL);
@@ -2320,7 +2488,7 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
         mbedtls_platform_zeroize(decoded, der_len);
         free(decoded);
       }
-      if (r == 0 && pass) sp_not_supported("private keys encrypted with this scheme or cipher");
+      if (r == 0 && pass) sp_decoder_unsupported();
       return k;
     } else if (decoded) {
       mbedtls_platform_zeroize(decoded, der_len);

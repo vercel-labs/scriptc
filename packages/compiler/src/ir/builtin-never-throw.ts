@@ -318,10 +318,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_crypto_x509_key_usage reads the certificate's extended key usage
   // extension: a certificate without one answers undefined and a malformed
   // extension is skipped, so no program-visible error is raised.
-  // crypto.getFips reads the process flag and crypto.setFips stores its
-  // argument's truthiness: neither validates nor runs program code.
+  // crypto.getFips reads the process flag: no validation, no program code.
   "crypto.getFips",
-  "crypto.setFips",
   "crypto.x509KeyUsage",
   // Timeout.close() and Immediate.prototype[Symbol.dispose]() clear the
   // timer the handle names: the loop's clear, or the mock's own entry

@@ -2724,20 +2724,27 @@ static SpKey *sp_key_from_raw(const ScrDyn *input, const ScrDyn *data, const Scr
   }
   bool x = sp_is_str(type, "x25519");
   bool x448 = sp_is_str(type, "x448");
+  /* ML-KEM keys have raw encodings of their own: the encoded public key
+   * and the 64-byte seed (raw-private has none). */
+  int mlkem_level = sp_is_str(type, "ml-kem-512")   ? 512
+                    : sp_is_str(type, "ml-kem-768") ? 768
+                    : sp_is_str(type, "ml-kem-1024") ? 1024
+                                                     : 0;
   bool other = false;
   for (size_t i = 0; i < sizeof sp_other_named_types / sizeof sp_other_named_types[0]; i++)
     other = other || sp_is_str(type, sp_other_named_types[i]);
-  if (!ec && !ed && !x && !x448 && !other) {
+  if (!ec && !ed && !x && !x448 && !other && mlkem_level == 0) {
     ScrStr *s = type->v.str;
     scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE", "Invalid asymmetricKeyType: %.*s", (int)s->len, s->data);
     return NULL;
   }
-  bool ml = other && type->v.str->len > 3 && memcmp(type->v.str->data, "ml-", 3) == 0;
+  bool ml = (other || mlkem_level != 0) && type->v.str->len > 3 &&
+            memcmp(type->v.str->data, "ml-", 3) == 0;
   if (seed && !ml) {
     sp_incompatible_key_type();
     return NULL;
   }
-  if (other) {
+  if (other && mlkem_level == 0) {
     sp_not_supported("raw keys of this asymmetricKeyType");
     return NULL;
   }
@@ -2752,7 +2759,28 @@ static SpKey *sp_key_from_raw(const ScrDyn *input, const ScrDyn *data, const Scr
   size_t len = (size_t)scr_bytes_byte_len(bytes);
   SpKey *k = sp_key_alloc(!raw_public);
   bool ok = false;
-  if (x448) {
+  if (mlkem_level != 0) {
+    k->mlkem = true;
+    k->mlkem_level = mlkem_level;
+    if (raw_public) {
+      size_t pk_len = sp_mlkem_pk_bytes(mlkem_level);
+      ok = len == pk_len;
+      if (ok) memcpy(k->mlkem_pk, p, pk_len);
+    } else if (seed) {
+      ok = len == 64;
+      if (ok) {
+        memcpy(k->mlkem_seed, p, 64);
+        ok = scr_pki_mlkem_core != NULL &&
+             scr_pki_mlkem_core->keypair_derand(mlkem_level, k->mlkem_pk, k->mlkem_sk,
+                                                k->mlkem_seed);
+      }
+    } else {
+      sp_key_release(k);
+      scr_bytes_release(bytes);
+      sp_incompatible_key_type();
+      return NULL;
+    }
+  } else if (x448) {
     k->x448 = true;
     if (len == 56 && raw_public) {
       memcpy(k->x448_pub, p, 56);

@@ -188,8 +188,38 @@ function declaresUnionBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
   const symbol = lowerer.resolveValueSymbol(expr);
   const decl = symbol?.valueDeclaration;
   if (!decl || !ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
-  if (lowerer.runtimeUncheckedArithmeticDeclarations.has(decl)) return false;
+  if (holdsUncheckedArithmetic(lowerer, decl)) return false;
   return lowerer.typeOf(decl.name).isUnionType();
+}
+
+/** Whether `decl` holds an unchecked string-arithmetic result, directly or
+ * through an alias of one: `const sum = text + 1` records the result, and
+ * `const alias = sum` (a further alias included) copies the same run-time
+ * union even though the checker types the alias from the declaration it
+ * reads. Reads of such a binding keep the union: narrowing one to the arm
+ * the checker names would meet the other arm at run time (NaN in a string
+ * slot). */
+function holdsUncheckedArithmetic(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  for (let node: ts.VariableDeclaration | undefined = decl; node !== undefined; ) {
+    if (lowerer.runtimeUncheckedArithmeticDeclarations.has(node)) return true;
+    if (node.initializer === undefined) return false;
+    let source: ts.Expression = node.initializer;
+    while (
+      ts.isParenthesizedExpression(source) ||
+      ts.isAsExpression(source) ||
+      ts.isTypeAssertion(source) ||
+      ts.isSatisfiesExpression(source) ||
+      ts.isNonNullExpression(source)
+    )
+      source = source.expression;
+    const symbol = ts.isIdentifier(source) ? lowerer.resolveValueSymbol(source) : null;
+    const next = symbol?.valueDeclaration;
+    node =
+      next !== undefined && ts.isVariableDeclaration(next) && ts.isIdentifier(next.name)
+        ? next
+        : undefined;
+  }
+  return false;
 }
 
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {

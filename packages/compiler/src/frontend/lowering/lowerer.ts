@@ -3516,6 +3516,11 @@ export class Lowerer {
   /** Whether any implementation source spells `versions`
    * (programMentionsVersions in builtins/process.ts). */
   mentionsProcessVersions: boolean | undefined = undefined;
+  /** Whether the program constructs a Console with inspectOptions or
+   * colorMode anywhere (lower-console.ts's program-wide scan): its methods
+   * format through the runtime's option-aware entries. Cached; undefined
+   * until the scan runs. */
+  consoleOptionsFact: boolean | undefined = undefined;
   private stringIndexBoundsCache: StringIndexBounds | null = null;
   /** Proofs that a string element read names an existing code unit. The
    * indexed-read analysis and expression lowering share one instance, so a
@@ -6654,6 +6659,9 @@ export class Lowerer {
     "constructorHolders",
     "constructorFunctionMemo",
     "abortOnStreamFlags",
+    // Whether the program constructs an option-bearing Console: a scan of
+    // the sources, computed again when needed.
+    "consoleOptionsFact",
     // The stream mode the pass settled on asking for (pass scratch, read
     // from the journaled requiresGeneralNodeStreams / requiresDynNodeStreams).
     "streamRequest",

@@ -108,6 +108,11 @@ typedef struct ScrConsoleInst {
   ScrStream *stream[2];        /* owned */
   ScrClosure *on_written[2];   /* owned: the per-stream completion handlers */
   bool ignore_errors;
+  /* Node's Console options: the inspectOptions record the methods format
+   * with (owned, NULL when the program gave none) and colorMode (0 false,
+   * 1 true, 2 'auto', Node's default). */
+  ScrDyn *inspect_options;
+  int color_mode;
   ScrConsoleState state;       /* this console's counters, timers and group indentation */
   void (*stream_write)(struct ScrConsoleInst *, int which, ScrStr *line);
   void (*stream_drop)(struct ScrConsoleInst *); /* releases the bound streams */
@@ -122,9 +127,17 @@ typedef struct ScrConsoleInst {
   struct ScrDyn *bound[5];     /* log, info, debug, error, warn */
 } ScrConsoleInst;
 ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors,
-                        ScrDyn *group_indentation);
+                        ScrDyn *group_indentation, ScrDyn *inspect_options, ScrDyn *color_mode);
 void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
 void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
+/* A Console built with inspectOptions or colorMode: its methods over a
+ * checked-dynamic argument pack, formatted with the instance's options. */
+void scr_console_inst_write_args(ScrDyn *console, double member, ScrDyn *pack);
+void scr_console_inst_write_args_dirxml(ScrDyn *console, ScrDyn *pack);
+ScrStr *scr_console_inst_dir_args(ScrDyn *console, ScrDyn *pack);
+void scr_console_inst_trace_args(ScrDyn *console, ScrDyn *pack);
+void scr_console_inst_assert_args(ScrDyn *console, ScrDyn *pack);
+void scr_console_inst_group_args(ScrDyn *console, ScrDyn *pack, bool collapsed);
 ScrDyn *scr_process_stdio(double fd);
 /* process.stdout/stderr.write(chunk) with a run-time chunk: Node's Writable
  * validation, then a synchronous write. false with an exception pending when
@@ -135,6 +148,9 @@ bool scr_dyn_process_stdio_is(const ScrDyn *value);
  * stream object's getColorDepth or hasColors function for that member name
  * (+1), NULL for any other name; and the release of both at exit. */
 ScrDyn *scr_tty_colors_method(const char *key, size_t length);
+/* Console colorMode 'auto': Node's shouldColorize over the target — the
+ * environment's FORCE_COLOR first, then the terminal's color depth. */
+bool scr_tty_console_auto_colors(bool is_tty);
 void scr_tty_colors_cleanup(void);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);
 

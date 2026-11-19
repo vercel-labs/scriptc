@@ -116,6 +116,10 @@ export interface CcOptions {
    * libCalls on the IR): compiles scr_inspect.c — the assert gating
    * precedent, so inspect-free binaries keep their exact size class. */
   inspect?: boolean;
+  /** A Console built with inspectOptions or colorMode: its methods' option-
+   * aware runtime entries, and the tty color tables colorMode 'auto' reads
+   * (scr_tty_colors.c). */
+  consoleOptions?: boolean;
   /** The program dispatches prototype methods on dyn receivers (index.ts
    * detects dynInvoke nodes / dyn.defineProps libCalls on the IR):
    * compiles scr_dyn_invoke.c — the assert gating precedent, so
@@ -576,6 +580,7 @@ export interface LibArchiveOptions {
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;
+  consoleOptions?: boolean;
   symbol?: boolean;
   bigint?: boolean;
   searchParams?: boolean;

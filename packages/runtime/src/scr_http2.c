@@ -58,6 +58,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 static void scr_h2_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
@@ -4631,6 +4634,37 @@ static const ScrDynHandleOps scr_h2_dynh_session_ops = {
   "Http2Session", &scr_http2_session_retain_v, &scr_http2_session_release_v,
   &scr_h2_dynh_session_invoke, &scr_h2_dynh_session_get, &scr_h2_dynh_session_set, NULL,
 };
+
+/* Http2ServerResponse.statusMessage is always "" and a write emits Node's
+ * one-time UnsupportedWarning (RFC 7540 has no reason phrase). `value` is
+ * evaluated by the caller for its side effects; nothing is stored. */
+static SCR_TL bool scr_h2_status_msg_warned = false;
+
+void scr_http2_status_message_unsupported(const ScrDyn *value /*borrowed, nullable*/) {
+  (void)value;
+  if (scr_h2_status_msg_warned) return;
+  scr_h2_status_msg_warned = true;
+  static const char text[] = "Status message is not supported by HTTP/2 (RFC7540 8.1.2.4)";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  if (scr_warning_emit_hook) {
+    scr_warning_emit_hook("UnsupportedWarning", NULL, message);
+  } else {
+    scr_stdout_settle();
+    fflush(stdout);
+#ifdef _WIN32
+    long pid = (long)_getpid();
+#else
+    long pid = (long)getpid();
+#endif
+    fprintf(stderr, "(node:%ld) UnsupportedWarning: %.*s\n", pid, (int)message->len,
+            message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    }
+  }
+  scr_str_release(message);
+}
 
 void scr_http2_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_H2_STREAM, &scr_h2_dynh_stream_ops);

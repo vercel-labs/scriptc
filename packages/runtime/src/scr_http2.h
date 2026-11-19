@@ -187,6 +187,10 @@ void scr_net_sock_set_native_established(ScrNetSocket *s, ScrNetNativeEventFn fn
 
 /* Registers the h2 session/stream dyn handle ops (the emitted main()
  * calls it when the unit is linked — the scr_net_dyn_install story). */
+/* Http2ServerResponse.statusMessage: always "" and a write warns once
+ * (RFC 7540 has no reason phrase). `value` was already evaluated. */
+void scr_http2_status_message_unsupported(const struct ScrDyn *value /*borrowed, nullable*/);
+
 void scr_http2_dyn_install(void);
 
 #ifdef SCR_RC_AUDIT

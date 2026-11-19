@@ -619,6 +619,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.getUnpackedSettings",
   "http2.streamRespondWait",
   "http2.streamSendTrailers",
+  "http2.statusMessageUnsupported",
   "http2.streamAdditionalHeaders",
   "http2.responseWriteInformation",
   "http2.streamRespond",

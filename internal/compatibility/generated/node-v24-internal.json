@@ -67085,7 +67085,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.request.setTimeout",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67111,7 +67111,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.aborted",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs"
@@ -67187,7 +67187,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.connection",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67213,7 +67213,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.headers",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67239,7 +67239,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.httpVersion",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67265,7 +67265,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.method",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67291,7 +67291,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.rawHeaders",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67366,7 +67366,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.socket",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67441,7 +67441,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.url",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67467,7 +67467,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'aborted'",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs"
@@ -67569,7 +67569,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.appendHeader",
         "tests": [
           "tests/corpus/compat-http2-headers.mjs"
@@ -67618,7 +67618,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.end",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67644,7 +67644,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.getHeader",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67670,7 +67670,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.getHeaderNames",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
@@ -67697,7 +67697,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.getHeaders",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
@@ -67724,7 +67724,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.hasHeader",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67750,7 +67750,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.removeHeader",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67776,7 +67776,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.setHeader",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67802,7 +67802,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.setTimeout",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
@@ -67829,7 +67829,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.write",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67933,7 +67933,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.writeHead",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67959,7 +67959,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.connection",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67985,7 +67985,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.finished",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68011,7 +68011,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.headersSent",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68037,7 +68037,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.req",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68086,7 +68086,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.socket",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68112,7 +68112,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.statusCode",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68138,8 +68138,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.statusMessage",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -68184,7 +68187,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.writableEnded",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68210,7 +68213,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'close'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -68236,7 +68239,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'finish'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"

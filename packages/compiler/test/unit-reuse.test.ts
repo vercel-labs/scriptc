@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "vitest";
 import { compile } from "../src/index.js";
 
@@ -170,6 +171,40 @@ const MODULES = {
 /** Whether `applied` holds a unit named `name`. */
 const has = (applied: readonly string[], name: string): boolean =>
   applied.some((unit) => unit.endsWith(`.${name}`) || unit === name);
+
+test("an implicit instance a record added is not lowered again by a later unit", async () => {
+  // The program is the corpus case for this: its second build records, and
+  // its third applies the records while another unit demands the same
+  // implicit instance at its call site. The recorded function is the one the
+  // module must hold.
+  const cache = await mkdtemp(join(tmpdir(), "scriptc-unit-reuse-instance-"));
+  const entry = fileURLToPath(
+    new URL("../../../tests/corpus/jose-jwe-asymmetric/main.mjs", import.meta.url),
+  );
+  try {
+    for (const name of VARIABLES) delete process.env[name];
+    process.env["SCRIPTC_CACHE_DIR"] = cache;
+    process.env["SCRIPTC_INCR_LOWERING"] = "1";
+    process.env["SCRIPTC_INCR_VERIFY"] = "1";
+    const outputs: string[] = [];
+    for (const build of [1, 2, 3]) {
+      const outPath = join(cache, `build-${build}.ll`);
+      const result = await compile(entry, {
+        outDir: join(cache, "out"),
+        outPath,
+        outputKind: "llvm",
+      });
+      expect(
+        result.ok,
+        `build ${build}: ${result.ok ? "" : result.diagnostics.map((d) => d.code).join(",")}`,
+      ).toBe(true);
+      outputs.push(await readFile(outPath, "utf8"));
+    }
+    expect(outputs[2]).toBe(outputs[0]);
+  } finally {
+    await rm(cache, { recursive: true, force: true });
+  }
+}, 300_000);
 
 test("an unchanged rebuild applies every unit's stored record", async () => {
   const workspace = await Workspace.create(MODULES);

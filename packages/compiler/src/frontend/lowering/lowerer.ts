@@ -15992,6 +15992,11 @@ export class Lowerer {
           while (instLowered < waveEnd) {
             this.settleStreamRequest();
             const { info, inst } = this.instantiationQueue[instLowered++]!;
+            // A unit that applied a record added the instance's function from
+            // the record (implicitFns): lowering it again would put a second
+            // function of the same name in the module. The fresh build lowers
+            // the instance only here, so this never matches there.
+            if (this.implicitFns.some((held) => held.name === inst.name)) continue;
             const owner = demandOwner();
             this.genericFunctionDemandOwner.set(inst, owner);
             const ref = this.genericDemandPriority.get(inst) ?? {

@@ -3757,6 +3757,14 @@ export function internImplicitInstanceOr(
     ...(declared === null ? { implicitInferReturn: true as const } : {}),
   };
   info.instances.set(key, inst);
+  // A reused build may already hold this instance's function: an applied
+  // unit's record added it (implicitFns, via the function table). Lowering
+  // it here would put a second function of the same name in the module.
+  for (const held of lowerer.implicitFns)
+    if (held.name === inst.name) {
+      inst.implicitState = "done";
+      return inst;
+    }
   // Eager lowering settles the return ABI before callers use it. A failed
   // JS body must still have a throwing implementation: later references
   // (including recursive ones) can already hold its cached signature.

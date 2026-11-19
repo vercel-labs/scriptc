@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -176,12 +176,19 @@ test("an implicit instance a record added is not lowered again by a later unit",
   // The program is the corpus case for this: its second build records, and
   // its third applies the records while another unit demands the same
   // implicit instance at its call site. The recorded function is the one the
-  // module must hold.
-  const cache = await mkdtemp(join(tmpdir(), "scriptc-unit-reuse-instance-"));
-  const entry = fileURLToPath(
-    new URL("../../../tests/corpus/jose-jwe-asymmetric/main.mjs", import.meta.url),
-  );
+  // module must hold, and a caller that lowers against it reads its return
+  // type. That caller is edited before the last build, so it lowers.
+  const root = await mkdtemp(join(tmpdir(), "scriptc-unit-reuse-instance-"));
+  const app = join(root, "jose");
+  const entry = join(app, "main.mjs");
+  const cache = join(root, "cache");
+  const caller = join(app, "node_modules/jose/dist/webapi/lib/key_management.js");
   try {
+    await cp(
+      fileURLToPath(new URL("../../../tests/corpus/jose-jwe-asymmetric", import.meta.url)),
+      app,
+      { recursive: true },
+    );
     for (const name of VARIABLES) delete process.env[name];
     process.env["SCRIPTC_CACHE_DIR"] = cache;
     process.env["SCRIPTC_INCR_LOWERING"] = "1";
@@ -201,8 +208,27 @@ test("an implicit instance a record added is not lowered again by a later unit",
       outputs.push(await readFile(outPath, "utf8"));
     }
     expect(outputs[2]).toBe(outputs[0]);
+    // A caller of the instance, edited so it lowers against the record.
+    const text = await readFile(caller, "utf8");
+    expect(text).toContain("  checkUsage(key, usage);");
+    await writeFile(
+      caller,
+      text.replace("  checkUsage(key, usage);", "  void 0;\n  checkUsage(key, usage);"),
+    );
+    const reusedPath = join(cache, "reused.ll");
+    const reused = await compile(entry, {
+      outDir: join(cache, "out"),
+      outPath: reusedPath,
+      outputKind: "llvm",
+    });
+    expect(reused.ok, reused.ok ? "" : reused.diagnostics.map((d) => d.code).join(",")).toBe(true);
+    for (const name of VARIABLES) delete process.env[name];
+    const freshPath = join(root, "fresh.ll");
+    const fresh = await compile(entry, { outDir: join(root, "out"), outPath: freshPath, outputKind: "llvm" });
+    expect(fresh.ok, fresh.ok ? "" : fresh.diagnostics.map((d) => d.code).join(",")).toBe(true);
+    expect(await readFile(reusedPath, "utf8")).toBe(await readFile(freshPath, "utf8"));
   } finally {
-    await rm(cache, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 }, 300_000);
 

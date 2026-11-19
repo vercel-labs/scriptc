@@ -15996,7 +15996,13 @@ export class Lowerer {
             // the record (implicitFns): lowering it again would put a second
             // function of the same name in the module. The fresh build lowers
             // the instance only here, so this never matches there.
-            if (this.implicitFns.some((held) => held.name === inst.name)) continue;
+            const recorded = this.implicitFns.find((held) => held.name === inst.name);
+            if (recorded !== undefined) {
+              // The recorded function settles the return type the drain would
+              // have inferred from the body, for callers lowered in this build.
+              inst.returnType = recorded.returnType;
+              continue;
+            }
             const owner = demandOwner();
             this.genericFunctionDemandOwner.set(inst, owner);
             const ref = this.genericDemandPriority.get(inst) ?? {

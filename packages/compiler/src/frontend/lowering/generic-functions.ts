@@ -3762,6 +3762,10 @@ export function internImplicitInstanceOr(
   // it here would put a second function of the same name in the module.
   for (const held of lowerer.implicitFns)
     if (held.name === inst.name) {
+      // The record's function is this instance's body: its return type is
+      // the one lowering the body would have inferred, which a caller
+      // lowered in this build reads.
+      inst.returnType = held.returnType;
       inst.implicitState = "done";
       return inst;
     }

@@ -5297,6 +5297,37 @@ static bool scr_net_sock_connect_ready(ScrNetSocket *s /*nullable*/, ScrClosure 
   return true;
 }
 
+/* An established socket without a client dial behind it (an accepted
+ * connection, or one a wrapper adopted): Node's handle answers EISCONN
+ * rather than dialing again over a live descriptor, which would strand the
+ * original poller registration. */
+static void scr_net_sock_refuse_established(ScrNetSocket *s, double port, const char *address,
+                                            ScrClosure *cb) {
+  if (cb) scr_closure_release(cb);
+  char local[64];
+  local[0] = '\0';
+  struct sockaddr_storage lsa;
+  socklen_t llen = sizeof lsa;
+  if (s->fd >= 0 && getsockname(s->fd, (struct sockaddr *)&lsa, &llen) == 0) {
+    char ip[64];
+    int lport = 0;
+    if (lsa.ss_family == AF_INET6) {
+      inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&lsa)->sin6_addr, ip, sizeof ip);
+      lport = ntohs(((struct sockaddr_in6 *)&lsa)->sin6_port);
+    } else {
+      inet_ntop(AF_INET, &((struct sockaddr_in *)&lsa)->sin_addr, ip, sizeof ip);
+      lport = ntohs(((struct sockaddr_in *)&lsa)->sin_port);
+    }
+    snprintf(local, sizeof local, " - Local (%s:%d)", ip, lport);
+  }
+  char msg[256];
+  int n = snprintf(msg, sizeof msg, "connect EISCONN %s:%d%s", address, (int)port, local);
+  /* No code override: the message carries Node's syscall, code, address and
+   * port, and the error object's properties come from it. */
+  if (!s->pending_err) s->pending_err = scr_str_new(msg, (size_t)n);
+  scr_net_sock_register(s);
+}
+
 /* socket.connect(port[, host][, connectListener]). */
 void scr_net_sock_connect(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
                           ScrClosure *cb /*moves, nullable*/) {
@@ -5307,6 +5338,11 @@ void scr_net_sock_connect(ScrNetSocket *s, double port, ScrStr *host /*borrowed,
   }
   if (host != NULL && !scr_net_host_chk(host)) {
     if (cb) scr_closure_release(cb);
+    return;
+  }
+  if (s->fd >= 0 && !s->connecting) {
+    scr_net_sock_refuse_established(s, port, host != NULL && host->len > 0 ? host->data : "127.0.0.1",
+                                    cb);
     return;
   }
   scr_net_sock_dial_on(s, port, host, cb, -1);
@@ -9526,7 +9562,11 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     sock->destroy_error = NULL;
     ScrStr *msg = scr_str_retain(err->message);
     ScrAlsCtx *prev = scr_als_dispatch_enter(sock->als);
-    bool consumed = sock->native_err_obj != NULL && sock->native_err_obj(sock->native_ctx, err);
+    /* A rebind detaches the protocol context while the socket lives on: the
+     * hook has nothing to claim once the context is gone. */
+    bool consumed =
+        sock->native_err_obj != NULL && sock->native_ctx != NULL &&
+        sock->native_err_obj(sock->native_ctx, err);
     /* The protocol handler stands in for Node's internal listener: the
      * program's own 'error' listeners still run beside it, and only an
      * error neither of them took ends the process. */

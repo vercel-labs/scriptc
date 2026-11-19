@@ -122,14 +122,24 @@ static ScrError *scr_system_error_from_message(ScrStr *msg) {
   bool with_address = listen || scr_system_error_word(data, syscall_len, "connect") ||
                       scr_system_error_word(data, syscall_len, "bind") ||
                       scr_system_error_word(data, syscall_len, "send");
-  if (with_address && detail < end) {
+  /* Node's ExceptionWithHostPort appends the local endpoint for an already
+   * connected socket ("... - Local (127.0.0.1:37499)"); the named address
+   * and port are the requested ones. */
+  const char *detail_end = end;
+  for (const char *q = detail; q + 10 <= end; q++) {
+    if (memcmp(q, " - Local (", 10) == 0) {
+      detail_end = q;
+      break;
+    }
+  }
+  if (with_address && detail < detail_end) {
     const char *colon = NULL;
-    for (const char *q = detail; q < end; q++)
+    for (const char *q = detail; q < detail_end; q++)
       if (*q == ':') colon = q;
-    bool digits = colon != NULL && colon + 1 < end;
-    for (const char *q = colon != NULL ? colon + 1 : end; q < end; q++)
+    bool digits = colon != NULL && colon + 1 < detail_end;
+    for (const char *q = colon != NULL ? colon + 1 : detail_end; q < detail_end; q++)
       if (*q < '0' || *q > '9') digits = false;
-    const char *address_end = digits ? colon : end;
+    const char *address_end = digits ? colon : detail_end;
     ScrStr *address = scr_str_new(detail, (size_t)(address_end - detail));
     scr_error_set_prop(e, "address", 7, scr_dyn_new_str(address));
     /* a pipe listen: Node's listenInCluster passes port -1 with the path */

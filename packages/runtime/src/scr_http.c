@@ -8154,6 +8154,9 @@ static void scr_http_client_rebind(ScrHttpClientReq *c, ScrHttpAgentFree *f, boo
   ScrHttpConn *oldconn = c->conn;
   scr_net_sock_set_native_reader(old, NULL, NULL, NULL, NULL, NULL);
   scr_net_sock_set_native_events(old, NULL, NULL);
+  /* the request's error claim travels with the request, not the abandoned
+   * socket: a later destroy(err) on it is the socket's own error */
+  scr_net_sock_set_native_error_obj(old, NULL);
   scr_net_sock_set_native_established(old, NULL);
   scr_net_sock_move_writes(old, f->sock);
   if (oldconn != NULL) {

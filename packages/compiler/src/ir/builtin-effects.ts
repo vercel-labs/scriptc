@@ -534,6 +534,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // getCipher throws the "not supported yet" error for a suite without a
   // known OpenSSL name.
   "tls.sockGetCipher",
+  // exportKeyingMaterial throws Node's validation ladder (ERR_OUT_OF_RANGE,
+  // ERR_INVALID_ARG_TYPE) and the TLS state error.
+  "tls.sockExportKeyingMaterial",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",

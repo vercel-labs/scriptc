@@ -1399,8 +1399,7 @@ export function lowerPropertyAccessExpr(
       // value the module finished evaluating with (lower-modules.ts,
       // registerCjsNamespaceSnapshotGlobals).
       const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, expr);
-      if (snapshot)
-        return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+      if (snapshot) return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
       return lowerExpr(lowerer, nsMember);
     }
     // The same read through a receiver that evaluates

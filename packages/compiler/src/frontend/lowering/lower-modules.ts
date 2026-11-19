@@ -5109,7 +5109,8 @@ export function lowerFileInit(
     // some importer holds keeps the value the module finished evaluating
     // with (Node's CommonJS namespace object), so the slot copies the live
     // member here, once its statements have run.
-    for (const { snapshot, source } of lowerer.cjsNamespaceMemberSnapshots.get(sf)?.values() ?? []) {
+    for (const { snapshot, source } of lowerer.cjsNamespaceMemberSnapshots.get(sf)?.values() ??
+      []) {
       body.push({
         kind: "assign",
         localId: snapshot.id,

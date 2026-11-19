@@ -305,3 +305,46 @@ test.skipIf(process.platform === "win32")(
   },
   60_000,
 );
+
+test("rewriting identical content, or touching a directory, keeps the identity", async () => {
+  const root = await fixture();
+  const file = join(root, "compiler.js");
+  await writeFile(file, "compiler-v1\n");
+  const first = await compilerImplementationIdentity(true, root);
+  expect(first.dependencies.length).toBeGreaterThan(0);
+  // Every record carries its content digest.
+  expect(first.dependencies.every((entry) => /^[0-9a-f]{64}$/.test(entry.content))).toBe(true);
+  // The same bytes rewritten (a fresh inode, a new mtime) and a touched root
+  // directory: the compiler's content is unchanged, so its identity is.
+  const copy = `${file}.tmp`;
+  await writeFile(copy, "compiler-v1\n");
+  await rename(copy, file);
+  const later = new Date(Date.now() + 60_000);
+  await utimes(file, later, later);
+  await utimes(root, later, later);
+  const second = await compilerImplementationIdentity(true, root);
+  expect(second.digest).toBe(first.digest);
+  // Content is what the proof compares: a change is a new identity.
+  await writeFile(file, "compiler-v2\n");
+  const third = await compilerImplementationIdentity(true, root);
+  expect(third.digest).not.toBe(first.digest);
+});
+
+test("a dependency record without a content digest does not match", async () => {
+  const root = await fixture();
+  const file = join(root, "compiler.js");
+  await writeFile(file, "x\n");
+  const info = await stat(file);
+  const legacy = [
+    {
+      path: file,
+      kind: "file" as const,
+      dev: info.dev,
+      ino: info.ino,
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      ctimeMs: info.ctimeMs,
+    },
+  ];
+  expect(await compilerImplementationDependenciesStillMatch(legacy as never)).toBe(false);
+});

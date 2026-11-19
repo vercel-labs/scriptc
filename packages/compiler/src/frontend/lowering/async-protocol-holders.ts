@@ -49,12 +49,23 @@ const PROTOCOL_NAMES: ReadonlySet<string> = new Set([
 function isValuesCallShape(expression: ts.Expression): boolean {
   const call = withoutParenthesesNonNull(expression);
   if (!ts.isCallExpression(call) || call.questionDotToken) return false;
-  const callee = withoutParenthesesNonNull(call.expression);
-  return (
-    ts.isPropertyAccessExpression(callee) &&
-    !callee.questionDotToken &&
-    callee.name.text === "values"
-  );
+  return valuesMemberKey(withoutParenthesesNonNull(call.expression)) !== null;
+}
+
+/** The key node naming a `values` member on a call's callee (`s.values`,
+ * `s["values"]`, or a no-substitution template key), or null. */
+function valuesMemberKey(callee: ts.Expression): ts.Node | null {
+  if (ts.isPropertyAccessExpression(callee))
+    return !callee.questionDotToken && callee.name.text === "values" ? callee.name : null;
+  if (ts.isElementAccessExpression(callee) && !callee.questionDotToken) {
+    const key = withoutParenthesesNonNull(callee.argumentExpression);
+    if (
+      (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) &&
+      key.text === "values"
+    )
+      return key;
+  }
+  return null;
 }
 
 /** Whether `node` is a `stream.values(...)` call on the stdlib
@@ -67,9 +78,9 @@ function valuesCallOfReadableStream(
   const call = withoutParenthesesNonNull(node);
   if (!ts.isCallExpression(call) || call.questionDotToken) return false;
   const callee = withoutParenthesesNonNull(call.expression);
-  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return false;
-  if (callee.name.text !== "values") return false;
-  const member = attempt(() => checker.getSymbolAtLocation(callee.name));
+  const key = valuesMemberKey(callee);
+  if (key === null) return false;
+  const member = attempt(() => checker.getSymbolAtLocation(key));
   const declaration = member?.declarations?.[0];
   if (declaration === undefined || !isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
   let owner: ts.Node | undefined = declaration.parent;

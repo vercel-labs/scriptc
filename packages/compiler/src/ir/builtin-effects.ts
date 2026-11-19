@@ -687,6 +687,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "writable.writeEnc",
   "writable.writeEcb",
   "writable.end",
+  "writable.endEcb",
   "writable.uncork",
   "writable.setDefaultEncoding",
   "stream.duplexFromGen",

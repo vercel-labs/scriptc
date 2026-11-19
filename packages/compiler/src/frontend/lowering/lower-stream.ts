@@ -7362,6 +7362,61 @@ export function lowerStreamMethodCall(
     if ((t.flags & nullish) !== 0) return true;
     return t.isUnionType() && ts.constituentTypes(t).some((arm) => (arm.flags & nullish) !== 0);
   };
+  // end(cb): Node calls the callback with no argument on success, and with
+  // ERR_STREAM_ALREADY_FINISHED when the stream already finished. A callback
+  // that declares the error parameter takes the error-first form, whose
+  // adapter turns the runtime's error into the callback's Error | null (the
+  // same shape a write callback takes). The stream ignores what the callback
+  // returns (`() => count++`, a saved completion helper returning an owned
+  // value): adapting it to the void slot discards that result the way a
+  // discarded call does, so a reference-counted result is released instead of
+  // being dropped by the completion dispatch.
+  const lowerEndCb = (node: ts.Expression): { cb: IrExpr; ecb: boolean } => {
+    const raw = lowerer.lowerExpr(node);
+    const value =
+      raw.type.kind === "dyn"
+        ? lowerer.coerceToExpected(raw, funcOf([DYN], VOID))
+        : raw.type.kind === "func" && raw.type.ret.kind !== "void" && raw.type.params.length <= 1
+          ? lowerer.coerceToExpected(raw, funcOf(raw.type.params, VOID))
+          : raw;
+    if (value.type.kind !== "func" || value.type.ret.kind !== "void") {
+      lowerer.noLowering(
+        "end with a callback that is not a function",
+        node,
+        "callbacks take () or (error?: Error | null) and return nothing",
+      );
+    }
+    const cbType = value.type;
+    if (cbType.params.length === 0) return { cb: value, ecb: false };
+    if (cbType.params.length > 1) {
+      lowerer.noLowering(
+        `end callbacks with ${cbType.params.length} parameters`,
+        node,
+        "callbacks take () or (error?: Error | null) and return nothing",
+      );
+    }
+    const param = cbType.params[0]!;
+    const def = param.kind === "union" ? lowerer.unions.get(param.unionId) : undefined;
+    const ok =
+      param.kind === "dyn" ||
+      (!!def &&
+        def.arms.some((a) => a.kind === "nullT") &&
+        def.arms.some((a) => a.kind === "object" && a.className === "%Error") &&
+        def.arms.every(
+          (a) =>
+            a.kind === "nullT" ||
+            a.kind === "undefinedT" ||
+            (a.kind === "object" && a.className === "%Error"),
+        ));
+    if (!ok) {
+      lowerer.unsupported(
+        "SC1090",
+        node,
+        `end completion callbacks whose parameter is not 'Error | null' (got '${lowerer.fmt(param)}')`,
+      );
+    }
+    return { cb: value, ecb: true };
+  };
   // end(chunk[, encoding][, cb]) for such a chunk. Node evaluates the
   // receiver and the arguments in order, then looks at the chunk: each is
   // bound once, and the two endings (with the chunk, through the dynamic
@@ -7383,18 +7438,11 @@ export function lowerStreamMethodCall(
     const encoding =
       encNode === undefined ? null : bind("%endEncoding", lowerer.lowerExprExpecting(encNode, DYN));
     let callback: IrExpr | null = null;
+    let ecb = false;
     if (cbArg !== undefined) {
-      const cb = callbackDeclaresParameters(cbArg)
-        ? null
-        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
-        lowerer.noLowering(
-          "end callbacks with parameters",
-          cbArg,
-          "() => void callbacks are supported",
-        );
-      }
-      callback = bind("%endCallback", cb);
+      const lowered = lowerEndCb(cbArg);
+      ecb = lowered.ecb;
+      callback = bind("%endCallback", lowered.cb);
     }
     const ending = (withChunk: boolean): IrExpr => {
       const tail: IrExpr[] = [];
@@ -7413,7 +7461,7 @@ export function lowerStreamMethodCall(
       }
       return {
         kind: "libCall",
-        fn: "writable.end",
+        fn: ecb ? "writable.endEcb" : "writable.end",
         args: [stream, numLit(flags, loc), ...tail],
         type: receiver.type,
         loc,
@@ -8021,23 +8069,16 @@ export function lowerStreamMethodCall(
         tail.push(lowerer.lowerExprExpecting(encNode, DYN));
       }
     }
+    let ecb = false;
     if (cbArg !== undefined) {
-      const cb = callbackDeclaresParameters(cbArg)
-        ? null
-        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
-        lowerer.noLowering(
-          "end callbacks with parameters",
-          cbArg,
-          "() => void callbacks are supported",
-        );
-      }
+      const lowered = lowerEndCb(cbArg);
+      ecb = lowered.ecb;
       flags |= 4;
-      tail.push(cb);
+      tail.push(lowered.cb);
     }
     return {
       kind: "libCall",
-      fn: "writable.end",
+      fn: ecb ? "writable.endEcb" : "writable.end",
       args: [receiver, numLit(flags, loc), ...tail],
       type: receiver.type,
       loc,
@@ -8424,18 +8465,4 @@ export function lowerStreamProperty(
     return lowerer.coerceToExpected(read, BOOL);
   }
   return null;
-}
-
-/** Whether an inline completion callback declares a parameter. Node calls
- * write and end callbacks with an error argument (null on success), but the
- * native callback receives none, so the parameter would read undefined
- * where Node passes null or the error. A function literal with parameters
- * would otherwise adapt to the zero-parameter slot silently. */
-function callbackDeclaresParameters(node: ts.Expression): boolean {
-  let callback = node;
-  while (ts.isParenthesizedExpression(callback)) callback = callback.expression;
-  return (
-    (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
-    callback.parameters.nodes.length > 0
-  );
 }

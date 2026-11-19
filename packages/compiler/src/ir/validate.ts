@@ -4369,6 +4369,7 @@ function validateFunction(
       e.fn === "writable.writeU" ||
       e.fn === "writable.writeEnc" ||
       e.fn === "writable.end" ||
+      e.fn === "writable.endEcb" ||
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
       e.fn === "rl.createSignal";
@@ -6467,6 +6468,7 @@ function validateFunction(
         e.fn === "readable.resume" ||
         e.fn === "readable.unpipe" ||
         e.fn === "writable.end" ||
+        e.fn === "writable.endEcb" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
         e.fn === "readable.encodingName" ||

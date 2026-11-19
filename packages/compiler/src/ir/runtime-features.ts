@@ -2481,7 +2481,7 @@ const RUNTIME_FEATURE_RULES = {
   /** A write completion callback that takes the error argument lowers
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
-  streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  streamWriteErrors: rule({ fns: ["writable.writeEcb", "writable.endEcb"] }),
   /** The program can pipe or unpipe a stream: pipe(), unpipe(), pipeline()
    * and compose() in every form, a call of a member named pipe or unpipe
    * (or a computed member) on an untyped value, which can reach a native

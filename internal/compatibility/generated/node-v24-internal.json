@@ -34669,6 +34669,7 @@
           "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-value-types.ts",
+          "tests/corpus/stream-end-already-finished.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/zlib-codec-invalid-params.cjs",
           "tests/corpus/zstd-compress.cjs",
@@ -40929,8 +40930,11 @@
       "anchor": "err_stream_already_finished",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_STREAM_ALREADY_FINISHED",
+        "tests": [
+          "tests/corpus/stream-end-already-finished.ts"
+        ]
       },
       "anchorSource": "exact"
     },

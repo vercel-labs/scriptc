@@ -2500,7 +2500,10 @@ static void scr_stream_error_buffer(ScrStream *s) {
     ScrClosure *cb = st->w.end_cbs[0];
     memmove(st->w.end_cbs, st->w.end_cbs + 1, (st->w.end_cbs_n - 1) * sizeof *st->w.end_cbs);
     st->w.end_cbs_n--;
-    ((void (*)(ScrClosure *))cb->fn)(cb);
+    /* Node's errorBuffer passes the stream's own terminal error (or the
+     * fresh ERR_STREAM_DESTROYED) to a buffered end() callback, so an
+     * error-first callback learns why the stream never finished. */
+    SCR_WCB_CALL_ERROF(cb, st);
     scr_closure_release(cb);
   }
 }
@@ -7942,13 +7945,25 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s, ScrC
   } else if (chunk_s) {
     scr_stream_write_str(s, chunk_s, NULL);
   }
-  if (!st->has_w || st->destroyed) {
-    if (cb) scr_closure_release(cb);
-    return scr_stream_retain(s);
-  }
   if (cb) {
     if (st->w.finished) {
-      scr_st_tick(s, SCR_ST_WCB_ERR, NULL, cb); /* already finished: plain call */
+      /* Node's end(): a finished stream reports ERR_STREAM_ALREADY_FINISHED
+       * to the callback (an error-first callback; a plain one takes the
+       * call with no error under SCR_STREAM_WRITE_ERRORS' plain-call form).
+       * This holds after autoDestroy closed the stream too: the finished
+       * state decides, not `destroyed`. */
+#ifdef SCR_STREAM_WRITE_ERRORS
+      ScrError *e = scr_stream_mkerr("ERR_STREAM_ALREADY_FINISHED",
+                                     "Cannot call end after a stream was finished");
+      scr_st_tick(s, SCR_ST_WCB_ERR, e, cb);
+#else
+      scr_st_tick(s, SCR_ST_WCB_ERR, NULL, cb);
+#endif
+      cb = NULL; /* the tick owns it now */
+    } else if (!st->has_w || st->destroyed) {
+      /* Node drops the callback on a destroyed stream that never finished. */
+      scr_closure_release(cb);
+      cb = NULL;
     } else {
       if (st->w.end_cbs_n == st->w.end_cbs_cap) {
         st->w.end_cbs_cap = st->w.end_cbs_cap ? st->w.end_cbs_cap * 2 : 2;
@@ -7956,8 +7971,10 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s, ScrC
         if (!st->w.end_cbs) scr_stream_oom();
       }
       st->w.end_cbs[st->w.end_cbs_n++] = cb;
+      cb = NULL; /* the list owns it now */
     }
   }
+  if (!st->has_w || st->destroyed) return scr_stream_retain(s);
   if (!st->w.ending) {
     st->w.ending = true;
     if (st->w.corked > 0) {

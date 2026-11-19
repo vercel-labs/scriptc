@@ -6330,6 +6330,10 @@ function buildLibFnSignatures() {
      * callback takes the completion's error (Node's null on success). */
     "writable.writeEcb": { argTypes: [null, F64, null, DYN, null], result: BOOL },
     "writable.end": { argTypes: [null, F64], result: VOID },
+    /** writable.end with an error-first completion callback: the same
+     * arguments; the callback takes (error: Error | null) and receives
+     * ERR_STREAM_ALREADY_FINISHED when the stream already finished. */
+    "writable.endEcb": { argTypes: [null, F64], result: VOID },
     "writable.cork": { argTypes: [null], result: VOID },
     "writable.uncork": { argTypes: [null], result: VOID },
     "stream.destroy": { argTypes: [null], result: VOID },

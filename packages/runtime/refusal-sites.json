@@ -817,6 +817,18 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection",
+  "message": "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection",
+  "message": "http.Agent createConnection options here are not supported by the runtime",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
   "code": "SC2020"

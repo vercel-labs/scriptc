@@ -56,6 +56,12 @@ test("fiber stacks commit on demand and preserve large frames across suspension"
 // With every deadline already passed, the order is the timer heap's and the
 // loop's, not the clock's: tests/corpus/timers-cross-kind-clears.ts once
 // showed the first of these only when its own script ran fast enough.
+test("the promise resource table survives tombstone churn", async () => {
+  const result = await execFileAsync(bin, ["promises"]);
+  expect(result.stdout).toBe("promise table survives tombstone churn\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("a destroyed AsyncResource keeps its context until the resource is freed", async () => {
   const result = await execFileAsync(bin, ["destroy"]);
   expect(result.stdout).toBe(
@@ -67,6 +73,12 @@ test("a destroyed AsyncResource keeps its context until the resource is freed", 
 test("AsyncResource bindings own their payload and release it", async () => {
   const result = await execFileAsync(bin, ["bindings"]);
   expect(result.stdout).toBe("async resource bindings own and release their payload\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("a promiseResolve hook may drop the settling promise's owner", async () => {
+  const result = await execFileAsync(bin, ["settlehook"]);
+  expect(result.stdout).toBe("a promiseResolve hook may drop the settling promise's owner\n");
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 

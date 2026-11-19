@@ -281,7 +281,8 @@ export type IrType =
    * listeners. Listeners are held only until close() (or the exit-time
    * cleanup) — the child ownership story, so lean allocation, no trace
    * header. Same container rules as child: union arms fine (the
-   * `FSWatcher | null` polling-fallback local), arrays/maps/JSON fenced. */
+   * `FSWatcher | null` polling-fallback local) and map values fine (the
+   * watcher registry); arrays and JSON stay fenced. */
   | { kind: "fsWatcher" }
   /** An fsPromises.watch iterator (scr_watch_async.c — linked only when the
    * IR uses it): the queue over an fs.watch handle that the `for await`
@@ -314,8 +315,9 @@ export type IrType =
    * JS form: `params` stays the declared non-rest list and the lifted
    * function has one hidden trailing ScrDyn array filled by its boxed call
    * thunk. `argumentsAll` keeps that hidden ABI but fills it with every
-   * actual argument, including named positions. The backends therefore
-   * still see one fixed native closure ABI;
+   * actual argument, including named positions, and adds it after a typed
+   * rest array when the function declares both (`funcHiddenParamCount`).
+   * The backends therefore still see one fixed native closure ABI;
    * only the frontend's call completion observes variadic source arity.
    * `argumentsPresence` says of an `argumentsAll` function that it reads the
    * hidden array only to ask whether an argument was passed at all, and reads
@@ -883,6 +885,15 @@ export function isSupportedMapValue(t: IrType): boolean {
     // the pre-settle closures.
     case "secureCtx":
       return true;
+    // An fs.watch handle (Map<string, FSWatcher> — the watcher registry):
+    // an ordinary refcounted pointer value (scr_watcher_retain/release_v),
+    // like child. Its listeners hold closures until the watcher closes, so
+    // a listener that captures the map is a cycle the collector cannot
+    // trace through this handle; the watcher keeps its listeners and the
+    // process alive until close() clears both, which is the same lifetime
+    // Node's FSWatcher owns.
+    case "fsWatcher":
+      return true;
     // A Date object: immutable, holds no references.
     case "date":
       return true;
@@ -1005,8 +1016,25 @@ export function typeKey(t: IrType): string {
       return `map<${typeKey(t.key)},${typeKey(t.value)}>`;
     case "set":
       return `set<${typeKey(t.elem)}>`;
-    case "func":
-      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "typed" ? "...typed[]" : t.argumentsPresence ? "presence[]" : t.argumentsAll ? "arguments[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
+    case "func": {
+      const slots = t.params.map(typeKey);
+      if (t.rest === true) {
+        slots.push(
+          t.restAbi === "typed"
+            ? "...typed[]"
+            : t.argumentsPresence
+              ? "presence[]"
+              : t.argumentsAll
+                ? "arguments[]"
+                : "...dyn[]",
+        );
+        // A typed rest array is one of `params`, so the actual-argument
+        // array an `argumentsAll` value receives follows it
+        // (funcHiddenParamCount); the key names both.
+        if (t.restAbi === "typed" && t.argumentsAll === true) slots.push("arguments[]");
+      }
+      return `func(${slots.join(",")})=>${typeKey(t.ret)}`;
+    }
     case "object":
       return `object:${t.className}`;
     case "classval":
@@ -1383,6 +1411,11 @@ export interface IrContracts {
    * instance's lifetime, so the backend may keep them in the instance itself
    * (ir/inline-arrays.ts). */
   inlineArrays?: string[];
+  /** Classes declared `implements SingleOwner`: the instances of one may
+   * have a single owner, which backend/tree-classes.ts proves before it
+   * drops their reference count and frees a subtree through its owner. A
+   * class the proof rejects is a compile error (SC7010). */
+  singleOwner?: string[];
 }
 
 export type IrFfiValueParamClass =
@@ -5390,6 +5423,16 @@ function canDynCheckToAt(
     return result;
   }
   return false;
+}
+
+/** How many hidden trailing native parameters a function VALUE's lifted
+ * signature carries after the ones `params` spells: the checked-dynamic
+ * rest array, or the actual-argument array an `argumentsAll` value
+ * receives (one slot serves both when the type is checked-dynamic
+ * variadic), or the actual-argument array that follows a typed rest
+ * array. */
+export function funcHiddenParamCount(t: IrType & { kind: "func" }): number {
+  return t.argumentsAll === true || (t.rest === true && t.restAbi === undefined) ? 1 : 0;
 }
 
 /** A closure type that can BOX into the checked-dynamic tree's function kind (dynFrom):

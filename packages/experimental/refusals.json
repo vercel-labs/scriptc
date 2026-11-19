@@ -20,22 +20,6 @@
       }
     },
     {
-      "row": "webstreams:d39eca07e53e",
-      "layer": "static",
-      "chapter": "webstreams",
-      "apiSymbol": "streamConsumers.blob",
-      "kind": "method",
-      "label": "streamConsumers.blob(stream)",
-      "manifestId": "node-builtin.stream.consumers.blob",
-      "binding": {
-        "module": "node:stream/consumers",
-        "path": [
-          "blob"
-        ],
-        "access": "call"
-      }
-    },
-    {
       "binding": {
         "module": "node:_http_agent",
         "access": "import"

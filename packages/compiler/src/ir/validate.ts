@@ -34,6 +34,7 @@ import {
   F64,
   ffiClassType,
   ffiSourceParamTypes,
+  funcHiddenParamCount,
   isDirentShape,
   isDynTypedRefType,
   isLiveDynRefType,
@@ -2930,21 +2931,19 @@ function validateFunction(
         });
         // Result func type must match the target's signature. A VARIADIC
         // (rest-marked) type hides one synthetic trailing dyn-array param
-        // in the lifted function (the thunk fills it) — the type's
-        // declared params plus that one must match.
+        // in the lifted function (the thunk fills it), and so does an
+        // `argumentsAll` value — after a typed rest array when it has one
+        // (funcHiddenParamCount) — so the type's declared params plus
+        // those hidden slots must match.
         if (e.type.kind === "func") {
           const wantRet = callSiteReturnType(target);
-
-          // array param — the lifted signature matches directly, no
-          // hidden slot.
-          const hiddenRest = e.type.rest === true && e.type.restAbi === undefined;
-          const declared = hiddenRest ? target.params.slice(0, -1) : target.params;
-          const restOk =
-            !hiddenRest ||
-            (target.params.length === e.type.params.length + 1 &&
-              target.params[target.params.length - 1]!.type.kind === "dyn");
+          const hidden = funcHiddenParamCount(e.type);
+          const declared = target.params.slice(0, target.params.length - hidden);
+          const hiddenOk =
+            target.params.length === declared.length + hidden &&
+            target.params.every((p, i) => i < declared.length || p.type.kind === "dyn");
           if (
-            !restOk ||
+            !hiddenOk ||
             e.type.params.length !== declared.length ||
             !e.type.params.every((p, i) => typeEquals(p, declared[i]!.type)) ||
             !typeEquals(e.type.ret, wantRet)
@@ -2967,19 +2966,17 @@ function validateFunction(
         }
         const ft = e.callee.type;
         // A checked-dynamic variadic value's lifted signature carries one
-        // trailing dyn array after its declared parameters.
-        const hiddenRest = ft.rest === true && ft.restAbi === undefined;
-        if (ft.params.length + (hiddenRest ? 1 : 0) !== e.args.length) {
-          err(
-            `callValue: ${e.args.length} args, expected ${ft.params.length + (hiddenRest ? 1 : 0)}`,
-            e.loc,
-          );
+        // trailing dyn array after its declared parameters, and so does an
+        // `argumentsAll` value, after a typed rest array when it has one.
+        const hidden = funcHiddenParamCount(ft);
+        if (ft.params.length + hidden !== e.args.length) {
+          err(`callValue: ${e.args.length} args, expected ${ft.params.length + hidden}`, e.loc);
         }
         e.args.forEach((a, i) => {
           const p = ft.params[i];
           if (p) expectType(a, p, `callValue arg ${i}`);
         });
-        const hiddenArg = hiddenRest ? e.args[ft.params.length] : undefined;
+        const hiddenArg = hidden > 0 ? e.args[ft.params.length] : undefined;
         if (hiddenArg !== undefined && hiddenArg.type.kind !== "dyn") {
           err(`callValue hidden rest argument is ${hiddenArg.type.kind}, not dyn`, e.loc);
         }
@@ -4372,6 +4369,7 @@ function validateFunction(
       e.fn === "writable.writeU" ||
       e.fn === "writable.writeEnc" ||
       e.fn === "writable.end" ||
+      e.fn === "writable.endEcb" ||
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
       e.fn === "rl.createSignal";
@@ -6470,6 +6468,7 @@ function validateFunction(
         e.fn === "readable.resume" ||
         e.fn === "readable.unpipe" ||
         e.fn === "writable.end" ||
+        e.fn === "writable.endEcb" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
         e.fn === "readable.encodingName" ||

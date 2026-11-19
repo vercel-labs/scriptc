@@ -1060,6 +1060,20 @@ ScrDyn *scr_blob_new(ScrDyn *args) {
   return b ? scr_blob_box(b) : NULL;
 }
 
+/* The stream/consumers blob() result: `new Blob([bytes])`, whose type is
+ * "" and whose size counts the bytes. */
+ScrDyn *scr_sc_blob_value(ScrBytes *all) {
+  /* The constructor's first argument is the list of parts, so the bytes
+   * ride in a one-element array inside the args. */
+  ScrDyn *list = scr_dyn_new_arr();
+  scr_dyn_arr_push(list, scr_dyn_new_bytes(all));
+  ScrDyn *args = scr_dyn_new_arr();
+  scr_dyn_arr_push(args, list);
+  ScrDyn *blob = scr_blob_new(args);
+  scr_dyn_release(args);
+  return blob;
+}
+
 ScrDyn *scr_file_new(ScrDyn *args) {
   scr_blob_install();
   size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;

@@ -376,6 +376,24 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.async_hooks.createHook",
+      "kind": "node-builtin",
+      "name": "async_hooks.createHook",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.async_hooks.executionAsyncId",
+      "kind": "node-builtin",
+      "name": "async_hooks.executionAsyncId",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.async_hooks.triggerAsyncId",
+      "kind": "node-builtin",
+      "name": "async_hooks.triggerAsyncId",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.buffer",
       "kind": "node-builtin",
       "name": "buffer",
@@ -612,9 +630,21 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.decapsulate",
+      "kind": "node-builtin",
+      "name": "crypto.decapsulate",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.diffieHellman",
       "kind": "node-builtin",
       "name": "crypto.diffieHellman",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.encapsulate",
+      "kind": "node-builtin",
+      "name": "crypto.encapsulate",
       "status": "static"
     },
     {
@@ -2955,14 +2985,6 @@
       "name": "stream/consumers",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
-    },
-    {
-      "id": "node-builtin.stream.consumers.blob",
-      "kind": "node-builtin",
-      "name": "stream/consumers.blob",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "collecting a stream into a Blob is not supported yet — buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text"
     },
     {
       "id": "node-builtin.stream.promises",

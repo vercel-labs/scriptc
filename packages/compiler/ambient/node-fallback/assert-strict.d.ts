@@ -16,7 +16,15 @@ declare module "assert/strict" {
     function deepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function notDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
     function partialDeepStrictEqual(actual: unknown, expected: unknown, message?: string): void;
-    function fail(message?: string): never;
+    function fail(message?: string | Error): never;
+    /** @deprecated since v10.0.0 - use fail([message]) or other assert functions instead. */
+    function fail(
+      actual: unknown,
+      expected: unknown,
+      message?: string | Error,
+      operator?: string,
+      stackStartFn?: Function,
+    ): never;
     function throws(fn: () => unknown, expected?: unknown, message?: string): void;
     function doesNotThrow(fn: () => unknown, expected?: unknown, message?: string): void;
     function rejects(

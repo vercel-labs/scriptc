@@ -515,6 +515,9 @@ void scr_punycode_warn(bool immediate, bool report);
  * (scr_async_dyn.c): DEP0005 on the next tick, once, within Node's
  * 10000-call check (scr_buffer_deprecation_count). */
 void scr_buffer_deprecation(void);
+/* assert.fail's deprecated multi-argument form reports DEP0094 once, at
+ * the point Node's deprecate() wrapper reports it. */
+void scr_assert_fail_deprecation(void);
 /* scr_emit_warning once a 'warning' listener exists (scr_lib.c; set by the
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */

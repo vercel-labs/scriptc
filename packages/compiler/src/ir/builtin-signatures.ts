@@ -6421,6 +6421,11 @@ function buildLibFnSignatures() {
      * no-op and everything else here (Node throws for falsy values too).
      * All arguments are borrowed. */
     "assert.ok": { argTypes: [BOOL, STRING, BOOL], result: VOID },
+    /** fail(actual, expected, message|null, operator, has_message): the
+     * deprecated form's AssertionError, built by the runtime. */
+    "assert.failDeprecated": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
+    /** DEP0094 for the first deprecated fail call (the events unit). */
+    "assert.failDeprecation": { argTypes: [], result: VOID },
     /** The next AssertionError's actual, expected and operator, recorded on
      * a failure branch. */
     "assert.record": { argTypes: [DYN, DYN, STRING], result: VOID },

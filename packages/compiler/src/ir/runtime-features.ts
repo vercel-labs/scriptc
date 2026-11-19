@@ -151,6 +151,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
+  // DEP0094 for assert.fail's deprecated multi-argument form.
+  "assert.failDeprecation",
   // util.aborted answers a checked-dynamic promise, and so do the
   // functions util.debounce and util.throttle return.
   "util.aborted",

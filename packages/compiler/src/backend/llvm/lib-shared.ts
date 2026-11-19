@@ -621,6 +621,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // node:assert (scr_assert.c): all args borrowed; failures throw the
   // catchable AssertionError. The never-throwing members ride along.
   "assert.ok": "scr_assert_ok",
+  "assert.failDeprecated": "scr_assert_deprecated_fail",
+  "assert.failDeprecation": "scr_assert_fail_deprecation",
   "assert.record": "scr_assert_record_dyn",
   "assert.errorNew": "scr_assert_error_new",
   "assert.eqF64": "scr_assert_eq_f64",
@@ -2436,6 +2438,9 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   // The deprecated Buffer constructor reports DEP0005, and SlowBuffer
   // DEP0030, on the next tick.
   "buffer.deprecation",
+  // assert.fail's deprecated form reports DEP0094 through the same warning
+  // machinery on the first multi-argument call.
+  "assert.failDeprecation",
   "buffer.slowBuffer",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",

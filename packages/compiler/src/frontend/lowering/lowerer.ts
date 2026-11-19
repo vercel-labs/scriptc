@@ -16810,6 +16810,14 @@ export class Lowerer {
     // from. Synthetic functions with no source file are left out: they
     // belong to no unit.
     //
+    // The class-dispatch helpers are left out too. Their bodies are
+    // regenerated every build from every unit's class lists and site
+    // requests, and their numbers depend on the program's class and site
+    // counts, so a build of another app names and shapes them differently
+    // (measured on todo vs counter: `%dyn.class.property.N` alone made two SDK
+    // units' pins differ, and `%class.branchPropertiesOrEmpty:*` alone made the
+    // 151-file unit differ). They are not a unit's functions to reuse.
+    //
     // A generic instance's body carries its family's declaration as `loc`,
     // so an app-demanded instance is attributed to the package that declares
     // the generic. M1-3's pin rule needs the demanding unit instead (an
@@ -16818,6 +16826,7 @@ export class Lowerer {
     // REPORT.md — so the attribution stays by declaration until it does.
     const pinFunctions: { module: string; name: string }[] = [];
     for (const fn of module.functions) {
+      if (fn.name.startsWith("%dyn.class.") || fn.name.startsWith("%class.")) continue;
       const module = relativeOf.get(fn.loc.file);
       if (module === undefined) continue;
       pinFunctions.push({ module, name: fn.name });

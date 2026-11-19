@@ -481,6 +481,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "tls.createServerDyn",
   "tls.createSecureContextDyn",
   "tls.caCertsChk",
+  // tls.checkServerIdentity can throw ERR_TLS_CERT_ALTNAME_FORMAT from its
+  // alt-name parser.
+  "tls.checkServerIdentity",
   "tls.createServerDynCb",
   "https.createServerDyn",
   "https.createServerDynCb",

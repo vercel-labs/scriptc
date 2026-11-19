@@ -10202,6 +10202,43 @@ static ScrDyn *scr_http_agent_hook_value(ScrHttpAgent *a, bool keep) {
                           keep ? "keepSocketAlive" : "reuseSocket");
 }
 
+/* agent.createConnection(options[, callback]): Node's default dialer is
+ * net.createConnection, so the net unit's dynamic entry does the work — its
+ * argument ladder, validation and dial. The `signal` option rides the signal
+ * unit's abort-listener entry when the program links it. */
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
+    __attribute__((weak));
+
+static ScrDyn *scr_http_agent_create_connection(ScrDyn *const *args, size_t argc) {
+  static const char fence_text[] =
+      "http.Agent createConnection options here are not supported by the runtime";
+  ScrStr *fence = scr_str_new(fence_text, sizeof fence_text - 1);
+  ScrNetSocket *sock = scr_net_connect_dyn(
+      argc > 0 ? args[0] : scr_dyn_undefined(), argc > 1 ? args[1] : NULL,
+      argc > 2 ? args[2] : NULL, NULL,
+      scr_events_add_abort_listener != NULL ? scr_events_add_abort_listener : NULL, fence);
+  scr_str_release(fence);
+  if (sock == NULL) return NULL; /* an exception is pending */
+  ScrDyn *out = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);
+  scr_net_sock_release(sock);
+  return out;
+}
+
+/* The dialer as a value, held like the other hooks. */
+static ScrDyn *scr_http_agent_connect_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  ScrHttpAgent *a = scr_box_get_ref(clo->caps[0]); /* +1 */
+  scr_http_agent_release(a);                       /* the dialer uses no agent state */
+  return scr_http_agent_create_connection(args, argc);
+}
+
+static ScrDyn *scr_http_agent_connect_value(ScrHttpAgent *a) {
+  ScrClosure *clo = scr_closure_new((void *)&scr_http_agent_connect_thunk, 1);
+  clo->caps[0] = scr_box_new_obj(&scr_http_agent_retain_v, &scr_http_agent_release_v, NULL);
+  scr_box_set_ref(clo->caps[0], scr_http_agent_retain(a));
+  return scr_dyn_new_func(clo, &scr_http_agent_connect_thunk, 2, "(options,callback)",
+                          "createConnection");
+}
+
 static ScrDyn *scr_http_dynh_agent_invoke(void *h, ScrDyn *self, const char *method,
                                           ScrDyn *const *args, size_t argc, const char *what) {
   ScrHttpAgent *a = (ScrHttpAgent *)h;
@@ -10255,8 +10292,10 @@ static ScrDyn *scr_http_dynh_agent_invoke(void *h, ScrDyn *self, const char *met
   if (strcmp(method, "keepSocketAlive") == 0)
     return scr_http_agent_keep_socket_alive(a, args, argc);
   if (strcmp(method, "reuseSocket") == 0) return scr_http_agent_reuse_socket(a, args, argc);
+  if (strcmp(method, "createConnection") == 0)
+    return scr_http_agent_create_connection(args, argc);
   {
-    static const char *const known[] = { "createConnection", "createSocket",
+    static const char *const known[] = { "createSocket",
       "addRequest", "removeSocket", "off", "removeListener",
       "removeAllListeners", "emit", "prependListener", "prependOnceListener",
       "listenerCount", "listeners", NULL };
@@ -10344,11 +10383,11 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
    * answer a bound function, the dial hook stays a named fence */
   if (strcmp(key, "keepSocketAlive") == 0) return scr_http_agent_hook_value(a, true);
   if (strcmp(key, "reuseSocket") == 0) return scr_http_agent_hook_value(a, false);
+  if (strcmp(key, "createConnection") == 0) return scr_http_agent_connect_value(a);
   {
     /* the hooks are functions in Node: a read must not answer
      * undefined, and an assignment is refused in the setter below */
-    static const char *const known[] = { "options", "maxTotalSockets", "createConnection",
-      "createSocket", NULL };
+    static const char *const known[] = { "options", "maxTotalSockets", "createSocket", NULL };
     if (scr_http_dynh_in(key, known)) {
       scr_http_dynh_unsupported("Agent", key, NULL);
       return NULL;

@@ -6880,7 +6880,7 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
   let opts: IrExpr;
   let literal: ts.Expression | null = optsNode;
   while (literal !== null && ts.isParenthesizedExpression(literal)) literal = literal.expression;
-  if (
+  const literalHasSocket =
     literal !== null &&
     ts.isObjectLiteralExpression(literal) &&
     literal.properties.nodes.some(
@@ -6888,11 +6888,28 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
         (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
         ts.isIdentifier(p.name) &&
         p.name.text === "socket",
-    )
-  ) {
-    // A socket member is a handle the record form cannot box: the literal
-    // builds the checked-dynamic object member by member.
-    opts = lowerDynObjectLiteral(lowerer, literal);
+    );
+  // A literal that spreads a UNION-typed source (`{ port, ...options }`
+  // with options of an arm-union type) has one field set per combination
+  // of source arms, which no single arm of the options union holds. Node
+  // still builds the plain object and validates its members (an invalid
+  // minVersion throws ERR_TLS_INVALID_PROTOCOL_VERSION), and the runtime
+  // walk is the validator here, so build the checked-dynamic literal and
+  // let it read the members.
+  const literalSpreadsUnion =
+    literal !== null &&
+    ts.isObjectLiteralExpression(literal) &&
+    literal.properties.nodes.some((p) => {
+      if (!ts.isSpreadAssignment(p)) return false;
+      let source: ts.Expression = p.expression;
+      while (ts.isParenthesizedExpression(source)) source = source.expression;
+      return lowerer.mapTypeOf(lowerer.typeOf(source))?.kind === "union";
+    });
+  if (literalHasSocket || literalSpreadsUnion) {
+    // A socket member is a handle the record form cannot box, and a union
+    // spread builds a field set the record form cannot choose an arm for:
+    // the literal builds the checked-dynamic object member by member.
+    opts = lowerDynObjectLiteral(lowerer, literal!);
   } else if (optsNode !== null) {
     const o = lowerer.lowerExpr(optsNode);
     if (o.type.kind === "dyn") {

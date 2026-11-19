@@ -2838,15 +2838,19 @@ void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family)
 
 /* ── the sweep: deferred emits ───────────────────────────────────────── */
 
-static bool scr_dgram_flags_pending(void) {
+/* Work the next dispatch delivers now: the deferred emits and the dns
+ * deliveries already queued. A query still in flight waits on the poller's
+ * own keys and must not arm the wake timer, or the loop would spin for the
+ * whole network wait. */
+static bool scr_dgram_wake_due(void) {
   if (scr_dns_pending) return true;
-  if (scr_dnsq_hooks != NULL && scr_dnsq_hooks->pending()) return true;
   for (ScrDgramSocket *s = scr_dgram_socks; s; s = s->next) {
     if (s->pending_err || s->emit_listening || s->emit_connect) return true;
     if (s->closing && !s->close_emitted) return true;
   }
   return false;
 }
+
 
 static void scr_dgram_sweep(void) {
   ScrDgramSocket *s = scr_dgram_socks;
@@ -2978,7 +2982,7 @@ static void scr_dgram_dispatch(void) {
   if (scr_exc_pending()) return;
   /* Emits a callback just queued (a connect issued from a 'listening' or a
    * dns callback) are due now: keep the loop from sleeping on them. */
-  if (scr_dgram_flags_pending()) scr_dgram_wake();
+  if (scr_dgram_wake_due()) scr_dgram_wake();
   if (scr_dgram_poller == NULL) return;
   ScrPollerEvent evs[64];
   int n = scrp_drain(scr_dgram_poller, evs, 64);
@@ -3008,7 +3012,7 @@ static void scr_dgram_dispatch(void) {
   }
   /* Emits a drained event's callback queued (a connect issued from a dns
    * delivery) are due next turn: wake the poll for them too. */
-  if (scr_dgram_flags_pending()) scr_dgram_wake();
+  if (scr_dgram_wake_due()) scr_dgram_wake();
 }
 
 /* Exit-time registry cleanup (the scr_net.c precedent): sockets a

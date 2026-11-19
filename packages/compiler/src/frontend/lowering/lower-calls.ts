@@ -7091,6 +7091,45 @@ function lowerPrimitiveProtoCall(
       );
       if (dispatched) return dispatched;
     }
+    // A statically typed number with a fractionDigits value the checker
+    // leaves untyped (`n.toFixed(digits)` where a function assigns `digits`):
+    // the number branch of the primitive dispatch converts the argument with
+    // Node's ToIntegerOrInfinity and picks the absent form when it is
+    // undefined. Without it the call keeps the standard-library fence and
+    // throws where Node formats.
+    if (name === "toFixed" && operand.type.kind === "f64" && call.arguments.nodes.length === 1) {
+      const digits = lowerer.lowerExpr(call.arguments.nodes[0]!);
+      const loc = locOf(call);
+      if (digits.type.kind === "f64")
+        return { kind: "libCall", fn: "num.toFixed", args: [operand, digits], type: STRING, loc };
+      if (digits.type.kind === "undefinedT" || digits.type.kind === "void") {
+        const integer: IrExpr = {
+          kind: "libCall",
+          fn: "num.toFixed0",
+          args: [operand],
+          type: STRING,
+          loc,
+        };
+        return isSafeToDiscard(digits)
+          ? integer
+          : {
+              kind: "seqExpr",
+              stmts: [{ kind: "exprStmt", expr: digits, loc }],
+              result: integer,
+              type: STRING,
+              loc,
+            };
+      }
+      const dispatched = lowerDynPrimitiveMethodCall(
+        lowerer,
+        call,
+        name,
+        `${ts.getTextOfNode(recv)}.${name}`,
+        lowerer.coerceToExpected(operand, DYN),
+        [digits],
+      );
+      if (dispatched) return dispatched;
+    }
     if (
       operand.type.kind === "dyn" ||
       (operand.type.kind === "union" && lowerer.dynConvertible(operand.type))

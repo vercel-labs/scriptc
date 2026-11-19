@@ -1622,7 +1622,11 @@ const DYN_STRING_KIND_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 /** Number methods a dyn receiver dispatches by runtime kind here. */
-const DYN_NUMBER_KIND_METHODS: ReadonlySet<string> = new Set(["toPrecision", "toExponential"]);
+const DYN_NUMBER_KIND_METHODS: ReadonlySet<string> = new Set([
+  "toPrecision",
+  "toExponential",
+  "toFixed",
+]);
 
 /** Annex B CreateHTML: the tag and the attribute (null for none). */
 const HTML_METHODS: Readonly<Record<string, readonly [string, string | null]>> = {
@@ -1826,7 +1830,7 @@ function buildNumberMethod(
   stmts: IrStmt[],
 ): IrExpr | null {
   const loc = locOf(call);
-  if (name !== "toPrecision" && name !== "toExponential") return null;
+  if (name !== "toPrecision" && name !== "toExponential" && name !== "toFixed") return null;
   const digits = optionalNumber(
     lowerer,
     args[0],
@@ -1843,6 +1847,29 @@ function buildNumberMethod(
       type: STRING,
       loc,
     };
+  if (name === "toFixed") {
+    // The absent fractionDigits form is the ties-up integer conversion
+    // (num.toFixed0); an explicit one rounds the exact binary value
+    // (num.toFixed). A digits value converted from a checked-dynamic
+    // argument picks between them at run time, as Node's ToIntegerOrInfinity
+    // of undefined does.
+    const integer: IrExpr = {
+      kind: "libCall",
+      fn: "num.toFixed0",
+      args: [x],
+      type: STRING,
+      loc,
+    };
+    const explicit: IrExpr = {
+      kind: "libCall",
+      fn: "num.toFixed",
+      args: [x, digits.value],
+      type: STRING,
+      loc,
+    };
+    if (digits.has.kind === "boolLit") return digits.has.value ? explicit : integer;
+    return { kind: "ternary", cond: digits.has, then: explicit, else_: integer, type: STRING, loc };
+  }
   const shortest: IrExpr = {
     kind: "libCall",
     fn: "num.toExponential",
@@ -1968,6 +1995,7 @@ export function lowerDynPrimitiveMethodCall(
   name: string,
   calleeName: string,
   recv: IrExpr,
+  preEvaluated?: readonly IrExpr[],
 ): IrExpr | null {
   const stringMethod = DYN_STRING_KIND_METHODS.has(name);
   const numberMethod = DYN_NUMBER_KIND_METHODS.has(name);
@@ -1978,7 +2006,14 @@ export function lowerDynPrimitiveMethodCall(
   const local = lowerer.declareHiddenLocal("%primitiveReceiver", DYN);
   stmts.push({ kind: "varDecl", localId: local.id, init: recv, loc });
   const r = varRef(local.id, DYN, loc);
-  const { args } = evaluatedOperands(lowerer, call, stmts, DYN);
+  const { args } =
+    preEvaluated === undefined
+      ? evaluatedOperands(lowerer, call, stmts, DYN)
+      : {
+          args: preEvaluated.map((value, i) =>
+            hoist(lowerer, lowerer.coerceToExpected(value, DYN), stmts, `%primitiveArg${i}`),
+          ),
+        };
   let result: IrExpr = {
     kind: "dynInvoke",
     recv: r,

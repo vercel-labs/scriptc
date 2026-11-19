@@ -429,8 +429,12 @@ ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags) {
     if (stw3_live) stw3_live->live_prev = c;
     stw3_live = c;
     /* One end-of-stream watcher for the adapted stream (after the sink's
-     * start, so a synchronously finished stream still sees the controller). */
-    c->eos = scr_stream_finished_always(c->writable, stw3_closure((void *)&stw3_eos, c), &stw3_eos);
+     * start, so a synchronously finished stream still sees the controller).
+     * Node's adapter calls finished(streamWritable, { readable: false }):
+     * a Duplex's readable side can outlive the writable one (it ends only
+     * through a read), and the writer's close settles on the writable. */
+    c->eos = scr_stream_finished_opts(c->writable, stw3_closure((void *)&stw3_eos, c), &stw3_eos,
+                                      0, -1, true, NULL, NULL);
   }
   stw3_unref(c); /* the constructor's reference */
   return out;

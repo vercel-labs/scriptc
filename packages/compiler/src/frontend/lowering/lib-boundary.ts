@@ -56,6 +56,7 @@ import {
   isDynTypedRefType,
   isUnitType,
   typeEquals,
+  funcHiddenParamCount,
 } from "../../ir/ir.js";
 import { libFnSignatures } from "../../ir/builtin-signatures.js";
 import { REGEX_INTRINSIC_SIGS, STR_INTRINSIC_SIGS } from "../../ir/intrinsic-signatures.js";
@@ -230,13 +231,11 @@ function enforceExprBoundary(lowerer: Lowerer, node: IrExpr): void {
     if (e.callee.type.kind !== "func") return; // validator's ICE otherwise
     const params = e.callee.type.params;
     // A checked-dynamic variadic value hides one trailing dyn array after
-    // its declared parameters (the slot its lifted signature carries). A
-    // typed rest keeps its array in the parameters, so the only slot hidden
-    // after them is the actual-argument array the body reads
-    // (argumentsAll), which completion passes after the rest position.
-    const hidden =
-      (e.callee.type.rest === true && e.callee.type.restAbi === undefined ? 1 : 0) +
-      (e.callee.type.argumentsAll === true ? 1 : 0);
+    // its declared parameters (the slot its lifted signature carries). That
+    // same array is the body's `arguments` when it reads one (argumentsAll),
+    // so the two never add up to two slots. A typed rest keeps its array in
+    // the parameters; only the actual-argument array is hidden then.
+    const hidden = funcHiddenParamCount(e.callee.type);
     if (e.args.length !== params.length + hidden) {
       fence(
         lowerer,

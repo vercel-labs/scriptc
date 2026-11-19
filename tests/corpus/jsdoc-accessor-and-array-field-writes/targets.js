@@ -51,6 +51,31 @@ export function run() {
   console.log(b.uniforms.length, b.uniforms[0].value);
 }
 
+class DepthSlot {
+  /** @type {?DepthTexture} */
+  _owned;
+}
+
+export class InheritedTarget extends DepthSlot {
+  /** @param {?DepthTexture} current */
+  set texture(current) {
+    this._owned = current;
+  }
+  /** @type {?DepthTexture} */
+  get texture() {
+    return this._owned;
+  }
+}
+
+export function inheritedSlot() {
+  const target = new InheritedTarget();
+  target.texture = new Texture();
+  const held = target.texture;
+  console.log(held === null ? "none" : held.constructor.name, held !== null && held.label);
+  target.texture = new DepthTexture();
+  console.log(target.texture.constructor.name, target.texture.isDepthTexture);
+}
+
 export function readBack() {
   const holder = new Target();
   holder.depthTexture = new DepthTexture();

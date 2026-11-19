@@ -10507,7 +10507,10 @@ export class Lowerer {
           continue;
         this.jsWidenedAccessors.add(member);
         // The instance field the setter stores its parameter in
-        // (`this._depthTexture = current`) holds that value too.
+        // (`this._depthTexture = current`) holds that value too. The slot is
+        // the class that declared the field: an inherited JSDoc-typed field
+        // keeps its own class's layout, so marking the setter's class leaves
+        // the write unmet.
         const parameter = ts.isSetAccessorDeclaration(member)
           ? member.parameters.nodes[0]
           : undefined;
@@ -10524,12 +10527,51 @@ export class Lowerer {
             ts.isIdentifier(node.left.name) &&
             ts.isIdentifier(node.right) &&
             node.right.text === parameterName
-          )
-            this.markJsWidenedField(owner, node.left.name.text);
+          ) {
+            this.markJsWidenedField(
+              this.jsFieldSlotClass(owner, node.left.name),
+              node.left.name.text,
+            );
+          }
           return undefined;
         });
       }
     }
+  }
+
+  /** The class whose layout holds the field a widened setter stores its
+   * parameter into: the class of the field's JSDoc declaration, in the
+   * setter's own class or in the nearest ancestor that declares it. A write
+   * inside a subclass names a property symbol of that subclass, which does
+   * not carry the base's declaration, so the base chain is searched when the
+   * write's own symbol answers none. The setter's class is the fallback: a
+   * same-class field needs no declaration lookup to be widened. */
+  private jsFieldSlotClass(
+    owner: ts.ClassLikeDeclaration,
+    name: ts.Identifier,
+  ): ts.ClassLikeDeclaration {
+    const field = this.checker.getSymbolAtLocation(name);
+    const direct = field === undefined ? undefined : jsFieldDeclaringClass(field);
+    if (direct !== undefined) return direct;
+    const ownerSymbol =
+      owner.name === undefined ? undefined : this.checker.getSymbolAtLocation(owner.name);
+    if (ownerSymbol !== undefined) {
+      const find = (type: ts.Type): ts.ClassLikeDeclaration | undefined => {
+        const target = type.isTypeReference() ? type.getTarget() : type;
+        if (target === undefined || !target.isClassOrInterface()) return undefined;
+        for (const base of this.checker.getBaseTypes(target)) {
+          const property = this.checker.getPropertyOfType(base, name.text);
+          const declaring = property === undefined ? undefined : jsFieldDeclaringClass(property);
+          if (declaring !== undefined) return declaring;
+          const inherited = find(base);
+          if (inherited !== undefined) return inherited;
+        }
+        return undefined;
+      };
+      const found = find(this.checker.getDeclaredTypeOfSymbol(ownerSymbol));
+      if (found !== undefined) return found;
+    }
+    return owner;
   }
 
   /** A `for (k in obj)` head writes the key string into its binding. The

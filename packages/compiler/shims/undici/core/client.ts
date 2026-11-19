@@ -4,7 +4,8 @@
 import type { Socket } from "node:net";
 import { buildConnector } from "./connector.ts";
 import { channels } from "./diagnostics.ts";
-import { DispatcherBase, unwrapHandler } from "./dispatcher.ts";
+import { DispatcherBase } from "./dispatcher-base.ts";
+import { unwrapHandler } from "./dispatcher.ts";
 import type { Dispatcher } from "./dispatcher.ts";
 import {
   BodyTimeoutError,

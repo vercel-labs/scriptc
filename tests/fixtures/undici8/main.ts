@@ -72,7 +72,7 @@ try {
   await parsed.body.dump();
   const localRaw = await local.request({ path: "/", method: "GET", responseHeaders: "raw",
     onInfo({ headers }) { console.log("raw hint", JSON.stringify(headers)); } });
-  console.log("custom raw", JSON.stringify(localRaw.headers), agent instanceof Dispatcher);
+  console.log("custom raw", JSON.stringify(localRaw.headers), agent instanceof Dispatcher, Dispatcher.name);
   await localRaw.body.dump();
   const missing = await fetch(origin + "/missing", { dispatcher: pool });
   console.log(missing.status, await missing.text());

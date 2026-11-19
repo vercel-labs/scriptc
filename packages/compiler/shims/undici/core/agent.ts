@@ -1,7 +1,8 @@
 // undici's Agent (lib/dispatcher/agent.js): one dispatcher per origin,
 // created by `factory` (default: a Pool, or a Client when connections is 1).
 import { Client } from "./client.ts";
-import { Dispatcher, DispatcherBase } from "./dispatcher.ts";
+import { Dispatcher } from "./dispatcher.ts";
+import { DispatcherBase } from "./dispatcher-base.ts";
 import { InvalidArgumentError } from "./errors.ts";
 import { Pool } from "./pool.ts";
 import type {

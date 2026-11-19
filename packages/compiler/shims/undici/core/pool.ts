@@ -3,7 +3,8 @@
 // a queue for requests no client can take.
 import { buildConnector } from "./connector.ts";
 import { Client } from "./client.ts";
-import { Dispatcher, DispatcherBase } from "./dispatcher.ts";
+import { Dispatcher } from "./dispatcher.ts";
+import { DispatcherBase } from "./dispatcher-base.ts";
 import { InvalidArgumentError } from "./errors.ts";
 import { parseOrigin } from "./util.ts";
 import type {

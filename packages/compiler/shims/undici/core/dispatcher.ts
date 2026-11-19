@@ -1,20 +1,11 @@
-// undici's Dispatcher (lib/dispatcher/dispatcher.js), DispatcherBase
-// (dispatcher-base.js) and the request() API's handler (lib/api/api-request.js).
+// undici's Dispatcher (lib/dispatcher/dispatcher.js) and request() handler (lib/api/api-request.js).
 import { EventEmitter } from "node:events";
 import { BodyReadable } from "./readable.ts";
-import {
-  ClientClosedError,
-  ClientDestroyedError,
-  InvalidArgumentError,
-  RequestAbortedError,
-  ResponseStatusCodeError,
-} from "./errors.ts";
+import { InvalidArgumentError, RequestAbortedError, ResponseStatusCodeError } from "./errors.ts";
 import { parseHeaders, rawHeaderStrings } from "./util.ts";
 import type {
   DispatchController,
-  DispatchFn,
   DispatchHandlers,
-  DispatchInterceptor,
   DispatchOptions,
   IncomingHttpHeaders,
   Profile,
@@ -106,154 +97,6 @@ export class Dispatcher extends EventEmitter {
 
   __sizeCount(): number {
     return 0;
-  }
-}
-
-/** A user-defined subclass inherits the handler protocol of its package entry. */
-export class DispatcherV8 extends Dispatcher {
-  __undiciProfile(): Profile {
-    return { major: 8 };
-  }
-}
-
-export declare namespace DispatcherV8 {
-  export import DispatchOptions = Dispatcher.DispatchOptions;
-  export import DispatchHandler = Dispatcher.DispatchHandler;
-  export import DispatchController = Dispatcher.DispatchController;
-  export import DispatchInterceptor = Dispatcher.DispatchInterceptor;
-  export import Dispatch = Dispatcher.Dispatch;
-  export import HttpMethod = Dispatcher.HttpMethod;
-  export import UndiciHeaders = Dispatcher.UndiciHeaders;
-  export import RequestOptions = Dispatcher.RequestOptions;
-  export import ResponseData = Dispatcher.ResponseData;
-}
-
-export class DispatcherBase extends DispatcherV8 {
-  __profile: Profile;
-  __destroyed: boolean;
-  __closed: boolean;
-  __onDestroyed: (() => void)[] | null;
-  __onClosed: (() => void)[] | null;
-  __interceptors: readonly DispatchInterceptor[];
-  __interceptedDispatch: DispatchFn | null;
-
-  constructor(profile: Profile) {
-    super();
-    this.__profile = profile;
-    this.__destroyed = false;
-    this.__closed = false;
-    this.__onDestroyed = [];
-    this.__onClosed = [];
-    this.__interceptors = [];
-    this.__interceptedDispatch = null;
-  }
-
-  __undiciProfile(): Profile {
-    return this.__profile;
-  }
-
-  get destroyed(): boolean {
-    return this.__destroyed;
-  }
-
-  __isDestroyed(): boolean {
-    return this.__destroyed;
-  }
-
-  get closed(): boolean {
-    return this.__closed;
-  }
-
-  close(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      if (this.__destroyed) {
-        queueMicrotask(() => reject(new ClientDestroyedError()));
-        return;
-      }
-      if (this.__closed) {
-        const waiting = this.__onClosed;
-        if (waiting !== null) waiting.push(() => resolve());
-        else queueMicrotask(() => resolve());
-        return;
-      }
-      this.__closed = true;
-      this.__onClosed!.push(() => resolve());
-      this.__close()
-        .then(() => this.destroy())
-        .then(() => {
-          queueMicrotask(() => {
-            const callbacks = this.__onClosed;
-            this.__onClosed = null;
-            if (callbacks !== null) for (const cb of callbacks) cb();
-          });
-        });
-    });
-  }
-
-  destroy(err?: Error | null): Promise<void> {
-    return new Promise<void>((resolve) => {
-      if (this.__destroyed) {
-        const waiting = this.__onDestroyed;
-        if (waiting !== null) waiting.push(() => resolve());
-        else queueMicrotask(() => resolve());
-        return;
-      }
-      const error = err ?? new ClientDestroyedError();
-      this.__destroyed = true;
-      this.__onDestroyed!.push(() => resolve());
-      this.__destroy(error).then(() => {
-        queueMicrotask(() => {
-          const callbacks = this.__onDestroyed;
-          this.__onDestroyed = null;
-          if (callbacks !== null) for (const cb of callbacks) cb();
-        });
-      });
-    });
-  }
-
-  dispatch(options: DispatchOptions, handler: DispatchHandlers): boolean {
-    const target = this.__profile.major === 7 ? unwrapHandler(handler, this.__profile) : handler;
-    try {
-      if (this.__destroyed) throw new ClientDestroyedError();
-      if (this.__closed) throw new ClientClosedError();
-      return this.__dispatchIntercepted(options, target);
-    } catch (err) {
-      if (this.__profile.major >= 8 && target.onResponseError !== undefined) {
-        // undici has no controller before dispatch starts.
-        target.onResponseError(null!, err as Error);
-        return false;
-      }
-      if (target.onError === undefined) {
-        if (this.__profile.major >= 7) throw err;
-        throw new InvalidArgumentError("invalid onError method");
-      }
-      target.onError!(err as Error);
-      return false;
-    }
-  }
-
-  __dispatchIntercepted(options: DispatchOptions, handler: DispatchHandlers): boolean {
-    let dispatch = this.__interceptedDispatch;
-    if (dispatch === null) {
-      dispatch = (o: DispatchOptions, h: DispatchHandlers): boolean => this.__dispatch(o, h);
-      for (let i = this.__interceptors.length - 1; i >= 0; i--) {
-        dispatch = this.__interceptors[i]!(dispatch);
-      }
-      this.__interceptedDispatch = dispatch;
-    }
-    return dispatch(options, handler);
-  }
-
-  __dispatch(_options: DispatchOptions, _handler: DispatchHandlers): boolean {
-    throw new Error("not implemented");
-  }
-
-  __close(): Promise<void> {
-    return Promise.resolve();
-  }
-
-  __destroy(_err: Error): Promise<void> {
-    return Promise.resolve();
   }
 }
 

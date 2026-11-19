@@ -275,7 +275,7 @@ describe("package shims", () => {
       expect(output).toContain("handler custom dispatcher");
       expect(output).toContain("instance custom dispatcher");
       expect(output).toContain('hint hint\ncustom parsed {"route":"chosen"}');
-      expect(output).toContain("raw hint []\ncustom raw [] true");
+      expect(output).toContain("raw hint []\ncustom raw [] true Dispatcher");
       expect(output).toContain("InvalidArgumentError invalid method");
       expect(output).toContain("\nfactory false\n");
       expect(output).toContain("pool factory false");

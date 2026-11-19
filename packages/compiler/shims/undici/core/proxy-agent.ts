@@ -28,7 +28,8 @@
 import type { Socket } from "node:net";
 import * as tls from "node:tls";
 import { buildConnector, serverNameOf } from "./connector.ts";
-import { Dispatcher, DispatcherBase } from "./dispatcher.ts";
+import { Dispatcher } from "./dispatcher.ts";
+import { DispatcherBase } from "./dispatcher-base.ts";
 import {
   InvalidArgumentError,
   NotSupportedError,

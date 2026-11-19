@@ -11,7 +11,7 @@ import type { AgentOptions, PoolOptions, Profile } from "./types.ts";
 
 const profile: Profile = { major: 8 };
 
-export { DispatcherV8 as Dispatcher } from "./dispatcher.ts";
+export { Dispatcher } from "./dispatcher-v8.ts";
 export import Headers = globalThis.Headers;
 
 function requireHttp1(options: { allowH2?: boolean } | undefined): void {

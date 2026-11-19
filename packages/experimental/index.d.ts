@@ -173,4 +173,3 @@ export declare function parallelFor(
   body: (start: number, end: number) => void,
   options?: ParallelOptions,
 ): void;
-

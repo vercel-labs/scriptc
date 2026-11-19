@@ -320,6 +320,12 @@ importers:
         specifier: 26.6.6
         version: 26.6.6
 
+  tests/fixtures/undici8:
+    dependencies:
+      undici:
+        specifier: 8.12.2
+        version: 8.12.2
+
 packages:
 
   '@bytecodealliance/preview2-shim@0.17.6':
@@ -2869,6 +2875,10 @@ packages:
     resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
     engines: {node: '>=22.19.0'}
 
+  undici@8.12.2:
+    resolution: {integrity: sha512-XtuDWVdqTLr3NAxm2ly9/hU6kUsJOgGh1RASzMBbsw6aWCOaQzHdW+QQDfdERjfJ2V5vL5pRPa4RetO9UfivDg==}
+    engines: {node: '>=22.19.0'}
+
   universalify@2.0.1:
     resolution: {integrity: sha512-gptHNQghINnc/vTGIk0SOFGFNXw7JVrlRUtConJRlvaw6DuX0wO5Jeko9sWrMBhh+PsYAZ7oXAiOnf/UKogyiw==}
     engines: {node: '>= 10.0.0'}
@@ -5216,6 +5226,8 @@ snapshots:
   undici@7.29.0: {}
 
   undici@8.11.2: {}
+
+  undici@8.12.2: {}
 
   universalify@2.0.1: {}
 

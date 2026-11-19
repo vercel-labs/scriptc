@@ -46,10 +46,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll, describe, expect, test } from "vitest";
-import { compile } from "@scriptc/compiler";
+import { analyze, compile } from "@scriptc/compiler";
+import { libnodePack } from "./libnode.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -152,7 +154,77 @@ async function runAgainstPeer(binary: string, cwd: string): Promise<string> {
   }
 }
 
+async function withUndiciServer(check: (url: string) => Promise<void>): Promise<void> {
+  const server = createServer(async (req, res) => {
+    if (req.url === "/missing") res.statusCode = 404;
+    res.setHeader("x-route", "local");
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    res.end(req.method + " " + req.url + (body ? " " + body : ""));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("expected a TCP port");
+    await check("http://127.0.0.1:" + address.port);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
 describe("package shims", () => {
+  test("undici8: an explicit Node island uses the installed package exports", () => {
+    const entry = join(repoRoot, "tests/fixtures/undici8/proxy.ts");
+    const native = analyze(entry);
+    expect(native.coverage.preflightFailed).toBe(true);
+    const island = analyze(entry, { nodeIslands: { islands: ["undici"] } });
+    expect(island.coverage.preflightFailed).toBe(false);
+    expect(island.coverage.nodeIslands?.islands.map((item) => item.package)).toContain("undici");
+  }, 120_000);
+
+  test.skipIf(libnodePack() === null)(
+    "undici8: both proxy agents forward HTTP through the installed package",
+    async () => {
+      const dir = join(repoRoot, "tests/fixtures/undici8");
+      const entry = join(dir, "proxy.ts");
+      const out = join(scratch, "undici8-proxy");
+      const result = await compile(entry, {
+        outPath: join(out, "client"),
+        outDir: out,
+        sanitize,
+        nodeIslands: { islands: ["undici"] },
+      });
+      if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+      await withUndiciServer(async (url) => {
+        const expected = await run(process.execPath, [entry, url], dir);
+        expect(expected).toBe("200 GET http://origin.invalid/probe?q=1\n".repeat(2));
+        expect(await run(result.binaryPath, [url], dir)).toBe(expected);
+      });
+    },
+    180_000,
+  );
+
+  test("undici8: HTTP/1.1 request and fetch match the installed package without Node islands", async () => {
+    const dir = join(repoRoot, "tests/fixtures/undici8");
+    const entry = join(dir, "main.ts");
+    const out = join(scratch, "undici8");
+    const result = await compile(entry, {
+      outPath: join(out, "client"),
+      outDir: out,
+      sanitize,
+      nodeIslands: { mode: "off" },
+    });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    await withUndiciServer(async (url) => {
+      const expected = await run(process.execPath, [entry, url], dir);
+      expect(expected).toContain("200 POST /write payload");
+      expect(expected).toContain("404 GET /missing");
+      expect(expected).toContain("InvalidArgumentError invalid method");
+      expect(await run(result.binaryPath, [url], dir)).toBe(expected);
+    });
+  }, 180_000);
+
   test("an unloaded package is never loaded, even when installed", async () => {
     const original = join(casesRoot, "unloaded-optional-dependency");
     const expected = await run(process.execPath, [join(original, "main.ts")], original);

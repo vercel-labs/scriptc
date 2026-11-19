@@ -1,0 +1,8 @@
+{
+  "name": "@internal/undici8-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "undici": "8.12.2"
+  }
+}

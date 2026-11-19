@@ -3,6 +3,7 @@ packages:
   - "internal/*"
   - "tests/fixtures/effect4"
   - "tests/fixtures/hono-starter"
+  - "tests/fixtures/undici8"
 minimumReleaseAgeExclude:
   - "vercel@58.1.0"
   - "effect@4.0.0"

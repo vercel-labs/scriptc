@@ -49,8 +49,10 @@ export function analyzeWithFrontend(
   // island report classifies every package from it (executable/prepare.ts's
   // decideNodeIslands), including a package the policy forces into Node.
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
+  const forcedNode = new Set(policy.forcedNode.keys());
   const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
     nodeIslands: true,
+    forcedNode,
     ...(opts.define !== undefined ? { define: opts.define } : {}),
   });
   // The reload lowering may run on, once the island set is known (see
@@ -193,6 +195,7 @@ export function analyzeWithFrontend(
         lowerLoad.fe?.dispose();
         lowerLoad.fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
           nodeIslands: true,
+          forcedNode,
           islandPackages: new Set(packages),
           // The reload re-reads the program: the define values still decide
           // its branches, so the coverage report sees what the build compiles.

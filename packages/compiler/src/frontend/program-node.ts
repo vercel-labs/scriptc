@@ -12,6 +12,7 @@ import type { FrontendServices } from "./services.js";
 export * from "./program.js";
 
 export interface NodeProgramLoadOptions {
+  forcedNode?: ReadonlySet<string> | undefined;
   npmStatic?: Iterable<string>;
   externalTypes?: ReadonlyMap<string, string> | Readonly<Record<string, string>> | undefined;
   define?: Defines | undefined;
@@ -25,6 +26,7 @@ function serviceOptions(options: NodeProgramLoadOptions | undefined) {
         ? [...options.externalTypes]
         : Object.entries(options?.externalTypes ?? {}),
     define: options?.define,
+    forcedNode: options?.forcedNode,
   };
 }
 

@@ -56,6 +56,9 @@ interface ImplementationShim {
   /** Supported major versions and their entry modules, relative to the
    * shim root. */
   versions: ReadonlyMap<number, string>;
+  /** Versions previously served by Node islands. An explicit Node selection
+   * keeps the installed package and its declarations for these versions. */
+  islandVersions?: readonly number[];
   /** Major versions without an entry module that `--npm-static` compiles
    * from the package's own published JavaScript. An installed version that
    * is in neither list stays out of the program. */
@@ -137,9 +140,11 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<
     {
       name: "undici",
       mainFile: "index.js",
+      islandVersions: [8],
       versions: new Map([
         [5, "undici/v5.ts"],
         [7, "undici/v7.ts"],
+        [8, "undici/v8.ts"],
       ]),
     },
   ],
@@ -156,7 +161,7 @@ export function packageShimForBundledFile(
   const shim = IMPLEMENTATION_SHIMS.get(name);
   if (shim === undefined || file.replace(/^\.\//, "") !== shim.mainFile) return null;
   const major = Number(/^(\d+)\./.exec(version)?.[1] ?? NaN);
-  const entry = shim.versions.get(major);
+  const entry = implementationEntry(shim, major);
   return entry === undefined ? null : join(packageShimRoot(), entry);
 }
 
@@ -203,12 +208,19 @@ export function packageShimEntries(): string[] {
 
 /** Package names the project marks never loaded. */
 let unloadedPackages: ReadonlySet<string> = new Set();
+let nodePackages: ReadonlySet<string> | undefined;
+
+function implementationEntry(shim: ImplementationShim, major: number): string | undefined {
+  if (shim.islandVersions?.includes(major) && nodePackages?.has(shim.name)) return undefined;
+  return shim.versions.get(major);
+}
 
 /** Reads the project's package-shim configuration: the `scriptc.packages`
  * entries marked "unloaded", and those with `"shapes": false`, in the
  * entry's nearest package.json (project-config.ts validates the rest).
  * Called once per program load. */
-export function configurePackageShims(entryPath: string): void {
+export function configurePackageShims(entryPath: string, forcedNode?: ReadonlySet<string>): void {
+  nodePackages = forcedNode;
   const packages = new Set<string>();
   const noShapes = new Set<string>();
   for (const [name, setting] of readProjectConfig(entryPath).packages) {
@@ -302,7 +314,7 @@ function shimEntryForPackageDir(pkgDir: string, expectedName: string | null): st
   if (expectedName !== null && installed.name !== expectedName) return null;
   const shim = IMPLEMENTATION_SHIMS.get(installed.name);
   if (shim === undefined) return null;
-  const entry = shim.versions.get(installed.major);
+  const entry = implementationEntry(shim, installed.major);
   if (entry === undefined) return null;
   return join(packageShimRoot(), shim.variant?.(pkgDir) ?? entry);
 }

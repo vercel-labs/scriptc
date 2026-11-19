@@ -242,6 +242,7 @@ interface PrepareInputs {
   /** The command line's `--native` and `--npm-static` marks
    * (node-islands/package-marks.ts), checked once against the first load. */
   packageMarks: readonly PackageMark[];
+  forcedNode: ReadonlySet<string>;
 }
 
 /** The islands, modules and fence rule the next round retries with. */
@@ -317,6 +318,7 @@ function prepareRounds(
     timing,
     islandScan: loadPolicy.mode !== "off" || packageMarks.length > 0,
     packageMarks,
+    forcedNode: new Set(loadPolicy.forcedNode.keys()),
   };
   // The island rounds run one at a time. A round whose preflight, lowering
   // or fence report grows the island set returns that set instead of
@@ -430,6 +432,7 @@ function prepareRound(
       : decideNodeIslands(entryPath, opts, state.firstLoad, lowerIslands, lowerModules);
   if (state.firstLoad === null || islandDecision === null || islandDecision.errors.length > 0) {
     first = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
+      forcedNode: inputs.forcedNode,
       islandScan,
       ...(opts.define !== undefined ? { define: opts.define } : {}),
     });
@@ -481,6 +484,7 @@ function prepareRound(
   if (islandDecision !== null) {
     first?.dispose();
     fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
+      forcedNode: inputs.forcedNode,
       islandPackages: new Set(islandDecision.packages.keys()),
       ...(islandDecision.modules.size > 0
         ? { islandModules: new Set(islandDecision.modules.keys()) }

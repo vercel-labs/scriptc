@@ -30,6 +30,7 @@ export function runNativeFrontend(
           npmStatic: options.npmStatic ?? [],
           externalTypes: Object.entries(options.externalTypes ?? {}),
           define: options.define,
+          forcedNode: options.forcedNode,
         }),
       npmStatic,
       externalTypes,

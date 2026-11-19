@@ -2303,6 +2303,7 @@ function loadProgram7(
  * moduleOrder straight to lowerToIr, and MUST dispose() when done — the
  * spawned tsgo server must not outlive the compile. */
 export interface ProgramLoadOptions {
+  forcedNode?: ReadonlySet<string> | undefined;
   /** Package names whose shipped JavaScript is compiled as program code. */
   npmStatic?: readonly string[];
   /** Exact host module specifiers paired with their declaration paths. */
@@ -2390,7 +2391,7 @@ export function loadProgram(
   // never loaded (package-shims.ts), never compile their published
   // JavaScript, even when named. A registry entry's `sourceVersions`
   // (chalk 6) compile from their own source.
-  configurePackageShims(entryPath);
+  configurePackageShims(entryPath, opts?.forcedNode);
   resetDeclBoundaryOrigins();
   resetDeclOriginVersions();
   // The project's type patches (type-patches/layer.ts), read by every host

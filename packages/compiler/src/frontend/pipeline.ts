@@ -98,6 +98,7 @@ function packageDiagWhere(load: LoadResult, loc: SrcLoc): string {
 }
 
 export interface ProgramLoadOptions {
+  forcedNode?: ReadonlySet<string> | undefined;
   npmStatic?: readonly string[];
   externalTypes?: Readonly<Record<string, string>> | undefined;
   define?: Defines | undefined;
@@ -160,6 +161,7 @@ export interface Frontend {
 /** Hosts own transport lifetimes; shared compiler stages own the frontend. */
 /** How a frontend loads the program, beyond its npm package selection. */
 export interface FrontendOptions {
+  forcedNode?: ReadonlySet<string>;
   /** Packages that run in Node islands (scope-B NI-4): never compiled,
    * typed by their declarations. */
   islandPackages?: ReadonlySet<string>;
@@ -613,7 +615,11 @@ export function runFrontend(
   // also closes both the current program and a failed temporary probe.
   const active: ReturnType<ProgramLoader>[] = [];
   const trackedLoader: ProgramLoader = (path, loadOptions) => {
-    const load = loadProgram(path, { ...loadOptions, define: options.define });
+    const load = loadProgram(path, {
+      ...loadOptions,
+      define: options.define,
+      forcedNode: options.forcedNode,
+    });
     active.push(load);
     return {
       ...load,

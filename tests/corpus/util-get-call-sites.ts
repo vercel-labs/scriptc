@@ -71,3 +71,5 @@ attempt("string", () => getCallSites("3" as unknown as number));
 attempt("null-options", () => getCallSites(null as unknown as number));
 attempt("number-options", () => getCallSites(3, 5 as unknown as { sourceMap?: boolean }));
 attempt("source-map", () => getCallSites(3, JSON.parse('{"sourceMap":"x"}')));
+// An options bag without the key takes the default.
+attempt("empty-options", () => getCallSites({}));

@@ -404,6 +404,10 @@ ScrDyn *scr_util_call_sites(ScrDyn *frame_count, ScrDyn *options) {
       return NULL;
     }
     ScrDyn *source_map = scr_dyn_obj_read(options, "sourceMap", 9);
+    /* A sourceMap accessor that throws answers NULL with its exception
+     * pending; Node reads the property the same way, so the error reaches
+     * the caller instead of being dereferenced here. */
+    if (!source_map) return NULL;
     if (source_map->kind != SCR_DYN_UNDEF && source_map->kind != SCR_DYN_BOOL) {
       scr_dyn_prop_type_fail("options.sourceMap", "of type boolean", source_map);
       scr_dyn_release(source_map);

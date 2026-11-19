@@ -44,7 +44,7 @@ function startLaterDirectory(): void {
     clearInterval(kick);
     console.log("later directory", event === "change" || event === "rename");
     if (watcher) watcher.close();
-    startRelativeRoot();
+    startCleanupPhase();
   });
   let n = 0;
   const kick = setInterval(() => {
@@ -58,6 +58,38 @@ function startLaterDirectory(): void {
       fs.mkdirSync(join(dir, "later"));
     }
     fs.writeFileSync(join(dir, "later", "inner.txt"), String(n));
+  }, 20);
+}
+
+// Removing a subdirectory drops that directory's own watch; the root and
+// its other children keep delivering.
+function startCleanupPhase(): void {
+  let fired = false;
+  let watcher: fs.FSWatcher | null = null;
+  watcher = fs.watch(dir, { recursive: true }, (event, filename) => {
+    if (fired || typeof filename !== "string") return;
+    if (filename !== "root.txt") return;
+    fired = true;
+    clearInterval(kick);
+    console.log("cleanup", event === "change" || event === "rename");
+    if (watcher) watcher.close();
+    startRelativeRoot();
+  });
+  let n = 0;
+  const kick = setInterval(() => {
+    if (fired) return;
+    n += 1;
+    if (n > 400) {
+      console.error("root event after subdirectory removal never delivered");
+      process.exit(1);
+    }
+    if (n === 1) {
+      fs.mkdirSync(join(dir, "doomed"));
+    } else if (n === 2) {
+      fs.rmdirSync(join(dir, "doomed"));
+    } else if (n >= 4) {
+      fs.writeFileSync(join(dir, "root.txt"), String(n));
+    }
   }, 20);
 }
 

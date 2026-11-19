@@ -220,11 +220,13 @@ static bool scr_watch_arm(ScrWatcher *w) {
  * tree; Node-on-macOS implements a recursive watch with an FSEvents stream.
  * CoreServices is loaded with dlopen so the runtime archive carries no
  * framework link flag, which the compiler's link line does not have.
- * Events arrive on a private serial queue; the callback only copies the
- * paths and flags into a mutex-protected list and writes one byte to a
- * pipe registered on the unit's kqueue, so every watcher is touched on the
- * loop's own thread (the watcher registry is thread-local). CoreServices
- * and CoreFoundation ship with every macOS install. */
+ * Events arrive on a private serial queue. Watchers and kqueues are
+ * per-thread, so each thread that starts a recursive watch owns a pending
+ * queue and a wake pipe registered on its own kqueue; the stream callback
+ * copies the paths and flags into every registered queue and wakes each
+ * pipe, and each thread drains its own queue against its own watchers.
+ * A thread's queue is unregistered when the thread exits. CoreServices and
+ * CoreFoundation ship with every macOS install. */
 
 #include <dlfcn.h>
 #include <pthread.h>
@@ -273,21 +275,30 @@ typedef struct {
   void (*release)(void *stream);
 } ScrFseApi;
 
-static ScrFseApi scr_fse_api_state;
-static bool scr_fse_loaded;
-static void *scr_fse_queue;
-
 typedef struct ScrFsePending {
   char *path;
   uint32_t flags;
   struct ScrFsePending *next;
 } ScrFsePending;
 
-static pthread_mutex_t scr_fse_mu = PTHREAD_MUTEX_INITIALIZER;
-static ScrFsePending *scr_fse_pending;
-static ScrFsePending *scr_fse_pending_tail;
-static int scr_fse_pipe[2] = {-1, -1};
-static char scr_fse_token; /* the kqueue udata that marks the wake pipe */
+/** One thread's deliveries: the kqueue filter that wakes it and the list
+ * the stream callback appends to. */
+typedef struct ScrFseQueue {
+  pthread_mutex_t mu;
+  ScrFsePending *head;
+  ScrFsePending *tail;
+  int pipe[2];
+  struct ScrFseQueue *next; /* the process-wide registry */
+} ScrFseQueue;
+
+static ScrFseApi scr_fse_api_state;
+static bool scr_fse_loaded;
+static void *scr_fse_dispatch_queue;
+static pthread_mutex_t scr_fse_reg_mu = PTHREAD_MUTEX_INITIALIZER;
+static ScrFseQueue *scr_fse_queues;
+static pthread_key_t scr_fse_key;
+static pthread_once_t scr_fse_once = PTHREAD_ONCE_INIT;
+static SCR_TL ScrFseQueue *scr_fse_own;
 
 static void *scr_fse_sym(void *handle, const char *name) {
   return handle != NULL ? dlsym(handle, name) : NULL;
@@ -313,8 +324,7 @@ static bool scr_fse_load(void) {
   a->array_callbacks = scr_fse_sym(cf, "kCFTypeArrayCallBacks");
   a->stream_create = (void *(*)(void *, ScrFseCallback, void *, void *, uint64_t, double, uint32_t))
       scr_fse_sym(cs, "FSEventStreamCreate");
-  a->set_queue =
-      (void (*)(void *, void *))scr_fse_sym(cs, "FSEventStreamSetDispatchQueue");
+  a->set_queue = (void (*)(void *, void *))scr_fse_sym(cs, "FSEventStreamSetDispatchQueue");
   a->start = (int (*)(void *))scr_fse_sym(cs, "FSEventStreamStart");
   a->stop = (void (*)(void *))scr_fse_sym(cs, "FSEventStreamStop");
   a->invalidate = (void (*)(void *))scr_fse_sym(cs, "FSEventStreamInvalidate");
@@ -323,14 +333,86 @@ static bool scr_fse_load(void) {
           a->cf_array_create != NULL && a->cf_release != NULL && a->stream_create != NULL &&
           a->set_queue != NULL && a->start != NULL && a->stop != NULL && a->invalidate != NULL &&
           a->release != NULL;
-  if (a->ok && scr_fse_queue == NULL)
-    scr_fse_queue = dispatch_queue_create("scriptc.watch.fsevents", NULL);
-  if (scr_fse_queue == NULL) a->ok = false;
+  if (a->ok && scr_fse_dispatch_queue == NULL)
+    scr_fse_dispatch_queue = dispatch_queue_create("scriptc.watch.fsevents", NULL);
+  if (scr_fse_dispatch_queue == NULL) a->ok = false;
   return a->ok;
 }
 
-/** Queues one delivery batch and wakes the loop. Runs on the stream's
- * serial queue; touches no watcher. */
+/** Unregisters a thread's queue as the thread exits, so the stream callback
+ * stops appending to it. */
+static void scr_fse_queue_free(void *p) {
+  ScrFseQueue *q = p;
+  if (q == NULL) return;
+  pthread_mutex_lock(&scr_fse_reg_mu);
+  for (ScrFseQueue **link = &scr_fse_queues; *link != NULL; link = &(*link)->next) {
+    if (*link == q) {
+      *link = q->next;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&scr_fse_reg_mu);
+  ScrFsePending *entry = q->head;
+  while (entry != NULL) {
+    ScrFsePending *next = entry->next;
+    free(entry->path);
+    free(entry);
+    entry = next;
+  }
+  if (q->pipe[0] >= 0) close(q->pipe[0]);
+  if (q->pipe[1] >= 0) close(q->pipe[1]);
+  pthread_mutex_destroy(&q->mu);
+  free(q);
+}
+
+static void scr_fse_key_init(void) { (void)pthread_key_create(&scr_fse_key, scr_fse_queue_free); }
+
+/** This thread's queue, created and armed on its own kqueue on first use. */
+static ScrFseQueue *scr_fse_queue_get(void) {
+  pthread_once(&scr_fse_once, scr_fse_key_init);
+  if (scr_fse_own != NULL) return scr_fse_own;
+  ScrFseQueue *q = calloc(1, sizeof *q);
+  if (q == NULL) return NULL;
+  pthread_mutex_init(&q->mu, NULL);
+  if (pipe(q->pipe) != 0) {
+    pthread_mutex_destroy(&q->mu);
+    free(q);
+    return NULL;
+  }
+  for (int i = 0; i < 2; i++) {
+    fcntl(q->pipe[i], F_SETFL, O_NONBLOCK);
+    fcntl(q->pipe[i], F_SETFD, FD_CLOEXEC);
+  }
+  if (scr_watch_kq < 0) scr_watch_kq = kqueue();
+  struct kevent ev;
+  struct timespec zero = {0, 0};
+  if (scr_watch_kq < 0) {
+    close(q->pipe[0]);
+    close(q->pipe[1]);
+    pthread_mutex_destroy(&q->mu);
+    free(q);
+    return NULL;
+  }
+  EV_SET(&ev, (uintptr_t)q->pipe[0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, q);
+  if (kevent(scr_watch_kq, &ev, 1, NULL, 0, &zero) != 0) {
+    close(q->pipe[0]);
+    close(q->pipe[1]);
+    pthread_mutex_destroy(&q->mu);
+    free(q);
+    return NULL;
+  }
+  pthread_mutex_lock(&scr_fse_reg_mu);
+  q->next = scr_fse_queues;
+  scr_fse_queues = q;
+  pthread_mutex_unlock(&scr_fse_reg_mu);
+  (void)pthread_setspecific(scr_fse_key, q);
+  scr_fse_own = q;
+  return q;
+}
+
+/** Queues one delivery batch on EVERY registered thread queue and wakes each
+ * one; a thread without a matching watcher simply discards it. Runs on the
+ * stream's serial queue and touches no watcher. */
 static void scr_fse_callback(void *stream, void *info, size_t count, void *paths,
                              const uint32_t *flags, const uint64_t *ids) {
   (void)stream;
@@ -338,49 +420,35 @@ static void scr_fse_callback(void *stream, void *info, size_t count, void *paths
   (void)ids;
   if (count == 0 || paths == NULL) return;
   char **names = (char **)paths;
-  pthread_mutex_lock(&scr_fse_mu);
-  for (size_t i = 0; i < count; i++) {
-    if (names[i] == NULL) continue;
-    size_t len = strlen(names[i]);
-    ScrFsePending *p = malloc(sizeof *p);
-    if (p == NULL) break;
-    p->path = malloc(len + 1);
-    if (p->path == NULL) {
-      free(p);
-      break;
+  pthread_mutex_lock(&scr_fse_reg_mu);
+  for (ScrFseQueue *q = scr_fse_queues; q != NULL; q = q->next) {
+    bool appended = false;
+    pthread_mutex_lock(&q->mu);
+    for (size_t i = 0; i < count; i++) {
+      if (names[i] == NULL) continue;
+      size_t len = strlen(names[i]);
+      ScrFsePending *p = malloc(sizeof *p);
+      if (p == NULL) break;
+      p->path = malloc(len + 1);
+      if (p->path == NULL) {
+        free(p);
+        break;
+      }
+      memcpy(p->path, names[i], len + 1);
+      p->flags = flags[i];
+      p->next = NULL;
+      if (q->tail != NULL) q->tail->next = p;
+      else q->head = p;
+      q->tail = p;
+      appended = true;
     }
-    memcpy(p->path, names[i], len + 1);
-    p->flags = flags[i];
-    p->next = NULL;
-    if (scr_fse_pending_tail != NULL) scr_fse_pending_tail->next = p;
-    else scr_fse_pending = p;
-    scr_fse_pending_tail = p;
+    pthread_mutex_unlock(&q->mu);
+    if (appended && q->pipe[1] >= 0) {
+      ssize_t ignored = write(q->pipe[1], "x", 1);
+      (void)ignored;
+    }
   }
-  pthread_mutex_unlock(&scr_fse_mu);
-  if (scr_fse_pipe[1] >= 0) {
-    ssize_t ignored = write(scr_fse_pipe[1], "x", 1);
-    (void)ignored;
-  }
-}
-
-/** Opens the wake pipe (once) and registers its read end on the unit's
- * kqueue, so the loop's single poll descriptor serves both arms. */
-static bool scr_fse_wake_pipe(void) {
-  if (scr_fse_pipe[0] >= 0) return true;
-  if (pipe(scr_fse_pipe) != 0) {
-    scr_fse_pipe[0] = scr_fse_pipe[1] = -1;
-    return false;
-  }
-  for (int i = 0; i < 2; i++) {
-    fcntl(scr_fse_pipe[i], F_SETFL, O_NONBLOCK);
-    fcntl(scr_fse_pipe[i], F_SETFD, FD_CLOEXEC);
-  }
-  if (scr_watch_kq < 0) scr_watch_kq = kqueue();
-  if (scr_watch_kq < 0) return false;
-  struct kevent ev;
-  EV_SET(&ev, (uintptr_t)scr_fse_pipe[0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, &scr_fse_token);
-  struct timespec zero = {0, 0};
-  return kevent(scr_watch_kq, &ev, 1, NULL, 0, &zero) == 0;
+  pthread_mutex_unlock(&scr_fse_reg_mu);
 }
 
 /** Starts the stream for a recursive directory watch. False leaves the
@@ -388,7 +456,7 @@ static bool scr_fse_wake_pipe(void) {
  * stance). */
 static bool scr_fse_start(ScrWatcher *w) {
   ScrFseApi *a = &scr_fse_api_state;
-  if (!scr_fse_load() || !scr_fse_wake_pipe()) return false;
+  if (!scr_fse_load() || scr_fse_queue_get() == NULL) return false;
   /* FSEvents needs an absolute path: the root's canonical spelling is
    * also the one events come back under. */
   const ScrStr *root = w->abs_root != NULL ? w->abs_root : w->path;
@@ -402,7 +470,7 @@ static bool scr_fse_start(ScrWatcher *w) {
   void *stream = a->stream_create(NULL, scr_fse_callback, NULL, paths, SCR_FSE_SINCE_NOW, 0.01, flags);
   a->cf_release(paths);
   if (stream == NULL) return false;
-  a->set_queue(stream, scr_fse_queue);
+  a->set_queue(stream, scr_fse_dispatch_queue);
   if (!a->start(stream)) {
     a->invalidate(stream);
     a->release(stream);
@@ -421,20 +489,20 @@ static void scr_fse_stop(ScrWatcher *w) {
   w->fse = NULL;
 }
 
-/** Delivers the queued batches to every recursive watcher whose root names
- * the event's path, on the loop's thread. The name is the path relative to
- * the root, which is what Node reports. */
+/** Delivers this thread's queued batches to its own recursive watchers whose
+ * root names the event's path. The name is the path relative to the root,
+ * which is what Node reports. */
 static void scr_fse_drain(void) {
-  if (scr_fse_pipe[0] >= 0) {
-    char buf[256];
-    while (read(scr_fse_pipe[0], buf, sizeof buf) > 0) {
-    }
+  ScrFseQueue *q = scr_fse_own;
+  if (q == NULL) return;
+  char buf[256];
+  while (read(q->pipe[0], buf, sizeof buf) > 0) {
   }
-  pthread_mutex_lock(&scr_fse_mu);
-  ScrFsePending *list = scr_fse_pending;
-  scr_fse_pending = NULL;
-  scr_fse_pending_tail = NULL;
-  pthread_mutex_unlock(&scr_fse_mu);
+  pthread_mutex_lock(&q->mu);
+  ScrFsePending *list = q->head;
+  q->head = NULL;
+  q->tail = NULL;
+  pthread_mutex_unlock(&q->mu);
   while (list != NULL) {
     ScrFsePending *next = list->next;
     size_t plen = strlen(list->path);
@@ -560,9 +628,14 @@ static const char *scr_watch_sub_name(const ScrWatchSub *sub, const char *name, 
   return heap;
 }
 
-/** Forgets the sub entry for a directory that left the tree. The kernel
- * drops the descriptor with the inode, so no inotify_rm_watch is needed
- * here (and a shared peer keeps its own entry). */
+/** The sub entry of the directory at `rel`, or NULL. */
+static ScrWatchSub *scr_watch_find_sub(ScrWatcher *w, const char *rel) {
+  for (ScrWatchSub *sub = w->subs; sub != NULL; sub = sub->next)
+    if (strcmp(sub->rel->data, rel) == 0) return sub;
+  return NULL;
+}
+
+/** Forgets the sub entry for a directory that left the tree. */
 static void scr_watch_drop_sub(ScrWatcher *w, const char *rel) {
   ScrWatchSub **link = &w->subs;
   while (*link != NULL) {
@@ -1110,7 +1183,7 @@ static void scr_watch_dispatch(void) {
     if (n <= 0) return;
     for (int i = 0; i < n; i++) {
 #if defined(__APPLE__)
-      if (evs[i].udata == (void *)&scr_fse_token) {
+      if (scr_fse_own != NULL && evs[i].udata == (void *)scr_fse_own) {
         scr_fse_drain();
         if (scr_exc_pending()) return;
         continue;
@@ -1210,9 +1283,14 @@ static void scr_watch_dispatch(void) {
             scr_watch_add_sub(w, abs, name);
             scr_watch_walk(w, abs, name);
           } else if (e->mask & (IN_DELETE | IN_MOVED_FROM)) {
+            /* The event arrives on the PARENT's descriptor; the watch to
+             * drop is the CHILD's own, which the sub table holds. Removing
+             * the parent's would silence the whole subtree. */
+            ScrWatchSub *child = scr_watch_find_sub(w, name);
+            int child_wd = child != NULL ? child->wd : -1;
             scr_watch_drop_sub(w, name);
-            if (scr_watch_ino >= 0 && !scr_watch_wd_shared(e->wd, w))
-              (void)inotify_rm_watch(scr_watch_ino, e->wd);
+            if (child_wd >= 0 && scr_watch_ino >= 0 && !scr_watch_wd_shared(child_wd, w))
+              (void)inotify_rm_watch(scr_watch_ino, child_wd);
           }
           free(abs);
         }

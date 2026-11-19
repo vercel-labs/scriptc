@@ -22,7 +22,11 @@ import { everyModuleNode, everyStmtList } from "./traverse.js";
 import { isDeferredDiagnosticFence } from "./deferred-fence.js";
 import { eachNodeOfKinds, type IrNodeIndex } from "./node-index.js";
 import { JsIcSites, hasJsIcSite } from "./js-ic.js";
-import { TEXT_DECODER_STREAM_CLASS } from "./webstream-classes.js";
+import {
+  COMPRESSION_STREAM_CLASS,
+  DECOMPRESSION_STREAM_CLASS,
+  TEXT_DECODER_STREAM_CLASS,
+} from "./webstream-classes.js";
 
 const DYN_BUFFER_NUM_METHODS: ReadonlySet<string> = new Set(
   ["read", "write"].flatMap((rw) => [
@@ -2834,7 +2838,17 @@ const RUNTIME_FEATURE_RULES = {
       "process.stdinIsRaw",
     ],
   }),
-  zlib: rule({ prefixes: ["zlib."] }),
+  zlib: rule({
+    prefixes: ["zlib."],
+    // CompressionStream and DecompressionStream run their transform on the
+    // same zlib engine (scr_zlib.c's streaming state), so constructing
+    // either class links that unit and the vendored zlib.
+    libCall: (node) =>
+      node.fn === "webstream.class" &&
+      node.args[0]?.kind === "numLit" &&
+      (node.args[0].value === COMPRESSION_STREAM_CLASS ||
+        node.args[0].value === DECOMPRESSION_STREAM_CLASS),
+  }),
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
   brotli: rule({ fns: ["zlib.brotliInstall"] }),

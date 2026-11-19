@@ -3137,6 +3137,8 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "Blob",
   "BroadcastChannel",
   "CloseEvent",
+  "CompressionStream",
+  "DecompressionStream",
   "CustomEvent",
   "DOMException",
   "Event",

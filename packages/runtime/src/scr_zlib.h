@@ -5,6 +5,23 @@
 
 #include "scr_bytes.h"
 
+/* The streaming state CompressionStream and DecompressionStream drive
+ * (webstreams/compression.js). scr_webstreams.c reaches it through this
+ * table, which this unit installs when it is linked, so the stream unit
+ * links without zlib; a program that constructs one links both. `format`
+ * is 0 gzip, 1 deflate, 2 deflate-raw; flush is 0 (more input) or 4
+ * (finish), zlib's Z_NO_FLUSH/Z_FINISH. work answers false with the state's
+ * zlib error; used_in/used_out report the step's progress. */
+typedef struct {
+  void *(*new)(int format, bool decompress);
+  bool (*work)(void *state, int flush, const unsigned char *in, size_t in_len,
+               unsigned char *out, size_t out_cap, size_t *used_in, size_t *used_out);
+  int (*last_error)(void *state); /* zlib's errno after a failed work */
+  bool (*ended)(void *state);      /* the stream reached its end */
+  void (*free)(void *state);
+} ScrWsZstreamOps;
+extern const ScrWsZstreamOps *scr_ws_zstream_ops;
+
 /* ── zlib (scr_zlib.c — compiled and linked with -lz only when the
  * program uses zlib, like scr_regex.c/libregexp; see native-toolchain.ts) ──────────
  * deflateSync/inflateSync over u8 bytes with Node's default options

@@ -9098,6 +9098,10 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
  * they can box its handles. */
 static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_CAPACITY];
 
+/* CompressionStream's zlib table (scr_zlib.c's constructor installs it):
+ * scr_webstreams.c reads it, so it lives here, in the unit every program
+ * links, and neither of those units has to link the other. */
+const ScrWsZstreamOps *scr_ws_zstream_ops = NULL;
 /* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
 SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
 /* BroadcastChannel's listener core lookup (scr_worker_events_install). */

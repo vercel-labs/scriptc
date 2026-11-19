@@ -5679,6 +5679,267 @@ static const ScrDynHandleClass ws_tcontroller_class = {
     "TransformStreamDefaultController", 0, NULL, ws_tcontroller_accessors, NULL, ws_tcontroller_order, ws_tcontroller_method,
 };
 
+/* ── CompressionStream and DecompressionStream (webstreams/compression.js)
+ *
+ * A TransformStream whose transformer runs the zlib unit's streaming engine
+ * (scr_ws_zstream_ops, installed by scr_zlib.c): this unit links without
+ * zlib, and a program that constructs either class links both. */
+typedef struct WsCompressionStream {
+  WsObj obj;
+  WsTransform *transform; /* +1 */
+  bool decompress;
+  void *zstream;           /* the zlib unit's state, owned; NULL once ended */
+  unsigned char *scratch;  /* output buffer, owned */
+  size_t scratch_cap;
+} WsCompressionStream;
+
+static void ws_compression_trace(void *obj, ScrTraceVisit visit, void *ctx) {
+  WsCompressionStream *t = obj;
+  ws_visit(t->transform, visit, ctx);
+}
+
+static void ws_compression_drop(void *obj, bool gc) {
+  WsCompressionStream *t = obj;
+  ws_drop_obj(t->transform, gc);
+  if (t->zstream && scr_ws_zstream_ops) {
+    scr_ws_zstream_ops->free(t->zstream);
+    t->zstream = NULL;
+  }
+  free(t->scratch);
+  t->scratch = NULL;
+}
+
+/* Checked-dynamic reads: `readable` and `writable` are the transform's. */
+static ScrDyn *ws_compression_get(void *ptr, const char *key, size_t len) {
+  WsCompressionStream *t = ptr;
+  ScrDynHandleTag tag = t->decompress ? SCR_DYNH_DECOMPRESSION_STREAM : SCR_DYNH_COMPRESSION_STREAM;
+  if (ws_name(key, len, "readable")) return ws_transform_readable_box(t->transform);
+  if (ws_name(key, len, "writable")) return ws_transform_writable_box(t->transform);
+  ScrDyn *own = ws_own_get(ptr, key, len);
+  if (own) return own;
+  return scr_dyn_handle_class_member(tag, ptr, key, len);
+}
+
+static ScrDyn *ws_compression_method(void *ptr, ScrDyn *self, const char *method,
+                                     ScrDyn *const *args, size_t argc, const char *what) {
+  (void)ptr;
+  return ws_invoke_member(self, method, args, argc, what);
+}
+WS_MEMBER_INVOKE(ws_compression)
+
+static const ScrDynHandleAccessor ws_compression_accessors[] = {
+    {"readable", false}, {"writable", false}, {NULL, false}};
+
+static void ws_compression_type_drop(void *obj, bool gc) { ws_compression_drop(obj, gc); }
+
+static const WsObjType ws_compression_type = {ws_compression_trace, ws_compression_type_drop,
+                                              "CompressionStream", ws_compression_accessors};
+static const WsObjType ws_decompression_type = {ws_compression_trace, ws_compression_type_drop,
+                                                "DecompressionStream", ws_compression_accessors};
+
+static void ws_compression_throw_zlib(int err) {
+  /* zlib's errno: Z_DATA_ERROR -3, Z_STREAM_ERROR -2, Z_MEM_ERROR -4. */
+  const char *code = err == -3 ? "Z_DATA_ERROR" : err == -4 ? "Z_MEM_ERROR" : "Z_STREAM_ERROR";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, "", 0, code);
+}
+
+/* One engine step loop: consume `in`, enqueue every produced piece. False
+ * with the exception pending (a zlib error, or an enqueue that errored the
+ * writable). */
+static bool ws_compression_step(WsCompressionStream *t, int flush, WsTController *c,
+                                const unsigned char *in, size_t in_len) {
+  if (t->zstream == NULL) return true;
+  for (;;) {
+    if (t->scratch == NULL || t->scratch_cap == 0) {
+      t->scratch = malloc(16384);
+      if (!t->scratch) scr_trap("scriptc: out of memory\n");
+      t->scratch_cap = 16384;
+    }
+    size_t used_in = 0, used_out = 0;
+    bool ok = scr_ws_zstream_ops->work(t->zstream, flush, in, in_len, t->scratch,
+                                       t->scratch_cap, &used_in, &used_out);
+    if (!ok) {
+      ws_compression_throw_zlib(scr_ws_zstream_ops->last_error(t->zstream));
+      return false;
+    }
+    if (used_out > 0) {
+      ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)used_out);
+      memcpy(bytes->data, t->scratch, used_out);
+      ScrDyn *value = scr_dyn_new_bytes(bytes);
+      scr_bytes_release(bytes);
+      bool enqueued = c != NULL && ws_tcontroller_enqueue(c, value);
+      scr_dyn_release(value);
+      if (!enqueued) return false;
+    }
+    in += used_in;
+    in_len -= used_in;
+    if (used_in == 0 && used_out == 0) break;
+    if (flush == 0 && in_len == 0) break;
+  }
+  if (in_len > 0) {
+    /* Bytes after the end of the compressed stream: Node rejects them
+     * (the same chunk's or a later write's). */
+    static const char msg[] = "Trailing junk found after the end of the compressed stream";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1,
+                             "ERR_TRAILING_JUNK_AFTER_STREAM_END");
+    return false;
+  }
+  return true;
+}
+
+/* The transform's chunk: a string or a buffer source, as zlib accepts;
+ * anything else is Node's ERR_INVALID_ARG_TYPE for the chunk. */
+static ScrBytes *ws_compression_chunk(ScrDyn *chunk) {
+  if (chunk->kind == SCR_DYN_STR) {
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    ScrBytes *bytes = scr_bytes_from_str(chunk->v.str, utf8);
+    scr_str_release(utf8);
+    return bytes;
+  }
+  if (chunk->kind == SCR_DYN_BYTES) {
+    /* A typed array's len is its element count; a DataView's len is bytes.
+     * zlib sees the view's bytes, as Node's BufferSource handling does. */
+    size_t size = chunk->v.bytes->len * scr_bytes_elem_size(chunk->v.bytes->elem);
+    ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)size);
+    memcpy(out->data, chunk->v.bytes->data, size);
+    return out;
+  }
+  char detail[256];
+  char msg[400];
+  int n = snprintf(msg, sizeof msg,
+                   "The \"chunk\" argument must be of type string or an instance of Buffer, "
+                   "TypedArray, or DataView. Received %s",
+                   scr_dyn_specific_type(chunk, detail, sizeof detail));
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+  return NULL;
+}
+
+static ScrDyn *ws_compression_transform(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  WsCompressionStream *t = scr_box_get_ref(closure->caps[0]);
+  WsTController *c = NULL;
+  ScrDyn *cv = ws_arg(args, argc, 1);
+  if (cv->kind == SCR_DYN_HANDLE && cv->v.handle.tag == SCR_DYNH_WS_TCONTROLLER)
+    c = cv->v.handle.ptr;
+  ScrDyn *result = NULL;
+  ScrBytes *bytes = ws_compression_chunk(ws_arg(args, argc, 0));
+  if (bytes != NULL) {
+    /* An empty chunk is a completed write that compresses nothing; leaving
+     * the answer unset would stall the write queue. */
+    if (bytes->len == 0 || ws_compression_step(t, 0, c, bytes->data, bytes->len))
+      result = ws_undef();
+    scr_bytes_release(bytes);
+  }
+  ws_release(t); /* the box reference this callback took */
+  return result;
+}
+
+static ScrDyn *ws_compression_flush(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  WsCompressionStream *t = scr_box_get_ref(closure->caps[0]);
+  ScrDyn *cv = ws_arg(args, argc, 0);
+  WsTController *c = cv->kind == SCR_DYN_HANDLE && cv->v.handle.tag == SCR_DYNH_WS_TCONTROLLER
+                        ? cv->v.handle.ptr
+                        : NULL;
+  ScrDyn *result = NULL;
+  if (!ws_compression_step(t, 4, c, NULL, 0)) {
+    ws_release(t);
+    return NULL;
+  }
+  if (t->decompress && t->zstream && !scr_ws_zstream_ops->ended(t->zstream)) {
+    /* finish() reached no stream end: the compressed input was truncated. */
+    ws_release(t);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, "", 0, "Z_BUF_ERROR");
+    return NULL;
+  }
+  if (t->zstream && scr_ws_zstream_ops) {
+    scr_ws_zstream_ops->free(t->zstream);
+    t->zstream = NULL;
+  }
+  if (c) ws_tcontroller_terminate(c);
+  result = ws_undef();
+  ws_release(t); /* the box reference this callback took */
+  return result;
+}
+
+static ScrDyn *ws_compression_callback(WsCompressionStream *t, ScrDynThunk thunk, uint32_t arity,
+                                       const char *name) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new_obj(ws_retain, ws_release, ws_obj_trace);
+  scr_box_set_ref(closure->caps[0], ws_retain(t));
+  return scr_dyn_new_func(closure, thunk, arity, "", name);
+}
+
+static bool ws_compression_attach(WsCompressionStream *t, ScrDynThunk transform, ScrDynThunk flush) {
+  ScrDyn *transformer = scr_dyn_new_obj();
+  scr_dyn_obj_set(transformer, "transform", 9, ws_compression_callback(t, transform, 2, "transform"));
+  scr_dyn_obj_set(transformer, "flush", 5, ws_compression_callback(t, flush, 1, "flush"));
+  ScrDyn *box = ws_transform_construct(&transformer, 1);
+  scr_dyn_release(transformer);
+  if (!box) return false;
+  t->transform = ws_retain(box->v.handle.ptr);
+  scr_dyn_release(box);
+  return true;
+}
+
+/* new CompressionStream(format) / new DecompressionStream(format): the
+ * webidl enum conversion, Node's message for a value outside it. */
+static ScrDyn *ws_compression_construct(ScrDyn *const *args, size_t argc, bool decompress) {
+  const char *cls = decompress ? "DecompressionStream" : "CompressionStream";
+  ScrDyn *format = argc > 0 ? args[0] : NULL;
+  ScrStr *text = NULL;
+  if (format && format->kind != SCR_DYN_UNDEF) {
+    text = scr_dyn_string_coerce_js(format);
+    if (!text) return NULL;
+  }
+  int mode = -1;
+  if (text != NULL) {
+    if (strcmp(text->data, "gzip") == 0) mode = 0;
+    else if (strcmp(text->data, "deflate") == 0) mode = 1;
+    else if (strcmp(text->data, "deflate-raw") == 0) mode = 2;
+  }
+  if (mode < 0) {
+    /* The message carries the value's full text, so its buffer is sized from
+     * it: a fixed buffer would cut the message and report a length past its
+     * end. */
+    const char *shown = text != NULL ? text->data : "undefined";
+    size_t needed = strlen(cls) + strlen(shown) + 128;
+    char *msg = malloc(needed);
+    if (msg == NULL) {
+      scr_str_release(text);
+      static const char fallback[] = "Failed to construct a compression stream: invalid format";
+      scr_throw_error_msg(SCR_ERR_TYPE, fallback, sizeof fallback - 1);
+      return NULL;
+    }
+    int n = snprintf(msg, needed,
+                     "Failed to construct '%s': 1st argument '%s' is not a valid enum value "
+                     "of type CompressionFormat.",
+                     cls, shown);
+    scr_str_release(text);
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+    free(msg);
+    return NULL;
+  }
+  scr_str_release(text);
+  if (scr_ws_zstream_ops == NULL) scr_trap("scriptc: the zlib unit is not linked\n");
+  ws_install();
+  WsCompressionStream *t =
+      ws_obj_new(sizeof *t, decompress ? &ws_decompression_type : &ws_compression_type);
+  ScrDyn *result = NULL;
+  t->decompress = decompress;
+  t->zstream = scr_ws_zstream_ops->new(mode, decompress);
+  if (t->zstream != NULL && ws_compression_attach(t, ws_compression_transform, ws_compression_flush))
+    result = ws_box(t, decompress ? SCR_DYNH_DECOMPRESSION_STREAM : SCR_DYNH_COMPRESSION_STREAM);
+  ws_release(t);
+  return result;
+}
+
+static ScrDyn *ws_compression_new(ScrDyn *const *args, size_t argc) {
+  return ws_compression_construct(args, argc, false);
+}
+
+static ScrDyn *ws_decompression_new(ScrDyn *const *args, size_t argc) {
+  return ws_compression_construct(args, argc, true);
+}
+
 /* ── TextEncoderStream and TextDecoderStream (webstreams/encoding.js) */
 
 /* A TransformStream whose transformer callbacks are native functions, as
@@ -5964,6 +6225,15 @@ static const ScrDynHandleClass ws_text_decoder_class = {
     "TextDecoderStream", 0, ws_text_decoder_construct, ws_text_decoder_accessors, NULL, NULL, ws_text_method,
 };
 
+static const ScrDynHandleClass ws_compression_class = {
+    "CompressionStream", 0, ws_compression_new, ws_compression_accessors, NULL, NULL,
+    ws_compression_method,
+};
+static const ScrDynHandleClass ws_decompression_class = {
+    "DecompressionStream", 0, ws_decompression_new, ws_compression_accessors, NULL, NULL,
+    ws_compression_method,
+};
+
 /* ── queuing strategies ────────────────────────────────────────────── */
 
 typedef struct WsStrategy {
@@ -6207,6 +6477,33 @@ static const ScrDynHandleOps ws_text_decoder_ops = {
     .rejected = ws_rejected_value,
     .stream_predicate = ws_stream_predicate,
 };
+
+static const ScrDynHandleOps ws_compression_ops = {
+    .cls = "CompressionStream",
+    .to_string_tag = "CompressionStream",
+    .retain = ws_retain,
+    .release = ws_release,
+    .invoke = ws_compression_invoke,
+    .get = ws_compression_get,
+    .set = ws_own_set,
+    .json_empty_object = true,
+    .invalid_this = "Value of \"this\" must be of type CompressionStream",
+    .rejected = ws_rejected_value,
+    .stream_predicate = ws_stream_predicate,
+};
+static const ScrDynHandleOps ws_decompression_ops = {
+    .cls = "DecompressionStream",
+    .to_string_tag = "DecompressionStream",
+    .retain = ws_retain,
+    .release = ws_release,
+    .invoke = ws_compression_invoke,
+    .get = ws_compression_get,
+    .set = ws_own_set,
+    .json_empty_object = true,
+    .invalid_this = "Value of \"this\" must be of type DecompressionStream",
+    .rejected = ws_rejected_value,
+    .stream_predicate = ws_stream_predicate,
+};
 WS_OPS(ws_count_strategy_ops, "CountQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL, "Value of \"this\" must be of type CountQueuingStrategy");
 WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL,
        "Value of \"this\" must be of type ByteLengthQueuingStrategy");
@@ -6237,6 +6534,9 @@ static void ws_install(void) {
   scr_dyn_handle_class_install(SCR_DYNH_WS_TCONTROLLER, &ws_tcontroller_ops, &ws_tcontroller_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_TEXT_ENCODER, &ws_text_encoder_ops, &ws_text_encoder_class);
   scr_dyn_handle_class_install(SCR_DYNH_WS_TEXT_DECODER, &ws_text_decoder_ops, &ws_text_decoder_class);
+  scr_dyn_handle_class_install(SCR_DYNH_COMPRESSION_STREAM, &ws_compression_ops, &ws_compression_class);
+  scr_dyn_handle_class_install(SCR_DYNH_DECOMPRESSION_STREAM, &ws_decompression_ops,
+                               &ws_decompression_class);
   /* The fetch unit's streams, readers, controllers, writers and identity
    * transforms (a Response body) are instances of the same classes. */
   scr_dyn_handle_class_alias(SCR_DYNH_WEB_STREAM, SCR_DYNH_WS_READABLE);
@@ -6255,6 +6555,7 @@ static ScrDynHandleTag ws_class_tag(double kind) {
       SCR_DYNH_WS_WRITER,        SCR_DYNH_WS_WCONTROLLER,  SCR_DYNH_WS_TRANSFORM,
       SCR_DYNH_WS_TCONTROLLER,   SCR_DYNH_WS_TEXT_ENCODER, SCR_DYNH_WS_TEXT_DECODER,
       SCR_DYNH_WS_BYOB_CONTROLLER, SCR_DYNH_WS_BYOB_READER, SCR_DYNH_WS_BYOB_REQUEST,
+      SCR_DYNH_COMPRESSION_STREAM, SCR_DYNH_DECOMPRESSION_STREAM,
   };
   int index = (int)kind;
   if (index < 0 || index >= (int)(sizeof tags / sizeof tags[0])) scr_trap("scriptc: unknown web stream class\n");

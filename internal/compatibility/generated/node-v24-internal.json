@@ -55912,6 +55912,7 @@
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/8162-navigator-global.cjs",
           "tests/corpus/9917-structured-clone-errors.ts",
+          "tests/corpus/9979-compression-streams.js",
           "tests/corpus/9988-message-port-events.js",
           "tests/corpus/9989-message-close-events.js",
           "tests/corpus/9991-global-channels.ts",
@@ -56385,10 +56386,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.CompressionStream",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/9979-compression-streams.js"
         ]
       },
       "anchorSource": "exact"
@@ -56523,10 +56524,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:globals.DecompressionStream",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/9979-compression-streams.js"
         ]
       },
       "anchorSource": "exact"
@@ -122146,6 +122147,7 @@
           "tests/corpus/2862-web-readable-async-iteration.ts",
           "tests/corpus/4875-stream-consumers-array-buffer.ts",
           "tests/corpus/7743-transform-stream-identity.ts",
+          "tests/corpus/9979-compression-streams.js",
           "tests/corpus/compat-stream-consumers-bytes.mjs",
           "tests/corpus/compat-stream-consumers-bytes.ts",
           "tests/corpus/compat-web-globals.ts",
@@ -122163,7 +122165,6 @@
           "tests/corpus/webstream-byte-stream-js.mjs",
           "tests/corpus/webstream-byte-stream.ts",
           "tests/corpus/webstream-byte-streams.ts",
-          "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -124558,10 +124559,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:webstreams.CompressionStream",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/9979-compression-streams.js"
         ]
       },
       "anchorSource": "exact"
@@ -124630,10 +124631,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:webstreams.DecompressionStream",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/9979-compression-streams.js"
         ]
       },
       "anchorSource": "exact"

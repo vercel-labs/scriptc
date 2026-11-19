@@ -1069,3 +1069,78 @@ ScrBytes *scr_zlib_inflate(const ScrBytes *data) {
 ScrBytes *scr_zlib_inflate_mode(const ScrBytes *data, double mode) {
   return scr_zlib_sync_opts(scr_zlib_codec_mode_of(mode, false), data, NULL);
 }
+
+/* ── CompressionStream and DecompressionStream's streaming state ─────────
+ * scr_webstreams.c reaches this through scr_ws_zstream_ops (scr_zlib.h):
+ * the stream unit links without zlib, and a program that constructs either
+ * class links both. Formats: 0 gzip, 1 deflate, 2 deflate-raw; the empty
+ * gzip header's mtime is zero and its OS byte is Unix's, as Node's is. */
+typedef struct ScrWsZstream {
+  z_stream zs;
+  bool decompress;
+  bool ended;
+  int err;
+} ScrWsZstream;
+
+static void *scr_ws_zstream_new(int format, bool decompress) {
+  ScrWsZstream *s = calloc(1, sizeof *s);
+  if (s == NULL) scr_zlib_oom();
+  s->decompress = decompress;
+  int window_bits = format == 0 ? 15 + 16 : format == 1 ? 15 : -15;
+  int rc = decompress
+               ? inflateInit2(&s->zs, window_bits)
+               : deflateInit2(&s->zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, window_bits, 8,
+                              Z_DEFAULT_STRATEGY);
+  if (rc != Z_OK) {
+    free(s);
+    return NULL;
+  }
+  return s;
+}
+
+/* One step; Z_NO_FLUSH (0) or Z_FINISH (4). False with the zlib error kept
+ * for last_error. */
+static bool scr_ws_zstream_work(void *state, int flush, const unsigned char *in, size_t in_len,
+                                unsigned char *out, size_t out_cap, size_t *used_in,
+                                size_t *used_out) {
+  ScrWsZstream *s = state;
+  *used_in = 0;
+  *used_out = 0;
+  if (s->ended) return true;
+  s->zs.next_in = (Bytef *)in;
+  s->zs.avail_in = (uInt)in_len;
+  s->zs.next_out = out;
+  s->zs.avail_out = (uInt)out_cap;
+  int rc = s->decompress ? inflate(&s->zs, flush) : deflate(&s->zs, flush);
+  *used_in = in_len - s->zs.avail_in;
+  *used_out = out_cap - s->zs.avail_out;
+  if (rc == Z_OK || rc == Z_BUF_ERROR) return true;
+  if (rc == Z_STREAM_END) {
+    s->ended = true;
+    return true;
+  }
+  s->err = rc;
+  return false;
+}
+
+static int scr_ws_zstream_error(void *state) { return ((ScrWsZstream *)state)->err; }
+
+static bool scr_ws_zstream_ended(void *state) { return ((ScrWsZstream *)state)->ended; }
+
+static void scr_ws_zstream_free(void *state) {
+  ScrWsZstream *s = state;
+  if (s->decompress) inflateEnd(&s->zs);
+  else deflateEnd(&s->zs);
+  free(s);
+}
+
+static const ScrWsZstreamOps scr_ws_zstream_table = {
+    scr_ws_zstream_new, scr_ws_zstream_work, scr_ws_zstream_error, scr_ws_zstream_ended,
+    scr_ws_zstream_free,
+};
+
+/* The table scr_webstreams.c's CompressionStream classes read; this unit's
+ * link is gated on the program constructing one (or using zlib). */
+__attribute__((constructor)) static void scr_ws_zstream_install(void) {
+  scr_ws_zstream_ops = &scr_ws_zstream_table;
+}

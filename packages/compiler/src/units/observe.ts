@@ -116,13 +116,19 @@ function filesOfUnits(
       installed.sort(([a], [b]) => a.localeCompare(b)),
     );
   }
+  // Every reached file of a unit the host did not list belongs in its key. A
+  // unit's files are all collected before it is recorded: setting the entry
+  // on the first file would make every later file look already held and its
+  // edits would leave the key unchanged.
+  const reached = new Map<string, [string, string][]>();
   for (const file of input.files) {
     const id = fileUnit.get(file.file);
     if (id === undefined || out.has(id)) continue;
-    const list = out.get(id) ?? [];
+    const list = reached.get(id) ?? [];
     list.push([file.relative, file.digest]);
-    out.set(id, list);
+    reached.set(id, list);
   }
+  for (const [id, list] of reached) out.set(id, list);
   for (const list of out.values()) list.sort(([a], [b]) => a.localeCompare(b));
   return out;
 }

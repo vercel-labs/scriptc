@@ -144,3 +144,37 @@ test("a stored entry from an older summary schema is a miss, not a guess", () =>
   expect(again.pinsEqual).toBe(false);
   expect(again.wouldHit).toBe(false);
 });
+
+test("every reached file of an app unit is in its key, not only the first", () => {
+  const store = mkdtempSync(join(tmpdir(), "scriptc-units-observe-"));
+  roots.push(store);
+  // A second app file, whose content the second build changes.
+  const withExtra = (extraDigest: string): UnitObservation => {
+    const value = observation("false");
+    return {
+      ...value,
+      files: [
+        ...value.files,
+        {
+          file: "/app/extra.ts",
+          relative: "extra.ts",
+          packageName: "app",
+          packageVersion: "1.0.0",
+          packageRoot: "/app",
+          digest: extraDigest,
+        },
+      ],
+    };
+  };
+  observe(withExtra("6".repeat(64)), store);
+  const changed = observe(withExtra("7".repeat(64)), store);
+  const app = changed.entries.find((entry) => entry.app)!;
+  // The app unit is not listed by an installed directory, so the key must
+  // cover both of its reached files: editing the second one is a miss.
+  expect(app.existed).toBe(false);
+  expect(app.wouldHit).toBeNull();
+  // The dependency's files did not change, so its entry still hits.
+  const lib = changed.entries.find((entry) => entry.id === "lib@1.0.0")!;
+  expect(lib.existed).toBe(true);
+  expect(lib.wouldHit).toBe(true);
+});

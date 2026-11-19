@@ -6964,6 +6964,15 @@ export class Lowerer {
     // unit reused from a record does not lower, so the hint falls back to
     // the generic install line.
     "nodeIslandUse",
+    // SCRIPTC_UNITS=observe|split's report state: the generic instances bodies
+    // demanded (with the owner that demanded each) and the source node of
+    // each retained unit body. The observation reads them from the pass that
+    // lowered the whole program, and a units build never reads the unit
+    // journal (index.ts skips the executable cache in that mode), so a
+    // replayed unit never has to restore them.
+    "unitGenericDemands",
+    "unitGenericDemandKeys",
+    "unitSources",
   ];
 
   /** The fields a unit must leave as they were, and the flags it may set
@@ -15259,8 +15268,7 @@ export class Lowerer {
     // values it adds to the entry module are boxed with the rest.
     if (!library)
       pass("installBuiltinStatics", () => installBuiltinStatics(this, functions, census));
-    if (!library)
-      pass("registerIslandIntrinsics", () => registerIslandIntrinsics(this, functions));
+    if (!library) pass("registerIslandIntrinsics", () => registerIslandIntrinsics(this, functions));
     pass("boxBuiltinValuesChecked", () => boxBuiltinValuesChecked(this, functions, census));
     pass("shareBuiltinValueIdentities", () => shareBuiltinValueIdentities(this, functions));
     pass("finalizeFunctionNames", () => finalizeFunctionNames(this, functions));

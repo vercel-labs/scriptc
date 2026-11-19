@@ -287,6 +287,8 @@ void scr_histo_add(ScrDyn *handle, ScrDyn *other);
 void scr_histo_subtract(ScrDyn *handle, ScrDyn *other);
 double scr_histo_stat(ScrDyn *handle, double which);
 ScrBigInt *scr_histo_stat_big(ScrDyn *handle, double which);
+double scr_histo_ewma(ScrDyn *handle, double which);
+double scr_histo_burn_rate(ScrDyn *handle, ScrDyn *slo_target);
 double scr_histo_percentile(ScrDyn *handle, double percentile);
 ScrBigInt *scr_histo_percentile_big(ScrDyn *handle, double percentile);
 double scr_histo_count_at(ScrDyn *handle, double value);
@@ -303,6 +305,10 @@ double scr_histo_mann_whitney_p(ScrDyn *handle, ScrDyn *other);
 double scr_histo_percentiles_count(ScrDyn *handle);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
+ScrBigInt *scr_histo_percentiles_value_big(ScrDyn *handle, double index);
+double scr_histo_linear_view(ScrDyn *handle, ScrDyn *step_size);
+double scr_histo_log_view(ScrDyn *handle, ScrDyn *first_bucket, ScrDyn *base);
+double scr_histo_percentiles_at_view(ScrDyn *handle, ScrDyn *percentiles);
 void scr_histo_dispose(ScrDyn *handle);
 /* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
  * family and the clears take the call's dyn argument vector (borrowed)

@@ -81027,6 +81027,7 @@
           "tests/corpus/perf-entry-globals.cjs",
           "tests/corpus/perf-entry-object-tag.ts",
           "tests/corpus/perf-event-loop-utilization.ts",
+          "tests/corpus/perf-histogram-ewma.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/perf-hooks-now-arguments.cjs",
           "tests/corpus/perf-hooks-observer.ts",
@@ -83036,6 +83037,7 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9990-histogram-comparison.ts",
+          "tests/corpus/perf-histogram-ewma.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
           "tests/corpus/9994-histogram-short-lived.ts",
@@ -83225,8 +83227,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.burnRate",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83274,8 +83279,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.linearBuckets",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83297,8 +83305,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.logBuckets",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83449,8 +83460,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.percentilesAt",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83670,8 +83684,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.ewmaMean",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83693,8 +83710,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.ewmaStddev",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83716,8 +83736,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.ewmaErrorRate",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83739,8 +83762,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.kurtosis",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9990-histogram-comparison.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83948,8 +83975,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.percentilesBigInt",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83971,8 +84001,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.skewness",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9990-histogram-comparison.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

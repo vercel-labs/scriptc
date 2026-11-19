@@ -53,6 +53,9 @@ struct ScrDgramSocket {
    * option was absent): sendBlockList gates outgoing destinations,
    * receiveBlockList drops incoming sources. */
   ScrDyn *send_block_list, *recv_block_list;
+  /* options.signal: the events.addAbortListener disposable (+1), released
+   * at 'close' — the listener closes the socket when the signal aborts. */
+  ScrDyn *abort_dispose;
   ScrDgramLs msg_ls, err_ls, listening_ls, close_ls, conn_ls;
   bool in_registry;
   struct ScrDgramSocket *next;

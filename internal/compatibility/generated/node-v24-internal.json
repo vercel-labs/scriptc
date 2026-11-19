@@ -34736,6 +34736,8 @@
           "tests/corpus/4994-lone-surrogate-uri.ts",
           "tests/corpus/5130-event-target-dispatch.js",
           "tests/corpus/5140-os-host-facts.ts",
+          "tests/corpus/5190-util-callbackify.cjs",
+          "tests/corpus/5191-util-callbackify.ts",
           "tests/corpus/5213-perf-timing-errors.ts",
           "tests/corpus/5254-cipher-errors.js",
           "tests/corpus/5295-readline-promises-question.ts",
@@ -34785,14 +34787,21 @@
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
           "tests/corpus/compat-error-validation-codes.mjs",
+          "tests/corpus/compat-errors-async-resource-ids.mjs",
+          "tests/corpus/compat-errors-buffer-encoding.mjs",
+          "tests/corpus/compat-errors-cli-tools.mjs",
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
+          "tests/corpus/compat-errors-event-target.mjs",
           "tests/corpus/compat-errors-http.mjs",
           "tests/corpus/compat-errors-http2-controls.mjs",
           "tests/corpus/compat-errors-ip-blocked.mjs",
           "tests/corpus/compat-errors-net.mjs",
+          "tests/corpus/compat-errors-process-codes.mjs",
+          "tests/corpus/compat-errors-stream-callbacks.mjs",
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-web-streams.mjs",
           "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-system-error-fields.mjs",
@@ -35026,7 +35035,7 @@
       "anchor": "class-domexception",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.DOMException",
         "tests": [
           "tests/corpus/compat-web-globals.ts",
@@ -35440,7 +35449,7 @@
       "anchor": "erroropensslerrorstack",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.error.opensslErrorStack",
         "tests": [
           "tests/corpus/compat-errors-crypto.mjs"
@@ -35479,7 +35488,7 @@
       "anchor": "errorlibrary",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.error.library",
         "tests": [
           "tests/corpus/compat-errors-crypto.mjs"
@@ -35500,7 +35509,7 @@
       "anchor": "errorreason",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.error.reason",
         "tests": [
           "tests/corpus/compat-errors-crypto.mjs"
@@ -35620,10 +35629,12 @@
       "anchor": "err_assertion",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ASSERTION",
         "tests": [
-          "tests/corpus/5634-error-extra-props-inspect.ts"
+          "tests/corpus/5634-error-extra-props-inspect.ts",
+          "tests/corpus/5190-util-callbackify.cjs",
+          "tests/corpus/5191-util-callbackify.ts"
         ]
       },
       "anchorSource": "exact"
@@ -35902,7 +35913,7 @@
       "anchor": "err_console_writable_stream",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_CONSOLE_WRITABLE_STREAM",
         "tests": [
           "tests/corpus/console-error-codes.cjs"
@@ -36067,7 +36078,7 @@
       "anchor": "err_crypto_ecdh_invalid_format",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ERR_CRYPTO_ECDH_INVALID_FORMAT",
         "tests": [
           "tests/corpus/6702-ecdh-errors.js"
@@ -36088,7 +36099,7 @@
       "anchor": "err_crypto_ecdh_invalid_public_key",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ERR_CRYPTO_ECDH_INVALID_PUBLIC_KEY",
         "tests": [
           "tests/corpus/6702-ecdh-errors.js"
@@ -36269,7 +36280,7 @@
       "anchor": "err_crypto_invalid_auth_tag",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_AUTH_TAG",
         "tests": [
           "tests/corpus/5254-cipher-errors.js"
@@ -36417,7 +36428,7 @@
       "anchor": "err_crypto_invalid_keypair",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_KEYPAIR",
         "tests": [
           "tests/corpus/6704-ecdh-set-public-key.cjs"
@@ -36501,7 +36512,7 @@
       "anchor": "err_crypto_invalid_messagelen",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_CRYPTO_INVALID_MESSAGELEN",
         "tests": [
           "tests/corpus/7155-cipher-aes-ccm.cjs"
@@ -36837,7 +36848,7 @@
       "anchor": "err_crypto_unknown_dh_group",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:ERR_CRYPTO_UNKNOWN_DH_GROUP",
         "tests": [
           "tests/corpus/6708-dh-errors.js"
@@ -37068,10 +37079,11 @@
       "anchor": "err_encoding_invalid_encoded_data",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ENCODING_INVALID_ENCODED_DATA",
         "tests": [
-          "tests/corpus/3133-text-decoder-streaming.ts"
+          "tests/corpus/3133-text-decoder-streaming.ts",
+          "tests/corpus/compat-errors-buffer-encoding.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -37129,10 +37141,11 @@
       "anchor": "err_event_recursion",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_EVENT_RECURSION",
         "tests": [
-          "tests/corpus/5130-event-target-dispatch.js"
+          "tests/corpus/5130-event-target-dispatch.js",
+          "tests/corpus/compat-errors-event-target.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -37168,10 +37181,12 @@
       "anchor": "err_falsy_value_rejection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_FALSY_VALUE_REJECTION",
         "tests": [
-          "tests/corpus/5634-error-extra-props-inspect.ts"
+          "tests/corpus/5634-error-extra-props-inspect.ts",
+          "tests/corpus/5190-util-callbackify.cjs",
+          "tests/corpus/5191-util-callbackify.ts"
         ]
       },
       "anchorSource": "exact"
@@ -38335,7 +38350,7 @@
       "anchor": "err_http_content_length_mismatch",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_HTTP_CONTENT_LENGTH_MISMATCH",
         "tests": [
           "tests/corpus/2957-http-static-response-controls.ts"
@@ -38356,7 +38371,7 @@
       "anchor": "err_http_headers_sent",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_HTTP_HEADERS_SENT",
         "tests": [
           "tests/corpus/http-response-header-errors.ts"
@@ -38377,7 +38392,7 @@
       "anchor": "err_http_invalid_header_value",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_HTTP_INVALID_HEADER_VALUE",
         "tests": [
           "tests/corpus/2953-http-header-validation.ts"
@@ -38398,7 +38413,7 @@
       "anchor": "err_http_invalid_status_code",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_HTTP_INVALID_STATUS_CODE",
         "tests": [
           "tests/corpus/http-response-header-errors.ts"
@@ -38497,10 +38512,11 @@
       "anchor": "err_illegal_constructor",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_ILLEGAL_CONSTRUCTOR",
         "tests": [
-          "tests/corpus/web-stream-readable-untyped.mjs"
+          "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/compat-errors-web-streams.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38863,10 +38879,10 @@
       "anchor": "err_invalid_async_id",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_ASYNC_ID",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/compat-errors-async-resource-ids.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -38884,10 +38900,11 @@
       "anchor": "err_invalid_buffer_size",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_BUFFER_SIZE",
         "tests": [
-          "tests/corpus/2570-buffer-arg-validation.cjs"
+          "tests/corpus/2570-buffer-arg-validation.cjs",
+          "tests/corpus/compat-errors-buffer-encoding.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39028,7 +39045,7 @@
       "anchor": "err_invalid_handle_type",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_HANDLE_TYPE",
         "tests": [
           "tests/corpus/5658-net-reset-dynamic.cjs"
@@ -39071,7 +39088,7 @@
       "anchor": "err_invalid_ip_address",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_IP_ADDRESS",
         "tests": [
           "tests/corpus/node-dns-resolve-errors.cjs",
@@ -39326,10 +39343,11 @@
       "anchor": "err_invalid_state",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_STATE",
         "tests": [
-          "tests/corpus/web-stream-readable-untyped.mjs"
+          "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/compat-errors-web-streams.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39425,10 +39443,11 @@
       "anchor": "err_invalid_uri",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_INVALID_URI",
         "tests": [
-          "tests/corpus/4994-lone-surrogate-uri.ts"
+          "tests/corpus/4994-lone-surrogate-uri.ts",
+          "tests/corpus/compat-errors-buffer-encoding.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39726,10 +39745,11 @@
       "anchor": "err_missing_option",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_MISSING_OPTION",
         "tests": [
-          "tests/corpus/web-stream-readable-untyped.mjs"
+          "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/compat-errors-web-streams.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -39747,7 +39767,7 @@
       "anchor": "err_missing_passphrase",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_MISSING_PASSPHRASE",
         "tests": [
           "tests/corpus/8167-encrypted-private-keys.cjs"
@@ -39825,10 +39845,11 @@
       "anchor": "err_multiple_callback",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_MULTIPLE_CALLBACK",
         "tests": [
-          "tests/corpus/7246-stream-construct.ts"
+          "tests/corpus/7246-stream-construct.ts",
+          "tests/corpus/compat-errors-stream-callbacks.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40230,10 +40251,11 @@
       "anchor": "err_parse_args_invalid_option_value",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_PARSE_ARGS_INVALID_OPTION_VALUE",
         "tests": [
-          "tests/corpus/2678-util-parseargs.ts"
+          "tests/corpus/2678-util-parseargs.ts",
+          "tests/corpus/compat-errors-cli-tools.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40251,10 +40273,11 @@
       "anchor": "err_parse_args_unexpected_positional",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL",
         "tests": [
-          "tests/corpus/2678-util-parseargs.ts"
+          "tests/corpus/2678-util-parseargs.ts",
+          "tests/corpus/compat-errors-cli-tools.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40294,10 +40317,11 @@
       "anchor": "err_performance_invalid_timestamp",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_PERFORMANCE_INVALID_TIMESTAMP",
         "tests": [
-          "tests/corpus/5213-perf-timing-errors.ts"
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/compat-errors-cli-tools.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40315,10 +40339,11 @@
       "anchor": "err_performance_measure_invalid_options",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_PERFORMANCE_MEASURE_INVALID_OPTIONS",
         "tests": [
-          "tests/corpus/5213-perf-timing-errors.ts"
+          "tests/corpus/5213-perf-timing-errors.ts",
+          "tests/corpus/compat-errors-cli-tools.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -40753,7 +40778,7 @@
       "anchor": "err_socket_already_bound",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_ALREADY_BOUND",
         "tests": [
           "tests/corpus/compat-errors-net.mjs"
@@ -40874,7 +40899,7 @@
       "anchor": "err_socket_closed_before_connection",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SOCKET_CLOSED_BEFORE_CONNECTION",
         "tests": [
           "tests/corpus/compat-errors-net.mjs"
@@ -41356,11 +41381,12 @@
       "anchor": "err_system_error",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_SYSTEM_ERROR",
         "tests": [
           "tests/corpus/5140-os-host-facts.ts",
-          "tests/corpus/os-error-codes.cjs"
+          "tests/corpus/os-error-codes.cjs",
+          "tests/corpus/compat-errors-process-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41396,10 +41422,11 @@
       "anchor": "err_throttled",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_THROTTLED",
         "tests": [
-          "tests/corpus/7711-util-throttle.cjs"
+          "tests/corpus/7711-util-throttle.cjs",
+          "tests/corpus/compat-errors-cli-tools.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41869,10 +41896,11 @@
       "anchor": "err_uncaught_exception_capture_already_set",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET",
         "tests": [
-          "tests/corpus/process-error-codes.cjs"
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/compat-errors-process-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41955,10 +41983,11 @@
       "anchor": "err_unknown_credential",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_UNKNOWN_CREDENTIAL",
         "tests": [
-          "tests/corpus/process-error-codes.cjs"
+          "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/compat-errors-process-codes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -42704,7 +42733,7 @@
       "anchor": "hpe_chunk_extensions_overflow",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.HPE_CHUNK_EXTENSIONS_OVERFLOW",
         "tests": [
           "tests/corpus/http-parser-response-checks.ts"
@@ -42746,7 +42775,7 @@
       "anchor": "hpe_unexpected_content_length",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.HPE_UNEXPECTED_CONTENT_LENGTH",
         "tests": [
           "tests/corpus/http-parser-response-checks.ts"
@@ -44151,7 +44180,7 @@
       "anchor": "unable_to_get_issuer_cert",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.UNABLE_TO_GET_ISSUER_CERT",
         "tests": [
           "tests/corpus/7097-tls-client-certificates.ts"
@@ -44190,7 +44219,7 @@
       "anchor": "depth_zero_self_signed_cert",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.DEPTH_ZERO_SELF_SIGNED_CERT",
         "tests": [
           "tests/corpus/8179-tls-reject-unauthorized-values.mjs"
@@ -44211,7 +44240,7 @@
       "anchor": "self_signed_cert_in_chain",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.SELF_SIGNED_CERT_IN_CHAIN",
         "tests": [
           "tests/corpus/7097-tls-client-certificates.ts"
@@ -44268,7 +44297,7 @@
       "anchor": "unable_to_verify_leaf_signature",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.UNABLE_TO_VERIFY_LEAF_SIGNATURE",
         "tests": [
           "tests/corpus/5562-https-verify-errors.ts"
@@ -44415,7 +44444,7 @@
       "anchor": "invalid_purpose",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.INVALID_PURPOSE",
         "tests": [
           "tests/corpus/7097-tls-client-certificates.ts"
@@ -122182,6 +122211,7 @@
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/web-stream-writable-untyped.mjs",
+          "tests/corpus/web-streams-values.ts",
           "tests/corpus/webstream-byob-partial-elements-js.mjs",
           "tests/corpus/webstream-byob-reader-js.mjs",
           "tests/corpus/webstream-byob-reader.ts",
@@ -122189,6 +122219,7 @@
           "tests/corpus/webstream-byte-stream.ts",
           "tests/corpus/webstream-byte-streams.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
+          "tests/fixtures/fetch/static-stream-values/main.mts",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -122678,10 +122709,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableStream.values",
         "tests": [
-          "tests/corpus/2862-web-readable-async-iteration.ts"
+          "tests/corpus/2862-web-readable-async-iteration.ts",
+          "tests/corpus/web-streams-values.ts",
+          "tests/fixtures/fetch/static-stream-values/main.mts"
         ]
       },
       "anchorSource": "exact"

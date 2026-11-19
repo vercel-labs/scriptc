@@ -1069,7 +1069,7 @@
   "U.clone": "unsupported"
  },
  "generator-infinite.p": {
-  "n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
+  "n2i/I.inspect": "clone=wrong,ctor=throws,proto=wrong,str=throws,tag=wrong",
   "n2i/I.read": "next=unsupported,take3=throws",
   "i2n/N.read.take3": "crash",
   "i2n/N.read.next": "crash",
@@ -1101,12 +1101,12 @@
   "n2i2n/U.inst": "throws",
   "n2i2n/U.clone": "unsupported",
   "i2n2i/I.same": "wrong",
-  "i2n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
+  "i2n2i/I.inspect": "clone=wrong,ctor=throws,proto=wrong,str=throws,tag=wrong",
   "i2n2i/I.read": "next=unsupported,take3=throws",
   "i2n2i/N.read@mixed.take3": "crash",
   "i2n2i/I.same@mixed": "wrong",
   "i2n2i/I.read@mixed": "next=unsupported,take3=throws",
-  "clo-n2i/I.thunk": "clone=wrong,ctor=unsupported,next=unsupported,proto=wrong,str=unsupported,tag=wrong,take3=throws",
+  "clo-n2i/I.thunk": "clone=wrong,ctor=throws,next=unsupported,proto=wrong,str=throws,tag=wrong,take3=throws",
   "clo-n2i/N.callback": "throws",
   "clo-n2i/I.read@callback": "take3=wrong",
   "clo-i2n/N.read.take3": "crash",
@@ -1119,8 +1119,8 @@
   "clo-i2n/U.inst": "throws",
   "clo-i2n/U.clone": "unsupported",
   "clo-i2n/N.ident": "wrong",
-  "clo-i2n/I.taker.back": "clone=wrong,ctor=unsupported,next=unsupported,proto=wrong,str=unsupported,tag=wrong,take3=throws",
-  "clo-i2n/I.taker": "clone=wrong,ctor=unsupported,next=unsupported,proto=wrong,str=unsupported,tag=wrong,take3=throws"
+  "clo-i2n/I.taker.back": "clone=wrong,ctor=throws,next=unsupported,proto=wrong,str=throws,tag=wrong,take3=throws",
+  "clo-i2n/I.taker": "clone=wrong,ctor=throws,next=unsupported,proto=wrong,str=throws,tag=wrong,take3=throws"
  },
  "generator-infinite.u": {
   "n2i/I.inspect": "clone=wrong,ctor=unsupported,proto=wrong,str=unsupported,tag=wrong",
@@ -2889,4 +2889,3 @@
   "clo-i2n/I.taker": "throws"
  }
 }
-

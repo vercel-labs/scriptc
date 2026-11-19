@@ -103,7 +103,11 @@ import {
   arrayValueType,
   tryLowerBytesReadNumberEquality,
 } from "../array-values.js";
-import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
+import {
+  cjsExportMemberWriteGlobalOf,
+  cjsInFileExportGlobalOf,
+  cjsPartialExportMirror,
+} from "../cjs-exports-object.js";
 import { cjsRuntimeOptionalExportStorage } from "../cjs-inline-require.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
 import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
@@ -2226,6 +2230,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
                 // A conditional whole export that selected this table answers
                 // Node's shared exports object, so its slots follow the write.
                 ...lowerer.cjsConditionalExportMirrorStmts(g.id, result, expr.right, loc),
+                // A module of a require() cycle keeps the live exports
+                // object: this write lands there too, where it runs.
+                ...cjsPartialExportMirror(
+                  lowerer,
+                  ts.getSourceFileOfNode(expr),
+                  expr.left.name.text,
+                  result,
+                  expr.right,
+                  loc,
+                ),
               ],
               result,
               type: value.type,

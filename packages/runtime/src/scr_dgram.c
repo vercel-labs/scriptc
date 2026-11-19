@@ -2908,8 +2908,15 @@ void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family)
 /* 'close' disposes the signal's listener (Node registers the removable as
  * a once('close') handler). */
 static void scr_dgram_clear_abort(ScrDgramSocket *s) {
-  scr_dyn_release(s->abort_dispose);
+  if (s->abort_dispose == NULL) return;
+  ScrDyn *dispose = s->abort_dispose;
   s->abort_dispose = NULL;
+  /* Calling the removable removes the abort listener, as Node's
+   * once('close', dispose) does: a signal outliving the socket keeps no
+   * reference to it. */
+  ScrDyn *result = scr_dyn_call(dispose, NULL, 0, "[Symbol.dispose]");
+  scr_dyn_release(result);
+  scr_dyn_release(dispose);
 }
 
 static bool scr_dgram_flags_pending(void) {

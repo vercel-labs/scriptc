@@ -64098,7 +64098,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.ping",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"
@@ -64297,7 +64297,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.connecting",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"
@@ -64703,7 +64703,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'ping'",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"
@@ -66069,7 +66069,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.server.close",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66210,7 +66210,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'connection'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66236,7 +66236,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'request'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66262,7 +66262,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'session'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66311,7 +66311,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'stream'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66383,7 +66383,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.server.close",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66501,7 +66501,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'connection'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66527,7 +66527,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'request'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66553,7 +66553,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'session'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66602,7 +66602,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'stream'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66701,7 +66701,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2.createSecureServer",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66754,7 +66754,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2.getDefaultSettings",
         "tests": [
           "tests/corpus/compat-http2-settings.mjs"
@@ -66780,7 +66780,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2.getPackedSettings",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"
@@ -66806,7 +66806,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2.getUnpackedSettings",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"

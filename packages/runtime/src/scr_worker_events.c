@@ -1215,9 +1215,13 @@ static bool scr_channel_dispatch(void) {
       scr_emitter_emit_message_out(view->events, name, event->message, scr_message_decode, &argument);
       scr_dyn_this_pop();
       scr_str_release(name);
-      if (view->port && !argument && !scr_exc_pending()) argument = scr_message_decode(event->message);
+      /* A typed emitter listener reads the message without decoding it, so
+       * a port only builds the EventTarget value when it has an
+       * EventTarget core (the program named the EventTarget surface). */
+      if (view->et && !argument && !scr_exc_pending())
+        argument = scr_message_decode(event->message);
       if (argument && !scr_exc_pending()) {
-        scr_port_dispatch_message(view, argument);
+        if (view->et) scr_port_dispatch_message(view, argument);
         scr_dyn_release(argument);
       } else if (argument) {
         scr_dyn_release(argument);
@@ -1505,7 +1509,7 @@ static void scr_worker_dispatch(void) {
     /* A message the typed entry cannot read (cyclic, aliased, transferred
      * ports) still reaches the port's EventTarget listeners, with the same
      * decoded value the emitter listeners got. */
-    if (event->kind == SCR_WORKER_MESSAGE && view->port && argument)
+    if (event->kind == SCR_WORKER_MESSAGE && view->port && view->et && argument)
       scr_port_dispatch_message(view, argument);
   }
   /* Node ends worker.stdout and worker.stderr as the worker exits: their

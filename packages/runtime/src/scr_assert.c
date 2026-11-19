@@ -2546,45 +2546,10 @@ static bool scr_assert_partial_bytes(const ScrBytes *x, const ScrBytes *y) {
 
 /* partialArrayEquiv over dense arrays: b's elements in order within a's. */
 static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
-  size_t la = a->v.arr.len, lb = b->v.arr.len;
-  if (la < lb) return false;
-  /* Equal-length arrays pair element by element. An expected hole imposes
-   * no property requirement (Node skips it), while an expected own element
-   * needs one on the actual side (an actual hole fails the aligned key
-   * check). The unequal-length forms below keep Node's subsequence match. */
-  /* Sparse arrays (either side has a hole) match by their own index
-   * values, in order: an expected hole imposes nothing and an actual hole
-   * is not a value, so `[, undefined]` matches `[undefined, ,]` while
-   * Array(1) does not match [undefined] and `[1, 2]` does not match
-   * `[2, ,]`. An expected array with no own index asks for nothing. Dense
-   * arrays keep the subsequence match below. */
-  {
-    size_t ownA = 0, ownB = 0;
-    bool holes = false;
-    for (size_t i = 0; i < la; i++) {
-      if (scr_dyn_arr_has_index(a, i)) ownA++;
-      else holes = true;
-    }
-    for (size_t i = 0; i < lb; i++) {
-      if (scr_dyn_arr_has_index(b, i)) ownB++;
-      else holes = true;
-    }
-    if (holes && ownB != 0) {
-      /* Each expected own index takes the actual's value at that index, or
-       * the next own value after it: a hole is skipped, so `[, 1, 2]`
-       * provides `[1]`, while the cursor only moves forward, which is why
-       * `[1, 2]` does not provide `[2, ,]`. An expected array with no own
-       * index asks for nothing (its named properties still compare below). */
-      size_t p = 0;
-      for (size_t k = 0; k < lb; k++) {
-        if (!scr_dyn_arr_has_index(b, k)) continue;
-        while (p < la && !scr_dyn_arr_has_index(a, p)) p++;
-        if (p >= la) return false;
-        if (!scr_assert_partial_eq(a->v.arr.items[p], b->v.arr.items[k])) return false;
-        p++;
-      }
-    }
-  }
+  if (a->v.arr.len < b->v.arr.len) return false;
+  /* Named properties first: their getters run program code, and Node runs
+   * them before the elements, so nothing about the elements is read (or
+   * cached) until they finish. */
   const ScrDyn *pb = b->v.arr.properties;
   if (pb) {
     const ScrDyn *pa = a->v.arr.properties;
@@ -2594,11 +2559,54 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
       if (!pa || !scr_assert_own_entries(pa, pb, ent, scr_assert_partial_eq)) return false;
     }
   }
+  /* Every comparison below can run a getter (a nested object's accessor)
+   * that changes either array, so lengths and indexes are read live and
+   * each element index is checked against the current length before use. */
+  bool aHoles = false;
+  for (size_t i = 0; i < a->v.arr.len; i++)
+    if (!scr_dyn_arr_has_index(a, i)) aHoles = true;
+  bool bHoles = false;
+  for (size_t i = 0; i < b->v.arr.len; i++)
+    if (!scr_dyn_arr_has_index(b, i)) bHoles = true;
+  if (bHoles) {
+    /* A sparse expectation is positional: each expected own index reads the
+     * actual's value at that index (a hole reads undefined). */
+    for (size_t k = 0; k < b->v.arr.len; k++) {
+      if (!scr_dyn_arr_has_index(b, k)) continue;
+      const ScrDyn *av =
+          (k < a->v.arr.len && scr_dyn_arr_has_index(a, k)) ? a->v.arr.items[k] : scr_dyn_undefined();
+      if (!scr_assert_partial_eq(av, b->v.arr.items[k])) return false;
+    }
+    /* The sparse comparison is the whole element answer: falling through to
+     * the subsequence search would compare the same nested pairs twice at
+     * every level (exponential work for nested sparse trees). */
+    return true;
+  }
+  if (aHoles) {
+    /* A dense expectation is matched in order against the actual's own
+     * values, a hole being skipped. */
+    size_t p = 0;
+    for (size_t k = 0; k < b->v.arr.len; k++) {
+      for (;;) {
+        if (p >= a->v.arr.len) return false;
+        if (scr_dyn_arr_has_index(a, p) && scr_assert_partial_eq(a->v.arr.items[p], b->v.arr.items[k]))
+          break;
+        p++;
+      }
+      p++;
+    }
+    return true;
+  }
+  /* Dense arrays keep Node's bounded subsequence search. */
   size_t pos = 0;
-  for (size_t i = 0; i < lb; i++) {
-    while (!scr_assert_partial_eq(a->v.arr.items[pos], b->v.arr.items[i])) {
+  for (size_t i = 0; i < b->v.arr.len; i++) {
+    if (a->v.arr.len < b->v.arr.len) return false;
+    size_t bound = a->v.arr.len - b->v.arr.len + i;
+    for (;;) {
+      if (pos >= a->v.arr.len) return false;
+      if (pos > bound) return false;
+      if (scr_assert_partial_eq(a->v.arr.items[pos], b->v.arr.items[i])) break;
       pos++;
-      if (pos > la - lb + i) return false;
     }
     pos++;
   }

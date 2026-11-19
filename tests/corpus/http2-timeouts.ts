@@ -67,4 +67,31 @@ await new Promise<void>((resolve) => {
   });
 });
 
+
+// Activity refreshes the session timer: five pings spaced inside the
+// timeout keep it from firing, and it fires once the session goes idle
+// again.
+await new Promise<void>((resolve) => {
+  const server = http2.createServer();
+  server.listen(0, "127.0.0.1", () => {
+    const client = http2.connect(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    let fired = 0;
+    client.on("connect", () => {
+      client.setTimeout(80);
+      client.on("timeout", () => (fired += 1));
+      let pings = 0;
+      const pinger = setInterval(() => {
+        client.ping(() => {});
+        pings += 1;
+        if (pings === 5) clearInterval(pinger);
+      }, 30);
+      void delay(420).then(() => {
+        lines.push(`activity refreshed timeouts ${fired}`);
+        client.destroy();
+        server.close(() => resolve());
+      });
+    });
+  });
+});
+
 for (const line of lines.sort()) console.log(line);

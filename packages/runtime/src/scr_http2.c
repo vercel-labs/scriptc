@@ -1120,6 +1120,7 @@ static bool scr_h2_sock_alive(ScrH2Session *s) {
 static void scr_h2_send_frame(ScrH2Session *s, uint8_t type, uint8_t flags,
                                int32_t stream_id, const void *payload, size_t n) {
   if (!scr_h2_sock_alive(s)) return;
+  scr_h2_session_touch(s);
   uint8_t head[9];
   head[0] = (uint8_t)(n >> 16);
   head[1] = (uint8_t)(n >> 8);
@@ -1508,6 +1509,17 @@ static void scr_h2_proto_sweep(void) {
         scr_dyn_this_pop();
         free(snap);
         scr_net_ls_drop(&s->connect_ls); /* fires once */
+        /* The streams a program requested while the session connected
+         * become ready now, after the 'connect' listeners. */
+        for (size_t i = 0; i < s->nstreams; i++) {
+          ScrH2Stream *stream = scr_http2_stream_retain(s->streams[i]);
+          if (stream->ready_ls.n > 0) {
+            scr_net_fire0_this(&stream->ready_ls, stream, SCR_DYNH_H2_STREAM);
+            scr_net_ls_drop(&stream->ready_ls);
+          }
+          scr_http2_stream_release(stream);
+          if (scr_exc_pending()) break;
+        }
       }
       break;
     }
@@ -1777,10 +1789,10 @@ void scr_http2_session_set_local_window_size(ScrH2Session *s, double window_size
     return;
   }
   int64_t want = (int64_t)window_size;
-  if (want <= s->local_window) {
-    s->local_window = want;
-    return;
-  }
+  /* The peer keeps every increment already advertised: a smaller value
+   * cannot take credit back, so the record stays the high-water mark and
+   * growing again only sends the difference. */
+  if (want <= s->local_window) return;
   int64_t delta = want - s->local_window;
   s->local_window = want;
   while (delta > 0) {
@@ -1856,6 +1868,7 @@ static bool scr_h2_on_frame(ScrH2Session *s, uint8_t type, uint8_t flags, int32_
 
 static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int32_t stream_id,
                                 const uint8_t *p, size_t n) {
+  scr_h2_session_touch(s);
   /* An open header block admits only its CONTINUATIONs. */
   if (s->hblock_active && type != SCR_H2_F_CONTINUATION) {
     goto proto_err;
@@ -2990,13 +3003,17 @@ void scr_http2_stream_on_timeout(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool
   scr_net_ls_add(&st->timeout_ls, cb, NULL, once);
 }
 
-/* 'ready' fires in Node's kInit, before any listener the program can add
- * (the stream is handed over only once it is ready), so the registration
- * is accepted and the listener waits forever — Node's observable shape. */
+/* 'ready' fires in Node's kInit. A server stream and a client stream on
+ * an established session are handed over ready, so a later registration
+ * waits forever. A request made while the client session is still
+ * connecting is initialized on 'connect': the listener joins the ready
+ * list and the connect sweep fires it. */
 void scr_http2_stream_on_ready(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once) {
-  (void)st;
-  (void)once;
-  scr_closure_release(cb);
+  if (!st->sess->client || st->sess->connected) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&st->ready_ls, cb, NULL, once);
 }
 
 ScrH2Session *scr_http2_stream_session(ScrH2Stream *st) {

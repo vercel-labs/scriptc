@@ -6,7 +6,9 @@
  * 'connect' to the next loop turn; bindSync/connectSync do the same
  * synchronously and throw their failures; send takes one string or Buffer
  * datagram with an explicit port + address (the connected-send and
- * callback forms ride the checked-dynamic ladder). address() and
+ * callback forms ride the checked-dynamic ladder). bind(options) adopts an
+ * existing datagram descriptor when options.fd is a positive int32 (any
+ * other fd falls through to the port bind; bindSync ignores fd). address() and
  * remoteAddress() return the real {address, family, port} record and
  * THROW Node's state errors ("Not running" after close(), getsockname's
  * EBADF before bind, ERR_SOCKET_DGRAM_NOT_CONNECTED for remoteAddress()).
@@ -15,9 +17,9 @@
  * 'error' with no listener exits 1 (the unhandled EventEmitter 'error'
  * behavior). receiveBlockList drops packets from a blocked source before
  * they reach 'message'; sendBlockList makes a blocked send fail its
- * callback with ERR_IP_BLOCKED and never reach the wire. The options with
- * no native behavior yet (signal, lookup) are refused at run time with an
- * SC2020 Error. */
+ * callback with ERR_IP_BLOCKED and never reach the wire; createSocket's
+ * signal closes the socket when it aborts. The option with no native
+ * behavior yet (lookup) is refused at run time with an SC2020 Error. */
 declare module "dgram" {
   export interface AddressInfo {
     address: string;
@@ -34,6 +36,8 @@ declare module "dgram" {
     port?: number;
     address?: string;
     exclusive?: boolean;
+    /** An existing datagram descriptor to adopt (bind); bindSync ignores it. */
+    fd?: number;
   }
   export interface SocketOptions {
     type: "udp4" | "udp6";

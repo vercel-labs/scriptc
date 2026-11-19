@@ -111,6 +111,15 @@ typedef struct ScrConsoleInst {
   ScrConsoleState state;       /* this console's counters, timers and group indentation */
   void (*stream_write)(struct ScrConsoleInst *, int which, ScrStr *line);
   void (*stream_drop)(struct ScrConsoleInst *); /* releases the bound streams */
+  /* Node binds each method to its Console: `const { log } = c` answers a
+   * function that writes to c's target. The first read of an output member
+   * builds its bound function here (identity holds across reads); the
+   * function owns a reference back to the instance, so the pair is broken
+   * up at exit (scr_console_bound_cleanup) instead of by the instance's
+   * release. */
+  struct ScrConsoleInst *bound_next;
+  bool bound_linked;           /* on the thread's cleanup list */
+  struct ScrDyn *bound[5];     /* log, info, debug, error, warn */
 } ScrConsoleInst;
 ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors,
                         ScrDyn *group_indentation);

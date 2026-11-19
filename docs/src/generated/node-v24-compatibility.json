@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 56,
-    "matrixRows": 3689,
+    "matrixRows": 3685,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 199,
+      "not-applicable": 203,
       "chapters": 7
     }
   },
@@ -176,8 +176,8 @@
     {
       "slug": "globals",
       "title": "Globals",
-      "entries": 92,
-      "apiEntries": 92
+      "entries": 88,
+      "apiEntries": 88
     },
     {
       "slug": "http",
@@ -33141,29 +33141,6 @@
       }
     },
     {
-      "id": "globals:3c623a789a40",
-      "chapter": "globals",
-      "kind": "class",
-      "name": "EventSource",
-      "signature": "Class: `EventSource`",
-      "label": "EventSource",
-      "apiSymbol": "EventSource",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-eventsource",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental. Enable this API with the [`--experimental-eventsource`][] CLI flag.",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
-      }
-    },
-    {
       "id": "globals:3e97945356cd",
       "chapter": "globals",
       "kind": "class",
@@ -33667,29 +33644,6 @@
         "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "globals:4d2dccff54ef",
-      "chapter": "globals",
-      "kind": "class",
-      "name": "Storage",
-      "signature": "Class: `Storage`",
-      "label": "Storage",
-      "apiSymbol": "Storage",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-storage",
-      "nodeStability": {
-        "index": "1.2",
-        "level": 1,
-        "text": "Release candidate. Enable this API with [`--experimental-webstorage`][].",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -34400,9 +34354,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34449,29 +34403,6 @@
         "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "globals:0a45bbc44df3",
-      "chapter": "globals",
-      "kind": "misc",
-      "name": "`localstorage`",
-      "signature": "`localStorage`",
-      "label": "localStorage",
-      "apiSymbol": "localStorage",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "localstorage",
-      "nodeStability": {
-        "index": "1.2",
-        "level": 1,
-        "text": "Release candidate. Enable this API with [`--experimental-webstorage`][].",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -34702,29 +34633,6 @@
         "status": "partial",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "globals:468e2e550926",
-      "chapter": "globals",
-      "kind": "misc",
-      "name": "`sessionstorage`",
-      "signature": "`sessionStorage`",
-      "label": "sessionStorage",
-      "apiSymbol": "sessionStorage",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "sessionstorage",
-      "nodeStability": {
-        "index": "1.2",
-        "level": 1,
-        "text": "Release candidate. Enable this API with [`--experimental-webstorage`][].",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {

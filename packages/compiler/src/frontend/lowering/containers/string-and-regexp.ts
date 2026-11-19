@@ -1848,11 +1848,10 @@ function buildNumberMethod(
       loc,
     };
   if (name === "toFixed") {
-    // The absent fractionDigits form is the ties-up integer conversion
-    // (num.toFixed0); an explicit one rounds the exact binary value
-    // (num.toFixed). A digits value converted from a checked-dynamic
-    // argument picks between them at run time, as Node's ToIntegerOrInfinity
-    // of undefined does.
+    // The omitted fractionDigits form is the ties-up integer conversion
+    // (num.toFixed0). A written argument that holds undefined is
+    // ToIntegerOrInfinity's 0 with the exact decimal integer answer
+    // (num.toFixed), not the omitted-digits fast path.
     const integer: IrExpr = {
       kind: "libCall",
       fn: "num.toFixed0",
@@ -1860,6 +1859,7 @@ function buildNumberMethod(
       type: STRING,
       loc,
     };
+    if (call.arguments.nodes.length === 0) return integer;
     const explicit: IrExpr = {
       kind: "libCall",
       fn: "num.toFixed",
@@ -1867,8 +1867,22 @@ function buildNumberMethod(
       type: STRING,
       loc,
     };
-    if (digits.has.kind === "boolLit") return digits.has.value ? explicit : integer;
-    return { kind: "ternary", cond: digits.has, then: explicit, else_: integer, type: STRING, loc };
+    const explicitZero: IrExpr = {
+      kind: "libCall",
+      fn: "num.toFixed",
+      args: [x, numLit(0, loc)],
+      type: STRING,
+      loc,
+    };
+    if (digits.has.kind === "boolLit") return digits.has.value ? explicit : explicitZero;
+    return {
+      kind: "ternary",
+      cond: digits.has,
+      then: explicit,
+      else_: explicitZero,
+      type: STRING,
+      loc,
+    };
   }
   const shortest: IrExpr = {
     kind: "libCall",

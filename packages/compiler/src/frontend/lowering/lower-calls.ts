@@ -7107,22 +7107,37 @@ function lowerPrimitiveProtoCall(
       if (digits.type.kind === "f64")
         return { kind: "libCall", fn: "num.toFixed", args: [operand, digits], type: STRING, loc };
       if (digits.type.kind === "undefinedT" || digits.type.kind === "void") {
-        const integer: IrExpr = {
+        // The argument is written, so the call is toFixed(0): the exact
+        // decimal integer, not the omitted-digits fast path (which answers
+        // the shortest round-trip text for a large integer).
+        const zero: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
+        const exact: IrExpr = {
           kind: "libCall",
-          fn: "num.toFixed0",
-          args: [operand],
+          fn: "num.toFixed",
+          args: [operand, zero],
           type: STRING,
           loc,
         };
-        return isSafeToDiscard(digits)
-          ? integer
-          : {
-              kind: "seqExpr",
-              stmts: [{ kind: "exprStmt", expr: digits, loc }],
-              result: integer,
-              type: STRING,
-              loc,
-            };
+        if (isSafeToDiscard(digits)) return exact;
+        // JavaScript evaluates the receiver before its arguments: the
+        // discarded digits expression runs after the receiver is read.
+        const receiver = lowerer.declareHiddenLocal("%toFixedReceiver", F64);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: receiver.id, init: operand, loc },
+            { kind: "exprStmt", expr: digits, loc },
+          ],
+          result: {
+            kind: "libCall",
+            fn: "num.toFixed",
+            args: [varRef(receiver.id, F64, loc), zero],
+            type: STRING,
+            loc,
+          },
+          type: STRING,
+          loc,
+        };
       }
       const dispatched = lowerDynPrimitiveMethodCall(
         lowerer,

@@ -46,3 +46,8 @@ try {
 } catch (error) {
   console.log(error.constructor.name);
 }
+
+// A written undefined argument is toFixed(0) with the exact decimal integer,
+// not the shortest round-trip text of the omitted-digits fast path.
+console.log((2 ** 60).toFixed(undefined));
+console.log((123456789012345680000).toFixed(undefined));

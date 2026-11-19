@@ -5612,15 +5612,16 @@ static ScrStr *scr_http_proxy_env_value(const ScrDyn *env, const char *upper,
     const ScrDyn *obj = materialized != NULL ? materialized : env;
     ScrStr *out = NULL;
     if (obj->kind == SCR_DYN_OBJ) {
-      const ScrDyn *v = scr_dyn_obj_get(obj, upper, strlen(upper));
-      if (v == NULL) v = scr_dyn_obj_get(obj, lower, strlen(lower));
+      /* Node reads the lowercase spelling first: it overrides the uppercase */
+      const ScrDyn *v = scr_dyn_obj_get(obj, lower, strlen(lower));
+      if (v == NULL) v = scr_dyn_obj_get(obj, upper, strlen(upper));
       if (v != NULL && v->kind == SCR_DYN_STR) out = scr_str_retain(v->v.str);
     }
     scr_dyn_release(materialized);
     return out;
   }
-  const char *raw = getenv(upper);
-  if (raw == NULL) raw = getenv(lower);
+  const char *raw = getenv(lower);
+  if (raw == NULL) raw = getenv(upper);
   return raw != NULL ? scr_str_new(raw, strlen(raw)) : NULL;
 }
 
@@ -8199,15 +8200,21 @@ static bool scr_http_no_proxy_matches(const ScrStr *list, const ScrStr *host, do
         }
       }
       if (port_ok) {
-        if (plen > 0 && pat[0] == '.') {
-          if (host->len > hlen && host->data[host->len - hlen] == '.' &&
-              scr_http_ci_at(host->data + host->len - hlen + 1, pat + 1, hlen - 1))
+        if (plen > 1 && pat[0] == '.') {
+          /* ".example.com": the apex and every subdomain */
+          if (host->len == hlen - 1 && scr_http_ci_at(host->data, pat + 1, host->len))
             return true;
-        } else if (scr_http_ci_at(host->data, pat, host->len < hlen ? host->len : hlen) &&
-                   host->len == hlen) {
-          return true;
-        } else if (host->len > hlen && host->data[host->len - hlen - 1] == '.' &&
-                   scr_http_ci_at(host->data + host->len - hlen, pat, hlen)) {
+          if (host->len > hlen && scr_http_ci_at(host->data + host->len - hlen, pat, hlen))
+            return true;
+        } else if (plen > 2 && pat[0] == '*' && pat[1] == '.') {
+          /* "*.example.com": the subdomains, not the apex */
+          const char *suffix = pat + 1; /* ".example.com" */
+          size_t suffix_len = hlen - 1;
+          if (host->len > suffix_len &&
+              scr_http_ci_at(host->data + host->len - suffix_len, suffix, suffix_len))
+            return true;
+        } else if (host->len == hlen && scr_http_ci_at(host->data, pat, hlen)) {
+          /* a bare host names exactly that host */
           return true;
         }
       }
@@ -8225,6 +8232,29 @@ static bool scr_http_proxy_covers(const ScrStr *host, double port, bool secure) 
   const ScrStr *spec = secure ? scr_http_proxy_env.https_proxy : scr_http_proxy_env.http_proxy;
   if (spec == NULL || spec->len == 0) return false;
   return !scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port);
+}
+
+/* Node's URL parsing decodes the proxy's userinfo before Basic auth. */
+static ScrStr *scr_http_pct_decode(const char *p, size_t n) {
+  char *out = malloc(n ? n : 1);
+  if (out == NULL) scr_http_oom();
+  size_t at = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (p[i] == '%' && i + 2 < n && isxdigit((unsigned char)p[i + 1]) &&
+        isxdigit((unsigned char)p[i + 2])) {
+      int hi = isdigit((unsigned char)p[i + 1]) ? p[i + 1] - '0'
+                                                : tolower((unsigned char)p[i + 1]) - 'a' + 10;
+      int lo = isdigit((unsigned char)p[i + 2]) ? p[i + 2] - '0'
+                                                : tolower((unsigned char)p[i + 2]) - 'a' + 10;
+      out[at++] = (char)((hi << 4) | lo);
+      i += 2;
+    } else {
+      out[at++] = p[i];
+    }
+  }
+  ScrStr *answer = scr_str_new(out, at);
+  free(out);
+  return answer;
 }
 
 /* The proxy a plain-http target goes through, parsed from HTTP_PROXY: an
@@ -8247,9 +8277,11 @@ static bool scr_http_proxy_resolve(const ScrStr *host, double port, ScrHttpProxy
   for (size_t i = 0; i < n; i++)
     if (p[i] == '@') at_sign = i;
   if (at_sign != SIZE_MAX) {
+    ScrStr *decoded = scr_http_pct_decode(p, at_sign);
     ScrHttpBuf cred = {NULL, 0, 0};
     scr_http_buf_str(&cred, "Basic ");
-    ScrStr *basic = scr_http_proxy_b64((const unsigned char *)p, at_sign);
+    ScrStr *basic = scr_http_proxy_b64((const unsigned char *)decoded->data, decoded->len);
+    scr_str_release(decoded);
     scr_http_buf_append(&cred, basic->data, basic->len);
     scr_str_release(basic);
     out->auth = scr_str_new(cred.data, cred.len);

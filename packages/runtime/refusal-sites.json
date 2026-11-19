@@ -349,12 +349,6 @@
  },
  {
   "file": "scr_dgram.c",
-  "function": "scr_dgram_block_list_fail",
-  "message": "a receiveBlockList or sendBlockList is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
   "function": "scr_dgram_create_chk",
   "message": "abort-driven close is not supported yet",
   "code": "SC2020"

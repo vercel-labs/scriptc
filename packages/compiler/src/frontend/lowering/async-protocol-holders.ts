@@ -162,6 +162,7 @@ export class AsyncProtocolHolders {
 
   private scan(marked: Set<ts.Type>): void {
     for (const file of this.islandFiles()) this.markIslandDeclared(file);
+    this.markWebStreamValueIterators();
     const sites = this.collect();
     this.sites = sites.length;
     if (sites.length === 0) return;
@@ -218,6 +219,26 @@ export class AsyncProtocolHolders {
         this.mark(to);
         changed = true;
       }
+    }
+  }
+
+  /** Marks the element type of a web stream's `values()` result wherever
+   * the call appears: its iterator object is the runtime's, whether the
+   * value is stored in an inferred object property, returned from an
+   * inferred function, or never bound at all. */
+  private markWebStreamValueIterators(): void {
+    for (const file of this.sources) {
+      if (file.isDeclarationFile) continue;
+      ts.walkPreorder(file, (node) => {
+        if (!ts.isCallExpression(node)) return undefined;
+        if (!valuesCallOfReadableStream(this.checker, this.isStdlibFile, node)) return undefined;
+        const type = attempt(() => this.checker.getTypeAtLocation(node));
+        if (type === undefined) return undefined;
+        const elements: ts.Type[] = [];
+        this.protocolElements(type, 0, elements);
+        for (const element of elements) this.mark(element);
+        return undefined;
+      });
     }
   }
 

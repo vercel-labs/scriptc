@@ -489,7 +489,10 @@ function programLinksFetch(functions: IrFunction[]): boolean {
  * fetch body. */
 function programUsesWebStreamOnlyMembers(lowerer: Lowerer, functions: IrFunction[]): boolean {
   if (programUsesTypedWebStreams(lowerer)) return true;
-  const members = staticFetchMembers().readableStreamUnsupported;
+  // values() is a static row in the fetch profile (it compiles), but a
+  // fetch body answers it only through the web stream classes, so it
+  // selects the unit here like the members the fetch streams lack.
+  const members = new Set([...staticFetchMembers().readableStreamUnsupported, "values"]);
   const iterates = members.has("[Symbol.asyncIterator]");
   let untyped = false;
   for (const file of lowerer.program.getSourceFiles()) {

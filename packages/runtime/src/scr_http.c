@@ -8068,6 +8068,7 @@ typedef struct ScrHttpAgent {
   bool destroyed;
   ScrHttpAgentEnt *ents, *ents_last; /* append order — Node's FIFO queue */
   size_t nqueued; /* entries with queued set */
+  size_t pump_depth; /* a queue pass is running: wakes inside it leave the queue to it */
   struct ScrHttpAgentFree *free_socks; /* keepAlive: idle sockets, most recent first */
   ScrHttpSockCount *sock_count; /* totalSocketCount (+1) */
   bool in_registry;
@@ -8410,9 +8411,16 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
  * has no live socket and whose dial stays under maxTotalSockets (Node's
  * cross-origin path; the queue is not FIFO across origins). */
 static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
+  /* A wake raised while a pass is running (a pruned socket's slot coming
+   * back, a settle) leaves the queue to that pass: selecting a waiter here
+   * would start one the enclosing pass has already chosen, and the enclosing
+   * pass would then dequeue it a second time — underflowing the count and
+   * stranding the requests behind it. */
+  if (ag->pump_depth > 0) return;
   /* Node's removeSocket serves the queue whenever a slot frees, including
    * after destroy(): destroy() only tears the sockets down */
   if (ag->nqueued > 0) {
+    ag->pump_depth++;
     bool started = false;
     if (name != NULL) {
       for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
@@ -8454,6 +8462,7 @@ static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
         break;
       }
     }
+    ag->pump_depth--;
   }
 }
 

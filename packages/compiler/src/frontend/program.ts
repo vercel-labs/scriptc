@@ -59,6 +59,7 @@ import {
 } from "../diagnostics/diagnostic.js";
 import {
   isInstalledPackagePath,
+  isInstalledSourcePackage,
   isNodeModulesPath,
   isPathSpecifier,
   nearestInvalidPackageJsonPath,
@@ -2391,8 +2392,10 @@ export function loadProgram(
   // The project's type patches (type-patches/layer.ts), read by every host
   // this load creates; nothing at all without `scriptc.typePatches`.
   configureTypePatches(entryPath, (path, text, kind) => services.parse(path, text, kind));
+  // A source package compiles from its TypeScript (isSourcePackagePath), never
+  // from published JavaScript, even when named.
   const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])].filter(
-    (name) => !npmStaticOmitsPackage(entryPath, name),
+    (name) => !npmStaticOmitsPackage(entryPath, name) && !isInstalledSourcePackage(entryPath, name),
   );
   // Resolve authored declaration entries before enabling the JS-only
   // package resolver. Safe overload metadata binds through the runtime

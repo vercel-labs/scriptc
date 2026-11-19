@@ -186,6 +186,14 @@ test("a non-object packages or nodeIslands value is SC8004", () => {
   expect(config({ somethingElse: 1 }).diagnostics).toEqual([]);
 });
 
+test("a package's own source mark is a boolean", () => {
+  expect(config({ source: true }).diagnostics).toEqual([]);
+  expect(config({ source: false }).diagnostics).toEqual([]);
+  expect(config({ source: "yes" }).diagnostics.map((d) => d.message)).toEqual([
+    `package.json 'scriptc.source' must be true or false, not "yes"`,
+  ]);
+});
+
 test("package setting keys named like Object.prototype members are unknown settings", () => {
   const c = config({ packages: { debug: { constructor: "node", toString: "node" } } });
   expect(c.diagnostics.map((d) => [d.code, d.message])).toEqual([

@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import {
   clearResolveCaches,
+  isNodeModulesPath,
+  isSourcePackagePath,
   projectDtsRuntimeSibling,
   resolveBareModule,
   rememberProjectTypes,
@@ -105,6 +107,51 @@ test("source-only workspace packages are project modules while JavaScript packag
     expect(resolveProjectModule(jsEntry, "wslinked")).toBeNull();
   } finally {
     clearResolveCaches();
+  }
+});
+
+test("a package that marks itself as source is program source wherever it is installed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-source-package-"));
+  try {
+    const write = async (path: string, text: string): Promise<void> => {
+      await mkdir(join(dir, path, ".."), { recursive: true });
+      await writeFile(join(dir, path), text);
+    };
+    const marked = JSON.stringify({ name: "kit", scriptc: { source: true } });
+    await write("node_modules/kit/package.json", marked);
+    await write("node_modules/kit/src/index.ts", "export {};\n");
+    await write("node_modules/@scope/kit/package.json", marked);
+    await write("node_modules/@scope/kit/index.ts", "export {};\n");
+    await write("node_modules/plain/package.json", JSON.stringify({ name: "plain" }));
+    await write("node_modules/plain/index.ts", "export {};\n");
+    await write(
+      "node_modules/falsy/package.json",
+      JSON.stringify({ name: "falsy", scriptc: { source: "true" } }),
+    );
+    await write("node_modules/falsy/index.ts", "export {};\n");
+    // A dependency installed inside a source package answers for itself.
+    await write("node_modules/kit/node_modules/dep/package.json", JSON.stringify({ name: "dep" }));
+    await write("node_modules/kit/node_modules/dep/index.js", "export {};\n");
+
+    clearResolveCaches();
+    const at = (path: string): string => join(dir, path);
+    for (const path of ["node_modules/kit/src/index.ts", "node_modules/@scope/kit/index.ts"]) {
+      expect(isSourcePackagePath(at(path))).toBe(true);
+      expect(isNodeModulesPath(at(path))).toBe(false);
+    }
+    for (const path of [
+      "node_modules/plain/index.ts",
+      "node_modules/falsy/index.ts",
+      "node_modules/kit/node_modules/dep/index.js",
+      "node_modules/@scope",
+    ]) {
+      expect(isSourcePackagePath(at(path))).toBe(false);
+      expect(isNodeModulesPath(at(path))).toBe(true);
+    }
+    expect(isSourcePackagePath(at("main.ts"))).toBe(false);
+  } finally {
+    clearResolveCaches();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

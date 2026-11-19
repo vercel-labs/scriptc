@@ -78,6 +78,9 @@ interface PkgJson {
   /** The workspace ROOT's member declaration: an array of directory globs
    * (or `{ packages: [...] }` — the tool-config twin of the same field). */
   workspaces?: unknown;
+  /** The package's own scriptc settings: `{ "source": true }` marks a
+   * source package (isSourcePackagePath). */
+  scriptc?: unknown;
 }
 
 const pkgJsonCache = new Map<string, PkgJson | null>();
@@ -1261,9 +1264,59 @@ export function clearResolveCaches(): void {
 }
 
 /** True when `path` is under a node_modules directory (the
- * isExternalLibraryImport test 5.9.3 answers on resolutions). */
+ * isExternalLibraryImport test 5.9.3 answers on resolutions) and not in a
+ * source package (isSourcePackagePath): a source package's files are
+ * program sources wherever the package is installed, exactly like a
+ * workspace package linked from outside node_modules. */
 export function isNodeModulesPath(path: string): boolean {
-  return isAbsolute(path) && normalizeResolvedPath(path).split("/").includes("node_modules");
+  if (!isAbsolute(path)) return false;
+  const parts = normalizeResolvedPath(path).split("/");
+  return parts.includes("node_modules") && !isSourcePackageParts(parts);
+}
+
+/** True when `path` lies in an installed package whose own package.json
+ * declares `"scriptc": { "source": true }`: the package ships TypeScript
+ * meant to compile as part of the program that imports it, so scriptc
+ * checks and lowers its files like the project's own, with types from its
+ * `.ts` files. The package is the one under the last node_modules segment,
+ * so a dependency installed inside a source package answers for itself. */
+export function isSourcePackagePath(path: string): boolean {
+  return isAbsolute(path) && isSourcePackageParts(normalizeResolvedPath(path).split("/"));
+}
+
+function isSourcePackageParts(parts: readonly string[]): boolean {
+  const i = parts.lastIndexOf("node_modules");
+  if (i < 0) return false;
+  const first = parts[i + 1];
+  if (first === undefined || first === "" || first.startsWith(".")) return false;
+  const depth = first.startsWith("@") ? 2 : 1;
+  if (depth === 2 && (parts[i + 2] === undefined || parts[i + 2] === "")) return false;
+  return isSourcePackageDir(parts.slice(0, i + 1 + depth).join("/"));
+}
+
+/** Whether the package `name` that Node's resolution reaches from
+ * `fromFile` (node_modules walked upward) declares itself a source package.
+ * Such a package compiles from its TypeScript source, so naming it in
+ * --npm-static selects nothing. */
+export function isInstalledSourcePackage(fromFile: string, name: string): boolean {
+  for (let dir = dirname(resolve(fromFile)); ;) {
+    const pkgDir = join(dir, "node_modules", name);
+    if (isDirectory(pkgDir)) return isSourcePackageDir(realpathOr(pkgDir));
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+
+/** Whether the package directory's package.json declares itself a source
+ * package. Only the literal `true` opts in. */
+export function isSourcePackageDir(dir: string): boolean {
+  const scriptc = pkgJsonOf(dir)?.scriptc;
+  return (
+    typeof scriptc === "object" &&
+    scriptc !== null &&
+    (scriptc as { source?: unknown }).source === true
+  );
 }
 
 /** True when `path` is an installed package's file: under a node_modules

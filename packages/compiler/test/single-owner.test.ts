@@ -128,6 +128,43 @@ test("the diagnostic names a local as the source writes it", async () => {
   expect(result.messages[0]).toContain("in head, local 'first' aliases a node it does not own");
 });
 
+test("a constructor cannot alias a pending argument's subtree", async () => {
+  // The argument is owned by the new object once stored; replacing the field
+  // frees the subtree, so a read taken through the argument is a view, not a
+  // borrow the caller keeps alive.
+  const result = await build(`
+import type { SingleOwner } from "@scriptc/experimental";
+
+class Node implements SingleOwner {
+  left: Node | null;
+  right: Node | null;
+  constructor(arg: Node | null) {
+    if (arg === null) {
+      this.left = null;
+      this.right = null;
+      return;
+    }
+    const saved = arg.left;
+    this.left = arg;
+    this.right = null;
+    this.left = null;
+    if (saved !== null) console.log(saved.right === null);
+  }
+}
+
+function main(): void {
+  const leaf = new Node(null);
+  const child = new Node(leaf);
+  const parent = new Node(child);
+  console.log(parent.left === null);
+}
+main();
+`);
+  expect(result.ok).toBe(false);
+  expect(result.codes).toEqual(["SC7010"]);
+  expect(result.messages[0]).toContain("local 'saved' aliases a node it does not own");
+});
+
 test("a constructor cannot alias a field it then overwrites", async () => {
   // The field holds the child; reading `this.child` into an alias makes a
   // second reference the overwrite does not see, so the child would be

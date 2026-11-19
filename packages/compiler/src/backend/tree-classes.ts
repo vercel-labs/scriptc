@@ -680,7 +680,11 @@ class LinearUse {
         const held = state.get(expr.localId);
         if (held === undefined || held === "moved")
           return this.fail(`local ${expr.localId} is used after it was moved`);
-        if (mode === "borrow") return held === "pending" ? "borrowed" : held;
+        // A pending constructor argument is owned by the object under
+        // construction, not by the caller: a field read through it is a view
+        // of that owner, and the constructor can replace the field and free
+        // the subtree, so an alias of it must not be copied as a borrow.
+        if (mode === "borrow") return held === "pending" ? "view" : held;
         if (held === "borrowed")
           return this.fail(`local ${expr.localId} is moved but only borrowed`);
         this.moved.push(expr);

@@ -8710,7 +8710,7 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
  * callback boundary as dynamic objects: an enumerable name and parentPath,
  * and a non-enumerable %dtype the prototype's is*() probes read (the same
  * libuv UV_DIRENT encoding the scandir snapshot uses). */
-static ScrDyn *scr_dirent_proto = NULL;
+static SCR_TL ScrDyn *scr_dirent_proto = NULL;
 
 static ScrDyn *scr_dirent_method(ScrDynThunk thunk, uint32_t arity, const char *name, double kind) {
   ScrClosure *closure = scr_closure_new(NULL, 1);

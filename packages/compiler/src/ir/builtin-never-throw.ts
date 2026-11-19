@@ -399,4 +399,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // own check, and running out of memory ends it too. The call reports no
   // error the emitter could deliver.
   "text.encodeIntoStr",
+  // Error.prepareStackTrace as program state (scr_exception.c): the getter
+  // and setter read and write the program's own cell, running no program
+  // code and raising no catchable error.
+  "error.prepareStackTraceGet",
+  "error.prepareStackTraceSet",
 ]);

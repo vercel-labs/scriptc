@@ -2358,6 +2358,20 @@ const RUNTIME_FEATURE_RULES = {
    * number format and the table-driven grapheme segmenter — which must keep
    * linking no ICU code. */
   icu: rule({ prefixes: ["icu."] }),
+  /** A Console built with inspectOptions or colorMode formats its methods
+   * through the runtime's option-aware entries: scr_inspect.c's console
+   * entries with scr_console_native.c's argument forms. colorMode 'auto'
+   * reads the environment's color depth (scr_tty_colors.c). */
+  consoleOptions: rule({
+    fns: [
+      "console.instWriteArgs",
+      "console.instDirxmlArgs",
+      "console.instDirArgs",
+      "console.instTraceArgs",
+      "console.instAssertArgs",
+      "console.instGroupArgs",
+    ],
+  }),
   /** scr_test.c renders thrown strings with the inspect unit's string
    * formatting; scr_util_callable.c wraps the inspect unit; readline's
    * terminal unit prints completion errors through it when there is a
@@ -2923,6 +2937,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     http: false,
     icu: false,
     inspect: false,
+    consoleOptions: false,
     jsObjectModel: false,
     mutableBuffers: false,
     legacyTextDecoder: false,

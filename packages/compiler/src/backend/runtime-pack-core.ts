@@ -87,6 +87,9 @@ export interface RuntimePackManifest {
 }
 
 export interface RuntimeFeatureSet extends NativeLinkFeatures {
+  /** The tty color-depth tables: the stream object's getColorDepth/
+   * hasColors, or a Console built with inspectOptions/colorMode. */
+  ttyColorTables?: boolean;
   workers: boolean;
   youngNursery: boolean;
   eventTarget: boolean;
@@ -445,6 +448,10 @@ export function effectiveRuntimeFeatures(
     streamWriteErrors: features.streamWriteErrors === true,
     stdioObject: features.stdioObject === true,
     ttyColors: features.ttyColors === true,
+    // The tty color-depth tables: the stream object's color methods, or a
+    // Console built with inspectOptions/colorMode reading colorMode 'auto'.
+    ttyColorTables:
+      (features.events === true && features.ttyColors === true) || features.consoleOptions === true,
     streamPipeEvents: features.streamPipeEvents === true,
     fsStreamSignal: features.fsStreamSignal === true,
     nodeIsland: features.nodeIsland === true,

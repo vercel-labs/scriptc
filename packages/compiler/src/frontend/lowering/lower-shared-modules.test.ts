@@ -222,6 +222,34 @@ export const instance = new Derived();
   );
 });
 
+test("a generic method its subclass overrides leaves the shared class's table", async () => {
+  // The base class's table cannot hold the method — dispatch is static and the subclass
+  // overrides it — so the table skips it instead of failing the whole build.
+  const mod = await lower({
+    "main.mjs": `import { requireModule } from "@scriptc/node";
+import { Base, Derived, base } from "./shapes.ts";
+const plugin = requireModule("./plugin.mjs");
+console.log(base.pick(1), new Derived().pick(2), plugin.name);
+`,
+    "plugin.mjs": `import { Base, Derived } from "./shapes.ts";
+export const name = String(new Derived() instanceof Base);
+`,
+    "shapes.ts": `export class Base {
+  pick<T>(value: T): T {
+    return value;
+  }
+}
+export class Derived extends Base {
+  pick<T>(value: T): T {
+    return value;
+  }
+}
+export const base = new Base();
+`,
+  });
+  expect(calls(mod, "nodeIsland.classMethodsOf").length).toBeGreaterThan(0);
+});
+
 test("island code constructs the class a shared module's variable holds", async () => {
   const mod = await lower({ "main.mjs": MAIN, "plugin.mjs": PLUGIN, "shapes.mjs": SHAPES });
   const shape = answers(mod)["Shape"]!;

@@ -27,6 +27,7 @@ import { extendsElementOf } from "../heritage-elements.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
+import { genericOverrideBelow } from "./lower-classes.js";
 import { isOptionalChainTail } from "./expressions/optional-chains.js";
 import {
   BOOL,
@@ -2100,6 +2101,11 @@ function classMethodsBuilderOf(
     lowerer.classMethodValueHelpers.add(builder);
     const fields: { key: IrExpr; value: IrExpr }[] = [];
     for (const m of names) {
+      // A generic method a subclass overrides has no value this table can
+      // hold — the island dispatches by static class, so the overriding
+      // class decides — and the lowering refuses the value: the table leaves
+      // the member out instead of failing the build that shares the class.
+      if (genericOverrideBelow(info, m)) continue;
       const method = classMethodValue(lowerer, blame, info, m, loc);
       if (method === null) continue;
       fields.push({

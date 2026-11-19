@@ -15114,8 +15114,7 @@ export class Lowerer {
     // values it adds to the entry module are boxed with the rest.
     if (!library)
       pass("installBuiltinStatics", () => installBuiltinStatics(this, functions, census));
-    if (!library)
-      pass("registerIslandIntrinsics", () => registerIslandIntrinsics(this, functions));
+    if (!library) pass("registerIslandIntrinsics", () => registerIslandIntrinsics(this, functions));
     pass("boxBuiltinValuesChecked", () => boxBuiltinValuesChecked(this, functions, census));
     pass("shareBuiltinValueIdentities", () => shareBuiltinValueIdentities(this, functions));
     pass("finalizeFunctionNames", () => finalizeFunctionNames(this, functions));

@@ -425,9 +425,7 @@ describe("the shape journal", () => {
     expect(reading.get(shape.id)!.declaredOrder).toEqual(["b", "a"]);
 
     // A unit after it reads the shape: both registries hold its content.
-    expect(reader.digest!(shape.id, reader.size())).toBe(
-      table.digest!(shape.id, table.size()),
-    );
+    expect(reader.digest!(shape.id, reader.size())).toBe(table.digest!(shape.id, table.size()));
     expect(reader.size()).toBe(1);
 
     // Truncating the entry takes the shape out again, as a recorded wave

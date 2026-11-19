@@ -5326,6 +5326,9 @@ static void scr_net_sock_refuse_established(ScrNetSocket *s, double port, const 
    * port, and the error object's properties come from it. */
   if (!s->pending_err) s->pending_err = scr_str_new(msg, (size_t)n);
   scr_net_sock_register(s);
+  /* the error is deferred work: an idle socket has no poller event to wake
+   * the dispatch, so it goes on the work queue */
+  scr_net_work_add(s);
 }
 
 /* socket.connect(port[, host][, connectListener]). */
@@ -5361,6 +5364,11 @@ void scr_net_sock_connect_path(ScrNetSocket *s, ScrStr *path /*borrowed*/, bool 
       return;
     }
     ScrStr *host = scr_str_new("localhost", 9);
+    if (s->fd >= 0 && !s->connecting) {
+      scr_net_sock_refuse_established(s, port, host->data, cb);
+      scr_str_release(host);
+      return;
+    }
     scr_net_sock_dial_on(s, port, host, cb, -1);
     scr_str_release(host);
     return;

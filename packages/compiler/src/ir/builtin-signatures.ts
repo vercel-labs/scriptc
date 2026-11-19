@@ -2662,28 +2662,30 @@ function buildLibFnSignatures() {
      * the loop-run emitted (usesTimers) so the runner fiber drains. */
     // The trailing three are the { plan, timeout, concurrency } options (plan
     // -1 without one; timeout read under flag 8; concurrency read under flag
-    // 16, -1 for true). An out-of-range timeout or concurrency throws.
+    // 16, -1 for true). An out-of-range timeout or concurrency throws. The
+    // last argument is the { tags } list (a dyn array of strings, undefined
+    // without the option).
     "test.register": {
-      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     "test.registerEmpty": {
-      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     // The suite body takes no parameters or its SuiteContext (flag 2).
     "test.suite": {
-      argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     // The trailing string is the hook call's "file:line:col".
     "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
     "test.sub": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN, DYN],
       result: { kind: "promise", inner: VOID },
     },
     "test.subEmpty": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
@@ -2699,6 +2701,8 @@ function buildLibFnSignatures() {
      * Node's check that it carries the mocked accessor. */
     "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
+    // t.tags: the flattened tag set (a frozen array of strings).
+    "test.ctxTags": { argTypes: [TESTCTX_T], result: arrayOf(STRING) },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
@@ -2714,7 +2718,7 @@ function buildLibFnSignatures() {
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
     // t.plan(count[, { wait }]) — hasWait says whether the options object
     // carried the property; the count of one t.assert call follows.
-    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64], result: VOID },
+    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64, BOOL], result: VOID },
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },

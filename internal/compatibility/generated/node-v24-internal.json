@@ -98441,6 +98441,7 @@
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
           "tests/fixtures/node-test/cases/ctx-log.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
+          "tests/fixtures/node-test/cases/ctx-plan-options.ts",
           "tests/fixtures/node-test/cases/ctx-plan.ts",
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/fixtures/node-test/cases/ctx-signal.ts",
@@ -98458,6 +98459,7 @@
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
           "tests/fixtures/node-test/cases/mock-timers-order.ts",
           "tests/fixtures/node-test/cases/mock-timers.ts",
+          "tests/fixtures/node-test/cases/mock-times.ts",
           "tests/fixtures/node-test/cases/only-false.ts",
           "tests/fixtures/node-test/cases/only-filter.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
@@ -98465,9 +98467,11 @@
           "tests/fixtures/node-test/cases/root-hooks.ts",
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
           "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
+          "tests/fixtures/node-test/cases/snapshot-serializer-values.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
+          "tests/fixtures/node-test/cases/tags.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
           "tests/fixtures/node-test/cases/tracing-channels.ts",
           "tests/harness/node-test.test.ts"
@@ -98634,7 +98638,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.only",
         "tests": [
           "tests/fixtures/node-test/cases/only-nested.ts",
@@ -99251,10 +99255,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.snapshot.setDefaultSnapshotSerializers",
         "tests": [
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/fixtures/node-test/cases/snapshot-serializer-values.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99278,7 +99283,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.snapshot.setResolveSnapshotPath",
         "tests": [
           "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
@@ -99917,11 +99922,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.mock.fn",
         "tests": [
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-fn-default.ts",
+          "tests/fixtures/node-test/cases/mock-context.ts",
+          "tests/fixtures/node-test/cases/mock-times.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100224,7 +100231,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.timers",
         "tests": [
           "tests/fixtures/node-test/cases/mock-timers-date.ts",
@@ -101001,7 +101008,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.log",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-log.ts",
@@ -101028,10 +101035,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.plan",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-plan.ts",
+          "tests/fixtures/node-test/cases/ctx-plan-options.ts",
           "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -101242,10 +101250,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.assert.fileSnapshot",
         "tests": [
           "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/fixtures/node-test/cases/snapshot-serializer-values.ts",
+          "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -101269,10 +101280,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.assert.snapshot",
         "tests": [
           "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/fixtures/node-test/cases/snapshot-serializer-values.ts",
+          "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -101424,7 +101438,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.error",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-error.ts",
@@ -101483,9 +101497,10 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.tags",
         "tests": [
+          "tests/fixtures/node-test/cases/tags.ts",
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/harness/node-test.test.ts"
         ]
@@ -101569,7 +101584,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.SuiteContext",
         "tests": [
           "tests/fixtures/node-test/cases/suite-context.ts",
@@ -101625,7 +101640,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.context.log",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-log.ts",
@@ -102401,7 +102416,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.getTestContext",
         "tests": [
           "tests/fixtures/node-test/cases/get-test-context.ts",

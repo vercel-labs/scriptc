@@ -10018,14 +10018,22 @@ static bool scr_http_dynh_res_pipe_from(void *dst, const ScrDyn *src) {
   return false;
 }
 
+/* IncomingMessage's methods as values: the class exposes destroy as a
+ * member function, so `req.destroy` reads as a function like Node's (and
+ * the same value on every read); the call already reached the invoke arm. */
+static const ScrDynHandleMethod scr_http_req_methods[] = {
+  {"destroy", 7, false, NULL, NULL},
+  {NULL, 0, false, NULL, NULL},
+};
+
 static const ScrDynHandleOps scr_http_dynh_req_ops = {
-  "IncomingMessage",
-  &scr_http_req_retain_v,
-  &scr_http_req_release_v,
-  &scr_http_dynh_req_invoke,
-  &scr_http_dynh_req_get,
-  &scr_http_dynh_req_set,
-  NULL,
+  .cls = "IncomingMessage",
+  .retain = &scr_http_req_retain_v,
+  .release = &scr_http_req_release_v,
+  .invoke = &scr_http_dynh_req_invoke,
+  .get = &scr_http_dynh_req_get,
+  .set = &scr_http_dynh_req_set,
+  .methods = scr_http_req_methods,
 };
 
 static const ScrDynHandleOps scr_http_dynh_res_ops = {

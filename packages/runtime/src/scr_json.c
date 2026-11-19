@@ -3796,6 +3796,22 @@ ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object) {
   return scr_dyn_get_prototype(object);
 }
 
+/* Whether `Object.getPrototypeOf(value) === Object.prototype`, the plain-object
+ * test programs write (ui-sdk's isRecord among them): the checked-dynamic view
+ * that a program class instance, an array, a function, a handle, a promise or
+ * a primitive shows is not an ordinary object; a plain object is, and so is a
+ * compiled record, which Node sees as the object literal the program built. */
+bool scr_dyn_is_plain_object(ScrDyn *value) {
+  if (value == NULL) return false;
+  if (value->kind == SCR_DYN_OBJ)
+    return !value->null_proto && !scr_dyn_error_view_on_error_prototype(value) &&
+           (value->prototype == NULL || value->prototype == scr_builtin_object_prototype);
+  if (value->kind == SCR_DYN_TYPED_REF)
+    return value->v.typed_ref.type_key_len >= 7 &&
+           memcmp(value->v.typed_ref.type_key, "record:", 7) == 0;
+  return false;
+}
+
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
   /* A primitive receiver is returned unchanged when the prototype is null or
    * any object or function; nothing is mutated, so the prototype's kind is the

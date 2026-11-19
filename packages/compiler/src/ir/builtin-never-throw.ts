@@ -12,6 +12,9 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // The plain-object prototype test reads the value's kind and prototype
+  // flags; it runs no program code and raises no error.
+  "dyn.isPlainObject",
   // Error.prepareStackTrace's program state: the get retains the stored value
   // (or builds the default function once) and the set retains and releases;
   // neither runs program code or raises a catchable error.

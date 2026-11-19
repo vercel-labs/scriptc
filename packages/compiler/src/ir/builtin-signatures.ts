@@ -5786,6 +5786,7 @@ function buildLibFnSignatures() {
     "dyn.nameClassPrototype": { argTypes: [DYN, STRING], result: VOID },
     "dyn.objCreateWithProperties": { argTypes: [DYN, DYN], result: DYN },
     "dyn.getPrototype": { argTypes: [DYN], result: DYN },
+    "dyn.isPlainObject": { argTypes: [DYN], result: BOOL },
     // dyn.getPrototype for walks that compare each prototype with a program
     // class's prototype: it answers for every value, and a value no program
     // class's prototype can be on the chain of ends the walk (null).

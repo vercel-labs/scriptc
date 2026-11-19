@@ -10753,7 +10753,7 @@ function lowerHttpResMethodCall(
     // statement.
     if (name === "end") requireStatementPosition(lowerer, call, `res.${name}(...)`);
     const minArgs = name === "write" ? 1 : 0;
-    const maxArgs = name === "write" ? 1 : 2;
+    const maxArgs = name === "write" ? 3 : 2;
     if (args.length < minArgs || args.length > maxArgs) {
       lowerer.noLowering(
         `${name} with ${args.length} arguments`,
@@ -10771,7 +10771,69 @@ function lowerHttpResMethodCall(
     // call in an interned composing helper.
     let cbArg: IrExpr | null = null;
     let dataNode: ts.Expression | undefined = args[0];
-    if (name === "end" && args.length === 2) {
+    /* Arguments this surface reads and drops are still evaluated, like
+     * Node's call does: their side effects and throws happen. */
+    const skippedEffects: ts.Expression[] = [];
+    if (name === "write" && args.length >= 2) {
+      // write(data[, "utf8" | "utf-8"][, callback]): the encoding names the
+      // bytes this surface already writes, so it is read and dropped; an
+      // explicit undefined is Node's absent encoding.
+      const second = args[1]!;
+      const secondType = lowerer.typeOf(second);
+      const secondMapped = lowerer.mapTypeOf(secondType);
+      let cbIndex: number | null = null;
+      if (secondType.isStringLiteralType() || secondMapped?.kind === "string") {
+        if (
+          !secondType.isStringLiteralType() ||
+          (secondType.value !== "utf8" && secondType.value !== "utf-8")
+        ) {
+          lowerer.noLowering(
+            "res.write with an encoding other than utf8",
+            second,
+            "write(data), write(data, 'utf8'), write(data, 'utf8', callback) or write(data, callback)",
+          );
+        }
+        if (!sideEffectFreeOptionValue(second)) skippedEffects.push(second);
+        if (args.length === 3) cbIndex = 2;
+      } else if (
+        secondMapped !== null &&
+        (secondMapped.kind === "undefinedT" ||
+          secondMapped.kind === "void" ||
+          secondMapped.kind === "nullT")
+      ) {
+        if (!sideEffectFreeOptionValue(second)) skippedEffects.push(second);
+        if (args.length === 3) cbIndex = 2;
+      } else {
+        if (args.length === 3) {
+          lowerer.noLowering(
+            "res.write with an encoding argument that is not the literal 'utf8'",
+            second,
+            "write(data, callback) or write(data, 'utf8', callback)",
+          );
+        }
+        cbIndex = 1;
+      }
+      const cbType = cbIndex === null ? null : lowerer.mapTypeOf(lowerer.typeOf(args[cbIndex]!));
+      if (
+        cbIndex !== null &&
+        (cbType === null ||
+          (cbType.kind !== "undefinedT" && cbType.kind !== "void" && cbType.kind !== "nullT"))
+      ) {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[cbIndex]!,
+          "write callbacks",
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        cbArg = cb;
+      } else if (cbIndex !== null) {
+        const cbNode = args[cbIndex]!;
+        if (!sideEffectFreeOptionValue(cbNode)) skippedEffects.push(cbNode);
+      }
+    } else if (name === "end" && args.length === 2) {
       const { cb } = lowerCallbackArg(
         lowerer,
         args[1]!,
@@ -10807,30 +10869,47 @@ function lowerHttpResMethodCall(
         dataNode = undefined;
       }
     }
-    const endWithCb = (fn: IrLibFn, callArgs: IrExpr[], cb: IrExpr): IrExpr => {
+    const withCb = (
+      register: IrLibFn,
+      fn: IrLibFn,
+      callArgs: IrExpr[],
+      cb: IrExpr,
+      ret: IrType,
+    ): IrExpr => {
       const all = [...callArgs, cb];
-      const key = `server.endcb:${fn}:${all.map((a) => typeKey(a.type)).join(",")}`;
+      const key = `server.cb:${register}:${fn}:${typeKey(ret)}:${all.map((a) => typeKey(a.type)).join(",")}`;
       const existing = lowerer.arrHofHelpers.get(key);
       const helper = existing ?? keyedHelperName(lowerer, "%server.endcb", key);
       if (!existing) {
         lowerer.arrHofHelpers.set(key, helper);
         const params = all.map((a, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: a.type }));
+        const returns = ret.kind === "bool";
+        const call: IrExpr = {
+          kind: "libCall",
+          fn,
+          args: callArgs.map((_, i) => varRef(params[i]!.localId, params[i]!.type, loc)),
+          type: ret,
+          loc,
+        };
         lowerer.liftedFns.push({
           name: helper,
           params,
-          returnType: VOID,
-          locals: params.map((p) => ({
-            id: p.localId,
-            name: p.name,
-            type: p.type,
-            mutable: false,
-          })),
+          returnType: ret,
+          locals: [
+            ...params.map((p) => ({
+              id: p.localId,
+              name: p.name,
+              type: p.type,
+              mutable: false,
+            })),
+            ...(returns ? [{ id: "r.0", name: "r", type: ret, mutable: false }] : []),
+          ],
           body: [
             {
               kind: "exprStmt",
               expr: {
                 kind: "libCall",
-                fn: "http.resOnEndCallback",
+                fn: register,
                 args: [
                   varRef(params[0]!.localId, params[0]!.type, loc),
                   varRef(params[all.length - 1]!.localId, params[all.length - 1]!.type, loc),
@@ -10840,42 +10919,85 @@ function lowerHttpResMethodCall(
               },
               loc,
             },
-            {
-              kind: "exprStmt",
-              expr: {
-                kind: "libCall",
-                fn,
-                args: callArgs.map((_, i) => varRef(params[i]!.localId, params[i]!.type, loc)),
-                type: VOID,
-                loc,
-              },
-              loc,
-            },
+            ...(returns
+              ? [
+                  { kind: "varDecl", localId: "r.0", init: call, loc } as IrStmt,
+                  {
+                    kind: "return",
+                    value: varRef("r.0", ret, loc),
+                    loc,
+                  } as IrStmt,
+                ]
+              : [{ kind: "exprStmt", expr: call, loc } as IrStmt]),
           ],
           loc,
         });
       }
-      return { kind: "call", callee: helper, args: all, type: resultType, loc };
+      return { kind: "call", callee: helper, args: all, type: ret, loc };
     };
     if (dataNode === undefined) {
-      if (cbArg !== null) return endWithCb("http.resEnd", [receiver], cbArg);
+      if (cbArg !== null)
+        return withCb("http.resOnEndCallback", "http.resEnd", [receiver], cbArg, resultType);
       return { kind: "libCall", fn: "http.resEnd", args: [receiver], type: resultType, loc };
     }
-    const data = lowerer.lowerExpr(dataNode);
+    let loweredData: IrExpr | null = null;
+    if (skippedEffects.length > 0) {
+      /* Node evaluates data, then the encoding and callback expressions
+       * before the call: keep that order through a hidden local. */
+      const value = lowerer.lowerExpr(dataNode);
+      const saved = lowerer.declareHiddenLocal("%writeData", value.type);
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: saved.id, init: value, loc: locOf(dataNode) },
+        ...skippedEffects.map((arg): IrStmt => ({
+          kind: "exprStmt",
+          expr: lowerer.lowerExpr(arg),
+          loc: locOf(arg),
+        })),
+      ];
+      loweredData = {
+        kind: "seqExpr",
+        stmts,
+        result: varRef(saved.id, value.type, loc),
+        type: value.type,
+        loc: locOf(dataNode),
+      };
+    }
+    const data = loweredData ?? lowerer.lowerExpr(dataNode);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "http.resWrite" : "http.resEndStr";
-      if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
+      if (cbArg !== null)
+        return withCb(
+          name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
+          fn,
+          [receiver, data],
+          cbArg,
+          resultType,
+        );
       return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     if (data.type.kind === "bytes" && data.type.elem === "u8") {
       const fn: IrLibFn = name === "write" ? "http.resWriteBytes" : "http.resEndBytes";
-      if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
+      if (cbArg !== null)
+        return withCb(
+          name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
+          fn,
+          [receiver, data],
+          cbArg,
+          resultType,
+        );
       return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     if (data.type.kind === "dyn") {
       // An untyped JS payload — the net.sockWriteDyn story.
       const fn: IrLibFn = name === "write" ? "http.resWriteDyn" : "http.resEndDyn";
-      if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
+      if (cbArg !== null)
+        return withCb(
+          name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
+          fn,
+          [receiver, data],
+          cbArg,
+          resultType,
+        );
       return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     // end(payload ? text : undefined): an absent chunk ends without data,
@@ -10898,7 +11020,14 @@ function lowerHttpResMethodCall(
       ) {
         const dynData: IrExpr = { kind: "dynFrom", value: data, type: DYN, loc: locOf(dataNode) };
         const fn: IrLibFn = name === "write" ? "http.resWriteDyn" : "http.resEndDyn";
-        if (cbArg !== null) return endWithCb(fn, [receiver, dynData], cbArg);
+        if (cbArg !== null)
+          return withCb(
+            name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
+            fn,
+            [receiver, dynData],
+            cbArg,
+            resultType,
+          );
         return { kind: "libCall", fn, args: [receiver, dynData], type: resultType, loc };
       }
     }

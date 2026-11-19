@@ -169,6 +169,8 @@ declare module "http" {
     /* Answers whether the buffer is still below its 64 KiB high-water
      * mark; a false answer fires 'drain' once the bytes are out. */
     write(data: string | Uint8Array): boolean;
+    write(data: string | Uint8Array, callback: () => void): boolean;
+    write(data: string | Uint8Array, encoding: string, callback?: () => void): boolean;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;

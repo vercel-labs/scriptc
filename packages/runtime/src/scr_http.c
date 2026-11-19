@@ -1171,6 +1171,7 @@ struct ScrHttpRes {
   bool writable_finished; /* set where Node emits 'finish' (writableFinished) */
   bool finish_queued;
   bool wcb_queued;
+  bool wcb_sock_armed; /* the socket's write-flush hook is armed for wcb_ls */
   bool close_queued;
   bool close_emitted;
 };
@@ -2779,6 +2780,7 @@ void scr_http_res_on_drain(ScrHttpRes *r, ScrClosure *cb /*moves*/, bool once) {
  * message's. Node's OutgoingMessage hears it as the socket uncorking;
  * this arm is registered only while a false write is pending. */
 static void scr_http_res_maybe_drain(ScrHttpRes *r);
+static void scr_http_res_arm_wcb(ScrHttpRes *r);
 
 static void scr_http_res_socket_drained_nt(ScrClosure *cb) {
   ScrHttpRes *r = scr_box_get_ref(cb->caps[0]);
@@ -2881,6 +2883,8 @@ static void scr_http_res_cork_flush(ScrHttpRes *r) {
    * 'drain' follows here (or at the socket's own drain when the bytes are
    * still in its buffer) */
   scr_http_res_maybe_drain(r);
+  /* write(chunk, cb)s that went into this batch complete with it */
+  scr_http_res_arm_wcb(r);
 }
 
 static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
@@ -3402,15 +3406,46 @@ void scr_http_res_on_end_callback(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
   if (r->finished) scr_http_queue_res_finish(r);
 }
 
-/* res.write(chunk, cb): the callback fires from the queue (this surface
- * flushes synchronously into the socket buffer — the deferral keeps the
- * cb off the writing stack, Node's contract). */
+/* res.write(chunk, cb) — Node fires the callback from afterWrite, once the
+ * chunk's bytes (or the corked batch holding them) left the socket's write
+ * buffer. The socket's write-flush hook is that moment and runs from the
+ * sweep, so a callback that writes the next chunk yields to the loop between
+ * chunks instead of requeueing in one sweep. */
+static void scr_http_res_wcb_flushed(ScrClosure *cb) {
+  ScrHttpRes *r = scr_box_get_ref(cb->caps[0]);
+  r->wcb_sock_armed = false;
+  scr_net_fire0_this(&r->wcb_ls, r, SCR_DYNH_HTTP_RES);
+  /* callbacks a firing callback added stay for the next flush */
+  scr_http_res_release(r);
+}
+
+static void scr_http_res_arm_wcb(ScrHttpRes *r) {
+  if (r->wcb_sock_armed || r->sock == NULL || r->wcb_ls.n == 0) return;
+  r->wcb_sock_armed = true;
+  ScrClosure *cb = scr_closure_new((void *)&scr_http_res_wcb_flushed, 1);
+  cb->caps[0] = scr_box_new_obj(&scr_http_res_retain_v, &scr_http_res_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_http_res_retain(r));
+  scr_net_sock_on_write_flush(r->sock, cb);
+}
+
 void scr_http_res_on_write_flush(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
-  scr_net_ls_add(&r->wcb_ls, cb, NULL, true);
-  if (!r->wcb_queued) {
-    r->wcb_queued = true;
-    scr_http_emit_push(SCR_HTTP_EMIT_RES_WCB, scr_http_res_retain(r));
+  if (r->close_emitted || r->destroyed) {
+    /* a late write on a settled response answers its callback once, off the
+     * writing stack, so nothing holds the response through the callback */
+    scr_next_tick(cb);
+    return;
   }
+  scr_net_ls_add(&r->wcb_ls, cb, NULL, true);
+  if (r->sock == NULL) {
+    /* no socket to flush: the callback still runs on the next sweep */
+    if (!r->wcb_queued) {
+      r->wcb_queued = true;
+      scr_http_emit_push(SCR_HTTP_EMIT_RES_WCB, scr_http_res_retain(r));
+    }
+    return;
+  }
+  if (r->corked == 0) scr_http_res_arm_wcb(r);
+  /* corked: the cork flush arms the hook when it writes the batch */
 }
 
 static bool scr_http_proto_pending(void) { return scr_http_emits_head < scr_http_emits_len; }
@@ -3456,6 +3491,9 @@ static void scr_http_proto_sweep(void) {
         scr_net_ls_drop(&res->finish_ls);
         scr_net_ls_drop(&res->prefinish_ls);
         scr_net_ls_drop(&res->endcb_ls);
+        /* an aborted response still reports the writes that were handed to
+         * the socket (Node errors them; this surface answers them once) */
+        if (res->wcb_ls.n > 0) scr_net_fire0_this(&res->wcb_ls, res, SCR_DYNH_HTTP_RES);
         scr_net_ls_drop(&res->wcb_ls);
       }
       break;
@@ -3464,6 +3502,9 @@ static void scr_http_proto_sweep(void) {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
       res->wcb_queued = false; /* later write(chunk, cb)s re-queue */
       scr_net_fire0_this(&res->wcb_ls, res, SCR_DYNH_HTTP_RES);
+      /* the fallback fires the whole list: a later socket flush must not
+       * fire these callbacks a second time */
+      scr_net_ls_drop(&res->wcb_ls);
       break;
     }
     case SCR_HTTP_EMIT_REQ_CLOSE: {
@@ -3541,6 +3582,12 @@ static void scr_http_proto_sweep(void) {
       ScrHttpRes *res = (ScrHttpRes *)e.h;
       res->finish_queued = false; /* a later on('finish') on the finished res re-queues */
       res->writable_finished = true;
+      /* write(chunk, cb) callbacks whose bytes are out run before the end
+       * callback and 'finish', Node's afterWrite position */
+      if (res->wcb_ls.n > 0) {
+        scr_net_fire0_this(&res->wcb_ls, res, SCR_DYNH_HTTP_RES);
+        if (scr_exc_pending()) break;
+      }
       ScrNetLs endcbs = res->endcb_ls;
       res->endcb_ls = (ScrNetLs){0};
       scr_net_fire0_this(&endcbs, res, SCR_DYNH_HTTP_RES);

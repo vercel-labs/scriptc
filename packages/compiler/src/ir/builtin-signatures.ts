@@ -2863,6 +2863,11 @@ function buildLibFnSignatures() {
       argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
     },
+    /** write(chunk, cb)'s callback slot: fires once the data is flushed. */
+    "http.resOnWriteFlush": {
+      argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "http.resOnEndCallback": {
       argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,

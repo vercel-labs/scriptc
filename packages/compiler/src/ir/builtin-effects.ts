@@ -430,6 +430,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // (ERR_HTTP_HEADERS_SENT) and every header name and value.
   "http.resWriteInformation",
   "http.resWriteContinueCb",
+  "http.resOnWriteFlush",
   "http.resWriteProcessingCb",
   "http.resWriteEarlyHintsCb",
   "http.validateHeaderName",

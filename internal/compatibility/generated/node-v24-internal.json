@@ -58376,6 +58376,9 @@
           "tests/corpus/http-client-lifecycle.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
           "tests/corpus/http-server-client-error.ts",
           "tests/corpus/http-server-dynamic-shapes.mjs",
           "tests/corpus/http-server-events-audit.ts",
@@ -58388,6 +58391,7 @@
           "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/http-server-options-timeouts.ts",
           "tests/corpus/http-server-request-aborted-typed.ts",
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/http-server-response-headers.ts",
           "tests/corpus/http-server-timeout-enforcement.ts",
           "tests/corpus/http-set-headers.mjs",
@@ -60688,14 +60692,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.addTrailers",
         "tests": [
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60718,14 +60723,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.cork",
         "tests": [
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60748,12 +60754,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:response.end",
+        "status": "supported",
+        "evidence": "compiler-feature:http.response.end",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60776,14 +60785,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.flushHeaders",
         "tests": [
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61006,14 +61016,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.uncork",
         "tests": [
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61036,12 +61047,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:response.write",
+        "status": "supported",
+        "evidence": "compiler-feature:http.response.write",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61449,10 +61463,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableEnded",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -61475,10 +61494,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableFinished",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -61501,10 +61525,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'close'",
         "tests": [
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61527,10 +61556,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'finish'",
         "tests": [
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62171,14 +62205,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.addTrailers",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62228,14 +62262,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.cork",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62310,14 +62344,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.flushHeaders",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62577,14 +62611,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.uncork",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62607,12 +62641,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.write",
         "tests": [
-          "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62744,10 +62780,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableEnded",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62770,10 +62810,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableFinished",
         "tests": [
-          "tests/corpus/compat-http-outgoing-headers.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62796,12 +62840,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableHighWaterMark",
         "tests": [
-          "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62824,12 +62870,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableLength",
         "tests": [
-          "tests/corpus/http-set-headers.ts",
-          "tests/corpus/http-set-headers.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62852,12 +62900,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableObjectMode",
         "tests": [
-          "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62880,12 +62930,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'drain'",
         "tests": [
-          "tests/corpus/http-set-headers.ts",
-          "tests/corpus/http-set-headers.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62908,10 +62960,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'finish'",
         "tests": [
-          "tests/corpus/compat-http-outgoing-headers.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62934,12 +62990,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'prefinish'",
         "tests": [
-          "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"

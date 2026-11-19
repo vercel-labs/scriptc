@@ -174,7 +174,12 @@ type PendingNote =
   | { readonly kind: "methodResult"; readonly node: IrExpr; readonly name: string }
   | { readonly kind: "merge"; readonly node: IrExpr; readonly note: DeclaredMergeNote }
   | { readonly kind: "width"; readonly node: IrExpr; readonly note: WidthNote }
-  | { readonly kind: "sourceProbe"; readonly node: IrExpr; readonly receiver: IrExpr; readonly key: string }
+  | {
+      readonly kind: "sourceProbe";
+      readonly node: IrExpr;
+      readonly receiver: IrExpr;
+      readonly key: string;
+    }
   | { readonly kind: "clone"; readonly node: IrExpr }
   | { readonly kind: "observe"; readonly shapeId: string };
 
@@ -224,7 +229,8 @@ function encodeNote(
     case "literal": {
       const segments: JournalSegment[] = [];
       for (const segment of note.segments) {
-        if (segment.kind === "key") segments.push({ k: "key", n: segment.name, d: segment.definite });
+        if (segment.kind === "key")
+          segments.push({ k: "key", n: segment.name, d: segment.definite });
         else if (segment.kind === "opaque") segments.push({ k: "opaque" });
         else {
           const value = segment.value === undefined ? undefined : position(segment.value);

@@ -592,6 +592,12 @@ static void scr_ar_trace(void *o, ScrTraceVisit visit, void *ctx) {
 static void scr_ar_gcfree(void *o) {
   ScrAsyncResource *r = o;
   scr_ar_unlink(r);
+  /* A collected resource is disposed like a refcounted one: its registered
+   * destroy is queued before the payload goes. */
+  if (r->destroy_registered && !r->destroyed && !scr_ar_tearing_down) {
+    r->destroyed = true;
+    scr_ar_queue_destroy(r->async_id);
+  }
   scr_cyc_free(r);
 }
 

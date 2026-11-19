@@ -114,6 +114,18 @@ test("disposing an AsyncResource queues its destroy", async () => {
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
+test("a bound function's resource queues its destroy when the binding drops", async () => {
+  const result = await execFileAsync(bin, ["binddestroy"]);
+  expect(result.stdout).toBe("async resource bindings queue their destroy\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("a collected resource cycle queues its destroy", async () => {
+  const result = await execFileAsync(bin, ["cycledestroy"]);
+  expect(result.stdout).toBe("collected async resources queue their destroy\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("due timers run by deadline, then by creation, before the turn's immediates", async () => {
   const result = await execFileAsync(bin, ["timers"]);
   expect(result.stdout).toBe(

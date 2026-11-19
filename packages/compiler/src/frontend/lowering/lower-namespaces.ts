@@ -465,7 +465,6 @@ export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.So
   )
     return null;
   const from = ts.getSourceFileOfNode(decl);
-  if (!isJsSourceFile(from)) return null;
   const dep = lowerer.facts.importedModule(from, stmt.moduleSpecifier.text);
   return dep !== null &&
     !dep.isDeclarationFile &&
@@ -519,12 +518,11 @@ export function nsMemberIdentOf(
   if (cjs !== null) {
     const { names, assignedLater } = lowerer.cjsNamespaceOf(cjs);
     const name = access.name.text;
-    return name !== "default" &&
-      names.has(name) &&
-      assignedLater !== "all" &&
-      !assignedLater.has(name)
-      ? access.name
-      : null;
+    // A name a FUNCTION assigns during the module's evaluation is a member
+    // of the finished namespace too (Node's namespace keeps the end-of-init
+    // values); the read lowers like the named import, which already reads
+    // the exporter's binding.
+    return name !== "default" && names.has(name) ? access.name : null;
   }
   if (nsBlockKindOfSymbol(lowerer, memberSym) !== null) return access.name;
   if (moduleNsSourceFileOf(lowerer, access.expression) !== null) return access.name;

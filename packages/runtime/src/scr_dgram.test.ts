@@ -45,6 +45,9 @@ afterAll(async () => {
 
 test("a poll key no registered socket owns is not read as one", async () => {
   const result = await execFileAsync(bin);
-  expect(result.stdout).toBe("a key no socket owns is not read as a socket\n");
+  expect(result.stdout).toBe(
+    "the wake predicate covers deliverable work only\n" +
+      "a key no socket owns is not read as a socket\n",
+  );
   expect(result.stderr).toBe("");
 });

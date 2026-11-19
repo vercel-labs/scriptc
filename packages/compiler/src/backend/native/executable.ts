@@ -589,6 +589,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
     "scr_stream_to_web.c",
   ),
+  // Duplex.fromWeb reads and writes the web pair directly.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_duplex_from_web.c",
+  ),
   // Writable.fromWeb wraps a web WritableStream's writer.
   unit(
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,

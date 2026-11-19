@@ -199,6 +199,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Writable.toWeb builds the sink object and the web WritableStream over it;
   // the sink's functions run later, on the web stream's calls.
   "webstream.writableToWeb",
+  // Duplex.fromWeb's pair constructs the Duplexify and stores the flag.
+  "stream.duplexifyPairHalf",
   // Duplex.toWeb builds both adapters over the duplex; their functions run
   // later, on the web streams' calls.
   "webstream.toWebDuplex",

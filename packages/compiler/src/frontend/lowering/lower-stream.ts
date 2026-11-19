@@ -2248,6 +2248,7 @@ export function lowerStreamStaticCall(
   if (member === "fromWeb" && cls === "%Writable") return lowerWritableFromWeb(lowerer, call, loc);
   if (member === "toWeb" && cls === "%Writable") return lowerWritableToWeb(lowerer, call, loc);
   if (member === "toWeb" && cls === "%Duplex") return lowerDuplexToWeb(lowerer, call, loc);
+  if (member === "fromWeb" && cls === "%Duplex") return lowerDuplexFromWeb(lowerer, call, loc);
   // Readable.isDisturbed is stream.isDisturbed, which every stream class
   // inherits from the module's legacy Stream.
   if (member === "isDisturbed") {
@@ -2446,6 +2447,53 @@ function lowerWritableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
     fn: "webstream.writableFromWeb",
     args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
     type: { kind: "object", className: "%Writable" },
+    loc,
+  };
+}
+
+/** Duplex.fromWeb(pair[, options]): the adapter that owns the pair's reader
+ * and writer directly (adapters.js's newStreamDuplexFromReadableWritablePair).
+ * The options have no lowering yet. */
+function lowerDuplexFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
+    lowerer.noLowering(
+      `Duplex.fromWeb with ${args.length} arguments`,
+      call,
+      "the supported form is Duplex.fromWeb({ readable, writable })",
+    );
+  }
+  const options = args[1];
+  if (options !== undefined) {
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "Duplex.fromWeb options that are not an object literal",
+        options,
+        "pass no options, or an empty object literal",
+      );
+    }
+    for (const option of options.properties.nodes) {
+      const key =
+        (ts.isPropertyAssignment(option) || ts.isShorthandPropertyAssignment(option)) &&
+        ts.isIdentifier(option.name)
+          ? option.name.text
+          : null;
+      lowerer.noLowering(
+        key === null
+          ? "Duplex.fromWeb options with this member"
+          : `the Duplex.fromWeb option '${key}'`,
+        option,
+        "the supported form is Duplex.fromWeb({ readable, writable })",
+      );
+    }
+  }
+  const duplexType: IrType = { kind: "object", className: "%Duplex" };
+  /* Node's web-pair adapter owns the reader and the writer directly. */
+  return {
+    kind: "libCall",
+    fn: "webstream.duplexFromWeb",
+    args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
+    type: duplexType,
     loc,
   };
 }

@@ -710,6 +710,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.wrap",
   "stream.wrapDyn",
   "webstream.writableFromWeb",
+  "webstream.duplexFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",

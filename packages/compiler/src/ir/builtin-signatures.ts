@@ -1729,6 +1729,9 @@ function buildLibFnSignatures() {
     /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
      * option flags; a web WritableStream. */
     "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
+    /** Duplex.fromWeb (scr_stream_duplex_from_web.c): the { readable,
+     * writable } pair and the option flags; a Duplex. */
+    "webstream.duplexFromWeb": { argTypes: [DYN, F64], result: VOID },
     /** Duplex.toWeb (scr_stream_to_web_pair.c): the duplex and the option
      * flags; the { writable, readable } pair. */
     "webstream.toWebDuplex": { argTypes: [null, F64], result: DYN },
@@ -6226,6 +6229,7 @@ function buildLibFnSignatures() {
     "stream.duplexifyReadable": { argTypes: [null], result: VOID },
     "stream.duplexifyWritable": { argTypes: [null], result: VOID },
     "stream.duplexifyPair": { argTypes: [null, null], result: VOID },
+    "stream.duplexifyPairHalf": { argTypes: [null, null, BOOL], result: VOID },
     /** Duplex.from(promise): the promise and its box helper. */
     "stream.duplexFromPromise": { argTypes: [null, null], result: VOID },
     /** Duplex.from(asyncFunction): the stage, its source helper and the

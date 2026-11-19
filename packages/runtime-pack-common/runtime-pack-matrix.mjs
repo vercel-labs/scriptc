@@ -372,6 +372,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
   // Writable.toWeb wraps a native writable in a web WritableStream.
   ["scr_stream_writable_to_web.c", all("stream", "webStreams", "dynAsync")],
+  // Duplex.fromWeb reads and writes the web pair directly.
+  ["scr_stream_duplex_from_web.c", all("stream", "webStreams", "dynAsync")],
   // Duplex.toWeb builds the readable and writable adapters over a duplex.
   ["scr_stream_to_web_pair.c", all("stream", "webStreams", "dynAsync")],
   ["scr_stream_to_web_pair_dyn.c", all("streamDyn", "webStreams", "dynAsync")],

@@ -81,6 +81,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["memberReceivers"],
   },
   {
+    name: "cjs-exports-object",
+    file: `${SRC}/frontend/lowering/cjs-exports-object-value.ts`,
+    symbol: "cjsExportsObjectModules",
+    source: "symbols",
+    scope: "file",
+    setBy:
+      "a CommonJS module binding or inline require() of a table module used as a value (anything but a static export's member read or call), or a plain write of one of its exports",
+    gates:
+      "that module's exports: its export writes also fill a real exports object, and every static member read, call and write of the module goes through that object",
+    narrower:
+      "the reads that can observe a write made through the object, by escape analysis of the object value; today every static member access of the module pays the checked-dynamic read",
+    tracked: "DESIGN.md (cjs-exports object)",
+    lowererFields: [],
+  },
+  {
     name: "thenables-may-be-defined",
     file: `${SRC}/frontend/lowering/thenables.ts`,
     symbol: "programMayDefineThenables",
@@ -744,6 +759,11 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "frontend/lowering/constant-conditions.ts#changesEnvironmentByComputedName",
     1,
     "computed-environment-write",
+  ),
+  decides(
+    "frontend/lowering/cjs-exports-object-value.ts#cjsExportsObjectModules",
+    1,
+    "cjs-exports-object",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#cjsExportEvaluations",

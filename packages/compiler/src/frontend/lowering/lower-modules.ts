@@ -4565,6 +4565,20 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    // A module whose `module.exports` object some code takes as a value
+    // starts it as Node does: the original exports object (top-level `this`
+    // when the module has one), empty until the module's writes fill it.
+    const exportsObject = lowerer.cjsExportsObjects.get(sf);
+    if (exportsObject) {
+      header.push({
+        kind: "assign",
+        localId: exportsObject.id,
+        value: exportsThis
+          ? { kind: "varRef", localId: exportsThis.id, type: DYN, loc: loc0 }
+          : { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
+        loc: loc0,
+      });
+    }
     // The module's initial `module.exports` IS that same object: Node starts
     // the wrapper with `this === module.exports === exports`, so an identity
     // test before a replacement answers true. A module that never observes

@@ -22,6 +22,7 @@ import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { tsgoPath } from "../dts-paths.js";
 import { moduleNamespaceDynValue } from "./module-namespace-elements.js";
+import { cjsExportsObjectRef } from "./cjs-exports-object-value.js";
 import {
   canonicalBuiltinModule,
   cjsExportAssignmentOf,
@@ -1341,9 +1342,11 @@ export function lowerInlineRequireValue(lowerer: Lowerer, call: ts.CallExpressio
     // per-module view over the export globals, one object per module, so
     // Node's cache identity holds. A top-level inline require keeps its
     // fence, as it had.
-    const exportsObject = nestedRequirePosition(call)
-      ? cjsExportsObjectValue(lowerer, req.dep, call)
-      : null;
+    const target = cjsNamespaceTargetOf(lowerer, req.dep);
+    const exportsObject =
+      nestedRequirePosition(call) || (target !== null && lowerer.cjsExportsObjects.has(target))
+        ? cjsExportsObjectValue(lowerer, req.dep, call)
+        : null;
     if (exportsObject !== null) return withRequireInit(lowerer, req, exportsObject);
     lowerer.unsupported(
       "SC1090",
@@ -1387,6 +1390,10 @@ export function cjsExportsObjectValue(
   const target = cjsNamespaceTargetOf(lowerer, dep);
   if (target === null) return null;
   const loc = locOf(blame);
+  // A module some code takes the object of has its real one: extensible,
+  // in write order (cjs-exports-object-value.ts).
+  const real = cjsExportsObjectRef(lowerer, target, loc);
+  if (real !== null) return real;
   const type: IrType & { kind: "moduleNs" } = {
     kind: "moduleNs",
     moduleId: `file:${tsgoPath(resolve(target.fileName))}`,

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-object-identity/lib.js",
+  "<repo>/tests/corpus/cjs-exports-object-identity/other.js",
+  "<repo>/tests/corpus/cjs-exports-object-identity/main.js"
+ ],
+ "diags": []
+}

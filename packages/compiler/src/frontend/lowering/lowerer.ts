@@ -571,6 +571,7 @@ import {
 } from "./cjs-inline-require.js";
 import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
 import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
+import { cjsExportsObjectModules } from "./cjs-exports-object-value.js";
 import type { CjsExportsShape } from "./cjs-exports-receiver.js";
 import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
@@ -3915,6 +3916,9 @@ export class Lowerer {
   /** Per CommonJS file using top-level `this`: the global holding the
    * object that stands for its original exports (lowerCjsTopLevelThis). */
   readonly cjsExportsThis = new Map<ts.SourceFile, IrGlobal>();
+  /** Per CommonJS table module whose `module.exports` object some code takes
+   * as a value: the global holding that object (cjs-exports-object-value.ts). */
+  readonly cjsExportsObjects = new Map<ts.SourceFile, IrGlobal>();
   /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
    * Null entries cache declarations that keep ordinary storage. */
   readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
@@ -6233,6 +6237,7 @@ export class Lowerer {
       checkedTable("enumObjectDecls", () => this.enumObjectDecls.size),
       checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
       checkedTable("cjsExportsThis", () => this.cjsExportsThis.size),
+      checkedTable("cjsExportsObjects", () => this.cjsExportsObjects.size),
       checkedTable("inlineRequireInitDone", () => this.inlineRequireInitDone.size),
       checkedTable(
         "runtimeOptionalArithmeticGlobals",
@@ -9980,6 +9985,22 @@ export class Lowerer {
         this.globalsList.push(exportsThis);
         this.cjsExportsThis.set(fp.sf, exportsThis);
       }
+    }
+    // The modules whose real `module.exports` object some code takes as a
+    // value hold it in one global each (cjs-exports-object-value.ts).
+    const exportsObjectModules = cjsExportsObjectModules(this);
+    for (const fp of parts) {
+      if (!exportsObjectModules.has(fp.sf)) continue;
+      const rawTag = this.fileTag.get(fp.sf) ?? "";
+      const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
+      const exportsObject: IrGlobal = {
+        id: `%g.${tag}%exportsObj`,
+        name: "%exportsObj",
+        type: DYN,
+        mutable: true,
+      };
+      this.globalsList.push(exportsObject);
+      this.cjsExportsObjects.set(fp.sf, exportsObject);
     }
 
     // A module is intrinsically async when an await/for-await occurs

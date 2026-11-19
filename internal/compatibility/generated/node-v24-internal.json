@@ -37364,8 +37364,8 @@
       "anchor": "err_fs_cp_unknown",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_UNKNOWN"
       },
       "anchorSource": "exact"
     },
@@ -40623,7 +40623,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_REQUIRE_ESM"
       },
       "anchorSource": "exact"
@@ -40646,7 +40646,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_REQUIRE_ESM_RACE_CONDITION"
       },
       "anchorSource": "exact"

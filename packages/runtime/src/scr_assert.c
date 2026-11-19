@@ -170,13 +170,22 @@ static ScrDyn *scr_assert_dyn_text(const char *text) {
 /* Sets the error's own properties in Node's order. The values move in. */
 static void scr_assert_attach_values(ScrError *e, bool generated, ScrDyn *actual, ScrDyn *expected,
                                      ScrDyn *op, ScrDyn *diff) {
-  scr_error_set_prop(e, "generatedMessage", 16, scr_dyn_new_bool(generated));
+  /* Node assigns generatedMessage, then name, then the rest; the view is
+   * laid out when the first property is attached, so the seed places
+   * generatedMessage before the class name. */
+  scr_error_seed_own_prop("generatedMessage", 16, scr_dyn_new_bool(generated));
+  ScrDyn *view = scr_dyn_from_error(e); /* generatedMessage, then name */
+  scr_dyn_release(view);
   scr_error_set_code(e, "ERR_ASSERTION");
   scr_error_set_prop(e, "code", 4, scr_assert_dyn_text("ERR_ASSERTION"));
   scr_error_set_prop(e, "actual", 6, actual);
   scr_error_set_prop(e, "expected", 8, expected);
   scr_error_set_prop(e, "operator", 8, op);
   scr_error_set_prop(e, "diff", 4, diff);
+  /* A view that already existed does not consume the seed; keep the value,
+   * at the end of the order. */
+  ScrDyn *leftover = scr_error_take_seed();
+  if (leftover) scr_error_set_prop(e, "generatedMessage", 16, leftover);
 }
 
 static ScrError *scr_assert_error(ScrStr *message, bool generated, const char *diff) {

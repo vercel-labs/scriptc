@@ -1469,6 +1469,12 @@ static ScrDyn *sp_b64url(const uint8_t *raw, size_t len) {
   return d;
 }
 
+/* Node's JWK export refusal for an EC curve with no JWK name. */
+static void sp_jwk_unsupported_curve(const SpCurve *curve) {
+  scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_JWK_UNSUPPORTED_CURVE",
+                    "Unsupported JWK EC curve: %s.", curve != NULL ? curve->name : "");
+}
+
 static ScrDyn *sp_export_jwk(SpKey *k) {
   ScrDyn *jwk = scr_dyn_new_obj();
   if (sp_is_mlkem(k)) {
@@ -1517,6 +1523,11 @@ static ScrDyn *sp_export_jwk(SpKey *k) {
   } else {
     const mbedtls_ecp_keypair *ec = mbedtls_pk_ec(k->pk);
     const SpCurve *curve = sp_curve_of(k);
+    if (curve == NULL || curve->jwk == NULL) {
+      scr_dyn_release(jwk);
+      sp_jwk_unsupported_curve(curve);
+      return NULL;
+    }
     size_t size = (ec->MBEDTLS_PRIVATE(grp).nbits + 7) / 8;
     sp_set(jwk, "kty", sp_dyn_str(scr_str_new("EC", 2)));
     sp_set(jwk, "x", sp_jwk_int(&ec->MBEDTLS_PRIVATE(Q).MBEDTLS_PRIVATE(X), size));
@@ -1576,6 +1587,12 @@ static void sp_invalid_jwk(void) {
   sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_JWK", "Invalid JWK data");
 }
 
+/* Node's "JWK does not contain private key material": a private key was
+ * asked for and the JWK has no d member. */
+static void sp_jwk_no_private(void) {
+  sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_JWK", "JWK does not contain private key material");
+}
+
 /* A JWK whose members do not make a key of its type: Node names the type
  * ("Invalid JWK RSA key"). */
 static void sp_invalid_jwk_key(const char *kty) {
@@ -1601,15 +1618,17 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
   }
   const ScrDyn *kty = sp_opt(jwk, "kty");
   if (kty->kind != SCR_DYN_STR) {
-    scr_dyn_prop_type_fail("key.kty", "of type string", kty);
+    sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_JWK", "Invalid JWK format");
     return NULL;
   }
   if (sp_is_str(kty, "AKP")) return sp_mlkem_from_jwk(jwk, want_private);
-  bool has_d = !sp_absent(sp_opt(jwk, "d"));
-  if (want_private && !has_d) {
-    sp_invalid_jwk();
+  if (!sp_is_str(kty, "OKP") && !sp_is_str(kty, "RSA") && !sp_is_str(kty, "EC")) {
+    scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_JWK",
+                      "%.*s is not a supported JWK key type", (int)kty->v.str->len,
+                      kty->v.str->data);
     return NULL;
   }
+  bool has_d = !sp_absent(sp_opt(jwk, "d"));
   bool private_key = want_private;
   SpKey *k = sp_key_alloc(private_key);
   bool ok = false;
@@ -1617,27 +1636,34 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
     const ScrDyn *crv = sp_opt(jwk, "crv");
     bool x = sp_is_str(crv, "X25519");
     bool x448 = sp_is_str(crv, "X448");
+    if (!x && !x448 && !sp_is_str(crv, "Ed25519")) {
+      sp_key_release(k);
+      sp_invalid_jwk_key("OKP");
+      return NULL;
+    }
     if (x448) {
       k->x448 = true;
       if (private_key) {
+        if (!has_d) {
+          sp_key_release(k);
+          sp_jwk_no_private();
+          return NULL;
+        }
         ok = sp_jwk_bytes_n(jwk, "d", k->x448_seed, 56);
         if (ok) ok = sp_x448(k->x448_seed, NULL, k->x448_pub);
       } else {
         ok = sp_jwk_bytes_n(jwk, "x", k->x448_pub, 56);
       }
-    } else if (!x && !sp_is_str(crv, "Ed25519")) {
-      sp_key_release(k);
-      if (crv->kind != SCR_DYN_STR) {
-        scr_dyn_prop_type_fail("key.crv", "of type string", crv);
-        return NULL;
-      }
-      sp_not_supported("JWK keys of this crv");
-      return NULL;
     }
     if (!x448) {
       k->ed25519 = !x;
       k->x25519 = x;
       if (private_key) {
+        if (!has_d) {
+          sp_key_release(k);
+          sp_jwk_no_private();
+          return NULL;
+        }
         ok = sp_jwk_bytes(jwk, "d", k->ed_seed);
         if (ok && x) {
           ok = sp_x25519(k->ed_seed, NULL, k->ed_pub);
@@ -1663,6 +1689,16 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
     if (sp_jwk_read(jwk, "n", &n) && sp_jwk_read(jwk, "e", &e) &&
         mbedtls_pk_setup(&k->pk, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA)) == 0) {
       mbedtls_rsa_context *rsa = mbedtls_pk_rsa(k->pk);
+      if (private_key && !has_d) {
+        mbedtls_mpi_free(&n);
+        mbedtls_mpi_free(&e);
+        mbedtls_mpi_free(&d);
+        mbedtls_mpi_free(&p);
+        mbedtls_mpi_free(&q);
+        sp_key_release(k);
+        sp_jwk_no_private();
+        return NULL;
+      }
       if (private_key) {
         ok = sp_jwk_read(jwk, "d", &d) && sp_jwk_read(jwk, "p", &p) && sp_jwk_read(jwk, "q", &q) &&
              mbedtls_rsa_import(rsa, &n, &p, &q, &d, &e) == 0 && mbedtls_rsa_complete(rsa) == 0 &&
@@ -1681,12 +1717,17 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
     const ScrDyn *crv = sp_opt(jwk, "crv");
     if (crv->kind != SCR_DYN_STR) {
       sp_key_release(k);
-      scr_dyn_prop_type_fail("key.crv", "of type string", crv);
+      sp_invalid_jwk_key("EC");
       return NULL;
     }
+    /* Node resolves the crv as an OpenSSL curve name (the short name or the
+     * NIST alias): an unknown name is the curve error, and a known one whose
+     * members do not make a key is "Invalid JWK EC key". */
     const SpCurve *curve = NULL;
     for (size_t i = 0; i < sizeof sp_curves / sizeof sp_curves[0]; i++)
-      if (sp_is_str(crv, sp_curves[i].jwk)) curve = &sp_curves[i];
+      if (sp_is_str(crv, sp_curves[i].name) ||
+          (sp_curves[i].nist != NULL && sp_is_str(crv, sp_curves[i].nist)))
+        curve = &sp_curves[i];
     if (!curve) {
       sp_key_release(k);
       sp_throw(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_CURVE", "Invalid EC curve name");
@@ -1700,13 +1741,18 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
            sp_jwk_read(jwk, "y", &Q->MBEDTLS_PRIVATE(Y)) &&
            mbedtls_mpi_lset(&Q->MBEDTLS_PRIVATE(Z), 1) == 0 &&
            mbedtls_ecp_check_pubkey(&ec->MBEDTLS_PRIVATE(grp), Q) == 0;
+      if (ok && private_key && !has_d) {
+        sp_key_release(k);
+        sp_jwk_no_private();
+        return NULL;
+      }
       if (ok && private_key)
         ok = sp_jwk_read(jwk, "d", &ec->MBEDTLS_PRIVATE(d)) &&
              mbedtls_ecp_check_privkey(&ec->MBEDTLS_PRIVATE(grp), &ec->MBEDTLS_PRIVATE(d)) == 0;
     }
   } else {
     sp_key_release(k);
-    sp_not_supported("JWK keys of this kty");
+    sp_invalid_jwk();
     return NULL;
   }
   if (!ok) {

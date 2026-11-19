@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 56,
-    "matrixRows": 3688,
+    "matrixRows": 3685,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 200,
+      "not-applicable": 203,
       "chapters": 7
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 387,
-      "apiEntries": 387
+      "entries": 384,
+      "apiEntries": 384
     },
     {
       "slug": "events",
@@ -19444,24 +19444,6 @@
       }
     },
     {
-      "id": "errors:7508273d2cc2",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_fs_cp_unknown`",
-      "signature": "`ERR_FS_CP_UNKNOWN`",
-      "label": "ERR_FS_CP_UNKNOWN",
-      "apiSymbol": "ERR_FS_CP_UNKNOWN",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_fs_cp_unknown",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "errors:00ec21ce38bc",
       "chapter": "errors",
       "kind": "module",
@@ -22047,52 +22029,6 @@
       "scope": "api",
       "anchor": "err_require_cycle_module",
       "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:40fd8c39f28b",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_require_esm`",
-      "signature": "`ERR_REQUIRE_ESM`",
-      "label": "ERR_REQUIRE_ESM",
-      "apiSymbol": "ERR_REQUIRE_ESM",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_require_esm",
-      "nodeStability": {
-        "index": "0",
-        "level": 0,
-        "text": "Deprecated",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:ad1a5adf2534",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_require_esm_race_condition`",
-      "signature": "`ERR_REQUIRE_ESM_RACE_CONDITION`",
-      "label": "ERR_REQUIRE_ESM_RACE_CONDITION",
-      "apiSymbol": "ERR_REQUIRE_ESM_RACE_CONDITION",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_require_esm_race_condition",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental.",
-        "inherited": false
-      },
       "static": {
         "status": "not-implemented",
         "detail": "Not implemented in scriptc's static module-loader subset yet.",

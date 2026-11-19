@@ -11707,6 +11707,16 @@ export class Lowerer {
           !provenPresent(e, symbol)
         );
       }
+      // An optional chain whose guard wraps a receiver the checker calls
+      // present can still short-circuit (`capture?.inner.label`), so its
+      // result keeps the absent arm.
+      if (
+        (ts.isPropertyAccessExpression(e) ||
+          ts.isElementAccessExpression(e) ||
+          ts.isCallExpression(e)) &&
+        chainGuardMayBeAbsent(e)
+      )
+        return true;
       if (ts.isPropertyAccessExpression(e)) {
         const symbol = symbolOf(e.name);
         if (symbol && optionalSymbols.has(symbol)) return true;
@@ -11749,6 +11759,28 @@ export class Lowerer {
         return fieldsOfValue(e.expression)?.has(fieldName(e)) ?? false;
       }
       return false;
+    };
+    /** Whether one of an optional chain's `?.` guards wraps a receiver
+     * that can be absent at run time, so the chain can short-circuit to
+     * undefined even though the checker types it as its present result. */
+    const chainGuardMayBeAbsent = (expr: ts.Expression): boolean => {
+      let cur: ts.Expression = expr;
+      for (;;) {
+        if (ts.isNonNullExpression(cur)) {
+          cur = cur.expression;
+          continue;
+        }
+        if (
+          ts.isPropertyAccessExpression(cur) ||
+          ts.isElementAccessExpression(cur) ||
+          ts.isCallExpression(cur)
+        ) {
+          if (cur.questionDotToken && mayBeOptional(cur.expression)) return true;
+          cur = cur.expression;
+          continue;
+        }
+        return false;
+      }
     };
     const optionalPrimitiveResultType = (node: ts.Expression): IrType | null => {
       const e = withoutParenthesesAssertionsNonNull(node);

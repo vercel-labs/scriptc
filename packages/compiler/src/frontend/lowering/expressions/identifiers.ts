@@ -438,6 +438,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           lowerer.armTag(local.type.unionId, UNDEFINED_T) >= 0
         )
           return { kind: "varRef", localId: local.id, type: local.type, loc };
+        if (use.kind !== "call")
+          return { kind: "varRef", localId: local.id, type: local.type, loc };
         lowerer.unsupported(
           "SC1090",
           expr,

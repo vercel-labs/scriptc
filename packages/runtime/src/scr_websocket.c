@@ -71,6 +71,8 @@ typedef struct ScrWs {
   ScrStr *protocol;  /* owned: the negotiated subprotocol ("" until open) */
   ScrStr *offered;   /* owned: the request's Sec-WebSocket-Protocol value */
   ScrStr *key_b64;   /* owned: Sec-WebSocket-Key */
+  /* bufferedAmount: the payload bytes send() queued that the socket has
+   * not yet flushed (Node counts application data). */
   double buffered_amount;
   int binary_type; /* 0 blob (Node's default), 1 arraybuffer */
   ScrEventTargetCore *et;
@@ -80,13 +82,20 @@ typedef struct ScrWs {
   bool close_dispatched;
   bool discard;      /* a terminal event already ran; ignore the rest */
   int frag_opcode;   /* 0 none, else the message's first opcode */
-  ScrBytes *frag;    /* owned: a fragmented message's payload so far */
+  unsigned char *frag; /* owned: a fragmented message's payload so far */
+  size_t frag_len;     /* its used bytes */
+  size_t frag_cap;     /* its allocated byte capacity (geometric growth) */
   unsigned char *buf; /* owned: received bytes not yet parsed */
   size_t buf_len;
   size_t buf_cap;
 } ScrWs;
 
 /* ── the handle's lifetime ──────────────────────────────────────────── */
+
+/* The reader callbacks the handshake installs (defined with the other
+ * network callbacks below). */
+static void scr_ws_on_data(void *ctx, const char *buf, size_t n);
+static void scr_ws_on_eof(void *ctx);
 
 static void *scr_ws_retain_v(void *p) {
   ((ScrWs *)p)->rc++;
@@ -120,7 +129,7 @@ static void scr_ws_release_v(void *p) {
   scr_str_release(ws->protocol);
   scr_str_release(ws->offered);
   scr_str_release(ws->key_b64);
-  scr_bytes_release(ws->frag);
+  free(ws->frag);
   free(ws->buf);
   free(ws);
 }
@@ -158,9 +167,20 @@ static void scr_ws_emit_close(ScrWs *ws, int64_t code, ScrStr *reason, bool was_
 
 /* The failed-connection path: one 'error' event, then close 1006, unclean,
  * as Node reports a connect or protocol failure. */
-static void scr_ws_fail(ScrWs *ws) {
+static void scr_ws_fail_impl(ScrWs *ws) {
   if (ws->discard) return;
   ws->discard = true;
+  if (ws->client != NULL && ws->sock == NULL) {
+    /* A failed handshake: the pending request and the connection it dialed
+     * are destroyed, so a server that stalls the response cannot keep them
+     * alive after the close event. */
+    ScrNetSocket *pending = scr_http_client_socket(ws->client);
+    scr_http_client_destroy(ws->client);
+    if (pending != NULL) {
+      scr_net_sock_destroy(pending);
+      scr_net_sock_release(pending);
+    }
+  }
   scr_ws_destroy_socket(ws);
   if (ws->ready_state == SCR_WS_OPEN || ws->ready_state == SCR_WS_CONNECTING)
     scr_ws_emit_type(ws, "error");
@@ -169,9 +189,10 @@ static void scr_ws_fail(ScrWs *ws) {
   scr_str_release(empty);
 }
 
-/* A protocol violation: 1002 when the socket still writes, then the event
- * pair a failed connection reports. */
-static void scr_ws_fail_protocol(ScrWs *ws) {
+/* A protocol violation: a 1002 close goes out when the socket still
+ * writes; the application sees Node's failed-connection pair (error, then
+ * close 1006, unclean). */
+static void scr_ws_fail_protocol_impl(ScrWs *ws) {
   if (ws->discard) return;
   if (ws->sock != NULL && !ws->close_sent) {
     static const unsigned char frame[4] = {0x88, 0x02, 0x03, 0xea}; /* close 1002 */
@@ -182,8 +203,32 @@ static void scr_ws_fail_protocol(ScrWs *ws) {
   scr_ws_destroy_socket(ws);
   scr_ws_emit_type(ws, "error");
   ScrStr *empty = scr_str_new("", 0);
-  scr_ws_emit_close(ws, 1002, empty, false);
+  scr_ws_emit_close(ws, 1006, empty, false);
   scr_str_release(empty);
+}
+
+static void scr_ws_read_close_impl(ScrWs *ws, const unsigned char *payload, size_t length);
+
+/* These paths emit events and then keep using the state; a listener that
+ * drops the program's last reference must not free it mid-path. */
+static void scr_ws_fail(ScrWs *ws) {
+  if (ws == NULL) return;
+  scr_ws_retain_v(ws);
+  scr_ws_fail_impl(ws);
+  scr_ws_release_v(ws);
+}
+
+static void scr_ws_fail_protocol(ScrWs *ws) {
+  if (ws == NULL) return;
+  scr_ws_retain_v(ws);
+  scr_ws_fail_protocol_impl(ws);
+  scr_ws_release_v(ws);
+}
+
+static void scr_ws_read_close(ScrWs *ws, const unsigned char *payload, size_t length) {
+  scr_ws_retain_v(ws);
+  scr_ws_read_close_impl(ws, payload, length);
+  scr_ws_release_v(ws);
 }
 
 /* ── frames ─────────────────────────────────────────────────────────── */
@@ -208,23 +253,48 @@ static size_t scr_ws_frame_header(unsigned char *out, int opcode, size_t length,
   return n + sizeof mask;
 }
 
-static void scr_ws_send_frame(ScrWs *ws, int opcode, const unsigned char *payload,
-                              size_t length) {
-  if (ws->sock == NULL) return;
+/* bufferedAmount: the queued payload until the socket has written every
+ * byte of the frames it came in, then zero. The socket's writable length is
+ * the pending-bytes signal (bytesWritten counts accepted bytes, buffered or
+ * not). */
+static double scr_ws_buffered_amount(ScrWs *ws) {
+  if (ws->sock == NULL || ws->buffered_amount == 0) {
+    ws->buffered_amount = 0;
+    return 0;
+  }
+  if (scr_net_sock_writable_length(ws->sock) <= 0) {
+    ws->buffered_amount = 0;
+    return 0;
+  }
+  return ws->buffered_amount;
+}
+
+static size_t scr_ws_send_frame(ScrWs *ws, int opcode, const unsigned char *payload,
+                                size_t length) {
+  if (ws->sock == NULL) return 0;
   unsigned char header[14];
   size_t header_len = scr_ws_frame_header(header, opcode, length, true);
   const unsigned char *mask = header + header_len - 4;
   size_t total = header_len + length;
+  if (opcode == SCR_WS_OP_TEXT || opcode == SCR_WS_OP_BINARY) {
+    /* send's contribution: the payload bytes queued until the socket has
+     * written every byte of the frames it came in (Node counts application
+     * data, not frame overhead); a send into an empty socket starts the
+     * count over, because everything counted before has flushed. */
+    if (scr_net_sock_writable_length(ws->sock) == 0) ws->buffered_amount = 0;
+    ws->buffered_amount += (double)length;
+  }
   unsigned char *frame = malloc(total ? total : 1);
   if (frame == NULL) scr_trap("scriptc: out of memory\n");
   memcpy(frame, header, header_len);
   for (size_t i = 0; i < length; i++) frame[header_len + i] = (unsigned char)(payload[i] ^ mask[i & 3]);
   scr_net_sock_write_native(ws->sock, (const char *)frame, total);
   free(frame);
+  return total;
 }
 
 /* The peer's close payload: a code (0 or 2+ bytes) and a UTF-8 reason. */
-static void scr_ws_read_close(ScrWs *ws, const unsigned char *payload, size_t length) {
+static void scr_ws_read_close_impl(ScrWs *ws, const unsigned char *payload, size_t length) {
   int64_t code = 1005;
   if (length == 1) {
     scr_ws_fail_protocol(ws);
@@ -344,7 +414,7 @@ static void scr_ws_handle_frame(ScrWs *ws, int fin, int opcode, const unsigned c
     return;
   case SCR_WS_OP_TEXT:
   case SCR_WS_OP_BINARY:
-    if (ws->frag != NULL) {
+    if (ws->frag_opcode != 0) {
       scr_ws_fail_protocol(ws);
       return;
     }
@@ -353,29 +423,62 @@ static void scr_ws_handle_frame(ScrWs *ws, int fin, int opcode, const unsigned c
       return;
     }
     ws->frag_opcode = opcode;
-    ws->frag = scr_bytes_new(SCR_BYTES_U8, (double)length);
-    if (length > 0) memcpy(ws->frag->data, payload, length);
+    if (length > 0) {
+      size_t cap = 4096;
+      while (cap < length) {
+        if (cap > SIZE_MAX / 2) {
+          cap = length;
+          break;
+        }
+        cap *= 2;
+      }
+      ws->frag = malloc(cap);
+      if (ws->frag == NULL) scr_trap("scriptc: out of memory\n");
+      memcpy(ws->frag, payload, length);
+      ws->frag_len = length;
+      ws->frag_cap = cap;
+    }
     return;
   case SCR_WS_OP_CONTINUATION:
-    if (ws->frag == NULL) {
+    if (ws->frag_opcode == 0) {
       scr_ws_fail_protocol(ws);
       return;
     }
     if (length > 0) {
-      size_t have = (size_t)ws->frag->len;
-      ScrBytes *grown = scr_bytes_new(SCR_BYTES_U8, (double)(have + length));
-      if (have > 0) memcpy(grown->data, ws->frag->data, have);
-      memcpy(grown->data + have, payload, length);
-      scr_bytes_release(ws->frag);
-      ws->frag = grown;
+      size_t need = ws->frag_len + length;
+      if (need < ws->frag_len) {
+        scr_ws_fail_protocol(ws);
+        return;
+      }
+      if (need > ws->frag_cap) {
+        /* geometric growth: a message arriving in many small continuation
+         * frames costs linear, not quadratic, copying */
+        size_t cap = ws->frag_cap ? ws->frag_cap : 4096;
+        while (cap < need) {
+          if (cap > SIZE_MAX / 2) {
+            cap = need;
+            break;
+          }
+          cap *= 2;
+        }
+        unsigned char *grown = realloc(ws->frag, cap);
+        if (grown == NULL) scr_trap("scriptc: out of memory\n");
+        ws->frag = grown;
+        ws->frag_cap = cap;
+      }
+      memcpy(ws->frag + ws->frag_len, payload, length);
+      ws->frag_len += length;
     }
     if (fin) {
       int message_opcode = ws->frag_opcode;
-      ScrBytes *whole = ws->frag;
+      unsigned char *whole = ws->frag;
+      size_t whole_len = ws->frag_len;
       ws->frag = NULL;
+      ws->frag_len = 0;
+      ws->frag_cap = 0;
       ws->frag_opcode = 0;
-      scr_ws_deliver(ws, message_opcode, whole->data, (size_t)whole->len);
-      scr_bytes_release(whole);
+      scr_ws_deliver(ws, message_opcode, whole, whole_len);
+      free(whole);
     }
     return;
   default:
@@ -385,7 +488,7 @@ static void scr_ws_handle_frame(ScrWs *ws, int fin, int opcode, const unsigned c
 
 /* ── the socket reader ─────────────────────────────────────────────── */
 
-static void scr_ws_on_data(void *ctx, const char *buf, size_t n) {
+static void scr_ws_on_data_impl(void *ctx, const char *buf, size_t n) {
   ScrWs *ws = ctx;
   if (ws->discard) return;
   if (ws->buf_len + n > ws->buf_cap) {
@@ -403,7 +506,7 @@ static void scr_ws_on_data(void *ctx, const char *buf, size_t n) {
 
 /* The peer went away without a close frame: 1006, unclean. A close the
  * program asked for that the peer never confirmed is unclean too. */
-static void scr_ws_on_eof(void *ctx) {
+static void scr_ws_on_eof_impl(void *ctx) {
   ScrWs *ws = ctx;
   if (ws->discard || ws->close_dispatched) return;
   ws->discard = true;
@@ -550,6 +653,25 @@ static void scr_ws_on_error(ScrClosure *cb, ScrStr *message) {
   ScrWs *ws = scr_ws_from(cb);
   if (ws == NULL) return;
   scr_ws_fail(ws);
+  scr_ws_release_v(ws);
+}
+
+/* The socket reader pins its receiver: a message or error listener may drop
+ * the program's last reference, and the parse loop and failure paths keep
+ * using the state after the dispatch. */
+static void scr_ws_on_data(void *ctx, const char *buf, size_t n) {
+  ScrWs *ws = ctx;
+  if (ws == NULL) return;
+  scr_ws_retain_v(ws);
+  scr_ws_on_data_impl(ws, buf, n);
+  scr_ws_release_v(ws);
+}
+
+static void scr_ws_on_eof(void *ctx) {
+  ScrWs *ws = ctx;
+  if (ws == NULL) return;
+  scr_ws_retain_v(ws);
+  scr_ws_on_eof_impl(ws);
   scr_ws_release_v(ws);
 }
 
@@ -750,7 +872,7 @@ static ScrDyn *scr_ws_get(void *ptr, const char *key, size_t len) {
     return out;
   }
   if (len == 14 && memcmp(key, "bufferedAmount", 14) == 0)
-    return scr_dyn_new_num(ws->buffered_amount);
+    return scr_dyn_new_num(scr_ws_buffered_amount(ws));
   if (len == 10 && memcmp(key, "binaryType", 10) == 0) {
     ScrStr *value = scr_str_new(ws->binary_type == 1 ? "arraybuffer" : "blob",
                                 ws->binary_type == 1 ? 11 : 4);

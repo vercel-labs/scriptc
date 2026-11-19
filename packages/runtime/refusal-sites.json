@@ -2268,6 +2268,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_exception.c",
+  "function": "scr_prepare_stack_trace_thunk",
+  "message": "Error.prepareStackTrace is a Node value that native code does not provide as a value",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_fs_stream.c",
   "function": "scr_fss_unsupported",
   "message": "",

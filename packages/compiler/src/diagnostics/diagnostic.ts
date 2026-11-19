@@ -1245,11 +1245,14 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // start, and let/const bindings that can be read before their
   // declaration carry an initialization check (Node's TDZ ReferenceError).
   // SC1016 remains for the shapes without an exact representation —
-  // CommonJS members, top-level await, default-export expressions,
-  // namespace imports or re-exports of cycle members, and var bindings
-  // reachable before their declaration ran. Classes carry an
-  // initialization check like the let/const bindings they behave as. The
-  // message names the offending construct.
+  // top-level await, default-export expressions, namespace imports or
+  // re-exports of cycle members, var bindings reachable before their
+  // declaration ran (classes carry an initialization check like the
+  // let/const bindings they behave as), a mixed ES-module/CommonJS
+  // cluster that a require() edge does not turn into Node's
+  // ERR_REQUIRE_CYCLE_MODULE, and top-level code that reaches another
+  // member of a require cycle only through a call or an escaping value.
+  // The message names the offending construct.
   SC1016: {
     feature: "circular imports",
     milestone: "later",

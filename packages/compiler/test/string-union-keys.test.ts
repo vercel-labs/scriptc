@@ -181,8 +181,10 @@ console.log(note(make(1, "a").name), note(pick(3, "b")), first());
   const llvm = emitLlvmModule(mod);
   // The byte an escaped key starts with, and the two cold helpers.
   expect(llvm).toMatch(/^@sc_key_escape = internal global .* c"\\FF\\00" }/m);
-  expect(llvm).toMatch(/^define internal ptr @sc_ukey_escape\(ptr %s\) cold noinline \{/m);
-  expect(llvm).toMatch(/^define internal ptr @sc_ukey_unescape\(ptr %s\) cold noinline \{/m);
+  expect(llvm).toMatch(/^define internal ptr @sc_ukey_escape\(ptr %s\) align 64 cold noinline \{/m);
+  expect(llvm).toMatch(
+    /^define internal ptr @sc_ukey_unescape\(ptr %s\) align 64 cold noinline \{/m,
+  );
   // Going in: the key's first byte is read, and 0xFF on the string arm
   // (not on a unit arm's key string) takes the cold call.
   const note = body(llvm, "sc_bf_note");

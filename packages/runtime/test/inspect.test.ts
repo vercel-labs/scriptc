@@ -58,6 +58,9 @@ beforeAll(async () => {
     // (readFile, writeFile and copyFile promises) pull the units that
     // define them, built in their SCR_FS_FLAGS shape.
     join(testDir, "../src/scr_async.c"),
+    // scr_bytes_io.c's Buffer.from object walk checks the compiled frames'
+    // stack guard, whose overflow report scr_context.c defines.
+    join(testDir, "../src/scr_context.c"),
     join(testDir, "../src/scr_bytes_io.c"),
     join(testDir, "../src/scr_fs_bytes_write.c"),
     join(testDir, "../src/scr_fs_flags.c"),

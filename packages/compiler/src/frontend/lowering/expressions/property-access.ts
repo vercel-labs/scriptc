@@ -151,6 +151,7 @@ import {
 } from "../lower-exprs.js";
 import {
   cjsInFileExportGlobalOf,
+  cjsPartialExportRead,
   isCjsExportsIdentifier,
   lowerCjsExportsObjectValue,
 } from "../cjs-exports-object.js";
@@ -241,7 +242,7 @@ import { fenceExpandoRead } from "../lower-expando.js";
 import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
-import { lowerEventStaticProperty } from "../builtins/numbers.js";
+import { lowerDOMExceptionStaticProperty, lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
@@ -1275,6 +1276,21 @@ export function lowerPropertyAccessExpr(
       (ts.isIdentifier(expr.name) &&
         lowerer.cjsWholeExportMemberOf(expr.expression, expr.name.text)))
   ) {
+    // A module of a require() cycle whose exports are still being
+    // assigned: the read is the live exports object's member, so a
+    // member not yet assigned reads undefined while the cycle
+    // initializes (and reports Node's warning), exactly as Node's
+    // partial exports answer.
+    if (ts.isIdentifier(expr.name)) {
+      const partialDep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      const partial =
+        partialDep === null
+          ? null
+          : cjsPartialExportRead(lowerer, partialDep, expr.name.text, expr);
+      if (partial !== null) return partial;
+    }
     // A binding whose dep is a class-expression WHOLE export
     // (`module.exports = class {…}`): the member surface is the
     // CLASS's — `C.name` folds to NamedEvaluation's answer and own
@@ -1492,6 +1508,7 @@ export function lowerPropertyAccessExpr(
     lowerer.lowerErrorCodeProperty(expr) ??
     lowerer.lowerNumberStaticProperty(expr) ??
     lowerEventStaticProperty(lowerer, expr) ??
+    lowerDOMExceptionStaticProperty(lowerer, expr) ??
     lowerer.lowerMathProperty(expr) ??
     lowerer.lowerIntrinsicProperty(expr) ??
     // The _readableState/_writableState scalar READS (the suite's
@@ -6147,6 +6164,21 @@ export function fieldTarget(
       fieldType: F64,
     };
   }
+  // `Error.prepareStackTrace`: program state, as in Node — a program may
+  // save it, replace it (typically with `void 0`) and restore it. The
+  // runtime holds the value and its default function, which throws the
+  // named refusal if called (native code has no V8 call-site formatter).
+  if (
+    access.name.text === "prepareStackTrace" &&
+    lowerer.isStdlibGlobal(access.expression, "Error")
+  ) {
+    return {
+      container: "errorPrepareStackTrace",
+      obj: { kind: "numLit", value: 0, type: F64, loc: locOf(access) },
+      field: "prepareStackTrace",
+      fieldType: DYN,
+    };
+  }
   // `this.#x` in a function-local class's prototype method: the field of
   // the brand-checked receiver (checkedPrivateReceiver).
   if (
@@ -6605,6 +6637,9 @@ export function fieldGetExpr(
     return errorPropertyRead(lowerer, target.obj, target.field);
   if (target.container === "errorStackLimit") {
     return { kind: "libCall", fn: "error.stackLimitGet", args: [], type: F64, loc };
+  }
+  if (target.container === "errorPrepareStackTrace") {
+    return { kind: "libCall", fn: "error.prepareStackTraceGet", args: [], type: DYN, loc };
   }
   if (target.container === "errorCause") {
     return { kind: "libCall", fn: "error.cause", args: [target.obj], type: DYN, loc };

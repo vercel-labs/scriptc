@@ -1376,6 +1376,7 @@ const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [
   "buffer.concatLen",
   "buffer.concatDyn",
   "buffer.concatLenDyn",
+  "buffer.concatLenDynOpt",
   "buffer.fromDyn",
   "buffer.fromStrChecked",
   "buffer.alloc",

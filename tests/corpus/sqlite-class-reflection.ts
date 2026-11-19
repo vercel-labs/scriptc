@@ -110,6 +110,29 @@ try {
   show("delete-accessor", [e.name, e.message]);
 }
 
+const brand = Symbol.for("sqlite-type");
+show("db-descriptors", Object.getOwnPropertyDescriptors(db));
+show("stmt-descriptors", Object.getOwnPropertyDescriptors(stmt));
+show("brand-symbols", Object.getOwnPropertySymbols(db).map((symbol) => String(symbol)));
+show("brand-presence", [Object.hasOwn(db, brand), brand in db, Object.hasOwn(stmt, brand)]);
+show("brand-descriptor", Object.getOwnPropertyDescriptor(db, brand));
+const iterator = stmt.iterate();
+show("iterator-descriptors", Object.getOwnPropertyDescriptors(iterator));
+show("iterator-inspect", inspect(iterator));
+const session = db.createSession();
+show("session-descriptors", Object.getOwnPropertyDescriptors(session));
+show("session-inspect", inspect(session));
+session.close();
+
+const copied: Record<string, unknown> = Object.assign({}, db as unknown as Record<string, unknown>);
+show("assign-brand", [
+  Object.keys(copied).length,
+  Object.getOwnPropertySymbols(copied).map((symbol) => String(symbol)),
+  Reflect.get(copied, brand),
+]);
+const spread = { ...(db as unknown as Record<string, unknown>) };
+show("spread-brand", Object.getOwnPropertySymbols(spread).map((symbol) => String(symbol)));
+
 stmt.close();
 show("closed-stmt-keys", Object.keys(stmt));
 try {

@@ -175,6 +175,7 @@ static ScrDyn *scr_sqlite_db_inspect_view(void *h);
 static ScrDyn *scr_sqlite_db_own_descriptor(void *h, const char *key, size_t key_len);
 static bool scr_sqlite_db_own_set(void *h, const char *key, size_t key_len, const ScrDyn *value);
 static bool scr_sqlite_db_own_delete(void *h, const char *key, size_t key_len);
+static ScrDyn *scr_sqlite_db_own_symbols(void *h);
 /* Symbol.for("sqlite-type"), the brand DatabaseSync carries. */
 static ScrSym *scr_sqlite_type_symbol_of(void);
 
@@ -948,6 +949,19 @@ static const ScrDynHandleMethod scr_sqlite_iter_methods[] = {
     {NULL, 0, false, NULL, NULL},
 };
 
+/* The statement iterator and a session carry no own properties, but
+ * reflection asks the class for them: Node answers an empty key list and an
+ * empty descriptor map (and serializes them as {}). */
+static ScrDyn *scr_sqlite_no_own_names(void *h) {
+  (void)h;
+  return scr_dyn_new_arr();
+}
+
+static ScrDyn *scr_sqlite_no_own_view(void *h) {
+  (void)h;
+  return scr_dyn_new_obj();
+}
+
 static const ScrDynHandleOps scr_sqlite_iter_ops = {
     .cls = "StatementSyncIterator",
     .retain = scr_sqlite_iter_retain,
@@ -959,6 +973,9 @@ static const ScrDynHandleOps scr_sqlite_iter_ops = {
     .symbol_get = scr_sqlite_iter_symbol_get,
     .to_string_tag = "Iterator",
     .methods = scr_sqlite_iter_methods,
+    .inspect_view = scr_sqlite_no_own_view,
+    .own_names = scr_sqlite_no_own_names,
+    .own_view = scr_sqlite_no_own_view,
 };
 
 static ScrDyn *scr_sqlite_iter_new(ScrSqliteIter *it) {
@@ -2925,7 +2942,7 @@ static const ScrDynHandleMethod scr_sqlite_session_methods[] = {
 
 static ScrDyn *scr_sqlite_session_inspect_view(void *h) {
   (void)h;
-  return scr_dyn_new_obj_null_proto();
+  return scr_dyn_new_obj();
 }
 
 static const ScrDynHandleOps scr_sqlite_session_ops = {
@@ -2938,6 +2955,8 @@ static const ScrDynHandleOps scr_sqlite_session_ops = {
     .json_empty_object = true,
     .symbol_get = scr_sqlite_session_symbol_get,
     .methods = scr_sqlite_session_methods,
+    .own_names = scr_sqlite_no_own_names,
+    .own_view = scr_sqlite_no_own_view,
 };
 
 static ScrDyn *scr_sqlite_session_dispose_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
@@ -3799,16 +3818,29 @@ static ScrDyn *scr_sqlite_db_own_names(void *h) {
   return scr_sqlite_own_names_of(scr_sqlite_db_own, SCR_SQLITE_DB_OWN_COUNT, db->expandos);
 }
 
+/* Adds DatabaseSync's Symbol(sqlite-type) brand to a view: the symbol Node
+ * registers and reads as the module's name. */
+static void scr_sqlite_db_add_brand(ScrDyn *view) {
+  ScrSym *type = scr_sqlite_type_symbol_of();
+  if (type == NULL || scr_sym_event_ops == NULL) return;
+  ScrDyn *key = scr_sym_event_ops->box(type);
+  scr_dyn_symbol_key_set(view, key, scr_sqlite_str_dyn("node:sqlite"));
+  scr_dyn_release(key);
+}
+
 static ScrDyn *scr_sqlite_db_inspect_view(void *h) {
   ScrSqliteDb *db = h;
   ScrDyn *view = scr_sqlite_inspect_of(SCR_DYNH_SQLITE_DB, scr_sqlite_db_own,
                                        SCR_SQLITE_DB_OWN_COUNT, db->expandos);
-  ScrSym *type = scr_sqlite_type_symbol_of();
-  if (type != NULL && scr_sym_event_ops != NULL) {
-    ScrDyn *key = scr_sym_event_ops->box(type);
-    scr_dyn_symbol_key_set(view, key, scr_sqlite_str_dyn("node:sqlite"));
-    scr_dyn_release(key);
-  }
+  scr_sqlite_db_add_brand(view);
+  return view;
+}
+
+/* DatabaseSync's own symbol-keyed properties: its brand. */
+static ScrDyn *scr_sqlite_db_own_symbols(void *h) {
+  (void)h;
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_sqlite_db_add_brand(view);
   return view;
 }
 
@@ -3923,6 +3955,7 @@ static const ScrDynHandleOps scr_sqlite_db_ops = {
     .own_view = scr_sqlite_db_own_view,
     .own_descriptor = scr_sqlite_db_own_descriptor,
     .delete_key = scr_sqlite_db_own_delete,
+    .own_symbols = scr_sqlite_db_own_symbols,
 };
 
 /* A handle box around a live database (the SQLTagStore#db getter). */

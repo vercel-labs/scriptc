@@ -2755,6 +2755,12 @@ typedef struct ScrDynHandleOps {
    * fetch classes). NULL = scr_dyn_handle_props.c's slot table owns the
    * table. See ScrDynHandlePropsHooks.table. */
   void (*adopt_props)(void *h, ScrDyn *props);
+  /* The class's own symbol-keyed properties as a fresh ordinary object
+   * (+1) whose own properties are symbol-keyed data properties with the
+   * class's attributes (DatabaseSync's Symbol(sqlite-type) brand), or NULL
+   * when the class has none. Object.getOwnPropertySymbols,
+   * getOwnPropertyDescriptors, hasOwn and `in` read it; NULL hook = none. */
+  ScrDyn *(*own_symbols)(void *h);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),

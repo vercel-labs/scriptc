@@ -4633,6 +4633,14 @@ static ScrDyn *scr_dyn_handle_own_view(const ScrDyn *v) {
   return ops->own_view ? ops->own_view(v->v.handle.ptr) : NULL;
 }
 
+/* A handle class's own symbol-keyed properties (a DatabaseSync's
+ * Symbol(sqlite-type) brand), or NULL when the class has none. */
+static ScrDyn *scr_dyn_handle_own_symbols(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_HANDLE) return NULL;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(v);
+  return ops->own_symbols ? ops->own_symbols(v->v.handle.ptr) : NULL;
+}
+
 /* Whether `key` is one of a handle class's own property names. */
 static bool scr_dyn_handle_own_name(const ScrDyn *v, const ScrStr *key) {
   ScrDyn *names = scr_dyn_handle_own_names(v);
@@ -12343,6 +12351,22 @@ static bool scr_dyn_key_probe_computed(const ScrDyn *value, const ScrDyn *raw_ke
       return mode == 0;
     }
   }
+  if (value->kind == SCR_DYN_HANDLE) {
+    /* The handle value's own symbol properties (a symbol-keyed write lands
+     * there), then the class's own symbols (DatabaseSync's brand). */
+    ScrDynEntry *own = scr_dyn_symbol_entry(value, key, mode != 0);
+    bool found = own != NULL && (mode != 2 || own->enumerable);
+    if (!found) {
+      ScrDyn *symbols = scr_dyn_handle_own_symbols(value);
+      if (symbols != NULL) {
+        ScrDynEntry *entry = scr_dyn_symbol_entry(symbols, key, mode != 0);
+        found = entry != NULL && (mode != 2 || entry->enumerable);
+        scr_dyn_release(symbols);
+      }
+    }
+    scr_dyn_release(key);
+    return found;
+  }
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
   ScrDynEntry *entry = receiver ? scr_dyn_symbol_entry(receiver, key, mode != 0) : NULL;
   bool found = entry && (mode != 2 || entry->enumerable);
@@ -12782,6 +12806,29 @@ ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
   }
 #endif
   if (key->kind == SCR_DYN_SYMBOL) {
+    if (target->kind == SCR_DYN_HANDLE) {
+      /* The handle value's own symbol properties, then the class's own
+       * symbols (DatabaseSync's brand). */
+      ScrStr *name = scr_dyn_symbol_storage_key(key);
+      ScrDyn *out = target->symbol_properties != NULL
+                        ? scr_dyn_own_descriptor(target->symbol_properties, name)
+                        : scr_dyn_retain(scr_dyn_undefined());
+      scr_str_release(name);
+      if (out != NULL && out->kind == SCR_DYN_UNDEF) {
+        scr_dyn_release(out);
+        ScrDyn *symbols = scr_dyn_handle_own_symbols(target);
+        out = NULL;
+        if (symbols != NULL) {
+          name = scr_dyn_symbol_storage_key(key);
+          out = symbols->symbol_properties != NULL
+                    ? scr_dyn_own_descriptor(symbols->symbol_properties, name)
+                    : scr_dyn_retain(scr_dyn_undefined());
+          scr_str_release(name);
+          scr_dyn_release(symbols);
+        }
+      }
+      return out != NULL ? out : scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+    }
     ScrDyn *receiver = scr_dyn_symbol_receiver(target);
     if (!receiver) {
       if (target->kind == SCR_DYN_NULL || target->kind == SCR_DYN_UNDEF) {
@@ -20898,6 +20945,20 @@ ScrDyn *scr_dyn_get_own_property_symbols(const ScrDyn *value) {
   ScrDyn *out = scr_dyn_new_arr();
   if (receiver && receiver->symbol_keys) for (size_t i = 0; i < receiver->symbol_keys->v.arr.len; i++)
     scr_dyn_arr_push(out, scr_dyn_retain(receiver->symbol_keys->v.arr.items[i]));
+  if (receiver && receiver->kind == SCR_DYN_HANDLE) {
+    /* The class's own symbol-keyed properties (DatabaseSync's brand). */
+    ScrDyn *symbols = scr_dyn_handle_own_symbols(receiver);
+    if (symbols != NULL) {
+      if (symbols->symbol_keys)
+        for (size_t i = 0; i < symbols->symbol_keys->v.arr.len; i++)
+          scr_dyn_arr_push(out, scr_dyn_retain(symbols->symbol_keys->v.arr.items[i]));
+      scr_dyn_release(symbols);
+    } else if (scr_exc_pending()) {
+      scr_dyn_release(receiver);
+      scr_dyn_release(out);
+      return NULL;
+    }
+  }
   scr_dyn_release(receiver);
   return out;
 }
@@ -20935,6 +20996,45 @@ ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object) {
     }
   }
 #endif
+  if (object->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(object)->own_names) {
+    /* A class's own properties: the names and their descriptors, then its
+     * own symbol-keyed properties (DatabaseSync's brand). */
+    ScrDyn *names = scr_dyn_handle_own_names(object);
+    if (!names) return NULL;
+    ScrDyn *result = scr_dyn_new_obj();
+    for (size_t i = 0; i < names->v.arr.len; i++) {
+      ScrStr *name = names->v.arr.items[i]->v.str;
+      ScrDyn *descriptor = scr_dyn_get_own_property_descriptor(object, names->v.arr.items[i]);
+      if (!descriptor) {
+        scr_dyn_release(names);
+        scr_dyn_release(result);
+        return NULL;
+      }
+      if (descriptor->kind != SCR_DYN_UNDEF) scr_dyn_obj_set(result, name->data, name->len, descriptor);
+      else scr_dyn_release(descriptor);
+    }
+    scr_dyn_release(names);
+    ScrDyn *symbols = scr_dyn_handle_own_symbols(object);
+    if (symbols != NULL) {
+      if (symbols->symbol_keys)
+        for (size_t i = 0; i < symbols->symbol_keys->v.arr.len; i++) {
+          ScrDyn *symbol = symbols->symbol_keys->v.arr.items[i];
+          ScrDyn *descriptor = scr_dyn_get_own_property_descriptor(object, symbol);
+          if (!descriptor) {
+            scr_dyn_release(symbols);
+            scr_dyn_release(result);
+            return NULL;
+          }
+          if (descriptor->kind != SCR_DYN_UNDEF) scr_dyn_symbol_key_set(result, symbol, descriptor);
+          else scr_dyn_release(descriptor);
+        }
+      scr_dyn_release(symbols);
+    } else if (scr_exc_pending()) {
+      scr_dyn_release(result);
+      return NULL;
+    }
+    return result;
+  }
   if (object->kind == SCR_DYN_PROXY || object->kind == SCR_DYN_HANDLE) {
     static const char message[] = "Object.getOwnPropertyDescriptors on this value is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
@@ -21842,13 +21942,14 @@ static ScrDyn *scr_dyn_symbol_assign_keys(const ScrDyn *holder) {
   return symbols;
 }
 
-/* `keys`' enumerable members of `holder` onto `target`, values read from
- * `src`. */
+/* `keys`' enumerable members of `holder` (or of `extra`, a handle class's
+ * own symbol view) onto `target`, values read from `src`. */
 static void scr_dyn_assign_symbols(ScrDyn *target, const ScrDyn *src, const ScrDyn *holder,
-                                   ScrDyn *keys, bool define) {
+                                   const ScrDyn *extra, ScrDyn *keys, bool define) {
   for (size_t i = 0; i < keys->v.arr.len && !scr_exc_pending(); i++) {
     ScrDyn *key = keys->v.arr.items[i];
     ScrDynEntry *entry = scr_dyn_symbol_entry(holder, key, true);
+    if (!entry && extra != NULL) entry = scr_dyn_symbol_entry(extra, key, true);
     if (!entry || !entry->enumerable) continue;
     ScrDyn *value = scr_dyn_symbol_key_get(src, key, false);
     if (!value) break;
@@ -21915,7 +22016,7 @@ static void scr_dyn_assign_linked_from(ScrDyn *target, const ScrDyn *src, bool d
     scr_dyn_release(snapshot);
     snapshot = fresh;
   }
-  scr_dyn_assign_symbols(target, src, snapshot, symbols, define);
+  scr_dyn_assign_symbols(target, src, snapshot, NULL, symbols, define);
   scr_dyn_release(symbols);
   scr_dyn_release(keys);
   scr_dyn_release(snapshot);
@@ -21967,8 +22068,14 @@ static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) 
   /* A view's symbol properties live on its named-property table. */
   const ScrDyn *holder = src->kind == SCR_DYN_BYTES ? src->v.bytes->properties : view;
   ScrDyn *symbols = scr_dyn_symbol_assign_keys(holder);
+  /* A handle class's own symbol-keyed properties (DatabaseSync's brand). */
+  ScrDyn *class_symbols = src->kind == SCR_DYN_HANDLE ? scr_dyn_handle_own_symbols(src) : NULL;
+  if (class_symbols != NULL && class_symbols->symbol_keys)
+    for (size_t i = 0; i < class_symbols->symbol_keys->v.arr.len; i++)
+      scr_dyn_arr_push(symbols, scr_dyn_retain(class_symbols->symbol_keys->v.arr.items[i]));
   scr_dyn_assign_strings_from(target, view, define);
-  scr_dyn_assign_symbols(target, src, holder, symbols, define);
+  scr_dyn_assign_symbols(target, src, holder, class_symbols, symbols, define);
+  scr_dyn_release(class_symbols);
   scr_dyn_release(symbols);
   scr_dyn_release(view);
 }

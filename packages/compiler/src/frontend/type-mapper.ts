@@ -645,11 +645,16 @@ export class ShapeRegistry {
     if (this.journalHolds(op)) return;
     switch (op.k) {
       case "intern": {
-        const id = this.intern(
-          op.fields,
-          op.tuple,
-          op.indexValue ?? undefined,
-          op.declaredOrder ?? undefined,
+        // The recorded priority, not the ambient one: the candidate the
+        // intern adds has to rank as the unit's own did, or a later unit's
+        // competing order settles the wrong way.
+        const id = this.withDeclaredOrderPriority(op.priority, () =>
+          this.intern(
+            op.fields,
+            op.tuple,
+            op.indexValue ?? undefined,
+            op.declaredOrder ?? undefined,
+          ),
         );
         if (id !== op.id)
           throw new InternalCompilerError(`shape record ${op.id} does not match its fields`);

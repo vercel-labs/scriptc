@@ -477,4 +477,28 @@ describe("the shape journal", () => {
     expect(table.digest!(id, before)).toBeNull();
     expect(table.entries!(before)!.length).toBe(1);
   });
+
+  test("a replayed intern keeps the declared-order rank its unit interned under", () => {
+    const writing = new ShapeRegistry();
+    writing.journaling = true;
+    writing.withDeclaredOrderPriority([3, 0], () =>
+      writing.intern(fields("a", "b"), false, undefined, ["b", "a"]),
+    );
+    const entries = writing.journalTable().entries!(0)!;
+    const reading = new ShapeRegistry();
+    reading.journaling = true;
+    reading.journalTable().apply!(entries);
+    // A later unit offers the shape another order under a better rank.
+    for (const registry of [writing, reading])
+      registry.withDeclaredOrderPriority([1, 0], () =>
+        registry.intern(fields("a", "b"), false, undefined, ["a", "b"]),
+      );
+    writing.settleDeclaredOrderPriorities();
+    reading.settleDeclaredOrderPriorities();
+    const id = writing.shapes[0]!.id;
+    // Both settle the better-ranked order; a replay that took the ambient
+    // rank would keep the recorded one instead.
+    expect(writing.get(id)!.declaredOrder).toEqual(["a", "b"]);
+    expect(reading.get(id)!.declaredOrder).toEqual(["a", "b"]);
+  });
 });

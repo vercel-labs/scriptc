@@ -43,6 +43,7 @@ import { varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
+  ambientErasedValueSymbolOf,
   ambientTypesOnlyGlobalSymbolOf,
   ambientUndefinedFnSymbolOf,
   ambientUndefinedVarSymbolOf,
@@ -457,6 +458,19 @@ function lowerTypeofAnswer(
       ambientUndefinedFnSymbolOf(lowerer, tested) ||
       (ambientTypesOnlyGlobalSymbolOf(lowerer, tested) &&
         !programMayWriteGlobalName(lowerer, tested.text, tested))
+    ) {
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+    }
+    // A name the program only DECLARES for its type — `declare class`,
+    // `declare namespace` (a `declare global` augmentation included),
+    // `declare enum` — has no runtime binding: typeof an unresolvable
+    // reference answers "undefined" and never throws, so no value read
+    // (and certainly no ReferenceError) may be emitted. A program that
+    // may have installed the name on the global object answers that
+    // property at run time instead, as for an erased variable.
+    if (
+      ambientErasedValueSymbolOf(lowerer, tested) &&
+      !programMayWriteGlobalName(lowerer, tested.text, tested)
     ) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }

@@ -7,6 +7,7 @@ import { undeclaredGlobalTypeof } from "./global-object-names.js";
 import { erasedGlobalBindingOf, programMayWriteGlobalName } from "./global-object-writes.js";
 import { isUnresolvedCjsExports } from "./cjs-exports-object.js";
 import {
+  ambientErasedValueSymbolOf,
   ambientTypesOnlyGlobalSymbolOf,
   ambientUndefinedFnSymbolOf,
   ambientUndefinedVarSymbolOf,
@@ -58,7 +59,11 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
     ambientUndefinedFnSymbolOf(lowerer, e) ||
     // A name the program installs on the global object answers at run time
     // (typeof.ts reads it), so no static answer folds.
-    (ambientTypesOnlyGlobalSymbolOf(lowerer, e) && !programMayWriteGlobalName(lowerer, e.text, e))
+    (ambientTypesOnlyGlobalSymbolOf(lowerer, e) && !programMayWriteGlobalName(lowerer, e.text, e)) ||
+    // Declared for its type only (`declare namespace`, `declare class`,
+    // `declare enum`): TypeScript erases it, so the reference is
+    // unresolvable at run time and typeof answers "undefined".
+    (ambientErasedValueSymbolOf(lowerer, e) && !programMayWriteGlobalName(lowerer, e.text, e))
   )
     return "undefined";
   return null;

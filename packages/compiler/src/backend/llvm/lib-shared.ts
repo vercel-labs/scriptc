@@ -1322,6 +1322,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "error.setStack": "scr_error_set_stack",
   "error.stackLimitGet": "scr_stack_limit_get",
   "error.stackLimitSet": "scr_stack_limit_set",
+  "error.prepareStackTraceGet": "scr_error_prepare_stack_trace_get",
+  "error.prepareStackTraceSet": "scr_error_prepare_stack_trace_set",
   "class.name": "scr_classobj_name",
   // The dyn (ScrDyn dyn) surface (scr_json.c / scr_dyn_invoke.c):
   // json.parse throws the catchable SyntaxError; keySet/toString/

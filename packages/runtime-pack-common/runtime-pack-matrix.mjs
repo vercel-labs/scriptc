@@ -249,7 +249,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     ),
   ],
   ["scr_stream.c", "stream"],
-  // stream.duplexPair builds two Duplexes wired to each other.
+  // stream.duplexPair builds two Duplexes wired to each other. Its empty
+  // chunk test reads an array's own length, which only the JavaScript object
+  // model build stores apart from the dense prefix.
   ["scr_stream_pair.c", "stream"],
   // readable.wrap reads a native source's chunks into the receiver.
   ["scr_stream_wrap.c", "stream"],
@@ -496,6 +498,11 @@ export function variantsFor(source) {
   // shape store probe declines it. Only the object model build models that
   // accessor: every other program keeps the default object, byte for byte.
   if (source === "scr_js_object.c") withJsObjectModel(variants);
+  // duplexPair's empty-chunk test reads an array's length through
+  // scr_dyn_arr_length: the object model build is where that length can
+  // exceed the dense prefix. A program with both features links this twin;
+  // every other program keeps the default object.
+  if (source === "scr_stream_pair.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects.
   // A method call on an island promise reaches the island object for the

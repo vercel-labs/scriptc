@@ -158,30 +158,11 @@ static void scr_perf_scratch_clear(void) {
   scr_perf_scratch_set = false;
 }
 
-/* The timerified wrappers' prototype objects, retained here: a prototype's
- * constructor property holds its wrapper, so dropping the program's
- * reference at teardown leaves that cycle alive. Cleanup removes the edge
- * first, letting the wrapper (and the heap display-name string its closure
- * holds) be freed. */
-static SCR_TL ScrDyn **scr_perf_timerify_protos;
-static SCR_TL size_t scr_perf_ntimerify_protos, scr_perf_timerify_protos_cap;
-
 static void scr_perf_observers_cleanup(void);
 static void scr_perf_entries_clear(ScrPerfEntries *l);
 static void scr_perf_observers_adopt_kept(size_t id, ScrDyn *ref);
 
 static void scr_perf_cleanup(void) {
-  if (scr_perf_ntimerify_protos > 0) {
-    ScrStr *ctor_key = scr_str_new("constructor", 11);
-    for (size_t i = 0; i < scr_perf_ntimerify_protos; i++) {
-      scr_dyn_obj_delete_field(scr_perf_timerify_protos[i], ctor_key);
-      scr_dyn_release(scr_perf_timerify_protos[i]);
-    }
-    scr_str_release(ctor_key);
-  }
-  free(scr_perf_timerify_protos);
-  scr_perf_timerify_protos = NULL;
-  scr_perf_ntimerify_protos = scr_perf_timerify_protos_cap = 0;
   scr_perf_observers_cleanup();
   scr_perf_scratch_clear();
   scr_perf_resource_orphan_clear();
@@ -1609,7 +1590,9 @@ static void scr_perf_observe_function(const ScrStr *name, double start, double d
   /* The entry the list answers: a plain object with the argument list as
    * its detail, kept so a typed read of the list answers this object. */
   ScrDyn *object = scr_dyn_new_obj();
-  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(scr_str_retain((ScrStr *)name)));
+  /* scr_dyn_new_str retains the borrowed name; retaining it here as well
+   * leaked one heap string per recorded call. */
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str((ScrStr *)name));
   ScrStr *type = scr_str_new("function", 8);
   scr_dyn_obj_set(object, "entryType", 9, scr_dyn_new_str(type));
   scr_str_release(type);
@@ -1875,19 +1858,6 @@ static ScrDyn *scr_perf_argument_member(ScrDyn *value, const char *key, size_t l
   return member;
 }
 
-/* Retains a timerified wrapper's prototype until exit, where cleanup drops
- * the constructor edge that closes the wrapper/prototype cycle. */
-static void scr_perf_timerify_proto_add(ScrDyn *prototype) {
-  if (scr_perf_ntimerify_protos == scr_perf_timerify_protos_cap) {
-    size_t cap = scr_perf_timerify_protos_cap ? scr_perf_timerify_protos_cap * 2 : 4;
-    ScrDyn **items = realloc(scr_perf_timerify_protos, cap * sizeof *items);
-    if (!items) scr_trap("scriptc: out of memory\n");
-    scr_perf_timerify_protos = items;
-    scr_perf_timerify_protos_cap = cap;
-  }
-  scr_perf_timerify_protos[scr_perf_ntimerify_protos++] = scr_dyn_retain(prototype);
-}
-
 /* `performance.timerify(fn)` / `perf_hooks.timerify(fn, options?)` (+1):
  * Node validates the callable and the options object, then wraps the call.
  * The arguments arrive as one dyn array. */
@@ -1987,7 +1957,6 @@ ScrDyn *scr_perf_timerify(ScrDyn *args) {
   if (ctor_index != SIZE_MAX)
     scr_dyn_obj_set_attrs_at(prototype, ctor_index, true, false, true);
   scr_dyn_fn_seed_prototype(wrapper, prototype);
-  scr_perf_timerify_proto_add(prototype);
   /* The seed's builtin recipe makes a constructor's prototype read-only;
    * an ordinary function's is writable in Node, and only its sameness and
    * attributes' enumerable/configurable bits are fixed. */

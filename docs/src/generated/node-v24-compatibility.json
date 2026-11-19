@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 56,
-    "matrixRows": 3685,
+    "matrixRows": 3684,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 203,
+      "not-applicable": 204,
       "chapters": 7
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 384,
-      "apiEntries": 384
+      "entries": 383,
+      "apiEntries": 383
     },
     {
       "slug": "events",
@@ -23850,9 +23850,9 @@
       "anchor": "cert_not_yet_valid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24108,24 +24108,6 @@
       }
     },
     {
-      "id": "errors:d72801142ee6",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`hostname_mismatch`",
-      "signature": "`HOSTNAME_MISMATCH`",
-      "label": "HOSTNAME_MISMATCH",
-      "apiSymbol": "HOSTNAME_MISMATCH",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "hostname_mismatch",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
       "id": "errors:75d9c5d34364",
       "chapter": "errors",
       "kind": "module",
@@ -24174,9 +24156,9 @@
       "anchor": "cert_signature_failure",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {

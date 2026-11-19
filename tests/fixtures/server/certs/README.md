@@ -31,3 +31,20 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
     openssl ecparam -genkey -name prime256v1 -noout -out embedded-key.pem
     openssl req -new -key embedded-key.pem -out embedded.csr -subj "/CN=embedded pem" -config embedded.cnf
     openssl x509 -req -in embedded.csr -CA ca.pem -CAkey ca-key.pem -set_serial 4242 -out embedded.pem -days 36500 -extfile embedded.cnf -extensions ext
+
+`future.pem`/`future-key.pem` is a self-signed localhost certificate whose validity starts in 2027, for the CERT_NOT_YET_VALID shape: a client that trusts it through `ca` still fails verification because the window has not begun. The date is fixed, so the differential lane passes until 2037 and then starts failing like any expired fixture would:
+
+    openssl ecparam -genkey -name prime256v1 -noout -out future-key.pem
+    openssl req -new -x509 -key future-key.pem -out future.pem -subj "/CN=localhost" -config san.cnf -extensions ext -not_before 20270101000000Z -not_after 20370101000000Z
+
+`badsig.pem` is `localhost.pem` with one byte of its signature flipped, keeping the issuer name and key. A client trusting `ca.pem` finds the issuer but the signature over the TBS does not verify: the CERT_SIGNATURE_FAILURE shape. `badsig-key.pem` is a copy of `localhost-key.pem` (the public key is untouched; the server only needs the pair to load):
+
+    python3 - <<'PY'
+    import base64
+    s = open("localhost.pem").read()
+    der = bytearray(base64.b64decode("".join(s.strip().splitlines()[1:-1])))
+    der[-5] ^= 0xFF
+    b = base64.b64encode(bytes(der)).decode()
+    open("badsig.pem", "w").write("-----BEGIN CERTIFICATE-----\n" + "\n".join(b[i:i+64] for i in range(0, len(b), 64)) + "\n-----END CERTIFICATE-----\n")
+    PY
+    cp localhost-key.pem badsig-key.pem

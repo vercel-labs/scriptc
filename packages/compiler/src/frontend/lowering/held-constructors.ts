@@ -44,6 +44,64 @@ import type { IrExpr, IrType } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import type { Lowerer, LowerResult } from "./lowerer.js";
+import { stdlibGlobalNameOf } from "./surfaces.js";
+
+/** Whether the program writes a primitive constructor as a value anywhere
+ * (held-constructors.ts's comparison exists for those programs). Decided
+ * before lowering from the symbols of value positions: an identifier that
+ * resolves to the global String, Number, Boolean or BigInt constructor and
+ * is not the callee of a call or the target of `new`. Reading the fact first
+ * makes every touch mark exact: the "made before the program's first
+ * constructor value" catch-all is no longer needed (RELEASE-PLAN H-1). */
+export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
+  for (const sf of lowerer.program.getSourceFiles()) {
+    let found = false;
+    ts.walkPreorder(sf, (node) => {
+      if (found || !ts.isIdentifier(node)) return;
+      const parent = node.parent;
+      if (parent !== undefined) {
+        if (
+          (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+          parent.expression === node
+        )
+          return;
+        if (ts.isPropertyAccessExpression(parent) && parent.name === node) return;
+        if (
+          (ts.isPropertyAssignment(parent) ||
+            ts.isPropertyDeclaration(parent) ||
+            ts.isVariableDeclaration(parent) ||
+            ts.isParameter(parent) ||
+            ts.isFunctionDeclaration(parent) ||
+            ts.isFunctionExpression(parent) ||
+            ts.isClassDeclaration(parent) ||
+            ts.isClassExpression(parent) ||
+            ts.isMethodDeclaration(parent) ||
+            ts.isBindingElement(parent) ||
+            ts.isImportSpecifier(parent) ||
+            ts.isExportSpecifier(parent) ||
+            ts.isImportClause(parent) ||
+            ts.isNamespaceImport(parent)) &&
+          parent.name === node
+        )
+          return;
+        if (ts.isQualifiedName(parent)) return;
+        // `class X extends String` uses the constructor as a value; every
+        // other type node's identifier is a type name.
+        if (ts.isTypeNode(parent)) {
+          if (ts.isExpressionWithTypeArguments(parent) && parent.expression === node) {
+            // fall through: a heritage clause's expression is a value use
+          } else return;
+        }
+      }
+      const name = stdlibGlobalNameOf(lowerer, node);
+      if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
+        found = true;
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
 
 /** Whether a value of `type` holds a primitive constructor by its own
  * function type at any depth: the function itself, a member of a record, an

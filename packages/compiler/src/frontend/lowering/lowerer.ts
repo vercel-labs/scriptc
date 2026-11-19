@@ -856,6 +856,7 @@ import {
   fewerRefusals,
   namedConstructorBox,
   otherErrors,
+  programHoldsConstructorValue,
   untypedConstructorAsFunction,
 } from "./held-constructors.js";
 import { lowerSystemErrorMapValue } from "./lower-system-errors.js";
@@ -7213,9 +7214,11 @@ export class Lowerer {
    * arguments (requireExactShape), with their ancestors: the classes a
    * comparison pass holds as checked-dynamic values. */
   readonly dynamicClassValueRequests = new Set<ts.Node>();
-  /** The program holds a primitive constructor as a value: one was written
-   * as a value expression (lower-exprs.ts, primitiveCtorValue). Until then
-   * nothing of held-constructors.ts is asked of the values it lowers. */
+  /** The program writes a primitive constructor as a value, decided before
+   * any body lowers (programHoldsConstructorValue). A diagnostic is marked
+   * heldConstructor only where lowering meets such a value's function type;
+   * the comparison pass in held-constructors.ts runs only for a program that
+   * holds one. */
   constructorFunctionTypes = false;
   /** How often lowering met a value or a type that holds a constructor's
    * function type (lowerExpr, the type mapper). */
@@ -14957,6 +14960,11 @@ export class Lowerer {
 
   run(): LowerResult {
     const parts = this.splitFiles();
+    // The held-constructor fact is decided from the program's syntax and
+    // symbols before any body lowers, so the marks below are exact: a
+    // diagnostic is marked only where lowering actually meets a constructor
+    // value's function type (held-constructors.ts).
+    this.constructorFunctionTypes = programHoldsConstructorValue(this);
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
     this.programSourceFiles = parts.map((fp) => fp.sf);
     this.classHierarchyCache = null;
@@ -17025,12 +17033,11 @@ export class Lowerer {
     const d = this.instantiationContext
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
-    // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts). Until the program writes its first
-    // constructor value, values are not looked at, so a diagnostic made
-    // that early is marked too: lowering order is not evaluation order, and
-    // the mark counts only if the program turns out to hold a constructor.
-    if (!this.constructorFunctionTypes || this.constructorTouches > this.constructorTouchMark)
+    // Made after the statement being lowered met a constructor value's
+    // function type (held-constructors.ts). The program's held-constructor
+    // fact precedes lowering, so this is exact: a diagnostic made earlier in
+    // lowering order is not marked for that reason alone.
+    if (this.constructorFunctionTypes && this.constructorTouches > this.constructorTouchMark)
       d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report

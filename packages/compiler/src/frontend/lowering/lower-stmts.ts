@@ -149,6 +149,7 @@ import {
 } from "./cjs-inline-require.js";
 import {
   cjsExportMemberWriteGlobalOf,
+  cjsPartialAccessorDefineStmt,
   cjsPartialExportMirror,
   cjsPartialExportRead,
   cjsPartialExportsReplaceStmt,
@@ -10429,15 +10430,20 @@ function lowerCjsExportStatement(
       const init = req !== null ? lowerer.requireInitStmt(req.spec, req.call) : null;
       // The class value itself is the export: a partial cycle's live
       // exports object holds the constructor, so a later read through a
-      // module binding answers it instead of undefined.
-      const mirror = cjsPartialExportMirror(
-        lowerer,
-        ts.getSourceFileOfNode(cjs.expr),
-        cjs.name.text,
-        lowerer.lowerExpr(cjs.value),
-        cjs.value,
-        locOf(cjs.value),
-      );
+      // module binding answers it instead of undefined. Outside a partial
+      // cycle the alias lowers to nothing, and the class value is never
+      // lowered (it would add statements the program does not run).
+      const classFile = ts.getSourceFileOfNode(cjs.expr);
+      const mirror = isPartialCjsCycleModule(lowerer, classFile)
+        ? cjsPartialExportMirror(
+            lowerer,
+            classFile,
+            cjs.name.text,
+            lowerer.lowerExpr(cjs.value),
+            cjs.value,
+            locOf(cjs.value),
+          )
+        : [];
       if (mirror.length === 0) return init ?? { kind: "block", body: [], loc };
       return { kind: "block", body: [...(init === null ? [] : [init]), ...mirror], loc: loc };
     }
@@ -10566,6 +10572,8 @@ function lowerCjsExportStatement(
     }
   };
   if (replace !== null) body.push(replace);
+  // Accessor entries installed on the live exports object once per key.
+  const accessorDefined = new Set<string>();
   for (const prop of table.properties.nodes) {
     if (ts.isShorthandPropertyAssignment(prop)) {
       const shorthandName = prop.name as ts.Identifier;
@@ -10642,11 +10650,40 @@ function lowerCjsExportStatement(
         }
       }
     }
-    // ACCESSOR entries: no storage and no code here — reads lift the
-    // getter as a module-level function and call it per read
-    // (cjsExportAccessorRead); writes through the setter keep their
-    // fence at the write site.
-    if (ts.isGetAccessorDeclaration(prop) || ts.isSetAccessorDeclaration(prop)) continue;
+    // ACCESSOR entries: the static table has no storage (reads lift the
+    // getter as a module-level function and call it per read —
+    // cjsExportAccessorRead; writes through the setter keep their fence at
+    // the write site). A partial cycle's live exports object needs the
+    // descriptor itself, so a read through a module binding runs the
+    // getter like Node's exports object does.
+    if (ts.isGetAccessorDeclaration(prop) || ts.isSetAccessorDeclaration(prop)) {
+      const name = prop.name;
+      if (
+        isPartialCjsCycleModule(lowerer, ts.getSourceFileOfNode(cjs.expr)) &&
+        (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) &&
+        !accessorDefined.has(name.text)
+      ) {
+        accessorDefined.add(name.text);
+        const siblings = table.properties.nodes.filter(
+          (other) =>
+            (ts.isGetAccessorDeclaration(other) || ts.isSetAccessorDeclaration(other)) &&
+            (ts.isIdentifier(other.name) || ts.isStringLiteralLike(other.name)) &&
+            other.name.text === name.text,
+        );
+        const getter = siblings.find(ts.isGetAccessorDeclaration) ?? null;
+        const setter = siblings.find(ts.isSetAccessorDeclaration) ?? null;
+        const define = cjsPartialAccessorDefineStmt(
+          lowerer,
+          ts.getSourceFileOfNode(cjs.expr),
+          name.text,
+          getter,
+          setter,
+          loc,
+        );
+        if (define !== null) body.push(define);
+      }
+      continue;
+    }
     // `...require('spec')` SPREAD entries are star-re-export plumbing
     // (the bundler-emitted CJS canonical table — npm-static-rewrite.ts):
     // importers of the spread names resolve statically through the

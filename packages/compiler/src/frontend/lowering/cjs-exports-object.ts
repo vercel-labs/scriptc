@@ -37,6 +37,7 @@ import {
   inlineProgramRequireOf,
 } from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
+import { cjsAccessorValue } from "./lower-exprs.js";
 import { requireBindingTdzCheck } from "./require-initialization.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { moduleExportIgnoresThis } from "./module-member-this.js";
@@ -864,6 +865,67 @@ export function cjsPartialExportRead(
     ],
     result: read,
     type: DYN,
+    loc,
+  };
+}
+
+/** The statement that installs export `key`'s accessor descriptor on a
+ * partial-cycle module's live exports object (`module.exports = { get … }`):
+ * Node's exports object carries the getter/setter, so a read through a
+ * module binding runs it. Null for modules outside a partial cycle. */
+export function cjsPartialAccessorDefineStmt(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  key: string,
+  getter: ts.GetAccessorDeclaration | null,
+  setter: ts.SetAccessorDeclaration | null,
+  loc: SrcLoc,
+): IrStmt | null {
+  const obj = cjsPartialExportsObject(lowerer, sf);
+  if (obj === null || (getter === null && setter === null)) return null;
+  const fields: { key: IrExpr; value: IrExpr }[] = [];
+  const member = (
+    name: string,
+    accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
+  ) => {
+    const value = cjsAccessorValue(lowerer, accessor, loc);
+    if (value === null) return false;
+    fields.push({
+      key: { kind: "strLit", value: name, type: STRING, loc },
+      value: lowerer.coerceToExpected(value, DYN),
+    });
+    return true;
+  };
+  if (getter !== null && !member("get", getter)) return null;
+  if (setter !== null && !member("set", setter)) return null;
+  const truth = (): IrExpr => ({
+    kind: "dynFrom",
+    value: { kind: "boolLit", value: true, type: BOOL, loc },
+    type: DYN,
+    loc,
+  });
+  fields.push(
+    { key: { kind: "strLit", value: "enumerable", type: STRING, loc }, value: truth() },
+    { key: { kind: "strLit", value: "configurable", type: STRING, loc }, value: truth() },
+  );
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "dyn.defineProperty",
+      args: [
+        partialObjectRef(obj, loc),
+        {
+          kind: "dynFrom",
+          value: { kind: "strLit", value: key, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+        { kind: "dynObjLit", fields, type: DYN, loc },
+      ],
+      type: DYN,
+      loc,
+    },
     loc,
   };
 }

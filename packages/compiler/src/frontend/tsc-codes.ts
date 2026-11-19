@@ -1,4 +1,5 @@
 import * as ts from "./ts7/adapter.js";
+import { bodyReadsArguments } from "./arguments-usage.js";
 import { isNodeModulesPath } from "./resolve.js";
 
 /** Compiler options adopted from the project during preflight. */
@@ -857,6 +858,84 @@ const jsStorageWriteTarget = (node: ts.Node, d: ts.Diagnostic, program: ts.Progr
   return (decl.parent.flags & ts.NodeFlags.Const) === 0;
 };
 
+/** Whether a JavaScript method joins its override family's checked-dynamic
+ * slot: an ordinary method with a body, no type parameters, rest parameter
+ * or `arguments` read, and neither a generator nor async. These are the
+ * members whose slot the class lowering widens to the family's largest
+ * arity with checked-dynamic parameters and results (virtualJsMethodArity
+ * and checkedVirtualJsMethods in lowering/lower-classes.ts), so a call through any member of the family
+ * passes every argument the call supplies, and each body binds the ones it
+ * declares, as Node does. */
+function jsFamilyMethod(decl: ts.Node): decl is ts.MethodDeclaration {
+  return (
+    ts.isMethodDeclaration(decl) &&
+    ts.isIdentifier(decl.name) &&
+    decl.body !== undefined &&
+    isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) &&
+    decl.asteriskToken === undefined &&
+    !decl.typeParameters?.nodes.length &&
+    !decl.modifiers?.nodes.some(
+      (m) => m.kind === ts.SyntaxKind.AsyncKeyword || m.kind === ts.SyntaxKind.StaticKeyword,
+    ) &&
+    decl.parameters.nodes.every((p) => p.dotDotDotToken === undefined) &&
+    !bodyReadsArguments(decl)
+  );
+}
+
+/** TS2416 on a JavaScript method that overrides only JavaScript methods,
+ * every one of them a family member (jsFamilyMethod). JSDoc narrows a
+ * parameter per subclass (`@param {Mesh} source` over `@param {Object3D}
+ * source`), and a base often declares fewer parameters than its overrides
+ * (a `raycast()` that names its parameters only in a comment); the checker
+ * then also rejects every `copy()` that returns `this`, because the subclass
+ * no longer matches its base. Node reads none of it: a call dispatches on the
+ * receiver's class and binds the arguments the call supplies. The class
+ * lowering gives such a family one slot of the largest arity any member
+ * declares, with checked-dynamic parameters and results, so the native call
+ * is Node's. Every ancestor that declares the method must be a family member
+ * too: the lowering walks the whole base chain, so one ancestor it cannot
+ * give a checked-dynamic slot (a rest parameter, an `arguments` read, a
+ * generator) leaves the family on the class lowering's ordinary dispatch and
+ * a call that supplies extra arguments is not Node's. An override of a
+ * TypeScript, built-in or accessor member keeps the refusal. */
+const jsMethodOverridesJsFamily = (
+  node: ts.Node,
+  _d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
+  const member = node.parent;
+  if (member === undefined || !jsFamilyMethod(member) || member.name !== node) return false;
+  if (!ts.isIdentifier(member.name)) return false;
+  const owner = member.parent;
+  if (owner === undefined || !ts.isClassLikeDeclaration(owner)) return false;
+  const checker = program.getTypeChecker();
+  const symbol = owner.name === undefined ? undefined : checker.getSymbolAtLocation(owner.name);
+  if (symbol === undefined) return false;
+  const name = member.name.text;
+  // The class lowering marks the declaration it finds in each ancestor
+  // (collectVirtualJsMethods walks every base), so every ancestor that
+  // declares the method has to be a family member for the family to share
+  // one checked-dynamic slot.
+  let overridden = 0;
+  const seen = new Set<ts.Type>();
+  const overridesFamily = (type: ts.Type): boolean => {
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface() || seen.has(target)) return true;
+    seen.add(target);
+    for (const base of checker.getBaseTypes(target)) {
+      const property = checker.getPropertyOfType(base, name);
+      if (property !== undefined) {
+        const declarations = property.declarations ?? [];
+        if (declarations.length === 0 || !declarations.every(jsFamilyMethod)) return false;
+        overridden++;
+      }
+      if (!overridesFamily(base)) return false;
+    }
+    return true;
+  };
+  return overridesFamily(checker.getDeclaredTypeOfSymbol(symbol)) && overridden > 0;
+};
+
 /** Whether `node` is the binding a `for...in` head writes each key into.
  * The key is always a string, whatever the binding was declared to hold
  * (TS2405), and analyzeJsWidenedBindings gives such a binding
@@ -1489,9 +1568,28 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // claim about the constructor object; the member itself is an ordinary
   // static that installs on the constructor, and Node never reads the
   // signature. A checked file keeps the error: the project asked tsc for
-  // it. Its instance-side sibling (2416) stays refused — a differing
-  // instance member's storage is the class lowering's business.
+  // it. Its instance-side sibling (2416) is admitted below only for a method
+  // family the class lowering dispatches through one checked-dynamic slot.
   [2417, inCheckedJs(CHECKER(JSDOC_CLAIM, ["tests/corpus/js-subclass-static-side.js"]))],
+  // A subclass METHOD whose JSDoc signature differs from the one it
+  // overrides (2416): narrowed parameter types, more parameters than the
+  // base declares, a different result, and the `return this` methods that
+  // inherit the mismatch. The family's slot takes the largest arity with
+  // checked-dynamic parameters and results (jsMethodOverridesJsFamily). Every
+  // other 2416 site keeps its triage row, and a checked file keeps the
+  // error: the project asked tsc for it.
+  [
+    2416,
+    at(
+      jsMethodOverridesJsFamily,
+      inCheckedJs(
+        WIDEN(
+          "a JavaScript override family dispatches through one slot of the largest declared arity, with checked-dynamic parameters and results, so every call binds the arguments it supplies as Node does",
+          ["tests/corpus/js-override-family-signatures/main.ts"],
+        ),
+      ),
+    ),
+  ],
   // The async-iterator protocol demand (2504). Whether a value is
   // async-iterable is a runtime fact of untyped JS, exactly like the sync
   // demand: `for await` over a non-iterable value and `yield*` in an async

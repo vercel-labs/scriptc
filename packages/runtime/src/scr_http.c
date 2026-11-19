@@ -3416,6 +3416,12 @@ static void scr_http_res_arm_wcb(ScrHttpRes *r) {
 }
 
 void scr_http_res_on_write_flush(ScrHttpRes *r, ScrClosure *cb /*moves*/) {
+  if (r->close_emitted || r->destroyed) {
+    /* a late write on a settled response answers its callback once, off the
+     * writing stack, so nothing holds the response through the callback */
+    scr_next_tick(cb);
+    return;
+  }
   scr_net_ls_add(&r->wcb_ls, cb, NULL, true);
   if (r->sock == NULL) {
     /* no socket to flush: the callback still runs on the next sweep */

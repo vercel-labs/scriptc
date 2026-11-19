@@ -412,26 +412,46 @@ bool scr_dc_chan_unbind_store(double handle, double als_id) {
   return false;
 }
 
+/* One store the walk will enter, captured before any transform runs. */
+typedef struct {
+  double als_id;
+  ScrDyn *transform; /* owned by the snapshot while the walk runs */
+} ScrDcEnter;
+
 /* Enter every bound store (transform(data) or data itself); the returned
  * malloc'd array of PREVIOUS snapshots (*n_out entries) restores in
  * reverse. Node wraps the stores in insertion order, so the last-bound
  * store is outermost: its transform runs first and its context is entered
  * first, leaving the first-bound store innermost. A store whose transform
- * throws is not entered. */
+ * throws is not entered.
+ *
+ * The bindings are snapshotted before the first transform runs. A transform
+ * may unbind or bind stores, and Node builds its chain of store calls before
+ * it runs any of them, so this run keeps the bindings it started with (and
+ * never reads a slot an unbind released). */
 static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out) {
   *n_out = 0;
-  if (ch->nbinds == 0) return NULL;
-  ScrAlsCtx **prevs = malloc(ch->nbinds * sizeof *prevs);
-  if (!prevs) {
+  size_t n = ch->nbinds;
+  if (n == 0) return NULL;
+  ScrDcEnter *enters = malloc(n * sizeof *enters);
+  ScrAlsCtx **prevs = malloc(n * sizeof *prevs);
+  if (enters == NULL || prevs == NULL) {
+    free(enters);
+    free(prevs);
     fputs("scriptc: out of memory\n", stderr);
     abort();
   }
-  for (size_t k = ch->nbinds; k > 0; k--) {
-    size_t i = k - 1;
+  for (size_t i = 0; i < n; i++) {
+    enters[i].als_id = ch->binds[i].als_id;
+    enters[i].transform =
+        ch->binds[i].transform != NULL ? scr_dyn_retain(ch->binds[i].transform) : NULL;
+  }
+  for (size_t k = n; k > 0; k--) {
+    ScrDcEnter *entry = &enters[k - 1];
     ScrDyn *value;
-    if (ch->binds[i].transform != NULL) {
+    if (entry->transform != NULL) {
       ScrDyn *args[1] = {data};
-      if (!scr_dyn_is_callable(ch->binds[i].transform)) {
+      if (!scr_dyn_is_callable(entry->transform)) {
         /* Node calls the stored value, so a non-function answers V8's call
          * TypeError for its own local name; the throw is deferred as a
          * transform throw is. */
@@ -440,7 +460,7 @@ static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out
         dc_defer_pending_throw();
         continue;
       }
-      value = scr_dyn_call(ch->binds[i].transform, args, 1, "transform");
+      value = scr_dyn_call(entry->transform, args, 1, "transform");
       if (value == NULL) {
         dc_defer_pending_throw();
         continue;
@@ -448,10 +468,12 @@ static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out
     } else {
       value = scr_dyn_retain(data);
     }
-    prevs[*n_out] = scr_als_enter(ch->binds[i].als_id, value);
+    prevs[*n_out] = scr_als_enter(entry->als_id, value);
     scr_dyn_release(value);
     (*n_out)++;
   }
+  for (size_t i = 0; i < n; i++) scr_dyn_release(enters[i].transform);
+  free(enters);
   return prevs;
 }
 

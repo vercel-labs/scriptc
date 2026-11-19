@@ -2442,6 +2442,34 @@ ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
   return scr_buffer_concat_dyn_impl(list, total, true);
 }
 
+/* Buffer.concat(list, totalLength) where the argument list kept an undefined
+ * total: Node's concat sums the parts when totalLength is undefined, before
+ * the list validates (an empty list answers an empty Buffer either way). A
+ * supplied total follows Node's own order — the list is an Array, an empty
+ * one answers an empty Buffer, and only then does the total convert and
+ * range — so a null total on an empty list does not throw, and an invalid
+ * list is reported as the list. */
+ScrBytes *scr_buffer_concat_len_dyn_opt(const ScrDyn *list, const ScrDyn *total) {
+  if (total->kind == SCR_DYN_UNDEF) return scr_buffer_concat_dyn(list);
+  ScrDyn *materialized = NULL;
+  if (list->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(list) != NULL) {
+    materialized = scr_dyn_typed_ref_materialize(list);
+    list = materialized;
+  }
+  ScrBytes *out = NULL;
+  if (list->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("list", "an instance of Array", list);
+  } else if (list->v.arr.len == 0) {
+    out = scr_buffer_concat_dyn(list);
+  } else if (total->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("length", "of type number", total);
+  } else {
+    out = scr_buffer_concat_len_dyn(list, total->v.num);
+  }
+  scr_dyn_release(materialized);
+  return out;
+}
+
 /* Buffer.from(arrayBuffer, byteOffset, length) over a checked ArrayBuffer
  * or SharedArrayBuffer, as Node's fromArrayBuffer: a Buffer that shares its
  * memory. The offset converts with ToNumber, where a missing offset (NULL)
@@ -2497,20 +2525,77 @@ static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *of
   return out;
 }
 
+/* An untyped object literal holds an array-valued field as a typed
+ * reference; the array it stands for is what shape checks and element
+ * reads see. *materialized owns the array when one was built. */
+static ScrDyn *scr_dyn_array_value(const ScrDyn *value, ScrDyn **materialized) {
+  *materialized = NULL;
+  if (value->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(value) != NULL) {
+    *materialized = scr_dyn_typed_ref_materialize(value);
+    return *materialized;
+  }
+  return (ScrDyn *)value;
+}
+
 ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
   if (value->kind == SCR_DYN_STR) return scr_bytes_from_str(value->v.str, encoding);
   /* The second argument here is an encoding name, which as a byte offset
    * converts to NaN: offset 0. */
   if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL, NULL);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(SCR_BYTES_U8, value->v.bytes);
-  if (value->kind == SCR_DYN_ARR) {
-    return scr_buffer_from_array_like(value, (double)value->v.arr.len);
+  if (value->kind == SCR_DYN_ARR || (value->kind == SCR_DYN_TYPED_REF &&
+      scr_dyn_typed_ref_array_ops(value) != NULL)) {
+    ScrDyn *materialized;
+    const ScrDyn *array = scr_dyn_array_value(value, &materialized);
+    if (!array) return NULL;
+    ScrBytes *out = scr_buffer_from_array_like(array, (double)array->v.arr.len);
+    scr_dyn_release(materialized);
+    return out;
   }
   if (value->kind == SCR_DYN_OBJ) {
-    const ScrDyn *hook = scr_dyn_obj_get(value, "valueOf", 7);
-    if (hook && scr_dyn_truthy(hook)) {
-      return scr_buffer_from_refusal("with a custom valueOf");
+    /* Node's from() reads the object's valueOf() first: a string answer is
+     * the source, an object answer other than the value itself converts the
+     * same way, and anything else (including the inherited
+     * Object.prototype.valueOf, which answers the object itself) falls
+     * through to the shape checks below. A non-callable valueOf throws the
+     * same "is not a function" TypeError Node's call raises. A dictionary
+     * object has no prototype to read; an object that has one (a primitive
+     * wrapper, Object.create) reads it through the chain, where a String
+     * wrapper's valueOf answers the primitive string. */
+    const ScrDyn *hook = NULL;
+    ScrDyn *inherited = NULL;
+    if (value->prototype) {
+      ScrStr *name = scr_str_new("valueOf", 7);
+      ScrDyn *key = scr_dyn_new_str(name);
+      scr_str_release(name);
+      inherited = scr_dyn_reflect_get((ScrDyn *)value, key, (ScrDyn *)value);
+      scr_dyn_release(key);
+      if (!inherited) return NULL;
+      hook = inherited;
+    } else {
+      hook = scr_dyn_obj_get(value, "valueOf", 7);
     }
+    ScrBytes *value_of_result = NULL;
+    bool value_of_threw = false;
+    if (hook && scr_dyn_truthy(hook)) {
+      scr_dyn_this_push_dyn(value);
+      ScrDyn *answer = scr_dyn_call(hook, NULL, 0, "value.valueOf");
+      scr_dyn_this_pop();
+      if (!answer) {
+        scr_dyn_release(inherited);
+        return NULL;
+      }
+      if (answer->kind == SCR_DYN_STR) {
+        value_of_result = scr_bytes_from_str(answer->v.str, encoding);
+      } else if (answer != value && (answer->kind == SCR_DYN_OBJ || answer->kind == SCR_DYN_ARR ||
+                                     answer->kind == SCR_DYN_BYTES)) {
+        value_of_result = scr_buffer_from_dyn(answer, encoding);
+      }
+      value_of_threw = scr_exc_pending();
+      scr_dyn_release(answer);
+    }
+    scr_dyn_release(inherited);
+    if (value_of_result || value_of_threw) return value_of_result;
     const ScrDyn *length = scr_dyn_obj_get(value, "length", 6);
     if (length && length->kind != SCR_DYN_UNDEF) {
       return scr_buffer_from_array_like(value, length->kind == SCR_DYN_NUM ? length->v.num : 0);
@@ -2518,13 +2603,32 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
     const ScrDyn *type = scr_dyn_obj_get(value, "type", 4);
     const ScrDyn *data = scr_dyn_obj_get(value, "data", 4);
     if (type && type->kind == SCR_DYN_STR && type->v.str->len == 6 &&
-        memcmp(type->v.str->data, "Buffer", 6) == 0 && data && data->kind == SCR_DYN_ARR) {
+        memcmp(type->v.str->data, "Buffer", 6) == 0 && data &&
+        (data->kind == SCR_DYN_ARR || (data->kind == SCR_DYN_TYPED_REF &&
+                                       scr_dyn_typed_ref_array_ops(data) != NULL))) {
       /* Element coercion may mutate the parent and replace `data`. */
-      ScrDyn *held = scr_dyn_retain((ScrDyn *)data);
+      ScrDyn *materialized;
+      const ScrDyn *array = scr_dyn_array_value(data, &materialized);
+      if (!array) return NULL;
+      ScrDyn *held = scr_dyn_retain(array);
       ScrBytes *out = scr_buffer_from_array_like(held, (double)held->v.arr.len);
       scr_dyn_release(held);
+      scr_dyn_release(materialized);
       return out;
     }
+  }
+  if (value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE) {
+    /* Node's from() finds no length, buffer or Buffer shape on a Date and
+     * falls to Symbol.toPrimitive, whose "string" hint renders the date as
+     * its toString does. */
+    ScrStr *text = scr_dyn_to_string(value, NULL);
+    if (!text || scr_exc_pending()) {
+      scr_str_release(text);
+      return NULL;
+    }
+    ScrBytes *out = scr_bytes_from_str(text, encoding);
+    scr_str_release(text);
+    return out;
   }
   if (value->kind == SCR_DYN_TYPED_REF || value->kind == SCR_DYN_HANDLE) {
     return scr_buffer_from_refusal("with an opaque reference");

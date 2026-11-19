@@ -543,6 +543,29 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return out;
   }
+  if (
+    e.fn === "net.sockConnect" ||
+    e.fn === "net.sockConnectCb" ||
+    e.fn === "net.sockConnectPath" ||
+    e.fn === "net.sockConnectPathCb" ||
+    e.fn === "net.sockConnectOpts" ||
+    e.fn === "net.sockConnectOptsCb"
+  ) {
+    // socket.connect(...): the callback (when the call carried one)
+    // registers as once('connect') inside the runtime; the plain forms
+    // pass a null pointer.
+    const args = e.args.map((arg) => host.emitExpr(arg));
+    const withCb = e.fn.endsWith("Cb");
+    if (withCb) host.toHeap(args[args.length - 1]!);
+    const symbol = e.fn.startsWith("net.sockConnectPath")
+      ? "scr_net_sock_connect_path"
+      : e.fn.startsWith("net.sockConnectOpts")
+        ? "scr_net_sock_connect_opts"
+        : "scr_net_sock_connect";
+    const abi = args.map((arg) => abiValue(host, arg));
+    if (!withCb) abi.push(ptr());
+    return finishRuntimeCall(host, e, symbol, abi);
+  }
   if (e.fn === "net.connectPath" || e.fn === "net.connectPathCb") {
     const args = e.args.map((a) => host.emitExpr(a));
     let cb = "null";

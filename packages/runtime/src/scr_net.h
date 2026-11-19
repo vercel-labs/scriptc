@@ -63,6 +63,10 @@ typedef void (*ScrNetNativeDataFn)(void *ctx, const char *buf, size_t n);
 typedef void (*ScrNetNativeEventFn)(void *ctx);
 typedef bool (*ScrNetNativeTimeoutHandledFn)(void *ctx);
 typedef bool (*ScrNetNativeErrFn)(void *ctx, ScrStr *msg); /* true = consumed */
+/* The same claim for an Error the program itself queued (destroy(err)):
+ * the protocol layer answers with the object Node hands its own
+ * handler. */
+typedef bool (*ScrNetNativeErrObjFn)(void *ctx, ScrError *err);
 void scr_net_server_set_native_conn(ScrNetServer *s, ScrNetNativeConnFn fn, void *ctx, void (*ctx_free)(void *));
 /* The HTTP-parser ctx ALIAS: scr_http.c stamps its server ctx here so
  * late 'request' listener installs (scr_http_server_on_request) can
@@ -104,6 +108,7 @@ bool scr_net_sock_destroyed(ScrNetSocket *s); /* socket.destroyed */
 bool scr_net_sock_writable(ScrNetSocket *s);  /* socket.writable */
 bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS handshake */
 void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout, ScrNetNativeErrFn err);
+void scr_net_sock_set_native_error_obj(ScrNetSocket *s, ScrNetNativeErrObjFn fn);
 void scr_net_sock_set_native_http_timeout(ScrNetSocket *s, ScrNetNativeTimeoutHandledFn fn);
 void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n);
 /* Several protocol-layer slices in order as one write: a single vectored
@@ -350,6 +355,36 @@ ScrNetSocket *scr_net_connect_path(ScrStr *path /*borrowed*/, bool deferred); /*
  * numeric string is a localhost port, as in Node. */
 ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_name_rule,
                                            ScrClosure *cb /*moves, nullable*/); /* +1 */
+/* new net.Socket(options?): a handle-less client socket connect() dials.
+ * allowHalfOpen is honored; an existing descriptor, an abort signal, onread
+ * and lookup are refused (SC2020, or Node's type error). NULL with the
+ * exception pending. */
+ScrNetSocket *scr_net_socket_new(const ScrDyn *options /*borrowed*/); /* +1 */
+/* socket.connect(port[, host][, cb]), (path[, cb]) and (options[, cb]).
+ * Node's state ladder: a connecting socket defers EALREADY as 'error'; a
+ * closed one is refused (SC2020 — its listeners are gone here). */
+void scr_net_sock_connect(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
+                          ScrClosure *cb /*moves, nullable*/);
+void scr_net_sock_connect_path(ScrNetSocket *s, ScrStr *path /*borrowed*/, bool pipe_name_rule,
+                               ScrClosure *cb /*moves, nullable*/);
+void scr_net_sock_connect_opts(ScrNetSocket *s, const ScrDyn *options /*borrowed*/,
+                               ScrClosure *cb /*moves, nullable*/);
+/* socket.timeout: undefined until the first setTimeout (Node's
+ * _idleTimeout), then the idle timeout in milliseconds. +1. */
+ScrDyn *scr_net_sock_timeout(ScrNetSocket *s);
+/* destroy(error): the 'error' event carries this Error, then 'close' with
+ * hadError. Borrows the caller's error and retains the one it queues. */
+void scr_net_sock_destroy_error(ScrNetSocket *s, ScrError *err /*borrowed*/);
+/* write(str, encoding) / end(str, encoding): the string's bytes in that
+ * encoding (Node's unknown-encoding TypeError included). */
+bool scr_net_sock_write_enc(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);
+void scr_net_sock_end_enc(ScrNetSocket *s, ScrStr *data /*borrowed*/, ScrStr *enc /*borrowed*/);
+/* The same over a checked-dynamic payload: a string decodes with the
+ * encoding, a Buffer ignores it. */
+bool scr_net_sock_write_dyn_enc(ScrNetSocket *s, const ScrDyn *data /*borrowed*/,
+                                ScrStr *enc /*borrowed*/);
+void scr_net_sock_end_dyn_enc(ScrNetSocket *s, const ScrDyn *data /*borrowed*/,
+                              ScrStr *enc /*borrowed*/);
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_dial_start(ScrNetSocket *s);

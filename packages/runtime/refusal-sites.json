@@ -1531,6 +1531,54 @@
  },
  {
   "file": "scr_net.c",
+  "function": "scr_net_socket_new",
+  "message": "adopting an existing descriptor is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_socket_new",
+  "message": "abort-driven destroy is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_socket_new",
+  "message": "an onread hook or a custom lookup is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_socket_new",
+  "message": "a socket constructed with the read or write side off is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_sock_connect_ready",
+  "message": "connecting a closed socket is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_sock_connect_opts",
+  "message": "connecting with a lookup, blockList, signal or onread is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_sock_connect_opts",
+  "message": "a localAddress that long is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
+  "function": "scr_net_sock_connect_opts",
+  "message": "a non-IPv4 localAddress is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_net.c",
   "function": "scr_net_dynh_unsupported",
   "message": "'Socket.prototype.%s' on a dynamic value is not supported yet%s%s",
   "code": "SC2020"

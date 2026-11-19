@@ -5485,6 +5485,40 @@ static bool scr_http_conn_server_timeout(void *ctx) {
   return handled;
 }
 
+/* req.socket.destroy(err) on a server socket: Node's socketOnError hands
+ * the Error to the server's 'clientError' listeners, then the request
+ * tears down (its 'error' fires "aborted"); the socket's own listeners
+ * never see it. Always consumed: the parser owns the error story. */
+static bool scr_http_conn_err_obj(void *ctx, ScrError *err) {
+  ScrHttpConn *conn = (ScrHttpConn *)ctx;
+  if (conn->client_mode) return false;
+  if (conn->srv != NULL && scr_net_ls_has_live(&conn->srv->client_error_ls)) {
+    conn->len = 0;
+    conn->client_errored = true;
+    ScrNetL *snap;
+    size_t count = scr_net_ls_snapshot(&conn->srv->client_error_ls, &snap);
+    scr_dyn_this_push(scr_net_sock_server(conn->sock), SCR_DYNH_NET_SERVER);
+    for (size_t i = 0; i < count; i++) {
+      if (!scr_exc_pending()) {
+        ((ScrHttpClientErrorFn)snap[i].fn)(snap[i].cb, scr_error_retain(err),
+                                           scr_net_sock_retain(conn->sock));
+      }
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+  }
+  if (conn->req != NULL && conn->res != NULL && !conn->res->finished) {
+    scr_http_conn_abort_incoming(conn);
+  } else if (conn->req && conn->req->err_ls.n > 0) {
+    ScrStr *aborted = scr_str_new("aborted", 7);
+    scr_net_fire_err_this(&conn->req->err_ls, aborted, conn->req, SCR_DYNH_HTTP_REQ);
+    scr_str_release(aborted);
+  }
+  scr_http_conn_drop_request(conn, false);
+  return true;
+}
+
 /* The server's native connection hook: one parser per accepted socket. */
 static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
   ScrHttpSrvCtx *srv = (ScrHttpSrvCtx *)ctx;
@@ -5499,6 +5533,7 @@ static void scr_http_on_connection(void *ctx, ScrNetSocket *sock) {
                                   &scr_http_conn_closed, conn, &scr_http_conn_free);
   scr_net_sock_set_native_idle_checker(sock, &scr_http_conn_is_idle);
   scr_net_sock_set_native_events(sock, NULL, &scr_http_conn_err);
+  scr_net_sock_set_native_error_obj(sock, &scr_http_conn_err_obj);
   scr_net_sock_set_native_http_timeout(sock, &scr_http_conn_server_timeout);
   /* Node starts the headers deadline at accept: a client that sends no
    * bytes at all must still time out. */
@@ -7866,6 +7901,27 @@ static bool scr_http_client_sock_err(ScrHttpConn *conn, ScrStr *msg) {
   return true;
 }
 
+/* The client request's socket destroyed with an Error: Node hands the
+ * request that same Error, and the socket's own listeners never see it. */
+static bool scr_http_client_sock_err_obj(void *ctx, ScrError *err) {
+  ScrHttpConn *conn = (ScrHttpConn *)ctx;
+  ScrHttpClientReq *c = conn->client;
+  if (!c) return true;
+  if (c->response_done || c->close_emitted || (c->aborted && !c->socket_emitted)) return true;
+  if (!c->response_started) {
+    c->response_done = true;
+    c->had_error = true;
+    ScrError *saved = scr_event_error_payload;
+    scr_event_error_payload = err;
+    scr_net_fire_err(&c->err_ls, err->message);
+    scr_event_error_payload = saved;
+    if (!scr_exc_pending()) scr_http_client_queue_close(c);
+  } else {
+    scr_http_client_premature(conn);
+  }
+  return true;
+}
+
 /* Header-cap overflow / malformed response head: Node surfaces a parse
  * error on the request; this slice hangs up with the same teardown shape
  * ('socket hang up' when nothing parsed yet). */
@@ -8137,6 +8193,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   scr_net_sock_set_native_reader(c->sock, &scr_http_conn_data, &scr_http_conn_eof,
                                   &scr_http_conn_closed, conn, &scr_http_conn_free);
   scr_net_sock_set_native_events(c->sock, &scr_http_client_sock_timeout, &scr_http_conn_err);
+  scr_net_sock_set_native_error_obj(c->sock, &scr_http_client_sock_err_obj);
   /* the transport (scr_tls.c's https) wraps the dialed socket before any
    * bytes go out — everything below buffers until its handshake ends */
   if (wrap) wrap(c->sock, wrap_ctx);
@@ -8409,6 +8466,9 @@ static void scr_http_client_rebind(ScrHttpClientReq *c, ScrHttpAgentFree *f, boo
   ScrHttpConn *oldconn = c->conn;
   scr_net_sock_set_native_reader(old, NULL, NULL, NULL, NULL, NULL);
   scr_net_sock_set_native_events(old, NULL, NULL);
+  /* the request's error claim travels with the request, not the abandoned
+   * socket: a later destroy(err) on it is the socket's own error */
+  scr_net_sock_set_native_error_obj(old, NULL);
   scr_net_sock_set_native_established(old, NULL);
   scr_net_sock_move_writes(old, f->sock);
   if (oldconn != NULL) {

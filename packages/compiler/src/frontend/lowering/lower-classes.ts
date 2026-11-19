@@ -237,6 +237,7 @@ import {
 import {
   lowerHttpAgentNew,
   lowerHttpServerNew,
+  lowerNetSocketNew,
   lowerTlsServerNew,
   lowerTlsSocketNew,
 } from "./lower-server.js";
@@ -12965,6 +12966,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     if (req !== null && !lowerer.inlineRequireInitDone.has(req.call)) {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
+  }
+  // `new net.Socket(options?)`: Node's client-socket constructor — the
+  // same native socket net.connect dials.
+  {
+    const netSocket = lowerNetSocketNew(lowerer, expr);
+    if (netSocket) return netSocket;
   }
   // `new dgram.Socket(type | options[, listener])`: Node's own Socket
   // constructor — the same native socket createSocket builds.

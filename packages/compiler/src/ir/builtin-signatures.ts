@@ -2465,6 +2465,39 @@ function buildLibFnSignatures() {
     "net.sockWriteBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: BOOL },
     "net.sockEnd": { argTypes: [NETSOCKET_T], result: VOID },
     "net.sockEndStr": { argTypes: [NETSOCKET_T, STRING], result: VOID },
+    /** new net.Socket(options?) and its connect() forms: the constructor's
+     * options, then the dial on the existing handle (port/host, path, or
+     * the options record), each with its optional connect listener. */
+    "net.socketNew": { argTypes: [DYN], result: NETSOCKET_T },
+    "net.sockConnect": { argTypes: [NETSOCKET_T, F64, STRING], result: VOID },
+    "net.sockConnectCb": {
+      argTypes: [NETSOCKET_T, F64, STRING, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    "net.sockConnectPath": { argTypes: [NETSOCKET_T, STRING, BOOL], result: VOID },
+    "net.sockConnectPathCb": {
+      argTypes: [NETSOCKET_T, STRING, BOOL, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    "net.sockConnectOpts": { argTypes: [NETSOCKET_T, DYN], result: VOID },
+    "net.sockConnectOptsCb": {
+      argTypes: [NETSOCKET_T, DYN, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    /** destroy(error): the 'error' event carries this Error, then 'close'. */
+    "net.sockDestroyError": {
+      argTypes: [NETSOCKET_T, { kind: "object", className: "%Error" }],
+      result: VOID,
+    },
+    /** socket.timeout: undefined until setTimeout arms one. */
+    "net.sockTimeout": { argTypes: [NETSOCKET_T], result: DYN },
+    /** write(str, encoding) / end(str, encoding): the string's bytes in
+     * that encoding. */
+    "net.sockWriteEnc": { argTypes: [NETSOCKET_T, STRING, STRING], result: BOOL },
+    /** The same over a checked-dynamic payload (an untyped JS write). */
+    "net.sockWriteDynEnc": { argTypes: [NETSOCKET_T, DYN, STRING], result: BOOL },
+    "net.sockEndDynEnc": { argTypes: [NETSOCKET_T, DYN, STRING], result: VOID },
+    "net.sockEndEnc": { argTypes: [NETSOCKET_T, STRING, STRING], result: VOID },
     "net.sockEndBytes": { argTypes: [NETSOCKET_T, BYTES_U8], result: VOID },
     /** write/end with a CHECKED-DYNAMIC chunk (an untyped JS payload into a
      * typed socket): the runtime dispatches STR/BYTES and throws Node's

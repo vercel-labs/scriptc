@@ -20,6 +20,21 @@
  * and an 'error' with no listener exits 1 like an unhandled EventEmitter
  * 'error'. */
 declare module "net" {
+  /** new net.Socket(options): the client-socket constructor's options. */
+  export interface SocketOptions {
+    allowHalfOpen?: boolean;
+    readable?: boolean;
+    writable?: boolean;
+  }
+  /** socket.connect(options): the fields the native dial reads. */
+  export interface ConnectOptions {
+    port?: number;
+    host?: string;
+    path?: string;
+    family?: number;
+    localAddress?: string;
+    localPort?: number;
+  }
   export interface Socket {
     /* Whether the socket keeps the event loop alive (ref'd by default).
      * Both chain, Node's shape. */
@@ -56,13 +71,31 @@ declare module "net" {
      * once the socket finishes. */
     /* false when the bytes this write left unsent reach the 65536-byte
      * high-water mark, as in Node; 'drain' fires when they are all sent. */
+    /* connect(port[, host][, listener]), (path[, listener]) and
+     * (options[, listener]): dials this handle. Answers the socket. */
+    connect(): Socket;
+    connect(port: number, host?: string, connectListener?: () => void): Socket;
+    connect(path: string, connectListener?: () => void): Socket;
+    connect(options: ConnectOptions, connectListener?: () => void): Socket;
+    /* destroy(error): the 'error' event carries that Error, then 'close'. */
+    destroy(error?: Error): Socket;
+    /* socket.timeout: what setTimeout armed (undefined before any). */
+    readonly timeout?: number;
     write(data: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
+    /* write(data, encoding[, callback]): a string's bytes in that encoding
+     * (a Buffer ignores it, as in Node). */
+    write(
+      data: string | Uint8Array,
+      encoding: string,
+      callback?: (err?: Error | null) => void,
+    ): boolean;
     /* the bytes written and not yet sent */
     readonly writableLength: number;
     /* a write answered false and 'drain' has not fired yet */
     readonly writableNeedDrain: boolean;
     end(callback?: () => void): Socket;
     end(data: string | Uint8Array, callback?: () => void): Socket;
+    end(data: string | Uint8Array, encoding: string, callback?: () => void): Socket;
     /* An explicit destroy only; the error payload form is not lowered. */
     destroy(): Socket;
     /* Flow control: pause holds reads off (kernel/TCP backpressure is
@@ -266,9 +299,10 @@ declare module "net" {
       callback?: () => void,
     ): Server;
     close(callback?: () => void): Server;
-    /* The bound AddressInfo (Node answers null before listen — this
-     * surface answers the record with port 0 there, the serverPort
-     * stance). */
+    /* The bound AddressInfo (Node answers null before listen and the
+     * path for a Unix-socket server — this surface answers the record
+     * with port 0 there, the serverPort stance; programs typed by
+     * @types/node get Node's union). */
     address(): import("node:dgram").AddressInfo;
     /* The demux route: hand an accepted socket to another server. */
     emit(event: "connection", socket: Socket): boolean;
@@ -517,7 +551,7 @@ declare module "net" {
   /* The Socket VALUE — the `x instanceof net.Socket` narrowing target
    * (the h2 compat 'connect' listener's test). Constructing bare sockets
    * has no lowering; the construct signature exists for instanceof. */
-  export const Socket: abstract new () => Socket;
+  export const Socket: new (options?: SocketOptions) => Socket;
   export function createServer(connectionListener?: (socket: Socket) => void): Server;
   export function connect(port: number, host?: string, connectListener?: () => void): Socket;
   export function createConnection(
@@ -542,6 +576,9 @@ declare module "net" {
     options: {
       port: number;
       host?: string;
+      family?: number;
+      localAddress?: string;
+      localPort?: number;
       autoSelectFamily?: boolean;
       autoSelectFamilyAttemptTimeout?: number;
       lookup?: LookupFunction;
@@ -552,6 +589,9 @@ declare module "net" {
     options: {
       port: number;
       host?: string;
+      family?: number;
+      localAddress?: string;
+      localPort?: number;
       autoSelectFamily?: boolean;
       autoSelectFamilyAttemptTimeout?: number;
       lookup?: LookupFunction;

@@ -1,13 +1,6 @@
 import { keyedHelperName } from "./stable-names.js";
 import { lowerTlsCertificateCall } from "./builtins/x509.js";
-import {
-  dynUndefinedExpr,
-  nodeThrowExpr,
-  boolLit,
-  numLit,
-  strLit,
-  varRef,
-} from "../../ir/build.js";
+import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesAssertions } from "../outer-expressions.js";
@@ -1392,6 +1385,10 @@ function lowerNetConnectOptions(
   let autoSelect = false;
   let attempt: IrExpr | null = null;
   let optionThrow: IrExpr | null = null;
+  // Options the runtime's own ladder reads (family, hints, localAddress,
+  // localPort): the whole record crosses as a checked-dynamic value and
+  // scr_net_connect_dyn validates it as Node does.
+  let dynOptions = false;
   const propThrow = (name: string, expected: string, got: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "error.propTypeThrow",
@@ -1519,14 +1516,22 @@ function lowerNetConnectOptions(
           "the lowered resolver is (hostname: string, options: unknown, callback: (err: NodeJS.ErrnoException | null, addresses: { address: string; family: number }[]) => void) => void",
         );
       }
+    } else if (
+      key === "localAddress" ||
+      key === "localPort" ||
+      key === "family" ||
+      key === "hints"
+    ) {
+      dynOptions = true;
     } else {
       lowerer.noLowering(
         `${member} option '${key}'`,
         prop,
-        "port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
+        "port, host, localAddress, localPort, family, hints, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
       );
     }
   }
+  if (dynOptions) return lowerNetConnectDyn(lowerer, expr, member, expr.arguments.nodes, loc);
   // A collected option-contract violation replaces the whole call: Node
   // throws it from Socket.connect before dialing (port validation held —
   // the port arm above fenced non-number ports already).
@@ -3464,187 +3469,299 @@ function lowerNetSocketMethodCall(
       loc,
     };
   }
+  if (name === "connect") {
+    // socket.connect(port[, host][, cb]), (path[, cb]) and
+    // (options[, cb]): Node's own argument shuffle, decided by the first
+    // argument's shape. Answers the socket unless the result is dropped.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const answer = (fn: IrLibFn, callArgs: IrExpr[]): IrExpr =>
+      chainingResultDiscarded(lowerer, call)
+        ? { kind: "libCall", fn, args: callArgs, type: VOID, loc }
+        : receiverReturningCall(lowerer, fn, callArgs, NETSOCKET_T, loc);
+    if (args.length > 3) {
+      lowerer.noLowering(
+        `connect with ${args.length} arguments`,
+        call,
+        "the forms are connect(port[, host][, listener]), connect(path[, listener]) and connect(options[, listener])",
+      );
+    }
+    if (args.length === 0) {
+      // Node's normalizeArgs answers ERR_MISSING_ARGS; the runtime's
+      // options lane reports it with Node's message.
+      return answer("net.sockConnectOpts", [receiver, dynUndefinedExpr(loc)]);
+    }
+    const firstT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    const firstAny = (lowerer.typeOf(args[0]!).flags & ts.TypeFlags.Any) !== 0;
+    // Anything that is not a port number or a path string is Node's
+    // options slot (an object, a dynamic value, a bigint — the runtime
+    // validates it with Node's ladders).
+    if (firstT === null || firstAny || (firstT.kind !== "f64" && firstT.kind !== "string")) {
+      // An options record (literal, typed or untyped): the runtime reads
+      // port/host/path/localAddress/localPort/family and refuses the rest.
+      const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+      const cbNode = args.length > 1 ? args[1] : undefined;
+      if (args.length > 2) {
+        lowerer.noLowering(
+          `connect(options) with ${args.length} arguments`,
+          call,
+          "the form is connect(options[, listener])",
+        );
+      }
+      if (cbNode === undefined) return answer("net.sockConnectOpts", [receiver, options]);
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        cbNode,
+        "connect listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return answer("net.sockConnectOptsCb", [receiver, options, cb]);
+    }
+    if (firstT.kind === "string") {
+      // connect(path[, cb]): a numeric string is a localhost port
+      // (Node's isPipeName), decided at run time.
+      if (args.length > 2) {
+        lowerer.noLowering(
+          `connect(path) with ${args.length} arguments`,
+          call,
+          "the form is connect(path[, listener])",
+        );
+      }
+      const path = lowerer.lowerExpr(args[0]!);
+      if (args.length === 1) {
+        return answer("net.sockConnectPath", [receiver, path, boolLit(true, loc)]);
+      }
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "connect listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return answer("net.sockConnectPathCb", [receiver, path, boolLit(true, loc), cb]);
+    }
+    const port = lowerer.lowerExprExpecting(args[0]!, F64);
+    let hostNode: ts.Expression | undefined;
+    let cbNode: ts.Expression | undefined;
+    if (args.length === 2) {
+      if (lowerer.mapTypeOf(lowerer.typeOf(args[1]!))?.kind === "string") hostNode = args[1];
+      else cbNode = args[1];
+    } else if (args.length === 3) {
+      hostNode = args[1];
+      cbNode = args[2];
+    }
+    // Node's absent host for a Socket's connect is 'localhost'.
+    const host: IrExpr = hostNode
+      ? lowerer.lowerExprExpecting(hostNode, STRING)
+      : { kind: "strLit", value: "localhost", type: STRING, loc };
+    if (cbNode === undefined) return answer("net.sockConnect", [receiver, port, host]);
+    const { cb } = lowerCallbackArg(
+      lowerer,
+      cbNode,
+      "connect listeners",
+      0,
+      () => false,
+      "use ()",
+      [],
+    );
+    return answer("net.sockConnectCb", [receiver, port, host, cb]);
+  }
   if (name === "write" || name === "end") {
     // write() answers Node's backpressure boolean; end() answers the
-    // socket (Node's chaining).
+    // socket (Node's chaining). The shapes are write(data[, encoding][,
+    // callback]) and end([data[, encoding]][, callback]).
     const resultOf = (fn: IrLibFn, callArgs: IrExpr[]): IrExpr =>
       name === "write"
         ? { kind: "libCall", fn, args: callArgs, type: BOOL, loc }
         : receiverReturningCall(lowerer, fn, callArgs, NETSOCKET_T, loc);
-    // write(chunk, encoding) — the two-argument encoding form: 'buffer'
-    // beside a string chunk is Writable's encoding check (a synchronous
-    // ERR_UNKNOWN_ENCODING TypeError, "Unknown encoding: buffer" — the
-    // invalid-input probes' shape); utf8 spellings are the plain write
-    // (that IS the encoding written); a Buffer chunk ignores the encoding
-    // like Node does. Other encodings keep the fence.
-    if (name === "write" && args.length === 2) {
-      const encT = lowerer.typeOf(args[1]!);
-      const chunkT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-      if (encT.isStringLiteralType() && chunkT !== null) {
-        if (
-          encT.value === "buffer" &&
-          chunkT.kind === "string" &&
-          isJsSourceFile(ts.getSourceFileOfNode(call))
-        ) {
-          lowerer.lowerExpr(args[0]!); // evaluation order (effect-free in practice)
-          return nodeThrowExpr(1, "ERR_UNKNOWN_ENCODING", "Unknown encoding: buffer", VOID, loc);
-        }
-        const passthrough =
-          (chunkT.kind === "string" && (encT.value === "utf8" || encT.value === "utf-8")) ||
-          (chunkT.kind === "bytes" && chunkT.elem === "u8");
-        if (passthrough) {
-          const socket = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
-          const chunk = lowerer.lowerExpr(args[0]!);
-          const fn: IrLibFn = chunk.type.kind === "string" ? "net.sockWrite" : "net.sockWriteBytes";
-          return { kind: "libCall", fn, args: [socket, chunk], type: BOOL, loc };
-        }
+    if (args.length > 3) {
+      lowerer.noLowering(
+        `${name} with ${args.length} arguments`,
+        call,
+        name === "write"
+          ? "the forms are write(data), write(data, encoding), write(data, callback) and write(data, encoding, callback)"
+          : "the forms are end(), end(data), end(data, encoding), end(data, callback) and end(data, encoding, callback)",
+      );
+    }
+    // The data/encoding/callback split: a callable last argument is the
+    // callback, a string in the middle is the encoding.
+    let dataNode: ts.Expression | undefined = args[0];
+    let encodingNode: ts.Expression | undefined;
+    let callbackNode: ts.Expression | undefined;
+    if (args.length === 2) {
+      if (lowerer.checker.getCallSignatures(lowerer.typeOf(args[1]!)).length > 0)
+        callbackNode = args[1];
+      else encodingNode = args[1];
+    } else if (args.length === 3) {
+      encodingNode = args[1];
+      callbackNode = args[2];
+    }
+    if (
+      name === "end" &&
+      args.length === 1 &&
+      lowerer.checker.getCallSignatures(lowerer.typeOf(args[0]!)).length > 0
+    ) {
+      callbackNode = args[0];
+      dataNode = undefined;
+    }
+    // The write or end itself: a Buffer ignores the encoding (Node does),
+    // a string's bytes decode with it (UTF-8 spellings stay the plain
+    // write), and an untyped payload dispatches at run time.
+    const buildMain = (receiver: () => IrExpr): IrExpr => {
+      if (dataNode === undefined) return resultOf("net.sockEnd", [receiver()]);
+      const data = lowerer.lowerExpr(dataNode);
+      if (data.type.kind === "bytes" && data.type.elem === "u8") {
+        return resultOf(name === "write" ? "net.sockWriteBytes" : "net.sockEndBytes", [
+          receiver(),
+          data,
+        ]);
       }
+      if (data.type.kind === "string") {
+        if (encodingNode !== undefined) {
+          const enc = lowerer.lowerExprExpecting(encodingNode, STRING);
+          if (enc.kind === "strLit" && (enc.value === "utf8" || enc.value === "utf-8")) {
+            return resultOf(name === "write" ? "net.sockWrite" : "net.sockEndStr", [
+              receiver(),
+              data,
+            ]);
+          }
+          return resultOf(name === "write" ? "net.sockWriteEnc" : "net.sockEndEnc", [
+            receiver(),
+            data,
+            enc,
+          ]);
+        }
+        return resultOf(name === "write" ? "net.sockWrite" : "net.sockEndStr", [receiver(), data]);
+      }
+      if (data.type.kind === "dyn") {
+        if (encodingNode !== undefined) {
+          // The value may be a string at run time: its encoding applies.
+          const enc = lowerer.coerceToExpected(lowerer.lowerExpr(encodingNode), STRING);
+          return resultOf(name === "write" ? "net.sockWriteDynEnc" : "net.sockEndDynEnc", [
+            receiver(),
+            data,
+            enc,
+          ]);
+        }
+        return resultOf(name === "write" ? "net.sockWriteDyn" : "net.sockEndDyn", [
+          receiver(),
+          data,
+        ]);
+      }
+      lowerer.noLowering(`${name} of '${lowerer.fmt(data.type)}' data`, dataNode, NARROW_DATA_HINT);
+    };
+    if (callbackNode === undefined) {
+      const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+      return buildMain(() => receiver);
     }
     // A trailing callback: write's runs once the data is flushed (with
     // null for the error), end's once the socket finishes ('finish').
-    const last = args.length > 0 ? args[args.length - 1]! : null;
-    if (
-      last !== null &&
-      args.length <= 2 &&
-      (name === "end" || args.length === 2) &&
-      lowerer.checker.getCallSignatures(lowerer.typeOf(last)).length > 0
-    ) {
-      const sockLocal = lowerer.declareHiddenLocal("%sockCb", NETSOCKET_T);
-      const stmts: IrStmt[] = [
-        {
-          kind: "varDecl",
-          localId: sockLocal.id,
-          init: coerceToHandle(lowerer, access.expression, NETSOCKET_T),
-          loc,
-        },
-      ];
-      const receiver = (): IrExpr => ({
-        kind: "varRef",
+    const sockLocal = lowerer.declareHiddenLocal("%sockCb", NETSOCKET_T);
+    const stmts: IrStmt[] = [
+      {
+        kind: "varDecl",
         localId: sockLocal.id,
-        type: NETSOCKET_T,
+        init: coerceToHandle(lowerer, access.expression, NETSOCKET_T),
         loc,
-      });
-      const dataNode = args.length === 2 ? args[0]! : null;
-      let main: IrExpr = resultOf("net.sockEnd", [receiver()]);
-      if (dataNode !== null) {
-        const data = lowerer.lowerExpr(dataNode);
-        const fn: IrLibFn | null =
-          data.type.kind === "string"
-            ? name === "write"
-              ? "net.sockWrite"
-              : "net.sockEndStr"
-            : data.type.kind === "bytes" && data.type.elem === "u8"
-              ? name === "write"
-                ? "net.sockWriteBytes"
-                : "net.sockEndBytes"
-              : data.type.kind === "dyn"
-                ? name === "write"
-                  ? "net.sockWriteDyn"
-                  : "net.sockEndDyn"
-                : null;
-        if (fn === null) {
-          lowerer.noLowering(
-            `${name} of '${lowerer.fmt(data.type)}' data`,
-            dataNode,
-            NARROW_DATA_HINT,
-          );
-        }
-        main = resultOf(fn, [receiver(), data]);
-      }
-      const cb = lowerer.lowerExpr(last);
-      let register: IrExpr;
-      if (cb.type.kind === "func" && cb.type.params.length === 0 && cb.type.ret.kind === "void") {
-        register = {
-          kind: "libCall",
-          fn: name === "write" ? "net.sockOnWriteFlush" : "net.sockOnFinish",
-          args: [receiver(), cb],
-          type: VOID,
-          loc,
-        };
-      } else {
-        register = {
-          kind: "libCall",
-          fn: name === "write" ? "net.sockOnWriteFlushDyn" : "net.sockOnFinishDyn",
-          args: [receiver(), lowerSocketDynListener(lowerer, last, `${name} callbacks`)],
-          type: VOID,
-          loc,
-        };
-      }
-      if (name === "write") {
-        // write(data, cb): the data is written, the callback registered,
-        // and the backpressure answer is the value.
-        const okLocal = lowerer.declareHiddenLocal("%sockWriteOk", BOOL);
-        stmts.push(
-          { kind: "varDecl", localId: okLocal.id, init: main, loc },
-          { kind: "exprStmt", expr: register, loc },
-        );
-        return {
-          kind: "seqExpr",
-          stmts,
-          result: { kind: "varRef", localId: okLocal.id, type: BOOL, loc },
-          type: BOOL,
-          loc,
-        };
-      }
-      // end(data?, cb): the data is written, the finish listener
-      // registers, and the socket is the answer.
-      const sockRet = lowerer.declareHiddenLocal("%sockEndRet", NETSOCKET_T);
+      },
+    ];
+    const receiver = (): IrExpr => ({
+      kind: "varRef",
+      localId: sockLocal.id,
+      type: NETSOCKET_T,
+      loc,
+    });
+    const main = buildMain(receiver);
+    const cb = lowerer.lowerExpr(callbackNode);
+    let register: IrExpr;
+    if (cb.type.kind === "func" && cb.type.params.length === 0 && cb.type.ret.kind === "void") {
+      register = {
+        kind: "libCall",
+        fn: name === "write" ? "net.sockOnWriteFlush" : "net.sockOnFinish",
+        args: [receiver(), cb],
+        type: VOID,
+        loc,
+      };
+    } else {
+      register = {
+        kind: "libCall",
+        fn: name === "write" ? "net.sockOnWriteFlushDyn" : "net.sockOnFinishDyn",
+        args: [receiver(), lowerSocketDynListener(lowerer, callbackNode, `${name} callbacks`)],
+        type: VOID,
+        loc,
+      };
+    }
+    if (name === "write") {
+      // write(data, cb): the data is written, the callback registered,
+      // and the backpressure answer is the value.
+      const okLocal = lowerer.declareHiddenLocal("%sockWriteOk", BOOL);
       stmts.push(
-        { kind: "varDecl", localId: sockRet.id, init: main, loc },
+        { kind: "varDecl", localId: okLocal.id, init: main, loc },
         { kind: "exprStmt", expr: register, loc },
       );
       return {
         kind: "seqExpr",
         stmts,
-        result: { kind: "varRef", localId: sockRet.id, type: NETSOCKET_T, loc },
-        type: NETSOCKET_T,
+        result: { kind: "varRef", localId: okLocal.id, type: BOOL, loc },
+        type: BOOL,
         loc,
       };
     }
-    const maxArgs = name === "write" ? 1 : 1;
-    const minArgs = name === "write" ? 1 : 0;
-    if (args.length < minArgs || args.length > maxArgs) {
+    // end(data?, cb): the data is written, the finish listener
+    // registers, and the socket is the answer.
+    const sockRet = lowerer.declareHiddenLocal("%sockEndRet", NETSOCKET_T);
+    stmts.push(
+      { kind: "varDecl", localId: sockRet.id, init: main, loc },
+      { kind: "exprStmt", expr: register, loc },
+    );
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: { kind: "varRef", localId: sockRet.id, type: NETSOCKET_T, loc },
+      type: NETSOCKET_T,
+      loc,
+    };
+  }
+  if (name === "destroy" && args.length === 1) {
+    // destroy(err): the 'error' event carries this Error, then 'close'
+    // with hadError; answers the socket, Node's chaining.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const err = lowerer.lowerExpr(args[0]!);
+    if (err.type.kind !== "object") {
       lowerer.noLowering(
-        `${name} with ${args.length} arguments`,
-        call,
-        name === "write"
-          ? "the supported form is write(data) — one string or Buffer"
-          : "the supported forms are end() and end(data)",
+        `destroy with a '${lowerer.fmt(err.type)}' argument`,
+        args[0]!,
+        "pass an Error value, or call destroy() without one",
       );
     }
-    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
-    if (args.length === 0) {
-      return resultOf("net.sockEnd", [receiver]);
+    const arg = lowerer.coerceToExpected(err, ERROR_T);
+    if (chainingResultDiscarded(lowerer, call)) {
+      return {
+        kind: "libCall",
+        fn: "net.sockDestroyError",
+        args: [receiver, arg],
+        type: VOID,
+        loc,
+      };
     }
-    const data = lowerer.lowerExpr(args[0]!);
-    if (data.type.kind === "string") {
-      const fn: IrLibFn = name === "write" ? "net.sockWrite" : "net.sockEndStr";
-      return resultOf(fn, [receiver, data]);
-    }
-    if (data.type.kind === "bytes" && data.type.elem === "u8") {
-      const fn: IrLibFn = name === "write" ? "net.sockWriteBytes" : "net.sockEndBytes";
-      return resultOf(fn, [receiver, data]);
-    }
-    if (data.type.kind === "dyn") {
-      // An untyped JS payload (a helper's parameter): the runtime
-      // dispatches STR/BYTES and throws Node's chunk TypeError otherwise.
-      const fn: IrLibFn = name === "write" ? "net.sockWriteDyn" : "net.sockEndDyn";
-      return resultOf(fn, [receiver, data]);
-    }
-    lowerer.noLowering(
-      `${name} of '${lowerer.fmt(data.type)}' data`,
-      args[0] ?? call,
-      NARROW_DATA_HINT,
+    return receiverReturningCall(
+      lowerer,
+      "net.sockDestroyError",
+      [receiver, arg],
+      NETSOCKET_T,
+      loc,
     );
   }
   if (name === "destroy") {
-    // The error payload form is not lowered yet; the plain destroy answers
-    // the socket, Node's chaining.
     if (args.length !== 0) {
       lowerer.noLowering(
         `destroy with ${args.length} arguments`,
         call,
-        "destroy() takes no arguments here",
+        "the forms are destroy() and destroy(error)",
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
@@ -5377,6 +5494,22 @@ export function lowerServerProperty(
         kind: "libCall",
         fn: "tls.sockDynMember",
         args: [receiver, numLit(0, loc)],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(expr, value, declared);
+    }
+    if (name === "timeout") {
+      // The idle timeout setTimeout armed: `number | undefined` (Node's
+      // _idleTimeout, undefined before any timeout was set).
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "net.sockTimeout",
+        args: [receiver],
         type: DYN,
         loc,
       };
@@ -9836,6 +9969,33 @@ export function isStreamUndefCallExpr(lowerer: Lowerer, node: ts.Node): boolean 
  * net.Socket`): one runtime tag test; tsc's control-flow narrowing types
  * the branches and reads bridge through maybeNarrow's unionNarrow. Null
  * for every other shape (lower-exprs' fences stand). */
+/** `new net.Socket(options?)`: Node's client-socket constructor, the same
+ * handle connect() dials. Null for every other callee. */
+export function lowerNetSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  let callee: ts.Expression = expr.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  const bi = ts.isIdentifier(callee)
+    ? lowerer.builtinImportOf(callee)
+    : ts.isPropertyAccessExpression(callee) && !callee.questionDotToken
+      ? lowerer.builtinMemberOf(callee)
+      : null;
+  if (!bi || bi.module !== "net" || bi.member !== "Socket") return null;
+  const loc = locOf(expr);
+  const args = expr.arguments?.nodes ?? [];
+  if (args.length > 1) {
+    lowerer.noLowering(
+      `new net.Socket with ${args.length} arguments`,
+      expr,
+      "the form is new net.Socket(options?)",
+    );
+  }
+  const options =
+    args.length === 1
+      ? lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN)
+      : dynUndefinedExpr(loc);
+  return { kind: "libCall", fn: "net.socketNew", args: [options], type: NETSOCKET_T, loc };
+}
+
 export function lowerSocketInstanceOf(
   lowerer: Lowerer,
   expr: ts.BinaryExpression,

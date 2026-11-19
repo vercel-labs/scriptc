@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-socket-destroy-error-listener.ts"
+ ],
+ "diags": []
+}

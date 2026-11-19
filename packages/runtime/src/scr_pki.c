@@ -1361,24 +1361,79 @@ static const SpKeyCipher sp_pbes1_3des = {"pbeWithSHAAnd3-KeyTripleDES-CBC", "DE
 static const SpKeyCipher sp_pbes1_2des = {"pbeWithSHAAnd2-KeyTripleDES-CBC", "DES-EDE-CBC",
                                           MBEDTLS_CIPHER_DES_EDE_CBC, NULL, 0, 16, 8, false};
 
-/* RFC 7292 Appendix B.2 with SHA-1 (u = 20, v = 64). Each password byte is
- * one BMP unit (OpenSSL's ASCII variant), and the string carries the KDF's
- * trailing zero unit. */
+/* The KDF's BMPString for a UTF-8 passphrase (OpenSSL's
+ * OPENSSL_utf82uni): each valid UTF-8 sequence becomes its UTF-16
+ * encoding (a surrogate pair above the BMP), a byte that begins an
+ * invalid sequence stands for its own code point, and the string ends with
+ * the KDF's zero unit. +1 malloc'd. */
+static unsigned char *sp_utf8_to_bmp(const unsigned char *s, size_t len, size_t *out_len) {
+  unsigned char *b = malloc(len * 2 + 4);
+  if (!b) scr_trap("scriptc: out of memory\n");
+  size_t o = 0;
+  for (size_t i = 0; i < len;) {
+    unsigned c = s[i];
+    uint32_t cp;
+    size_t n;
+    if (c < 0x80) {
+      cp = c;
+      n = 1;
+    } else if ((c & 0xE0) == 0xC0) {
+      cp = c & 0x1F;
+      n = 2;
+    } else if ((c & 0xF0) == 0xE0) {
+      cp = c & 0x0F;
+      n = 3;
+    } else if ((c & 0xF8) == 0xF0) {
+      cp = c & 0x07;
+      n = 4;
+    } else {
+      cp = c;
+      n = 0;
+    }
+    bool ok = n != 0 && i + n <= len;
+    for (size_t k = 1; ok && k < n; k++) {
+      if ((s[i + k] & 0xC0) != 0x80) ok = false;
+      else cp = (cp << 6) | (s[i + k] & 0x3F);
+    }
+    /* Overlongs, surrogates and out-of-range values are not sequences UTF-8
+     * can carry; there the leading byte stands for itself. */
+    if (ok && ((n == 2 && cp < 0x80) || (n == 3 && cp < 0x800) || (n == 4 && cp < 0x10000) ||
+               cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)))
+      ok = false;
+    if (!ok) {
+      cp = c;
+      n = 1;
+    }
+    i += n;
+    if (cp <= 0xFFFF) {
+      b[o++] = (unsigned char)(cp >> 8);
+      b[o++] = (unsigned char)cp;
+    } else {
+      uint32_t t = cp - 0x10000;
+      unsigned high = 0xD800 + (t >> 10), low = 0xDC00 + (t & 0x3FF);
+      b[o++] = (unsigned char)(high >> 8);
+      b[o++] = (unsigned char)high;
+      b[o++] = (unsigned char)(low >> 8);
+      b[o++] = (unsigned char)low;
+    }
+  }
+  b[o++] = 0;
+  b[o++] = 0;
+  *out_len = o;
+  return b;
+}
+
+/* RFC 7292 Appendix B.2 with SHA-1 (u = 20, v = 64). The passphrase is its
+ * UTF-8 form as a BMPString, and the string carries the KDF's trailing
+ * zero unit. */
 static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsigned char *salt,
                           size_t salt_len, unsigned id, unsigned iterations, unsigned char *out,
                           size_t out_len) {
   enum { U = 20, V = 64 };
   const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA1);
   if (info == NULL) return false;
-  size_t pass16_len = pass_len * 2 + 2;
-  unsigned char *pass16 = malloc(pass16_len);
-  if (!pass16) scr_trap("scriptc: out of memory\n");
-  for (size_t i = 0; i < pass_len; i++) {
-    pass16[2 * i] = 0;
-    pass16[2 * i + 1] = pass[i];
-  }
-  pass16[2 * pass_len] = 0;
-  pass16[2 * pass_len + 1] = 0;
+  size_t pass16_len = 0;
+  unsigned char *pass16 = sp_utf8_to_bmp(pass, pass_len, &pass16_len);
   size_t p_pad = (pass16_len + V - 1) / V * V;
   size_t s_pad = salt_len == 0 ? 0 : (salt_len + V - 1) / V * V;
   size_t i_len = p_pad + s_pad;

@@ -35,6 +35,16 @@ zNKMKfPECeH5h5rMRFtr159u7h8BBfDlzs6gs6KtfabiZVxB/Ih92/H0Zmp4SeKj
 P/JBvE92Y2uoRhXvODAurrc1eCHZdtPq6JZ3TJdTnd3WdRg=
 -----END ENCRYPTED PRIVATE KEY-----\n`;
 
+const uniPass = `-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIGxMBwGCiqGSIb3DQEMAQMwDgQIMcwZqgxn7MICAggABIGQK1yAAZgwBf7RDPA7
+cZrB50ez/FPQs+ctjMSRVUrk7bti1VMD5sUUJBCVG5b9q2xgUDbfwmnI3Z+OKYhj
+hfyqq2JmTyKoAy8ffBSFfkuQPqa85Fx094A8DPWIOFdpHG/jfLlv+rt9BCEKskxW
+5EY/YQ+pbmuQ6UxItYqCNrZjz4NXjlK4o7bLPlqFq5CLsvFv
+-----END ENCRYPTED PRIVATE KEY-----\n`;
+attempt("3des unicode", () => createPrivateKey({ key: uniPass, passphrase: "sécrét" }));
+attempt("3des unicode buffer", () => createPrivateKey({ key: uniPass, passphrase: Buffer.from("sécrét", "utf8") }));
+attempt("3des latin1 buffer", () =>
+  createPrivateKey({ key: uniPass, passphrase: Buffer.from([0x73, 0xe9, 0x63, 0x72, 0xe9, 0x74]) }));
 attempt("3des", () => createPrivateKey({ key: threeDes, passphrase: "secret" }));
 attempt("2des", () => createPrivateKey({ key: twoDes, passphrase: "secret" }));
 attempt("rc2", () => createPrivateKey({ key: rc2, passphrase: "secret" }));

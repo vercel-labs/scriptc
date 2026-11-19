@@ -317,22 +317,41 @@ void scr_http_req_set_encoding(ScrHttpReq *r, ScrStr *enc /*borrowed*/) {
 }
 
 /* IncomingMessage.signal's abort controller comes from the abort unit
- * (scr_abort.c or fetch). Weak bindings keep a program that never reads
- * req.signal from linking it. */
+ * (scr_fetch.c). Weak bindings keep a program that never reads req.signal
+ * from linking it; Mach-O refuses an undefined weak reference, so Apple gets
+ * weak definitions and the unit's linked flag as the capability test. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_abort_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_abort_signal_controller_new(void) { return NULL; }
+__attribute__((weak)) ScrDyn *scr_abort_signal_signal(ScrDyn *controller) {
+  (void)controller;
+  return NULL;
+}
+__attribute__((weak)) void scr_abort_signal_abort(ScrDyn *controller) { (void)controller; }
+__attribute__((weak)) void scr_abort_signal_drop_listeners(ScrDyn *controller) {
+  (void)controller;
+}
+static bool scr_http_abort_available(void) { return scr_dyn_abort_unit_linked != 0; }
+#else
 extern ScrDyn *scr_abort_signal_controller_new(void) __attribute__((weak));
 extern ScrDyn *scr_abort_signal_signal(ScrDyn *controller) __attribute__((weak));
 extern void scr_abort_signal_abort(ScrDyn *controller) __attribute__((weak));
 extern void scr_abort_signal_drop_listeners(ScrDyn *controller) __attribute__((weak));
+static bool scr_http_abort_available(void) {
+  return scr_abort_signal_controller_new != NULL && scr_abort_signal_signal != NULL &&
+         scr_abort_signal_abort != NULL && scr_abort_signal_drop_listeners != NULL;
+}
+#endif
 
 static void scr_http_req_abort_signal(ScrHttpReq *r) {
-  if (r != NULL && r->abort_controller != NULL && scr_abort_signal_abort != NULL)
+  if (r != NULL && r->abort_controller != NULL && scr_http_abort_available())
     scr_abort_signal_abort(r->abort_controller);
 }
 
 /* req.signal (+1): one native AbortSignal per request, created on first
  * read and aborted when the request is destroyed before it completes. */
 ScrDyn *scr_http_req_signal(ScrHttpReq *r) {
-  if (scr_abort_signal_controller_new == NULL || scr_abort_signal_signal == NULL) {
+  if (!scr_http_abort_available()) {
     static const char msg[] = "IncomingMessage.signal is not supported by this runtime build";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
@@ -3521,7 +3540,7 @@ static void scr_http_proto_sweep(void) {
         /* The signal's abort listeners captured the request (and usually the
          * response); release them so the settled request is collectable once
          * the program drops it. */
-        if (req->abort_controller != NULL && scr_abort_signal_drop_listeners != NULL)
+        if (req->abort_controller != NULL && scr_http_abort_available())
           scr_abort_signal_drop_listeners(req->abort_controller);
       }
       break;

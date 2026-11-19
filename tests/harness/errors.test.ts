@@ -289,9 +289,9 @@ level2(-2);
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("3\n");
+    expect(r.stdout).toBe("4\n");
     expect(r.stderr).toMatch(
-      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts\)\n    at level2 \(.*uncaught-frames\.ts\)\n$/,
+      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts:\d+:\d+\)\n    at level2 \(.*uncaught-frames\.ts:\d+:\d+\)\n    at .*uncaught-frames\.ts:\d+:\d+\n$/,
     );
   });
 
@@ -308,9 +308,9 @@ setTimeout(() => {
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("1\n");
+    expect(r.stdout).toBe("2\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts\)\n/,
+      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts:\d+:\d+\)\n/,
     );
   });
 
@@ -339,7 +339,7 @@ main();
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("2\n");
     expect(r.stderr).toMatch(
-      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts\)\n$/,
+      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts:\d+:\d+\)\n$/,
     );
   });
 
@@ -354,9 +354,9 @@ new Promise((resolve, reject) => reject(make()));
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("2\n");
+    expect(r.stdout).toBe("3\n");
     expect(r.stderr).toMatch(
-      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts\)\n$/,
+      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts:\d+:\d+\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts:\d+:\d+\)\n    at .*unhandled-dyn-rejection-frames\.ts:\d+:\d+\n$/,
     );
   });
 });
@@ -3614,16 +3614,15 @@ console.log(count(require("./lib.cjs")));
 
 describe("builtin constructor values (JS lane)", () => {
   test("constructing one without a lowering throws the refusal that names it", async () => {
-    // `AsyncResource` has no lowering, so a JavaScript source reads the
-    // import as a function value that refuses when it is used
+    // `Intl.PluralRules` has no lowering, so a JavaScript source reads the
+    // global class as a value that refuses when it is constructed
     // (builtin-function-fences.ts). Node constructs the class, so "… is not
     // a constructor" would be the wrong error class and a fabricated
     // message: the construction is refused by name where it is written.
     const r = await compileAndRun(
       "builtin-token-construction",
-      `import { AsyncResource } from "node:async_hooks";
-function run() {
-  return new AsyncResource("demo");
+      `function run() {
+  return new Intl.PluralRules("en");
 }
 console.log("before");
 run();
@@ -3633,7 +3632,7 @@ run();
     expect(r.stdout).toBe("before\n");
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'new async_hooks\.AsyncResource' is part of the standard library types but has no scriptc lowering yet \[SC2020 at .*builtin-token-construction\.mjs:3\]\n$/,
+      /^Uncaught Error: 'new Intl\.PluralRules' is part of the standard library types but has no scriptc lowering yet \[SC2020 at .*builtin-token-construction\.mjs:2\]\n$/,
     );
   });
 
@@ -3792,10 +3791,11 @@ refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
 });
 
 // WebCrypto's native slice is crypto.subtle's secret-key methods and its
-// ECDSA, Ed25519 and RSA algorithms. Algorithms Node recognizes outside
-// that slice reject with a coded SC2020
-// Error instead of a Node-shaped success, and a JavaScript call of a
-// method outside it meets its named fence when it runs.
+// ECDSA, Ed25519, X448 and RSA algorithms. Algorithms Node recognizes
+// outside that slice reject with a coded SC2020 Error instead of a
+// Node-shaped success, and a JavaScript call of a method outside it meets
+// its named fence when it runs. An X448 call that the key's usage refuses
+// still reports Node's ExperimentalWarning as the algorithm normalizes.
 // Node's own rejections (unknown names, bad usages) are corpus-pinned
 // (6292, 6294); these refusals have no Node twin, so they live here.
 describe("WebCrypto refusals (JS lane)", () => {
@@ -3832,12 +3832,17 @@ await attempt("unwrap an ecdsa key", () =>
       "mjs",
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stderr).toBe("");
+    // X448 normalizes before the refusal, so the runtime reports Node's
+    // one-per-process ExperimentalWarning (its prefix carries the pid).
+    expect(r.stderr.replace(/\(node:\d+\)/, "(node:PID)")).toBe(
+      "(node:PID) ExperimentalWarning: The X448 Web Crypto API algorithm is an experimental feature and might change at any time\n" +
+        "(Use `node --trace-warnings ...` to show where the warning was created)\n",
+    );
     expect(r.stdout).toBe(
       "ed448 Error SC2020 crypto.subtle.sign with the Ed448 algorithm is not supported yet\n" +
         "ecdsa with an hmac key InvalidAccessError 15 Key algorithm mismatch\n" +
         "cshake TypeError ERR_MISSING_OPTION Failed to normalize algorithm: passed algorithm cannot be converted to 'CShakeParams' because 'outputLength' is required in 'CShakeParams'.\n" +
-        "x448 bits Error SC2020 crypto.subtle.deriveBits with the X448 algorithm is not supported yet\n" +
+        "x448 bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "ecdh bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +
         "wrap an ecdsa key Error SC2020 crypto.subtle.wrapKey with an ECDSA, Ed25519 or RSA key is not supported yet\n" +

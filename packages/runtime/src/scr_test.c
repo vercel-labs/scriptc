@@ -199,13 +199,32 @@ struct ScrTestCtx {
   ScrPromise *plan_met; /* owned */
 };
 
-/* t.signal's abort unit face (scr_abort.c). The compiler links that unit
+/* t.signal's abort unit face (scr_fetch.c). The compiler links that unit
  * only for a program that reads a test's signal (the abortSignal runtime
  * feature), so these declarations are weak: a program without it leaves
- * them null, and nothing else in the runner touches them. */
+ * them null, and nothing else in the runner touches them. Mach-O refuses an
+ * undefined weak reference, so Apple gets weak definitions and the unit's
+ * linked flag as the capability test. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_abort_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_test_abort_controller_new(void) { return NULL; }
+__attribute__((weak)) ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) {
+  (void)controller;
+  return NULL;
+}
+__attribute__((weak)) void scr_test_abort_controller_abort(ScrDyn *controller) {
+  (void)controller;
+}
+static bool scr_test_abort_available(void) { return scr_dyn_abort_unit_linked != 0; }
+#else
 extern ScrDyn *scr_test_abort_controller_new(void) __attribute__((weak));
 extern ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) __attribute__((weak));
 extern void scr_test_abort_controller_abort(ScrDyn *controller) __attribute__((weak));
+static bool scr_test_abort_available(void) {
+  return scr_test_abort_controller_new != NULL && scr_test_abort_controller_signal != NULL &&
+         scr_test_abort_controller_abort != NULL;
+}
+#endif
 
 /* Aborts a test's t.signal when it finished, timed out or was cancelled, as
  * Node's Test#run does for every non-root test (its hooks see the signal
@@ -214,7 +233,7 @@ extern void scr_test_abort_controller_abort(ScrDyn *controller) __attribute__((w
 static void scr_test_abort_now(ScrTestCtx *t) {
   if (!t) return;
   t->signal_aborted = true;
-  if (t->abort_controller && scr_test_abort_controller_abort)
+  if (t->abort_controller && scr_test_abort_available())
     scr_test_abort_controller_abort(t->abort_controller);
 }
 
@@ -3950,13 +3969,12 @@ double scr_test_worker_id(void) {
  * the checked-dynamic handle rule (tag + pointer). +1, or undefined when
  * the unit is absent. */
 ScrDyn *scr_test_ctx_signal(ScrTestCtx *t) {
-  if (!scr_test_abort_controller_new || !scr_test_abort_controller_signal)
-    return scr_dyn_undefined();
+  if (!scr_test_abort_available()) return scr_dyn_undefined();
   if (!t->abort_controller) {
     t->abort_controller = scr_test_abort_controller_new();
     /* The test may have finished before anything read its signal: the
      * controller made now starts aborted then. */
-    if (t->signal_aborted && scr_test_abort_controller_abort)
+    if (t->signal_aborted && scr_test_abort_available())
       scr_test_abort_controller_abort(t->abort_controller);
   }
   return scr_test_abort_controller_signal(t->abort_controller);

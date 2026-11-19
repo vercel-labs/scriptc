@@ -1788,27 +1788,59 @@ function deferredFenceWarnings(
 ): ScrDiagnostic[] {
   if (mod === null) return [];
   // A probe can capture a diagnostic and then compile the statement another
-  // way, leaving an inventory entry with no fence. Keep the sites a fence
-  // actually throws: a tagged fence's message is the diagnostic's message
-  // plus its position tag, and a bare fence's message is the message.
+  // way, leaving an inventory entry with no fence. Keep the sites the program
+  // actually throws: a runtime fence's message is the diagnostic's message,
+  // with or without its position tag, and a validation ladder's refusal
+  // library call carries the whole message as a string literal.
   const thrown: string[] = [];
   everyModuleNode(mod, {
-    expr: () => true,
+    expr: (node) => {
+      if (node.kind === "libCall")
+        for (const arg of node.args)
+          if (arg.kind === "strLit" && arg.value.includes("[SC")) thrown.push(arg.value);
+      return true;
+    },
     stmt: (node) => {
       if (node.kind === "runtimeFence") thrown.push(node.message);
       return true;
     },
     type: () => true,
   });
+  // One refusal is spelled two ways: the diagnostic says the feature "is
+  // part of the standard library types but has no scriptc lowering yet" or
+  // "is not supported yet", while a ladder's literal carries the surface and
+  // the position tag. Quotes around the surface vary too. Compare surfaces,
+  // with those endings and the tag removed.
+  const bare = (text: string): string =>
+    text
+      .replace(/'/g, "")
+      .replace(/ \[SC\d+(?: at [^\]]*)?\]$/, "")
+      .replace(/ is part of the standard library types but has no scriptc lowering yet$/, "")
+      .replace(/ is not supported yet$/, "")
+      .trim();
+  const throwsRefusal = (message: string): boolean => {
+    const refusal = bare(message);
+    return thrown.some((m) => bare(m) === refusal);
+  };
   const seen = new Set(already.map((d) => `${d.loc.file}:${d.loc.start}`));
-  const guardedKeys = new Set(guarded.map((site) => `${site.code}\u0000${site.refusal}`));
   const out: ScrDiagnostic[] = [];
   for (const fence of fences) {
     const key = `${fence.loc.file}:${fence.loc.start}`;
     if (seen.has(key)) continue;
-    // The same refusal as a guarded fence: SC6012 names that site.
-    if (guardedKeys.has(`${fence.code}\u0000${fence.message}`)) continue;
-    if (!thrown.some((m) => m === fence.message || m.startsWith(`${fence.message} [`))) continue;
+    // A guarded fence names its site with SC6012. Its own statement span
+    // holds the diagnostic's site, so only an entry inside it is skipped;
+    // the same message from another statement or file is still named.
+    if (
+      guarded.some(
+        (site) =>
+          site.code === fence.code &&
+          site.loc.file === fence.loc.file &&
+          fence.loc.start >= site.loc.start &&
+          fence.loc.start <= site.loc.end,
+      )
+    )
+      continue;
+    if (!throwsRefusal(fence.message)) continue;
     seen.add(key);
     out.push(
       deferredRefusalDiag(

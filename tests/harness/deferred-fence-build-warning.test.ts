@@ -62,3 +62,74 @@ test("the build names each deferred site at its file and line", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a guarded site does not hide the same refusal elsewhere", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-deferred-guarded-"));
+  try {
+    mkdirSync(outDir, { recursive: true });
+    const part = join(dir, "part.js");
+    writeFileSync(
+      part,
+      "export function guarded(found, el, channel, name) {\n" +
+        "  try {\n" +
+        "    return void found.get(el)?.[channel]?.delete(name)\n" +
+        "  } catch {\n" +
+        "    return undefined\n" +
+        "  }\n" +
+        "}\n" +
+        "export function unguarded(found, el, channel, name) {\n" +
+        "  return void found.get(el)?.[channel]?.delete(name)\n" +
+        "}\n",
+    );
+    const entry = join(dir, "main.mjs");
+    writeFileSync(
+      entry,
+      'import { guarded, unguarded } from "./part.js"\nconsole.log(typeof guarded, typeof unguarded)\n',
+    );
+    const outPath = join(outDir, "deferred-guarded");
+    const result = await compile(entry, { outPath, outDir, sanitize });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const text = readFileSync(part, "utf8");
+    const warnings = "warnings" in result ? (result.warnings ?? []) : [];
+    const lines = (code: string): number[] =>
+      warnings
+        .filter((w) => w.code === code)
+        .map((w) => text.slice(0, w.loc.start).split("\n").length);
+    expect(lines("SC6015")).toEqual([9]);
+    expect(lines("SC6012")).toEqual([3]);
+    const run = await execFileAsync(outPath, [], { encoding: "utf8" });
+    expect(run.stdout).toBe("function function\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a deferred refusal that is a library call's validation ladder is named", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-deferred-ladder-"));
+  try {
+    mkdirSync(outDir, { recursive: true });
+    const part = join(dir, "part.js");
+    writeFileSync(
+      part,
+      "export function segments() {\n" +
+        '  return new Intl.Segmenter("en", { granularity: "sentence" }).segment("hi")\n' +
+        "}\n",
+    );
+    const entry = join(dir, "main.mjs");
+    writeFileSync(entry, 'import { segments } from "./part.js"\nconsole.log(typeof segments)\n');
+    const outPath = join(outDir, "deferred-ladder");
+    const result = await compile(entry, { outPath, outDir, sanitize });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const text = readFileSync(part, "utf8");
+    const warnings = "warnings" in result ? (result.warnings ?? []) : [];
+    const deferred = warnings.filter((w) => w.code === "SC6015");
+    expect(
+      deferred.map((w) => text.slice(0, w.loc.start).split("\n").length),
+    ).toEqual([2]);
+    expect(deferred[0]!.message).toContain("Intl.Segmenter");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

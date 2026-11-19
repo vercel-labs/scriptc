@@ -1472,11 +1472,14 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
                   ProfileMatch &Match) {
   // Everything besides a partition's own bytes that determines its
   // artifacts. The caller's cache directory already identifies the exact
-  // helper build; source content and partition count arrive per module.
+  // helper build; source content and partition count arrive per module. The
+  // dispatch level changes the simplified bitcode of every partition that
+  // holds a generated helper, so it keys them too.
   std::string Salt = hashParts({"scriptc-partition-v1", LLVM_VERSION_STRING,
                                 Options.Target, Options.OptLevel,
-                                Options.RelocationModel, Options.SourcePath,
-                                "profile-generate", Options.ProfileGenerate});
+                                Options.DispatchOpt, Options.RelocationModel,
+                                Options.SourcePath, "profile-generate",
+                                Options.ProfileGenerate});
   // A profile changes every partition it describes, so its bytes key them.
   if (!Options.ProfileUse.empty()) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> Profile =

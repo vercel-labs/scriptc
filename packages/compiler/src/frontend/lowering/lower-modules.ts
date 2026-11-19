@@ -49,7 +49,6 @@ import {
   cjsExportDeclaratorOf,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
-  cjsExportsAssignedInFunctions,
   cjsReexportedModules,
   entryPackageFilePredicate,
   isCjsJsFile,

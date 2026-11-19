@@ -47,7 +47,7 @@ import { isIslandImportBinding } from "./lower-node-island.js";
 import { isNodeTypesPath } from "../dts-paths.js";
 import { funduleFunctionOf, funduleMemberOf, lowerFunduleMemberValue } from "./lower-fundule.js";
 import type { FileParts } from "./lower-modules.js";
-import { isCjsJsFile, isJsSourceFile, locOf } from "../program.js";
+import { isCjsJsFile, locOf } from "../program.js";
 import { F64, type IrExpr, type IrGlobal, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
 import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
 import { nodeGlobalKind } from "./node-values.js";
@@ -516,7 +516,7 @@ export function nsMemberIdentOf(
   // module.exports itself.
   const cjs = cjsNamespaceImportDep(lowerer, access.expression);
   if (cjs !== null) {
-    const { names, assignedLater } = lowerer.cjsNamespaceOf(cjs);
+    const { names } = lowerer.cjsNamespaceOf(cjs);
     const name = access.name.text;
     // A name a FUNCTION assigns during the module's evaluation is a member
     // of the finished namespace too (Node's namespace keeps the end-of-init

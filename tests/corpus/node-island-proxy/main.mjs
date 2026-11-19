@@ -31,8 +31,21 @@ const store = new Proxy({}, {
   },
 });
 
+const reads = [];
+const marked = new Proxy({}, {
+  get(target, key) {
+    if (typeof key === "symbol") {
+      reads.push(key.description);
+      return "symbol-value";
+    }
+    return Reflect.get(target, key);
+  },
+});
+
 const island = requireModule("./island.mjs");
 console.log("call:", island.call(doubled, 20), calls.join(","));
 console.log("get:", island.read(view, "a"), island.read(view, "missing"), "has:" + has.join(","));
+const readKey = Symbol.for("node-island-proxy.read");
+console.log("read:", island.readSymbol(marked, readKey), reads.join(","));
 const key = Symbol.for("node-island-proxy.symbol");
 console.log("write:", island.write(store, key, 7), writes.join(","));

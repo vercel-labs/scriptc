@@ -1176,6 +1176,20 @@ static bool ni_inherited_name(const ScrDyn *target, const ScrDyn *key) {
  * pending). */
 static ScrDyn *ni_symbol_get(ScrDyn *target, ScrDyn *key, bool *threw) {
   *threw = false;
+  /* A Proxy answers a symbol read through its get trap; asking for its own symbols would answer
+   * the island representative's value instead of running the trap. */
+  if (target->kind == SCR_DYN_PROXY) {
+    ScrDyn *value = scr_dyn_reflect_get(target, key, target);
+    if (value == NULL) {
+      if (scr_exc_pending()) *threw = true;
+      return NULL;
+    }
+    if (value->kind == SCR_DYN_UNDEF) {
+      scr_dyn_release(value);
+      return NULL;
+    }
+    return value;
+  }
   /* A checked-dynamic object, or the view of a record or class instance
    * (generators, arrays and collections have other representatives). */
   if (target->kind != SCR_DYN_OBJ &&

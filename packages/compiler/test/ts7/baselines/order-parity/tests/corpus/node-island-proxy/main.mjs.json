@@ -1,6 +1,6 @@
 {
  "order": [
-  "<repo>/tests/corpus/node-island-proxy/main.mjx"
+  "<repo>/tests/corpus/node-island-proxy/main.mjs"
  ],
  "diags": []
 }

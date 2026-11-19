@@ -15045,6 +15045,18 @@ export class Lowerer {
     );
   }
 
+  /** Writes a `scriptc lowering` line for a pass of reachable emit
+   * (SCRIPTC_TIMING=1): the pass's own time. */
+  private emitPhase(phase: string, started: number, detail: Record<string, unknown> = {}): void {
+    if (process.env["SCRIPTC_TIMING"] !== "1") return;
+    const event: Record<string, unknown> = {
+      phase,
+      phase_ms: Math.round((performance.now() - started) * 10) / 10,
+    };
+    for (const key of Object.keys(detail)) event[key] = detail[key];
+    process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
+  }
+
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
@@ -15058,12 +15070,20 @@ export class Lowerer {
     // that looks for a rare kind: they skip a function that cannot hold one
     // instead of walking it.
     const census = new FunctionCensus();
+    // The passes below that take over 0.3 s (SCRIPTC_TIMING=1).
+    const pass = <T>(name: string, run: () => T): T => {
+      const started = performance.now();
+      const value = run();
+      const elapsed = performance.now() - started;
+      if (elapsed >= 300) this.emitPhase(`finish:${name}`, performance.now() - elapsed);
+      return value;
+    };
     // Whether the program uses workers is final now.
-    settleLoaderShareEnv(this, functions);
+    pass("settleLoaderShareEnv", () => settleLoaderShareEnv(this, functions));
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
-    checkGenericIdentityPins(this);
+    pass("checkGenericIdentityPins", () => checkGenericIdentityPins(this));
     // Every function value and conversion is in the IR now: a variadic
     // function must not reach a native call of fixed arity, and one stored
     // as a fixed signature is exact only if no function of that type is
@@ -15071,47 +15091,50 @@ export class Lowerer {
     // devirtualization found in them) answers for a program that holds no
     // variadic function without another walk of its IR; the one step since,
     // settleLoaderShareEnv above, stores a boxed symbol and no function.
-    checkVariadicFunctions(this, functions, bodies);
+    pass("checkVariadicFunctions", () => checkVariadicFunctions(this, functions, bodies));
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
-    refuseSourceFieldDeletes(this, functions);
+    pass("refuseSourceFieldDeletes", () => refuseSourceFieldDeletes(this, functions));
     // A record built into a class instance, or a union's arm copied into
     // another union's arm, where the program can tell the copy from the
     // object is refused while a module can still fail.
-    refuseObservedCopies(this, functions);
-    finalizeRecordLinks(this, functions);
-    finalizeGeneratorArrays(this, functions);
+    pass("refuseObservedCopies", () => refuseObservedCopies(this, functions));
+    pass("finalizeRecordLinks", () => finalizeRecordLinks(this, functions));
+    pass("finalizeGeneratorArrays", () => finalizeGeneratorArrays(this, functions));
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
-    if (!library) installBuiltinStatics(this, functions, census);
-    if (!library) registerIslandIntrinsics(this, functions);
-    boxBuiltinValuesChecked(this, functions, census);
-    shareBuiltinValueIdentities(this, functions);
-    finalizeFunctionNames(this, functions);
-    finalizeFunctionSourceText(this, functions);
-    if (this.diags.length === 0) fuseArrayPipelines(this, functions);
-    finalizeClassMethodValues(this, functions);
-    finalizePrivateBrands(this, functions);
-    routeWrapperConsumers(this, functions, census);
-    trackClassFieldCreation(this, functions, census);
-    boxClassInstancesExactly(this, functions);
-    addUntypedIntegrityWords(this);
-    guardClassAttributeWrites(this, functions, census);
-    guardPartialReads(this, functions);
-    guardFrozenWrites(this, functions, census);
-    applyHandleProperties(this, functions);
-    adoptIslandThenables(this, functions);
-    shareIslandProcessState(this, functions);
+    if (!library)
+      pass("installBuiltinStatics", () => installBuiltinStatics(this, functions, census));
+    if (!library)
+      pass("registerIslandIntrinsics", () => registerIslandIntrinsics(this, functions));
+    pass("boxBuiltinValuesChecked", () => boxBuiltinValuesChecked(this, functions, census));
+    pass("shareBuiltinValueIdentities", () => shareBuiltinValueIdentities(this, functions));
+    pass("finalizeFunctionNames", () => finalizeFunctionNames(this, functions));
+    pass("finalizeFunctionSourceText", () => finalizeFunctionSourceText(this, functions));
+    if (this.diags.length === 0)
+      pass("fuseArrayPipelines", () => fuseArrayPipelines(this, functions));
+    pass("finalizeClassMethodValues", () => finalizeClassMethodValues(this, functions));
+    pass("finalizePrivateBrands", () => finalizePrivateBrands(this, functions));
+    pass("routeWrapperConsumers", () => routeWrapperConsumers(this, functions, census));
+    pass("trackClassFieldCreation", () => trackClassFieldCreation(this, functions, census));
+    pass("boxClassInstancesExactly", () => boxClassInstancesExactly(this, functions));
+    pass("addUntypedIntegrityWords", () => addUntypedIntegrityWords(this));
+    pass("guardClassAttributeWrites", () => guardClassAttributeWrites(this, functions, census));
+    pass("guardPartialReads", () => guardPartialReads(this, functions));
+    pass("guardFrozenWrites", () => guardFrozenWrites(this, functions, census));
+    pass("applyHandleProperties", () => applyHandleProperties(this, functions));
+    pass("adoptIslandThenables", () => adoptIslandThenables(this, functions));
+    pass("shareIslandProcessState", () => shareIslandProcessState(this, functions));
     // applyHandleProperties, adoptIslandThenables and shareIslandProcessState
     // rewrite nodes inside unchanged statement lists, so the census of every
     // function they touched no longer describes its body.
     census.clear();
-    installBufferValue(functions, census);
+    pass("installBufferValue", () => installBufferValue(functions, census));
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
     const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
-    installFetchBodyWebStreams(this, functions);
-    returnDispatchReceivers(this, functions, census);
+    pass("installFetchBodyWebStreams", () => installFetchBodyWebStreams(this, functions));
+    pass("returnDispatchReceivers", () => returnDispatchReceivers(this, functions, census));
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
@@ -15292,7 +15315,7 @@ export class Lowerer {
       });
     }
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
-    if (module) checkCycleBindingAccesses(this, module);
+    if (module) pass("checkCycleBindingAccesses", () => checkCycleBindingAccesses(this, module));
     if (module) bindCompletionCallbacks(module);
     // SCRIPTC_DYNAMIC_CLASSES: where the finished program makes instances of
     // the named classes dynamic values (dynamic-class-report.ts).
@@ -15308,7 +15331,8 @@ export class Lowerer {
     // Dynamic-tier functions compute with jsval values (ir/jsval.ts). The
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
-    if (module && this.dynamicFunctions.length > 0) promoteJsvals(module);
+    if (module && this.dynamicFunctions.length > 0)
+      pass("promoteJsvals", () => promoteJsvals(module));
     // Receiver proofs that took `call` and `apply` for the builtins, in a
     // program whose finished module gives a function its own.
     const ownCallRefusals = module ? refuseForwardsToOwnCall(this, module) : [];
@@ -15584,7 +15608,10 @@ export class Lowerer {
         this.analyzeJsWidenedFields(parts);
         this.analyzeJsForInKeyBindings(parts);
       });
+      const collectStarted = performance.now();
       this.collectProgram(parts);
+      this.emitPhase("collect", collectStarted);
+      const scansStarted = performance.now();
       this.speculativeTypeQueries(() => {
         extendAssertedRecordMembers(
           this,
@@ -15603,6 +15630,7 @@ export class Lowerer {
         this.widenRetypedOperatorBindings(parts);
         this.analyzeOpenEnumerations(parts);
       });
+      this.emitPhase("scans", scansStarted);
       widenCjsExportsOfWidenedBindings(this, parts);
       // Decorated classes analyze post-collection here too: the %init seeds
       // lower the decoration calls, whose edges (decorator bodies, construct
@@ -16066,6 +16094,7 @@ export class Lowerer {
         ...(info.classDecorators?.nodes ?? []),
       ]),
     ]);
+    const rootWaveStarted = performance.now();
     parts.forEach((fp, index) => {
       this.settleStreamRequest();
       const priority = [2, index] as const;
@@ -16080,6 +16109,7 @@ export class Lowerer {
         ),
       );
     });
+    this.emitPhase("root-wave", rootWaveStarted);
     // LIBRARY mode's extra reachability roots (LowerOptions.libRoots): the
     // profile-mapped exports are called from outside the graph, so they
     // seed the worklist beside the init bodies. Each name resolves through
@@ -16215,7 +16245,9 @@ export class Lowerer {
       }
       held?.check();
     };
+    const drainStarted = performance.now();
     drainUnits();
+    this.emitPhase("drain", drainStarted);
     this.restoreGenericInstanceOrder();
     this.restoreGenericClassInstanceOrder();
     // Generic bodies can reach ordinary declarations, whose bodies can in
@@ -16223,6 +16255,8 @@ export class Lowerer {
     // queue above is the only portion whose discovery order differed from
     // historical emit order.
     noteDateClassMethods(this);
+    const fixpointStarted = performance.now();
+    let classDynamicDispatchMs = 0;
     const classDispatch = new ClassDynamicDispatch(extraRoots !== undefined);
     const functionViews = new FunctionViews();
     // Units in declaration order, so the passes below meet functions, and the
@@ -16246,6 +16280,7 @@ export class Lowerer {
         ],
         (fn) => classDispatch.sites.forget(fn),
       );
+      const dispatchStarted = performance.now();
       const dispatchChanged = classDispatch.process(this, [
         ...declared,
         ...initFunctions,
@@ -16253,6 +16288,7 @@ export class Lowerer {
         ...byName(this.liftedFns),
         ...byName(this.implicitFns),
       ]);
+      classDynamicDispatchMs += performance.now() - dispatchStarted;
       // `x.constructor` helpers answer from the class graph, which the
       // bodies lowered since may have grown (class-instance-constructor.ts).
       const identityChanged = settleClassIdentityHelpers(this, (fn) =>
@@ -16274,6 +16310,7 @@ export class Lowerer {
       this.restoreGenericClassInstanceOrder(clsInstLowered);
     }
     classDispatch.finalize(this);
+    this.emitPhase("class-dynamic-dispatch", performance.now() - classDynamicDispatchMs);
     // The adapters finalize built are looked through as well; this adds
     // adapters and boxing helpers only, which no other worklist reads.
     functionViews.process(this);
@@ -16312,6 +16349,7 @@ export class Lowerer {
         this.onEdge = edges;
       }
     }
+    this.emitPhase("fixpoint", fixpointStarted);
     if (dump !== null) writeRecords(dump, recordLines);
     if (reuse !== null) {
       reuse.finish();
@@ -16382,9 +16420,11 @@ export class Lowerer {
     const changedDump = process.env["SCRIPTC_UNIT_CHANGED_DUMP"];
     if (changedUnits !== undefined && changedDump !== undefined && changedDump !== "")
       writeFileSync(changedDump, JSON.stringify(changedUnits));
+    const finishStarted = performance.now();
     const finished = withStructureSharing(() =>
       this.finishModule(functions, extraRoots !== undefined, bodies, classDispatch),
     );
+    this.emitPhase("finish-module", finishStarted);
     return {
       reachable,
       result:

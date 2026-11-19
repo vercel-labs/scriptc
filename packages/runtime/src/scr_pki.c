@@ -7007,7 +7007,8 @@ static bool sp_kem_extract_and_expand(const char *alg, uint16_t kem_id, const ui
  * modulus) and the ciphertext is its raw RSA encryption. */
 static ScrDyn *sp_kem_rsa_encapsulate(SpKey *k) {
   mbedtls_rsa_context *rsa = mbedtls_pk_rsa(k->pk);
-  size_t n = (mbedtls_rsa_get_bitlen(rsa) + 7) / 8;
+  size_t bits = mbedtls_rsa_get_bitlen(rsa);
+  size_t n = (bits + 7) / 8;
   if (n == 0 || n > 1024) return NULL;
   uint8_t *shared = malloc(n), *ct = malloc(n);
   if (!shared || !ct) scr_trap("scriptc: out of memory\n");
@@ -7016,9 +7017,16 @@ static ScrDyn *sp_kem_rsa_encapsulate(SpKey *k) {
   mbedtls_mpi bound;
   mbedtls_mpi_init(&bound);
   mbedtls_mpi_sub_int(&bound, &rsa->MBEDTLS_PRIVATE(N), 1);
+  unsigned excess = (unsigned)(8 * n - bits);
   bool ok = false;
   for (int attempt = 0; attempt < 64 && !ok; attempt++) {
     sp_random(NULL, shared, n);
+    /* Rejection sampling converges at any modulus width: masking the top
+     * byte to the modulus's bit length keeps the draw below 2^bits, and
+     * N >= 2^(bits-1), so at least half the draws fit. Without the mask a
+     * non-byte-aligned modulus (a 2050-bit key, say) fits only about one
+     * draw in 2^excess. */
+    if (excess != 0) shared[0] &= (uint8_t)(0xff >> excess);
     if (mbedtls_mpi_read_binary(&M, shared, n) != 0) break;
     /* OpenSSL's RSA-KEM takes a ciphertext in [2, N-2]: 0, 1 and N-1 are
      * not group elements, and a value at or above N does not fit. */

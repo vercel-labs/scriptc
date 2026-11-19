@@ -44,3 +44,12 @@ log("der private input", decapsulate(priv, fromDerPrivate.ciphertext).equals(fro
 const bigger = generateKeyPairSync("rsa", { modulusLength: 3072 });
 const biggerEnc = encapsulate(bigger.publicKey);
 log("rsa-3072", biggerEnc.ciphertext.length, biggerEnc.sharedKey.length, decapsulate(bigger.privateKey, biggerEnc.ciphertext).equals(biggerEnc.sharedKey));
+// A non-byte-aligned modulus (2050 bits): the sampled secret has to fit
+// below N on essentially every draw, so all of these encapsulations work.
+const odd = generateKeyPairSync("rsa", { modulusLength: 2050 });
+let oddRoundtrips = 0;
+for (let i = 0; i < 20; i++) {
+  const oddEnc = encapsulate(odd.publicKey);
+  if (decapsulate(odd.privateKey, oddEnc.ciphertext).equals(oddEnc.sharedKey)) oddRoundtrips++;
+}
+log("rsa-2050 roundtrips", oddRoundtrips);

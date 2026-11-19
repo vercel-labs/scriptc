@@ -4523,7 +4523,7 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
       for (size_t i = 0; i < ctx.dns.n && !valid; i++)
         valid = scr_tls_ident_check(host_lc, ctx.dns.v[i], true);
     } else if (cn->kind == SCR_DYN_ARR) {
-      for (size_t i = 0; i < scr_dyn_arr_length(cn) && !valid; i++) {
+      for (size_t i = 0; i < scr_dyn_arr_len(cn) && !valid; i++) {
         const ScrDyn *item = cn->v.arr.items[i];
         if (item != NULL && item->kind == SCR_DYN_STR) {
           char *item_owned = NULL;
@@ -4548,7 +4548,7 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
       } else {
         scr_tls_ident_buf_put(&reason, ". is not cert's CN: ", 20);
         if (cn->kind == SCR_DYN_ARR) {
-          for (size_t i = 0; i < scr_dyn_arr_length(cn); i++) {
+          for (size_t i = 0; i < scr_dyn_arr_len(cn); i++) {
             const ScrDyn *item = cn->v.arr.items[i];
             if (i != 0) scr_tls_ident_buf_put(&reason, ",", 1);
             if (item != NULL && item->kind == SCR_DYN_STR) {

@@ -54,6 +54,10 @@ void scr_assert_partial_deep_result(bool equal, bool negated, ScrStr *msg, bool 
 bool scr_assert_partial_eq_dyn(const ScrDyn *a, const ScrDyn *b);
 ScrStr *scr_assert_inspect_str(const ScrStr *s); /* util.inspect quoting; +1 */
 void scr_assert_ok(bool pass, ScrStr *message, bool generated);
+/* assert.fail(actual, expected[, message[, operator[, stackStartFn]]]) —
+ * the deprecated form; everything moves in, throws. */
+void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *message,
+                                ScrDyn *operator_value, ScrDyn *default_operator);
 bool scr_assert_same_value_f64(double a, double b); /* Object.is */
 /* deepStrictEqual over cyclic values: pair memo (enter answers true for
  * a pair already being compared — Node's coinductive memo; leave pops).

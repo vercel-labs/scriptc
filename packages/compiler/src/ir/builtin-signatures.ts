@@ -2868,6 +2868,11 @@ function buildLibFnSignatures() {
       argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
     },
+    /** write(chunk, cb)'s callback slot: fires once the data is flushed. */
+    "http.resOnWriteFlush": {
+      argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "http.resOnEndCallback": {
       argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
@@ -3719,6 +3724,10 @@ function buildLibFnSignatures() {
     },
     "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
     "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
+    /** setHeader / appendHeader with a string, number, null or array value;
+     * the stored value keeps its type for getHeader/getHeaders. MAY THROW. */
+    "http.clientSetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
+    "http.clientAppendHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
     "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientHasHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
     "http.clientRemoveHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
@@ -6146,6 +6155,8 @@ function buildLibFnSignatures() {
     "sc.text": { argTypes: [null], result: { kind: "promise", inner: STRING } },
     "sc.json": { argTypes: [null], result: { kind: "promise", inner: DYN } },
     "sc.buffer": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
+    /** blob(stream): the concatenated chunks as a Blob (dyn). */
+    "sc.blob": { argTypes: [null], result: { kind: "promise", inner: DYN } },
     /** bytes(stream): sc.buffer's bytes as a plain Uint8Array. */
     "sc.bytes": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
     "sc.arrayBuffer": { argTypes: [null], result: { kind: "promise", inner: DYN } },
@@ -6181,9 +6192,9 @@ function buildLibFnSignatures() {
     "readable.pushNull": { argTypes: [null], result: BOOL },
     "readable.pushU": { argTypes: [null, null], result: BOOL },
     "readable.pushDyn": { argTypes: [null, DYN], result: BOOL },
-    "readable.unshift": { argTypes: [null, BYTES_U8], result: VOID },
-    "readable.unshiftDyn": { argTypes: [null, DYN], result: VOID },
-    "readable.unshiftStr": { argTypes: [null, STRING], result: VOID },
+    "readable.unshift": { argTypes: [null, BYTES_U8], result: BOOL },
+    "readable.unshiftDyn": { argTypes: [null, DYN], result: BOOL },
+    "readable.unshiftStr": { argTypes: [null, STRING], result: BOOL },
     "stream.onDyn": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
     "readable.readDyn": { argTypes: [null, DYN], result: DYN },
     "readable.read": { argTypes: [null, F64], result: VOID },
@@ -6324,6 +6335,10 @@ function buildLibFnSignatures() {
      * callback takes the completion's error (Node's null on success). */
     "writable.writeEcb": { argTypes: [null, F64, null, DYN, null], result: BOOL },
     "writable.end": { argTypes: [null, F64], result: VOID },
+    /** writable.end with an error-first completion callback: the same
+     * arguments; the callback takes (error: Error | null) and receives
+     * ERR_STREAM_ALREADY_FINISHED when the stream already finished. */
+    "writable.endEcb": { argTypes: [null, F64], result: VOID },
     "writable.cork": { argTypes: [null], result: VOID },
     "writable.uncork": { argTypes: [null], result: VOID },
     "stream.destroy": { argTypes: [null], result: VOID },
@@ -6411,6 +6426,11 @@ function buildLibFnSignatures() {
      * no-op and everything else here (Node throws for falsy values too).
      * All arguments are borrowed. */
     "assert.ok": { argTypes: [BOOL, STRING, BOOL], result: VOID },
+    /** fail(actual, expected, message|null, operator, has_message): the
+     * deprecated form's AssertionError, built by the runtime. */
+    "assert.failDeprecated": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
+    /** DEP0094 for the first deprecated fail call (the events unit). */
+    "assert.failDeprecation": { argTypes: [], result: VOID },
     /** The next AssertionError's actual, expected and operator, recorded on
      * a failure branch. */
     "assert.record": { argTypes: [DYN, DYN, STRING], result: VOID },
@@ -7069,6 +7089,26 @@ function buildLibFnSignatures() {
     /** AsyncLocalStorage.snapshot(): a dyn function (cb, ...args) that runs
      * cb in the context active at the snapshot. */
     "als.snapshot": { argTypes: [], result: DYN },
+    /** node:async_hooks (scr_async_dyn.c): createHook(callbacks) validates
+     * its five callbacks with Node's ERR_ASYNC_CALLBACK and answers a 1-based
+     * AsyncHook handle (MAY THROW); enable/disable answer the handle;
+     * executionId/triggerId read the execution's ids. The ids are scriptc's
+     * own sequence (Node's counter also numbers its module loading). */
+    "ah.createHook": { argTypes: [DYN], result: F64 },
+    /** createHook over an inline literal's five callbacks (each DYN,
+     * undefined for an absent member): the literal converts member by
+     * member, so a function member boxes as the checked-dynamic function
+     * the registry calls. */
+    "ah.createHookParts": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
+    "ah.enable": { argTypes: [F64], result: F64 },
+    "ah.disable": { argTypes: [F64], result: F64 },
+    /** asyncWrapProviders: Node's provider-name → id table as a
+     * null-prototype checked-dynamic object (scr_ah_providers builds it; no
+     * program code runs, and a compiled binary has no provider ids of its
+     * own — the value is Node's published table). */
+    "ah.providers": { argTypes: [], result: DYN },
+    "ah.executionId": { argTypes: [], result: F64 },
+    "ah.triggerId": { argTypes: [], result: F64 },
     /** AsyncLocalStorage.withScope(store): enters the store now and answers
      * the native RunScope handle whose dispose()/[Symbol.dispose] installs
      * the value getStore() answered before it again. */
@@ -7218,6 +7258,8 @@ function buildLibFnSignatures() {
     "crypto.createPrivateKey": { argTypes: [DYN], result: DYN },
     "crypto.createPublicKey": { argTypes: [DYN], result: DYN },
     "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.encapsulate": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.decapsulate": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
     "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.signOneshotCb": { argTypes: [DYN, DYN, DYN, DYN], result: VOID },

@@ -106,6 +106,13 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // The AsyncHook flips and the execution-id reads touch the core's own
+  // thread-local state; no program code runs and nothing raises.
+  "ah.disable",
+  "ah.enable",
+  "ah.providers",
+  "ah.executionId",
+  "ah.triggerId",
   // scr_als_with_scope reads the effective store, enters the new one and
   // boxes the RunScope; no program code runs and nothing raises.
   "als.withScope",

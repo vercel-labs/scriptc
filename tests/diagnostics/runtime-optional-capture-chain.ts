@@ -1,19 +1,3 @@
-function logical(values: string[], present: string): void {
-  let value = values[0];
-  if (!value) return;
-  const read = () => console.log((present && value)?.length);
-  value = values.slice(1)[0];
-  read();
-}
-
-function conditional(values: string[], present: boolean): void {
-  let value = values[0];
-  if (!value) return;
-  const read = () => console.log((present ? value : value)?.length);
-  value = values.slice(1)[0];
-  read();
-}
-
 function multipleArms(values: (string | number)[]): void {
   let value = values[0];
   if (!value) return;
@@ -30,7 +14,5 @@ function commaCall(callbacks: (() => void)[], mark: () => void): void {
   call();
 }
 
-logical(["first"], "yes");
-conditional(["first"], true);
 multipleArms(["first"]);
 commaCall([() => {}], () => {});

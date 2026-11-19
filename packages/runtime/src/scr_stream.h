@@ -341,9 +341,9 @@ bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
  * answers +1 (the setEncoding chaining shape). */
 ScrStream *scr_stream_set_push_encoding(ScrStream *s, ScrStr *enc);
 bool scr_stream_push_null(ScrStream *s);
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str);
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str);
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
@@ -421,6 +421,7 @@ ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
 ScrPromise *scr_sc_array_buffer(ScrStream *s);
 ScrPromise *scr_sc_bytes(ScrStream *s); /* sc_buffer's bytes as a plain Uint8Array */
+ScrPromise *scr_sc_blob(ScrStream *s);  /* the chunks as a Blob (type "") */
 /* Readable.from over a typed source: arr holds the string or Buffer
  * elements (one element under SCR_FROM_SINGLE, from.js's string/Buffer
  * case). Elements push lazily, one _read at a time, as whole entries

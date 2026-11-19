@@ -1,8 +1,6 @@
-stream-completion-callback-error.ts:11:10 - error SC2020: 'end callbacks with parameters' is part of the standard library types but has no scriptc lowering yet
+stream-completion-callback-error.ts:12:10 - error SC1090: end completion callbacks whose parameter is not 'Error | null' (got 'string | undefined') is not supported yet
 
-  10 | sink.write("a", (err) => console.log("written", err));
-  11 | sink.end((err?: Error | null) => console.log("ended", err));
-     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  12 | 
-
-  hint: () => void callbacks are supported
+  11 | });
+  12 | sink.end((note?: string) => console.log("ended", note));
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | 

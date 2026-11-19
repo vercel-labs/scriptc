@@ -15,6 +15,7 @@
  *     },
  *     "nodeIslands": { "auto": true, "modules": ["src/plugins/*.ts"] },
  *     "wasm": ["build/module.wasm"],
+ *     "source": true,                    // installed elsewhere: program source
  *     "typePatches": {                   // frontend/type-patches/layer.ts
  *       "commander@^15.0.0": {
  *         "declarations": { "HelpContext.helpWidth": "| undefined" }
@@ -221,6 +222,13 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
       }),
     );
   };
+
+  // `source` is a package's own declaration that its files are program
+  // sources when another program installs it (frontend/resolve.ts,
+  // isSourcePackagePath). The project's own files already are.
+  const source = root["source"];
+  if (source !== undefined && typeof source !== "boolean")
+    problem(["source"], `must be true or false, not ${shown(source)}`, "use a boolean");
 
   const packages = root["packages"];
   if (packages !== undefined) {

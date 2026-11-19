@@ -623,6 +623,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // node:assert (scr_assert.c): all args borrowed; failures throw the
   // catchable AssertionError. The never-throwing members ride along.
   "assert.ok": "scr_assert_ok",
+  "assert.failDeprecated": "scr_assert_deprecated_fail",
+  "assert.failDeprecation": "scr_assert_fail_deprecation",
   "assert.record": "scr_assert_record_dyn",
   "assert.errorNew": "scr_assert_error_new",
   "assert.eqF64": "scr_assert_eq_f64",
@@ -1605,6 +1607,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.signOneshotCb": "scr_crypto_sign_oneshot_async",
   "crypto.signOneshotMaybe": "scr_crypto_sign_oneshot_maybe",
   "crypto.diffieHellman": "scr_crypto_diffie_hellman",
+  "crypto.encapsulate": "scr_crypto_encapsulate_dyn",
+  "crypto.decapsulate": "scr_crypto_decapsulate_dyn",
   "crypto.verifyOneshot": "scr_crypto_verify_oneshot",
   "crypto.verifyOneshotCb": "scr_crypto_verify_oneshot_async",
   "crypto.verifyOneshotMaybe": "scr_crypto_verify_oneshot_maybe",
@@ -2061,6 +2065,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.serverRejectNonStandardBodyWrites": "scr_http_server_reject_non_standard_body_writes",
   "http.clientWrite": "scr_http_client_write_str",
   "http.clientSetHeader": "scr_http_client_set_header",
+  "http.clientSetHeaderDyn": "scr_http_client_set_header_dyn",
+  "http.clientAppendHeaderDyn": "scr_http_client_append_header_dyn",
   "http.clientHasHeader": "scr_http_client_has_header_named",
   "http.clientRemoveHeader": "scr_http_client_remove_header",
   "http.clientGetHeaderNames": "scr_http_client_get_header_names",
@@ -2132,6 +2138,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sc.json": "scr_sc_json",
   "sc.buffer": "scr_sc_buffer",
   "sc.bytes": "scr_sc_bytes",
+  "sc.blob": "scr_sc_blob",
   "sc.arrayBuffer": "scr_sc_array_buffer",
   "dc.channel": "scr_dc_channel",
   "dc.subscribe": "scr_dc_subscribe",
@@ -2181,6 +2188,15 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "ar.asyncId": "scr_ar_async_id",
   "ar.triggerAsyncId": "scr_ar_trigger_id",
   "dc.chanBindStore": "scr_dc_chan_bind_store",
+  // node:async_hooks (scr_async_dyn.c / scr_async.c): the hook registry and
+  // the execution-id pair.
+  "ah.createHook": "scr_ah_create",
+  "ah.createHookParts": "scr_ah_parts",
+  "ah.enable": "scr_ah_enable",
+  "ah.disable": "scr_ah_disable",
+  "ah.providers": "scr_ah_providers",
+  "ah.executionId": "scr_async_execution_id",
+  "ah.triggerId": "scr_async_execution_trigger",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",
   // node:trace_events (scr_async_dyn.c): native Tracing handles.
@@ -2381,6 +2397,8 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.verifyOneshotCb",
   "crypto.verifyOneshotMaybe",
   "crypto.diffieHellman",
+  "crypto.encapsulate",
+  "crypto.decapsulate",
   "crypto.checkPrimeCb",
   "crypto.generatePrimeCb",
   // The checked-dynamic KDF and random entries deliver a callback from the
@@ -2422,6 +2440,9 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   // The deprecated Buffer constructor reports DEP0005, and SlowBuffer
   // DEP0030, on the next tick.
   "buffer.deprecation",
+  // assert.fail's deprecated form reports DEP0094 through the same warning
+  // machinery on the first multi-argument call.
+  "assert.failDeprecation",
   "buffer.slowBuffer",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",
@@ -2556,6 +2577,7 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "writable.writeEnc",
   "writable.writeEcb",
   "writable.end",
+  "writable.endEcb",
   "writable.uncork",
   "stream.destroy",
   "stream.destroyErr",

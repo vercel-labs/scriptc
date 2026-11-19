@@ -1670,6 +1670,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "timers":
     case "async":
     case "als":
+    case "ah":
     case "ar":
     case "te":
       return host.emitAsyncContextLibCall(e);

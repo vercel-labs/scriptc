@@ -77,6 +77,31 @@ ScrPkiKey *scr_pki_generate_x448(void);
 bool scr_pki_key_is_x448(const ScrPkiKey *key);
 ScrPkiKey *scr_pki_key_from_x448_raw(const uint8_t *raw, size_t len);
 ScrBytes *scr_pki_export_x448_raw(ScrPkiKey *key);
+/* The per-level ML-KEM core, installed by the optional scr_mlkem unit (the
+ * vendored mlkem-native archive). pki holds ML-KEM key material and DER/JWK
+ * forms without referencing that unit, so a program that never names an
+ * ML-KEM algorithm does not link it. */
+typedef struct ScrPkiMlkemCore {
+  bool (*keypair_derand)(int level, uint8_t *pk, uint8_t *sk, const uint8_t seed[64]);
+  bool (*encapsulate)(int level, uint8_t *ct, uint8_t shared[32], const uint8_t *pk,
+                      const uint8_t seed[32]);
+  bool (*decapsulate)(int level, uint8_t *shared, const uint8_t *ct, const uint8_t *sk);
+} ScrPkiMlkemCore;
+extern const ScrPkiMlkemCore *scr_pki_mlkem_core;
+
+/* ML-KEM (FIPS 203): node:crypto's crypto.encapsulate/decapsulate over the
+ * vendored core. The encapsulation answers a fresh object
+ * { sharedKey, ciphertext } (both Buffers) or NULL with the error pending;
+ * the decapsulation answers the 32-byte shared key, or NULL. */
+bool scr_pki_key_is_mlkem(const ScrPkiKey *key);
+ScrDyn *scr_pki_mlkem_encapsulate(const ScrPkiKey *key);
+ScrBytes *scr_pki_mlkem_decapsulate(const ScrPkiKey *key, const unsigned char *ciphertext,
+                                    size_t len);
+/* Node's key-shape errors for the KEM entry points. */
+void scr_pki_mlkem_encapsulate_failed(void);
+void scr_pki_mlkem_decapsulate_failed(void);
+void scr_pki_mlkem_expected_private(void);
+void scr_pki_mlkem_key_unsupported(void);
 /* The shared secret of an ECDH or X25519 key pair: X25519's 32 bytes or
  * ECDH's x coordinate at the field's width. NULL on failure (a public key
  * of another curve or type), with no error pending. */

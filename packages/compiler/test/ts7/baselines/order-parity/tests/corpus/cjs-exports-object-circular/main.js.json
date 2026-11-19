@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-object-circular/b.js",
+  "<repo>/tests/corpus/cjs-exports-object-circular/a.js",
+  "<repo>/tests/corpus/cjs-exports-object-circular/main.js"
+ ],
+ "diags": []
+}

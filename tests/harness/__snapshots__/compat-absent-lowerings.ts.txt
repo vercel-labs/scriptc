@@ -1,8 +1,8 @@
-compat-absent-lowerings.ts:9:17 - error SC2020: 'Duplex.toWeb' is part of the standard library types but has no scriptc lowering yet
+compat-absent-lowerings.ts:9:52 - error SC2020: 'Readable.toWeb with type: 'bytes'' is part of the standard library types but has no scriptc lowering yet
 
-   8 | import { Duplex, PassThrough } from "node:stream";
-   9 | const webPair = Duplex.toWeb(new PassThrough());
-     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  10 | console.log(typeof webPair);
+   8 | import { Readable } from "node:stream";
+   9 | const web = Readable.toWeb(Readable.from(["a"]), { type: "bytes" });
+     |                                                    ^~~~~~~~~~~~~
+  10 | console.log(typeof web);
 
-  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+  hint: a byte stream has no lowering yet; omit the option

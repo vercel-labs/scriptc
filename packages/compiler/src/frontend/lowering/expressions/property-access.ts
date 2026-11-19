@@ -49,6 +49,7 @@ import {
   argumentCountSlot,
   contextualCallCount,
   handedWithoutCallCount,
+  readsHiddenArguments,
   usedAsValue,
 } from "../argument-counts.js";
 import {
@@ -1148,19 +1149,46 @@ export function lowerPropertyAccessExpr(
   // exact arity at every call site and call/apply/bind indirection is
   // fenced, so the actual count IS the declared count — a compile-time
   // constant. Arrows don't bind `arguments` (the walk skips them,
-  // exactly JS's scoping); variable-arity signatures keep the fence
-  // (the count would need a hidden argc). The JS-source variadic
-  // `arguments` object (dynRest) was claimed at identifier lowering.
+  // exactly JS's scoping). A signature with a parameter that can be
+  // absent receives the hidden array of the arguments actually passed
+  // instead (call-signatures.ts appendArgumentsParameter), and a
+  // JavaScript source reads its array through the checked-dynamic
+  // receiver path below.
   if (
     expr.name.text === "length" &&
     !expr.questionDotToken &&
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "arguments" &&
-    !lowerer.ctx.argumentsLocal &&
     ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "IArguments" &&
     lowerer.isStdlibSymbol(lowerer.typeOf(expr.expression).getSymbol())
   ) {
-    let fn: ts.Node | undefined = expr.parent;
+    // The hidden array of the arguments this call received: its length is
+    // the count.
+    if (readsHiddenArguments(lowerer) && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const recv = lowerer.lowerExpr(expr.expression);
+      if (recv.type.kind !== "dyn") {
+        throw new InternalCompilerError("lowerer bug: hidden arguments array is not dynamic");
+      }
+      return lowerer.maybeNarrow(
+        {
+          kind: "dynCheck",
+          value: {
+            kind: "dynKeyGet",
+            value: recv,
+            key: { kind: "strLit", value: "length", type: STRING, loc },
+            type: DYN,
+            loc,
+          },
+          type: F64,
+          loc,
+        },
+        expr,
+      );
+    }
+    // A JavaScript source with a hidden array keeps the read it always had,
+    // through the checked-dynamic receiver path below: there is no constant
+    // to fold.
+    let fn: ts.Node | undefined = readsHiddenArguments(lowerer) ? undefined : expr.parent;
     while (
       fn !== undefined &&
       !ts.isFunctionDeclaration(fn) &&
@@ -4255,7 +4283,7 @@ function staticRegexFlagsOf(lowerer: Lowerer, node: ts.Expression): string | nul
     return init !== null ? staticRegexFlagsOf(lowerer, init) : null;
   }
   if (
-    ts.isNewExpression(expr) &&
+    (ts.isNewExpression(expr) || ts.isCallExpression(expr)) &&
     ts.isIdentifier(expr.expression) &&
     lowerer.isStdlibGlobal(expr.expression, "RegExp")
   ) {

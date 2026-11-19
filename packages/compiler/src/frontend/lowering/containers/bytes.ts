@@ -1747,6 +1747,14 @@ export function lowerBytesMethodCall(
     }
     const write = name.startsWith("write");
     const required = write ? 3 : 2; // Node declares offset AND byteLength required
+    // A JavaScript call whose slots are not all statically numbers (a
+    // string offset, an explicit undefined, a wrong arity) runs Node's
+    // runtime ladder, which names the failing argument.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      (nArgs !== required || !numericArguments(lowerer, call))
+    )
+      return dynNumericCall(lowerer, call, access, name, receiverIr, loc);
     if (nArgs !== required) {
       lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     }
@@ -1989,12 +1997,20 @@ function bufEncodingArgument(
       'a literal "utf8", "hex", "base64", "base64url", "latin1", "binary", "ascii", "utf16le", or "ucs2" spelling, or a string value, is the lowered encoding surface',
     );
   }
-  const raw = lowerOptionalArgument(lowerer, encNode, STRING, {
-    kind: "strLit",
-    value: "utf8",
-    type: STRING,
-    loc,
-  });
+  const raw = lowerOptionalArgument(
+    lowerer,
+    encNode,
+    STRING,
+    {
+      kind: "strLit",
+      value: "utf8",
+      type: STRING,
+      loc,
+    },
+    // Node's encoding slots read only a string as a name: a null in the
+    // union takes the default rather than becoming the "null" spelling.
+    { nullArm: "default" },
+  );
   return { raw, mode };
 }
 
@@ -2935,15 +2951,17 @@ function withDynBufferArguments(
 }
 
 /** Buffer.from(value, encoding) over a checked-dynamic value whose encoding
- * is not a literal: yazl forwards its `encoding` parameter, often undefined.
- * Null when the encoding is absent or a literal. */
+ * is not a known literal encoding name: yazl forwards its `encoding`
+ * parameter, often undefined, and a spelling Node does not know still runs
+ * (a string source throws ERR_UNKNOWN_ENCODING). Null when the encoding is
+ * absent or a name Node knows. */
 function dynBufferFromRuntimeEncoding(
   lowerer: Lowerer,
   value: IrExpr,
   encNode: ts.Expression | undefined,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (encNode === undefined || lowerer.typeOf(encNode).isStringLiteralType()) return null;
+  if (encNode === undefined || literalBufEncoding(lowerer, encNode) !== undefined) return null;
   return withDynBufferArguments(lowerer, value, encNode, loc, (source, encoding) =>
     dynBufferFromParts(source, encoding, loc),
   );
@@ -3166,7 +3184,9 @@ function lowerBufferStaticValue(
         if (value.type.kind === "dyn") {
           const runtimeEncoding = dynBufferFromRuntimeEncoding(lowerer, value, args[1], loc);
           if (runtimeEncoding) return runtimeEncoding;
-          const encName = args[1] ? bufEncoding(lowerer, "Buffer.from", args[1]) : "utf8";
+          // The runtime form above keeps every value it can read; a name
+          // left here is the literal spelling this form can evaluate.
+          const encName = args[1] ? literalBufEncoding(lowerer, args[1])! : "utf8";
           const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
           return {
             kind: "libCall",
@@ -3198,7 +3218,9 @@ function lowerBufferStaticValue(
               if (undefinedArg) {
                 enc = defaultAfterUndefined(undefinedArg, enc);
               } else {
-                enc = lowerOptionalArgument(lowerer, encNode, STRING, enc);
+                enc = lowerOptionalArgument(lowerer, encNode, STRING, enc, {
+                  nullArm: "default",
+                });
                 fn = "buffer.poolFromStrChecked";
               }
             }
@@ -3278,6 +3300,39 @@ function lowerBufferStaticValue(
           }
         }
       }
+    }
+    // A JavaScript source's untyped argument runs Node's own from():
+    // strings, Buffers, typed arrays, ArrayBuffers, arrays and array-likes,
+    // a valueOf hook, and the first-argument errors. A second argument is
+    // the string form's encoding or the buffer form's byte offset, and an
+    // object source ignores it, as Node's fromObject does.
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      args.length <= 2 &&
+      !args.some(ts.isSpreadElement)
+    ) {
+      const value: IrExpr =
+        args.length === 0
+          ? dynUndefinedExpr(loc)
+          : ts.isObjectLiteralExpression(args[0]!)
+            ? lowerDynObjectLiteral(lowerer, args[0]!)
+            : lowerer.lowerExprExpecting(args[0]!, DYN);
+      if (args.length === 2) {
+        return {
+          kind: "libCall",
+          fn: "buffer.poolFromDynOffset",
+          args: [value, lowerer.lowerExprExpecting(args[1]!, DYN)],
+          type: BYTES_U8,
+          loc,
+        };
+      }
+      return {
+        kind: "libCall",
+        fn: "buffer.fromDyn",
+        args: [value, strLit("", loc)],
+        type: BYTES_U8,
+        loc,
+      };
     }
     lowerer.noLowering(
       "Buffer.from with this argument shape",
@@ -3487,7 +3542,17 @@ function lowerBufferStaticValue(
               };
             }
           }
-          return dynLen(value, lowerer.coerceInto(totalNode, total, F64));
+          if (total.type.kind === "f64") return dynLen(value, total);
+          return {
+            kind: "libCall",
+            fn: "buffer.concatLenDynOpt",
+            args: [
+              value,
+              total.type.kind === "dyn" ? total : { kind: "dynFrom", value: total, type: DYN, loc },
+            ],
+            type: BYTES_U8,
+            loc,
+          };
         }
         return dynSum(value);
       }
@@ -3569,11 +3634,22 @@ function lowerBufferStaticValue(
       }
       // The totalLength form truncates or zero-pads (and THROWS Node's
       // 'length' RangeError on bad totals).
-      const totalNum = lowerer.coerceInto(totalNode, total, F64);
+      if (total.type.kind === "f64") {
+        return {
+          kind: "libCall",
+          fn: "buffer.concatLen",
+          args: [list, total],
+          type: BYTES_U8,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
-        fn: "buffer.concatLen",
-        args: [list, totalNum],
+        fn: "buffer.concatLenDynOpt",
+        args: [
+          { kind: "dynFrom", value: list, type: DYN, loc },
+          total.type.kind === "dyn" ? total : { kind: "dynFrom", value: total, type: DYN, loc },
+        ],
         type: BYTES_U8,
         loc,
       };

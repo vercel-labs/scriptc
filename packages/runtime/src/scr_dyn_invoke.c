@@ -2573,19 +2573,75 @@ static ScrDyn *dyn_worker_channel(void) { return scr_worker_message_channel(); }
 static ScrDyn *dyn_worker_channel(void) { return NULL; }
 #endif
 /* The runtime-provided host classes whose constructors the runtime builds:
- * the abort unit (scr_abort.c / scr_fetch.c), the event-target unit, and the
- * base error unit's DOMException. */
+ * the abort unit (scr_fetch.c), the event-target unit, and the base error
+ * unit's DOMException. */
+extern ScrError *scr_domex_new(const ScrDyn *message, const ScrDyn *name_or_options)
+    __attribute__((weak));
+/* Mach-O refuses an undefined weak *reference* in an executable, so the
+ * optional constructor units get weak definitions there: a program that
+ * links none of them still links, and the units' strong definitions replace
+ * them. The linked flags answer the capability tests the NULL checks give on
+ * the other formats — a defined stub can no longer be told apart by its
+ * address. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_abort_unit_linked = 0;
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_fetch_abort_controller_new(void) { return NULL; }
+__attribute__((weak)) ScrDyn *scr_event_target_new(void) { return NULL; }
+__attribute__((weak)) ScrDyn *scr_event_new(ScrDyn *args) {
+  (void)args;
+  return NULL;
+}
+__attribute__((weak)) ScrDyn *scr_custom_event_new(ScrDyn *args) {
+  (void)args;
+  return NULL;
+}
+static bool dyn_abort_available(void) { return scr_dyn_abort_unit_linked != 0; }
+static bool dyn_event_available(void) { return scr_dyn_event_target_unit_linked != 0; }
+#else
 extern ScrDyn *scr_fetch_abort_controller_new(void) __attribute__((weak));
 extern ScrDyn *scr_event_target_new(void) __attribute__((weak));
 extern ScrDyn *scr_event_new(ScrDyn *args) __attribute__((weak));
 extern ScrDyn *scr_custom_event_new(ScrDyn *args) __attribute__((weak));
-extern ScrError *scr_domex_new(const ScrDyn *message, const ScrDyn *name_or_options)
-    __attribute__((weak));
+static bool dyn_abort_available(void) { return scr_fetch_abort_controller_new != NULL; }
+static bool dyn_event_available(void) {
+  return scr_event_new != NULL && scr_custom_event_new != NULL && scr_event_target_new != NULL;
+}
+#endif
+/* Mach-O refuses an undefined weak *reference* in an executable, so the
+ * regex entries get weak definitions there: a program that links no regex
+ * unit still links, and the unit's strong definitions replace them. The
+ * linked flag answers the capability test the NULL check gives on the other
+ * formats — a defined stub can no longer be told apart by its address. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_regex_unit_linked = 0;
+__attribute__((weak)) ScrRegex *scr_regex_new_checked(const ScrDyn *pattern,
+                                                      const ScrDyn *flags) {
+  (void)pattern;
+  (void)flags;
+  return NULL;
+}
+__attribute__((weak)) ScrDyn *scr_dyn_native_regex(ScrRegex *value) {
+  (void)value;
+  return NULL;
+}
+__attribute__((weak)) bool scr_dyn_native_regex_is(const ScrDyn *value) {
+  (void)value;
+  return false;
+}
+__attribute__((weak)) void scr_regex_release(ScrRegex *value) { (void)value; }
+static bool dyn_regex_available(void) { return scr_dyn_regex_unit_linked != 0; }
+#else
 extern ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags)
     __attribute__((weak));
 extern ScrDyn *scr_dyn_native_regex(ScrRegex *value) __attribute__((weak));
 extern bool scr_dyn_native_regex_is(const ScrDyn *value) __attribute__((weak));
 extern void scr_regex_release(ScrRegex *value) __attribute__((weak));
+static bool dyn_regex_available(void) {
+  return scr_regex_new_checked != NULL && scr_dyn_native_regex != NULL &&
+         scr_dyn_native_regex_is != NULL && scr_regex_release != NULL;
+}
+#endif
 
 /* `new RegExp(pattern, flags)` and `RegExp(pattern, flags)` through the
  * interned constructor: the same native engine the regex literals and the
@@ -2595,8 +2651,7 @@ extern void scr_regex_release(ScrRegex *value) __attribute__((weak));
  * `constructor` that step compares, since a write of that member is
  * refused); `new` always builds a copy. */
 static ScrDyn *dyn_regex_construct(const ScrDyn *pattern, const ScrDyn *flags, bool identity) {
-  if (scr_regex_new_checked == NULL || scr_dyn_native_regex == NULL ||
-      scr_dyn_native_regex_is == NULL || scr_regex_release == NULL) {
+  if (!dyn_regex_available()) {
     char message[128];
     int length = snprintf(message, sizeof message, identity ? dyn_s0 : dyn_s33, dyn_s25, dyn_s32);
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
@@ -2693,13 +2748,13 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
     ScrDyn *channel = dyn_worker_channel();
     if (channel != NULL) *result = channel;
     else dyn_unsupported_constructor(name, result);
-  } else if (strcmp(name, dyn_s52) == 0 && scr_fetch_abort_controller_new != NULL) {
+  } else if (strcmp(name, dyn_s52) == 0 && dyn_abort_available()) {
     *result = scr_fetch_abort_controller_new();
-  } else if (strcmp(name, dyn_s53) == 0 && scr_event_new != NULL) {
+  } else if (strcmp(name, dyn_s53) == 0 && dyn_event_available()) {
     *result = scr_event_new((ScrDyn *)args);
-  } else if (strcmp(name, dyn_s54) == 0 && scr_custom_event_new != NULL) {
+  } else if (strcmp(name, dyn_s54) == 0 && dyn_event_available()) {
     *result = scr_custom_event_new((ScrDyn *)args);
-  } else if (strcmp(name, dyn_s55) == 0 && scr_event_target_new != NULL) {
+  } else if (strcmp(name, dyn_s55) == 0 && dyn_event_available()) {
     *result = scr_event_target_new();
   } else if (strcmp(name, dyn_s56) == 0 && scr_domex_new != NULL) {
     ScrError *error = scr_domex_new(first, argc > 1 ? items[1] : scr_dyn_undefined());

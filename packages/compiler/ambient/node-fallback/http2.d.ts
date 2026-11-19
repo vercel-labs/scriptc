@@ -18,6 +18,11 @@ declare module "http2" {
   export interface Http2ServerRequest {
     readonly url: string;
     readonly method: string;
+    /* The trailer block the request carried (empty before the request
+     * ends): a record of joined values, and the raw [name, value, ...]
+     * list after 'end'. */
+    readonly trailers: IncomingHttpHeaders;
+    readonly rawTrailers: string[];
     readonly statusCode: number | undefined;
     readonly socket: Socket;
     readonly headers: { [name: string]: string | undefined };
@@ -72,8 +77,10 @@ declare module "http2" {
       statusMessage: string,
       headers?: import("http").OutgoingHttpHeaders | string[],
     ): Http2ServerResponse;
-    writeContinue(): void;
-    writeEarlyHints(hints: Record<string, string | string[]>): void;
+    writeContinue(): boolean;
+    writeEarlyHints(hints: Record<string, string | string[]>): boolean;
+    /* A 1xx block before the response starts: 100..199 (never 101). */
+    writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     write(data: string | Uint8Array): void;
     flushHeaders(): void;
     cork(): void;
@@ -668,6 +675,9 @@ declare module "http2" {
   }
 
   export interface ClientHttp2Stream extends Http2StreamCore {
+    on(event: "continue", listener: () => void): void;
+    once(event: "continue", listener: () => void): void;
+    addListener(event: "continue", listener: () => void): void;
     on(event: "response", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     on(event: "push", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     on(event: "headers", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;

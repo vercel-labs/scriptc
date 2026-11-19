@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/util-get-call-sites.ts"],
+  "diags": []
+}

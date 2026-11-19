@@ -175,7 +175,7 @@ test("hashed number-key lookups probe inline and call the runtime only for wide 
     expect(helper).toMatch(/br i1 %ix\d+, label %slot, label %slow\n/);
     expect(helper).not.toContain("dense.any");
     const hashed =
-      /^define internal ptr @sc_map_entry_f64_hashed\(ptr %m, double %k\) noinline [^]*?^}/m.exec(
+      /^define internal ptr @sc_map_entry_f64_hashed\(ptr %m, double %k\) align 64 noinline [^]*?^}/m.exec(
         module,
       )![0];
     // The SameValueZero key word (canonical NaN, +0 for -0) from integer
@@ -223,7 +223,7 @@ test("a key with an integer view tests the direct index on the integer", () => {
     // that double. The probe converts nothing itself (cvtsi2sd would wait
     // for its register's last value).
     const hashed =
-      /^define internal ptr @sc_map_entry_f64_hashed_int\(ptr %m, i64 %ki, double %k\) noinline [^]*?^}/m.exec(
+      /^define internal ptr @sc_map_entry_f64_hashed_int\(ptr %m, i64 %ki, double %k\) align 64 noinline [^]*?^}/m.exec(
         integral.module,
       )![0];
     expect(hashed).toContain("bitcast double %k to i64");
@@ -252,7 +252,7 @@ test("a lookup inside a loop calls the flavor that inlines the hashed probe", ()
     // They only read memory and always return, so a has() and get() of one
     // key merge before they are inlined.
     const helper = new RegExp(
-      `^define internal ptr @${name}\\.loop\\([^)]*\\) alwaysinline memory\\(read\\) nounwind willreturn [^]*?^}`,
+      `^define internal ptr @${name}\\.loop\\([^)]*\\) align 64 alwaysinline memory\\(read\\) nounwind willreturn [^]*?^}`,
       "m",
     ).exec(module)![0];
     const hashed =
@@ -260,7 +260,7 @@ test("a lookup inside a loop calls the flavor that inlines the hashed probe", ()
     expect(helper).toContain(`call ptr @${hashed}.loop(`);
     expect(module).toMatch(
       new RegExp(
-        `^define internal ptr @${hashed}\\.loop\\([^)]*\\) alwaysinline memory\\(read\\) nounwind willreturn `,
+        `^define internal ptr @${hashed}\\.loop\\([^)]*\\) align 64 alwaysinline memory\\(read\\) nounwind willreturn `,
         "m",
       ),
     );

@@ -1630,12 +1630,14 @@ export function lowerMonitorEventLoopDelayCall(lowerer: Lowerer, expr: ts.CallEx
           "resolution is the one option",
         );
       }
-      // An undefined resolution takes the default, as Node's destructuring.
+      // An undefined resolution takes the default, as Node's destructuring;
+      // a supplied one is validated, so a null does not convert to 0.
       resolution = lowerOptionalArgument(
         lowerer,
         shorthand ? property.name : property.initializer,
         F64,
         numLit(10, loc),
+        { nullArm: "reject" },
       );
     }
   }

@@ -418,6 +418,10 @@ export function unloweredModuleMemberValue(
   loc: SrcLoc,
   esmNamed: boolean,
 ): IrExpr {
+  // async_hooks.asyncWrapProviders: Node's published provider table, which
+  // the runtime builds exactly (scr_ah_providers).
+  if (bi.module === "async_hooks" && bi.member === "asyncWrapProviders")
+    return { kind: "libCall", fn: "ah.providers", args: [], type: DYN, loc };
   const display = `${bi.module}.${bi.member}`;
   const hint = builtinFenceHintOf(bi.module, bi.member);
   const kind = nodeModuleMemberKind(bi.module, bi.member);

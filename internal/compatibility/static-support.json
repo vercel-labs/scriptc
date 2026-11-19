@@ -768,7 +768,7 @@
     { "chapter": "http", "parent": "Class: `http.OutgoingMessage`", "signatures": ["`outgoingMessage.destroy([error])`"], "status": "partial", "evidence": ["tests/corpus/2985-http-static-message-destroy.ts"] },
     { "chapter": "http", "parent": "HTTP", "signatures": ["`http.setMaxIdleHTTPParsers(max)`"], "status": "partial", "evidence": ["tests/corpus/compat-http-message-tail.ts", "tests/corpus/compat-http-message-tail.mjs"] },
     { "chapter": "https", "parent": "HTTPS", "signatures": ["Class: `https.Server`"], "status": "partial", "evidence": ["tests/corpus/compat-http-server-tail.mjs"] },
-    { "chapter": "http", "parent": "Class: `http.Agent`", "signatures": ["`agent.createConnection(options[, callback])`"], "status": "partial", "evidence": ["tests/corpus/http-agent-create-connection.mjs"] },
+    { "chapter": "http", "parent": "Class: `http.Agent`", "signatures": ["`agent.createConnection(options[, callback])`"], "status": "supported", "evidence": ["tests/corpus/http-agent-create-connection.mjs", "tests/corpus/http-agent-create-connection-typed.ts"] },
     { "chapter": "http", "parent": "Class: `http.Agent`", "signatures": ["`agent.keepSocketAlive(socket)`", "`agent.reuseSocket(socket, request)`"], "status": "supported", "evidence": ["tests/corpus/http-agent-keep-alive-hooks.ts"] },
     { "chapter": "http", "parent": "Class: `http.Agent`", "signatures": ["`maxTotalSockets` Type: {number}"], "status": "partial", "evidence": ["tests/corpus/http-agent-max-total-sockets.ts"] },
     { "chapter": "http", "parent": "Class: `http.ClientRequest`", "signatures": ["`maxHeadersCount` Type: {number} **Default:** `1000`"], "status": "partial", "evidence": ["tests/corpus/http-client-max-headers-count.ts"] },

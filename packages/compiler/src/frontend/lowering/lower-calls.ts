@@ -297,6 +297,7 @@ import {
   lowerCompatReqStreamOptionalCall,
   lowerHttpClientFnCall,
   lowerHttpClientFnRefCall,
+  lowerNetConnectCall,
   lowerNetServerAsyncDisposeCall,
 } from "./lower-server.js";
 import {
@@ -5247,6 +5248,25 @@ function unionArmsDispatchMember(
  * the dyn array and validated-extracts the survivors into the element type
  * the checker committed the result to. Null when the receiver isn't a dyn
  * value or the method isn't claimable (the method-call fence stays). */
+/** A receiver whose checker type is the `Agent` class declared by node:http
+ * (the fallback ambient or the real @types/node both name the file
+ * http.d.ts). An `https.Agent` is deliberately NOT matched: its default
+ * dialer is tls.connect, and the rewritten net dial builds a plaintext
+ * socket, so a secure agent keeps the dyn dispatch, whose dialer refuses.
+ * `any` receivers keep the dyn dispatch too. */
+function isHttpAgentReceiver(lowerer: Lowerer, expr: ts.Expression): boolean {
+  const t = lowerer.typeOf(expr);
+  if ((t.flags & ts.TypeFlags.Any) !== 0) return false;
+  const sym = t.getSymbol();
+  if (!sym || ts.symbolName(sym) !== "Agent") return false;
+  return (
+    sym.declarations?.some((d) => {
+      const file = ts.getSourceFileOfNode(d).fileName.replace(/\\/g, "/");
+      return file.endsWith("/http.d.ts");
+    }) ?? false
+  );
+}
+
 function lowerDynReceiverMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -5254,6 +5274,25 @@ function lowerDynReceiverMethodCall(
   boxTypedTemporary = false,
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
+  // agent.createConnection(...) is Node's default dialer, which IS
+  // net.createConnection — and a compiled program cannot install an Agent
+  // override (subclassing is refused; an instance assignment hits the
+  // Agent setter's fence), so the two calls lower identically. The receiver
+  // is evaluated first, as Node evaluates it before the arguments.
+  // lowerNetConnectCall carries the note about switching to the
+  // instance-dispatching form if hook overrides ever become reachable.
+  if (access.name.text === "createConnection" && isHttpAgentReceiver(lowerer, access.expression)) {
+    const callsLoc = locOf(call);
+    const receiver = lowerer.lowerExpr(access.expression);
+    const net = lowerNetConnectCall(lowerer, call, "createConnection", callsLoc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(access.expression) }],
+      result: net,
+      type: net.type,
+      loc: callsLoc,
+    };
+  }
   if (stdlibGlobalNameOf(lowerer, access.expression) !== null) {
     // A named builtin import can resolve to its ambient declaration, too.
     // parentPort is an instance value whose methods use the native handle;

@@ -8411,10 +8411,10 @@ static void scr_stream_emit_readable_now(ScrStream *s) {
   }
   st->r.need_readable = st->r.flowing != 1 && !st->r.ended &&
                         st->r.length <= st->r.hwm;
+  /* flow() alone reaches the end: Node emits 'end' only through a read
+   * (read()/read(0)) or through flow(), so a stream nobody observes stays
+   * unended after push(null) (readableEnded false). */
   scr_stream_flow(s);
-  if (!scr_exc_pending() && st->r.ended && st->r.length == 0) {
-    scr_stream_end_readable(s);
-  }
 }
 
 /* ── tick dispatch ────────────────────────────────────────────────────── */

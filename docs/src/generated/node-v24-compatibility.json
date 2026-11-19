@@ -76969,7 +76969,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
     },
@@ -77014,7 +77014,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77037,7 +77037,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77060,7 +77060,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77083,7 +77083,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77199,7 +77199,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
     },
@@ -77244,7 +77244,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77267,7 +77267,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77290,7 +77290,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77313,7 +77313,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77336,7 +77336,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77382,7 +77382,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77405,7 +77405,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77428,7 +77428,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
@@ -77705,7 +77705,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
     },
@@ -77981,7 +77981,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented for the documented static async-iteration subset.",
+        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
     },

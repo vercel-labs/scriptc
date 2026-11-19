@@ -55812,8 +55812,12 @@
           "tests/corpus/webassembly-typed.ts",
           "tests/corpus/webassembly-worker.ts",
           "tests/corpus/webassembly-wpt-jsapi.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs",
+          "tests/corpus/webstream-byob-reader-js.mjs",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/node-types/navigator.ts",
           "tests/harness/fetch-conformance.test.ts",
@@ -56864,8 +56868,12 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.ReadableByteStreamController",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -56917,8 +56925,12 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.ReadableStreamBYOBReader",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -56944,8 +56956,12 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.ReadableStreamBYOBRequest",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -121944,8 +121960,12 @@
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/web-stream-writable-untyped.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs",
+          "tests/corpus/webstream-byob-reader-js.mjs",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/harness/fetch-conformance.test.ts"
         ]
@@ -122602,8 +122622,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.closed",
         "tests": [
-          "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122629,8 +122649,12 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.ReadableStreamBYOBReader",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122653,11 +122677,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableStreamBYOBReader.cancel",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122680,11 +122708,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableStreamBYOBReader.read",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122707,11 +122739,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableStreamBYOBReader.releaseLock",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122734,11 +122770,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.closed",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -122874,8 +122914,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.desiredSize",
         "tests": [
-          "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -122901,8 +122941,12 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.ReadableByteStreamController",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122925,11 +122969,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableByteStreamController.close",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122952,11 +123000,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableByteStreamController.enqueue",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122979,11 +123031,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableByteStreamController.error",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -123006,11 +123062,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.byobRequest",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -123033,11 +123093,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.desiredSize",
         "tests": [
+          "tests/corpus/webstream-byte-streams.ts",
           "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -123063,7 +123127,12 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.ReadableStreamBYOBRequest",
         "tests": [
-          "tests/corpus/webstream-byob-reader.ts"
+          "tests/corpus/webstream-byte-streams.ts",
+          "tests/corpus/webstream-byob-reader.ts",
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -123086,10 +123155,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableStreamBYOBRequest.respond",
         "tests": [
-          "tests/corpus/webstream-byob-reader.ts"
+          "tests/corpus/webstream-byte-streams.ts",
+          "tests/corpus/webstream-byob-reader.ts",
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -123112,10 +123186,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableStreamBYOBRequest.respondWithNewView",
         "tests": [
-          "tests/corpus/webstream-byob-reader.ts"
+          "tests/corpus/webstream-byte-streams.ts",
+          "tests/corpus/webstream-byob-reader.ts",
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -123138,10 +123217,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.view",
         "tests": [
-          "tests/corpus/webstream-byob-reader.ts"
+          "tests/corpus/webstream-byte-streams.ts",
+          "tests/corpus/webstream-byob-reader.ts",
+          "tests/corpus/webstream-byob-reader-js.mjs",
+          "tests/corpus/webstream-byte-stream.ts",
+          "tests/corpus/webstream-byte-stream-js.mjs",
+          "tests/corpus/webstream-byob-partial-elements-js.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -123488,8 +123572,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.desiredSize",
         "tests": [
-          "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -123837,8 +123921,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.desiredSize",
         "tests": [
-          "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byte-controller.ts"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/compat-web-stream-members.ts"
         ]
       },
       "anchorSource": "ancestor"

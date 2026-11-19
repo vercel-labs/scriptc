@@ -199,6 +199,12 @@ static void scr_sqlite_inspect_expandos(ScrDyn *view, const ScrDyn *expandos, Sc
                                         void *h);
 static void scr_sqlite_add_expandos(ScrDyn *view, const ScrDyn *expandos, void *h,
                                     ScrDynHandleTag tag);
+/* An added property shadows a class method: true when `method` names one
+ * (its call, or V8's "not a function" TypeError, is in `out`). */
+static bool scr_sqlite_own_method_call(ScrDyn *expandos, void *h, ScrDynHandleTag tag,
+                                       const char *method, ScrDyn *self,
+                                       ScrDyn *const *args, size_t argc, const char *what,
+                                       ScrDyn **out);
 
 /* ── small helpers ──────────────────────────────────────────────────── */
 
@@ -1092,8 +1098,11 @@ static ScrDyn *scr_sqlite_stmt_all_result(ScrSqliteStmt *s) {
 
 static ScrDyn *scr_sqlite_stmt_invoke(void *h, ScrDyn *self, const char *method,
                                       ScrDyn *const *args, size_t argc, const char *what) {
-  (void)self;
   ScrSqliteStmt *s = h;
+  ScrDyn *own = NULL;
+  if (scr_sqlite_own_method_call(s->expandos, h, SCR_DYNH_SQLITE_STATEMENT, method, self, args,
+                                 argc, what, &own))
+    return own;
 
   if (strcmp(method, "run") == 0 || strcmp(method, "get") == 0 || strcmp(method, "all") == 0 ||
       strcmp(method, "iterate") == 0) {
@@ -1436,8 +1445,11 @@ static bool scr_sqlite_tag_bind(ScrSqliteStmt *stmt, ScrDyn *const *args, size_t
 /* One SQLTagStore method: prepare/bind, then run the statement operation. */
 static ScrDyn *scr_sqlite_tag_invoke(void *h, ScrDyn *self, const char *method,
                                      ScrDyn *const *args, size_t argc, const char *what) {
-  (void)self;
   ScrSqliteTagStore *store = h;
+  ScrDyn *own = NULL;
+  if (scr_sqlite_own_method_call(store->expandos, h, SCR_DYNH_SQLITE_TAG_STORE, method, self, args,
+                                 argc, what, &own))
+    return own;
   if (strcmp(method, "clear") == 0) {
     scr_sqlite_tag_clear_entries(store);
     return scr_dyn_retain(scr_dyn_undefined());
@@ -1755,9 +1767,19 @@ static ScrDyn *scr_sqlite_limits_own_view(void *h) {
     scr_sqlite_invalid_state("database is not open");
     return NULL;
   }
+  /* An added getter can close or drop the database while the walk is in
+   * progress: the connection is held here and checked again before the
+   * limits are read. */
+  ScrSqliteDb *db = scr_sqlite_db_retain(l->db);
   ScrDyn *view = scr_dyn_new_obj();
   /* The JavaScript-added properties come first, as V8 lists them. */
   scr_sqlite_add_expandos(view, l->expandos, l, SCR_DYNH_SQLITE_LIMITS);
+  if (!scr_sqlite_limits_open(l)) {
+    scr_dyn_release(view);
+    scr_sqlite_db_release(db);
+    scr_sqlite_invalid_state("database is not open");
+    return NULL;
+  }
   for (size_t i = 0; i < SCR_SQLITE_LIMIT_COUNT; i++) {
     const char *name = scr_sqlite_limit_names[i];
     size_t len = strlen(name);
@@ -1765,6 +1787,7 @@ static ScrDyn *scr_sqlite_limits_own_view(void *h) {
                     scr_dyn_new_num((double)sqlite3_limit(l->db->conn, (int)i, -1)));
     scr_dyn_obj_set_attrs_at(view, scr_dyn_obj_index_of(view, name, len), true, true, false);
   }
+  scr_sqlite_db_release(db);
   return view;
 }
 
@@ -1776,8 +1799,15 @@ static ScrDyn *scr_sqlite_limits_inspect_view(void *h) {
     scr_sqlite_invalid_state("database is not open");
     return NULL;
   }
+  ScrSqliteDb *db = scr_sqlite_db_retain(l->db);
   ScrDyn *view = scr_dyn_new_obj();
   scr_sqlite_inspect_expandos(view, l->expandos, SCR_DYNH_SQLITE_LIMITS, h);
+  if (!scr_sqlite_limits_open(l)) {
+    scr_dyn_release(view);
+    scr_sqlite_db_release(db);
+    scr_sqlite_invalid_state("database is not open");
+    return NULL;
+  }
   for (size_t i = 0; i < SCR_SQLITE_LIMIT_COUNT; i++) {
     const char *name = scr_sqlite_limit_names[i];
     size_t len = strlen(name);
@@ -1785,6 +1815,7 @@ static ScrDyn *scr_sqlite_limits_inspect_view(void *h) {
                     scr_dyn_new_num((double)sqlite3_limit(l->db->conn, (int)i, -1)));
     scr_dyn_obj_set_attrs_at(view, scr_dyn_obj_index_of(view, name, len), true, true, false);
   }
+  scr_sqlite_db_release(db);
   return view;
 }
 
@@ -3412,8 +3443,11 @@ done:
 
 static ScrDyn *scr_sqlite_db_invoke(void *h, ScrDyn *self, const char *method,
                                     ScrDyn *const *args, size_t argc, const char *what) {
-  (void)self;
   ScrSqliteDb *db = h;
+  ScrDyn *own = NULL;
+  if (scr_sqlite_own_method_call(db->expandos, h, SCR_DYNH_SQLITE_DB, method, self, args, argc,
+                                 what, &own))
+    return own;
 
   if (strcmp(method, "close") == 0) {
     if (db->conn == NULL) {
@@ -3752,7 +3786,11 @@ static ScrDyn *scr_sqlite_table_read(const ScrDyn *table, const char *key, size_
   if (!scr_sqlite_table_prop(table, key, len, &prop)) return NULL;
   if (!prop.accessor) return scr_dyn_retain(prop.value);
   if (prop.getter == NULL) return scr_dyn_retain(scr_dyn_undefined());
-  return scr_sqlite_call_with_handle(prop.getter, NULL, 0, h, tag);
+  /* A getter may delete or replace itself; keep it alive for the call. */
+  ScrDyn *getter = scr_dyn_retain(prop.getter);
+  ScrDyn *value = scr_sqlite_call_with_handle(getter, NULL, 0, h, tag);
+  scr_dyn_release(getter);
+  return value;
 }
 
 /* The addresses of the added properties in enumeration order. */
@@ -3774,11 +3812,15 @@ static void scr_sqlite_add_expandos(ScrDyn *view, const ScrDyn *expandos, void *
     const ScrStr *name = added->v.arr.items[i]->v.str;
     ScrDynProp prop;
     if (!scr_sqlite_table_prop(expandos, name->data, name->len, &prop) || !prop.enumerable) continue;
-    ScrDyn *value = prop.accessor
-                        ? (prop.getter != NULL
-                               ? scr_sqlite_call_with_handle(prop.getter, NULL, 0, h, tag)
-                               : scr_dyn_retain(scr_dyn_undefined()))
-                        : scr_dyn_retain(prop.value);
+    ScrDyn *value;
+    if (!prop.accessor) value = scr_dyn_retain(prop.value);
+    else if (prop.getter == NULL) value = scr_dyn_retain(scr_dyn_undefined());
+    else {
+      /* A getter may delete or replace itself; keep it alive for the call. */
+      ScrDyn *getter = scr_dyn_retain(prop.getter);
+      value = scr_sqlite_call_with_handle(getter, NULL, 0, h, tag);
+      scr_dyn_release(getter);
+    }
     if (value != NULL) scr_dyn_obj_set(view, name->data, name->len, value);
   }
   scr_dyn_release(added);
@@ -3853,8 +3895,11 @@ static bool scr_sqlite_table_write(ScrDyn **expandos, const char *cls, void *h,
         scr_dyn_assign_failure_note();
         return true;
       }
+      /* A setter may delete or replace itself; keep it alive for the call. */
+      ScrDyn *setter = scr_dyn_retain(prop.setter);
       ScrDyn *const args[] = {(ScrDyn *)value};
-      ScrDyn *result = scr_sqlite_call_with_handle(prop.setter, args, 1, h, tag);
+      ScrDyn *result = scr_sqlite_call_with_handle(setter, args, 1, h, tag);
+      scr_dyn_release(setter);
       scr_dyn_release(result);
       return true;
     }
@@ -3868,6 +3913,45 @@ static bool scr_sqlite_table_write(ScrDyn **expandos, const char *cls, void *h,
     }
   }
   return scr_sqlite_assign_added(expandos, key, len, value);
+}
+
+/* An added property shadows the class's method of the same name, as an own
+ * property shadows a prototype method in Node: a callable runs with the
+ * handle as `this`, and any other value is V8's "not a function" TypeError.
+ * Answers false when `method` names no added property. */
+static bool scr_sqlite_own_method_call(ScrDyn *expandos, void *h, ScrDynHandleTag tag,
+                                       const char *method, ScrDyn *self,
+                                       ScrDyn *const *args, size_t argc, const char *what,
+                                       ScrDyn **out) {
+  ScrDynProp prop;
+  if (!scr_sqlite_table_prop(expandos, method, strlen(method), &prop)) return false;
+  ScrDyn *callable;
+  if (prop.accessor) {
+    if (prop.getter == NULL) callable = scr_dyn_retain(scr_dyn_undefined());
+    else {
+      ScrDyn *getter = scr_dyn_retain(prop.getter);
+      callable = scr_sqlite_call_with_handle(getter, NULL, 0, h, tag);
+      scr_dyn_release(getter);
+    }
+  } else callable = scr_dyn_retain(prop.value);
+  if (callable == NULL || scr_exc_pending()) {
+    scr_dyn_release(callable);
+    *out = NULL;
+    return true;
+  }
+  if (!scr_dyn_is_callable(callable)) {
+    scr_dyn_release(callable);
+    char message[192];
+    snprintf(message, sizeof message, "%s is not a function", what != NULL ? what : method);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    *out = NULL;
+    return true;
+  }
+  scr_dyn_this_push_dyn(self);
+  *out = scr_dyn_call(callable, args, argc, what);
+  scr_dyn_this_pop();
+  scr_dyn_release(callable);
+  return true;
 }
 
 /* Defines an added property with an ordinary object's rules. */
@@ -4188,7 +4272,10 @@ static void scr_sqlite_db_add_brand(ScrDyn *view) {
   ScrSym *type = scr_sqlite_type_symbol_of();
   if (type == NULL || scr_sym_event_ops == NULL) return;
   ScrDyn *key = scr_sym_event_ops->box(type);
-  scr_dyn_symbol_key_set(view, key, scr_sqlite_str_dyn("node:sqlite"));
+  /* symbol_key_set borrows the value. */
+  ScrDyn *value = scr_sqlite_str_dyn("node:sqlite");
+  scr_dyn_symbol_key_set(view, key, value);
+  scr_dyn_release(value);
   scr_dyn_release(key);
 }
 

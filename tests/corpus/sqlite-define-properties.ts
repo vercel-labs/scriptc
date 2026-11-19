@@ -152,3 +152,110 @@ attempt("delete-empty", () => {
 });
 
 db.close();
+
+// An accessor that removes or replaces itself mid-call keeps its value.
+attempt("getter-self-remove", () => {
+  const dbx = new DatabaseSync(":memory:");
+  const fields = dbx as unknown as Record<string, unknown>;
+  Object.defineProperty(dbx, "vanish", {
+    get() {
+      delete fields.vanish;
+      return "kept";
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  const value = fields.vanish;
+  const after = Object.getOwnPropertyNames(dbx).includes("vanish");
+  dbx.close();
+  return [value, after];
+});
+attempt("setter-self-replace", () => {
+  const dbx = new DatabaseSync(":memory:");
+  const fields = dbx as unknown as Record<string, unknown>;
+  Object.defineProperty(dbx, "swap", {
+    get() {
+      return "original";
+    },
+    set(_value: unknown) {
+      Object.defineProperty(dbx, "swap", {
+        value: "replaced",
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  fields.swap = 1;
+  const value = fields.swap;
+  dbx.close();
+  return value;
+});
+
+// A getter that closes the database mid-walk leaves the walk with Node's
+// error instead of reading a closed connection.
+attempt("limits-close-in-getter", () => {
+  const dbx = new DatabaseSync(":memory:");
+  const limits = dbx.limits as unknown as Record<string, unknown>;
+  Object.defineProperty(limits, "closer", {
+    get() {
+      dbx.close();
+      return 1;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  return Object.values(limits);
+});
+
+// A program-added toJSON is the object's JSON form.
+attempt("tojson-db", () => {
+  const dbx = new DatabaseSync(":memory:");
+  (dbx as unknown as Record<string, unknown>).toJSON = () => ({ tag: "db" });
+  const text = JSON.parse(JSON.stringify(dbx));
+  dbx.close();
+  return text;
+});
+attempt("tojson-stmt-tag-limits", () => {
+  const dbx = new DatabaseSync(":memory:");
+  const stmt = dbx.prepare("SELECT 1 AS a");
+  const tag = dbx.createTagStore(2);
+  const limits = dbx.limits;
+  (stmt as unknown as Record<string, unknown>).toJSON = () => ({ tag: "stmt" });
+  (tag as unknown as Record<string, unknown>).toJSON = () => ({ tag: "tag" });
+  (limits as unknown as Record<string, unknown>).toJSON = () => ({ tag: "limits" });
+  const out = [
+    JSON.parse(JSON.stringify(stmt)),
+    JSON.parse(JSON.stringify(tag)),
+    JSON.parse(JSON.stringify(limits)),
+    JSON.parse(JSON.stringify({ stmt })),
+  ];
+  dbx.close();
+  return out;
+});
+
+// An own property shadows a class method: a function is called, and any
+// other value is V8's "not a function" TypeError.
+attempt("shadow-method-function", () => {
+  const dbx = new DatabaseSync(":memory:");
+  let called = false;
+  (dbx as unknown as Record<string, unknown>).exec = () => {
+    called = true;
+  };
+  dbx.exec("SELECT 1");
+  dbx.close();
+  return called;
+});
+attempt("shadow-method-value", () => {
+  const dbx = new DatabaseSync(":memory:");
+  (dbx as unknown as Record<string, unknown>).prepare = 5;
+  try {
+    dbx.prepare("SELECT 1");
+    return "none";
+  } catch (error) {
+    const e = error as { name: string; message: string };
+    return [e.name, e.message];
+  }
+});

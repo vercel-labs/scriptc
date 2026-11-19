@@ -18687,6 +18687,24 @@ static ScrDyn *scr_json_to_json_at(ScrDyn *value, const ScrStr *key, size_t inde
       scr_dyn_release(value);
       value = converted;
     } else scr_dyn_release(method);
+  } else if (inspected->kind == SCR_DYN_HANDLE) {
+    /* A property the program added to the object is Node's toJSON hook
+     * (a database's, a statement's, a limits object's). The classes with a
+     * native toJSON were converted above. */
+    ScrDyn *method = scr_dyn_obj_read(inspected, "toJSON", 6);
+    if (!method) {
+      if (scr_exc_pending()) { scr_dyn_release(view); scr_dyn_release(value); return NULL; }
+    } else if (scr_json_callable(method)) {
+      ScrDyn *name = scr_json_key_arg(key, index);
+      ScrDyn *args[] = { name };
+      scr_dyn_this_push_dyn(value);
+      ScrDyn *converted = scr_dyn_call(method, args, 1, "toJSON");
+      scr_dyn_this_pop();
+      scr_dyn_release(method);
+      scr_dyn_release(name);
+      scr_dyn_release(value);
+      value = converted;
+    } else scr_dyn_release(method);
   } else if (inspected->kind == SCR_DYN_BYTES && inspected->buffer) {
     ScrDyn *converted = scr_json_buffer_view(inspected);
     scr_dyn_release(value);
@@ -21043,8 +21061,11 @@ ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object) {
             scr_dyn_release(result);
             return NULL;
           }
-          if (descriptor->kind != SCR_DYN_UNDEF) scr_dyn_symbol_key_set(result, symbol, descriptor);
-          else scr_dyn_release(descriptor);
+          if (descriptor->kind != SCR_DYN_UNDEF) {
+            /* symbol_key_set borrows the descriptor. */
+            scr_dyn_symbol_key_set(result, symbol, descriptor);
+            scr_dyn_release(descriptor);
+          } else scr_dyn_release(descriptor);
         }
       scr_dyn_release(symbols);
     } else if (scr_exc_pending()) {

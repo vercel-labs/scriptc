@@ -46,6 +46,7 @@ import {
   type NativeProfileOptions,
 } from "./native-profile.js";
 import { writeTextParts } from "../text-parts.js";
+import { ensureExecutable } from "../executable-mode.js";
 
 import {
   NativeCodegenError,
@@ -146,6 +147,7 @@ async function invoke(
   binaryPath: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
+  ensureExecutable(binaryPath);
   try {
     return await execFileAsync(binaryPath, args, {
       encoding: "utf8",
@@ -211,6 +213,11 @@ async function resolveHelper(
       "missing_binary",
     );
   }
+  // A package manager that installs from a cache, or with lifecycle scripts
+  // disabled, can leave the helper at mode 0644 and its postinstall never
+  // repairs it: restore the execute bits before judging the file unusable.
+  ensureExecutable(binaryPath);
+  binaryStat = await stat(binaryPath);
   try {
     if (
       process.platform !== "win32" &&

@@ -1184,6 +1184,15 @@ static size_t scr_tls_crl_chain(ScrTlsSock *t, mbedtls_x509_crt *leaf,
     if (issuer == NULL) break;
     chain[n++] = issuer;
   }
+  /* A chain beyond the fixed array cannot be checked completely; report it
+   * as uncovered rather than accepting a revocation that was not looked
+   * at. */
+  if (n == 16) {
+    const mbedtls_x509_crt *top = chain[n - 1];
+    bool self = top->issuer_raw.len == top->subject_raw.len &&
+                memcmp(top->issuer_raw.p, top->subject_raw.p, top->issuer_raw.len) == 0;
+    if (!self) return 0;
+  }
   return n;
 }
 
@@ -1198,7 +1207,7 @@ static void scr_tls_crl_check_chain(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
   if (crls == NULL) return;
   const mbedtls_x509_crt *chain[16];
   size_t n = scr_tls_crl_chain(t, leaf, chain);
-  bool revoked = false, missing = false, sig_fail = false, expired = false, future = false;
+  bool revoked = false, missing = n == 0, sig_fail = false, expired = false, future = false;
   for (size_t i = 0; i + 1 < n; i++) {
     const mbedtls_x509_crt *cert = chain[i];
     const mbedtls_x509_crt *issuer = chain[i + 1];
@@ -2811,6 +2820,12 @@ static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat)
       else scr_bytes_read(e->v.bytes, 0, copy, n);
       snap[i] = copy;
       snap_len[i] = n;
+      if (n > SIZE_MAX - budget - 1) { /* worst-case separator budget overflow */
+        for (size_t k = 0; k <= i; k++) free(snap[k]);
+        free(snap);
+        free(snap_len);
+        scr_tls_oom();
+      }
       budget += n + 1; /* worst case: one separator after every entry */
     }
     unsigned char *joined = malloc(budget > 0 ? budget : 1);

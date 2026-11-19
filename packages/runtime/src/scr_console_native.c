@@ -204,13 +204,58 @@ static void *scr_console_inst_retain(void *ptr) {
 
 static void scr_console_state_clear(ScrConsoleState *state);
 
-static void scr_console_inst_release(void *ptr) {
+static void scr_console_bound_unlink(ScrConsoleInst *inst);
+
+/* A Console with a detached output method is a cycle: the instance holds
+ * its bound functions and each function holds the instance. The instance
+ * carries a cycle header so the collector can see the edges — the bound
+ * functions and the inspectOptions record — and free a request-scoped
+ * Console with its functions, its streams going through the teardown. */
+static void scr_console_inst_cycle_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   ScrConsoleInst *inst = ptr;
-  if (--inst->rc) return;
+  for (int i = 0; i < 5; i++) visit(inst->bound[i], ctx);
+  visit(inst->inspect_options, ctx);
+}
+
+/* The collector's teardown: the complement of the trace — the streams and
+ * their completion handlers, the counter and timer store — then the block. */
+static void scr_console_inst_gcfree(void *ptr) {
+  ScrConsoleInst *inst = ptr;
+  scr_console_bound_unlink(inst);
   scr_console_state_clear(&inst->state);
   if (inst->stream_drop) inst->stream_drop(inst);
-  scr_dyn_release(inst->inspect_options);
-  free(inst);
+  scr_obj_free_note();
+  scr_cyc_free(inst);
+}
+
+static void scr_console_inst_destroy(void *ptr) {
+  ScrConsoleInst *inst = ptr;
+  /* A cached bound function holds the instance through its capture box, so
+   * none can be live when the count reaches zero; the releases below are
+   * the defensive path, and a re-entrant capture release from a box being
+   * torn down here must not decrement the count again. */
+  inst->rc = SIZE_MAX;
+  for (int i = 0; i < 5; i++) {
+    ScrDyn *bound = inst->bound[i];
+    inst->bound[i] = NULL;
+    scr_dyn_release(bound);
+  }
+  ScrDyn *options = inst->inspect_options;
+  inst->inspect_options = NULL;
+  scr_dyn_release(options);
+  inst->rc = 0;
+  scr_console_inst_gcfree(inst);
+}
+
+static void scr_console_inst_release(void *ptr) {
+  ScrConsoleInst *inst = ptr;
+  if (inst->rc == SIZE_MAX) return; /* the teardown's own releases */
+  if (--inst->rc) {
+    scr_cyc_released(inst);
+    return;
+  }
+  scr_cyc_dead(inst);
+  scr_rc_destroy(inst, scr_console_inst_destroy);
 }
 
 /* kWriteToConsole's indentation: the indent before the line and after
@@ -315,6 +360,21 @@ static int scr_console_member_index(const char *key, size_t len) {
  * reference audit runs. */
 static SCR_TL ScrConsoleInst *scr_console_bound_list;
 
+/* The collector can free an instance before exit; the cleanup list must not
+ * keep the pointer. */
+static void scr_console_bound_unlink(ScrConsoleInst *inst) {
+  ScrConsoleInst **link = &scr_console_bound_list;
+  while (*link != NULL) {
+    if (*link == inst) {
+      *link = inst->bound_next;
+      inst->bound_next = NULL;
+      inst->bound_linked = false;
+      return;
+    }
+    link = &(*link)->bound_next;
+  }
+}
+
 static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key,
                                        ScrDyn *const *args, size_t argc, const char *what);
 static ScrDyn *scr_console_inst_bound_call(ScrClosure *closure, ScrDyn *const *args, size_t argc);
@@ -339,6 +399,12 @@ static void scr_console_bound_cleanup(void) {
   }
 }
 
+/* The bound function's capture box traces the instance, so the cycle
+ * instance → function → box → instance is visible to the collector. */
+static void scr_console_inst_capture_trace(void *o, ScrTraceVisit visit, void *ctx) {
+  visit(o, ctx);
+}
+
 /** The instance's bound function for member `which` (+1), built on first
  * read. */
 static ScrDyn *scr_console_inst_bound(ScrConsoleInst *inst, int which) {
@@ -350,7 +416,8 @@ static ScrDyn *scr_console_inst_bound(ScrConsoleInst *inst, int which) {
     scr_atexit(scr_console_bound_cleanup);
   }
   ScrClosure *closure = scr_closure_new(NULL, 2);
-  closure->caps[0] = scr_box_new_obj(scr_console_inst_retain, scr_console_inst_release, NULL);
+  closure->caps[0] = scr_box_new_obj(scr_console_inst_retain, scr_console_inst_release,
+                                     scr_console_inst_capture_trace);
   scr_box_set_ref(closure->caps[0], scr_console_inst_retain(inst));
   closure->caps[1] = scr_box_new(SCR_BOX_F64);
   scr_box_set_f64(closure->caps[1], (double)which);
@@ -508,9 +575,13 @@ ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors,
   }
   size_t width = 2;
   if (!scr_console_group_width(group_indentation, &width)) return NULL;
-  ScrConsoleInst *inst = calloc(1, sizeof *inst);
+  static ScrCycType cyc_type = {&scr_console_inst_cycle_trace, &scr_console_inst_gcfree,
+                                SCR_CYC_KIND_NONE, 0};
+  ScrConsoleInst *inst = scr_cyc_alloc(sizeof *inst, &cyc_type);
   if (!inst) scr_trap("scriptc: out of memory\n");
+  memset(inst, 0, sizeof *inst);
   inst->rc = 1;
+  scr_obj_alloc_note();
   inst->fd[0] = out_fd;
   inst->fd[1] = err_fd;
   inst->ignore_errors = ignore_errors;

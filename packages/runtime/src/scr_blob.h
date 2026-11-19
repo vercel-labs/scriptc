@@ -119,9 +119,9 @@ typedef struct ScrConsoleInst {
   /* Node binds each method to its Console: `const { log } = c` answers a
    * function that writes to c's target. The first read of an output member
    * builds its bound function here (identity holds across reads); the
-   * function owns a reference back to the instance, so the pair is broken
-   * up at exit (scr_console_bound_cleanup) instead of by the instance's
-   * release. */
+   * function owns a reference back to the instance: both directions are
+   * traced (this struct carries a cycle header), so the collector frees the
+   * pair, and scr_console_bound_cleanup covers what is still held at exit. */
   struct ScrConsoleInst *bound_next;
   bool bound_linked;           /* on the thread's cleanup list */
   struct ScrDyn *bound[5];     /* log, info, debug, error, warn */

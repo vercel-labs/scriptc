@@ -125,9 +125,7 @@ test("a deferred refusal that is a library call's validation ladder is named", a
     const text = readFileSync(part, "utf8");
     const warnings = "warnings" in result ? (result.warnings ?? []) : [];
     const deferred = warnings.filter((w) => w.code === "SC6015");
-    expect(
-      deferred.map((w) => text.slice(0, w.loc.start).split("\n").length),
-    ).toEqual([2]);
+    expect(deferred.map((w) => text.slice(0, w.loc.start).split("\n").length)).toEqual([2]);
     expect(deferred[0]!.message).toContain("Intl.Segmenter");
   } finally {
     rmSync(dir, { recursive: true, force: true });

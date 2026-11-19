@@ -2951,15 +2951,17 @@ function withDynBufferArguments(
 }
 
 /** Buffer.from(value, encoding) over a checked-dynamic value whose encoding
- * is not a literal: yazl forwards its `encoding` parameter, often undefined.
- * Null when the encoding is absent or a literal. */
+ * is not a known literal encoding name: yazl forwards its `encoding`
+ * parameter, often undefined, and a spelling Node does not know still runs
+ * (a string source throws ERR_UNKNOWN_ENCODING). Null when the encoding is
+ * absent or a name Node knows. */
 function dynBufferFromRuntimeEncoding(
   lowerer: Lowerer,
   value: IrExpr,
   encNode: ts.Expression | undefined,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (encNode === undefined || lowerer.typeOf(encNode).isStringLiteralType()) return null;
+  if (encNode === undefined || literalBufEncoding(lowerer, encNode) !== undefined) return null;
   return withDynBufferArguments(lowerer, value, encNode, loc, (source, encoding) =>
     dynBufferFromParts(source, encoding, loc),
   );
@@ -3182,7 +3184,9 @@ function lowerBufferStaticValue(
         if (value.type.kind === "dyn") {
           const runtimeEncoding = dynBufferFromRuntimeEncoding(lowerer, value, args[1], loc);
           if (runtimeEncoding) return runtimeEncoding;
-          const encName = args[1] ? bufEncoding(lowerer, "Buffer.from", args[1]) : "utf8";
+          // The runtime form above keeps every value it can read; a name
+          // left here is the literal spelling this form can evaluate.
+          const encName = args[1] ? literalBufEncoding(lowerer, args[1])! : "utf8";
           const enc: IrExpr = { kind: "strLit", value: encName, type: STRING, loc };
           return {
             kind: "libCall",

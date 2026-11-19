@@ -2537,11 +2537,86 @@ static ScrDyn *scr_dyn_array_value(const ScrDyn *value, ScrDyn **materialized) {
   return (ScrDyn *)value;
 }
 
-ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
-  if (value->kind == SCR_DYN_STR) return scr_bytes_from_str(value->v.str, encoding);
-  /* The second argument here is an encoding name, which as a byte offset
-   * converts to NaN: offset 0. */
-  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL, NULL);
+/* The answer of value's valueOf() as Node's from() reads it: a non-null
+ * answer other than the value itself is returned (owned by the caller) when
+ * it is a string or an object; anything else falls through to the shape
+ * checks. A dictionary object has no prototype to read; an object that has
+ * one (a primitive wrapper, Object.create) reads it through the chain, where
+ * a String wrapper's valueOf answers the primitive string. A non-callable
+ * hook throws the same "is not a function" TypeError Node's call raises,
+ * leaving it pending. */
+static ScrDyn *scr_buffer_value_of(const ScrDyn *value) {
+  const ScrDyn *hook = NULL;
+  ScrDyn *inherited = NULL;
+  ScrDyn *owned = NULL;
+  if (value->prototype) {
+    ScrStr *name = scr_str_new("valueOf", 7);
+    ScrDyn *key = scr_dyn_new_str(name);
+    scr_str_release(name);
+    inherited = scr_dyn_reflect_get((ScrDyn *)value, key, (ScrDyn *)value);
+    scr_dyn_release(key);
+    if (!inherited) return NULL;
+    hook = inherited;
+  } else {
+    /* The hook can free its own property while it runs (a single-use lazy
+     * source that deletes or replaces itself); the call holds its own
+     * reference, so the running function and its captures stay alive. */
+    const ScrDyn *found = scr_dyn_obj_get(value, "valueOf", 7);
+    if (found) owned = scr_dyn_retain((ScrDyn *)found);
+    hook = owned;
+  }
+  ScrDyn *answer = NULL;
+  if (hook && scr_dyn_truthy(hook)) {
+    scr_dyn_this_push_dyn(value);
+    answer = scr_dyn_call(hook, NULL, 0, "value.valueOf");
+    scr_dyn_this_pop();
+  }
+  scr_dyn_release(owned);
+  scr_dyn_release(inherited);
+  if (!answer) return NULL;
+  if (answer == value) {
+    scr_dyn_release(answer);
+    return NULL;
+  }
+  return answer;
+}
+
+/* A string source converts with the second argument's encoding when the
+ * call has one (Node's fromString: a non-empty string names a Buffer
+ * encoding and anything else is utf8), and with the encoding passed by name
+ * in the one-argument form otherwise. */
+static ScrBytes *scr_buffer_from_dyn_str(const ScrStr *s, const ScrStr *encoding,
+                                         const ScrDyn *second) {
+  if (!second) return scr_bytes_from_str(s, encoding);
+  if (second->kind == SCR_DYN_STR && second->v.str->len > 0)
+    return scr_buffer_from_str_checked(s, second->v.str);
+  ScrStr *utf8 = scr_str_new("utf8", 4);
+  ScrBytes *out = scr_buffer_from_str(s, utf8);
+  scr_str_release(utf8);
+  return out;
+}
+
+/* Buffer.from(value) and Buffer.from(value, second[, third]) for a value
+ * that is not a string or an ArrayBuffer. Node's own from() recursion: an
+ * object's valueOf() answer that is a string or an object converts with the
+ * same second and third arguments — a string answer takes the second as its
+ * encoding, an ArrayBuffer answer as its byte offset, and either converts
+ * the way the recursive call would — and only then do the object shapes
+ * speak. `second` and `third` are NULL in the one-argument form, whose
+ * `encoding` names the string conversion. */
+static ScrBytes *scr_buffer_from_dyn_impl(const ScrDyn *value, const ScrStr *encoding,
+                                          const ScrDyn *second, const ScrDyn *third) {
+  /* Node recurses through from() once per valueOf() answer; the check
+   * compiled frames make before their own bodies keeps a chain deep enough
+   * to exhaust the stack reporting Node's RangeError instead of faulting. */
+  if (scr_stack_guard != 0 && (uintptr_t)&value < scr_stack_guard) {
+    scr_stack_overflow();
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_STR) return scr_buffer_from_dyn_str(value->v.str, encoding, second);
+  if (scr_buffer_storage_is(value))
+    return second ? scr_buffer_from_storage(value, second, third)
+                  : scr_buffer_from_storage(value, NULL, NULL);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(SCR_BYTES_U8, value->v.bytes);
   if (value->kind == SCR_DYN_ARR || (value->kind == SCR_DYN_TYPED_REF &&
       scr_dyn_typed_ref_array_ops(value) != NULL)) {
@@ -2553,49 +2628,28 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
     return out;
   }
   if (value->kind == SCR_DYN_OBJ) {
-    /* Node's from() reads the object's valueOf() first: a string answer is
-     * the source, an object answer other than the value itself converts the
-     * same way, and anything else (including the inherited
-     * Object.prototype.valueOf, which answers the object itself) falls
-     * through to the shape checks below. A non-callable valueOf throws the
-     * same "is not a function" TypeError Node's call raises. A dictionary
-     * object has no prototype to read; an object that has one (a primitive
-     * wrapper, Object.create) reads it through the chain, where a String
-     * wrapper's valueOf answers the primitive string. */
-    const ScrDyn *hook = NULL;
-    ScrDyn *inherited = NULL;
-    if (value->prototype) {
-      ScrStr *name = scr_str_new("valueOf", 7);
-      ScrDyn *key = scr_dyn_new_str(name);
-      scr_str_release(name);
-      inherited = scr_dyn_reflect_get((ScrDyn *)value, key, (ScrDyn *)value);
-      scr_dyn_release(key);
-      if (!inherited) return NULL;
-      hook = inherited;
-    } else {
-      hook = scr_dyn_obj_get(value, "valueOf", 7);
-    }
-    ScrBytes *value_of_result = NULL;
-    bool value_of_threw = false;
-    if (hook && scr_dyn_truthy(hook)) {
-      scr_dyn_this_push_dyn(value);
-      ScrDyn *answer = scr_dyn_call(hook, NULL, 0, "value.valueOf");
-      scr_dyn_this_pop();
-      if (!answer) {
-        scr_dyn_release(inherited);
-        return NULL;
-      }
+    /* Node reads valueOf() first; an answer that is not a string or an
+     * object (including the inherited Object.prototype.valueOf, which
+     * answers the object itself) leaves the original to the shape checks
+     * below: the array-like `length` branch, then the Buffer JSON shape. */
+    ScrDyn *answer = scr_buffer_value_of(value);
+    if (!answer && scr_exc_pending()) return NULL;
+    if (answer) {
+      ScrBytes *out = NULL;
       if (answer->kind == SCR_DYN_STR) {
-        value_of_result = scr_bytes_from_str(answer->v.str, encoding);
-      } else if (answer != value && (answer->kind == SCR_DYN_OBJ || answer->kind == SCR_DYN_ARR ||
-                                     answer->kind == SCR_DYN_BYTES)) {
-        value_of_result = scr_buffer_from_dyn(answer, encoding);
+        out = scr_buffer_from_dyn_str(answer->v.str, encoding, second);
+      } else if (scr_buffer_storage_is(answer)) {
+        out = scr_buffer_from_storage(answer, second, third);
+      } else if (answer->kind == SCR_DYN_OBJ || answer->kind == SCR_DYN_ARR ||
+                 answer->kind == SCR_DYN_BYTES ||
+                 (answer->kind == SCR_DYN_TYPED_REF &&
+                  scr_dyn_typed_ref_array_ops(answer) != NULL)) {
+        out = scr_buffer_from_dyn_impl(answer, encoding, second, third);
       }
-      value_of_threw = scr_exc_pending();
+      bool threw = scr_exc_pending();
       scr_dyn_release(answer);
+      if (out || threw) return out;
     }
-    scr_dyn_release(inherited);
-    if (value_of_result || value_of_threw) return value_of_result;
     const ScrDyn *length = scr_dyn_obj_get(value, "length", 6);
     if (length && length->kind != SCR_DYN_UNDEF) {
       return scr_buffer_from_array_like(value, length->kind == SCR_DYN_NUM ? length->v.num : 0);
@@ -2626,7 +2680,7 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
       scr_str_release(text);
       return NULL;
     }
-    ScrBytes *out = scr_bytes_from_str(text, encoding);
+    ScrBytes *out = scr_buffer_from_dyn_str(text, encoding, second);
     scr_str_release(text);
     return out;
   }
@@ -2641,6 +2695,10 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
       received);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
   return NULL;
+}
+
+ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
+  return scr_buffer_from_dyn_impl(value, encoding, NULL, NULL);
 }
 
 /* Buffer.from over a checked value, with Node's pooling: strings take
@@ -2661,7 +2719,7 @@ ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding
 /* scr_buffer_from_dyn_pooled for values that can be a typed array crossing
  * an untyped slot by reference (a number[] passed to an untyped parameter,
  * as yazl's Buffer.from(something, encoding) receives it): the array copies
- * like the array it is. Used by the runtime-encoding Buffer.from forms. */
+ * like the array it is. */
 ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *encoding) {
   if (value->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(value) != NULL) {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
@@ -2677,11 +2735,10 @@ ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *enco
 }
 
 /* Buffer.from(value, second) over checked values whose second argument is
- * not a literal encoding name: an ArrayBuffer or SharedArrayBuffer takes it
- * as the byte offset (scr_buffer_from_storage); a string takes it as the
- * encoding (Node's fromString: utf8 unless it is a non-empty string, which
- * must name a Buffer encoding or throw ERR_UNKNOWN_ENCODING); other values
- * convert as scr_buffer_from_dyn_ref_pooled with utf8. */
+ * not a literal encoding name: a string takes it as the encoding, an
+ * ArrayBuffer or SharedArrayBuffer as the byte offset, and every other
+ * value converts through Node's from() recursion, where an object's
+ * valueOf() answer sees the same second argument. */
 ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *second) {
   if (value->kind == SCR_DYN_STR) {
     if (second->kind == SCR_DYN_STR && second->v.str->len > 0)
@@ -2692,20 +2749,25 @@ ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *s
     return out;
   }
   if (!scr_buffer_storage_is(value)) {
-    ScrStr *utf8 = scr_str_new("utf8", 4);
-    ScrBytes *out = scr_buffer_from_dyn_ref_pooled(value, utf8);
-    scr_str_release(utf8);
-    return out;
+    ScrBytes *out = scr_buffer_from_dyn_impl(value, NULL, second, NULL);
+    if (!out) return NULL;
+    out->is_buffer = true;
+    return scr_buffer_pool_adopt(out);
   }
   return scr_buffer_from_storage(value, second, NULL);
 }
 
 /* Buffer.from(value, second, third): an ArrayBuffer or SharedArrayBuffer
- * takes them as its byte offset and length; other values convert as
- * scr_buffer_from_dyn_offset_pooled does, without the third argument. */
+ * takes them as its byte offset and length; every other value converts
+ * through the same recursion with all three arguments. */
 ScrBytes *scr_buffer_from_dyn_range_pooled(const ScrDyn *value, const ScrDyn *second,
                                            const ScrDyn *third) {
-  if (!scr_buffer_storage_is(value)) return scr_buffer_from_dyn_offset_pooled(value, second);
+  if (!scr_buffer_storage_is(value)) {
+    ScrBytes *out = scr_buffer_from_dyn_impl(value, NULL, second, third);
+    if (!out) return NULL;
+    out->is_buffer = true;
+    return scr_buffer_pool_adopt(out);
+  }
   return scr_buffer_from_storage(value, second, third);
 }
 

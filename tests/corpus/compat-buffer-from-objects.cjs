@@ -52,7 +52,7 @@ console.log("bigint", shape(() => Buffer.from(10n)));
 console.log("missing", shape(() => Buffer.from()));
 
 // A second argument is the string form's encoding or the buffer form's byte
-// offset; an object source ignores it, as Node's fromObject does, while a
+// offset. An object shape ignores it, as Node's fromObject does, while a
 // string source reads a null encoding as the utf8 default.
 console.log("json enc", shape(() => Buffer.from({ type: "Buffer", data: [104, 105] }, "utf8")));
 console.log("array-like enc", shape(() => Buffer.from({ length: 2, 0: 65, 1: 66 }, "latin1")));
@@ -62,3 +62,66 @@ console.log("string null encoding", shape(() => Buffer.from("hé", null).toStrin
 // A primitive wrapper converts through its valueOf, the way a String object
 // is a Buffer source to Node.
 console.log("string object", shape(() => Buffer.from(new String("hi"))));
+
+// An object's valueOf answer converts as Node's own recursion would: a
+// string takes the call's encoding, an ArrayBuffer or SharedArrayBuffer
+// becomes a view (the second argument its byte offset and a third its
+// length), and any other object converts as if it were the argument.
+const storage = new ArrayBuffer(4);
+new Uint8Array(storage).set([1, 2, 3, 4]);
+const shared = new SharedArrayBuffer(3);
+new Uint8Array(shared).set([9, 8, 7]);
+const vo = (answer) => ({ valueOf: () => answer });
+const runtimeEncoding = "hex";
+console.log("valueOf storage", shape(() => Buffer.from(vo(storage))));
+console.log("valueOf shared", shape(() => Buffer.from(vo(shared))));
+console.log("valueOf storage offset", shape(() => Buffer.from(vo(storage), 2)));
+console.log("valueOf storage range", shape(() => Buffer.from(vo(storage), 1, 2)));
+console.log("valueOf string encoding", shape(() => Buffer.from(vo("6162"), "hex")));
+console.log("valueOf string bad encoding", shape(() => Buffer.from(vo("x"), "bogus")));
+console.log("valueOf runtime encoding", shape(() => Buffer.from(vo("6162"), runtimeEncoding)));
+console.log("valueOf string utf8", shape(() => Buffer.from(vo("hé"), runtimeEncoding)));
+console.log("valueOf array encoding", shape(() => Buffer.from(vo([1, 2]), "hex")));
+console.log("valueOf nested", shape(() => Buffer.from(vo(vo("6162")), "hex")));
+console.log("valueOf other", shape(() => Buffer.from(vo(5))));
+
+// A valueOf() chain that never reaches a source exhausts the stack, which
+// Node reports as its RangeError rather than a fault.
+let first, second;
+first = { valueOf: () => second };
+second = { valueOf: () => first };
+console.log("valueOf cycle", shape(() => Buffer.from(first)));
+
+// A single-use hook that drops or replaces its own property while it runs
+// keeps the running function and its captured source alive for the rest of
+// the call.
+function singleUse(source) {
+  const holder = { calls: 0 };
+  holder.valueOf = () => {
+    holder.calls++;
+    delete holder.valueOf;
+    return source;
+  };
+  return holder;
+}
+console.log("valueOf deletes itself", shape(() => Buffer.from(singleUse(Buffer.from([1, 2])))));
+console.log("valueOf replaces itself", shape(() => {
+  const holder = {
+    valueOf: () => {
+      holder.valueOf = () => null;
+      return "6162";
+    },
+  };
+  return Buffer.from(holder, "hex");
+}));
+console.log("valueOf mutates source", shape(() => {
+  const data = [1, 2, 3];
+  const holder = {
+    valueOf: () => {
+      data.length = 2;
+      delete holder.valueOf;
+      return data;
+    },
+  };
+  return Buffer.from(holder);
+}));

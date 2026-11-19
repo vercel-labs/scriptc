@@ -6190,8 +6190,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!inner) return null;
     return { kind: "promise", inner };
   }
-  // Native collection iterators use checked runtime iterator objects.
-  if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
+  // Native collection iterators use checked runtime iterator objects, and a
+  // web stream's async iterator is the runtime's iterator object too.
+  if (
+    isStdlibInterface("MapIterator") ||
+    isStdlibInterface("SetIterator") ||
+    isStdlibInterface("ReadableStreamAsyncIterator")
+  )
+    return DYN;
   // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
   // types name a protocol any object can implement. A protocol type the
   // program moves such an object into (TypeMapperCtx.

@@ -6249,6 +6249,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "values",
   "entries",
   "next",
+  "return",
   "writeContinue",
   "writeEarlyHints",
   "cork",

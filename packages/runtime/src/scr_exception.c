@@ -225,7 +225,16 @@ static void scr_prepare_stack_trace_reset(void) {
   scr_prepare_stack_trace = NULL;
   scr_prepare_stack_trace_reset_registered = false;
 }
+/* The stored value is released at exit like every other runtime cache, so a
+ * program that only READS the member releases the default function it created
+ * before the reference-count audit runs. */
+static void scr_prepare_stack_trace_own_cleanup(void) {
+  if (scr_prepare_stack_trace_reset_registered) return;
+  scr_atexit(scr_prepare_stack_trace_reset);
+  scr_prepare_stack_trace_reset_registered = true;
+}
 ScrDyn *scr_error_prepare_stack_trace_get(void) {
+  scr_prepare_stack_trace_own_cleanup();
   if (scr_prepare_stack_trace == NULL) {
     ScrClosure *clo = scr_closure_new((void *)scr_prepare_stack_trace_thunk, 0);
     scr_prepare_stack_trace = scr_dyn_new_func(clo, scr_prepare_stack_trace_thunk, 0, "",
@@ -234,10 +243,7 @@ ScrDyn *scr_error_prepare_stack_trace_get(void) {
   return scr_dyn_retain(scr_prepare_stack_trace);
 }
 void scr_error_prepare_stack_trace_set(ScrDyn *value) {
-  if (!scr_prepare_stack_trace_reset_registered) {
-    scr_atexit(scr_prepare_stack_trace_reset);
-    scr_prepare_stack_trace_reset_registered = true;
-  }
+  scr_prepare_stack_trace_own_cleanup();
   ScrDyn *retained = value == NULL ? scr_dyn_undefined() : scr_dyn_retain(value);
   if (scr_prepare_stack_trace != NULL) scr_dyn_release(scr_prepare_stack_trace);
   scr_prepare_stack_trace = retained;

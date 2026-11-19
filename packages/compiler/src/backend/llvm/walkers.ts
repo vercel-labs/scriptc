@@ -1018,6 +1018,26 @@ export class LlWalkers {
     }
   }
 
+  /** Whether serializing a value of `t` reaches a record element: a record,
+   * an array of them (possibly nested), or a union with such an arm. A
+   * checked-dynamic copy would flatten a record view into its empty slot
+   * words, so an array that holds one is written by the type-directed
+   * writer instead of being boxed. */
+  private recordElements(t: IrType): boolean {
+    switch (t.kind) {
+      case "record":
+        return true;
+      case "array":
+        return this.recordElements(t.elem);
+      case "union":
+        return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+          this.recordElements(arm),
+        );
+      default:
+        return false;
+    }
+  }
+
   /** Write a field value loaded borrowed from its record, at nesting level
    * `depth`. When its serialization can call user code that replaces the
    * field, the value is held across the write. */
@@ -1280,9 +1300,16 @@ export class LlWalkers {
       B.condBr(handled, done, plain);
       B.startBlock(plain);
     }
-    if (t.kind === "record" || map !== null) {
+    if (
+      t.kind === "record" ||
+      (t.kind === "array" && this.recordElements(t.elem)) ||
+      map !== null
+    ) {
+      // An array of records is held and written by the type-directed writer:
+      // boxing it deep-copies, and a record view element has no plain slots
+      // to copy.
       this.emitMemberKey(B, keyRef, first);
-      this.writeField(B, v, t, "record member", depth);
+      this.writeField(B, v, t, `${t.kind} member`, depth);
     } else {
       const conv = host.toDynHelper(t);
       const box = B.tmp();
@@ -1332,10 +1359,16 @@ export class LlWalkers {
       B.condBr(handled, done, plain);
       B.startBlock(plain);
     }
-    if (t.kind === "record" || map !== null) {
-      // The slot is borrowed and a callback inside the record may replace
-      // it; writeField holds the value across its own traversal.
-      this.writeField(B, v, t, "record element", depth);
+    if (
+      t.kind === "record" ||
+      (t.kind === "array" && this.recordElements(t.elem)) ||
+      map !== null
+    ) {
+      // The slot is borrowed and a callback inside the value may replace it;
+      // writeField holds the value across its own traversal. An array of
+      // records is written directly: boxing it would copy record views as
+      // plain records.
+      this.writeField(B, v, t, `${t.kind} element`, depth);
     } else {
       const conv = host.toDynHelper(t);
       const box = B.tmp();

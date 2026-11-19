@@ -22,3 +22,26 @@ try {
     error instanceof Error ? `${error.name}: ${error.message.split("\n")[0]}` : typeof error,
   );
 }
+
+// A recursive index-signature record reaches the same TypeError: its values
+// are written through the type-directed writer, not copied.
+interface Bag {
+  [key: string]: Bag | undefined;
+}
+
+class Bags {
+  bag: Bag;
+  constructor(bag: Bag) {
+    this.bag = bag;
+  }
+}
+
+const bag: Bag = {};
+bag["self"] = bag;
+try {
+  console.log(JSON.stringify(new Bags(bag)));
+} catch (error) {
+  console.log(
+    error instanceof Error ? `${error.name}: ${error.message.split("\n")[0]}` : typeof error,
+  );
+}

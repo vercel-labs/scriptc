@@ -6621,15 +6621,21 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
         scr_http_buf_str(&b, "\r\n");
         continue;
       }
+      bool te = c->hnames[i]->len == 17;
+      for (size_t j = 0; j < 17 && te; j++)
+        if (tolower((unsigned char)c->hnames[i]->data[j]) != "transfer-encoding"[j]) te = false;
+      bool chunked_item = false;
       for (size_t k = 0; k < c->hraw[i]->v.arr.len; k++) {
         ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
         if (text == NULL) continue;
+        if (te && scr_http_header_has_token(text, "chunked")) chunked_item = true;
         scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
         scr_http_buf_str(&b, ": ");
         scr_http_buf_append(&b, text->data, text->len);
         scr_http_buf_str(&b, "\r\n");
         scr_str_release(text);
       }
+      if (chunked_item) c->chunked = true;
       continue;
     }
     scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
@@ -6640,7 +6646,21 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
     for (size_t j = 0; j < 17 && transfer; j++) {
       if (tolower((unsigned char)c->hnames[i]->data[j]) != "transfer-encoding"[j]) transfer = false;
     }
-    if (transfer && scr_http_header_has_token(c->hvalues[i], "chunked")) c->chunked = true;
+    if (transfer) {
+      /* "chunked" may sit in any element of an array-valued header */
+      bool chunked = c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR
+                         ? false
+                         : scr_http_header_has_token(c->hvalues[i], "chunked");
+      if (c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR) {
+        for (size_t k = 0; k < c->hraw[i]->v.arr.len && !chunked; k++) {
+          ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
+          if (text == NULL) continue;
+          chunked = scr_http_header_has_token(text, "chunked");
+          scr_str_release(text);
+        }
+      }
+      if (chunked) c->chunked = true;
+    }
   }
   if (!c->removed_host && !scr_http_client_has_header(c, "host")) {
     /* Host: name[:port] — the scheme's default port omitted (80 http,
@@ -10101,7 +10121,7 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
     ScrArr *names = scr_http_client_get_header_names(c);
     ScrDyn *out = scr_dyn_new_arr();
     for (size_t i = 0; i < scr_arr_len(names); i++)
-      scr_dyn_arr_push(out, scr_dyn_retain((ScrDyn *)scr_arr_get_ref(names, (double)i)));
+      scr_dyn_arr_push(out, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(names, (double)i)));
     scr_arr_release(names);
     return out;
   }
@@ -10109,7 +10129,7 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
     ScrArr *names = scr_http_client_get_raw_header_names(c);
     ScrDyn *out = scr_dyn_new_arr();
     for (size_t i = 0; i < scr_arr_len(names); i++)
-      scr_dyn_arr_push(out, scr_dyn_retain((ScrDyn *)scr_arr_get_ref(names, (double)i)));
+      scr_dyn_arr_push(out, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(names, (double)i)));
     scr_arr_release(names);
     return out;
   }

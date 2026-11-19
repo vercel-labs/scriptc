@@ -45,6 +45,10 @@ import {
   constructorForeignFlag,
   constructorPrimitiveFlag,
   superIntoResultSlot,
+  rebindingBase,
+  publishConstructorResult,
+  constructorEntrySlot,
+  constructorReturnPlan,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { checkedIteratorPack } from "./expressions/array-literals.js";
@@ -4444,8 +4448,9 @@ export function collectClassShapeInner(
               overrideReturnAbi(lowerer, ft.ret, overridden.sig.ret, className, base),
             ))
         ) {
+          const jsMember = isJsSourceFile(ts.getSourceFileOfNode(member));
           const fencedJsOverride =
-            isJsSourceFile(ts.getSourceFileOfNode(member)) &&
+            jsMember &&
             overridden.declarer.decl !== null &&
             isJsSourceFile(ts.getSourceFileOfNode(overridden.declarer.decl)) &&
             overridden.sig.gen === undefined;
@@ -4480,7 +4485,13 @@ export function collectClassShapeInner(
             // `arguments` would miss them, so it keeps the fence.
             (shapes.length >= overridden.sig.params.length || confinesMemberRefusals) &&
             (shapes.length === overridden.sig.params.length || !bodyReadsArguments(member)) &&
-            shapes.slice(overridden.sig.params.length).every((p) => p.mode === "omittable") &&
+            // A JavaScript method needs no `?` on a parameter the inherited
+            // ABI does not carry: a caller that stops at the inherited
+            // arity passes nothing and JavaScript binds undefined, which is
+            // what the slot supplies (`toString(compact)` over Error's).
+            shapes
+              .slice(overridden.sig.params.length)
+              .every((p) => p.mode === "omittable" || jsMember) &&
             overridden.sig.params.every(
               (p, i) =>
                 (p.mode === "required" || p.mode === "omittable") &&
@@ -4817,7 +4828,10 @@ export function collectClassShapeInner(
           if (!refuseAccessor(propertyType())) throw e;
           continue;
         }
-        if (lowerer.checkedVirtualJsAccessors.has(member)) {
+        if (
+          lowerer.checkedVirtualJsAccessors.has(member) ||
+          lowerer.jsWidenedAccessors.has(member)
+        ) {
           if (isGet) sig.ret = DYN;
           else for (const parameter of sig.params) parameter.type = DYN;
         }
@@ -5614,11 +5628,22 @@ export function collectClassShapeInner(
         ? lowerer.paramShapes(abiCtor.parameters.nodes)
         : (base?.ctorParams ??
           (callableBase || extendsDate || extendsArray ? [{ type: DYN, mode: "dynRest" }] : []));
+    // A constructor that reads its actual argument list receives it: every
+    // untyped constructor (JS arity) without a rest parameter, which already
+    // owns that contract, and a typed one whose callers can pass a different
+    // number of arguments than the declaration names (an optional, defaulted
+    // or rest parameter, where a fixed-arity signature folds
+    // `arguments.length` to a constant). A typed rest array holds only the
+    // arguments after the named positions, so the array follows it.
+    const ctorTyped = ctor !== null && !isJsSourceFile(ts.getSourceFileOfNode(ctor));
     if (
       ctor &&
       !mixinForwarding &&
-      isJsSourceFile(ts.getSourceFileOfNode(ctor)) &&
-      !ctorParams.some((shape) => shape.mode === "rest" || shape.mode === "dynRest") &&
+      (ctorTyped
+        ? ctor.parameters.nodes.some(
+            (param) => param.questionToken || param.initializer || param.dotDotDotToken,
+          )
+        : !ctorParams.some((shape) => shape.mode === "rest" || shape.mode === "dynRest")) &&
       bodyReadsArguments(ctor)
     ) {
       ctorParams.push({ type: DYN, mode: "arguments" });
@@ -10221,6 +10246,23 @@ function classCaptureParams(info: ClassInfo, context: FnCtx): Pick<IrFunction, "
   };
 }
 
+/** Whether a constructor's own body (nested functions and classes excluded)
+ * has a `finally` block: the only site that reads the value-return flag. */
+function hasOwnFinallyBlock(ctor: ts.Node): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isFunctionLike(node) || ts.isClassLikeDeclaration(node)) return;
+    if (ts.isTryStatement(node) && node.finallyBlock !== undefined) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(ctor, visit);
+  return found;
+}
+
 function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
   const className = info.def.name;
   const thisType: IrType = { kind: "object", className };
@@ -10231,6 +10273,85 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
     const thisLocal = lowerer.declareThis(thisType);
     const params: IrParam[] = [{ localId: thisLocal.id, name: "this", type: thisType }];
     const body: IrStmt[] = [];
+    // A base constructor that can return an existing instance rebinds this
+    // constructor's `this` (constructor-returns.ts superIntoResultSlot):
+    // `this` is a local the allocated instance initializes, and the
+    // instance the constructor ends with is published where it finishes.
+    // Every other constructor keeps `this` as its parameter.
+    // A function-local class constructs through its own environment, which
+    // has no result slot: its `super()` keeps the earlier contract.
+    const allocated: IrLocal | null =
+      info.localClass === undefined && rebindingBase(lowerer, info) !== null
+        ? { id: "%allocated.0", name: "%allocated", type: thisType, mutable: false }
+        : null;
+    if (allocated !== null) {
+      const loc = locOf(info.ctor ?? info.decl!);
+      lowerer.ctx.locals.push(allocated);
+      thisLocal.mutable = true;
+      params[0] = { localId: allocated.id, name: "this", type: thisType };
+      body.push({
+        kind: "varDecl",
+        localId: thisLocal.id,
+        init: varRef(allocated.id, thisType, loc),
+        loc,
+      });
+      const publish = () => [publishConstructorResult(lowerer, info, thisLocal, loc)];
+      // A value return publishes the instance it answers itself
+      // (constructor-returns.ts lowerConstructorReturn), so a `finally`
+      // republishes this constructor's `this` only when no value return of
+      // this construction did. A finalizer that constructs the same class
+      // consumes whatever the class's result slot held, so a constructor
+      // finishing on the path that answers its own `this` publishes it
+      // again afterwards, while a value return's answer is left as it is.
+      const returnsValue = (constructorReturnPlan(lowerer, info)?.returns.size ?? 0) !== 0;
+      const ctorBody = info.ctor?.body;
+      const needsValueFlag = returnsValue && ctorBody !== undefined && hasOwnFinallyBlock(ctorBody);
+      let valueReturn: IrLocal | null = null;
+      if (needsValueFlag) {
+        valueReturn = { id: "%valueReturn.0", name: "%valueReturn", type: BOOL, mutable: true };
+        lowerer.ctx.locals.push(valueReturn);
+        body.push({
+          kind: "varDecl",
+          localId: valueReturn.id,
+          init: { kind: "boolLit", value: false, type: BOOL, loc },
+          loc,
+        });
+        lowerer.ctx.constructorValueReturn = valueReturn;
+      }
+      lowerer.ctx.constructorEpilogue = (site) =>
+        site === "finally" && valueReturn !== null
+          ? [
+              {
+                kind: "if",
+                cond: {
+                  kind: "unary",
+                  op: "!",
+                  operand: varRef(valueReturn.id, BOOL, loc),
+                  type: BOOL,
+                  loc,
+                },
+                then: publish(),
+                else_: null,
+                loc,
+              },
+            ]
+          : publish();
+    }
+    // A construction nested in this constructor's argument evaluation can
+    // have been abandoned after publishing its instance (a `finally` that
+    // throws after its return): clear the class's result slot once this
+    // constructor runs, so the read that follows it cannot answer that
+    // instance (constructor-returns.ts constructorEntrySlot).
+    const entrySlot = constructorEntrySlot(lowerer, info);
+    if (entrySlot !== null) {
+      const clearLoc = locOf(info.ctor ?? info.decl!);
+      body.push({
+        kind: "assign",
+        localId: entrySlot.id,
+        value: lowerer.wrappedUndefined(entrySlot.type, clearLoc)!,
+        loc: clearLoc,
+      });
+    }
     // A derived constructor that can return a primitive records the pending
     // TypeError for the construction site to raise. Drop a stale record on
     // entry: a `finally` that throws after the return abandons the
@@ -10345,6 +10466,7 @@ function lowerClassCtorInner(lowerer: Lowerer, info: ClassInfo): IrFunction {
       }
       body.push(...lowerer.fieldInitStmts(info, thisLocal));
     }
+    if (allocated !== null) body.push(...lowerer.ctx.constructorEpilogue!("return"));
     return {
       name: `%${className}.constructor`,
       params,
@@ -11774,6 +11896,7 @@ export function superCallStmt(
     call,
     lowerer.upcastTo({ ...thisRef }, base.def.name),
     info.ctor ?? info.decl!,
+    thisLocal.mutable ? thisLocal : null,
   );
 }
 
@@ -13770,6 +13893,35 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         if (ctx && ctxMap !== null) {
           tsType = ctx;
           mapped = ctxMap;
+        }
+      }
+      // A JavaScript source's pair-literal seed whose entries do not all
+      // match the slot tsc inferred: `new Map([["a", xs], ["b", ys]])`
+      // takes V from the FIRST entry, and with checkJs off the later
+      // entries are type errors the checker reports nowhere. Node stores
+      // each entry's own value, so the map's slot really holds whatever
+      // the entries hold: type that slot checked-dynamic (`unknown`)
+      // instead of refusing the first entry whose conversion has no
+      // layout mapping. A typed seed (type arguments, a contextual map
+      // layout) keeps its declared layout.
+      if (
+        entriesLit !== null &&
+        mapped?.kind === "map" &&
+        (expr.typeArguments?.nodes.length ?? 0) === 0 &&
+        isJsSourceFile(ts.getSourceFileOfNode(expr))
+      ) {
+        const contextual = lowerer.checker.getContextualType(expr);
+        if (contextual === undefined || contextualMapLayout(lowerer, contextual) === null) {
+          const slotTypeOf = (node: ts.Expression): IrType | null =>
+            lowerer.mapTypeOf(lowerer.typeOf(node));
+          const disagrees = (index: 0 | 1, slot: IrType): boolean =>
+            entriesLit.some((pair) => {
+              const type = slotTypeOf(pair.elements.nodes[index]!);
+              return type === null || !typeEquals(type, slot);
+            });
+          const key = disagrees(0, mapped.key) ? DYN : mapped.key;
+          const value = disagrees(1, mapped.value) ? DYN : mapped.value;
+          if (key.kind === "dyn" || value.kind === "dyn") mapped = { kind: "map", key, value };
         }
       }
       // `new Map(source)` the checker types `Map<any, any>` because the

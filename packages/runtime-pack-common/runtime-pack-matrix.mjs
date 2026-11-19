@@ -99,6 +99,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_idna.c", "regex"],
   // crypto.argon2 and crypto.argon2Sync.
   ["scr_argon2.c", "argon2"],
+  // ML-KEM (node:crypto encapsulate/decapsulate and WebCrypto).
+  ["scr_mlkem.c", "mlkem"],
   // The worker unit's SHARE_ENV symbol reaches the symbol unit
   // (scr_worker_events.c), which assembles symbol equality messages here.
   ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
@@ -188,8 +190,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_events.c", "events"],
   // getColorDepth and hasColors of the process stream object: a program
   // that holds a process stream as a value and names one of them. It is
-  // called by the SCR_TTY_COLORS build of scr_events.c.
-  ["scr_tty_colors.c", all("events", "ttyColors")],
+  // called by the SCR_TTY_COLORS build of scr_events.c. A Console built with
+  // inspectOptions or colorMode reads the same tables for colorMode 'auto',
+  // so both select the unit (runtime-pack-core's ttyColorTables).
+  ["scr_tty_colors.c", "ttyColorTables"],
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
   ["scr_events_emitter.c", "emitter"],
@@ -249,7 +253,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     ),
   ],
   ["scr_stream.c", "stream"],
-  // stream.duplexPair builds two Duplexes wired to each other.
+  // stream.duplexPair builds two Duplexes wired to each other. Its empty
+  // chunk test reads an array's own length, which only the JavaScript object
+  // model build stores apart from the dense prefix.
   ["scr_stream_pair.c", "stream"],
   // readable.wrap reads a native source's chunks into the receiver.
   ["scr_stream_wrap.c", "stream"],
@@ -372,6 +378,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
   // Writable.toWeb wraps a native writable in a web WritableStream.
   ["scr_stream_writable_to_web.c", all("stream", "webStreams", "dynAsync")],
+  // Duplex.fromWeb reads and writes the web pair directly.
+  ["scr_stream_duplex_from_web.c", all("stream", "webStreams", "dynAsync")],
   // Duplex.toWeb builds the readable and writable adapters over a duplex.
   ["scr_stream_to_web_pair.c", all("stream", "webStreams", "dynAsync")],
   ["scr_stream_to_web_pair_dyn.c", all("streamDyn", "webStreams", "dynAsync")],
@@ -494,6 +502,11 @@ export function variantsFor(source) {
   // shape store probe declines it. Only the object model build models that
   // accessor: every other program keeps the default object, byte for byte.
   if (source === "scr_js_object.c") withJsObjectModel(variants);
+  // duplexPair's empty-chunk test reads an array's length through
+  // scr_dyn_arr_length: the object model build is where that length can
+  // exceed the dense prefix. A program with both features links this twin;
+  // every other program keeps the default object.
+  if (source === "scr_stream_pair.c") withJsObjectModel(variants);
   // util.inspect prints a BigInt typed array by reading its elements as
   // BigInts, whichever build of the unit the program selects.
   // A method call on an island promise reaches the island object for the

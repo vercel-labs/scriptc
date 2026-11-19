@@ -234,6 +234,10 @@ ScrStream *scr_stream_wrap_dyn(ScrStream *self, const struct ScrDyn *value);
  * a Writable over the web stream's writer, +1, or NULL with
  * ERR_INVALID_ARG_TYPE pending for a value that is not a WritableStream. */
 ScrStream *scr_stream_writable_from_web(struct ScrDyn *web, double flags);
+/* Duplex.fromWeb(pair[, options]) (scr_stream_duplex_from_web.c): a Duplex
+ * over the pair's web readable and writable, +1, or NULL with
+ * ERR_INVALID_ARG_TYPE pending. */
+ScrStream *scr_stream_duplex_from_web(struct ScrDyn *pair, double flags);
 
 /* stream.setDefaultHighWaterMark(objectMode, value) and
  * stream.getDefaultHighWaterMark(objectMode): what a stream created without
@@ -341,9 +345,9 @@ bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
  * answers +1 (the setEncoding chaining shape). */
 ScrStream *scr_stream_set_push_encoding(ScrStream *s, ScrStr *enc);
 bool scr_stream_push_null(ScrStream *s);
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str);
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str);
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
@@ -421,6 +425,7 @@ ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
 ScrPromise *scr_sc_array_buffer(ScrStream *s);
 ScrPromise *scr_sc_bytes(ScrStream *s); /* sc_buffer's bytes as a plain Uint8Array */
+ScrPromise *scr_sc_blob(ScrStream *s);  /* the chunks as a Blob (type "") */
 /* Readable.from over a typed source: arr holds the string or Buffer
  * elements (one element under SCR_FROM_SINGLE, from.js's string/Buffer
  * case). Elements push lazily, one _read at a time, as whole entries
@@ -517,6 +522,9 @@ void scr_stream_uncork(ScrStream *s);
  * fn(cb, err-or-NULL)) receives the error this write completion carries
  * (NULL is Node's null). */
 ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrError *));
+/* The error the current write callback is receiving (NULL for success): read
+ * inside a write completion that forwards the error to another stream. */
+ScrError *scr_stream_write_cb_error(void);
 #endif
 
 /* Shared lifecycle. destroy's err is BORROWED (may be NULL). */
@@ -780,6 +788,9 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w);
 ScrStream *scr_stream_duplexify_readable(ScrStream *r);
 ScrStream *scr_stream_duplexify_writable(ScrStream *w);
 ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w);
+/* The same pair with an explicit allowHalfOpen (Duplex.fromWeb's default is
+ * false where Duplex.from's is true). */
+ScrStream *scr_stream_duplexify_pair_opt(ScrStream *r, ScrStream *w, bool allow_half_open);
 /* Duplex.from(promise): a readable Duplexify of the promise's value. p and
  * box (the compiler's promise → dyn promise helper) borrowed. +1. */
 ScrStream *scr_stream_duplex_from_promise(struct ScrPromise *p, ScrClosure *box);

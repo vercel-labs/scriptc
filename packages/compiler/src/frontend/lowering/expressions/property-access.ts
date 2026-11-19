@@ -49,6 +49,7 @@ import {
   argumentCountSlot,
   contextualCallCount,
   handedWithoutCallCount,
+  readsHiddenArguments,
   usedAsValue,
 } from "../argument-counts.js";
 import {
@@ -150,6 +151,7 @@ import {
 } from "../lower-exprs.js";
 import {
   cjsInFileExportGlobalOf,
+  cjsPartialExportRead,
   isCjsExportsIdentifier,
   lowerCjsExportsObjectValue,
 } from "../cjs-exports-object.js";
@@ -240,7 +242,7 @@ import { fenceExpandoRead } from "../lower-expando.js";
 import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
-import { lowerEventStaticProperty } from "../builtins/numbers.js";
+import { lowerDOMExceptionStaticProperty, lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerWebSocketStaticProperty } from "../builtins/websocket.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
@@ -1149,19 +1151,46 @@ export function lowerPropertyAccessExpr(
   // exact arity at every call site and call/apply/bind indirection is
   // fenced, so the actual count IS the declared count — a compile-time
   // constant. Arrows don't bind `arguments` (the walk skips them,
-  // exactly JS's scoping); variable-arity signatures keep the fence
-  // (the count would need a hidden argc). The JS-source variadic
-  // `arguments` object (dynRest) was claimed at identifier lowering.
+  // exactly JS's scoping). A signature with a parameter that can be
+  // absent receives the hidden array of the arguments actually passed
+  // instead (call-signatures.ts appendArgumentsParameter), and a
+  // JavaScript source reads its array through the checked-dynamic
+  // receiver path below.
   if (
     expr.name.text === "length" &&
     !expr.questionDotToken &&
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "arguments" &&
-    !lowerer.ctx.argumentsLocal &&
     ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "IArguments" &&
     lowerer.isStdlibSymbol(lowerer.typeOf(expr.expression).getSymbol())
   ) {
-    let fn: ts.Node | undefined = expr.parent;
+    // The hidden array of the arguments this call received: its length is
+    // the count.
+    if (readsHiddenArguments(lowerer) && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const recv = lowerer.lowerExpr(expr.expression);
+      if (recv.type.kind !== "dyn") {
+        throw new InternalCompilerError("lowerer bug: hidden arguments array is not dynamic");
+      }
+      return lowerer.maybeNarrow(
+        {
+          kind: "dynCheck",
+          value: {
+            kind: "dynKeyGet",
+            value: recv,
+            key: { kind: "strLit", value: "length", type: STRING, loc },
+            type: DYN,
+            loc,
+          },
+          type: F64,
+          loc,
+        },
+        expr,
+      );
+    }
+    // A JavaScript source with a hidden array keeps the read it always had,
+    // through the checked-dynamic receiver path below: there is no constant
+    // to fold.
+    let fn: ts.Node | undefined = readsHiddenArguments(lowerer) ? undefined : expr.parent;
     while (
       fn !== undefined &&
       !ts.isFunctionDeclaration(fn) &&
@@ -1248,6 +1277,21 @@ export function lowerPropertyAccessExpr(
       (ts.isIdentifier(expr.name) &&
         lowerer.cjsWholeExportMemberOf(expr.expression, expr.name.text)))
   ) {
+    // A module of a require() cycle whose exports are still being
+    // assigned: the read is the live exports object's member, so a
+    // member not yet assigned reads undefined while the cycle
+    // initializes (and reports Node's warning), exactly as Node's
+    // partial exports answer.
+    if (ts.isIdentifier(expr.name)) {
+      const partialDep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      const partial =
+        partialDep === null
+          ? null
+          : cjsPartialExportRead(lowerer, partialDep, expr.name.text, expr);
+      if (partial !== null) return partial;
+    }
     // A binding whose dep is a class-expression WHOLE export
     // (`module.exports = class {…}`): the member surface is the
     // CLASS's — `C.name` folds to NamedEvaluation's answer and own
@@ -1465,6 +1509,7 @@ export function lowerPropertyAccessExpr(
     lowerer.lowerErrorCodeProperty(expr) ??
     lowerer.lowerNumberStaticProperty(expr) ??
     lowerEventStaticProperty(lowerer, expr) ??
+    lowerDOMExceptionStaticProperty(lowerer, expr) ??
     lowerWebSocketStaticProperty(lowerer, expr) ??
     lowerer.lowerMathProperty(expr) ??
     lowerer.lowerIntrinsicProperty(expr) ??
@@ -4257,7 +4302,7 @@ function staticRegexFlagsOf(lowerer: Lowerer, node: ts.Expression): string | nul
     return init !== null ? staticRegexFlagsOf(lowerer, init) : null;
   }
   if (
-    ts.isNewExpression(expr) &&
+    (ts.isNewExpression(expr) || ts.isCallExpression(expr)) &&
     ts.isIdentifier(expr.expression) &&
     lowerer.isStdlibGlobal(expr.expression, "RegExp")
   ) {
@@ -6121,6 +6166,21 @@ export function fieldTarget(
       fieldType: F64,
     };
   }
+  // `Error.prepareStackTrace`: program state, as in Node — a program may
+  // save it, replace it (typically with `void 0`) and restore it. The
+  // runtime holds the value and its default function, which throws the
+  // named refusal if called (native code has no V8 call-site formatter).
+  if (
+    access.name.text === "prepareStackTrace" &&
+    lowerer.isStdlibGlobal(access.expression, "Error")
+  ) {
+    return {
+      container: "errorPrepareStackTrace",
+      obj: { kind: "numLit", value: 0, type: F64, loc: locOf(access) },
+      field: "prepareStackTrace",
+      fieldType: DYN,
+    };
+  }
   // `this.#x` in a function-local class's prototype method: the field of
   // the brand-checked receiver (checkedPrivateReceiver).
   if (
@@ -6579,6 +6639,9 @@ export function fieldGetExpr(
     return errorPropertyRead(lowerer, target.obj, target.field);
   if (target.container === "errorStackLimit") {
     return { kind: "libCall", fn: "error.stackLimitGet", args: [], type: F64, loc };
+  }
+  if (target.container === "errorPrepareStackTrace") {
+    return { kind: "libCall", fn: "error.prepareStackTraceGet", args: [], type: DYN, loc };
   }
   if (target.container === "errorCause") {
     return { kind: "libCall", fn: "error.cause", args: [target.obj], type: DYN, loc };

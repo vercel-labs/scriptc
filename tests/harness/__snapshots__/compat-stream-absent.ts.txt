@@ -1,6 +1,0 @@
-compat-stream-absent.ts:9:35 - error SC0001: Object literal may only specify known properties, and 'readable' does not exist in type 'ReadableStream<unknown>'.
-
-   8 | const transform = new TransformStream();
-   9 | const fromPair = Duplex.fromWeb({ readable: transform.readable, writable: transform.writable });
-     |                                   ^~~~~~~~
-  10 | console.log(typeof fromPair);

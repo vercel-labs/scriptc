@@ -12,6 +12,13 @@
  */
 #include "scr_runtime.h"
 
+#if defined(__APPLE__)
+/* scr_dyn_invoke.c defines this weakly for Mach-O's linker; the event-target
+ * unit's strong definition tells it that Event, CustomEvent and EventTarget
+ * construction is available. */
+int scr_dyn_event_target_unit_linked = 1;
+#endif
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fetch-handle-body-method-shadow.ts"
+ ],
+ "diags": []
+}

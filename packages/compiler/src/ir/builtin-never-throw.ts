@@ -12,6 +12,11 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // Error.prepareStackTrace's program state: the get retains the stored value
+  // (or builds the default function once) and the set retains and releases;
+  // neither runs program code or raises a catchable error.
+  "error.prepareStackTraceGet",
+  "error.prepareStackTraceSet",
   // perf_hooks histogram readings and state: the handle indexes the
   // thread's table, every selector is arithmetic over it, and none runs
   // program code. (Creating and recording validate their arguments, so
@@ -37,6 +42,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "test.ctxSignal",
   // scr_test_ctx_log writes the ℹ line at once; printing cannot raise.
   "test.ctxLog",
+  // scr_test_ctx_tags answers the cached frozen tag array; building it on the
+  // first read copies the tag strings and allocates, running no program code.
+  "test.ctxTags",
   // Console instance state that answers text: the timer labels are already
   // strings, the stores are the instance's own tables, and no program code
   // runs. (The counters and the table can throw, so they are not here.)
@@ -107,6 +115,13 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // The AsyncHook flips and the execution-id reads touch the core's own
+  // thread-local state; no program code runs and nothing raises.
+  "ah.disable",
+  "ah.enable",
+  "ah.providers",
+  "ah.executionId",
+  "ah.triggerId",
   // scr_als_with_scope reads the effective store, enters the new one and
   // boxes the RunScope; no program code runs and nothing raises.
   "als.withScope",
@@ -192,6 +207,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Writable.toWeb builds the sink object and the web WritableStream over it;
   // the sink's functions run later, on the web stream's calls.
   "webstream.writableToWeb",
+  // Duplex.fromWeb's pair constructs the Duplexify and stores the flag.
+  "stream.duplexifyPairHalf",
   // Duplex.toWeb builds both adapters over the duplex; their functions run
   // later, on the web streams' calls.
   "webstream.toWebDuplex",
@@ -385,4 +402,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // own check, and running out of memory ends it too. The call reports no
   // error the emitter could deliver.
   "text.encodeIntoStr",
+  // Error.prepareStackTrace as program state (scr_exception.c): the getter
+  // and setter read and write the program's own cell, running no program
+  // code and raising no catchable error.
+  "error.prepareStackTraceGet",
+  "error.prepareStackTraceSet",
 ]);

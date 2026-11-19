@@ -229,6 +229,54 @@ export function renderStartupWarnings(
   );
 }
 
+/** The deferred statements a build names (SC6015), one line each. These are
+ * the statements that throw when the program reaches them; a program with
+ * hundreds of deferred sites (a framework's untyped JavaScript) would bury
+ * them past the source-frame limit, so every site is printed, compactly, at
+ * its own line. */
+export function renderDeferredWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+): string {
+  const sorted = [...diags].sort(
+    (a, b) => a.loc.file.localeCompare(b.loc.file) || a.loc.start - b.loc.start,
+  );
+  const indexes = new Map<string, LineIndex>();
+  const lines = sorted.map((d) => {
+    const text = sourceTextByFile.get(d.loc.file);
+    let at = "";
+    if (text !== undefined) {
+      let index = indexes.get(d.loc.file);
+      if (index === undefined) {
+        index = lineIndex(text);
+        indexes.set(d.loc.file, index);
+      }
+      const { lineStarts } = index;
+      let lo = 0;
+      let hi = lineStarts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (lineStarts[mid]! <= d.loc.start) lo = mid;
+        else hi = mid - 1;
+      }
+      at = `:${lo + 1}:${d.loc.start - lineStarts[lo]! + 1}`;
+    }
+    // A TypeScript statement's warning wraps the refusal; print the refusal.
+    const wrapped =
+      /^this statement throws when it runs \((.*)\), where it would have completed under Node/s.exec(
+        d.message,
+      );
+    return `  ${d.loc.file}${at}: ${wrapped ? wrapped[1]! : d.message}`;
+  });
+  const n = diags.length;
+  return (
+    (n === 1
+      ? "This statement defers to run time: it throws where it runs, and a program that never reaches it runs as it does under Node.\n"
+      : `These ${n} statements defer to run time: each throws where it runs, and a program that never reaches it runs as it does under Node.\n`) +
+    lines.join("\n")
+  );
+}
+
 export function renderWarnings(
   diags: readonly ScrDiagnostic[],
   sourceTextByFile: Map<string, string>,

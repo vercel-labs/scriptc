@@ -107,7 +107,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 50, marker: "scr_runtime_abi_v50" },
+    runtime_abi: { version: 51, marker: "scr_runtime_abi_v51" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -306,6 +306,21 @@ describe("runtime pack manifests", () => {
     expect(bigint).toMatchObject({ bigintBytes: true, jsObjectModel: true, dynTier: true });
     const plain = effectiveRuntimeFeatures(BASE);
     expect(plain).toMatchObject({ jsObjectModel: false, dynTier: false, bigintBytes: false });
+  });
+
+  test("the tty color tables serve the stream methods and Console options", () => {
+    // scr_tty_colors.c is one unit with two callers: the stream object's
+    // getColorDepth/hasColors (events + ttyColors) and a Console built with
+    // inspectOptions or colorMode, whose 'auto' mode colors by the
+    // environment's depth.
+    const stream = effectiveRuntimeFeatures({ ...BASE, events: true, ttyColors: true });
+    expect(stream.ttyColorTables).toBe(true);
+    const consoleOptions = effectiveRuntimeFeatures({ ...BASE, consoleOptions: true });
+    expect(consoleOptions.ttyColorTables).toBe(true);
+    const eventsOnly = effectiveRuntimeFeatures({ ...BASE, events: true });
+    expect(eventsOnly.ttyColorTables).toBe(false);
+    const plain = effectiveRuntimeFeatures(BASE);
+    expect(plain.ttyColorTables).toBe(false);
   });
 
   test("static runtime-pack executable links dead-strip too", async () => {

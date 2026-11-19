@@ -380,6 +380,7 @@ ScrDyn *scr_net_socket_address_parse(const ScrDyn *input);
 bool scr_net_is_socket_address(const ScrDyn *value);
 ScrDyn *scr_net_block_list_new(const ScrDyn *args);
 bool scr_net_is_block_list(const ScrDyn *value);
+bool scr_net_block_list_blocks(const ScrDyn *list, const char *ip, int family);
 /* net.BoundSocket: construction validates its options and binds (TCP or a
  * Unix-socket path); server.listen(bound[, cb]) adopts the descriptor. All
  * +1, borrowed arguments; may throw. */

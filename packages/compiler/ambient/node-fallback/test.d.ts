@@ -42,7 +42,9 @@ declare module "node:test" {
     log(message: string, data?: unknown): void;
   }
   interface TestContextPlanOptions {
-    wait?: number | undefined;
+    /* `true` waits indefinitely for the plan, `false` (the default) checks
+     * as soon as the body finishes, a number is the maximum wait. */
+    wait?: boolean | number | undefined;
   }
   interface TestOptions {
     skip?: boolean | string;
@@ -58,6 +60,10 @@ declare module "node:test" {
      * Node's matcher forms (RegExp, function, object, Error, { label, match })
      * are not lowered. */
     expectFailure?: boolean | string;
+    /* Labels carried by the test and its descendant suites' tests. Values
+     * must be non-empty strings; they are lowercased and de-duplicated, and
+     * a suite's tags are inherited by every test it contains. */
+    tags?: readonly string[];
   }
   interface TestContext {
     readonly name: string;

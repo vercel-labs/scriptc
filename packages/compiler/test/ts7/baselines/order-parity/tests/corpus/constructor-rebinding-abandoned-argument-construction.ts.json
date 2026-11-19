@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/constructor-rebinding-abandoned-argument-construction.ts"
+ ],
+ "diags": []
+}

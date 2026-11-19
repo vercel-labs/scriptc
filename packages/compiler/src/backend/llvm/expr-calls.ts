@@ -4,6 +4,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
   DYN,
+  funcHiddenParamCount,
   isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
@@ -72,7 +73,7 @@ import {
 import type { Writes } from "./reference-writes.js";
 import { capsuleCallSite, emitCapsuleCall, emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
-import { registerReplay } from "./emit-journal.js";
+import { registerContentReplay } from "./emit-journal.js";
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -967,8 +968,9 @@ export function emitCallExpr(
         throw new InternalCompilerError("llvm emitter bug: callValue on non-func");
       const ft = e.callee.type;
       // A checked-dynamic variadic value's lifted signature carries one
-      // trailing dyn array after its declared parameters.
-      const hiddenRest = ft.rest === true && ft.restAbi === undefined;
+      // trailing dyn array after its declared parameters, and an
+      // `argumentsAll` value carries the actual-argument array there.
+      const hiddenRest = funcHiddenParamCount(ft) > 0;
       if (e.args.length !== ft.params.length + (hiddenRest ? 1 : 0))
         throw new LlvmUnsupportedError("callValue:arity", e.loc);
       // A receiver that reads the ambient `this` binds what the callee
@@ -1892,7 +1894,7 @@ export function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
   // The box binds the same live view eager boxing attaches, so `in`,
   // for-in and Object.keys see the class members.
   const view = liveRefView(adapter);
-  recipe = `@sc_trr_${host.typedRefRecipes.size}`;
+  recipe = `@${host.contentSymbol("sc_trr_", key)}`;
   host.typedRefRecipes.set(key, recipe);
   host.journal?.allocated(recipe, "typedRefRecipe", [t]);
   host.resolveThunkDefs.push(
@@ -1902,4 +1904,4 @@ export function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
   return recipe;
 }
 
-registerReplay("typedRefRecipe", (host, args) => typedRefRecipe(host, args[0] as IrType));
+registerContentReplay("typedRefRecipe", (host, args) => typedRefRecipe(host, args[0] as IrType));

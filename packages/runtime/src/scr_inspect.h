@@ -123,6 +123,18 @@ ScrStr *scr_insp_inspect(ScrDyn *value, ScrDyn *options, ScrDyn *depth, ScrDyn *
  * then the call's own options; argc is the call's argument count (+1, or
  * NULL with the exception pending). */
 ScrStr *scr_insp_inspect_dir(ScrDyn *value, ScrDyn *options, double argc);
+/* A Console instance's formatting: util.formatWithOptions over the
+ * instance's inspectOptions with `surface`'s defaults, and an explicit
+ * colors override (0 keeps the options' answer, 1 forces colors, 2 forces
+ * none — the instance's colorMode decides unless inspectOptions.colors is
+ * spelled). +1, or NULL with the exception pending. */
+ScrStr *scr_insp_console_format(ScrDyn *pack, ScrDyn *inspect_options, const char *surface,
+                                int colors_mode);
+/* A Console instance's inspect (dir, dirxml): custom inspection off,
+ * inspectOptions first, then the call's own options over it, with the same
+ * colors override. +1, or NULL with the exception pending. */
+ScrStr *scr_insp_console_inspect(ScrDyn *value, ScrDyn *inspect_options, ScrDyn *call_options,
+                                 double argc, int colors_mode);
 /* Whether a format string has a '%' before its last character, the only
  * strings whose substitutions can change the output. */
 bool scr_insp_format_specifies(ScrStr *first);

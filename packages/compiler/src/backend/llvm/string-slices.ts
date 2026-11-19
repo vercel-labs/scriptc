@@ -71,7 +71,7 @@ export function findScalarStringSlices(
 /** scr_slice_unit: a slice()/substring() bound `v` over `length` units. A
  * non-negative bound clamps to the length; a negative one counts from the
  * end for slice (truncated toward zero) and is 0 for substring, as is NaN. */
-function emitSliceUnit(
+export function emitSliceUnit(
   host: LlvmEmitterContext,
   v: string,
   length: string,

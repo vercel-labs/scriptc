@@ -9409,13 +9409,16 @@ bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
   if (auth_out != NULL) *auth_out = NULL;
   if (!u) return false; /* Invalid URL pending */
   /* A URL's username and password become Node's `auth` option, which sets
-   * the Authorization header. This client sets none of the auth shapes, so
-   * credentials in the URL are a fence rather than a request that quietly
-   * leaves them off. */
+   * the Authorization header. */
   if (auth_out != NULL && u->userinfo->len > 0) {
-    /* "user:pass", each part percent-decoded (Node's urlToHttpOptions) */
-    ScrStr *user = scr_str_decode_uri_component(scr_url_username(u));
-    ScrStr *pass = user ? scr_str_decode_uri_component(scr_url_password(u)) : NULL;
+    /* "user:pass", each part percent-decoded (Node's urlToHttpOptions); the
+     * getters and the decoder each answer a new string */
+    ScrStr *raw_user = scr_url_username(u);
+    ScrStr *raw_pass = scr_url_password(u);
+    ScrStr *user = scr_str_decode_uri_component(raw_user);
+    ScrStr *pass = user ? scr_str_decode_uri_component(raw_pass) : NULL;
+    scr_str_release(raw_user);
+    scr_str_release(raw_pass);
     if (pass) {
       ScrHttpBuf auth_buf = {NULL, 0, 0};
       scr_http_buf_append(&auth_buf, user->data, user->len);
@@ -9501,6 +9504,23 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
  * shapes. Documented options outside the implemented set throw the
  * runtime fence when they carry a value, rather than being ignored;
  * undocumented keys are ignored, as Node ignores them. */
+
+/* Whether the headers record carries `name` at all (case-insensitive), even
+ * with an empty value list: Node's getHeader answers the array, which is
+ * truthy, so an explicit empty Authorization array still overrides auth. */
+static bool scr_http_headers_record_has(const ScrDyn *headers, const char *name) {
+  if (headers == NULL || headers->kind != SCR_DYN_OBJ) return false;
+  size_t want = strlen(name);
+  for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
+    if (e.key_len != want) continue;
+    bool same = true;
+    for (size_t j = 0; j < want && same; j++)
+      if (tolower((unsigned char)e.key[j]) != name[j]) same = false;
+    if (same) return true;
+  }
+  return false;
+}
 
 /* Whether the flat [name, value, ...] pairs already carry `name`. */
 static bool scr_http_pairs_have(ScrArr *pairs, const char *name) {
@@ -9885,6 +9905,9 @@ bool scr_http_req_opts_read(const ScrDyn *opts, bool secure, const char *api, Sc
   } else if (headers != NULL && headers->kind != SCR_DYN_NULL) {
     scr_http_req_opts_fence(api, "headers", "headers is an object of string or number values here");
   }
+  const bool headers_has_authorization =
+      scr_http_headers_record_has(headers, "authorization") ||
+      (o->headers != NULL && scr_http_pairs_have(o->headers, "authorization"));
   scr_dyn_release(headers_view);
   if (scr_exc_pending()) {
     scr_http_req_opts_free(o);
@@ -9898,8 +9921,7 @@ bool scr_http_req_opts_read(const ScrDyn *opts, bool secure, const char *api, Sc
   /* Node: `options.auth && !this.getHeader('Authorization')` — a falsy value
    * is ignored without conversion, and an Authorization header the caller
    * set means the option is never read */
-  if (auth != NULL && scr_http_req_truthy(auth) &&
-      !scr_http_pairs_have(o->headers, "authorization")) {
+  if (auth != NULL && scr_http_req_truthy(auth) && !headers_has_authorization) {
     const unsigned char *bytes = NULL;
     unsigned char *bytes_owned = NULL;
     size_t n = 0;

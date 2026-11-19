@@ -1964,7 +1964,11 @@ export class LlEmitter {
   readonly staticArrayTables: ReadonlySet<IrExpr>;
   /** Constant-key reads on checked-dynamic objects, each with its own
    * zero-initialized ScrDynReadIc (scr_runtime.h). */
-  dynReadIcSites = 0;
+  /** The dyn-read IC globals this module allocates, in allocation order. Each
+   * is named by the function that owns its site and the site's ordinal in
+   * that function (contentSymbol), so its name does not depend on how many
+   * IC sites the rest of the program has. */
+  readonly dynReadIcGlobals: string[] = [];
   /** ThreadSlots blocks by family name (thread-slots.ts). */
   readonly threadSlotsBlocks = new Map<string, string>();
   /** May-throw analysis (computeMayThrow): pending
@@ -2115,12 +2119,21 @@ export class LlEmitter {
   readonly weakTraces: WeakTrace[] = [];
   /** Inline-cache sites of dynamic-tier functions (js-ic.ts): one
    * zero-initialized ScrJsIc per site (scr_js.h). */
-  jsIcSiteCount = 0;
+  /** The JS inline-cache globals this module allocates (see
+   * dynReadIcGlobals). */
+  readonly jsIcGlobals: string[] = [];
   private jsIcSitesMemo: JsIcSites | undefined;
   /** Guard-group records of dynamic-tier functions (js-groups.ts): one
    * zero-initialized ScrJsGroup per group, and the key arrays the probes
    * read (scr_js.h). */
-  jsGroupCount = 0;
+  /** The JS guard-group globals this module allocates (see
+   * dynReadIcGlobals). */
+  readonly jsGroupGlobals: string[] = [];
+  /** Every site global already recorded, so re-emission never declares one
+   * twice. */
+  private readonly icSiteNames = new Set<string>();
+  /** Each site kind's ordinal within the function being emitted. */
+  private siteOrdinal = { js: 0, group: 0, dynRead: 0, spec: 0 };
   private jsGroupKeysCount = 0;
   private readonly jsGroupKeysByName = new Map<string, readonly string[]>();
   private readonly jsGroupKeysByText = new Map<string, string>();
@@ -2316,7 +2329,6 @@ export class LlEmitter {
     increments?: ReadonlySet<IrExpr>;
   } | null = null;
   /** Speculative loop sites numbered so far in the module. */
-  speculativeLoopSites = 0;
   /** The ordinary copy being emitted: resume labels still to place. */
   speculationResume: Map<IrStmt, { label: string; placed: boolean }> | null = null;
   /** The rewritten values of the writes `speculationResume` resumes at. */
@@ -7458,6 +7470,10 @@ export class LlEmitter {
     return copies;
   }
   emitFunction(fn: IrFunction): string {
+    // A site's ordinal is its place in the function being emitted, so it
+    // restarts with each function: the name is a function of the function and
+    // the site, never of what emitted before it.
+    this.siteOrdinal = { js: 0, group: 0, dynRead: 0, spec: 0 };
     try {
       return emitFunction(this, fn);
     } catch (error) {
@@ -9890,16 +9906,30 @@ export class LlEmitter {
     return (this.jsIcSitesMemo ??= new JsIcSites(this.mod));
   }
 
-  jsIcSite(): string {
-    const name = `@sc_js_ic_${this.jsIcSiteCount++}`;
-    this.journal?.site(name, "jsIcSite");
+  jsIcSite(
+    owner: string = this.currentFunctionName,
+    ordinal: number = this.siteOrdinal.js++,
+  ): string {
+    const name = this.contentSymbol("@sc_js_ic_", `${owner}\u0000${ordinal}`);
+    if (!this.icSiteNames.has(name)) {
+      this.icSiteNames.add(name);
+      this.jsIcGlobals.push(name);
+    }
+    this.journal?.site(name, "jsIcSite", [owner, ordinal]);
     return name;
   }
 
   /** A fresh guard-group record (js-groups.ts). */
-  jsGroup(): string {
-    const name = `@sc_js_group_${this.jsGroupCount++}`;
-    this.journal?.site(name, "jsGroup");
+  jsGroup(
+    owner: string = this.currentFunctionName,
+    ordinal: number = this.siteOrdinal.group++,
+  ): string {
+    const name = this.contentSymbol("@sc_js_group_", `${owner}\u0000${ordinal}`);
+    if (!this.icSiteNames.has(name)) {
+      this.icSiteNames.add(name);
+      this.jsGroupGlobals.push(name);
+    }
+    this.journal?.site(name, "jsGroup", [owner, ordinal]);
     return name;
   }
 
@@ -9922,18 +9952,27 @@ export class LlEmitter {
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */
-  dynReadIcSite(): string {
-    const name = `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
-    this.journal?.site(name, "dynReadIcSite");
+  dynReadIcSite(
+    owner: string = this.currentFunctionName,
+    ordinal: number = this.siteOrdinal.dynRead++,
+  ): string {
+    const name = this.contentSymbol("@sc_dyn_read_ic_", `${owner}\u0000${ordinal}`);
+    if (!this.icSiteNames.has(name)) {
+      this.icSiteNames.add(name);
+      this.dynReadIcGlobals.push(name);
+    }
+    this.journal?.site(name, "dynReadIcSite", [owner, ordinal]);
     return name;
   }
 
   /** A fresh speculative loop site: the global that counts its bailing
    * entries in a row. */
-  speculativeLoopSite(): string {
-    const name = `@sc_spec_bails_${this.speculativeLoopSites++}`;
-    this.journal?.site(name, "speculativeLoopSite");
-    this.journal?.opened("speculativeLoopSite");
+  speculativeLoopSite(
+    owner: string = this.currentFunctionName,
+    ordinal: number = this.siteOrdinal.spec++,
+  ): string {
+    const name = this.contentSymbol("@sc_spec_bails_", `${owner}\u0000${ordinal}`);
+    this.journal?.allocated(name, "speculativeLoopSite", [owner, ordinal]);
     this.declare(`${name} = internal global i8 0`);
     this.journal?.built();
     return name;
@@ -10481,3 +10520,17 @@ for (const op of [
   registerReplay(op, (emitter, args) => emitter.walkers.replayHelper(op, args));
 for (const op of ["publish.walker", "publish.refusal"])
   registerReplay(op, (emitter, args) => emitter.publishWalkers.replayHelper(op, args));
+
+// A site record carries the function and ordinal it was named from, so
+// replaying it on the merging emitter names the site the same whatever that
+// emitter is emitting at the time.
+registerReplay("jsIcSite", (emitter, args) =>
+  emitter.jsIcSite(args[0] as string, args[1] as number),
+);
+registerReplay("jsGroup", (emitter, args) => emitter.jsGroup(args[0] as string, args[1] as number));
+registerReplay("dynReadIcSite", (emitter, args) =>
+  emitter.dynReadIcSite(args[0] as string, args[1] as number),
+);
+registerReplay("speculativeLoopSite", (emitter, args) =>
+  emitter.speculativeLoopSite(args[0] as string, args[1] as number),
+);

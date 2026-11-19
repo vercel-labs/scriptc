@@ -1157,16 +1157,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
         ? "thread_local "
         : "";
     out.push(...threadSlotsBlockDefinitions(emitter.threadSlotsBlocks, tl !== ""));
-    for (let site = 0; site < emitter.dynReadIcSites; site++)
+    for (const name of emitter.dynReadIcGlobals)
       out.push(
-        `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
+        `${name} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
       );
-    for (let site = 0; site < emitter.jsIcSiteCount; site++)
-      out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
-    for (let group = 0; group < emitter.jsGroupCount; group++)
-      out.push(
-        `@sc_js_group_${group} = internal ${tl}global [${JS_GROUP_WORDS} x i64] zeroinitializer`,
-      );
+    for (const name of emitter.jsIcGlobals)
+      out.push(`${name} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
+    for (const name of emitter.jsGroupGlobals)
+      out.push(`${name} = internal ${tl}global [${JS_GROUP_WORDS} x i64] zeroinitializer`);
     for (const [name, keys] of emitter.jsGroupKeysTable)
       out.push(
         `${name} = internal constant [${keys.length} x ptr] [${keys.map((key) => `ptr ${key}`).join(", ")}]`,

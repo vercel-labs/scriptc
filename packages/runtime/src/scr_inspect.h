@@ -130,6 +130,11 @@ ScrStr *scr_insp_inspect_dir(ScrDyn *value, ScrDyn *options, double argc);
  * spelled). +1, or NULL with the exception pending. */
 ScrStr *scr_insp_console_format(ScrDyn *pack, ScrDyn *inspect_options, const char *surface,
                                 int colors_mode);
+/* scr_insp_console_format over a call's argument list (a stored method's
+ * arguments): util.formatWithOptions with the same options and colors
+ * answer. +1, or NULL with the exception pending. */
+ScrStr *scr_insp_console_format_argv(ScrDyn *const *args, size_t argc, ScrDyn *inspect_options,
+                                     const char *surface, int colors_mode);
 /* A Console instance's inspect (dir, dirxml): custom inspection off,
  * inspectOptions first, then the call's own options over it, with the same
  * colors override. +1, or NULL with the exception pending. */

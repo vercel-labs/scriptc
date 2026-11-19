@@ -4,6 +4,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The tty color tables live in their own unit (scr_tty_colors.c), whose
+ * color-depth warning schedules through the async unit, which a library
+ * archive does not carry. A build that links this unit without them answers
+ * the tables' question with no color, so the archive links; every other
+ * build selects the unit (the stream color methods, an option-bearing
+ * Console, or any program linking this unit with the inspect unit) and its
+ * definition replaces this one. */
+__attribute__((weak)) bool scr_tty_console_auto_colors(bool is_tty) {
+  (void)is_tty;
+  return false;
+}
+
+/* The colorMode answers, defined with the instance writers below. */
+static int scr_console_target_colors_mode(int color_mode, bool is_tty);
+static int scr_console_inst_colors_mode(ScrConsoleInst *inst, int which);
+
 /* The console object as a value. Its function-valued members are one
  * function object each per thread, so `console.log === console.log` holds
  * and a detached method needs no receiver (Node binds them the same way).
@@ -112,9 +128,13 @@ static ScrDyn *scr_console_method_call(ScrClosure *closure, ScrDyn *const *args,
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)len, "SC2020");
     return NULL;
   }
-  ScrInspFormatOptions options;
-  scr_insp_format_defaults(&options, member->surface);
-  ScrStr *line = scr_insp_format(args, argc, &options);
+  /* Node's stored global methods format through kFormatForStdout, so they
+   * read the stream's inspect options and the console's colorMode answer
+   * exactly as a direct call does. */
+  int which = member->target ? 1 : 0;
+  ScrStr *line = scr_insp_console_format_argv(
+      args, argc, NULL, member->surface,
+      scr_console_target_colors_mode(2, scr_process_is_tty(which ? 2 : 1)));
   if (!line) return NULL;
   ScrLogArg arg = {.tag = SCR_ARG_STR};
   arg.v.s = line;
@@ -383,11 +403,15 @@ static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key,
   (void)self; (void)what;
   int index = scr_console_member_index(key, strlen(key));
   if (index < 0) return scr_console_inst_get(ptr, key, strlen(key));
-  ScrInspFormatOptions options;
-  scr_insp_format_defaults(&options, index >= 3 ? "console.error" : "console.log");
-  ScrStr *line = scr_insp_format(args, argc, &options);
+  ScrConsoleInst *inst = ptr;
+  int which = index >= 3 ? 1 : 0;
+  /* The stored function is the same method: it formats with the instance's
+   * inspectOptions and colorMode answer, so detaching one changes nothing. */
+  ScrStr *line = scr_insp_console_format_argv(
+      args, argc, inst->inspect_options, index >= 3 ? "console.error" : "console.log",
+      scr_console_inst_colors_mode(inst, which));
   if (line == NULL) return NULL;
-  scr_console_inst_print(ptr, index >= 3 ? 1 : 0, line);
+  scr_console_inst_print(inst, which, line);
   scr_str_release(line);
   return scr_dyn_retain(scr_dyn_undefined());
 }

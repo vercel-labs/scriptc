@@ -1213,7 +1213,7 @@ console.log(a.fromA, a.fromB);
     );
   });
 
-  test("split table re-exports keep the exports-object value fence at the consumer", async () => {
+  test("split table re-exports answer the forwarded table's exports object at the consumer", async () => {
     const r = await compileAndRun(
       "split-table-reexport-as-value",
       `const lib = require("./wrap.cjs");
@@ -1230,11 +1230,11 @@ console.log("wrap: done");
 `,
       },
     );
-    expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("wrap: done\nbefore\n");
-    expect(r.stderr).toMatch(
-      /^Uncaught Error: console\.log of 'module namespace .*lib\.cjs'' values.*\[SC1090 at .*split-table-reexport-as-value\.cjs:3\]\n$/,
-    );
+    // Node's require answers lib.cjs's own exports object through the
+    // forwarding module, and console.log prints it as a plain object.
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("wrap: done\nbefore\n{ n: 7 }\n");
+    expect(r.stderr).toBe("");
   });
 
   test("split table re-exports with later live member writes keep the value fence", async () => {
@@ -3583,19 +3583,6 @@ console.log(exports.size());
       8,
       "calling 'exports\\.size' through the module's exports object when the function may read 'this'",
     ],
-    [
-      "require-table-as-value",
-      `function count(o) {
-  return Object.keys(o).length;
-}
-console.log("before");
-console.log(count(require("./lib.cjs")));
-`,
-      { "lib.cjs": "exports.x = 1;\n" },
-      "before\n",
-      5,
-      "the exports object of '\\./lib\\.cjs' as a value",
-    ],
   ] as const)("%s", async (name, source, extra, stdout, line, message) => {
     const r = await compileAndRun(name, source, "cjs", extra);
     expect(r.exitCode).toBe(1);
@@ -3603,6 +3590,25 @@ console.log(count(require("./lib.cjs")));
     expect(r.stderr).toMatch(
       new RegExp(`^Uncaught Error: ${message}.*\\[SC1090 at .*${name}\\.cjs:${line}\\]\\n$`),
     );
+  });
+
+  test("a top-level inline require of a table module as a value is its exports object", async () => {
+    // Node's require answers the module's own exports object, so a function
+    // handed it sees the module's keys.
+    const r = await compileAndRun(
+      "require-table-as-value",
+      `function count(o) {
+  return Object.keys(o).length;
+}
+console.log("before");
+console.log(count(require("./lib.cjs")));
+`,
+      "cjs",
+      { "lib.cjs": "exports.x = 1;\n" },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("before\n1\n");
+    expect(r.stderr).toBe("");
   });
 });
 

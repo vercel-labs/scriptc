@@ -345,6 +345,7 @@
     { "chapter": "errors", "symbols": ["ERR_INVALID_MIME_SYNTAX"], "status": "supported", "evidence": ["tests/corpus/7707-util-mime-type.cjs", "tests/corpus/compat-error-validation-codes.mjs"] },
     { "chapter": "errors", "symbols": ["ERR_INVALID_IP_ADDRESS"], "status": "partial", "evidence": ["tests/corpus/node-dns-resolve-errors.cjs", "tests/corpus/node-dns-resolver-class.ts"] },
     { "chapter": "errors", "symbols": ["ERR_THROTTLED"], "status": "partial", "evidence": ["tests/corpus/7711-util-throttle.cjs"] },
+    { "chapter": "util", "signatures": ["`util.getCallSites([frameCount][, options])`"], "status": "supported", "evidence": ["tests/corpus/util-get-call-sites.ts"] },
     { "chapter": "util", "symbols": ["util.parseEnv"], "status": "supported", "evidence": ["tests/corpus/node24-env-parse.ts", "tests/corpus/node24-env-parse-errors.ts", "tests/corpus/node24-env-imports.cjs", "tests/fixtures/node-types/env-files.ts", "tests/harness/project-config.test.ts"] },
     { "chapter": "process", "symbols": ["process.memoryUsage.rss"], "status": "supported", "evidence": ["tests/corpus/5210-process-memory-usage.ts", "tests/corpus/process-ignored-arguments.cjs"] },
     { "chapter": "process", "symbols": ["process.availableMemory"], "status": "supported", "evidence": ["tests/corpus/2314-process-introspection.ts", "tests/corpus/process-ignored-arguments.cjs"] },

@@ -973,6 +973,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "date.argumentsTime",
   "date.checkedValue",
   "util.parseArgs",
+  "util.getCallSites",
   "util.parseEnv",
   "util.getSystemErrorName",
   "util.getSystemErrorMessage",

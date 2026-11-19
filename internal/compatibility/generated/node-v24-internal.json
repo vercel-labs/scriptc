@@ -110452,6 +110452,7 @@
           "tests/corpus/util-format-class-to-string.ts",
           "tests/corpus/util-format-equality-promisify.ts",
           "tests/corpus/util-format-json-error.ts",
+          "tests/corpus/util-get-call-sites.ts",
           "tests/corpus/util-inspect-colors-builtins.ts",
           "tests/corpus/util-inspect-colors-errors.ts",
           "tests/corpus/util-inspect-colors-escaped-cwd.ts",
@@ -111766,8 +111767,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "supported",
+        "evidence": "compiler-feature:util.util.getCallSites",
+        "tests": [
+          "tests/corpus/util-get-call-sites.ts"
+        ]
       },
       "anchorSource": "exact"
     },

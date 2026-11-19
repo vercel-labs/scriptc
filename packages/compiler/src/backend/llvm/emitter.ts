@@ -2560,13 +2560,11 @@ export class LlEmitter {
     // A release build whose program observes stacks records the position of
     // each call and throw site in the frame, instead of the per-statement
     // text a dev build stores. A sanitized build keeps the release frames:
-    // ASan instruments every store, and dev builds already skip positions
-    // there for the same reason.
-    this.stackPositions =
-      !this.positionedFrames &&
-      this.stackTraces &&
-      options.sanitizeAttributes === false &&
-      options.positionSources !== undefined;
+    // Every build that observes stacks records its call and throw sites:
+    // a dev build keeps its per-statement text for uncaught reports as
+    // well, and a sanitized build accepts the instrumented stores so that
+    // calls such as util.getCallSites answer real positions there too.
+    this.stackPositions = this.stackTraces && options.positionSources !== undefined;
     const positionSources = options.positionSources;
     this.positionSourcesValue = positionSources;
     this.positionOf =

@@ -1359,6 +1359,36 @@ typedef struct {
   size_t len;
 } ScrCfEntry;
 
+/* The growing entry list the container renderers collect into: a render
+ * runs program getters, which can add properties while the table is being
+ * walked, so the list grows as entries are produced instead of being sized
+ * from an up-front count. */
+typedef struct {
+  ScrCfEntry *items;
+  size_t len, cap;
+} ScrCfEntries;
+
+static char *scr_assert_cf_entry_copy(const char *text, size_t len) {
+  char *copy = malloc(len ? len : 1);
+  if (!copy) scr_assert_oom();
+  if (len) memcpy(copy, text, len);
+  return copy;
+}
+
+static void scr_assert_cf_entries_push(ScrCfEntries *list, char *text, size_t len) {
+  if (list->len == list->cap) {
+    size_t cap = list->cap ? list->cap * 2 : 8;
+    if (cap < list->cap || cap > SIZE_MAX / sizeof *list->items) scr_assert_oom();
+    ScrCfEntry *items = realloc(list->items, cap * sizeof *items);
+    if (!items) scr_assert_oom();
+    list->items = items;
+    list->cap = cap;
+  }
+  list->items[list->len].text = text;
+  list->items[list->len].len = len;
+  list->len++;
+}
+
 static int scr_assert_cf_entry_cmp(const void *pa, const void *pb) {
   const ScrCfEntry *a = pa, *b = pb;
   size_t n = a->len < b->len ? a->len : b->len;
@@ -1453,8 +1483,7 @@ static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent
   } else if (d->null_proto) ab_cstr(b, "[Object: null prototype] ");
   /* Render every entry, then sort the RENDERED texts (Node's
    * sorted:true sorts formatted entries, quotes included). */
-  ScrCfEntry *ents = malloc(shown * sizeof *ents);
-  if (!ents) scr_assert_oom();
+  ScrCfEntries ents = {0};
   size_t n = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
@@ -1463,20 +1492,19 @@ static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent
     scr_assert_cf_key(&eb, ent.key, ent.key_len);
     ab_cstr(&eb, ": ");
     scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
-    ents[n].text = eb.data ? eb.data : malloc(1);
-    if (!ents[n].text) scr_assert_oom();
-    ents[n++].len = eb.len;
+    scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
+    n++;
   }
-  qsort(ents, shown, sizeof *ents, scr_assert_cf_entry_cmp);
+  qsort(ents.items, n, sizeof *ents.items, scr_assert_cf_entry_cmp);
   ab_char(b, '{');
-  for (size_t i = 0; i < shown; i++) {
+  for (size_t i = 0; i < n; i++) {
     ab_char(b, '\n');
     scr_assert_cf_pad(b, indent + 2);
-    ab_bytes(b, ents[i].text, ents[i].len);
-    if (i + 1 < shown) ab_char(b, ',');
-    free(ents[i].text);
+    ab_bytes(b, ents.items[i].text, ents.items[i].len);
+    if (i + 1 < n) ab_char(b, ',');
+    free(ents.items[i].text);
   }
-  free(ents);
+  free(ents.items);
   ab_char(b, '\n');
   scr_assert_cf_pad(b, indent);
   ab_char(b, '}');
@@ -1531,8 +1559,7 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   }
   if (extra == 0) return;
   if (depth == 0) return;
-  ScrCfEntry *ents = malloc(extra * sizeof *ents);
-  if (!ents) scr_assert_oom();
+  ScrCfEntries ents = {0};
   size_t n = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
@@ -1541,20 +1568,19 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
     scr_assert_cf_key(&eb, ent.key, ent.key_len);
     ab_cstr(&eb, ": ");
     scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
-    ents[n].text = eb.data ? eb.data : malloc(1);
-    if (!ents[n].text) scr_assert_oom();
-    ents[n++].len = eb.len;
+    scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
+    n++;
   }
-  qsort(ents, n, sizeof *ents, scr_assert_cf_entry_cmp);
+  qsort(ents.items, n, sizeof *ents.items, scr_assert_cf_entry_cmp);
   ab_cstr(b, " {");
   for (size_t i = 0; i < n; i++) {
     ab_char(b, '\n');
     scr_assert_cf_pad(b, indent + 2);
-    ab_bytes(b, ents[i].text, ents[i].len);
+    ab_bytes(b, ents.items[i].text, ents.items[i].len);
     if (i + 1 < n) ab_char(b, ',');
-    free(ents[i].text);
+    free(ents.items[i].text);
   }
-  free(ents);
+  free(ents.items);
   ab_char(b, '\n');
   scr_assert_cf_pad(b, indent);
   ab_char(b, '}');

@@ -454,7 +454,10 @@ test("the terminal color methods are a unit of their own behind one build of the
   const unit = matrix.runtime_units.find(
     (u: { source: string }) => u.source === "scr_tty_colors.c",
   );
-  expect(unit.predicate).toEqual({ all: ["events", "ttyColors"] });
+  // The stream object's getColorDepth/hasColors and a Console built with
+  // inspectOptions/colorMode both read the tables
+  // (runtime-pack-core's ttyColorTables).
+  expect(unit.predicate).toEqual("ttyColorTables");
   expect(selected("scr_events.c", { ttyColors: true, workers: false }).defines).toEqual([
     "SCR_TTY_COLORS",
   ]);

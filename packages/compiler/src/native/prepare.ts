@@ -39,6 +39,10 @@ import {
 } from "../frontend/input-tracker.js";
 import { compilerOwnedFileRoots } from "../frontend/dts-paths.js";
 import { frontendEnvironment } from "../frontend/environment.js";
+import { unitsObserveEnabled } from "../units/mode.js";
+import { ffiProfileDigest } from "../units/key.js";
+import { observeUnits } from "../units/observe.js";
+import { unitsStoreRoot } from "../units/store.js";
 import { provenanceSources } from "../frontend/provenance-registry.js";
 import { processFork } from "../frontend/process-fork.js";
 import { unitReuseEnabled, type UnitStore } from "../frontend/lowering/unit-reuse.js";
@@ -529,7 +533,9 @@ export function prepareNativeExecutable(
     inputs = null;
     keyless = "the compiler's toolchain could not be identified";
   }
-  if (cache !== null && inputs !== null) {
+  // An observe build reports from its lowering, which a frontend cache hit
+  // would skip; it takes the full path and computes its own store entries.
+  if (cache !== null && inputs !== null && !unitsObserveEnabled()) {
     try {
       key = contentDigest(JSON.stringify(inputs));
       if (unitReuseEnabled()) {
@@ -616,6 +622,23 @@ export function prepareNativeExecutable(
   });
   const { prepared, islandModuleData } = lowered;
   if (!prepared.ok) return prepared;
+  // SCRIPTC_UNITS=observe: the same report and store entry the Node host
+  // makes, with the native toolchain's identity and triple. Report-only.
+  if (prepared.unitObservation !== undefined) {
+    try {
+      observeUnits(prepared.unitObservation, {
+        compilerIdentity: implementationIdentity(toolchain),
+        target: toolchain.target.llvmTriple,
+        optimization: options.optimization ?? "release",
+        lowering: loweringOptions(options),
+        ffiDigest: ffi === null ? null : ffiProfileDigest(ffi),
+        environment: frontendEnvironment().map(([name, value]) => [name, value ?? ""] as const),
+        storeRoot: unitsStoreRoot(),
+      });
+    } catch {
+      /* the observation is a report, not a build step */
+    }
+  }
   const ir =
     outputKind === "ir" || options.emitIr
       ? batchTextParts(serializeModuleParts(prepared.mod, compilerOwnedFileRoots()))

@@ -961,9 +961,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/lowering/lowerer.ts#Lowerer",
-    1,
-    "prefilter",
-    "analyzeDateJsonResults: a toJSON call spells `toJSON`; the result types individual bindings",
+    2,
+    "discovery",
+    "analyzeDateJsonResults: a toJSON call spells `toJSON`, a prefilter whose result types individual bindings; and unitObservation (SCRIPTC_UNITS=observe, report-only) lists the implementation files to attribute them to compilation units",
   ),
   scan(
     "frontend/lowering/native-ffi.ts#validateFfiImports",

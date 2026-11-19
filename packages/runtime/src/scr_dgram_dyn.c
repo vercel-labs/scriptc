@@ -510,11 +510,16 @@ static ScrDyn *scr_dgram_dynh_invoke(void *h, ScrDyn *self, const char *method,
     /* An absent host is "" here; the runtime completes bind's wildcard
      * and connect's loopback for the socket's family. */
     ScrStr *h2 = host ? scr_str_retain(host) : scr_str_new("", 0);
-    /* the callback is once('listening') / once('connect'), registered
-     * before the state checks as Node registers it */
-    if (cb) scr_dgram_dyn_on(e, bind ? SCR_DGRAM_EV_LISTENING : SCR_DGRAM_EV_CONNECT, cb, true);
-    if (bind) scr_dgram_bind(s, port, h2, NULL);
-    else scr_dgram_connect(s, port, h2, NULL);
+    if (bind) {
+      /* the callback is once('listening') */
+      if (cb) scr_dgram_dyn_on(e, SCR_DGRAM_EV_LISTENING, cb, true);
+      scr_dgram_bind(s, port, h2, NULL);
+    } else {
+      /* Node's connect registers the callback as once('connect') and, when
+       * the address is refused, answers the callback instead of emitting
+       * 'error': the dynamic connect form does both. */
+      scr_dgram_connect_dyn(s, port, h2, cb ? scr_dyn_retain((ScrDyn *)cb) : NULL);
+    }
     scr_str_release(h2);
     if (scr_exc_pending()) return NULL;
     return bind ? scr_dyn_retain(self) : scr_dyn_retain(scr_dyn_undefined());

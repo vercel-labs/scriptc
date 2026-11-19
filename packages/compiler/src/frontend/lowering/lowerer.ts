@@ -71,6 +71,7 @@ import { LoweringFacts } from "./lowering-facts.js";
 import {
   type AdmittedOpinion,
   isJsSourceFileName,
+  jsArrayFieldAppendOwner,
   jsFieldDeclaringClass,
   jsStoresWrittenValue,
   jsWritableBindingDeclaration,
@@ -4056,6 +4057,11 @@ export class Lowerer {
    * distinct property symbol for a write through `this` and one through a
    * typed value of the same class. */
   readonly jsWidenedFields = new Map<ts.ClassLikeDeclaration, Set<string>>();
+  /** JavaScript accessor pairs written a value outside the setter's JSDoc
+   * parameter type (analyzeJsWidenedFields): the getter answers and the
+   * setter takes a checked-dynamic value, as a field written the same way
+   * stores one, and so does the field the setter stores its parameter in. */
+  readonly jsWidenedAccessors = new Set<ts.GetAccessorDeclaration | ts.SetAccessorDeclaration>();
 
   /** Record (or ask about) a JavaScript class field whose storage follows
    * the values the program writes to it instead of a JSDoc annotation. */
@@ -4551,6 +4557,32 @@ export class Lowerer {
     const read = panicSafe(() => this.mapTypeOf(this.typeOf(e)), null);
     if (read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0) return null;
     return value;
+  }
+
+  /** Whether a JavaScript property read whose receiver is checked-dynamic
+   * (`this.attributes.tangent` over a JSDoc `Object<string, (A|B)>` the
+   * field stores as a checked-dynamic value) resolves to the receiver's
+   * string index signature, whose typed value does not admit undefined. The
+   * read is a JavaScript property read: a missing key answers undefined, as
+   * a record's index-signature read does, so a binding it initializes keeps
+   * the undefined arm. */
+  dynIndexSignatureRead(e: ts.PropertyAccessExpression): boolean {
+    if (!isJsSourceFile(ts.getSourceFileOfNode(e))) return false;
+    // The checker's own type of the receiver: typeOf answers `unknown` for a
+    // read of a checked-dynamic field, whose JSDoc type still names the
+    // index signature the property read resolves to.
+    const receiverType = this.checker.getTypeAtLocation(e.expression);
+    if ((receiverType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
+    if (this.checker.getPropertyOfType(receiverType, e.name.text) !== undefined) return false;
+    const signature = this.checker
+      .getIndexInfosOfType(receiverType)
+      .find((info) => (info.keyType.flags & ts.TypeFlags.String) !== 0);
+    if (signature === undefined) return false;
+    const value = panicSafe(() => this.mapTypeOf(signature.type), null);
+    if (!value || value.kind === "dyn" || value.kind === "void" || isUnitType(value)) return false;
+    if (value.kind === "union" && this.armTag(value.unionId, UNDEFINED_T) >= 0) return false;
+    const read = panicSafe(() => this.mapTypeOf(this.typeOf(e)), null);
+    return !(read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0);
   }
 
   /** The index value of a keyed read of a record's index signature that
@@ -6580,6 +6612,7 @@ export class Lowerer {
     // sets before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",
     "jsWidenedFields",
+    "jsWidenedAccessors",
     "jsWidenedReturnDecls",
     "voidTruthinessValueCalls",
     // Preflight's admitted opinions are a program fact computed before any
@@ -10392,6 +10425,18 @@ export class Lowerer {
       if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
       if (this.checkedJsFile(sf)) continue;
       ts.walkPreorder(sf, (node) => {
+        // An element appended to a JSDoc-typed array field that preflight
+        // admitted outside the element type (TS2739, jsArrayFieldAppend):
+        // the field holds what the program appends to it.
+        if (
+          ts.isCallExpression(node) &&
+          this.admittedOpinions.length > 0 &&
+          node.arguments.nodes.some((argument) => this.opinionAtNode(argument, 2739))
+        ) {
+          const owner = jsArrayFieldAppendOwner(this.checker, node);
+          if (owner !== undefined) this.markJsWidenedField(owner.decl, owner.name);
+          return undefined;
+        }
         if (
           !ts.isBinaryExpression(node) ||
           !jsStoresWrittenValue(node.operatorToken.kind) ||
@@ -10401,6 +10446,29 @@ export class Lowerer {
           return undefined;
         const field = this.checker.getSymbolAtLocation(node.left.name);
         if (!field) return undefined;
+        // A write through a JavaScript setter of a value outside the
+        // setter's JSDoc parameter type: the value reaches the setter as
+        // Node passes it, and the getter can answer it back.
+        const setter = field.declarations.find(
+          (decl): decl is ts.SetAccessorDeclaration =>
+            ts.isSetAccessorDeclaration(decl) &&
+            isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName),
+        );
+        const setterParameter = setter?.parameters.nodes[0];
+        if (setter !== undefined && setterParameter !== undefined) {
+          if (setter.parameters.nodes.length !== 1 || this.jsWidenedAccessors.has(setter))
+            return undefined;
+          const declared = this.checker.getTypeAtLocation(setterParameter);
+          if (
+            jsTypeIsTyped(declared) &&
+            (this.jsStorageHoldsForeignValues(this.mapTypeOf(declared)) ||
+              this.jsAnnotationIsAdvisory(ts.getSourceFileOfNode(node))) &&
+            !this.jsParsedDataKeepsStorage(declared, node.right) &&
+            !jsValueFits(this.checker, declared, this.checker.getTypeAtLocation(node.right))
+          )
+            this.widenJsAccessorPair(field);
+          return undefined;
+        }
         const owner = jsFieldDeclaringClass(field);
         if (owner === undefined || this.jsFieldWidened(owner, node.left.name.text))
           return undefined;
@@ -10419,6 +10487,117 @@ export class Lowerer {
         return undefined;
       });
     }
+  }
+
+  /** Whether `expression` reads a JavaScript field or accessor whose storage
+   * follows the values the program writes instead of its JSDoc type
+   * (jsWidenedFields, jsWidenedAccessors). */
+  private readsWidenedJsMember(expression: ts.Expression): boolean {
+    if (this.jsWidenedFields.size === 0 && this.jsWidenedAccessors.size === 0) return false;
+    let read: ts.Expression = expression;
+    while (ts.isParenthesizedExpression(read)) read = read.expression;
+    if (!ts.isPropertyAccessExpression(read) || !ts.isIdentifier(read.name)) return false;
+    const property = this.checker.getSymbolAtLocation(read.name);
+    if (property === undefined) return false;
+    if (
+      property.declarations.some(
+        (decl) =>
+          (ts.isGetAccessorDeclaration(decl) || ts.isSetAccessorDeclaration(decl)) &&
+          this.jsWidenedAccessors.has(decl),
+      )
+    )
+      return true;
+    return this.jsFieldWidened(jsFieldDeclaringClass(property), read.name.text);
+  }
+
+  /** Mark a JavaScript property's accessor halves, in each unchecked class
+   * that declares them, as taking and answering checked-dynamic values
+   * (jsWidenedAccessors). */
+  private widenJsAccessorPair(property: ts.Symbol): void {
+    for (const decl of property.declarations) {
+      if (!ts.isGetAccessorDeclaration(decl) && !ts.isSetAccessorDeclaration(decl)) continue;
+      const sf = ts.getSourceFileOfNode(decl);
+      if (!isJsSourceFileName(sf.fileName) || this.checkedJsFile(sf)) continue;
+      const owner = decl.parent;
+      if (!ts.isIdentifier(decl.name) || !ts.isClassLikeDeclaration(owner)) continue;
+      const name = decl.name.text;
+      const isStatic = (member: ts.ClassElement): boolean =>
+        member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true;
+      for (const member of owner.members.nodes) {
+        if (
+          !(ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) ||
+          !ts.isIdentifier(member.name) ||
+          member.name.text !== name ||
+          isStatic(member) !== isStatic(decl)
+        )
+          continue;
+        this.jsWidenedAccessors.add(member);
+        // The instance field the setter stores its parameter in
+        // (`this._depthTexture = current`) holds that value too. The slot is
+        // the class that declared the field: an inherited JSDoc-typed field
+        // keeps its own class's layout, so marking the setter's class leaves
+        // the write unmet.
+        const parameter = ts.isSetAccessorDeclaration(member)
+          ? member.parameters.nodes[0]
+          : undefined;
+        if (parameter === undefined || !ts.isIdentifier(parameter.name) || isStatic(member))
+          continue;
+        const parameterName = parameter.name.text;
+        ts.walkPreorder(member.body ?? member, (node) => {
+          if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) return "skip";
+          if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(node.left) &&
+            node.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+            ts.isIdentifier(node.left.name) &&
+            ts.isIdentifier(node.right) &&
+            node.right.text === parameterName
+          ) {
+            this.markJsWidenedField(
+              this.jsFieldSlotClass(owner, node.left.name),
+              node.left.name.text,
+            );
+          }
+          return undefined;
+        });
+      }
+    }
+  }
+
+  /** The class whose layout holds the field a widened setter stores its
+   * parameter into: the class of the field's JSDoc declaration, in the
+   * setter's own class or in the nearest ancestor that declares it. A write
+   * inside a subclass names a property symbol of that subclass, which does
+   * not carry the base's declaration, so the base chain is searched when the
+   * write's own symbol answers none. The setter's class is the fallback: a
+   * same-class field needs no declaration lookup to be widened. */
+  private jsFieldSlotClass(
+    owner: ts.ClassLikeDeclaration,
+    name: ts.Identifier,
+  ): ts.ClassLikeDeclaration {
+    const field = this.checker.getSymbolAtLocation(name);
+    const direct = field === undefined ? undefined : jsFieldDeclaringClass(field);
+    if (direct !== undefined) return direct;
+    const ownerSymbol =
+      owner.name === undefined ? undefined : this.checker.getSymbolAtLocation(owner.name);
+    if (ownerSymbol !== undefined) {
+      const find = (type: ts.Type): ts.ClassLikeDeclaration | undefined => {
+        const target = type.isTypeReference() ? type.getTarget() : type;
+        if (target === undefined || !target.isClassOrInterface()) return undefined;
+        for (const base of this.checker.getBaseTypes(target)) {
+          const property = this.checker.getPropertyOfType(base, name.text);
+          const declaring = property === undefined ? undefined : jsFieldDeclaringClass(property);
+          if (declaring !== undefined) return declaring;
+          const inherited = find(base);
+          if (inherited !== undefined) return inherited;
+        }
+        return undefined;
+      };
+      const found = find(this.checker.getDeclaredTypeOfSymbol(ownerSymbol));
+      if (found !== undefined) return found;
+    }
+    return owner;
   }
 
   /** A `for (k in obj)` head writes the key string into its binding. The
@@ -10824,6 +11003,22 @@ export class Lowerer {
             if (calleeBinding !== null) widenBinding(calleeBinding);
             return undefined;
           }
+        }
+        // An unannotated binding initialized from a widened field or accessor
+        // read (`const texture = target.depthTexture`) holds the value the
+        // read answers: the checker types it from the JSDoc annotation the
+        // storage no longer follows.
+        if (
+          !checked &&
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.initializer !== undefined &&
+          !hasJsTypeAnnotation(node) &&
+          this.readsWidenedJsMember(node.initializer)
+        ) {
+          const symbol = this.resolveValueSymbol(node.name);
+          if (symbol && !this.runtimeOptionalBindingTypes.has(symbol)) widenBinding(symbol);
+          return undefined;
         }
         // An annotated binding whose initializer the checker cannot show
         // fits the annotation (`/** @type {Base|undefined} */ const b = v;`
@@ -11489,6 +11684,7 @@ export class Lowerer {
       if (!answersIndexSignature) return false;
       const receiver = this.mapTypeOf(this.typeOf(e.expression));
       if (receiver?.kind === "object") return this.classIndexSignatureRead(e) !== null;
+      if (receiver?.kind === "dyn") return this.dynIndexSignatureRead(e);
       if (receiver?.kind !== "record") return false;
       const shape = this.shapes.get(receiver.shapeId);
       if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn")

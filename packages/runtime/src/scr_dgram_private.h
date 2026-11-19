@@ -46,6 +46,13 @@ struct ScrDgramSocket {
   bool emit_listening;
   bool emit_connect;
   ScrStr *pending_err; /* deferred bind/connect/send failure */
+  /* pending_err's code when its message does not name one (static
+   * storage; NULL = the code the message maps to) */
+  const char *pending_code;
+  /* The options' net.BlockList filters (retained handles; NULL when the
+   * option was absent): sendBlockList gates outgoing destinations,
+   * receiveBlockList drops incoming sources. */
+  ScrDyn *send_block_list, *recv_block_list;
   ScrDgramLs msg_ls, err_ls, listening_ls, close_ls, conn_ls;
   bool in_registry;
   struct ScrDgramSocket *next;

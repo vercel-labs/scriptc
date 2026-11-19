@@ -98446,6 +98446,7 @@
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/fixtures/node-test/cases/ctx-signal.ts",
           "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-test-options.ts",
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
           "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
@@ -98469,6 +98470,7 @@
           "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/fixtures/node-test/cases/snapshot-serializer-values.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/fixtures/node-test/cases/subtests.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/tags.ts",
@@ -101160,9 +101162,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:context.test",
         "tests": [
+          "tests/fixtures/node-test/cases/ctx-test-options.ts",
+          "tests/fixtures/node-test/cases/subtests.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/harness/node-test.test.ts"
         ]
       },

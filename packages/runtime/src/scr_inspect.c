@@ -6387,11 +6387,25 @@ ScrStr *scr_insp_table_cell(ScrDyn *value, ScrDyn *inspect_options, int colors_m
   double depth = 0;
   ScrDyn *view = value;
   ScrDyn *view_hold = NULL;
-  if (view->kind == SCR_DYN_PROXY) {
-    view = view->v.proxy.target;
-  } else if (view->kind == SCR_DYN_TYPED_REF) {
-    view = view_hold = scr_dyn_typed_ref_materialize(value);
-    if (view == NULL) return NULL;
+  /* The depth rule reads the value's own keys, so walk through every proxy
+   * and typed reference on the way to the object that holds them: a proxy
+   * over a typed record is still the record. */
+  for (;;) {
+    if (view->kind == SCR_DYN_PROXY) {
+      view = view->v.proxy.target;
+      continue;
+    }
+    if (view->kind == SCR_DYN_TYPED_REF) {
+      ScrDyn *materialized = scr_dyn_typed_ref_materialize(view);
+      if (materialized == NULL) {
+        scr_dyn_release(view_hold);
+        return NULL;
+      }
+      scr_dyn_release(view_hold);
+      view = view_hold = materialized;
+      continue;
+    }
+    break;
   }
   if (view->kind == SCR_DYN_OBJ) {
     size_t own = 0;

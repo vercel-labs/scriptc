@@ -29,6 +29,20 @@ new Console({ stdout: streamOf(plainSink) }).table([
 ]);
 show("default cells", plainSink.out);
 
+// A proxy answers the depth rule with the keys of the record it wraps: over
+// a record with more than two keys the cell renders [Object], over a smaller
+// one it shows that record.
+const record = { a: 1, b: 2, c: 3 };
+const small = { z: 9 };
+const proxied = new Proxy(record, {});
+const proxiedSmall = new Proxy(small, {});
+const proxySink: Sink = { out: "" };
+new Console({ stdout: streamOf(proxySink) }).table([
+  { p: proxied, n: 1 },
+  { p: proxiedSmall },
+]);
+show("proxy cells", proxySink.out);
+
 // depth overrides the table's computed depth.
 const depthSink: Sink = { out: "" };
 new Console({ stdout: streamOf(depthSink), inspectOptions: { depth: 2 } }).table([

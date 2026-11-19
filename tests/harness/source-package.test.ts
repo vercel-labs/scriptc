@@ -19,7 +19,8 @@ import { compile } from "@scriptc/compiler";
 // meant to compile into the program that installs it. The fixture's dom-kit
 // is installed under node_modules (not linked), its runtime extends a base
 // class declared only in its own source, the program extends the runtime's
-// class again, and the runtime imports plain JavaScript helpers of its own.
+// class again, and the runtime imports plain JavaScript helpers of its own,
+// which the program also imports by the names the package exports.
 //
 // Node.js refuses to strip types under node_modules, so the oracle runs the
 // same files with the package linked from outside node_modules, the layout a
@@ -97,6 +98,7 @@ test.for([
         "true true true",
         "submit null",
         "4 #text,BUTTON",
+        'lang="en" "say &quot;hi&quot;"',
         "",
       ].join("\n"),
     );
@@ -120,6 +122,8 @@ test.for([
     pkg["exports"] = {
       "./runtime/dom": "./runtime/dom.js",
       "./shared/node": "./shared/node.js",
+      "./attributes": "./runtime/attributes.js",
+      "./quote": "./runtime/quote.js",
     };
     writeFileSync(manifest, JSON.stringify(pkg, null, 2));
     for (const module of ["shared/node", "runtime/dom"]) {
@@ -161,6 +165,8 @@ test("a package without the source mark keeps refusing its TypeScript", async ()
     outDir: join(dir, "out"),
     backend: "llvm",
     sanitize,
+    // Its plain JavaScript would otherwise run in a Node island.
+    nodeIslands: { mode: "off" },
   });
   expect(result.ok).toBe(false);
   expect(result.diagnostics.map((d) => `${d.code}: ${d.message}`)).toContain(

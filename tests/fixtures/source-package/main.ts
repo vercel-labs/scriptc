@@ -25,3 +25,10 @@ console.log(root.textContent);
 console.log(button.parentNode === root, button instanceof Element, button instanceof Node);
 console.log(button.getAttribute("type"), button.getAttribute("missing"));
 console.log(Node.count, root.childNodes.map((child) => child.nodeName).join(","));
+
+// The package's plain JavaScript, by the names its exports give it: one
+// module typed by a declaration beside it, one by inference.
+import { formatAttributes } from "dom-kit/attributes";
+import { quote } from "dom-kit/quote";
+const attributes: string = formatAttributes(new Map([["lang", "en"]]));
+console.log(attributes.trim(), quote('say "hi"'));

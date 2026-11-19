@@ -303,12 +303,18 @@ const DTS_RUNTIME_SIBLINGS: readonly (readonly [string, string])[] = [
 ];
 
 export function projectDtsRuntimeSibling(path: string): string | null {
-  if (path.includes("/node_modules/") || path.includes("\\node_modules\\")) return null;
+  // A source package (isSourcePackagePath) is a realm of program sources of
+  // its own, installed or linked: its declarations type the JavaScript it
+  // compiles, as the project's do.
+  const realm = nearestPkgJsonPath(path);
+  const sourceRealm = realm !== null && isSourcePackageDir(dirname(realm));
+  if (!sourceRealm && (path.includes("/node_modules/") || path.includes("\\node_modules\\")))
+    return null;
   // A project without any package.json is one realm, exactly like a project
   // inside one: its declarations and their runtime siblings walk up to
   // nothing. Only a declaration whose nearest package.json is the entry's
   // own realm answers — a nested realm keeps its declarations.
-  if (!projectRealmSet || nearestPkgJsonPath(path) !== projectRealmPkgJson) return null;
+  if (!sourceRealm && (!projectRealmSet || realm !== projectRealmPkgJson)) return null;
   for (const [declaration, runtime] of DTS_RUNTIME_SIBLINGS) {
     if (!path.endsWith(declaration)) continue;
     const sibling = path.slice(0, -declaration.length) + runtime;
@@ -1208,8 +1214,18 @@ export function resolveWorkspaceSourceModule(
   // resolves like a missing one.
   if (isUnloadedPackage(specifier)) return null;
   const source = resolveBareModule(fromFile, specifier, "runtime-source");
+  // A source package's plain-JavaScript module, named by its exports, is a
+  // program module like the package's TypeScript (isSourcePackagePath).
+  if (source === null) {
+    const js = resolveBareModule(fromFile, specifier, "runtime-js");
+    return js?.workspaceDir !== undefined &&
+      isJsRuntimeFileName(js.typesFile) &&
+      isSourcePackageDir(js.workspaceDir)
+      ? js
+      : null;
+  }
   if (
-    source?.workspaceDir === undefined ||
+    source.workspaceDir === undefined ||
     !/\.(?:ts|tsx|mts|cts)$/.test(source.typesFile) ||
     /\.d\.(?:ts|mts|cts)$/.test(source.typesFile)
   ) {
@@ -1219,6 +1235,10 @@ export function resolveWorkspaceSourceModule(
   // ships the JavaScript compiled from it: the mark names the sources.
   if (isSourcePackageDir(source.workspaceDir)) return source;
   return resolveBareModule(fromFile, specifier, "runtime-js") === null ? source : null;
+}
+
+function isJsRuntimeFileName(path: string): boolean {
+  return /\.(?:js|jsx|mjs|cjs)$/.test(path);
 }
 
 /** Resolves a `/// <reference types="name" />`-style TYPE DIRECTIVE the way

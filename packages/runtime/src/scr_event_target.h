@@ -28,6 +28,12 @@ typedef struct ScrEventTargetCore {
    * The instance holds the core, so this is a cycle the collector reclaims
    * through the scr_event_target_state_* helpers. NULL otherwise. */
   ScrDyn *self;
+  /* The owner's listener-change notification (a MessagePort recomputes its
+   * loop reference after any removal, including the automatic ones: a
+   * `{ once: true }` listener firing and an AbortSignal removing its
+   * listener). NULL = the owner is not interested. */
+  void (*changed)(void *ctx);
+  void *changed_ctx;
   double max_listeners;    /* 0 = no leak warning (AbortSignal) */
   bool warned;
   const char *cls;         /* the warning's target name ("EventTarget") */
@@ -135,6 +141,8 @@ typedef struct {
   /* the type's listener count on the core (the on<type> attribute counts
    * as one, as Node's port bookkeeping expects) */
   double (*listener_count)(ScrEventTargetCore *core, const char *type);
+  /* Install the owner's removals notification (see ScrEventTargetCore.changed). */
+  void (*watch)(ScrEventTargetCore *core, void *ctx, void (*changed)(void *ctx));
   bool (*method)(ScrEventTargetCore *core, ScrDyn *self, const char *method, ScrDyn *const *args,
                  size_t argc, ScrDyn **out);
   ScrDyn *(*method_value)(const char *name, size_t length);

@@ -989,13 +989,24 @@ static ScrDyn *scr_worker_symbol_get(void *ptr, const ScrDyn *key) {
   return scr_dyn_new_func(closure, &scr_worker_async_dispose_call, 0, "()", "[Symbol.asyncDispose]");
 }
 
+/* A listener left the core however it left — removeEventListener, a
+ * `{ once: true }` listener firing, or an AbortSignal removing it — so the
+ * port's loop reference follows, as Node's setupPortReferencing does. */
+static void scr_port_listeners_changed(void *ctx) {
+  scr_port_message_refs((ScrWorkerView *)ctx);
+}
+
 /* A port's EventTarget core, created on first use (Node's MessagePort is an
  * EventTarget beside its EventEmitter surface). */
 static ScrEventTargetCore *scr_port_core(ScrWorkerView *view) {
   /* A program that never names BroadcastChannel or MessageChannel does not
    * link the EventTarget unit; its ports keep the emitter surface only. */
   if (!scr_et_broadcast_ops) return NULL;
-  if (!view->et) view->et = scr_et_broadcast_ops->core_new("MessagePort");
+  if (!view->et) {
+    view->et = scr_et_broadcast_ops->core_new("MessagePort");
+    if (view->et && scr_et_broadcast_ops->watch)
+      scr_et_broadcast_ops->watch(view->et, view, scr_port_listeners_changed);
+  }
   return view->et;
 }
 

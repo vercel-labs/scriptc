@@ -46,6 +46,7 @@ import {
   type NativeProfileOptions,
 } from "./native-profile.js";
 import { writeTextParts } from "../text-parts.js";
+import { ensureExecutable } from "../executable-mode.js";
 
 import {
   NativeCodegenError,
@@ -146,6 +147,7 @@ async function invoke(
   binaryPath: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
+  ensureExecutable(binaryPath);
   try {
     return await execFileAsync(binaryPath, args, {
       encoding: "utf8",
@@ -211,6 +213,19 @@ async function resolveHelper(
       "missing_binary",
     );
   }
+  // A package manager that installs from a cache, or with lifecycle scripts
+  // disabled, can leave the helper at mode 0644 and its postinstall never
+  // repairs it: restore the execute bits before judging the file unusable.
+  try {
+    ensureExecutable(binaryPath);
+  } catch (error) {
+    throw new NativeCodegenError(
+      "SC3003",
+      `LLVM native helper package ${helper.packageName} cannot be executed: ${(error as Error).message}; reinstall scriptc or fix the file's permissions`,
+      "unusable_binary",
+    );
+  }
+  binaryStat = await stat(binaryPath);
   try {
     if (
       process.platform !== "win32" &&

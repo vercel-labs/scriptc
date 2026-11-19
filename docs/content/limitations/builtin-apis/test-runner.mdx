@@ -1,11 +1,11 @@
 - **Concurrent tests:** with `{ concurrency }` above 1, subtests run on their own fibers, and results are reported in declaration order, as in Node.
   Concurrent bodies resume in Node's order around `beforeEach` hooks and nested suites.
   Other runner steps, such as `afterEach` and `after` hooks, take no microtask turns between bodies, so code that observes the interleaving of concurrent bodies across those steps can see a different order than Node.
-- **Snapshots:** `t.assert.snapshot` and `t.assert.fileSnapshot` compile, with Node's default serializer, `JSON.stringify(value, null, 2)`, or an `options.serializers` array literal.
+- **Snapshots:** `t.assert.snapshot` and `t.assert.fileSnapshot` compile, with Node's default serializer, `JSON.stringify(value, null, 2)`, or an `options.serializers` list (an array literal or an array-typed value whose entries are functions).
   A compiled test reads the snapshot file Node writes beside the entry file, `<entry file>.snapshot`, at the entry file's path when the program was compiled.
   Running the binary with Node's flag `--test-update-snapshots` as its first argument writes the snapshot files instead; as in Node, the flag is kept out of `process.argv` and appears in `process.execArgv`.
   Snapshot files are read in the form Node writes them, `` exports[`key`] = `value`; `` statements.
-  `snapshot.setDefaultSnapshotSerializers` and `snapshot.setResolveSnapshotPath` compile: the first takes an array literal of serializers, and the second a `(path: string) => string` closure that Node runs once per test file, on the first snapshot, to name the file.
+  `snapshot.setDefaultSnapshotSerializers` and `snapshot.setResolveSnapshotPath` compile: the first takes an array of serializers (a literal or an array-typed value), and the second a `(path: string) => string` closure that Node runs once per test file, on the first snapshot, to name the file.
 - **Reporters:** the binary writes the spec report, so `--test-reporter=spec` is the only reporter it takes, and any other name ends the run before the tests start with `scriptc: unknown test reporter '<name>': only the spec reporter is supported`.
   `--test-reporter-destination=stdout`, its default, sends the report to stdout, `stderr` sends it to stderr, and any other value names the file the binary writes the report to; the program's own output stays on stdout in every case.
   As in Node, both options are leading arguments, in any order, kept out of `process.argv` and listed in `process.execArgv`.
@@ -14,7 +14,8 @@
   `t.attempt` is `0`, since a test runs once.
   `t.passed` is `false` while the body runs and the test's outcome in its `afterEach` and `t.after` hooks.
   `t.workerId` is `Number(process.env.NODE_TEST_WORKER_ID) || undefined`, as in Node.
-  `t.tags` is `[]`, since the `tags` test option throws `SC2020`; the array is not frozen as Node's is.
+  `t.tags` is the test's flattened tag set: the `{ tags }` values of the test and of every suite above it, lowercased and de-duplicated in declaration order, as the frozen array Node caches on the test.
+  A `{ tags }` option takes an array literal of strings; an empty tag value throws Node's `ERR_INVALID_ARG_VALUE` at the registration site, and a tag equal to one already in the set (after lowercasing) is dropped, as in Node.
   `t.log(message[, data])` prints its line at once, at the test's indentation, and the data payload rides the `test:log` event only.
   `t.signal` is the test's `AbortSignal`: created on its first read, the same signal on every read, unaborted in the body and in its hooks, and aborted when the test times out, is cancelled, or finishes; a suite's `signal` is not aborted when the suite finishes, as in Node, and the abort unit is linked only for a program that reads one.
   `t.error` is Node's `ERR_TEST_FAILURE` wrapper over the failure, its `cause` the value the test threw, or `null` while the test has not failed; it does not carry the `failureType` Node stamps on the wrapper, and `@types/node` does not declare the member, so a typed program reaches it through a cast.
@@ -39,6 +40,9 @@
   A body that keeps running after its test finished and calls `t.test` again fails that subtest with Node's `test could not be started because its parent finished`, as Node does for a subtest a leftover task registers.
 - **Subtests:** `t.test(...)` starts its subtest at the call site on the runner fiber and returns the settled promise `await` consumes, so an awaited subtest behaves as in Node.
   An un-awaited subtest whose body awaits I/O or a timer holds the calling body until it settles, where Node resumes the calling body at its next statement once the subtest reaches its first `await`.
+- **Mock accessors:** `mock.getter` and `mock.setter` (and their `t.mock` twins) compile for an object held as a checked-dynamic value — an object literal with accessors, or an untyped object — with an explicit implementation: the mock becomes the property's accessor, reads and writes go through it, and `restore()` (or a `{ times }` budget) puts the original descriptor back.
+  The accessor is found along the prototype chain, as in Node, and a property without it — a data property, or only the other half of the pair — throws Node's `ERR_INVALID_ARG_VALUE` before the mock exists; a typed object whose type declares no such accessor is refused with that error named.
+  A static record's or a class instance's property has no interception point, so it is refused, and calling the original accessor through the mock (no implementation argument) is not lowered.
 - **Expecting failures:** `{ expectFailure: true }`, `{ expectFailure: false }` and `{ expectFailure: "reason" }` compile, as do `test.expectFailure(...)`, `it.expectFailure(...)`, `describe.expectFailure(...)`, `suite.expectFailure(...)` and the module-level `expectFailure(...)` export.
   A flagged test or suite passes only if its own run throws, its result line carries `# EXPECTED FAILURE`, an unexpected pass fails with Node's `test was expected to fail but passed`, and descendants inherit the flag the way they inherit `todo`.
   `skip` keeps its `SKIP` directive and `todo` keeps `TODO` and its counter, with the outcome flipped either way.
@@ -52,3 +56,6 @@
 - **Current context:** `getTestContext()` returns the context of the test, suite or hook whose code is running, as in Node: `undefined` at module top level, the root's context in module-level hooks, the suite's in a suite body and in the suite's hooks, and the test's in its body, in the code it awaits, and in the timers, immediates, `process.nextTick` and `queueMicrotask` callbacks it schedules.
   Node returns, for a suite, a `TestContext` that is a different object from the `SuiteContext` passed to the suite body and its `before` and `after` hooks; in a compiled program they are the same object, so comparing them with `===` gives `true`.
   Completion callbacks of callback-style I/O APIs, such as `fs.readFile`, get `undefined`, as AsyncLocalStorage stores do.
+- **Tracing:** the runner publishes Node's `tracing:node.test` events through `diagnostics_channel`: `start` when a test's run begins (a suite's when its body is collected; skipped, todo and fn-less tests included), `end` when a run finishes, and `error` with the thrown value.
+  Each message carries the test's `name`, `nesting`, `file` (the entry file's path when the program was compiled) and `type` (`test` or `suite`), and the implicit root publishes its own start and end once every test has finished.
+  A test's start and end share one context object, as in Node, and the error event is a fresh object over the same fields; a handler whose context parameter is typed as a structural record receives a converted copy, so type that parameter `object` to observe the shared identity.

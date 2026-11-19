@@ -2065,6 +2065,10 @@ void scr_dyn_key_define_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* The same in sloppy-mode code: an assignment strict mode refuses with a
  * TypeError is ignored. */
 void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* A gated unit's write path that raises the strict-mode refusal notes it,
+ * right after the throw, so a sloppy-mode write drops exactly that
+ * exception (scr_dyn_key_set_sloppy) and propagates any other. */
+void scr_dyn_assign_failure_note(void);
 void scr_dyn_key_set_computed_sloppy(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* A named (non-index) property of an extensible, unfrozen ARR, stored as
  * scr_dyn_key_set stores it. Takes ownership of value. */
@@ -2602,6 +2606,16 @@ typedef struct ScrDynHandleMethod {
   const char *same_as;      /* NULL = this entry's own function */
 } ScrDynHandleMethod;
 
+/* A member name with the length it has, so a lookup compares by length and
+ * memcmp without a strlen walk. The runtime asks these tables on every
+ * property write of a handle; SCR_DYN_HANDLE_NAME folds the length of a
+ * string literal at compile time. */
+typedef struct ScrDynHandleName {
+  const char *name;
+  size_t len;
+} ScrDynHandleName;
+#define SCR_DYN_HANDLE_NAME(s) { s, sizeof s - 1 }
+
 typedef struct ScrDynHandleOps {
   const char *cls; /* Node's constructor name — error texts and dynCheck's "got ..." */
   void *(*retain)(void *h);
@@ -2694,6 +2708,15 @@ typedef struct ScrDynHandleOps {
    * property read answers no methods (member calls still reach invoke).
    * See ScrDynHandleMethod. */
   const ScrDynHandleMethod *methods;
+  /* The class's prototype accessors, terminated by a NULL name. A write of
+   * one adds no own property: strict code throws V8's getter-only TypeError
+   * (a definition still shadows it), and it is the set the fetch classes
+   * answer from their interfaces. NULL = the class declares no accessors. */
+  const ScrDynHandleName *attributes;
+  /* The class name V8's property TypeErrors print when it differs from
+   * cls: undici's constructors are `_Request` and `_Response`, which V8
+   * shows as `#<_Request>`. NULL = cls. */
+  const char *error_cls;
   /* The TypeError (code ERR_INVALID_THIS) a method value called on another
    * receiver raises; NULL = WebIDL's "Illegal invocation". */
   const char *invalid_this;
@@ -2708,6 +2731,12 @@ typedef struct ScrDynHandleOps {
    * answer). The web stream classes answer Node's symbol getters here;
    * only they set it. */
   ScrDyn *(*stream_predicate)(void *h, ScrDynHandleTag tag, double which);
+  /* The owning unit takes the own-property table (+1) of a handle whose
+   * properties its native object holds and traces, so the cycle collector
+   * sees the table's references like any other edge of the object (the
+   * fetch classes). NULL = scr_dyn_handle_props.c's slot table owns the
+   * table. See ScrDynHandlePropsHooks.table. */
+  void (*adopt_props)(void *h, ScrDyn *props);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),
@@ -2717,7 +2746,9 @@ typedef struct ScrDynHandleOps {
  * the handle to the ordinary path. NULL until the program's first
  * handle.propsInstall. */
 typedef struct ScrDynHandlePropsHooks {
-  /* The handle's table (borrowed), or NULL when it has none. */
+  /* The handle's table (borrowed), or NULL when it has none. A table the
+   * owning unit adopted (ScrDynHandleOps.adopt_props) is owned and traced
+   * by that native object; the slot only maps the handle to it. */
   ScrDyn *(*table)(const ScrDyn *handle);
   /* scr_dyn_handle_install: the ops to install for `tag` in place of
    * `ops` (the wrapped ops when the tag has tables). */
@@ -2735,6 +2766,12 @@ typedef struct ScrDynHandlePropsHooks {
   /* The ScrObjWalk modes private to scr_json.c: keys 0, values 1, entries 2. */
   bool (*objwalk)(const ScrDyn *handle, int mode, ScrDyn **out);
   bool (*for_in_keys)(const ScrDyn *handle, ScrDyn **out);
+  /* A handle of a tag whose table does not retain it is being freed: drop
+   * the slot now. The owning unit calls it from the release that frees the
+   * object (a fetch Request, Response or Headers list), so the slot never
+   * names a freed object. A table the unit adopted is released by the
+   * unit itself (the slot does not own it). */
+  void (*released)(const void *handle);
   /* op: 0 preventExtensions, 1 seal, 2 freeze (out_value = the handle +1);
    * 3 isExtensible, 4 isSealed, 5 isFrozen (out_bool). */
   bool (*integrity)(ScrDyn *handle, int op, ScrDyn **out_value, bool *out_bool);
@@ -3033,6 +3070,9 @@ void scr_dyn_check_listener(const ScrDyn *cb, const char *argname);
  * generic ERR_INVALID_ARG_TYPE thrower over it (`expected` is the whole
  * "of type ..." clause). The handle dispatchers' per-arg gates. */
 const char *scr_dyn_specific_type(const ScrDyn *v, char *buf, size_t cap);
+/* The same tail with its true length in *len: a string value keeps the NUL
+ * bytes %s would stop at, so the message builders append it by length. */
+const char *scr_dyn_specific_type_len(const ScrDyn *v, char *buf, size_t cap, size_t *len);
 /* Registers a namespace object built by scr_module_namespace_dyn.c, whose
  * objects are ordinary dyn objects; util.types.isModuleNamespaceObject
  * tests the registry (V8's private-slot brand). The registry borrows the

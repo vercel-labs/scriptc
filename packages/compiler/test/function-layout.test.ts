@@ -109,7 +109,7 @@ test("a function listed twice keeps its first tier, and malformed lines are skip
 test("the start-up walk ranks the functions a run reaches first, by depth", () => {
   const defined = (symbol: string, calls: string[] = []): string =>
     [
-      `define internal double @${symbol}(double %p) #0 { ; ${symbol}`,
+      `define internal double @${symbol}(double %p) align 64 #0 { ; ${symbol}`,
       ...calls.map((callee) => `  %a = call double @${callee}(double %p)`),
       "  ret double %p",
       "}",

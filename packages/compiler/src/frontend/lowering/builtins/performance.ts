@@ -1461,6 +1461,8 @@ const HISTOGRAM_STATS: ReadonlyMap<string, number> = new Map([
   ["stddev", 3],
   ["count", 4],
   ["exceeds", 5],
+  ["skewness", 6],
+  ["kurtosis", 7],
 ]);
 
 /** `h.min`, `h.max`, … on an IntervalHistogram: the runtime's current
@@ -1628,12 +1630,14 @@ export function lowerMonitorEventLoopDelayCall(lowerer: Lowerer, expr: ts.CallEx
           "resolution is the one option",
         );
       }
-      // An undefined resolution takes the default, as Node's destructuring.
+      // An undefined resolution takes the default, as Node's destructuring;
+      // a supplied one is validated, so a null does not convert to 0.
       resolution = lowerOptionalArgument(
         lowerer,
         shorthand ? property.name : property.initializer,
         F64,
         numLit(10, loc),
+        { nullArm: "reject" },
       );
     }
   }
@@ -1790,6 +1794,8 @@ const HISTO_STATS: ReadonlyMap<string, number> = new Map([
   ["mean", 3],
   ["stddev", 4],
   ["exceeds", 5],
+  ["skewness", 6],
+  ["kurtosis", 7],
 ]);
 
 /** The BigInt readings, as perf.histoStatBig selectors. */

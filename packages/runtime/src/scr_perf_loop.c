@@ -434,6 +434,37 @@ double scr_eld_stat(ScrDyn *handle, double which) {
     }
     case 4:
       return h->count;
+    case 6:
+    case 7: {
+      if (h->total == 0) return 0;
+      /* Node answers kurtosis only from four samples; fewer read 0. */
+      if (w == 7 && h->total < 4) return 0;
+      double n = (double)h->total;
+      double mean = 0;
+      for (size_t i = 0; i < h->counts_len; i++) {
+        if (h->counts[i] == 0) continue;
+        mean += (double)h->counts[i] *
+                (double)scr_hdr_median_equivalent(scr_hdr_value_at_index(i));
+      }
+      mean /= n;
+      double m2 = 0, m3 = 0, m4 = 0;
+      for (size_t i = 0; i < h->counts_len; i++) {
+        if (h->counts[i] == 0) continue;
+        double dev = (double)scr_hdr_median_equivalent(scr_hdr_value_at_index(i)) - mean;
+        double c = (double)h->counts[i];
+        m2 += c * dev * dev;
+        m3 += c * dev * dev * dev;
+        m4 += c * dev * dev * dev * dev;
+      }
+      m2 /= n;
+      m3 /= n;
+      m4 /= n;
+      {
+        double sd = scr_eld_sqrt(m2);
+        if (!(sd > 0)) return 0;
+        return w == 6 ? m3 / (sd * sd * sd) : m4 / (sd * sd * sd * sd) - 3.0;
+      }
+    }
     default:
       return 0;
   }
@@ -505,8 +536,9 @@ static void scr_histo_release_v(void *p) {
  * BigInt ones. Any other name is not modeled (the caller answers undefined
  * for a miss, as for every handle). */
 static ScrDyn *scr_histo_reading(ScrDynHandleTag tag, void *ptr, const char *key, size_t length) {
-  static const char *const names[] = {"count", "min", "max", "mean", "stddev", "exceeds"};
-  static const int which[] = {0, 1, 2, 3, 4, 5};
+  static const char *const names[] = {"count",    "min",   "max",      "mean",
+                                     "stddev",   "exceeds", "skewness", "kurtosis"};
+  static const int which[] = {0, 1, 2, 3, 4, 5, 6, 7};
   static const char *const big_names[] = {"countBigInt", "minBigInt", "maxBigInt", "exceedsBigInt"};
   static const int big_which[] = {0, 1, 2, 5};
   ScrDyn probe;
@@ -1053,6 +1085,8 @@ static double scr_histo_eld_selector(int which) {
     case 2: return 1;
     case 3: return 2;
     case 4: return 3;
+    case 6: return 6;
+    case 7: return 7;
     default: return 5;
   }
 }
@@ -1100,6 +1134,37 @@ double scr_histo_stat(ScrDyn *handle, double which) {
       double mean = scr_histo_mean_of(h);
       if (w == 3) return mean;
       return scr_histo_stddev_of(h, mean);
+    }
+    case 6:
+    case 7: {
+      /* Node's shape moments over the same bucket medians its mean and
+       * stddev use: skewness m3/sd^3, kurtosis m4/sd^4 - 3 (kurtosis only
+       * from four samples; fewer read 0). */
+      if (h->total == 0) return 0;
+      if (w == 7 && h->total < 4) return 0;
+      int64_t sum = 0;
+      for (int64_t i = 0; i < h->counts_len; i++) {
+        if (h->counts[i] == 0) continue;
+        sum += h->counts[i] * scr_histo_median_equivalent(h, scr_histo_value_at_index(h, i));
+      }
+      double mean = (double)sum / (double)h->total;
+      double m2 = 0, m3 = 0, m4 = 0;
+      for (int64_t i = 0; i < h->counts_len; i++) {
+        if (h->counts[i] == 0) continue;
+        double dev = (double)scr_histo_median_equivalent(h, scr_histo_value_at_index(h, i)) - mean;
+        double c = (double)h->counts[i];
+        m2 += c * dev * dev;
+        m3 += c * dev * dev * dev;
+        m4 += c * dev * dev * dev * dev;
+      }
+      m2 /= (double)h->total;
+      m3 /= (double)h->total;
+      m4 /= (double)h->total;
+      {
+        double sd = sqrt(m2);
+        if (!(sd > 0)) return 0;
+        return w == 6 ? m3 / (sd * sd * sd) : m4 / (sd * sd * sd * sd) - 3.0;
+      }
     }
     default:
       return (double)h->exceeds;

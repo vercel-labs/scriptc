@@ -989,6 +989,49 @@ function staticHeaderKeyOf(lowerer: Lowerer, prop: ts.PropertyAssignment): strin
   return null;
 }
 
+/** The header pairs an object literal or a `Record<string, string>` value
+ * holds — the informational-response argument shape (writeEarlyHints,
+ * writeInformation). */
+function h2HeaderPairsArg(lowerer: Lowerer, node: ts.Expression, what: string): IrExpr {
+  const loc = locOf(node);
+  if (ts.isObjectLiteralExpression(node)) {
+    const elems: IrExpr[] = [];
+    for (const prop of node.properties.nodes) {
+      const key = ts.isPropertyAssignment(prop) ? staticHeaderKeyOf(lowerer, prop) : null;
+      if (!ts.isPropertyAssignment(prop) || key === null) {
+        lowerer.noLowering(
+          `${what} with dynamic keys, spreads, or shorthand entries`,
+          prop,
+          "use literal header keys and string values",
+        );
+      }
+      const value = lowerer.lowerExpr(prop.initializer);
+      if (value.type.kind !== "string") {
+        lowerer.noLowering(
+          `${what} of type '${lowerer.fmt(value.type)}'`,
+          prop.initializer,
+          "header values must be strings here",
+        );
+      }
+      elems.push({ kind: "strLit", value: key, type: STRING, loc }, value);
+    }
+    return { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
+  }
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind !== "record") {
+    lowerer.noLowering(
+      `${what} of '${lowerer.fmt(value.type)}'`,
+      node,
+      "pass an object literal or a Record<string, string>",
+    );
+  }
+  const helper = lowerer.envToPairsHelper(value.type.shapeId, loc);
+  if (helper === null) {
+    lowerer.noLowering(`${what} values`, node, "use a Record<string, string> with string values");
+  }
+  return { kind: "call", callee: helper, args: [value], type: arrayOf(STRING), loc };
+}
+
 /** Module-function calls on net import bindings: createServer(handler?),
  * connect/createConnection(port[, host][, cb]). Null for other modules
  * (the caller falls through to the ordinary builtin tables); every net
@@ -4220,11 +4263,44 @@ function h2EndStreamOption(lowerer: Lowerer, node: ts.Expression | undefined): b
           "spell it true or false",
         );
     }
-    // Other keys (waitForTrailers, exclusive, parent, weight) are accepted
-    // and ignored — the honest-defaults stance (they tune framing this
-    // core does not model; a use that DEPENDS on them fails downstream).
+    // Other keys (exclusive, parent, weight) are accepted and ignored —
+    // the honest-defaults stance (they tune framing this core does not
+    // model; a use that DEPENDS on them fails downstream).
   }
   return end;
+}
+
+/** A literal boolean member of an h2 options object (`waitForTrailers`):
+ * null when the object omits it, or when there is no options argument. */
+function h2BoolOption(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  key: string,
+): boolean | null {
+  if (node === undefined) return null;
+  if (!ts.isObjectLiteralExpression(node)) {
+    lowerer.noLowering(
+      "h2 options argument",
+      node,
+      "pass the options as an object literal ({ endStream: true, waitForTrailers: true })",
+    );
+  }
+  let value: boolean | null = null;
+  for (const prop of node.properties.nodes) {
+    if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
+      lowerer.noLowering(
+        "h2 options with spreads or computed keys",
+        prop,
+        "use plain `name: value` entries",
+      );
+    }
+    if (prop.name.text !== key) continue;
+    if (prop.initializer.kind === ts.SyntaxKind.TrueKeyword) value = true;
+    else if (prop.initializer.kind === ts.SyntaxKind.FalseKeyword) value = false;
+    else
+      lowerer.noLowering(`a non-literal ${key} option`, prop.initializer, "spell it true or false");
+  }
+  return value;
 }
 
 /** A settings listener or settings() callback as lowered. The runtime
@@ -4279,10 +4355,13 @@ function lowerH2SessionMethodCall(
       type: F64,
       loc,
     };
+    // { waitForTrailers: true }: the request body may be followed by a
+    // trailer block ('wantTrailers' fires once it is out).
+    const wait = h2BoolOption(lowerer, args[1], "waitForTrailers");
     return {
       kind: "libCall",
       fn: "http2.sessionRequest",
-      args: [receiver(), headersArg, endF64],
+      args: [receiver(), headersArg, endF64, boolLit(wait ?? false, loc)],
       type: HTTP2STREAM_T,
       loc,
     };
@@ -4583,10 +4662,56 @@ function lowerH2StreamMethodCall(
         ? lowerH2HeadersArg(lowerer, args[0]!)
         : ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } as IrExpr);
     const end = h2EndStreamOption(lowerer, args[1]);
+    // { waitForTrailers: true }: the HEADERS carries no END_STREAM and the
+    // trailer block ends the stream after 'wantTrailers'.
+    const wait = h2BoolOption(lowerer, args[1], "waitForTrailers");
+    if (wait !== null) {
+      return {
+        kind: "libCall",
+        fn: "http2.streamRespondWait",
+        args: [receiver(), headersArg, boolLit(end ?? false, loc), boolLit(wait, loc)],
+        type: VOID,
+        loc,
+      };
+    }
     return {
       kind: "libCall",
       fn: "http2.streamRespond",
       args: [receiver(), headersArg, boolLit(end ?? false, loc)],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "sendTrailers") {
+    requireStatementPosition(lowerer, call, "stream.sendTrailers(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `stream.sendTrailers with ${args.length} arguments`,
+        call,
+        "use sendTrailers(headers)",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.streamSendTrailers",
+      args: [receiver(), lowerH2HeadersArg(lowerer, args[0]!)],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "additionalHeaders") {
+    requireStatementPosition(lowerer, call, "stream.additionalHeaders(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `stream.additionalHeaders with ${args.length} arguments`,
+        call,
+        "use additionalHeaders(headers)",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.streamAdditionalHeaders",
+      args: [receiver(), lowerH2HeadersArg(lowerer, args[0]!)],
       type: VOID,
       loc,
     };
@@ -4701,6 +4826,43 @@ function lowerH2StreamMethodCall(
     const once = boolLit(name === "once", loc);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
+    if (event === "trailers" || event === "headers") {
+      // (headers, flags) for a trailer block; the informational 'headers'
+      // record carries :status as a number, so its ABI adds the status.
+      const cb = h2HeadersCallbackAdapter(
+        lowerer,
+        args[1]!,
+        `${event} listeners`,
+        null,
+        event === "headers",
+        loc,
+      );
+      return {
+        kind: "libCall",
+        fn: event === "trailers" ? "http2.streamOnTrailers" : "http2.streamOnHeaders",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
+    if (event === "wantTrailers" || event === "continue") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        `${event} listeners`,
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: event === "wantTrailers" ? "http2.streamOnWantTrailers" : "http2.streamOnContinue",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "data") {
       const { cb } = lowerCallbackArg(
         lowerer,
@@ -4768,13 +4930,13 @@ function lowerH2StreamMethodCall(
     lowerer.noLowering(
       `stream.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"data", "end", "close", "aborted", "error", and "response" are the supported stream events',
+      '"data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events',
     );
   }
   lowerer.noLowering(
     `stream.${name}`,
     call,
-    "respond/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members",
+    "respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members",
   );
 }
 
@@ -4882,6 +5044,12 @@ export function lowerServerProperty(
   }
   if (recvKind === "httpReq" && lowerer.isStdlibMember(expr)) {
     const name = expr.name.text;
+    if (name === "signal") {
+      // The message's AbortSignal, built on the first read: it aborts when
+      // the message is destroyed or closes unfinished.
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      return { kind: "libCall", fn: "http.reqSignal", args: [receiver], type: DYN, loc };
+    }
     if (name === "url" || name === "method") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
       const fn: IrLibFn = name === "url" ? "http.reqUrl" : "http.reqMethod";
@@ -9174,17 +9342,27 @@ function lowerHttpClientMethodCall(
   const name = access.name.text;
   const loc = locOf(call);
   const args = call.arguments.nodes;
-  if (name === "setHeader") {
-    requireStatementPosition(lowerer, call, "request.setHeader(...)");
+  if (name === "setHeader" || name === "appendHeader") {
+    requireStatementPosition(lowerer, call, `request.${name}(...)`);
     if (args.length !== 2)
-      lowerer.noLowering("request.setHeader arguments", call, "pass a name and string value");
+      lowerer.noLowering(
+        `request.${name} arguments`,
+        call,
+        "pass a name and a string, number, null or array value",
+      );
     const receiver = coerceToHandle(lowerer, access.expression, HTTPCLIENTREQ_T);
     const header = lowerer.lowerExprExpecting(args[0]!, STRING);
-    const value = lowerer.lowerExprExpecting(args[1]!, STRING);
+    const raw = lowerer.coerceToExpected(lowerer.lowerExpr(args[1]!), DYN);
+    if (raw.type.kind !== "dyn")
+      lowerer.noLowering(
+        `request.${name} with a '${lowerer.fmt(raw.type)}' value that cannot cross the header boundary`,
+        args[1]!,
+        "the value is a string, number, null or an array of those",
+      );
     return {
       kind: "libCall",
-      fn: "http.clientSetHeader",
-      args: [receiver, header, value],
+      fn: name === "setHeader" ? "http.clientSetHeaderDyn" : "http.clientAppendHeaderDyn",
+      args: [receiver, header, raw],
       type: VOID,
       loc,
     };
@@ -10025,14 +10203,76 @@ function lowerHttpResMethodCall(
     name === "writeInformation"
   ) {
     // writeInformation answers write()'s boolean, so it may stand in an
-    // expression; the three delegating forms are statements.
-    if (name !== "writeInformation") requireStatementPosition(lowerer, call, `res.${name}(...)`);
-    if (ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse") {
-      lowerer.noLowering(
-        `Http2ServerResponse.${name}`,
-        call,
-        "HTTP/2 informational responses are not supported by the static runtime yet",
-      );
+    // expression; the three delegating forms are statements (an
+    // Http2ServerResponse's informational sends answer a boolean too).
+    const h2Compat =
+      ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse";
+    if (!h2Compat && name !== "writeInformation")
+      requireStatementPosition(lowerer, call, `res.${name}(...)`);
+    if (h2Compat) {
+      // The compat response's informational blocks ride the stream's
+      // additionalHeaders: 100 (writeContinue), 103 (writeEarlyHints) or
+      // the caller's status, sent only before the response starts.
+      if (name === "writeProcessing") {
+        lowerer.noLowering(
+          "Http2ServerResponse.writeProcessing",
+          call,
+          "use writeContinue() or writeInformation(statusCode, headers)",
+        );
+      }
+      const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
+      if (name === "writeContinue") {
+        if (args.length !== 0)
+          lowerer.noLowering(
+            "res.writeContinue arguments",
+            call,
+            "writeContinue() takes no arguments",
+          );
+        return {
+          kind: "libCall",
+          fn: "http2.responseWriteInformation",
+          args: [
+            receiver,
+            numLit(100, loc),
+            { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } as IrExpr,
+          ],
+          type: BOOL,
+          loc,
+        };
+      }
+      if (name === "writeEarlyHints") {
+        if (args.length !== 1)
+          lowerer.noLowering("res.writeEarlyHints arguments", call, "pass one header object");
+        return {
+          kind: "libCall",
+          fn: "http2.responseWriteInformation",
+          args: [
+            receiver,
+            numLit(103, loc),
+            h2HeaderPairsArg(lowerer, args[0]!, "writeEarlyHints headers"),
+          ],
+          type: BOOL,
+          loc,
+        };
+      }
+      if (args.length < 1 || args.length > 2)
+        lowerer.noLowering(
+          `res.writeInformation with ${args.length} arguments`,
+          call,
+          "use writeInformation(statusCode[, headers])",
+        );
+      const status = lowerer.lowerExprExpecting(args[0]!, F64);
+      const pairs =
+        args.length === 2
+          ? h2HeaderPairsArg(lowerer, args[1]!, "writeInformation headers")
+          : ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } as IrExpr);
+      return {
+        kind: "libCall",
+        fn: "http2.responseWriteInformation",
+        args: [receiver, status, pairs],
+        type: BOOL,
+        loc,
+      };
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPRES_T);
     if (name === "writeContinue" || name === "writeProcessing") {
@@ -10258,13 +10498,6 @@ function lowerHttpResMethodCall(
   }
   if (name === "addTrailers") {
     requireStatementPosition(lowerer, call, "res.addTrailers(...)");
-    if (ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse") {
-      lowerer.noLowering(
-        "Http2ServerResponse.addTrailers",
-        call,
-        "HTTP/2 response trailers are not supported by the static runtime yet",
-      );
-    }
     if (args.length !== 1)
       lowerer.noLowering(
         "res.addTrailers argument count",
@@ -10520,7 +10753,7 @@ function lowerHttpResMethodCall(
     // statement.
     if (name === "end") requireStatementPosition(lowerer, call, `res.${name}(...)`);
     const minArgs = name === "write" ? 1 : 0;
-    const maxArgs = name === "write" ? 1 : 2;
+    const maxArgs = name === "write" ? 3 : 2;
     if (args.length < minArgs || args.length > maxArgs) {
       lowerer.noLowering(
         `${name} with ${args.length} arguments`,
@@ -10538,7 +10771,69 @@ function lowerHttpResMethodCall(
     // call in an interned composing helper.
     let cbArg: IrExpr | null = null;
     let dataNode: ts.Expression | undefined = args[0];
-    if (name === "end" && args.length === 2) {
+    /* Arguments this surface reads and drops are still evaluated, like
+     * Node's call does: their side effects and throws happen. */
+    const skippedEffects: ts.Expression[] = [];
+    if (name === "write" && args.length >= 2) {
+      // write(data[, "utf8" | "utf-8"][, callback]): the encoding names the
+      // bytes this surface already writes, so it is read and dropped; an
+      // explicit undefined is Node's absent encoding.
+      const second = args[1]!;
+      const secondType = lowerer.typeOf(second);
+      const secondMapped = lowerer.mapTypeOf(secondType);
+      let cbIndex: number | null = null;
+      if (secondType.isStringLiteralType() || secondMapped?.kind === "string") {
+        if (
+          !secondType.isStringLiteralType() ||
+          (secondType.value !== "utf8" && secondType.value !== "utf-8")
+        ) {
+          lowerer.noLowering(
+            "res.write with an encoding other than utf8",
+            second,
+            "write(data), write(data, 'utf8'), write(data, 'utf8', callback) or write(data, callback)",
+          );
+        }
+        if (!sideEffectFreeOptionValue(second)) skippedEffects.push(second);
+        if (args.length === 3) cbIndex = 2;
+      } else if (
+        secondMapped !== null &&
+        (secondMapped.kind === "undefinedT" ||
+          secondMapped.kind === "void" ||
+          secondMapped.kind === "nullT")
+      ) {
+        if (!sideEffectFreeOptionValue(second)) skippedEffects.push(second);
+        if (args.length === 3) cbIndex = 2;
+      } else {
+        if (args.length === 3) {
+          lowerer.noLowering(
+            "res.write with an encoding argument that is not the literal 'utf8'",
+            second,
+            "write(data, callback) or write(data, 'utf8', callback)",
+          );
+        }
+        cbIndex = 1;
+      }
+      const cbType = cbIndex === null ? null : lowerer.mapTypeOf(lowerer.typeOf(args[cbIndex]!));
+      if (
+        cbIndex !== null &&
+        (cbType === null ||
+          (cbType.kind !== "undefinedT" && cbType.kind !== "void" && cbType.kind !== "nullT"))
+      ) {
+        const { cb } = lowerCallbackArg(
+          lowerer,
+          args[cbIndex]!,
+          "write callbacks",
+          0,
+          () => false,
+          "use ()",
+          [],
+        );
+        cbArg = cb;
+      } else if (cbIndex !== null) {
+        const cbNode = args[cbIndex]!;
+        if (!sideEffectFreeOptionValue(cbNode)) skippedEffects.push(cbNode);
+      }
+    } else if (name === "end" && args.length === 2) {
       const { cb } = lowerCallbackArg(
         lowerer,
         args[1]!,
@@ -10574,30 +10869,47 @@ function lowerHttpResMethodCall(
         dataNode = undefined;
       }
     }
-    const endWithCb = (fn: IrLibFn, callArgs: IrExpr[], cb: IrExpr): IrExpr => {
+    const withCb = (
+      register: IrLibFn,
+      fn: IrLibFn,
+      callArgs: IrExpr[],
+      cb: IrExpr,
+      ret: IrType,
+    ): IrExpr => {
       const all = [...callArgs, cb];
-      const key = `server.endcb:${fn}:${all.map((a) => typeKey(a.type)).join(",")}`;
+      const key = `server.cb:${register}:${fn}:${typeKey(ret)}:${all.map((a) => typeKey(a.type)).join(",")}`;
       const existing = lowerer.arrHofHelpers.get(key);
       const helper = existing ?? keyedHelperName(lowerer, "%server.endcb", key);
       if (!existing) {
         lowerer.arrHofHelpers.set(key, helper);
         const params = all.map((a, i) => ({ localId: `p${i}.0`, name: `p${i}`, type: a.type }));
+        const returns = ret.kind === "bool";
+        const call: IrExpr = {
+          kind: "libCall",
+          fn,
+          args: callArgs.map((_, i) => varRef(params[i]!.localId, params[i]!.type, loc)),
+          type: ret,
+          loc,
+        };
         lowerer.liftedFns.push({
           name: helper,
           params,
-          returnType: VOID,
-          locals: params.map((p) => ({
-            id: p.localId,
-            name: p.name,
-            type: p.type,
-            mutable: false,
-          })),
+          returnType: ret,
+          locals: [
+            ...params.map((p) => ({
+              id: p.localId,
+              name: p.name,
+              type: p.type,
+              mutable: false,
+            })),
+            ...(returns ? [{ id: "r.0", name: "r", type: ret, mutable: false }] : []),
+          ],
           body: [
             {
               kind: "exprStmt",
               expr: {
                 kind: "libCall",
-                fn: "http.resOnEndCallback",
+                fn: register,
                 args: [
                   varRef(params[0]!.localId, params[0]!.type, loc),
                   varRef(params[all.length - 1]!.localId, params[all.length - 1]!.type, loc),
@@ -10607,42 +10919,85 @@ function lowerHttpResMethodCall(
               },
               loc,
             },
-            {
-              kind: "exprStmt",
-              expr: {
-                kind: "libCall",
-                fn,
-                args: callArgs.map((_, i) => varRef(params[i]!.localId, params[i]!.type, loc)),
-                type: VOID,
-                loc,
-              },
-              loc,
-            },
+            ...(returns
+              ? [
+                  { kind: "varDecl", localId: "r.0", init: call, loc } as IrStmt,
+                  {
+                    kind: "return",
+                    value: varRef("r.0", ret, loc),
+                    loc,
+                  } as IrStmt,
+                ]
+              : [{ kind: "exprStmt", expr: call, loc } as IrStmt]),
           ],
           loc,
         });
       }
-      return { kind: "call", callee: helper, args: all, type: resultType, loc };
+      return { kind: "call", callee: helper, args: all, type: ret, loc };
     };
     if (dataNode === undefined) {
-      if (cbArg !== null) return endWithCb("http.resEnd", [receiver], cbArg);
+      if (cbArg !== null)
+        return withCb("http.resOnEndCallback", "http.resEnd", [receiver], cbArg, resultType);
       return { kind: "libCall", fn: "http.resEnd", args: [receiver], type: resultType, loc };
     }
-    const data = lowerer.lowerExpr(dataNode);
+    let loweredData: IrExpr | null = null;
+    if (skippedEffects.length > 0) {
+      /* Node evaluates data, then the encoding and callback expressions
+       * before the call: keep that order through a hidden local. */
+      const value = lowerer.lowerExpr(dataNode);
+      const saved = lowerer.declareHiddenLocal("%writeData", value.type);
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: saved.id, init: value, loc: locOf(dataNode) },
+        ...skippedEffects.map((arg): IrStmt => ({
+          kind: "exprStmt",
+          expr: lowerer.lowerExpr(arg),
+          loc: locOf(arg),
+        })),
+      ];
+      loweredData = {
+        kind: "seqExpr",
+        stmts,
+        result: varRef(saved.id, value.type, loc),
+        type: value.type,
+        loc: locOf(dataNode),
+      };
+    }
+    const data = loweredData ?? lowerer.lowerExpr(dataNode);
     if (data.type.kind === "string") {
       const fn: IrLibFn = name === "write" ? "http.resWrite" : "http.resEndStr";
-      if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
+      if (cbArg !== null)
+        return withCb(
+          name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
+          fn,
+          [receiver, data],
+          cbArg,
+          resultType,
+        );
       return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     if (data.type.kind === "bytes" && data.type.elem === "u8") {
       const fn: IrLibFn = name === "write" ? "http.resWriteBytes" : "http.resEndBytes";
-      if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
+      if (cbArg !== null)
+        return withCb(
+          name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
+          fn,
+          [receiver, data],
+          cbArg,
+          resultType,
+        );
       return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     if (data.type.kind === "dyn") {
       // An untyped JS payload — the net.sockWriteDyn story.
       const fn: IrLibFn = name === "write" ? "http.resWriteDyn" : "http.resEndDyn";
-      if (cbArg !== null) return endWithCb(fn, [receiver, data], cbArg);
+      if (cbArg !== null)
+        return withCb(
+          name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
+          fn,
+          [receiver, data],
+          cbArg,
+          resultType,
+        );
       return { kind: "libCall", fn, args: [receiver, data], type: resultType, loc };
     }
     // end(payload ? text : undefined): an absent chunk ends without data,
@@ -10665,7 +11020,14 @@ function lowerHttpResMethodCall(
       ) {
         const dynData: IrExpr = { kind: "dynFrom", value: data, type: DYN, loc: locOf(dataNode) };
         const fn: IrLibFn = name === "write" ? "http.resWriteDyn" : "http.resEndDyn";
-        if (cbArg !== null) return endWithCb(fn, [receiver, dynData], cbArg);
+        if (cbArg !== null)
+          return withCb(
+            name === "write" ? "http.resOnWriteFlush" : "http.resOnEndCallback",
+            fn,
+            [receiver, dynData],
+            cbArg,
+            resultType,
+          );
         return { kind: "libCall", fn, args: [receiver, dynData], type: resultType, loc };
       }
     }

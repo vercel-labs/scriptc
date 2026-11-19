@@ -42,7 +42,9 @@ declare module "node:test" {
     log(message: string, data?: unknown): void;
   }
   interface TestContextPlanOptions {
-    wait?: number | undefined;
+    /* `true` waits indefinitely for the plan, `false` (the default) checks
+     * as soon as the body finishes, a number is the maximum wait. */
+    wait?: boolean | number | undefined;
   }
   interface TestOptions {
     skip?: boolean | string;
@@ -58,6 +60,10 @@ declare module "node:test" {
      * Node's matcher forms (RegExp, function, object, Error, { label, match })
      * are not lowered. */
     expectFailure?: boolean | string;
+    /* Labels carried by the test and its descendant suites' tests. Values
+     * must be non-empty strings; they are lowercased and de-duplicated, and
+     * a suite's tags are inherited by every test it contains. */
+    tags?: readonly string[];
   }
   interface TestContext {
     readonly name: string;
@@ -198,6 +204,12 @@ declare module "node:test" {
   type FunctionPropertyNames<T> = {
     [K in keyof T]: T[K] extends Function ? K : never;
   }[keyof T];
+  interface MockMethodOptions extends MockFunctionOptions {
+    /* The property is treated as a getter (or a setter); the two are
+     * mutually exclusive. */
+    getter?: boolean;
+    setter?: boolean;
+  }
   interface MockTracker {
     fn<F extends Function = (...args: any[]) => undefined>(original?: F): Mock<F>;
     /* The { times } option: the implementation serves that many calls and
@@ -218,7 +230,7 @@ declare module "node:test" {
     method<MockedObject extends object, MethodName extends FunctionPropertyNames<MockedObject>>(
       object: MockedObject,
       methodName: MethodName,
-      options?: MockFunctionOptions,
+      options?: MockMethodOptions,
     ): MockedObject[MethodName] extends Function ? Mock<MockedObject[MethodName]> : never;
     method<
       MockedObject extends object,
@@ -228,10 +240,22 @@ declare module "node:test" {
       object: MockedObject,
       methodName: MethodName,
       implementation: Implementation,
-      options?: MockFunctionOptions,
+      options?: MockMethodOptions,
     ): MockedObject[MethodName] extends Function
       ? Mock<MockedObject[MethodName] | Implementation>
       : never;
+    getter<MockedObject extends object, MethodName extends keyof MockedObject>(
+      object: MockedObject,
+      methodName: MethodName,
+      implementation: (...args: any[]) => MockedObject[MethodName],
+      options?: MockFunctionOptions,
+    ): Mock<() => MockedObject[MethodName]>;
+    setter<MockedObject extends object, MethodName extends keyof MockedObject>(
+      object: MockedObject,
+      methodName: MethodName,
+      implementation: (value: MockedObject[MethodName]) => void,
+      options?: MockFunctionOptions,
+    ): Mock<(value: MockedObject[MethodName]) => void>;
     reset(): void;
     restoreAll(): void;
     readonly timers: MockTimers;

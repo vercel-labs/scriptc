@@ -1,4 +1,5 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
+import { lowerCjsExportsObjectWrite } from "../cjs-exports-object-value.js";
 import {
   fenceConsoleMutation,
   isConsoleExpression,
@@ -2180,6 +2181,26 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       // RHS value is the expression's value — its OWN type, so the
       // consumer sees exactly what the checker typed.
       if (ts.isPropertyAccessExpression(expr.left) && !expr.left.questionDotToken) {
+        // A member of a module whose exports object some code takes is
+        // written through that object (cjs-exports-object-value.ts).
+        {
+          let inFunction = false;
+          for (let p: ts.Node | undefined = expr.parent; p !== undefined; p = p.parent) {
+            if (ts.isFunctionLike(p) || ts.isClassDeclaration(p) || ts.isClassExpression(p)) {
+              inFunction = true;
+              break;
+            }
+          }
+          const viaObject = lowerCjsExportsObjectWrite(
+            lowerer,
+            expr.left,
+            expr.right,
+            inFunction
+              ? cjsExportMemberWriteGlobalOf(lowerer, expr.left)
+              : cjsInFileExportGlobalOf(lowerer, expr.left),
+          );
+          if (viaObject) return viaObject;
+        }
         // `const src = exports.src = []`: an export member assigned in
         // value position writes its export global and yields the value.
         {

@@ -960,14 +960,18 @@ typedef struct {
 static NiMethods *ni_methods = NULL;
 static size_t ni_nmethods = 0, ni_methods_cap = 0;
 
-static ScrDyn *ni_methods_of(const ScrDyn *v) {
+static NiMethods *ni_methods_entry(const ScrDyn *v) {
   if (v->kind != SCR_DYN_TYPED_REF || v->v.typed_ref.type_key == NULL) return NULL;
   const char *key = v->v.typed_ref.type_key;
   size_t len = v->v.typed_ref.type_key_len;
   for (size_t i = 0; i < ni_nmethods; i++)
-    if (ni_methods[i].key_len == len && memcmp(ni_methods[i].key, key, len) == 0)
-      return ni_methods[i].table;
+    if (ni_methods[i].key_len == len && memcmp(ni_methods[i].key, key, len) == 0) return &ni_methods[i];
   return NULL;
+}
+
+static ScrDyn *ni_methods_of(const ScrDyn *v) {
+  NiMethods *entry = ni_methods_entry(v);
+  return entry != NULL ? entry->table : NULL;
 }
 
 /* The tables below belong to the island's thread: its host callbacks read
@@ -1123,6 +1127,26 @@ static ScrDyn *ni_run_accessor(ScrDyn *fn, ScrDyn *target, ScrDyn *const *args, 
   return result;
 }
 
+/* A member exactly one class under the instance's static class declares: an element typed
+ * HTMLElement from getElementById answers its class's own members (an HTMLCanvasElement's
+ * getContext) when no other subclass below HTMLElement declares the name. Two declarations are
+ * ambiguous and answer nothing, so a shared name is never resolved to the wrong class. */
+static ScrDyn *ni_class_member_below(const ScrDyn *target, const ScrStr *name) {
+  NiMethods *owner = ni_methods_entry(target);
+  if (owner == NULL || !owner->ranged) return NULL;
+  ScrDyn *found = NULL;
+  for (size_t i = 0; i < ni_nmethods; i++) {
+    NiMethods *m = &ni_methods[i];
+    if (!m->ranged || m == owner) continue;
+    if (m->pre <= owner->pre || m->pre > owner->post) continue;
+    ScrDyn *value = scr_dyn_obj_get(m->table, name->data, name->len);
+    if (value == NULL) continue;
+    if (found != NULL) return NULL;
+    found = scr_dyn_retain(value);
+  }
+  return found;
+}
+
 static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key) {
   if (key->kind != SCR_DYN_STR || ni_accessor_key(key->v.str)) return NULL;
   ScrDyn *table = ni_methods_of(target);
@@ -1132,7 +1156,8 @@ static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key) {
       scr_dyn_obj_get(view, key->v.str->data, key->v.str->len) != NULL)
     return NULL;
   ScrDyn *m = scr_dyn_obj_get(table, key->v.str->data, key->v.str->len);
-  return m != NULL ? scr_dyn_retain(m) : NULL;
+  if (m != NULL) return scr_dyn_retain(m);
+  return ni_class_member_below(target, key->v.str);
 }
 
 /* Whether `key` is a name `target` only inherits from Object.prototype.

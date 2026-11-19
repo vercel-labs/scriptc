@@ -281,7 +281,8 @@ export type IrType =
    * listeners. Listeners are held only until close() (or the exit-time
    * cleanup) — the child ownership story, so lean allocation, no trace
    * header. Same container rules as child: union arms fine (the
-   * `FSWatcher | null` polling-fallback local), arrays/maps/JSON fenced. */
+   * `FSWatcher | null` polling-fallback local) and map values fine (the
+   * watcher registry); arrays and JSON stay fenced. */
   | { kind: "fsWatcher" }
   /** An fsPromises.watch iterator (scr_watch_async.c — linked only when the
    * IR uses it): the queue over an fs.watch handle that the `for await`
@@ -883,6 +884,15 @@ export function isSupportedMapValue(t: IrType): boolean {
     // the same ordinary refcounted pointer story as child, without even
     // the pre-settle closures.
     case "secureCtx":
+      return true;
+    // An fs.watch handle (Map<string, FSWatcher> — the watcher registry):
+    // an ordinary refcounted pointer value (scr_watcher_retain/release_v),
+    // like child. Its listeners hold closures until the watcher closes, so
+    // a listener that captures the map is a cycle the collector cannot
+    // trace through this handle; the watcher keeps its listeners and the
+    // process alive until close() clears both, which is the same lifetime
+    // Node's FSWatcher owns.
+    case "fsWatcher":
       return true;
     // A Date object: immutable, holds no references.
     case "date":

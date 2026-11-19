@@ -52,6 +52,21 @@ Type-only imports follow Node.js's type stripping. `import type` and `export typ
 
 A project that tsc compiles follows tsc instead. When the nearest `tsconfig.json` above a TypeScript file doesn't set `verbatimModuleSyntax`, scriptc drops the imports and exports that tsc drops for that file: an import whose bindings are never used as values, a clause of `type` specifiers only, and a re-export of a type. A module imported only in those ways isn't loaded, exactly as in the JavaScript tsc emits, so it doesn't run and doesn't take part in an import cycle. `isolatedModules` and `preserveConstEnums` decide whether a use of a const enum keeps its import, as they do for tsc. An export of a const enum stays a value export even where tsc's output has no value for the name, because a file that imports the export and uses a member as a value keeps that use; the importing file's build warns with `SC6008`. With `verbatimModuleSyntax: true`, or with no `tsconfig.json`, the type-stripping rule applies; a plain import of a type then fails when the program starts, as it does under Node.js, and the build warns about it with `SC6201`.
 
+## Packages that ship TypeScript source
+
+A package can ship TypeScript that's meant to compile as part of the program that installs it, for example classes a program extends. To mark it, set `scriptc.source` in the package's own `package.json`:
+
+```json:node_modules/dom-kit/package.json
+{
+  "name": "dom-kit",
+  "type": "module",
+  "exports": { "./runtime/dom": "./runtime/dom.ts" },
+  "scriptc": { "source": true }
+}
+```
+
+scriptc then compiles the package's files from `node_modules` the way it compiles a TypeScript workspace package: their types come from the package's own `.ts` files, the type checker reports errors in them, and your program can extend the classes they declare. The package's JavaScript modules compile with it too, whether the package imports them or your program imports them through the package's `exports`, and a `.d.ts` file beside one types it. Where the package publishes JavaScript compiled from its TypeScript, with each `.ts` file beside its `.js`, scriptc compiles the TypeScript. Only the package that sets the field is affected, and a dependency installed inside it follows its own `package.json`. Naming the package in `--npm-static` changes nothing: it still compiles from its TypeScript. Without the field, an installed package that ships only TypeScript fails with `SC2013`. Node.js doesn't strip types from files under `node_modules`, so such a package runs under `node` only when it's linked from outside `node_modules`, as in a workspace.
+
 ## Which packages compile
 
 scriptc compiles a package automatically when it:

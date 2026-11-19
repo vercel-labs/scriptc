@@ -23,6 +23,7 @@ import { constructorClass } from "../../ir/final-fields.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
+import { findStringCursorLoops } from "./string-cursor-loops.js";
 import {
   findMapReadBorrows,
   findMapReadLifetimes,
@@ -319,6 +320,20 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   );
   emitter.localUnionStorage = new Map();
   emitter.walkBorrows = emitter.walkBorrowsByFunction.get(fn.name) ?? new Set();
+  const reboundParameters = emitter.reboundByFunction.get(fn.name);
+  emitter.stringCursorLoops =
+    emitter.debug === null
+      ? findStringCursorLoops(fn, {
+          plain: (id) =>
+            !emitter.valueBindings.has(id) &&
+            !emitter.walkBorrows.has(id) &&
+            !emitter.lazyCaptureBoxes.has(id) &&
+            !emitter.privateSplitLocals.has(id) &&
+            reboundParameters?.has(id) !== true,
+          captured: emitter.captureIds,
+          parameters: new Set(fn.params.map((param) => param.localId)),
+        })
+      : new Map();
   const slotFacts = emitter.int32Slots.facts(fn.name);
   const rangeFacts = analyzeIntegerRangeFacts(numericFn, slotFacts);
   emitter.integerRanges = rangeFacts.ranges;

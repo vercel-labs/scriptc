@@ -163,6 +163,19 @@ export function lowerMapMethodCall(
     value.type.value.kind !== "dyn"
   )
     receiverIr = value.type;
+  // The converse: a JavaScript receiver the lowering built with a
+  // checked-dynamic slot where the checker still names a concrete one
+  // (`new Map([["a", xs], ["b", ys]])` takes V from the first entry, so the
+  // entries after it store boxed — lower-classes' seed rule). The intrinsic
+  // reads and writes the map the program built, so its key and value slots
+  // direct the argument and result types.
+  if (
+    value.type.kind === "map" &&
+    (!typeEquals(value.type.key, receiverIr.key) ||
+      !typeEquals(value.type.value, receiverIr.value)) &&
+    (value.type.key.kind === "dyn" || value.type.value.kind === "dyn")
+  )
+    receiverIr = value.type;
   const receiver =
     lowerer.runtimeOptionalPropertyReceiver(access.expression, value, receiverIr, name) ?? value;
   if (receiver.type.kind !== "map") {

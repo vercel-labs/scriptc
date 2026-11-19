@@ -489,6 +489,14 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // listeners), so the iterator unit brings the checked-dynamic async unit
   // with it.
   { feature: "watchEvents", requires: ["watch", "dynAsync"] },
+  // scr_mlkem.c installs the vendored core's hook table that the pki unit
+  // reads for ML-KEM keys, and the table's storage lives in the pki unit:
+  // the two units select each other. The pki unit takes the algorithm and
+  // the encoded key at run time (generateKeyPairSync's type,
+  // createPrivateKey's DER), so a program that never spells a parameter set
+  // still needs the hook when it can reach one.
+  { feature: "pki", requires: ["mlkem"] },
+  { feature: "mlkem", requires: ["pki"] },
   // scr_fs_web_stream.c reads through the FileHandle unit; the web stream
   // unit comes with it through executable-features' webStreams OR.
   { feature: "fsWebStream", requires: ["fileHandle"] },

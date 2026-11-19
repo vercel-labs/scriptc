@@ -2076,8 +2076,8 @@
           "tests/corpus/7388-als-http2-compat-events.mjs",
           "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/corpus/7391-als-response-end-and-finished.mjs",
-          "tests/corpus/async-local-storage-audit.cjs",
-          "tests/harness/node-test.test.ts"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -2238,8 +2238,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.AsyncHook",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2284,8 +2287,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.init",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2307,8 +2313,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.type",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2330,8 +2339,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.triggerAsyncId",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2353,8 +2365,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.resource",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2400,9 +2415,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:before",
+        "evidence": "compiler-feature:async_hooks.before",
         "tests": [
-          "tests/harness/node-test.test.ts"
+          "tests/corpus/async-hooks-execution-ids.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2426,9 +2441,9 @@
       },
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:after",
+        "evidence": "compiler-feature:async_hooks.after",
         "tests": [
-          "tests/harness/node-test.test.ts"
+          "tests/corpus/async-hooks-execution-ids.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2451,8 +2466,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.destroy",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2474,8 +2492,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.promiseResolve",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2497,8 +2518,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.asyncHook.enable",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2520,8 +2544,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.asyncHook.disable",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2566,8 +2593,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.async_hooks.executionAsyncId",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2589,8 +2619,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.async_hooks.triggerAsyncId",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2612,8 +2645,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:async_hooks.asyncWrapProviders",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -2676,8 +2712,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.async_hooks.createHook",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -20246,6 +20285,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -21273,8 +21313,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.crypto.decapsulate",
+        "tests": [
+          "tests/corpus/crypto-argon2.ts",
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/1534-crypto-hash-chain.ts",
+          "tests/corpus/2556-crypto-introspection.ts",
+          "tests/corpus/2890-crypto-static-utility.ts",
+          "tests/harness/npm-static.test.ts",
+          "tests/corpus/node24-crypto-sha2.ts",
+          "tests/corpus/node24-crypto-kdf.ts",
+          "tests/corpus/node24-crypto-kdf-errors.ts",
+          "tests/corpus/node24-crypto-kdf-options.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -21330,8 +21385,23 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.crypto.encapsulate",
+        "tests": [
+          "tests/corpus/crypto-argon2.ts",
+          "tests/corpus/key-object-to-crypto-key.ts",
+          "tests/corpus/key-object-from-crypto-key.ts",
+          "tests/corpus/key-object-from-arguments.mjs",
+          "tests/corpus/1358-crypto-random.ts",
+          "tests/corpus/1534-crypto-hash-chain.ts",
+          "tests/corpus/2556-crypto-introspection.ts",
+          "tests/corpus/2890-crypto-static-utility.ts",
+          "tests/harness/npm-static.test.ts",
+          "tests/corpus/node24-crypto-sha2.ts",
+          "tests/corpus/node24-crypto-kdf.ts",
+          "tests/corpus/node24-crypto-kdf-errors.ts",
+          "tests/corpus/node24-crypto-kdf-options.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -34561,6 +34631,7 @@
           "tests/corpus/8783-child-max-buffer-refused-arguments.ts",
           "tests/corpus/8922-child-max-buffer-async.ts",
           "tests/corpus/9872-child-stream-pause-max-buffer.ts",
+          "tests/corpus/async-hooks-execution-ids.cjs",
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/compat-error-capture-stack-trace.mjs",
           "tests/corpus/compat-error-class-surface.mjs",
@@ -35419,8 +35490,11 @@
       "anchor": "err_async_callback",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_ASYNC_CALLBACK"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_ASYNC_CALLBACK",
+        "tests": [
+          "tests/corpus/async-hooks-execution-ids.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58370,11 +58444,16 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-agent-create-connection.mjs",
           "tests/corpus/http-agent-keep-alive-hooks.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
+          "tests/corpus/http-client-header-values.mjs",
           "tests/corpus/http-client-lifecycle.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
           "tests/corpus/http-server-client-error.ts",
           "tests/corpus/http-server-dynamic-shapes.mjs",
           "tests/corpus/http-server-events-audit.ts",
@@ -58387,6 +58466,7 @@
           "tests/corpus/http-server-max-headers-count.ts",
           "tests/corpus/http-server-options-timeouts.ts",
           "tests/corpus/http-server-request-aborted-typed.ts",
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/http-server-response-headers.ts",
           "tests/corpus/http-server-timeout-enforcement.ts",
           "tests/corpus/http-set-headers.mjs",
@@ -58561,10 +58641,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.agent.createConnection",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-agent-create-connection.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59066,10 +59146,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getHeaderNames",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59092,10 +59172,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getHeaders",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59118,10 +59198,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getRawHeaderNames",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59144,10 +59224,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.hasHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59170,10 +59250,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.removeHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59196,10 +59276,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.setHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -60687,14 +60767,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.addTrailers",
         "tests": [
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60717,14 +60798,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.cork",
         "tests": [
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60747,12 +60829,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:response.end",
+        "status": "supported",
+        "evidence": "compiler-feature:http.response.end",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -60775,14 +60860,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.flushHeaders",
         "tests": [
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61005,14 +61091,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.response.uncork",
         "tests": [
+          "tests/corpus/http-server-response-body-audit.ts",
           "tests/corpus/2700-http-static-trailers.ts",
           "tests/corpus/2701-http-static-trailer-wire.ts",
           "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61035,12 +61122,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:response.write",
+        "status": "supported",
+        "evidence": "compiler-feature:http.response.write",
         "tests": [
-          "tests/corpus/1780-http-res-surface.ts",
-          "tests/corpus/2672-http-request-response-callback.ts",
-          "tests/corpus/2689-http-server-timeout-properties.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61448,10 +61538,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableEnded",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -61474,10 +61569,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableFinished",
         "tests": [
-          "tests/corpus/2957-http-static-response-controls.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -61500,10 +61600,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'close'",
         "tests": [
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -61526,10 +61631,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'finish'",
         "tests": [
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/2700-http-static-trailers.ts",
+          "tests/corpus/2701-http-static-trailer-wire.ts",
+          "tests/corpus/2702-http-static-trailer-end.ts",
+          "tests/corpus/http-response-cork.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62170,14 +62280,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.addTrailers",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62200,9 +62310,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.appendHeader",
         "tests": [
+          "tests/corpus/http-client-header-values.mjs",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },
@@ -62226,14 +62337,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.cork",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62308,14 +62419,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.flushHeaders",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62575,14 +62686,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.uncork",
         "tests": [
-          "tests/corpus/2700-http-static-trailers.ts",
-          "tests/corpus/2701-http-static-trailer-wire.ts",
-          "tests/corpus/2702-http-static-trailer-end.ts",
-          "tests/corpus/2972-http-static-distinct-snapshots.ts",
-          "tests/fixtures/server/cases/http-trailers/main.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62605,12 +62716,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.write",
         "tests": [
-          "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62742,10 +62855,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableEnded",
         "tests": [
-          "tests/corpus/2955-http-static-state.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62768,10 +62885,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableFinished",
         "tests": [
-          "tests/corpus/compat-http-outgoing-headers.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62794,12 +62915,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableHighWaterMark",
         "tests": [
-          "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62822,12 +62945,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableLength",
         "tests": [
-          "tests/corpus/http-set-headers.ts",
-          "tests/corpus/http-set-headers.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62850,12 +62975,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.writableObjectMode",
         "tests": [
-          "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -62878,12 +63005,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'drain'",
         "tests": [
-          "tests/corpus/http-set-headers.ts",
-          "tests/corpus/http-set-headers.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62906,10 +63035,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'finish'",
         "tests": [
-          "tests/corpus/compat-http-outgoing-headers.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -62932,12 +63065,14 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'prefinish'",
         "tests": [
-          "tests/corpus/compat-http-message-tail.ts",
-          "tests/corpus/compat-http-message-tail.mjs",
-          "tests/corpus/http-write-backpressure.ts"
+          "tests/corpus/http-server-response-body-audit.ts",
+          "tests/corpus/http-write-backpressure.ts",
+          "tests/corpus/http-response-drain-rearm.ts",
+          "tests/corpus/http-response-writable-length-drain.ts",
+          "tests/corpus/compat-http-server-tail.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98171,6 +98306,7 @@
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/tags.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/fixtures/node-test/cases/tracing-channels.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99052,8 +99188,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "supported",
+        "evidence": "compiler-feature:test.'tracing:node.test:start'",
+        "tests": [
+          "tests/fixtures/node-test/cases/tracing-channels.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99075,8 +99215,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "supported",
+        "evidence": "compiler-feature:test.'tracing:node.test:end'",
+        "tests": [
+          "tests/fixtures/node-test/cases/tracing-channels.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99098,8 +99242,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "supported",
+        "evidence": "compiler-feature:test.'tracing:node.test:error'",
+        "tests": [
+          "tests/fixtures/node-test/cases/tracing-channels.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

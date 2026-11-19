@@ -6880,8 +6880,7 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
   let opts: IrExpr;
   let literal: ts.Expression | null = optsNode;
   while (literal !== null && ts.isParenthesizedExpression(literal)) literal = literal.expression;
-  const literalObject =
-    literal !== null && ts.isObjectLiteralExpression(literal) ? literal : null;
+  const literalObject = literal !== null && ts.isObjectLiteralExpression(literal) ? literal : null;
   const literalHasSocket =
     literalObject !== null &&
     literalObject.properties.nodes.some(

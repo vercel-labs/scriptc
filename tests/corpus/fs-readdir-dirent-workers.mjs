@@ -9,8 +9,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 
-const root = path.join(os.tmpdir(), `scriptc-dirent-workers-${process.pid}`);
-
 function readRound(dir, done) {
   fs.readdir(dir, { withFileTypes: true }, (error, entries) => {
     if (error) {
@@ -34,10 +32,25 @@ function readRound(dir, done) {
 }
 
 if (isMainThread) {
-  fs.mkdirSync(root, { recursive: true });
-  fs.writeFileSync(path.join(root, "alpha.txt"), "a");
-  fs.writeFileSync(path.join(root, "beta.txt"), "b");
+  // A private directory from the platform's own creator: nothing else on the
+  // machine can name it in advance, and the entries inside are created
+  // exclusively, so an existing file is never truncated.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "scriptc-dirent-workers-"));
+  fs.writeFileSync(path.join(root, "alpha.txt"), "a", { flag: "wx" });
+  fs.writeFileSync(path.join(root, "beta.txt"), "b", { flag: "wx" });
   fs.mkdirSync(path.join(root, "gamma"));
+  let exclusive = false;
+  try {
+    fs.writeFileSync(path.join(root, "alpha.txt"), "again", { flag: "wx" });
+  } catch (error) {
+    exclusive = error.code === "EEXIST";
+  }
+  // Windows synthesizes the mode of a directory; its permission bits are not
+  // the private-directory signal they are on the POSIX platforms.
+  const privateMode = process.platform === "win32" ? "n/a" : (fs.statSync(root).mode & 0o077) === 0;
+  if (!exclusive) throw new Error("temporary file was not created exclusively");
+  if (privateMode !== true && privateMode !== "n/a")
+    throw new Error("temporary directory is not private to this process");
   const lines = [];
   let pending = 4;
   for (let worker = 0; worker < 4; worker++) {
@@ -49,6 +62,7 @@ if (isMainThread) {
     });
     child.on("exit", () => {
       if (--pending > 0) return;
+      console.log("directory exclusive", exclusive, "private", privateMode);
       for (const line of lines) console.log(line);
       fs.rmSync(root, { recursive: true, force: true });
       console.log("done");

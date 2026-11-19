@@ -333,7 +333,11 @@ export function emitSerializationExpr(
         const buf = B.slot();
         B.entryAllocas.push(`${buf} = alloca %ScrJsonBuf`);
         B.line(`call void @scr_jb_init(ptr ${buf})`);
-        B.line(`call void @${helper}(ptr ${buf}, ${host.llType(e.value.type)} ${v.name})`);
+        // The root value sits at nesting level 0; its writer checks that
+        // the graph is no deeper than the runtime walk allows.
+        B.line(
+          `call void @${helper}(ptr ${buf}, ${host.llType(e.value.type)} ${v.name}${host.walkers.jsonWriteDepthArg(e.value.type, "0")})`,
+        );
         const t = B.tmp();
         B.line(`${t} = call ptr @scr_jb_finish(ptr ${buf})`);
         compact = host.own({ name: t, type: e.type });

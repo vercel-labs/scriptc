@@ -86,6 +86,13 @@ export function collectClassMethodMutations(
     unknownKey = site;
     unknownKeySites.push(site);
   };
+  /** A new prototype can carry a `toJSON` that JSON.stringify reads from the
+   * prototype chain, on an instance the static class layout admits (the
+   * property bag only records properties written to the instance itself).
+   * Marks the hook name like a method the program may replace. */
+  const markPrototypeReplacement = (site: ts.Node): void => {
+    lowerer.noteMethodAccess("toJSON", site);
+  };
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
   // `sym:iterator` for `Symbol.iterator`: the name a class method declared
@@ -123,8 +130,19 @@ export function collectClassMethodMutations(
   for (const key of computedMethods)
     for (const name of literalValues(lowerer.typeOf(key)) ?? []) methods.add(String(name));
   const markName = (name: string, site: ts.Node, arrow = false): void => {
-    if (name === "prototype" || name === "__proto__") markUnknownKey(site);
-    if (methods.has(name)) lowerer.noteMethodAccess(name, site);
+    if (name === "prototype" || name === "__proto__") {
+      markUnknownKey(site);
+      markPrototypeReplacement(site);
+    }
+    // A dynamic store under the name `toJSON` can install the JSON hook on a
+    // class prototype (`Object.defineProperty(C.prototype, "toJSON", …)`), or
+    // on an instance the static layout admits. JSON.stringify reads that hook
+    // from the prototype chain, so the class writers must not assume it is
+    // absent: mark the name like a method the program reads or replaces. The
+    // name may have no declared method anywhere, which is why this is not
+    // limited to `methods`.
+    if (name === "toJSON") lowerer.noteMethodAccess(name, site);
+    else if (methods.has(name)) lowerer.noteMethodAccess(name, site);
     if (!arrow) receiverFields.add(name);
   };
   // Structural types can be live views of class instances. A fresh
@@ -550,6 +568,12 @@ export function collectClassMethodMutations(
       const target =
         ts.isCallExpression(call) && call.expression === node ? call.arguments.nodes[0] : undefined;
       prototypeTargets.push(target && !ts.isSpreadElement(target) ? target : null);
+      // A prototype other than `null` may carry the JSON hook.
+      const next =
+        ts.isCallExpression(call) && call.expression === node ? call.arguments.nodes[1] : undefined;
+      const value = next === undefined ? undefined : withoutParenthesesAssertionsNonNull(next);
+      if (value === undefined || value.kind !== ts.SyntaxKind.NullKeyword)
+        markPrototypeReplacement(node);
     }
     const single =
       objectMethod === "defineProperty" ||
@@ -806,6 +830,10 @@ export function collectClassMethodMutations(
     }
   }
   if (unknownKey) {
+    // An unknown-key write can install any name on a prototype, including a
+    // redacting `toJSON` that no class declares. Mark the hook name here so
+    // class JSON eligibility sees it, not only the declared methods below.
+    markPrototypeReplacement(unknownKey);
     for (const method of methods) {
       lowerer.prototypeMethodAccesses.set(method, unknownKey);
       for (const site of unknownKeySites) lowerer.noteMethodSite(method, site);

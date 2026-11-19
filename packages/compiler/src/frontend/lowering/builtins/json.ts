@@ -1,4 +1,5 @@
 import { callbackTakesEveryArgument } from "../callback-arg.js";
+import { classJsonInstanceEligible, recordDeclaresToJson } from "../class-json.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
@@ -187,6 +188,19 @@ export function lowerJsonMethodCall(
       value.type.kind === "object" &&
       lowerer.findMethodOn(lowerer.classes.get(value.type.className) ?? null, "toJSON") !== null &&
       lowerer.dynConvertible(value.type);
+    // A class instance the static layout describes exactly serializes from
+    // its slots, in the order the runtime walk lists them. The writer falls
+    // back to the runtime walk for one instance that took a dynamic
+    // property; every other instance keeps the runtime walk.
+    if (
+      value.type.kind === "object" &&
+      !toJsonClass &&
+      classJsonInstanceEligible(lowerer, value.type.className)
+    ) {
+      const node: IrExpr = { kind: "jsonStringify", value, type: STRING, loc };
+      if (indent !== "") node.indent = indent;
+      return node;
+    }
     // A record that declares toJSON is serialized by the runtime walker for
     // the same reason: the method runs with the record as receiver, and the
     // value it answers is what gets serialized. Its other methods stay
@@ -294,42 +308,6 @@ export function lowerJsonMethodCall(
     return node;
   }
   return null; // unknown members are tsc errors before lowering
-}
-
-/** Whether a record reachable from `t` declares a toJSON method. Such a type
- * cannot be serialized field by field: Node calls the method (with the record
- * as receiver) and serializes what it answers, so the value takes the runtime
- * walker. */
-function recordDeclaresToJson(
-  lowerer: Lowerer,
-  t: IrType,
-  visiting: Set<string> = new Set(),
-): boolean {
-  switch (t.kind) {
-    case "array":
-      return recordDeclaresToJson(lowerer, t.elem, visiting);
-    case "record": {
-      const shape = lowerer.shapes.get(t.shapeId);
-      if (shape === undefined || visiting.has(t.shapeId)) return false;
-      visiting.add(t.shapeId);
-      for (const field of shape.fields) {
-        if (field.name === "toJSON" && field.type.kind === "func") return true;
-        if (recordDeclaresToJson(lowerer, field.type, visiting)) return true;
-      }
-      return shape.indexValue !== undefined
-        ? recordDeclaresToJson(lowerer, shape.indexValue, visiting)
-        : false;
-    }
-    case "union": {
-      const def = lowerer.unions.get(t.unionId);
-      const key = `union:${t.unionId}`;
-      if (def === undefined || visiting.has(key)) return false;
-      visiting.add(key);
-      return def.arms.some((arm) => recordDeclaresToJson(lowerer, arm, visiting));
-    }
-    default:
-      return false;
-  }
 }
 
 function lowerOptionalStringifyRoot(

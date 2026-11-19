@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/json-class-runtime-field-array.ts"
+ ],
+ "diags": []
+}

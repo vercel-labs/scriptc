@@ -64,6 +64,30 @@ export interface WalkerHost extends ShapeHost {
   /** `@`-ref of the optional checked-dynamic field slot's ABSENT marker
    * (an immortal ScrDyn, address-compared). */
   dynAbsentRef(): string;
+  /** The own enumerable properties JSON.stringify writes for an instance of
+   * the class, in layout order (class-json.ts classJsonFields). */
+  jsonClassFields(className: string): readonly { name: string; type: IrType }[];
+  /** Reads one of those fields from the instance `obj`: the value its
+   * writer takes, and the call that frees a temporary the read owns (or
+   * null when it borrows the slot). */
+  jsonClassFieldRead(
+    B: BlockBuilder,
+    obj: string,
+    className: string,
+    field: { name: string; type: IrType },
+  ): { value: string; release: string | null };
+  /** Whether the class's layout describes its instances exactly (its
+   * jsonLayout flag and the class graph agree). */
+  jsonClassReadsLayout(className: string): boolean;
+  /** Writes the instance with the runtime walk, from its live capsule. */
+  jsonClassDynWrite(B: BlockBuilder, buf: string, obj: string, className: string): void;
+  /** `@`-ref of the checked-dynamic converter for `t`: returns an owned
+   * (+1) box of the value. */
+  toDynHelper(t: IrType): string;
+  /** An owned (+1) checked-dynamic value for `t` that keeps its identity:
+   * records and arrays come back as live references, so a hook can read
+   * the value it was installed on as `this`. */
+  streamTypedRefBoxValue(B: BlockBuilder, t: IrType, value: string): string;
 }
 
 const FN_ATTRS = "#0";
@@ -215,6 +239,22 @@ export class LlWalkers {
 
   /* ── type-directed JSON serializers (jsonWriteHelper, ported) ─────────── */
 
+  /** Whether the writer for `t` takes the nesting depth of the value it
+   * serializes. Every container takes it so a value graph deeper than the
+   * runtime walk's limit raises Node's catchable RangeError instead of
+   * exhausting the native stack; a union forwards it to the arm that
+   * matches. Leaves cannot recurse, so they take no depth. */
+  jsonWriteTakesDepth(t: IrType): boolean {
+    return t.kind === "record" || t.kind === "object" || t.kind === "array" || t.kind === "union";
+  }
+
+  /** The `, size depth` argument of a call to `t`'s writer, or nothing when
+   * the writer takes no depth (a leaf). The root site passes 0; a container
+   * writer passes the level of its members. */
+  jsonWriteDepthArg(t: IrType, depth: string | null): string {
+    return this.jsonWriteTakesDepth(t) ? `, ${this.S} ${depth ?? "0"}` : "";
+  }
+
   jsonWriteHelper(t: IrType): string {
     const key = typeKey(t);
     const existing = this.jsonWriters.get(key);
@@ -223,6 +263,27 @@ export class LlWalkers {
     this.jsonWriters.set(key, name);
     this.host.journalAllocated?.(name, "walkers.jsonWriteHelper", [t]);
     const B = new BlockBuilder();
+    const takesDepth = this.jsonWriteTakesDepth(t);
+    // The runtime's own walk (scr_json_callback_depth) bounds nesting at
+    // SCR_JSON_MAX_DEPTH = 1000, throwing Node's catchable RangeError. The
+    // emitted writers must do the same: a long chain of distinct instances
+    // (or an acyclic-but-deep value graph the collector analysis cannot
+    // call a cycle) otherwise recurses until the native stack ends the
+    // process. `%d` is the value's level, so a chain of 1001 containers
+    // (levels 0..1000) develops before the check trips, exactly the depth
+    // the runtime walk allows.
+    if (takesDepth) {
+      const over = B.newLabel("jw.deep");
+      const ok = B.newLabel("jw.ok");
+      const too = B.tmp();
+      B.line(`${too} = icmp ugt ${this.S} %d, 1000`);
+      B.condBr(too, over, ok);
+      B.startBlock(over);
+      this.host.declare(`declare void @scr_stack_overflow()`);
+      B.line(`call void @scr_stack_overflow() ; Maximum call stack size exceeded`);
+      B.terminate("ret void");
+      B.startBlock(ok);
+    }
     switch (t.kind) {
       case "f64":
         this.host.declare(`declare void @scr_jb_put_f64(ptr, double)`);
@@ -261,13 +322,18 @@ export class LlWalkers {
         B.line(`call void @scr_jb_put_dyn(ptr %b, ptr %v)`);
         break;
       case "record":
-        this.emitRecordWriter(B, t.shapeId);
+        this.emitRecordWriter(B, t.shapeId, "%d");
+        break;
+      case "object":
+        this.emitClassWriter(B, t.className, "%d");
         break;
       case "array":
-        this.emitArrayWriter(B, t.elem, traceAdapter(this.host, t) !== null);
+        this.emitArrayWriter(B, t.elem, traceAdapter(this.host, t) !== null, "%d");
         break;
       case "union":
-        this.emitUnionWriter(B, t.unionId);
+        // A union is not itself a JSON container: its arm carries the
+        // value at the union's own level.
+        this.emitUnionWriter(B, t.unionId, "%d");
         break;
       case "map":
       case "set":
@@ -285,7 +351,7 @@ export class LlWalkers {
     }
     B.terminate("ret void");
     this.defs.push(
-      `define internal void @${name}(ptr %b, ${this.valTy(t)} %v) ${FN_ATTRS} { ; stringify ${key}`,
+      `define internal void @${name}(ptr %b, ${this.valTy(t)} %v${takesDepth ? `, ${this.S} %d` : ""}) ${FN_ATTRS} { ; stringify ${key}`,
       B.render(),
       `}`,
       ``,
@@ -344,7 +410,7 @@ export class LlWalkers {
     return b;
   }
 
-  private emitRecordWriter(B: BlockBuilder, shapeId: string): void {
+  private emitRecordWriter(B: BlockBuilder, shapeId: string, depth: string): void {
     const shape = this.host.recordsById.get(shapeId);
     if (!shape)
       throw new InternalCompilerError(
@@ -352,7 +418,9 @@ export class LlWalkers {
       );
     const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
     const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
-    this.emitLinkedRecordWriter(B, shapeId);
+    const member = B.tmp();
+    B.line(`${member} = add nuw ${this.S} ${depth}, 1`);
+    this.emitLinkedRecordWriter(B, shapeId, depth);
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -369,7 +437,12 @@ export class LlWalkers {
         if (i > 0) this.putc(B, "%b", "44"); // ','
         if (edgeable(f.type)) this.jbEdgeIdx(B, String(i));
         const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-        this.writeField(B, v, f.type, `[${llvmCommentText(f.name)}]`);
+        // A tuple slot keeps the array rule for a value the runtime walk
+        // handles: its toJSON runs with the index as the key and an
+        // undefined result is written `null`.
+        if (this.serializationMayCallUserCode(f.type))
+          this.emitRuntimeElement(B, v, f.type, f64Lit(i), member);
+        else this.writeField(B, v, f.type, `[${llvmCommentText(f.name)}]`, member);
       });
       this.putc(B, "%b", "93"); // ']'
       if (cyclic) this.jbLeave(B);
@@ -403,19 +476,25 @@ export class LlWalkers {
         .map((n) => byName.get(n))
         .filter((f) => f !== undefined)
         .filter((f) => f.type.kind !== "func");
+      const runtimeMember = (f: { type: IrType }): boolean =>
+        this.serializationMayCallUserCode(f.type);
       const droppable =
         emitFields.some(
           (f) =>
             undefinedArmTag(f.type, this.host.unionsById) >= 0 ||
             (f.optional === true && f.type.kind === "dyn"),
-        ) || !!shape.indexValue;
+        ) ||
+        !!shape.indexValue ||
+        // The runtime member walk owns the comma: it must not run between
+        // statically written commas, or after one.
+        emitFields.some(runtimeMember);
       this.putc(B, "%b", "123"); // '{'
       if (!droppable) {
         emitFields.forEach((f, i) => {
           this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
           if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
           const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
+          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`, member);
         });
       } else {
         const first = B.slot();
@@ -456,28 +535,155 @@ export class LlWalkers {
             B.condBr(isa, skip, lw);
             B.startBlock(lw);
           }
-          comma();
-          this.puts(B, "%b", jsonObjectKeyLabel(f.name));
-          if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
-          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
+          if (runtimeMember(f)) {
+            // The value may be written by the runtime walk (a class that
+            // gained a property bag, a checked-dynamic value, a foreign
+            // element). It owns the comma and the key so an omitted member
+            // leaves the buffer untouched.
+            this.emitRuntimeMember(B, v, f.type, f.name, first, "%v", member);
+          } else {
+            comma();
+            this.puts(B, "%b", jsonObjectKeyLabel(f.name));
+            if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+            this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`, member);
+          }
           if (skip !== null) {
             B.br(skip);
             B.startBlock(skip);
           }
         }
-        if (shape.indexValue) this.emitOverflowEntries(B, shape, first, edgeable(shape.indexValue));
+        if (shape.indexValue)
+          this.emitOverflowEntries(B, shape, first, member, edgeable(shape.indexValue));
       }
     });
     this.putc(B, "%b", "125"); // '}'
     if (cyclic) this.jbLeave(B);
   }
 
+  /** A class instance whose own properties the static layout describes
+   * exactly serializes from its slots, in the order the runtime walk lists
+   * them. The class graph decides: a class that gained a property bag or
+   * field attributes after the frontend admitted it is written by the
+   * runtime walk instead (jsonClassReadsLayout), and a member or element
+   * whose own class did so is written by the runtime walk at its position
+   * (emitRuntimeMember / emitRuntimeElement), so its hook runs with the
+   * right key and an omitted member drops. */
+  private emitClassWriter(B: BlockBuilder, className: string, depth: string): void {
+    const host = this.host;
+    if (!host.jsonClassReadsLayout(className)) {
+      host.jsonClassDynWrite(B, "%b", "%v", className);
+      return;
+    }
+    const member = B.tmp();
+    B.line(`${member} = add nuw ${this.S} ${depth}, 1`);
+    const t: Extract<IrType, { kind: "object" }> = { kind: "object", className };
+    const fields = host.jsonClassFields(className);
+    const cyclic = traceAdapter(host, t) !== null;
+    const edgeable = (ft: IrType): boolean => cyclic && traceAdapter(host, ft) !== null;
+    const runtimeMember = (f: { type: IrType }): boolean =>
+      this.serializationMayCallUserCode(f.type);
+    // CYCLE-CAPABLE instances bracket the walk exactly like records.
+    if (cyclic) this.jbEnter(B, false);
+    const droppable =
+      fields.some((f) => undefinedArmTag(f.type, host.unionsById) >= 0) ||
+      fields.some(runtimeMember);
+    this.putc(B, "%b", "123"); // '{'
+    if (!droppable) {
+      fields.forEach((f, i) => {
+        this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
+        if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+        this.writeClassField(B, className, f, member);
+      });
+    } else {
+      const first = B.slot();
+      B.entryAllocas.push(`${first} = alloca i1`);
+      B.line(`store i1 true, ptr ${first}`);
+      const comma = (): void => {
+        const isf = B.tmp();
+        const lc = B.newLabel("jcl.c");
+        const lj = B.newLabel("jcl.j");
+        B.line(`${isf} = load i1, ptr ${first}`);
+        B.condBr(isf, lj, lc);
+        B.startBlock(lc);
+        this.putc(B, "%b", "44"); // ','
+        B.br(lj);
+        B.startBlock(lj);
+        B.line(`store i1 false, ptr ${first}`);
+      };
+      for (const f of fields) {
+        if (f.type.kind === "nullT") {
+          // A field that is always null contributes `null`, never a drop.
+          comma();
+          this.puts(B, "%b", jsonObjectKeyLabel(f.name));
+          this.puts(B, "%b", "null");
+          continue;
+        }
+        const read = host.jsonClassFieldRead(B, "%v", className, f);
+        const utag = undefinedArmTag(f.type, host.unionsById);
+        let skip: string | null = null;
+        if (utag >= 0 && f.type.kind === "union") {
+          // Undefined-valued field: dropped, like Node.
+          const tag = this.unionTag(B, read.value, f.type.unionId);
+          const isu = B.tmp();
+          B.line(`${isu} = icmp eq i32 ${tag}, ${utag}`);
+          const lw = B.newLabel("jcl.w");
+          skip = B.newLabel("jcl.s");
+          B.condBr(isu, skip, lw);
+          B.startBlock(lw);
+        }
+        if (runtimeMember(f)) {
+          // The value's class took the runtime walk after the frontend
+          // admitted it, or its serialization may call user code: the
+          // runtime member walk runs its toJSON with this field's key and
+          // drops an omitted member.
+          this.emitRuntimeMember(B, read.value, f.type, f.name, first, "%v", member);
+        } else {
+          comma();
+          this.puts(B, "%b", jsonObjectKeyLabel(f.name));
+          if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+          this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`, member);
+        }
+        // Released once, at the join both arms reach: a present nullable
+        // class reference's union box is owned by this read, and the
+        // undefined arm owns the unit box it was given — releasing twice
+        // frees the box before the writer reads it again.
+        if (skip !== null) {
+          B.br(skip);
+          B.startBlock(skip);
+        }
+        if (read.release !== null) B.line(read.release);
+      }
+    }
+    this.putc(B, "%b", "125"); // '}'
+    if (cyclic) this.jbLeave(B);
+  }
+
+  /** Writes one class field: the read's value through its writer, and the
+   * temporary the read owns released after the write. */
+  private writeClassField(
+    B: BlockBuilder,
+    className: string,
+    f: { name: string; type: IrType },
+    depth: string,
+  ): void {
+    if (f.type.kind === "nullT") {
+      this.puts(B, "%b", "null");
+      return;
+    }
+    const read = this.host.jsonClassFieldRead(B, "%v", className, f);
+    this.writeField(B, read.value, f.type, `${llvmCommentText(f.name)}`, depth);
+    if (read.release !== null) B.line(read.release);
+  }
+
   /** A record copy linked to its source (IrModule.recordLinks) serializes
    * as its composed record, a record of the source's type with the copy's
    * values for the fields both declare. */
-  private emitLinkedRecordWriter(B: BlockBuilder, shapeId: string): void {
+  private emitLinkedRecordWriter(B: BlockBuilder, shapeId: string, depth: string): void {
     emitLinkedRecordBranches(this.host, B, shapeId, "%v", (sourceT, composed) => {
-      B.line(`call void @${this.jsonWriteHelper(sourceT)}(ptr %b, ptr ${composed})`);
+      // The composed record is the same value at the same nesting level.
+      B.line(
+        `call void @${this.jsonWriteHelper(sourceT)}(ptr %b, ptr ${composed}${this.jsonWriteDepthArg(sourceT, depth)})`,
+      );
       return "ret void";
     });
   }
@@ -589,6 +795,22 @@ export class LlWalkers {
         B.condBr(isAbsent, lSkip, lWrite);
         B.startBlock(lWrite);
       }
+      if (this.serializationMayCallUserCode(f.type)) {
+        // The value may be written by the runtime walk, which owns the
+        // comma, the key and the member's omission. This callback answers
+        // whether it wrote anything, so the caller's first-member flag
+        // travels through a slot.
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca i1`);
+        B.line(`store i1 %first, ptr ${slot}`);
+        this.emitRuntimeMember(B, v, f.type, fieldName, slot, "%v", "0");
+        const left = B.tmp();
+        const wrote = B.tmp();
+        B.line(`${left} = load i1, ptr ${slot}`);
+        B.line(`${wrote} = xor i1 ${left}, true`);
+        B.terminate(`ret i1 ${wrote}`);
+        return;
+      }
       const lComma = B.newLabel("jwf.comma");
       const lKey = B.newLabel("jwf.key");
       B.condBr("%first", lKey, lComma);
@@ -598,7 +820,7 @@ export class LlWalkers {
       B.startBlock(lKey);
       this.puts(B, "%b", jsonObjectKeyLabel(fieldName));
       if (cyclic && traceAdapter(this.host, f.type) !== null) this.jbEdgeProp(B, fieldName);
-      this.writeField(B, v, f.type, `${llvmCommentText(fieldName)}`);
+      this.writeField(B, v, f.type, `${llvmCommentText(fieldName)}`, "0");
       B.terminate("ret i1 true");
     });
     B.startBlock(lSkip);
@@ -613,41 +835,15 @@ export class LlWalkers {
     return name;
   }
 
-  /** Whether the walker for `t` can leave an exception pending: cyclic
-   * values, records serialized through a kept checked source, and
-   * checked-dynamic values (toJSON methods, getters, BigInts), including
-   * the foreign elements of arrays that can hold them. */
-  jsonWriteMayThrow(t: IrType, seen = new Set<string>()): boolean {
-    if (traceAdapter(this.host, t) !== null) return true;
-    switch (t.kind) {
-      case "dyn":
-        return true;
-      case "array":
-        return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);
-      case "union": {
-        // A union can reach itself through an array arm; its other arms
-        // are already being asked.
-        const key = `union:${t.unionId}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
-          this.jsonWriteMayThrow(arm, seen),
-        );
-      }
-      case "record": {
-        if (seen.has(t.shapeId)) return false;
-        seen.add(t.shapeId);
-        const shape = this.host.recordsById.get(t.shapeId);
-        if (!shape) return false;
-        if (recordMayKeepSource(shape)) return true;
-        return (
-          shape.fields.some((f) => this.jsonWriteMayThrow(f.type, seen)) ||
-          (shape.indexValue !== undefined && this.jsonWriteMayThrow(shape.indexValue, seen))
-        );
-      }
-      default:
-        return false;
-    }
+  /** Whether the walker for `t` can leave an exception pending. Every
+   * container writer checks its nesting depth and can raise the catchable
+   * RangeError (scr_stack_overflow), and a checked-dynamic value runs
+   * arbitrary user code (toJSON methods, getters, BigInts); the leaves
+   * cannot throw. Cyclic values and kept checked sources throw from inside
+   * a container writer, so they are covered by the first answer too. */
+  jsonWriteMayThrow(t: IrType): boolean {
+    if (this.jsonWriteTakesDepth(t)) return true;
+    return t.kind === "dyn";
   }
 
   /** Overflow entries follow the declared fields, in JS OWN-KEY order
@@ -657,6 +853,7 @@ export class LlWalkers {
     B: BlockBuilder,
     shape: IrRecordShape,
     first: string,
+    depth: string,
     edgeKeys = false,
   ): void {
     const iv = shape.indexValue!;
@@ -733,8 +930,13 @@ export class LlWalkers {
         B.br(next);
         B.startBlock(write);
       }
-      // The comma dance over the shared `first` flag.
-      {
+      if (this.serializationMayCallUserCode(iv)) {
+        // The entry's value may be written by the runtime walk: it owns the
+        // comma, the key and the entry's omission, with the key as the
+        // value's toJSON argument.
+        this.emitRuntimeMemberKeyed(B, val, iv, k, first, "%v", depth);
+      } else {
+        // The comma dance over the shared `first` flag.
         const isf = B.tmp();
         const lcm = B.newLabel("ovf.cm");
         const lj = B.newLabel("ovf.cj");
@@ -745,15 +947,17 @@ export class LlWalkers {
         B.br(lj);
         B.startBlock(lj);
         B.line(`store i1 false, ptr ${first}`);
+        host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
+        B.line(`call void @scr_jb_put_json_str(ptr %b, ptr ${k})`);
+        this.putc(B, "%b", "58"); // ':'
+        if (edgeKeys) {
+          this.host.declare(`declare void @scr_jb_edge_key(ptr, ptr)`);
+          B.line(`call void @scr_jb_edge_key(ptr %b, ptr ${k})`);
+        }
+        B.line(
+          `call void @${this.jsonWriteHelper(iv)}(ptr %b, ${this.valTy(iv)} ${val}${this.jsonWriteDepthArg(iv, depth)})`,
+        );
       }
-      host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
-      B.line(`call void @scr_jb_put_json_str(ptr %b, ptr ${k})`);
-      this.putc(B, "%b", "58"); // ':'
-      if (edgeKeys) {
-        this.host.declare(`declare void @scr_jb_edge_key(ptr, ptr)`);
-        B.line(`call void @scr_jb_edge_key(ptr %b, ptr ${k})`);
-      }
-      B.line(`call void @${this.jsonWriteHelper(iv)}(ptr %b, ${this.valTy(iv)} ${val})`);
       B.line(`call void @scr_str_release(ptr ${k})`);
       if (isRefCounted(iv)) B.line(`call void ${releaseSym(host, iv)}(ptr ${val})`);
     });
@@ -763,26 +967,48 @@ export class LlWalkers {
 
   /** Serializing a value of `t` can call user code that changes the
    * arrays or records holding it: it reaches an array that can hold
-   * foreign elements (their toJSON and getters), or a value whose own
-   * serialization may (a class instance, a checked-dynamic value), in a
-   * program that has foreign elements at all. */
+   * foreign elements (their toJSON and getters), a checked-dynamic value,
+   * or a class instance its writer sends through the runtime walk. The
+   * runtime walk runs `toJSON` and accessors, including ones installed on
+   * an instance after the frontend admitted its class (a property bag) —
+   * that is independent of whether the program holds foreign array
+   * elements, so the answer cannot be gated on them. */
   private serializationMayCallUserCode(t: IrType, seen = new Set<string>()): boolean {
     const host = this.host;
-    if (!host.mayHoldForeign({ kind: "f64" }) && !host.mayHoldForeign({ kind: "string" }))
-      return false;
     const key = typeKey(t);
     if (seen.has(key)) return false;
     seen.add(key);
     switch (t.kind) {
       case "dyn":
-      case "object":
         return true;
+      // A class instance calls user code when its class takes the runtime
+      // walk, and a layout writer calls it when a field's serialization
+      // does: the getter behind a runtime-written field can replace the
+      // array or record that holds the instance, so the instance itself is
+      // not callback-free.
+      case "object":
+        return (
+          !host.jsonClassReadsLayout(t.className) ||
+          host
+            .jsonClassFields(t.className)
+            .some((field) => this.serializationMayCallUserCode(field.type, seen))
+        );
       case "array":
         return host.mayHoldForeign(t.elem) || this.serializationMayCallUserCode(t.elem, seen);
-      case "record":
-        return (host.recordsById.get(t.shapeId)?.fields ?? []).some((field) =>
-          this.serializationMayCallUserCode(field.type, seen),
+      case "record": {
+        const shape = host.recordsById.get(t.shapeId);
+        if (!shape) return false;
+        // A shape realized as a view over a checked-dynamic object reads its
+        // fields through the runtime, where accessors (installed on undeclared
+        // keys or on the declared ones) can run user code and change the
+        // containers of the walk.
+        if (host.recordViews?.targets.has(t.shapeId) === true) return true;
+        return (
+          shape.fields.some((field) => this.serializationMayCallUserCode(field.type, seen)) ||
+          (shape.indexValue !== undefined &&
+            this.serializationMayCallUserCode(shape.indexValue, seen))
         );
+      }
       case "union":
         return (host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.serializationMayCallUserCode(arm, seen),
@@ -792,19 +1018,382 @@ export class LlWalkers {
     }
   }
 
-  /** Write a field value loaded borrowed from its record. When its
-   * serialization can call user code that replaces the field, the value
-   * is held across the write. */
-  private writeField(B: BlockBuilder, v: string, t: IrType, comment: string): void {
+  /** Whether serializing a value of `t` reaches a record element: a record,
+   * an array of them (possibly nested), or a union with such an arm. A
+   * checked-dynamic copy would flatten a record view into its empty slot
+   * words, so an array that holds one is written by the type-directed
+   * writer instead of being boxed. */
+  private recordElements(t: IrType, seen = new Set<string>()): boolean {
+    const key = typeKey(t);
+    // A union can reach itself through an array (a recursive JSON type); the
+    // walk answers for the type it is already inside.
+    if (seen.has(key)) return false;
+    seen.add(key);
+    switch (t.kind) {
+      case "record":
+        return true;
+      case "array":
+        return this.recordElements(t.elem, seen);
+      case "union":
+        return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+          this.recordElements(arm, seen),
+        );
+      default:
+        return false;
+    }
+  }
+
+  /** Write a field value loaded borrowed from its record, at nesting level
+   * `depth`. When its serialization can call user code that replaces the
+   * field, the value is held across the write. */
+  private writeField(B: BlockBuilder, v: string, t: IrType, comment: string, depth: string): void {
     const held = isRefCounted(t) && this.serializationMayCallUserCode(t);
     if (held) B.line(`call ptr ${retainSym(this.host, t)}(ptr ${v})`);
-    B.line(`call void @${this.jsonWriteHelper(t)}(ptr %b, ${this.valTy(t)} ${v}) ; ${comment}`);
+    const w = this.jsonWriteHelper(t);
+    B.line(
+      `call void @${w}(ptr %b, ${this.valTy(t)} ${v}${this.jsonWriteDepthArg(t, depth)}) ; ${comment}`,
+    );
     if (held) B.line(`call void ${releaseSym(this.host, t)}(ptr ${v})`);
   }
 
-  private emitArrayWriter(B: BlockBuilder, elem: IrType, cyclic: boolean): void {
+  /** Writes one OBJECT member (`name`) whose value may be serialized by
+   * the runtime walk: the comma, the key, the value's `toJSON` with that
+   * key, and the written value, dropping the member when the hook answers
+   * undefined. `first` is the writer's first-member flag slot (the runtime
+   * owns the comma so an omitted member leaves no trace); `rec` is the
+   * container the member belongs to, already on the circular-detection
+   * stack when the writer pushed it. */
+  private emitRuntimeMember(
+    B: BlockBuilder,
+    v: string,
+    t: IrType,
+    name: string,
+    first: string,
+    rec: string | null,
+    depth: string,
+  ): void {
+    this.emitRuntimeMemberKeyed(B, v, t, this.host.internLiteral(name), first, rec, depth);
+  }
+
+  /** The overflow map of a record whose unknown index signature holds
+   * checked-dynamic values — the one place a callable `toJSON` can be
+   * installed on a record — or null when no such entry can exist. */
+  private recordHookMap(B: BlockBuilder, v: string, shapeId: string): string | null {
+    const shape = this.host.recordsById.get(shapeId);
+    if (!shape || shape.indexValue === undefined || shape.indexValue.kind !== "dyn") return null;
+    const at = B.tmp();
+    const map = B.tmp();
+    B.line(
+      `${at} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr ${v}, i64 0, i32 ${shape.fields.length + this.host.nullableUnions.fieldBase(shape.id)}`,
+    );
+    B.line(`${map} = load ptr, ptr ${at} ; overflow map`);
+    return map;
+  }
+
+  /** The member's comma and key, driven by the writer's first-member flag. */
+  private emitMemberKey(B: BlockBuilder, keyRef: string, first: string): void {
+    const isf = B.tmp();
+    const comma = B.newLabel("jbm.c");
+    const key = B.newLabel("jbm.k");
+    B.line(`${isf} = load i1, ptr ${first}`);
+    B.condBr(isf, key, comma);
+    B.startBlock(comma);
+    this.putc(B, "%b", "44"); // ','
+    B.br(key);
+    B.startBlock(key);
+    B.line(`store i1 false, ptr ${first}`);
+    this.host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
+    B.line(`call void @scr_jb_put_json_str(ptr %b, ptr ${keyRef})`);
+    this.putc(B, "%b", "58"); // ':'
+  }
+
+  /** Whether a union arm's own value can run a `toJSON` hook, so it must be
+   * boxed as a checked-dynamic value. Records answer no: their only hook
+   * lives in the unknown index signature, which the member and element
+   * paths check directly. */
+  private armNeedsBox(t: IrType, seen = new Set<string>()): boolean {
+    const key = typeKey(t);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    switch (t.kind) {
+      case "dyn":
+        return true;
+      case "object":
+        return !this.host.jsonClassReadsLayout(t.className);
+      case "union":
+        return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+          this.armNeedsBox(arm, seen),
+        );
+      default:
+        return false;
+    }
+  }
+
+  /** A union member: dispatch on the tag so a record arm's index-signature
+   * hook runs with the member's key, an arm that can run its own hook is
+   * boxed, and every other arm is written by the type-directed writer. */
+  private emitUnionRuntimeMemberKeyed(
+    B: BlockBuilder,
+    v: string,
+    t: IrType & { kind: "union" },
+    keyRef: string,
+    first: string,
+    rec: string | null,
+    depth: string,
+  ): void {
+    const host = this.host;
+    const def = host.unionsById.get(t.unionId);
+    if (!def)
+      throw new InternalCompilerError(
+        `llvm emitter bug: jsonStringify of unknown union ${t.unionId}`,
+      );
+    const tag = this.unionTag(B, v, t.unionId);
+    const bad = B.newLabel("jbu.bad");
+    const done = B.newLabel("jbu.d");
+    const labels = def.arms.map(() => B.newLabel("jbu.a"));
+    B.terminate(
+      `switch i32 ${tag}, label %${bad} [ ${def.arms.map((_, i) => `i32 ${i}, label %${labels[i]}`).join(" ")} ]`,
+    );
+    def.arms.forEach((arm, i) => {
+      B.startBlock(labels[i]!);
+      const shape = arm.kind === "record" ? host.recordsById.get(arm.shapeId) : undefined;
+      if (arm.kind === "record" && shape?.indexValue?.kind === "dyn") {
+        const p = this.unionPeek(B, v, t.unionId);
+        const map = this.recordHookMap(B, p, arm.shapeId);
+        let plain: string | null = null;
+        if (map !== null) {
+          host.declare(
+            `declare zeroext i1 @scr_jb_put_record_hook_member(ptr, ptr, ptr, ptr, ptr, ptr)`,
+          );
+          const receiver = host.streamTypedRefBoxValue(B, arm, p);
+          const handled = B.tmp();
+          B.line(
+            `${handled} = call zeroext i1 @scr_jb_put_record_hook_member(ptr %b, ptr ${rec ?? "null"}, ptr ${map}, ptr ${keyRef}, ptr ${receiver}, ptr ${first})`,
+          );
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_release(ptr ${receiver})`);
+          plain = B.newLabel("jbu.p");
+          B.condBr(handled, done, plain);
+          B.startBlock(plain);
+        }
+        this.emitMemberKey(B, keyRef, first);
+        this.writeField(B, p, arm, "record member", depth);
+      } else if (this.armNeedsBox(arm)) {
+        const conv = host.toDynHelper(t);
+        const box = B.tmp();
+        B.line(`${box} = call ptr @${conv}(${this.valTy(t)} ${v}) ; +1`);
+        host.declare(`declare void @scr_jb_put_dyn_member(ptr, ptr, ptr, ptr, ptr)`);
+        B.line(
+          `call void @scr_jb_put_dyn_member(ptr %b, ptr ${rec ?? "null"}, ptr ${keyRef}, ptr ${box}, ptr ${first})`,
+        );
+        host.declare(`declare void @scr_dyn_release(ptr)`);
+        B.line(`call void @scr_dyn_release(ptr ${box})`);
+      } else {
+        this.emitMemberKey(B, keyRef, first);
+        this.writeField(B, v, t, "union member", depth);
+      }
+      B.br(done);
+    });
+    B.startBlock(bad);
+    host.needBadTag();
+    B.line(`call void @sc_bad_tag()`);
+    B.terminate(`unreachable`);
+    B.startBlock(done);
+  }
+
+  /** emitUnionRuntimeMemberKeyed for an array slot: the hook's key is the
+   * index, and an omitted answer is the slot's null. */
+  private emitUnionRuntimeElement(
+    B: BlockBuilder,
+    v: string,
+    t: IrType & { kind: "union" },
+    index: string,
+    depth: string,
+  ): void {
+    const host = this.host;
+    const def = host.unionsById.get(t.unionId);
+    if (!def)
+      throw new InternalCompilerError(
+        `llvm emitter bug: jsonStringify of unknown union ${t.unionId}`,
+      );
+    const tag = this.unionTag(B, v, t.unionId);
+    const bad = B.newLabel("jue.bad");
+    const done = B.newLabel("jue.d");
+    const labels = def.arms.map(() => B.newLabel("jue.a"));
+    B.terminate(
+      `switch i32 ${tag}, label %${bad} [ ${def.arms.map((_, i) => `i32 ${i}, label %${labels[i]}`).join(" ")} ]`,
+    );
+    def.arms.forEach((arm, i) => {
+      B.startBlock(labels[i]!);
+      const shape = arm.kind === "record" ? host.recordsById.get(arm.shapeId) : undefined;
+      if (arm.kind === "record" && shape?.indexValue?.kind === "dyn") {
+        const p = this.unionPeek(B, v, t.unionId);
+        const map = this.recordHookMap(B, p, arm.shapeId);
+        let plain: string | null = null;
+        if (map !== null) {
+          host.declare(`declare zeroext i1 @scr_jb_put_record_hook_element(ptr, ptr, double, ptr)`);
+          const receiver = host.streamTypedRefBoxValue(B, arm, p);
+          const handled = B.tmp();
+          B.line(
+            `${handled} = call zeroext i1 @scr_jb_put_record_hook_element(ptr %b, ptr ${map}, double ${index}, ptr ${receiver})`,
+          );
+          host.declare(`declare void @scr_dyn_release(ptr)`);
+          B.line(`call void @scr_dyn_release(ptr ${receiver})`);
+          plain = B.newLabel("jue.p");
+          B.condBr(handled, done, plain);
+          B.startBlock(plain);
+        }
+        this.writeField(B, p, arm, "record element", depth);
+      } else if (this.armNeedsBox(arm)) {
+        const conv = host.toDynHelper(t);
+        const box = B.tmp();
+        B.line(`${box} = call ptr @${conv}(${this.valTy(t)} ${v}) ; +1`);
+        host.declare(`declare void @scr_jb_put_dyn_element(ptr, ptr, double)`);
+        B.line(`call void @scr_jb_put_dyn_element(ptr %b, ptr ${box}, double ${index})`);
+        host.declare(`declare void @scr_dyn_release(ptr)`);
+        B.line(`call void @scr_dyn_release(ptr ${box})`);
+      } else {
+        this.writeField(B, v, t, "union element", depth);
+      }
+      B.br(done);
+    });
+    B.startBlock(bad);
+    host.needBadTag();
+    B.line(`call void @sc_bad_tag()`);
+    B.terminate(`unreachable`);
+    B.startBlock(done);
+  }
+
+  /** emitRuntimeMember for a key that is only known at run time (an
+   * `unknown`-indexed record's entry): `keyRef` is an LLVM value naming the
+   * borrowed ScrStr key. */
+  private emitRuntimeMemberKeyed(
+    B: BlockBuilder,
+    v: string,
+    t: IrType,
+    keyRef: string,
+    first: string,
+    rec: string | null,
+    depth: string,
+  ): void {
+    const host = this.host;
+    if (t.kind === "union") {
+      this.emitUnionRuntimeMemberKeyed(B, v, t, keyRef, first, rec, depth);
+      return;
+    }
+    // A record carries its hook in the unknown index signature, if it has
+    // one: call it through the runtime (the hook answers for the whole
+    // value), and otherwise write the record from the type-directed writer,
+    // which keeps JSON's catchable circular-structure TypeError. Boxing the
+    // record as a checked-dynamic value would deep-copy it, and a cycle in
+    // that copy aborts the process.
+    const map = t.kind === "record" ? this.recordHookMap(B, v, t.shapeId) : null;
+    let done: string | null = null;
+    if (map !== null) {
+      host.declare(
+        `declare zeroext i1 @scr_jb_put_record_hook_member(ptr, ptr, ptr, ptr, ptr, ptr)`,
+      );
+      const receiver = host.streamTypedRefBoxValue(B, t, v);
+      const handled = B.tmp();
+      B.line(
+        `${handled} = call zeroext i1 @scr_jb_put_record_hook_member(ptr %b, ptr ${rec ?? "null"}, ptr ${map}, ptr ${keyRef}, ptr ${receiver}, ptr ${first})`,
+      );
+      host.declare(`declare void @scr_dyn_release(ptr)`);
+      B.line(`call void @scr_dyn_release(ptr ${receiver})`);
+      const plain = B.newLabel("jbm.plain");
+      done = B.newLabel("jbm.done");
+      B.condBr(handled, done, plain);
+      B.startBlock(plain);
+    }
+    if (
+      t.kind === "record" ||
+      (t.kind === "array" && this.recordElements(t.elem)) ||
+      map !== null
+    ) {
+      // An array of records is held and written by the type-directed writer:
+      // boxing it deep-copies, and a record view element has no plain slots
+      // to copy.
+      this.emitMemberKey(B, keyRef, first);
+      this.writeField(B, v, t, `${t.kind} member`, depth);
+    } else {
+      const conv = host.toDynHelper(t);
+      const box = B.tmp();
+      B.line(`${box} = call ptr @${conv}(${this.valTy(t)} ${v}) ; +1`);
+      host.declare(`declare void @scr_jb_put_dyn_member(ptr, ptr, ptr, ptr, ptr)`);
+      B.line(
+        `call void @scr_jb_put_dyn_member(ptr %b, ptr ${rec ?? "null"}, ptr ${keyRef}, ptr ${box}, ptr ${first})`,
+      );
+      host.declare(`declare void @scr_dyn_release(ptr)`);
+      B.line(`call void @scr_dyn_release(ptr ${box})`);
+    }
+    if (done !== null) {
+      B.br(done);
+      B.startBlock(done);
+    }
+  }
+
+  /** Writes one ARRAY element at `index` whose value may be serialized by
+   * the runtime walk: the value's `toJSON` with the index as its key and
+   * the written value (`undefined` becomes `null`, an array slot's rule).
+   * The caller writes the separator. */
+  private emitRuntimeElement(
+    B: BlockBuilder,
+    v: string,
+    t: IrType,
+    index: string,
+    depth: string,
+  ): void {
+    const host = this.host;
+    if (t.kind === "union") {
+      this.emitUnionRuntimeElement(B, v, t, index, depth);
+      return;
+    }
+    const map = t.kind === "record" ? this.recordHookMap(B, v, t.shapeId) : null;
+    let done: string | null = null;
+    if (map !== null) {
+      host.declare(`declare zeroext i1 @scr_jb_put_record_hook_element(ptr, ptr, double, ptr)`);
+      const receiver = host.streamTypedRefBoxValue(B, t, v);
+      const handled = B.tmp();
+      B.line(
+        `${handled} = call zeroext i1 @scr_jb_put_record_hook_element(ptr %b, ptr ${map}, double ${index}, ptr ${receiver})`,
+      );
+      host.declare(`declare void @scr_dyn_release(ptr)`);
+      B.line(`call void @scr_dyn_release(ptr ${receiver})`);
+      const plain = B.newLabel("jbe.plain");
+      done = B.newLabel("jbe.done");
+      B.condBr(handled, done, plain);
+      B.startBlock(plain);
+    }
+    if (
+      t.kind === "record" ||
+      (t.kind === "array" && this.recordElements(t.elem)) ||
+      map !== null
+    ) {
+      // The slot is borrowed and a callback inside the value may replace it;
+      // writeField holds the value across its own traversal. An array of
+      // records is written directly: boxing it would copy record views as
+      // plain records.
+      this.writeField(B, v, t, `${t.kind} element`, depth);
+    } else {
+      const conv = host.toDynHelper(t);
+      const box = B.tmp();
+      B.line(`${box} = call ptr @${conv}(${this.valTy(t)} ${v}) ; +1`);
+      host.declare(`declare void @scr_jb_put_dyn_element(ptr, ptr, double)`);
+      B.line(`call void @scr_jb_put_dyn_element(ptr %b, ptr ${box}, double ${index})`);
+      host.declare(`declare void @scr_dyn_release(ptr)`);
+      B.line(`call void @scr_dyn_release(ptr ${box})`);
+    }
+    if (done !== null) {
+      B.br(done);
+      B.startBlock(done);
+    }
+  }
+
+  private emitArrayWriter(B: BlockBuilder, elem: IrType, cyclic: boolean, depth: string): void {
     const host = this.host;
     const w = this.jsonWriteHelper(elem);
+    const member = B.tmp();
+    B.line(`${member} = add nuw ${this.S} ${depth}, 1`);
     host.declare(`declare double @scr_arr_len(ptr)`);
     // A cycle-capable array joins the circular-detection stack exactly
     // like a cycle-capable record.
@@ -816,7 +1405,7 @@ export class LlWalkers {
     // shrink the array or replace the element, the general walk below
     // reads each index afresh and holds its element instead.
     if (elem.kind !== "bool" && !this.serializationMayCallUserCode(elem))
-      this.emitDenseArrayElements(B, elem, w, cyclic, finish);
+      this.emitDenseArrayElements(B, elem, w, cyclic, finish, member);
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr %v)`);
     B.countedLoop(len, (i) => {
@@ -881,7 +1470,15 @@ export class LlWalkers {
         host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
         const v = B.tmp();
         B.line(`${v} = call ptr @scr_arr_get_ref(ptr %v, double ${i})`);
-        B.line(`call void @${w}(ptr %b, ptr ${v})`);
+        if (this.serializationMayCallUserCode(elem)) {
+          // The element may be written by the runtime walk: it runs the
+          // element's toJSON with the index as its key, and the array's
+          // slot is re-read each iteration (the walk above already chose
+          // the general path for it).
+          this.emitRuntimeElement(B, v, elem, i, member);
+        } else {
+          B.line(`call void @${w}(ptr %b, ptr ${v}${this.jsonWriteDepthArg(elem, member)})`);
+        }
         B.line(`call void ${releaseSym(host, elem)}(ptr ${v})`);
       }
       B.br(doneBlock);
@@ -904,6 +1501,7 @@ export class LlWalkers {
     w: string,
     cyclic: boolean,
     finish: string,
+    depth: string,
   ): void {
     const S = this.S;
     this.host.declare(`declare ptr @scr_arr_dense_slots(ptr, ptr)`);
@@ -948,7 +1546,9 @@ export class LlWalkers {
     B.line(`${raw} = load i64, ptr ${at}`);
     if (elem.kind === "f64") B.line(`${v} = bitcast i64 ${raw} to double`);
     else B.line(`${v} = inttoptr i64 ${raw} to ptr`);
-    B.line(`call void @${w}(ptr %b, ${this.valTy(elem)} ${v}) ; borrowed`);
+    B.line(
+      `call void @${w}(ptr %b, ${this.valTy(elem)} ${v}${this.jsonWriteDepthArg(elem, depth)}) ; borrowed`,
+    );
     const next = B.tmp();
     B.line(`${next} = add nuw ${S} ${i}, 1`);
     B.line(`store ${S} ${next}, ptr ${indexSlot}`);
@@ -956,7 +1556,7 @@ export class LlWalkers {
     B.startBlock(general);
   }
 
-  private emitUnionWriter(B: BlockBuilder, unionId: string): void {
+  private emitUnionWriter(B: BlockBuilder, unionId: string, depth: string): void {
     const def = this.host.unionsById.get(unionId);
     if (!def)
       throw new InternalCompilerError(
@@ -998,7 +1598,9 @@ export class LlWalkers {
       } else {
         // Payload is BORROWED out of the box for the write.
         const p = this.unionPeek(B, "%v", unionId);
-        B.line(`call void @${w}(ptr %b, ptr ${p}) ; ${arm.kind}`);
+        B.line(
+          `call void @${w}(ptr %b, ptr ${p}${this.jsonWriteDepthArg(arm, depth)}) ; ${arm.kind}`,
+        );
       }
       B.br(done);
     });

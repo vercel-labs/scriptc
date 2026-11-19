@@ -19106,17 +19106,15 @@ static inline __attribute__((always_inline)) bool scr_jb_try_pure_member(
  * buffer's stack. The container is the top of that stack, or `rec` is
  * pushed for the walk when it is not; the key becomes the container's
  * edge. Answers false with an exception pending. */
-static bool scr_jb_put_member_walk(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value,
-                                   bool *first, void *rec) {
-  ScrDyn *child = scr_json_to_json(value, key);
-  if (!child) return false;
-  if (scr_json_omitted(child)) {
-    scr_dyn_release(child);
+static bool scr_jb_put_resolved_member(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value,
+                                       bool *first, void *rec) {
+  if (scr_json_omitted(value)) {
+    scr_dyn_release(value);
     return true;
   }
   bool entered = rec && !(b->seen_len && b->seen[b->seen_len - 1].ptr == rec);
   if (entered && !scr_jb_enter(b, rec, false)) {
-    scr_dyn_release(child);
+    scr_dyn_release(value);
     return false;
   }
   if (!*first) scr_jb_putc(b, ',');
@@ -19124,11 +19122,74 @@ static bool scr_jb_put_member_walk(ScrJsonBuf *b, const ScrStr *key, ScrDyn *val
   scr_jb_put_json_str(b, key);
   scr_jb_putc(b, ':');
   scr_jb_edge_key(b, key);
-  bool ok = scr_json_replaced_write(b, child, scr_dyn_undefined(), NULL, &scr_json_compact_gap,
+  bool ok = scr_json_replaced_write(b, value, scr_dyn_undefined(), NULL, &scr_json_compact_gap,
                                     b->seen_len);
   if (entered) scr_jb_leave(b);
-  scr_dyn_release(child);
+  scr_dyn_release(value);
   return ok;
+}
+
+static bool scr_jb_put_member_walk(ScrJsonBuf *b, const ScrStr *key, ScrDyn *value,
+                                   bool *first, void *rec) {
+  ScrDyn *child = scr_json_to_json(value, key);
+  if (!child) return false;
+  return scr_jb_put_resolved_member(b, key, child, first, rec);
+}
+
+/* The callable `toJSON` an unknown index signature holds, called the way
+ * JSON.stringify calls one: with the member's key as its argument. The hook
+ * answers for the whole value, so the record's own fields are not written.
+ * Answers false (writes nothing) when the entry is absent or not callable,
+ * leaving the member to the type-directed writer, and true once it wrote or
+ * dropped the member (an exception may be pending). */
+bool scr_jb_put_record_hook_member(ScrJsonBuf *b, void *rec, ScrMap *map, const ScrStr *key,
+                                   ScrDyn *receiver, bool *first) {
+  ScrStr *name = scr_str_new("toJSON", 6);
+  ScrDyn *hook = scr_map_get_str_ref(map, name);
+  scr_str_release(name);
+  if (!hook) return false;
+  if (!scr_json_callable(hook)) {
+    scr_dyn_release(hook);
+    return false;
+  }
+  ScrDyn *keyArg = scr_json_key_arg(key, 0);
+  ScrDyn *args[] = {keyArg};
+  if (receiver) scr_dyn_this_push_dyn(receiver);
+  ScrDyn *value = scr_dyn_call(hook, args, 1, "toJSON");
+  if (receiver) scr_dyn_this_pop();
+  scr_dyn_release(keyArg);
+  scr_dyn_release(hook);
+  if (!value) return true; /* exception pending: the member is not written */
+  scr_jb_put_resolved_member(b, key, value, first, rec);
+  return true;
+}
+
+/* scr_jb_put_record_hook_member for an array slot: the hook's key is the
+ * index as a string, and an undefined, function or symbol answer is the
+ * slot's null. */
+bool scr_jb_put_record_hook_element(ScrJsonBuf *b, ScrMap *map, double index, ScrDyn *receiver) {
+  ScrStr *name = scr_str_new("toJSON", 6);
+  ScrDyn *hook = scr_map_get_str_ref(map, name);
+  scr_str_release(name);
+  if (!hook) return false;
+  if (!scr_json_callable(hook)) {
+    scr_dyn_release(hook);
+    return false;
+  }
+  ScrDyn *keyArg = scr_json_key_arg(NULL, (size_t)index);
+  ScrDyn *args[] = {keyArg};
+  if (receiver) scr_dyn_this_push_dyn(receiver);
+  ScrDyn *value = scr_dyn_call(hook, args, 1, "toJSON");
+  if (receiver) scr_dyn_this_pop();
+  scr_dyn_release(keyArg);
+  scr_dyn_release(hook);
+  if (!value) return true;
+  if (scr_json_omitted(value)) scr_jb_puts(b, "null");
+  else
+    scr_json_replaced_write(b, value, scr_dyn_undefined(), NULL, &scr_json_compact_gap,
+                            b->seen_len);
+  scr_dyn_release(value);
+  return true;
 }
 
 /* scr_jb_put_member_walk, writing the member directly when scr_jb_put_pure
@@ -19213,6 +19274,31 @@ void scr_jb_put_dyn_element(ScrJsonBuf *b, const ScrDyn *d, double index) {
   ScrDyn *value = scr_json_to_json_at(scr_dyn_retain((ScrDyn *)d), NULL, (size_t)index);
   if (!value) return;
   scr_jb_put_dyn(b, value);
+  scr_dyn_release(value);
+}
+
+/* scr_jb_put_dyn at an object member position: the toJSON step that
+ * SerializeJSONProperty runs for the value read under `key`, then the
+ * member's own rules (an omitted result drops the member). The caller has
+ * written neither the comma nor the key; this walk does, so an omitted
+ * member leaves the buffer exactly as it was. */
+void scr_jb_put_dyn_member(ScrJsonBuf *b, void *rec, const ScrStr *key, const ScrDyn *value,
+                           bool *first) {
+  scr_jb_put_dyn_entry(b, rec, key, value, first);
+}
+
+/* The root's SerializeJSONProperty step: toJSON with the empty key. An
+ * omitted result is JSON.stringify's undefined value, which the compiled
+ * program prints as the word (scr_dyn_format_j's answer for a dropped
+ * checked-dynamic root); a result of any other kind is written by the
+ * protocol walk. */
+void scr_jb_put_dyn_root(ScrJsonBuf *b, const ScrDyn *d) {
+  ScrStr *key = scr_str_new("", 0);
+  ScrDyn *value = scr_json_to_json(scr_dyn_retain((ScrDyn *)d), key);
+  scr_str_release(key);
+  if (!value) return;
+  if (scr_json_omitted(value)) scr_jb_puts(b, "undefined");
+  else scr_jb_put_dyn(b, value);
   scr_dyn_release(value);
 }
 

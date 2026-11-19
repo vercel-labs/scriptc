@@ -6642,6 +6642,9 @@ export class Lowerer {
     "constructorHolders",
     "constructorFunctionMemo",
     "abortOnStreamFlags",
+    // Whether the program constructs an option-bearing Console: a scan of
+    // the sources, computed again when needed.
+    "consoleOptionsFact",
     // The stream mode the pass settled on asking for (pass scratch, read
     // from the journaled requiresGeneralNodeStreams / requiresDynNodeStreams).
     "streamRequest",

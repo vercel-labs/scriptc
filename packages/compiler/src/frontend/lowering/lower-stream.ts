@@ -7367,10 +7367,20 @@ export function lowerStreamMethodCall(
   // ERR_STREAM_ALREADY_FINISHED when the stream already finished. A callback
   // that declares the error parameter takes the error-first form, whose
   // adapter turns the runtime's error into the callback's Error | null (the
-  // same shape a write callback takes).
+  // same shape a write callback takes). The stream ignores what the callback
+  // returns (`() => count++`, a saved completion helper returning an owned
+  // value): adapting it to the void slot discards that result the way a
+  // discarded call does, so a reference-counted result is released instead of
+  // being dropped by the completion dispatch.
   const lowerEndCb = (node: ts.Expression): { cb: IrExpr; ecb: boolean } => {
-    const value = lowerer.lowerExpr(node);
-    if (value.type.kind !== "func") {
+    const raw = lowerer.lowerExpr(node);
+    const value =
+      raw.type.kind === "dyn"
+        ? lowerer.coerceToExpected(raw, funcOf([DYN], VOID))
+        : raw.type.kind === "func" && raw.type.ret.kind !== "void" && raw.type.params.length <= 1
+          ? lowerer.coerceToExpected(raw, funcOf(raw.type.params, VOID))
+          : raw;
+    if (value.type.kind !== "func" || value.type.ret.kind !== "void") {
       lowerer.noLowering(
         "end with a callback that is not a function",
         node,

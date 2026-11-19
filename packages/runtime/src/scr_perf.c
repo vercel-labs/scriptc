@@ -1616,6 +1616,7 @@ static void scr_perf_observe_function(const ScrStr *name, double start, double d
   for (size_t i = 0; i < sizeof empty_strings / sizeof empty_strings[0]; i++) {
     ScrStr *empty = scr_str_new("", 0);
     scr_dyn_obj_set(object, empty_strings[i], strlen(empty_strings[i]), scr_dyn_new_str(empty));
+    scr_str_release(empty); /* the dyn string holds its own reference */
   }
   ScrPerfEntry entry;
   memset(&entry, 0, sizeof entry);

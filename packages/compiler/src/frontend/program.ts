@@ -5564,7 +5564,7 @@ function cjsCycleAdmission7(
             stmts.length,
             req.decl,
             [],
-            (id) => functionExportRead7(id, dep) || observableExportRead7(program, id, dep),
+            (id) => functionExportRead7(id, dep) || observableExportRead7(program, id),
           );
           if (reached !== null && earlyUseReason === null) {
             earlyUseReason = `the top-level code of ${m.fileName} can use its binding '${reached.text}' of a module of the cycle (${lineOf(reached)}) while the cycle initializes`;
@@ -5653,11 +5653,7 @@ function publishedAlias7(use: ts.Node, decl: ts.Node | undefined): boolean {
  * `console` call): a live checked-dynamic read that shows exactly what Node
  * shows, whether or not the export is a function. A call, a store, or any
  * other escape stays the strict rule's business. */
-function observableExportRead7(
-  program: ts.Program,
-  id: ts.Identifier,
-  dep: ts.SourceFile,
-): boolean {
+function observableExportRead7(program: ts.Program, id: ts.Identifier): boolean {
   const access = id.parent;
   if (!ts.isPropertyAccessExpression(access) || access.expression !== id) return false;
   let use: ts.Node = access;
@@ -5687,19 +5683,18 @@ function observableExportRead7(
     );
   }
   return (
-    !ts.isSourceFile(dep) &&
-    (ts.isExpressionStatement(parent) ||
-      ts.isTypeOfExpression(parent) ||
-      ts.isVoidExpression(parent) ||
-      (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken) ||
-      (ts.isBinaryExpression(parent) &&
-        (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-          parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-          parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
-          parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)) ||
-      ((ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent)) &&
-        parent.expression === use) ||
-      (ts.isConditionalExpression(parent) && parent.condition === use))
+    ts.isExpressionStatement(parent) ||
+    ts.isTypeOfExpression(parent) ||
+    ts.isVoidExpression(parent) ||
+    (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken) ||
+    (ts.isBinaryExpression(parent) &&
+      (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)) ||
+    ((ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent)) &&
+      parent.expression === use) ||
+    (ts.isConditionalExpression(parent) && parent.condition === use)
   );
 }
 

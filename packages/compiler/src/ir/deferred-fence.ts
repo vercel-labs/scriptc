@@ -86,7 +86,6 @@ function refusalOf(code: string, message: string): string {
   return (tag < 0 ? message : message.slice(0, tag)).trimEnd();
 }
 
-
 /** The guarded deferred-diagnostic fences of `mod`, one per site (a site is
  * its message, as in the runtime's report), in the order the module holds
  * them. A library reports nothing at run time for any fence, so it has

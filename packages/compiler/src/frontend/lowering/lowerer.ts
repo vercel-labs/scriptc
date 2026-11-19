@@ -4044,6 +4044,18 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Per module some namespace import reads, the export members its
+   * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
+   * takes the value the module finished evaluating with, and the slot its
+   * writes keep updating. Node's namespace object is a snapshot of
+   * `module.exports` taken when the CommonJS module finished evaluating, so
+   * a namespace read observes the snapshot slot, not the live export one.
+   * Registered before any init lowers (collectProgram), assigned at the end
+   * of the module's own init. */
+  readonly cjsNamespaceMemberSnapshots = new Map<
+    ts.SourceFile,
+    Map<string, { snapshot: IrGlobal; source: IrGlobal }>
+  >();
   /** The require bindings whose module had a run-time export choice: they
    * keep their own checked-dynamic storage (the value the require answered
    * at that position), unlike alias-plumbing require bindings. */
@@ -6762,6 +6774,7 @@ export class Lowerer {
     // program's modules (registered before lowering begins), and the memo is
     // a cache of that detection.
     "cjsRuntimeExportSnapshotGlobals",
+    "cjsNamespaceMemberSnapshots",
     "cjsRuntimeRequireBindings",
     "cjsRuntimeWholeExportModules",
     "cjsConditionalExportMirrors",

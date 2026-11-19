@@ -48,7 +48,7 @@ import { isNodeTypesPath } from "../dts-paths.js";
 import { funduleFunctionOf, funduleMemberOf, lowerFunduleMemberValue } from "./lower-fundule.js";
 import type { FileParts } from "./lower-modules.js";
 import { isCjsJsFile, isJsSourceFile, locOf } from "../program.js";
-import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
+import { F64, type IrExpr, type IrGlobal, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
 import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
 import { nodeGlobalKind } from "./node-values.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
@@ -527,6 +527,23 @@ export function nsMemberIdentOf(
   if (nsBlockKindOfSymbol(lowerer, memberSym) !== null) return access.name;
   if (moduleNsSourceFileOf(lowerer, access.expression) !== null) return access.name;
   return null;
+}
+
+/** The snapshot slot a namespace read observes when the member is one the
+ * CommonJS module's functions assign (registerCjsNamespaceSnapshotGlobals:
+ * Node's namespace object keeps the values `module.exports` held when the
+ * module finished evaluating). Null for members nothing reassigns — their
+ * live export storage IS the snapshot — and for receivers that are not a
+ * namespace-import binding. */
+export function cjsNamespaceMemberSnapshotOf(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrGlobal | null {
+  if (lowerer.cjsNamespaceMemberSnapshots.size === 0) return null;
+  if (access.questionDotToken !== undefined || !ts.isIdentifier(access.name)) return null;
+  const dep = cjsNamespaceImportDep(lowerer, access.expression);
+  if (dep === null) return null;
+  return lowerer.cjsNamespaceMemberSnapshots.get(dep)?.get(access.name.text)?.snapshot ?? null;
 }
 
 /** The ROOT identifier of a qualifier chain that denotes a user-file

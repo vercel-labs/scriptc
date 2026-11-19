@@ -91,6 +91,7 @@ import {
   fenceEarlyAliasUse,
   isNodeUndefinedGlobalRoot,
   cjsNamespaceImportDep,
+  cjsNamespaceMemberSnapshotOf,
   lowerNsIdentifierValue,
   nsUndefRead,
 } from "../lower-namespaces.js";
@@ -173,6 +174,18 @@ function isJsWidenedBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
   if (lowerer.isStdlibGlobal(expr, "console")) {
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
+  }
+
+  // A member read through a CommonJS namespace binding for a member the
+  // module's own functions reassign: Node's namespace object kept the value
+  // the module finished evaluating with (lower-modules.ts,
+  // registerCjsNamespaceSnapshotGlobals), so the read is the snapshot slot.
+  {
+    const parent = expr.parent;
+    if (parent !== undefined && ts.isPropertyAccessExpression(parent) && parent.name === expr) {
+      const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, parent);
+      if (snapshot) return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+    }
   }
 
   // A createRequire loader as a VALUE (not the callee of a lowered call or

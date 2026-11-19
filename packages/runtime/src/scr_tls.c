@@ -1128,6 +1128,117 @@ static bool scr_tls_crl_issuer_trusted(ScrTlsSock *t) {
   return false;
 }
 
+/* The crl option's CRLs on a client socket (NULL when none). */
+static const mbedtls_x509_crl *scr_tls_client_crls(ScrTlsSock *t) {
+  if (t->cli == NULL || !t->cli->has_crl) return NULL;
+  return &t->cli->crl;
+}
+
+/* Whether a CRL's signature verifies under the key of the certificate its
+ * issuer field names. */
+static bool scr_tls_crl_signed_by(const mbedtls_x509_crl *crl,
+                                  const mbedtls_x509_crt *issuer) {
+  const mbedtls_md_info_t *md = mbedtls_md_info_from_type(crl->MBEDTLS_PRIVATE(sig_md));
+  if (md == NULL || !mbedtls_pk_can_do(&issuer->pk, crl->MBEDTLS_PRIVATE(sig_pk))) return false;
+  unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+  if (mbedtls_md(md, crl->tbs.p, crl->tbs.len, hash) != 0) return false;
+  return mbedtls_pk_verify_ext(crl->MBEDTLS_PRIVATE(sig_pk), crl->MBEDTLS_PRIVATE(sig_opts),
+                               (mbedtls_pk_context *)&issuer->pk, crl->MBEDTLS_PRIVATE(sig_md),
+                               hash, mbedtls_md_get_size(md), crl->MBEDTLS_PRIVATE(sig).p,
+                               crl->MBEDTLS_PRIVATE(sig).len) == 0;
+}
+
+/* Whether a CRL lists the certificate's serial. */
+static bool scr_tls_crl_lists(const mbedtls_x509_crl *crl, const mbedtls_x509_crt *cert) {
+  if (cert->serial.p == NULL) return false;
+  for (const mbedtls_x509_crl_entry *e = &crl->entry; e != NULL; e = e->next) {
+    if (e->serial.p == NULL) break;
+    if (e->serial.len == cert->serial.len &&
+        memcmp(e->serial.p, cert->serial.p, e->serial.len) == 0)
+      return true;
+  }
+  return false;
+}
+
+/* The built chain for CRL checking: the presented certificates, completed
+ * through the trust list to the self-issued root. */
+static size_t scr_tls_crl_chain(ScrTlsSock *t, mbedtls_x509_crt *leaf,
+                                const mbedtls_x509_crt *chain[16]) {
+  size_t n = 0;
+  for (const mbedtls_x509_crt *c = leaf; c != NULL && n < 16; c = c->next) chain[n++] = c;
+  while (n > 0 && n < 16) {
+    const mbedtls_x509_crt *top = chain[n - 1];
+    bool self = top->issuer_raw.len == top->subject_raw.len &&
+                memcmp(top->issuer_raw.p, top->subject_raw.p, top->issuer_raw.len) == 0;
+    if (self) break;
+    const mbedtls_x509_crt *issuer = NULL;
+    if (t->vrfy_trust != NULL && top->issuer_raw.len > 0) {
+      for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+        if (ca->subject_raw.len == top->issuer_raw.len &&
+            memcmp(ca->subject_raw.p, top->issuer_raw.p, top->issuer_raw.len) == 0) {
+          issuer = ca;
+          break;
+        }
+      }
+    }
+    if (issuer == NULL) break;
+    chain[n++] = issuer;
+  }
+  return n;
+}
+
+/* OpenSSL's CRL checking runs over the whole built chain, including
+ * intermediates that are themselves in `ca` (where mbedTLS stops at the
+ * first trusted certificate and never asks the root's CRL about them).
+ * Every certificate with an issuer needs a CRL from that issuer; the first
+ * valid CRL per issuer decides. A revocation outranks a missing CRL, as
+ * Node reports it. */
+static void scr_tls_crl_check_chain(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
+  const mbedtls_x509_crl *crls = scr_tls_client_crls(t);
+  if (crls == NULL) return;
+  const mbedtls_x509_crt *chain[16];
+  size_t n = scr_tls_crl_chain(t, leaf, chain);
+  bool revoked = false, missing = false, sig_fail = false, expired = false, future = false;
+  for (size_t i = 0; i + 1 < n; i++) {
+    const mbedtls_x509_crt *cert = chain[i];
+    const mbedtls_x509_crt *issuer = chain[i + 1];
+    const mbedtls_x509_crl *match = NULL;
+    for (const mbedtls_x509_crl *crl = crls; crl != NULL && crl->raw.len > 0; crl = crl->next) {
+      if (crl->issuer_raw.len == cert->issuer_raw.len &&
+          memcmp(crl->issuer_raw.p, cert->issuer_raw.p, crl->issuer_raw.len) == 0) {
+        match = crl;
+        break;
+      }
+    }
+    if (match == NULL) {
+      missing = true;
+      continue;
+    }
+    if (!scr_tls_crl_signed_by(match, issuer)) {
+      sig_fail = true;
+      continue;
+    }
+    if (mbedtls_x509_time_is_past(&match->next_update)) {
+      expired = true;
+      continue;
+    }
+    if (mbedtls_x509_time_is_future(&match->this_update)) {
+      future = true;
+      continue;
+    }
+    if (scr_tls_crl_lists(match, cert)) revoked = true;
+  }
+  if (revoked) {
+    t->vrfy_crl_revoked = true;
+  } else if (missing) {
+    t->vrfy_crl_missing = true;
+  } else {
+    if (sig_fail) t->vrfy_crl_sig_fail = true;
+    if (expired) t->vrfy_crl_expired = true;
+    if (future) t->vrfy_crl_future = true;
+  }
+}
+
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   t->vrfy_seen = true;
@@ -1163,24 +1274,15 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     *flags |= MBEDTLS_X509_BADCERT_REVOKED;
     t->vrfy_blocked = true;
   }
-  /* A crl option holds CRLs for the issuers it names. A leaf whose issuer
-   * no provided CRL covers is OpenSSL's UNABLE_TO_GET_CRL (CRL checking
-   * finds no CRL for it), which fails the handshake like any other
-   * verification error. */
-  if (depth == 0 && !t->vrfy_blocked && t->cli != NULL && t->cli->has_crl) {
-    bool covered = false;
-    for (const mbedtls_x509_crl *crl = &t->cli->crl; crl != NULL && crl->raw.len > 0;
-         crl = crl->next) {
-      if (crl->issuer_raw.len == crt->issuer_raw.len &&
-          memcmp(crl->issuer_raw.p, crt->issuer_raw.p, crl->issuer_raw.len) == 0) {
-        covered = true;
-        break;
-      }
-    }
-    if (!covered) {
-      t->vrfy_crl_missing = true;
+  /* The crl option checks the whole built chain (the leaf's issuer CRL,
+   * every intermediate's issuer CRL, up to the root). Any outcome fails
+   * the handshake like another verification error; rejectUnauthorized:
+   * false still records it for authorizationError. */
+  if (depth == 0 && !t->vrfy_blocked && scr_tls_client_crls(t) != NULL) {
+    scr_tls_crl_check_chain(t, crt);
+    if (t->vrfy_crl_revoked || t->vrfy_crl_missing || t->vrfy_crl_sig_fail ||
+        t->vrfy_crl_expired || t->vrfy_crl_future)
       *flags |= MBEDTLS_X509_BADCERT_OTHER;
-    }
   }
   /* Node checks every certificate the peer sent when the chain did not
    * verify, the leaf and X509_STORE_CTX_get0_untrusted after it, so a
@@ -1214,7 +1316,12 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
   }
   /* the crl option's verdict; the blocked-SPKI policy's own
    * BADCERT_REVOKED is the same Node code and already recorded */
-  if ((*flags & MBEDTLS_X509_BADCERT_REVOKED) != 0 && !t->vrfy_blocked)
+  /* a CRL that failed its signature or window reports that instead of its
+   * entries, so its revocation result does not stand (Node's precedence) */
+  if ((*flags & MBEDTLS_X509_BADCERT_REVOKED) != 0 && !t->vrfy_blocked &&
+      (*flags & (MBEDTLS_X509_BADCRL_EXPIRED | MBEDTLS_X509_BADCRL_FUTURE |
+                 MBEDTLS_X509_BADCRL_NOT_TRUSTED | MBEDTLS_X509_BADCRL_BAD_MD |
+                 MBEDTLS_X509_BADCRL_BAD_PK | MBEDTLS_X509_BADCRL_BAD_KEY)) == 0)
     t->vrfy_crl_revoked = true;
   if (*flags & MBEDTLS_X509_BADCRL_EXPIRED) t->vrfy_crl_expired = true;
   if (*flags & MBEDTLS_X509_BADCRL_FUTURE) t->vrfy_crl_future = true;
@@ -1395,8 +1502,14 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
     snprintf(out, n, "certificate revoked");
     return;
   }
-  /* OpenSSL checks a CRL's issuer and signature, then its window, then the
-   * entries; the first failure is the one Node reports. */
+  /* A revocation outranks a missing CRL (Node reports a revoked
+   * intermediate even when the leaf's issuer CRL was not supplied); a
+   * CRL that fails its signature or window reports that instead of its
+   * entries. */
+  if (t->vrfy_crl_revoked) {
+    snprintf(out, n, "certificate revoked");
+    return;
+  }
   if (t->vrfy_crl_missing) {
     snprintf(out, n, "unable to get certificate CRL");
     return;
@@ -2664,51 +2777,58 @@ static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat)
       return NULL;
     }
     /* concatenate (mbedTLS parses concatenated PEM — the ca-bundle shape).
-     * A separator goes only BETWEEN entries, and only when the preceding
-     * entry does not already end its line: a trailing newline after the
-     * last block leaves mbedTLS a non-empty buffer it tries to parse as
-     * another PEM, which fails. */
+     * Snapshot every entry once: a SharedArrayBuffer-backed view can change
+     * between passes, and sizing from one read then copying from another
+     * could overflow the allocation. The sizing keeps the old worst-case
+     * budget (one separator per entry); the copy inserts a separator only
+     * between entries and only when the snapshot does not already end its
+     * line: a trailing newline after the last block leaves mbedTLS a
+     * non-empty buffer it tries to parse as another PEM, which fails. */
     const size_t count = v->v.arr.len;
-    size_t total = 0;
+    unsigned char **snap = calloc(count, sizeof *snap);
+    size_t *snap_len = calloc(count, sizeof *snap_len);
+    if (snap == NULL || snap_len == NULL) {
+      free(snap);
+      free(snap_len);
+      scr_tls_oom();
+    }
+    size_t budget = 0;
     for (size_t i = 0; i < count; i++) {
       const ScrDyn *e = v->v.arr.items[i];
       size_t n;
-      bool ends_line;
-      if (e->kind == SCR_DYN_STR) {
-        n = e->v.str->len;
-        ends_line = n > 0 && e->v.str->data[n - 1] == '\n';
-      } else if (scr_dyn_bytes_is(e, SCR_BYTES_U8)) {
-        n = e->v.bytes->len;
-        unsigned char last = 0;
-        if (n > 0) scr_bytes_read(e->v.bytes, n - 1, &last, 1);
-        ends_line = n > 0 && last == '\n';
-      } else {
+      if (e->kind == SCR_DYN_STR) n = e->v.str->len;
+      else if (scr_dyn_bytes_is(e, SCR_BYTES_U8)) n = e->v.bytes->len;
+      else {
         scr_dyn_arg_type_fail(what, "of type string or an instance of Buffer or Uint8Array", e);
+        for (size_t k = 0; k < i; k++) free(snap[k]);
+        free(snap);
+        free(snap_len);
         return NULL;
       }
-      total += n;
-      if (i + 1 < count && !ends_line) total++;
+      unsigned char *copy = malloc(n > 0 ? n : 1);
+      if (copy == NULL) scr_tls_oom();
+      if (e->kind == SCR_DYN_STR) memcpy(copy, e->v.str->data, n);
+      else scr_bytes_read(e->v.bytes, 0, copy, n);
+      snap[i] = copy;
+      snap_len[i] = n;
+      budget += n + 1; /* worst case: one separator after every entry */
     }
-    ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)total);
+    unsigned char *joined = malloc(budget > 0 ? budget : 1);
+    if (joined == NULL) scr_tls_oom();
     size_t off = 0;
     for (size_t i = 0; i < count; i++) {
-      const ScrDyn *e = v->v.arr.items[i];
-      size_t n = e->kind == SCR_DYN_STR ? e->v.str->len : e->v.bytes->len;
-      if (e->kind == SCR_DYN_STR) memcpy(b->data + off, e->v.str->data, n);
-      else scr_bytes_read(e->v.bytes, 0, b->data + off, n);
+      size_t n = snap_len[i];
+      memcpy(joined + off, snap[i], n);
       off += n;
-      if (i + 1 < count) {
-        bool ends_line;
-        if (e->kind == SCR_DYN_STR) {
-          ends_line = n > 0 && e->v.str->data[n - 1] == '\n';
-        } else {
-          unsigned char last = 0;
-          if (n > 0) scr_bytes_read(e->v.bytes, n - 1, &last, 1);
-          ends_line = n > 0 && last == '\n';
-        }
-        if (!ends_line) b->data[off++] = '\n'; /* PEM blocks join on line boundaries */
-      }
+      if (i + 1 < count && (n == 0 || snap[i][n - 1] != '\n'))
+        joined[off++] = '\n'; /* PEM blocks join on line boundaries */
     }
+    ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)off);
+    memcpy(b->data, joined, off);
+    free(joined);
+    for (size_t i = 0; i < count; i++) free(snap[i]);
+    free(snap);
+    free(snap_len);
     return b;
   }
   scr_dyn_arg_type_fail(what, "of type string or an instance of Buffer or Uint8Array", v);
@@ -4324,6 +4444,7 @@ void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/,
 static const char *scr_tls_auth_code(ScrTlsSock *t) {
   uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
   if (t->vrfy_blocked) return "CERT_REVOKED";
+  if (t->vrfy_crl_revoked) return "CERT_REVOKED";
   if (t->vrfy_crl_missing) return "UNABLE_TO_GET_CRL";
   if (t->vrfy_crl_sig_fail) return "CRL_SIGNATURE_FAILURE";
   if (t->vrfy_crl_expired) return "CRL_HAS_EXPIRED";

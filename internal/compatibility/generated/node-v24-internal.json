@@ -34791,6 +34791,7 @@
           "tests/corpus/compat-error-validation-codes.mjs",
           "tests/corpus/compat-errors-async-resource-ids.mjs",
           "tests/corpus/compat-errors-buffer-encoding.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs",
           "tests/corpus/compat-errors-cert-crl.mjs",
           "tests/corpus/compat-errors-cli-tools.mjs",
           "tests/corpus/compat-errors-core.mjs",
@@ -44114,7 +44115,8 @@
         "status": "supported",
         "evidence": "compiler-feature:errors.CRL_NOT_YET_VALID",
         "tests": [
-          "tests/corpus/compat-errors-cert-crl.mjs"
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -44135,7 +44137,8 @@
         "status": "supported",
         "evidence": "compiler-feature:errors.CRL_HAS_EXPIRED",
         "tests": [
-          "tests/corpus/compat-errors-cert-crl.mjs"
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -44156,7 +44159,8 @@
         "status": "supported",
         "evidence": "compiler-feature:errors.CERT_REVOKED",
         "tests": [
-          "tests/corpus/compat-errors-cert-crl.mjs"
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -44294,7 +44298,8 @@
         "status": "supported",
         "evidence": "compiler-feature:errors.UNABLE_TO_GET_CRL",
         "tests": [
-          "tests/corpus/compat-errors-cert-crl.mjs"
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -44537,7 +44542,8 @@
         "status": "supported",
         "evidence": "compiler-feature:errors.CRL_SIGNATURE_FAILURE",
         "tests": [
-          "tests/corpus/compat-errors-cert-crl.mjs"
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
         ]
       },
       "anchorSource": "exact"

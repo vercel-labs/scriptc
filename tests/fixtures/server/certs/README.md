@@ -49,3 +49,14 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
     # crl-untrusted.pem repeats -gencrl in a second ca-db directory that copies ca2.pem/ca2-key.pem
 
 `crl-clean.pem` is the same valid-window CRL from a copy of the CA database with the revocation entry removed: an empty list, so the leaf verifies.
+
+`int-ca.pem`/`int-ca-key.pem`, `int-leaf.pem`/`int-leaf-key.pem` and the `int-*crl*.pem` files are the intermediate-chain CRL fixtures: a CA certificate signed by `ca.pem`, a localhost leaf signed by that intermediate, a root-issued CRL that revokes the intermediate (`int-crl-revoked.pem`) and its clean counterpart, plus a clean CRL issued by the intermediate for its leaf (`int-leaf-crl-clean.pem`). They are minted with `openssl ca` in throwaway CA directories that copy the fixture keys:
+
+    # root CA directory (copies ca.pem/ca-key.pem); issue int-ca with CA:TRUE, then:
+    openssl ca -config root-db/ca.cnf -gencrl -out int-crl-clean.pem
+    openssl ca -config root-db/ca.cnf -revoke int-ca.pem
+    openssl ca -config root-db/ca.cnf -gencrl -out int-crl-revoked.pem
+    # intermediate CA directory (copies int-ca.pem/int-ca-key.pem); no revocations:
+    openssl ca -config int-db/ca.cnf -gencrl -out int-leaf-crl-clean.pem
+
+`int-leaf.pem` is signed by `int-ca.pem` for CN=localhost with the usual SANs. `ca.srl` is untouched (the databases live in copies).

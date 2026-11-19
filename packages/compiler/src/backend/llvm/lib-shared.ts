@@ -2184,6 +2184,15 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "ar.asyncId": "scr_ar_async_id",
   "ar.triggerAsyncId": "scr_ar_trigger_id",
   "dc.chanBindStore": "scr_dc_chan_bind_store",
+  // node:async_hooks (scr_async_dyn.c / scr_async.c): the hook registry and
+  // the execution-id pair.
+  "ah.createHook": "scr_ah_create",
+  "ah.createHookParts": "scr_ah_parts",
+  "ah.enable": "scr_ah_enable",
+  "ah.disable": "scr_ah_disable",
+  "ah.providers": "scr_ah_providers",
+  "ah.executionId": "scr_async_execution_id",
+  "ah.triggerId": "scr_async_execution_trigger",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",
   // node:trace_events (scr_async_dyn.c): native Tracing handles.

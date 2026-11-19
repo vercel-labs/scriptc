@@ -201,6 +201,15 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+  // The async_hooks hook registry and execution-id core (same unit: its
+  // callbacks cross as checked-dynamic values).
+  "ah.createHook",
+  "ah.createHookParts",
+  "ah.disable",
+  "ah.providers",
+  "ah.enable",
+  "ah.executionId",
+  "ah.triggerId",
   // The RunScope handle withScope answers, and AsyncResource's registry
   // with its bound functions.
   "als.withScope",
@@ -1731,6 +1740,11 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
+  /** node:async_hooks (scr_async_dyn.c's hook registry and scr_async.c's
+   * execution-id core): the program starts tracking at startup —
+   * scr_async_hooks_install is emitted — so timers, immediates and ticks
+   * carry ids and enabled hooks dispatch. */
+  asyncHooks: rule({ prefixes: ["ah."] }),
   /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
    * produce bigint values. */
   bigint: rule({
@@ -2832,6 +2846,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
   return {
     assert: false,
     asyncContext: false,
+    asyncHooks: false,
     bigint: false,
     bigstats: false,
     childProcess: false,

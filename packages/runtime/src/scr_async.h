@@ -364,6 +364,54 @@ double scr_ar_trigger_id(ScrDyn *handle);
 double scr_ar_execution_id(void);
 double scr_ar_execution_trigger(void);
 
+/* ── node:async_hooks execution ids and hooks ─────────────────────────
+ * The always-linked core keeps one execution-id pair and ONE NULL hook
+ * table; nothing allocates or counts ids while the table is NULL, so a
+ * program that never uses async_hooks pays a single predictable test at
+ * each instrumented site (the timer, immediate, tick and promise paths).
+ * The gated dyn-async unit installs the table at startup when the IR uses
+ * async_hooks' libCalls, which is also what turns id allocation on. The
+ * rest of the bookkeeping (the id counter, the execution pair's enter and
+ * leave, the per-resource capture) is private to scr_async.c.
+ *
+ * Ids start at 1 for the program's top-level execution (trigger id 0);
+ * each tracked resource takes the next id and remembers the execution it
+ * was created in as its trigger. Types are the Node resource names the
+ * runtime models ("Timeout", "Immediate", "TickObject", "PROMISE"). The
+ * ids are scriptc's own sequence: Node's counter also numbers its module
+ * loading internals, so only a resource's relations (equality with the id
+ * seen inside its own callback, ids greater than the root) are observable
+ * across implementations. */
+typedef struct ScrAsyncHookOps {
+  /* A tracked resource was created: `id`, its type, the execution id that
+   * created it, and the resource object the hooks receive (a fresh dyn
+   * object for the runtime's own kinds). */
+  void (*init)(double id, const char *type, size_t type_len, double trigger, ScrDyn *resource);
+  void (*before)(double id); /* about to run this resource's callback */
+  void (*after)(double id);  /* the callback returned or threw */
+  void (*destroy)(double id);
+  void (*promise_resolve)(double id); /* a tracked promise settled */
+} ScrAsyncHookOps;
+extern SCR_TL const ScrAsyncHookOps *scr_async_hook_ops; /* NULL: not tracking */
+double scr_async_execution_id(void);
+double scr_async_execution_trigger(void);
+
+/* createHook and the table's installation (scr_async_dyn.c). createHook
+ * validates its five callbacks with Node's ERR_ASYNC_CALLBACK and answers a
+ * 1-based f64 handle (NaN with the exception pending); enable/disable flip
+ * the hook and answer the handle, as Node's methods answer `this`; the
+ * install entry is emitted before the entry of a program whose IR uses
+ * async_hooks. */
+void scr_async_hooks_install(void);
+double scr_ah_create(ScrDyn *options);
+double scr_ah_parts(ScrDyn *init, ScrDyn *before, ScrDyn *after, ScrDyn *destroy,
+                    ScrDyn *promise_resolve);
+double scr_ah_enable(double handle);
+double scr_ah_disable(double handle);
+/* asyncWrapProviders: Node 24's published provider-name → id table as a
+ * null-prototype checked-dynamic object (+1). */
+ScrDyn *scr_ah_providers(void);
+
 /* process.on/once('unhandledRejection', fn): dyn listeners dispatched
  * per never-observed rejection at the end of its nextTick/microtask
  * checkpoint — (reason, promise), suppressing the default report and the

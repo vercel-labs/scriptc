@@ -762,6 +762,7 @@ import {
   lowerTracingChannelMethodCall,
   lowerTracingChannelProperty,
 } from "./builtins/async-context.js";
+import { lowerAsyncHooksMethodCall } from "./builtins/async-hooks.js";
 import { lowerDisposableStackNew } from "./builtins/disposable-stack.js";
 import { lowerErrorCodeProperty, lowerErrorFunctionCall } from "./builtins/errors.js";
 import { noteDateClassMethods } from "./builtins/date-classes.js";
@@ -25567,6 +25568,13 @@ export class Lowerer {
     access: ts.PropertyAccessExpression,
   ): IrExpr | null {
     return lowerAsyncLocalStorageMethodCall(this, call, access);
+  }
+
+  lowerAsyncHooksMethodCall(
+    call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,
+  ): IrExpr | null {
+    return lowerAsyncHooksMethodCall(this, call, access);
   }
 
   lowerAsyncResourceMethodCall(

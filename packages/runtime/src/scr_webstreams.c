@@ -1545,6 +1545,16 @@ static ScrDyn *ws_bytes_read(WsReader *r) {
     ScrBytes *view = scr_bytes_new(SCR_BYTES_U8, c->auto_allocate);
     if (!view) return NULL;
     ScrPromise *p = scr_promise_new();
+    if (r->stream == NULL) {
+      /* The init hook released the lock while the promise was built. The
+       * auto-allocated destination is no longer handed to a request, so its
+       * reference is released here. */
+      ws_reject(p, ws_reader_releasing_error());
+      ScrPromise *result = scr_promise_retain(p);
+      scr_promise_release(p);
+      scr_bytes_release(view);
+      return ws_promise_box(result);
+    }
     WsPullInto *d = ws_pull_into_new(view, 1, false, p);
     scr_bytes_release(view);
     ws_pull_into_enqueue(c, d);
@@ -1614,6 +1624,13 @@ static ScrDyn *ws_byob_read(WsReader *r, ScrDyn *view_arg, ScrDyn *options) {
     return ws_promise_box(rejected);
   }
   ScrPromise *p = scr_promise_new();
+  if (r->stream == NULL) {
+    /* The init hook released the lock while the promise was built. */
+    ws_reject(p, ws_reader_releasing_error());
+    ScrPromise *result = scr_promise_retain(p);
+    scr_promise_release(p);
+    return ws_promise_box(result);
+  }
   /* `min` counts elements of the destination's type (bytes for a DataView),
    * as Node's read does: minimumFill = min * elementSize. */
   size_t min_elements = min > 0 ? (size_t)min : 1;
@@ -1640,6 +1657,13 @@ static ScrDyn *ws_byob_read(WsReader *r, ScrDyn *view_arg, ScrDyn *options) {
 /* readableStreamDefaultReaderRead. */
 static void ws_reader_read_request(WsReader *r, WsReadRequest *q) {
   WsReadable *s = r->stream;
+  if (!s) {
+    /* The PROMISE init hook runs inside the promise a read just built and can
+     * release the reader's lock; the request answers the releasing error
+     * instead of following the cleared stream. */
+    q->ops->error(q, ws_reader_releasing_error());
+    return;
+  }
   s->disturbed = true;
   switch (s->state) {
   case WS_STATE_CLOSED: q->ops->close(q); break;

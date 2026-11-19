@@ -360,6 +360,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // %o's showHidden walk refuses the kinds whose hidden entries it cannot
   // render.
   "insp.dynHidden",
+  // diagnostics_channel: publish runs subscribers synchronously (a throw
+  // propagates — the documented divergence from triggerUncaughtException);
+  // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
+  // non-function subscribers.
+  // async_hooks.createHook validates its callbacks (ERR_ASYNC_CALLBACK).
+  "ah.createHook",
+  "ah.createHookParts",
   // diagnostics_channel: the subscribe/unsubscribe forms validate the name
   // and the subscriber in the runtime (Node's ERR_INVALID_ARG_TYPE), and
   // the bind-store/run-stores calls run program code.

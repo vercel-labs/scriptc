@@ -667,6 +667,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
+  const usesAsyncHooks = runtimeFeatures.asyncHooks;
   // URL programs give the host parser the IDNA unit's ToASCII.
   const usesUrlIdna = runtimeFeatures.urlIdna;
   // Programs whose checked-dynamic reads answer Buffer.prototype methods by
@@ -759,6 +760,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
+  if (usesAsyncHooks) emitter.declare(`declare void @scr_async_hooks_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
   if (usesSymbolFor) emitter.declare(`declare void @scr_sym_for_install()`);
@@ -1556,6 +1558,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
+    ...(usesAsyncHooks ? [`  call void @scr_async_hooks_install()`] : []),
     ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
     ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),

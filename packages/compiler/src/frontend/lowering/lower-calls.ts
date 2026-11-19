@@ -2249,6 +2249,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // AsyncLocalStorage receivers — run/getStore/exit/enterWith over
       // the f64 store handle.
       lowerer.lowerAsyncLocalStorageMethodCall(expr, expr.expression) ??
+      // AsyncHook receivers — enable/disable over the f64 hook handle.
+      lowerer.lowerAsyncHooksMethodCall(expr, expr.expression) ??
       // AsyncResource receivers — runInAsyncScope/bind/emitDestroy over
       // the f64 resource handle.
       lowerer.lowerAsyncResourceMethodCall(expr, expr.expression) ??

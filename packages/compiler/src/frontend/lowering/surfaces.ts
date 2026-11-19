@@ -2414,6 +2414,15 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // into the checked-dynamic tree (special-cased in lowerBuiltinModuleCall — the entries
     // carry canonical shapes and route the dispatch). The Channel method
     // surface lowers through lowerDiagnosticsChannelMethodCall/lowerDiagnosticsChannelProperty.
+    // node:async_hooks — the hook registry and the execution-id reads. The
+    // callbacks object crosses as a dyn value and AsyncHook values are f64
+    // handles (type-mapper.ts), so the members lower in
+    // lowerAsyncHooksMethodCall/lowerAsyncHooksCall.
+    async_hooks: {
+      createHook: { fn: "ah.createHook", params: [DYN], result: F64 },
+      executionAsyncId: { fn: "ah.executionId", params: [], result: F64 },
+      triggerAsyncId: { fn: "ah.triggerId", params: [], result: F64 },
+    },
     diagnostics_channel: {
       channel: { fn: "dc.channel", params: [STRING], result: F64 },
       subscribe: { fn: "dc.subscribe", params: [STRING, DYN], result: VOID },

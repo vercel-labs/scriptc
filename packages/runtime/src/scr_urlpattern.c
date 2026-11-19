@@ -1190,39 +1190,78 @@ static ScrStr *ws_strip_one(ScrStr *value, char marker, bool leading) {
 /* The standard's canonicalize a pathname: the value percent-encoded for a
  * special URL's path, with dot segments removed by the URL parser. A
  * relative value resolves against the base URL when there is one. */
+/* The pathname's dot segments, removed by the URL parser over path text
+ * (never as a URL: a component value may not contribute an authority). */
+static ScrStr *ws_dot_segments(const ScrStr *path) {
+  ScrStr *candidate = ws_str_join("http://x", path, NULL);
+  ScrUrl *url = ws_parse_or_null(candidate);
+  scr_str_release(candidate);
+  if (url == NULL) return NULL;
+  ScrStr *out = scr_url_pathname(url);
+  scr_url_release(url);
+  return out;
+}
+
+/* The standard's canonicalize a pathname: the value percent-encoded for a
+ * special URL's path, its dot segments removed, and, when relative with a
+ * base URL whose path is not opaque, prefixed with the base's directory.
+ * The value is always path text; it is never parsed as a URL. */
 static ScrStr *ws_path_canonicalize(ScrStr *value, ScrUrl *base) {
   if (value->len == 0) return scr_str_new("", 0);
   ScrStr *encoded = ws_percent_encode(value, WS_PATH_ENCODE);
   bool absolute = encoded->len > 0 && encoded->data[0] == '/';
-  if (!absolute && base != NULL) {
-    ScrStr *href = scr_url_href(base);
-    ScrUrl *url = scr_url_new_base(encoded, href);
-    scr_str_release(href);
+  if (absolute) {
+    ScrStr *out = ws_dot_segments(encoded);
     scr_str_release(encoded);
-    if (url == NULL) {
-      scr_exc_clear();
-      return NULL;
-    }
-    ScrStr *out = scr_url_pathname(url);
-    scr_url_release(url);
     return out;
   }
-  /* The standard parses the value in the path-start state on a dummy URL;
-   * a relative value gets a "/-" prefix so the parser keeps its text and
-   * the prefix is removed below. */
-  ScrStr *candidate = absolute ? ws_str_join("http://x", encoded, NULL)
-                               : ws_str_join("http://x/-", encoded, NULL);
+  if (base != NULL) {
+    ScrStr *base_path = scr_url_pathname(base);
+    if (base_path->len > 0 && base_path->data[0] == '/') {
+      /* the base's directory, then the value, both as path text */
+      size_t cut = base_path->len;
+      while (cut > 0 && base_path->data[cut - 1] != '/') cut--;
+      if (cut == 0) cut = 1;
+      WsBuf b = {0};
+      ws_buf_add(&b, base_path->data, cut);
+      ws_buf_scr(&b, encoded);
+      ScrStr *combined = ws_buf_finish(&b);
+      scr_str_release(base_path);
+      scr_str_release(encoded);
+      ScrStr *out = ws_dot_segments(combined);
+      scr_str_release(combined);
+      return out;
+    }
+    scr_str_release(base_path);
+  }
+  /* A relative value with no usable base: parsed in the path-start state on
+   * a dummy URL, with a "/-" prefix so the parser keeps its text. */
+  ScrStr *candidate = ws_str_join("http://x/-", encoded, NULL);
   scr_str_release(encoded);
   ScrUrl *url = ws_parse_or_null(candidate);
   scr_str_release(candidate);
   if (url == NULL) return NULL;
   ScrStr *path = scr_url_pathname(url);
   scr_url_release(url);
-  if (absolute) return path;
   ScrStr *out = path->len >= 2 ? scr_str_new(path->data + 2, path->len - 2)
                                : scr_str_new("", 0);
   scr_str_release(path);
   return out;
+}
+
+/* Whether the value is a URL scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ). */
+static bool ws_valid_scheme(const ScrStr *value) {
+  if (value->len == 0) return true;
+  unsigned char first = (unsigned char)value->data[0];
+  if (!((first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z'))) return false;
+  for (size_t i = 1; i < value->len; i++) {
+    unsigned char c = (unsigned char)value->data[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+        c == '+' || c == '-' || c == '.')
+      continue;
+    return false;
+  }
+  return true;
 }
 
 /* The standard's process <component> for init with type "url": the value
@@ -1232,25 +1271,22 @@ static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol, ScrUr
   switch (field) {
   case WF_PROTOCOL: {
     ScrStr *stripped = ws_strip_one(value, ':', false);
-    if (stripped->len == 0) return stripped;
-    ScrStr *candidate = ws_str_join(NULL, stripped, "://dummy.invalid/");
-    scr_str_release(stripped);
-    ScrUrl *url = ws_parse_or_null(candidate);
-    scr_str_release(candidate);
-    if (url != NULL) {
-      ScrStr *text = scr_url_protocol(url);
-      scr_url_release(url);
-      ScrStr *out = ws_strip_protocol(text);
-      scr_str_release(text);
-      return out;
+    /* the value is a scheme, never a URL that could smuggle an authority */
+    if (!ws_valid_scheme(stripped)) {
+      scr_str_release(stripped);
+      break;
     }
-    break;
+    ScrStr *out = ws_str_lower(stripped);
+    scr_str_release(stripped);
+    return out;
   }
   case WF_USERNAME:
   case WF_PASSWORD:
     return ws_percent_encode(value, WS_USERINFO_ENCODE);
   case WF_HOSTNAME: {
     if (value->len == 0) return scr_str_new("", 0);
+    /* a userinfo separator may not hide inside a host's text */
+    if (memchr(value->data, '@', value->len) != NULL) break;
     ScrStr *candidate = ws_str_join("https://", value, "/");
     ScrUrl *url = ws_parse_or_null(candidate);
     scr_str_release(candidate);

@@ -99,6 +99,28 @@ console.log(
   )
 );
 
+// A component's text is that component, never a URL that could smuggle a
+// different authority past an allowlist.
+const trusted = new URLPattern("https://trusted.example/x");
+console.log(
+  "pathname url text",
+  trusted.exec({ pathname: "https://attacker.example/x", baseURL: "https://trusted.example/" })
+);
+const trustedRecord = new URLPattern({ protocol: "https", hostname: "trusted.example", pathname: "*" });
+console.log(
+  "protocol url text",
+  trustedRecord.exec({ protocol: "https://attacker.example", hostname: "trusted.example", pathname: "/x" })
+);
+console.log(
+  "hostname userinfo text",
+  new URLPattern({ hostname: "*" }).exec({ hostname: "trusted.example@attacker.example" })
+);
+console.log(
+  "allowlist controls",
+  trusted.exec({ pathname: "/x", baseURL: "https://trusted.example/" }) !== null,
+  trustedRecord.exec({ protocol: "https:", hostname: "trusted.example", pathname: "/x" }) !== null
+);
+
 show("invalid regexp", () => new URLPattern({ pathname: "/([)" }));
 show("duplicate names", () => new URLPattern({ pathname: "/:a/:a" }));
 show("relative without base", () => new URLPattern("/books"));

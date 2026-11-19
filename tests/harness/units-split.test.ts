@@ -102,6 +102,26 @@ test("a split build's output matches a plain build's and it stores unit IR", asy
   expect(slices).toBe(stored.length);
 });
 
+/** Each stored entry's IR digest, by unit id. */
+function storedIrDigests(store: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const root = join(store, "units-v2");
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const meta = JSON.parse(readFileSync(join(root, entry.name, "meta.json"), "utf8")) as {
+        unit?: { id?: string };
+        ir?: { digest?: string };
+      };
+      if (typeof meta.unit?.id === "string" && typeof meta.ir?.digest === "string")
+        out.set(meta.unit.id, meta.ir.digest);
+    } catch {
+      /* not an entry */
+    }
+  }
+  return out;
+}
+
 test("a second split build in the same store is the fallback and still matches plain", async () => {
   // Until the warm path lands, every split build lowers the whole program —
   // the design's fallback — so the build after a cold one must still produce
@@ -110,8 +130,14 @@ test("a second split build in the same store is the fallback and still matches p
   const plain = await build("plain", "plain-warm");
   const store = join(work, "shared");
   await build("split", "split-cold", store);
+  const cold = storedIrDigests(store);
   const warm = await build("split", "split-warm", store);
   expect(warm.llvm).toBe(plain.llvm);
+  // A stored slice must be a function of the unit's lowering, or no later
+  // build could reuse it: the same program stores the same bytes.
+  const rewritten = storedIrDigests(store);
+  expect([...rewritten.keys()].sort()).toEqual([...cold.keys()].sort());
+  for (const [id, digest] of cold) expect(rewritten.get(id)).toBe(digest);
   const report = JSON.parse(warm.line!.slice("scriptc units ".length)) as {
     entries: { app: boolean; wouldHit: boolean | null }[];
   };

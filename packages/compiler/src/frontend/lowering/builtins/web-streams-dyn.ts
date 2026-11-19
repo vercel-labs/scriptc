@@ -98,7 +98,7 @@ const TYPED_CLASSES: ReadonlySet<string> = new Set([
   "TextEncoderStream",
   "TextDecoderStream",
 ]);
-const WEB_VIEW_CALLS: ReadonlySet<string> = new Set(READABLE_STREAM_WEB_VIEW_CALLS);
+const WEB_VIEW_CALLS: ReadonlySet<string> = new Set([...READABLE_STREAM_WEB_VIEW_CALLS, "values"]);
 
 /** The text of an object literal's property name, for a plain identifier, a
  * string or a number key; null for a computed key. */
@@ -129,8 +129,8 @@ function sourceIsByteStream(lowerer: Lowerer, arg: ts.Expression | undefined): b
 }
 
 /** Whether a TypeScript source of the program uses a web stream operation
- * the native streams lack: a ReadableStream tee(), pipeTo() or
- * pipeThrough() call, a getReader() call with arguments (the byte reader's
+ * the native streams lack: a ReadableStream tee(), pipeTo(), pipeThrough()
+ * or values() call, a getReader() call with arguments (the byte reader's
  * mode), a ReadableStream constructor with a queuing strategy or a byte
  * source, a WritableStream, WritableStreamDefaultWriter,
  * WritableStreamDefaultController, TransformStreamDefaultController,

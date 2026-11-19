@@ -122157,6 +122157,7 @@
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/web-stream-writable-untyped.mjs",
+          "tests/corpus/web-streams-values.ts",
           "tests/corpus/webstream-byob-partial-elements-js.mjs",
           "tests/corpus/webstream-byob-reader-js.mjs",
           "tests/corpus/webstream-byob-reader.ts",
@@ -122164,6 +122165,7 @@
           "tests/corpus/webstream-byte-stream.ts",
           "tests/corpus/webstream-byte-streams.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
+          "tests/fixtures/fetch/static-stream-values/main.mts",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -122653,10 +122655,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableStream.values",
         "tests": [
-          "tests/corpus/2862-web-readable-async-iteration.ts"
+          "tests/corpus/2862-web-readable-async-iteration.ts",
+          "tests/corpus/web-streams-values.ts",
+          "tests/fixtures/fetch/static-stream-values/main.mts"
         ]
       },
       "anchorSource": "exact"

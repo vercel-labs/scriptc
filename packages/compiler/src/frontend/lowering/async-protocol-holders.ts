@@ -11,6 +11,10 @@
  * and its typed stepping. The answer is per element type: the three
  * interfaces over one `T` hold each other's values.
  *
+ * One implementor is not a value of a class or an object literal: a web
+ * stream's `values()` answers the runtime's own iterator object, so a
+ * binding of that call marks its element type too.
+ *
  * The decision is made before any lowering, from the program alone: a scan
  * of the places a value flows into a typed slot (the flow sites
  * class-protocols.ts scans for identity), read with the checker. A site
@@ -38,6 +42,40 @@ const PROTOCOL_NAMES: ReadonlySet<string> = new Set([
   "AsyncIterableIterator",
   "AsyncIterator",
 ]);
+
+/** The syntactic shape of a `x.values(...)` call (the stdlib owner is
+ * checked later): an unannotated binding of one holds the web stream's
+ * async iterator, whose protocol type must be the checked-dynamic one. */
+function isValuesCallShape(expression: ts.Expression): boolean {
+  const call = withoutParenthesesNonNull(expression);
+  if (!ts.isCallExpression(call) || call.questionDotToken) return false;
+  const callee = withoutParenthesesNonNull(call.expression);
+  return (
+    ts.isPropertyAccessExpression(callee) &&
+    !callee.questionDotToken &&
+    callee.name.text === "values"
+  );
+}
+
+/** Whether `node` is a `stream.values(...)` call on the stdlib
+ * ReadableStream interface (the web stream class's async iterator). */
+function valuesCallOfReadableStream(
+  checker: ts.TypeChecker,
+  isStdlibFile: (sf: ts.SourceFile) => boolean,
+  node: ts.Expression,
+): boolean {
+  const call = withoutParenthesesNonNull(node);
+  if (!ts.isCallExpression(call) || call.questionDotToken) return false;
+  const callee = withoutParenthesesNonNull(call.expression);
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return false;
+  if (callee.name.text !== "values") return false;
+  const member = attempt(() => checker.getSymbolAtLocation(callee.name));
+  const declaration = member?.declarations?.[0];
+  if (declaration === undefined || !isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
+  let owner: ts.Node | undefined = declaration.parent;
+  while (owner !== undefined && !ts.isInterfaceDeclaration(owner)) owner = owner.parent;
+  return owner !== undefined && owner.name.text === "ReadableStream";
+}
 
 /** A place a value flows into a slot. */
 interface FlowSite {
@@ -135,7 +173,13 @@ export class AsyncProtocolHolders {
     attempt(() => this.checker.prefetchClassCollection(sourceNodes, []));
     const kinds: (SourceKinds | null)[] = sourceNodes.map((node) => {
       const type = attempt(() => this.checker.getTypeAtLocation(node));
-      return type === undefined ? null : this.sourceKinds(type);
+      if (type === undefined) return null;
+      const kinds = this.sourceKinds(type);
+      // A web stream's values() answers the runtime's iterator object, not a
+      // compiled async generator: its protocol type holds the implementor.
+      if (kinds !== null && valuesCallOfReadableStream(this.checker, this.isStdlibFile, node))
+        kinds.implementor = true;
+      return kinds;
     });
     // Only a site whose source can matter asks for its target.
     attempt(() =>
@@ -329,6 +373,13 @@ export class AsyncProtocolHolders {
         for (const argument of node.arguments?.nodes ?? [])
           if (!ts.isSpreadElement(argument)) flow(argument);
       } else if (ts.isVariableDeclaration(node) && node.type !== undefined)
+        declared(node.name, node.initializer);
+      else if (
+        ts.isVariableDeclaration(node) &&
+        node.type === undefined &&
+        node.initializer !== undefined &&
+        isValuesCallShape(node.initializer)
+      )
         declared(node.name, node.initializer);
       else if (ts.isPropertyDeclaration(node) && node.type !== undefined)
         declared(node.name, node.initializer);

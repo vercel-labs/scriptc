@@ -1,0 +1,7 @@
+exports[`a later resolver keeps the default file 1`] = `
+"two"
+`;
+
+exports[`default file first 1`] = `
+"one"
+`;

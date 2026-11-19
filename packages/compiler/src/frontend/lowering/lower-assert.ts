@@ -154,7 +154,16 @@ function recordedValue(lowerer: Lowerer, value: IrExpr | null, loc: SrcLoc): IrE
   ) {
     return { kind: "dynFrom", value, type: DYN, loc };
   }
-  return dynUndefinedExpr(loc);
+  // The value has no checked-dynamic form, but its expression still runs:
+  // Node evaluates the argument, so its side effects and its thrown errors
+  // happen before the assertion.
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: dynUndefinedExpr(loc),
+    type: DYN,
+    loc,
+  };
 }
 
 /** `if (failing) assert.record(actual, expected, operator)`. */
@@ -1147,18 +1156,79 @@ function lowerAssertOk(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): 
   return { kind: "seqExpr", stmts, result, type: VOID, loc };
 }
 
+/** The deprecated fail(actual, expected[, message[, operator[, stackStartFn]]]):
+ * every argument evaluates in order, then the call reports DEP0094 (once,
+ * from the events unit) and throws the runtime's AssertionError. A message
+ * that is an Error is thrown itself; a nullish message leaves Node's
+ * generated `${inspect(actual)} ${operator} ${inspect(expected)}`. The
+ * operator defaults to "!=" for exactly two arguments and "fail" otherwise.
+ * `stackStartFn` only picks where Node's stack starts, so it is evaluated
+ * and its value dropped. */
+function lowerAssertFailDeprecated(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = expr.arguments.nodes;
+  const stmts: IrStmt[] = [];
+  // Node evaluates each argument once, in order, and the failing error
+  // carries the value read then: a later argument that reassigns a local the
+  // earlier one named must not change what was recorded. The value is kept in
+  // a hidden local of its own even when it is a plain variable reference.
+  const snapshot = (value: IrExpr, name: string): IrExpr => {
+    if (value.kind !== "varRef") return stableValue(lowerer, stmts, value, name, loc);
+    const slot = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    return { kind: "varRef", localId: slot.id, type: value.type, loc };
+  };
+  const boxed = (node: ts.Expression, name: string): IrExpr =>
+    snapshot(recordedValue(lowerer, lowerer.lowerExpr(node), loc), name);
+  const actual = boxed(args[0]!, "%assertFailActual");
+  const expected = boxed(args[1]!, "%assertFailExpected");
+  const messageNode = args[2];
+  // A message crosses as the value Node reads: an Error is thrown itself,
+  // anything else becomes String(value), and a nullish one leaves the
+  // runtime's generated text.
+  const message: IrExpr =
+    messageNode === undefined
+      ? dynUndefinedExpr(loc)
+      : snapshot(recordedValue(lowerer, lowerer.lowerExpr(messageNode), loc), "%assertFailMessage");
+  // Node reads `operator` and falls back to the default when the value is
+  // nullish at run time, not only when the argument is the undefined literal.
+  const operatorNode = args[3];
+  const operator: IrExpr =
+    operatorNode !== undefined &&
+    !(ts.isIdentifier(operatorNode) && operatorNode.text === "undefined")
+      ? snapshot(
+          lowerer.coerceToExpected(lowerer.lowerExpr(operatorNode), DYN),
+          "%assertFailOperator",
+        )
+      : dynUndefinedExpr(loc);
+  const defaultOperator = lowerer.coerceToExpected(
+    strLit(args.length === 2 ? "!=" : "fail", loc),
+    DYN,
+  );
+  const stackStart = args[4];
+  if (stackStart !== undefined) {
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(stackStart), loc });
+  }
+  stmts.push({
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "assert.failDeprecation", args: [], type: VOID, loc },
+    loc,
+  });
+  const result: IrExpr = {
+    kind: "libCall",
+    fn: "assert.failDeprecated",
+    args: [actual, expected, message, operator, defaultOperator],
+    type: VOID,
+    loc,
+  };
+  return { kind: "seqExpr", stmts, result, type: VOID, loc };
+}
+
 /** assert.fail([message]): an unconditional AssertionError — "Failed"
  * when the message is omitted (Node's internal default). Lowers as
  * assert.ok over a false literal. */
 function lowerAssertFail(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   requireStatementPosition(lowerer, expr, "assert.fail");
-  if (expr.arguments.nodes.length > 1) {
-    lowerer.noLowering(
-      `assert.fail with ${expr.arguments.nodes.length} arguments`,
-      expr,
-      "the supported form is fail(message?) — the deprecated fail(actual, expected, ...) has no lowering",
-    );
-  }
+  if (expr.arguments.nodes.length > 1) return lowerAssertFailDeprecated(lowerer, expr, loc);
   let msg: IrExpr;
   let generated: IrExpr;
   const msgNode = expr.arguments.nodes[0];
@@ -2243,7 +2313,12 @@ function assertThrowsHelper(
             ? "shape:" + expected.keys.map((k) => `${k.id}${k.kind}:${k.enameBake ?? ""}`).join(",")
             : expected.form === "errValue"
               ? "errval"
-              : "bare";
+              : // The message form carries the ambiguity check its catch body
+                // runs, so it cannot share the bare form's helper: whichever
+                // call site lowered first would decide the other's body.
+                expected.form === "message"
+                ? "message"
+                : "bare";
   const key = `assert.${mode}:${recvIsPromise ? "p" : "f"}:${typeKey(recvType)}:${sig}`;
   const existing = lowerer.assertHelpers.get(key);
   if (existing) return existing;
@@ -2495,8 +2570,19 @@ function assertThrowsHelper(
   } else {
     switch (expected.form) {
       case "bare":
-      case "message":
         catchBody = [doReturn];
+        break;
+      case "message":
+        // The string is the message here, but Node still refuses the call
+        // when the thrown value could also be read as the expectation
+        // (expectsError's ambiguity check).
+        catchBody = [
+          lib("assert.throwsAmbiguous", [
+            { kind: "caughtToDyn", value: caughtRef(), type: DYN, loc },
+            m(),
+          ]),
+          doReturn,
+        ];
         break;
       case "class":
         catchBody = [

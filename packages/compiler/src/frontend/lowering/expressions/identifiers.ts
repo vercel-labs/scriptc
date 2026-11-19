@@ -38,9 +38,14 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { builtinImportBindingByName } from "../builtins/module-bindings.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
+  cjsAbsentMemberValue,
+  cjsDestructuredModuleBindingOf,
+  cjsExportsObjectValue,
+  cjsModuleLacksExport,
   cjsNestedExportReplacementOf,
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
@@ -78,6 +83,7 @@ import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
 import {
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefReadType,
   ambientUndefinedFnSymbolOf,
   ambientUndefinedVarSymbolOf,
@@ -241,6 +247,26 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
       return hostGlobalValue(lowerer, hostGlobal, expr);
     }
+  }
+  // A global only a types-only package declares (`XRWebGLLayer` from
+  // @types/webxr): Node has no such value, so the read is an ordinary
+  // global lookup — the catchable ReferenceError "<name> is not defined"
+  // (typeof answers "undefined" in static-typeof.ts). It is never an
+  // import: the declaration's package ships no implementation.
+  if (ambientTypesOnlyGlobalSymbolOf(lowerer, expr) !== null) {
+    // A program that installs the name on the global object answers the
+    // installed value, exactly as an undeclared or erased global does
+    // (global-object-writes.ts): the read is the global object's own.
+    if (programMayWriteGlobalName(lowerer, expr.text, expr))
+      return {
+        kind: "libCall",
+        fn: "global.bindingRead",
+        args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+        type: DYN,
+        loc,
+      };
+    const t = ambientUndefReadType(lowerer, expr) ?? F64;
+    return nsUndefRead(lowerer, expr.text, expr, t);
   }
   // A compiler-projected adapter as a VALUE: the adapter has no
   // runtime function object (its calls rewrite directly) — call it
@@ -411,6 +437,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           lowerer.armTag(checked.unionId, UNDEFINED_T) >= 0 &&
           lowerer.armTag(local.type.unionId, UNDEFINED_T) >= 0
         )
+          return { kind: "varRef", localId: local.id, type: local.type, loc };
+        if (use.kind !== "call")
           return { kind: "varRef", localId: local.id, type: local.type, loc };
         lowerer.unsupported(
           "SC1090",
@@ -798,7 +826,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (bi.module === "module" && bi.member === "constants") {
         return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
       }
-      if (bi.module === "fs" && bi.member === "constants")
+      if ((bi.module === "fs" || bi.module === "fs/promises") && bi.member === "constants")
         return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
       // `import { constants } from "node:zlib"`: the module's singleton
       // record (zlibConstantsValue), the same object the property form
@@ -951,6 +979,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
       );
     }
+    // A require binding used as a value IS its exports object: the
+    // runtime's per-module view over the module's export globals, which is
+    // what Node's require answers, so enumeration and member calls through
+    // the value match the module. A namespace import keeps its own member
+    // fences.
+    const exportsObject = dep !== null ? cjsExportsObjectValue(lowerer, dep, expr) : null;
+    if (exportsObject !== null) return exportsObject;
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -1254,6 +1289,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   {
     const sym = lowerer.resolveValueSymbol(expr);
     let classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    // A binding the checker models as an ALIAS of the class — an import or
+    // re-export whose exported name also declares a JSDoc namespace, as
+    // `@typedef {Object} GLTFLoader~LoadObject` does in three's
+    // GLTFLoader.js — is not the symbol classBySymbol keys; its aliased
+    // target is.
+    if (
+      classInfo === undefined &&
+      sym &&
+      (sym.flags & ts.SymbolFlags.Alias) !== 0 &&
+      !lowerer.isStdlibSymbol(sym)
+    )
+      classInfo = lowerer.classBySymbol.get(lowerer.checker.getAliasedSymbol(sym));
     // A class local to a function lowered once per instantiation
     // (`$constructor` called with different argument types) registers per
     // instance under the same symbol: a hoisted function of a later
@@ -1419,10 +1466,29 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
       ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
       : lowerer.resolveValueSymbol(expr) === null;
+  // `const { name } = require("./m")` over a member the module's exports
+  // object does not carry: Node copies undefined into the binding.
+  {
+    const destructured = cjsDestructuredModuleBindingOf(lowerer, expr);
+    if (destructured !== null && cjsModuleLacksExport(lowerer, destructured.dep, destructured.key))
+      return cjsAbsentMemberValue(lowerer, expr);
+  }
   // In a `.js` source the read is the global object's own property of that
   // name when the program created one (`globalThis.X = class X {}`, in this
   // module or another), as in Node, and the ReferenceError otherwise.
   if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    // A named import of a builtin whose export the checker resolves to a
+    // declared TYPE (an ambient interface) leaves the read with no value
+    // symbol, but it is still that module's member: keep the member's own
+    // refusal (node-value-reads.ts) instead of compiling a global read of
+    // the name, which would answer a ReferenceError at run time.
+    const importedMember = builtinImportBindingByName(
+      lowerer,
+      ts.getSourceFileOfNode(expr),
+      expr.text,
+    );
+    if (importedMember !== null)
+      return unloweredModuleMemberValue(lowerer, importedMember, expr, loc, true);
     if (NODE_GLOBALS_WITHOUT_NATIVE.has(expr.text)) lowerer.hostGlobalFence(expr.text, expr);
     return {
       kind: "libCall",

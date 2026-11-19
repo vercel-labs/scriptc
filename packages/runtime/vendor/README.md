@@ -72,6 +72,16 @@ Each build compiles the units and defines Node's `deps/zstd/zstd.gyp` selects: e
 
 Runtime packs archive zstd at `-O3`. Zig cross builds compile the objects lazily on the first zstd-using cross compile into the per-user build cache's `vendor/zstd-<version>-<flavor>-<target>-<toolchain>/` directory, the zlib-objects pattern. Zstd-free binaries compile and link none of it.
 
+## sqlite/
+
+- Project: https://sqlite.org
+- Version: 3.53.4, the amalgamation Node v24.22.1 bundles in `deps/sqlite` (`process.versions.sqlite`)
+- License: Public domain (the author's blessing, see sqlite/NOTICE)
+
+The engine behind node:sqlite (see packages/runtime/src/scr_sqlite.c). `sqlite3.c`, `sqlite3.h` and `sqlite3ext.h` are vendored unmodified from Node's `deps/sqlite`, which is the unmodified upstream amalgamation; `NOTICE` carries SQLite's public-domain notice and the provenance. The defines are the ones Node's `deps/sqlite/sqlite.gyp` selects (`SQLITE_ENABLE_SESSION`, `SQLITE_ENABLE_PREUPDATE_HOOK`, FTS3/FTS5, RTREE, GEOPOLY, RBU, DBSTAT, COLUMN_METADATA, MATH_FUNCTIONS, PERCENTILE, `SQLITE_DEFAULT_MEMSTATUS=0`), so the engine carries the same extensions and `pragma compile_options` reports the same list (the one row that differs is `COMPILER`, which names whoever built the amalgamation). The table is `sqliteInputs` in packages/runtime-pack-common/scripts/sqlite-inputs.mjs (runtime packs) and in packages/compiler/src/backend/vendor-inputs.ts (Zig cross builds), and a unit test keeps the two identical.
+
+Runtime packs archive the amalgamation at `-O2`, as Node builds it, into `artifacts/vendor/sqlite/libscriptc-sqlite.a`; source-build and Zig cross paths compile it lazily on the first sqlite-using compile into the per-user build cache's `vendor/sqlite-<version>-<flavor>-<target>-<toolchain>/libsqlite.a`. The `sqlite` runtime feature selects both the archive and scr_sqlite.c, so a program that never imports node:sqlite compiles and links neither.
+
 ## mbedtls/
 
 - Project: https://github.com/Mbed-TLS/mbedtls

@@ -64,6 +64,8 @@ export function unloweredGlobalValue(
   if (kind.kind === "function") {
     if (NODE_GLOBALS_WITHOUT_NATIVE.has(name)) return hostGlobalValue(lowerer, name, node);
     refuseUnmodeledMember(lowerer, name, node);
+    const constructible = constructibleGlobalValue(lowerer, name, loc);
+    if (constructible !== null) return constructible;
     return globalFunctionFenceValue(lowerer, name, loc);
   }
   if (kind.type === "undefined") return dynUndefinedExpr(loc);
@@ -85,6 +87,44 @@ export function unloweredGlobalValue(
     return nodeObjectValue(lowerer, name, node, loc);
   }
   lowerer.nodeValueFence(name, node);
+}
+
+/** The Node global classes whose value native code constructs the same
+ * object the direct `new` builds. A read answers the interned constructor
+ * the checked-dynamic construction dispatches by name, so a value stored,
+ * compared or passed on is that constructor and `new` through it builds a
+ * real instance. Each implementing unit (the abort, event-target and error
+ * units) links through the runtime-feature scan of this value
+ * (runtime-features.ts); MessageChannel's worker unit has no libCall of its
+ * own there, so the frontend requests it here. */
+const CONSTRUCTIBLE_GLOBAL_CLASSES: ReadonlySet<string> = new Set([
+  "MessageChannel",
+  "AbortController",
+  "Event",
+  "CustomEvent",
+  "EventTarget",
+  "DOMException",
+]);
+
+/** Whether `name` is a global class whose value constructs (lower-classes.ts
+ * reads this to let a JavaScript `new` reach that value). */
+export function isConstructibleGlobalClass(name: string): boolean {
+  return CONSTRUCTIBLE_GLOBAL_CLASSES.has(name);
+}
+
+/** The constructible value of the global class `name`, or null. The wasi
+ * target has no worker threads, so there the value keeps the direct
+ * construction's refusal (the SC2020 the read's refusing value throws). */
+function constructibleGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+  if (!CONSTRUCTIBLE_GLOBAL_CLASSES.has(name) || lowerer.targetPlatform === "wasi") return null;
+  if (name === "MessageChannel") lowerer.usesWorkers = true;
+  return {
+    kind: "libCall",
+    fn: "dyn.globalConstructor",
+    args: [strLit(name, loc)],
+    type: DYN,
+    loc,
+  };
 }
 
 /** The member `node` is the receiver of (`node.member`, `node["member"]`,
@@ -118,7 +158,10 @@ export function storedGlobalValue(
 ): IrExpr | null {
   const kind = nodeGlobalKind(name);
   if (kind === null) return null;
-  if (kind.kind === "function") return globalFunctionFenceValue(lowerer, name, loc);
+  if (kind.kind === "function")
+    return (
+      constructibleGlobalValue(lowerer, name, loc) ?? globalFunctionFenceValue(lowerer, name, loc)
+    );
   // The object of `process` or `performance` is held only by a program that
   // reads it as a value somewhere: its bare spelling then answers the same
   // object, and identity across the spellings is what the stored read is
@@ -375,6 +418,10 @@ export function unloweredModuleMemberValue(
   loc: SrcLoc,
   esmNamed: boolean,
 ): IrExpr {
+  // async_hooks.asyncWrapProviders: Node's published provider table, which
+  // the runtime builds exactly (scr_ah_providers).
+  if (bi.module === "async_hooks" && bi.member === "asyncWrapProviders")
+    return { kind: "libCall", fn: "ah.providers", args: [], type: DYN, loc };
   const display = `${bi.module}.${bi.member}`;
   const hint = builtinFenceHintOf(bi.module, bi.member);
   const kind = nodeModuleMemberKind(bi.module, bi.member);

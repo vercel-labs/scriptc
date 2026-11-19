@@ -194,6 +194,11 @@ export type IrType =
    * close() closes it for every alias, and the final release closes a
    * still-open stream. Holds no references and cannot be part of a cycle. */
   | { kind: "dir" }
+  /** The object fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync
+   * answers (scr_lib.c): the created path, its removal and the disposal
+   * hooks. Heap, refcounted, IMMUTABLE — it holds the full path so a later
+   * process.chdir cannot change what remove() deletes. */
+  | { kind: "mkdtempResult" }
   /** A child_process.spawnSync result (scr_child.c): heap, refcounted,
    * IMMUTABLE — the reaped child's status plus its captured utf8 stdout/
    * stderr. Holds only strings — never part of a cycle, no trace. Same
@@ -276,8 +281,18 @@ export type IrType =
    * listeners. Listeners are held only until close() (or the exit-time
    * cleanup) — the child ownership story, so lean allocation, no trace
    * header. Same container rules as child: union arms fine (the
-   * `FSWatcher | null` polling-fallback local), arrays/maps/JSON fenced. */
+   * `FSWatcher | null` polling-fallback local) and map values fine (the
+   * watcher registry); arrays and JSON stay fenced. */
   | { kind: "fsWatcher" }
+  /** An fsPromises.watch iterator (scr_watch_async.c — linked only when the
+   * IR uses it): the queue over an fs.watch handle that the `for await`
+   * lowering awaits and drains. Heap, refcounted; consumed only as a
+   * for-await source, so it stays out of unions, arrays, maps and JSON. */
+  | { kind: "watchEvents" }
+  /** An fs.StatWatcher handle (scr_watch_file.c): what fs.watchFile returns.
+   * Heap, refcounted; ref()/unref() move its loop liveness and close() stops
+   * its own listener registration. */
+  | { kind: "statWatcher" }
   /** A tls.SecureContext handle (scr_tls.c): heap, refcounted, IMMUTABLE —
    * a parsed cert/key pair (tls.createSecureContext({ cert, key })) that
    * an SNI callback answers per-servername. Holds no references — never
@@ -300,8 +315,9 @@ export type IrType =
    * JS form: `params` stays the declared non-rest list and the lifted
    * function has one hidden trailing ScrDyn array filled by its boxed call
    * thunk. `argumentsAll` keeps that hidden ABI but fills it with every
-   * actual argument, including named positions. The backends therefore
-   * still see one fixed native closure ABI;
+   * actual argument, including named positions, and adds it after a typed
+   * rest array when the function declares both (`funcHiddenParamCount`).
+   * The backends therefore still see one fixed native closure ABI;
    * only the frontend's call completion observes variadic source arity.
    * `argumentsPresence` says of an `argumentsAll` function that it reads the
    * hidden array only to ask whether an argument was passed at all, and reads
@@ -426,6 +442,7 @@ const POINTER_HANDLE_KINDS = [
   "bigintStats",
   "fileHandle",
   "dir",
+  "mkdtempResult",
   "spawnRes",
   "child",
   "netServer",
@@ -441,6 +458,8 @@ const POINTER_HANDLE_KINDS = [
   "cryptoHash",
   "cryptoHmac",
   "fsWatcher",
+  "watchEvents",
+  "statWatcher",
   "childStream",
   "childWriter",
 ] as const satisfies readonly IrType["kind"][];
@@ -511,6 +530,7 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   bigintStats: "scr_stats",
   fileHandle: "scr_file_handle",
   dir: "scr_dir",
+  mkdtempResult: "scr_mkdtemp_result",
   spawnRes: "scr_spawn_res",
   child: "scr_child",
   netServer: "scr_net_server",
@@ -526,6 +546,8 @@ export const RUNTIME_RC_STEMS: Record<IrType["kind"], string> = {
   childWriter: "scr_child_writer",
   procStream: "",
   fsWatcher: "scr_watcher",
+  watchEvents: "scr_watch_events",
+  statWatcher: "scr_stat_watcher",
   secureCtx: "scr_secure_ctx",
   cryptoHash: "scr_crypto_hash",
   cryptoHmac: "scr_crypto_hash",
@@ -579,6 +601,7 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "bigintStats",
   "fileHandle",
   "dir",
+  "mkdtempResult",
   "spawnRes",
   "child",
   "netServer",
@@ -594,6 +617,8 @@ export const REF_TRUTHY_KINDS: ReadonlySet<string> = new Set([
   "cryptoHash",
   "cryptoHmac",
   "fsWatcher",
+  "watchEvents",
+  "statWatcher",
   "childStream",
   "childWriter",
   "procStream",
@@ -624,6 +649,7 @@ export const STATS_T: IrType = { kind: "stats" };
 export const BIGINT_STATS_T: IrType = { kind: "bigintStats" };
 export const FILEHANDLE_T: IrType = { kind: "fileHandle" };
 export const DIR_T: IrType = { kind: "dir" };
+export const MKDTEMPRESULT_T: IrType = { kind: "mkdtempResult" };
 export const SPAWNRES_T: IrType = { kind: "spawnRes" };
 export const CHILD_T: IrType = { kind: "child" };
 export const NETSERVER_T: IrType = { kind: "netServer" };
@@ -639,6 +665,8 @@ export const SECURECTX_T: IrType = { kind: "secureCtx" };
 export const CRYPTOHASH_T: IrType = { kind: "cryptoHash" };
 export const CRYPTOHMAC_T: IrType = { kind: "cryptoHmac" };
 export const FSWATCHER_T: IrType = { kind: "fsWatcher" };
+export const WATCHEVENTS_T: IrType = { kind: "watchEvents" };
+export const STATWATCHER_T: IrType = { kind: "statWatcher" };
 export const CHILDSTREAM_T: IrType = { kind: "childStream" };
 export const CHILDWRITER_T: IrType = { kind: "childWriter" };
 export const PROCSTREAM_T: IrType = { kind: "procStream" };
@@ -740,7 +768,16 @@ export function isIdentityCollectionKey(t: IrType): boolean {
     // JS promise identity; the runtime's scr_promise_{retain,release,trace}_v
     // adapters already serve Map values and boxed captures.
     t.kind === "promise" ||
-    t.kind === "date"
+    t.kind === "date" ||
+    // A Map, a Set and a typed array are one object each for their whole
+    // life, so pointer identity is JS identity here too (JavaScript compares
+    // every object key by identity). Their runtime families already carry
+    // the ref-slot adapters this table needs: scr_map_retain/release/trace_v
+    // serve Maps and Sets, and a typed array is a leaf
+    // (scr_bytes_retain/release_v, no trace).
+    t.kind === "map" ||
+    t.kind === "set" ||
+    t.kind === "bytes"
   );
 }
 
@@ -847,6 +884,15 @@ export function isSupportedMapValue(t: IrType): boolean {
     // the same ordinary refcounted pointer story as child, without even
     // the pre-settle closures.
     case "secureCtx":
+      return true;
+    // An fs.watch handle (Map<string, FSWatcher> — the watcher registry):
+    // an ordinary refcounted pointer value (scr_watcher_retain/release_v),
+    // like child. Its listeners hold closures until the watcher closes, so
+    // a listener that captures the map is a cycle the collector cannot
+    // trace through this handle; the watcher keeps its listeners and the
+    // process alive until close() clears both, which is the same lifetime
+    // Node's FSWatcher owns.
+    case "fsWatcher":
       return true;
     // A Date object: immutable, holds no references.
     case "date":
@@ -970,8 +1016,25 @@ export function typeKey(t: IrType): string {
       return `map<${typeKey(t.key)},${typeKey(t.value)}>`;
     case "set":
       return `set<${typeKey(t.elem)}>`;
-    case "func":
-      return `func(${[...t.params.map(typeKey), ...(t.rest ? [t.restAbi === "typed" ? "...typed[]" : t.argumentsPresence ? "presence[]" : t.argumentsAll ? "arguments[]" : "...dyn[]"] : [])].join(",")})=>${typeKey(t.ret)}`;
+    case "func": {
+      const slots = t.params.map(typeKey);
+      if (t.rest === true) {
+        slots.push(
+          t.restAbi === "typed"
+            ? "...typed[]"
+            : t.argumentsPresence
+              ? "presence[]"
+              : t.argumentsAll
+                ? "arguments[]"
+                : "...dyn[]",
+        );
+        // A typed rest array is one of `params`, so the actual-argument
+        // array an `argumentsAll` value receives follows it
+        // (funcHiddenParamCount); the key names both.
+        if (t.restAbi === "typed" && t.argumentsAll === true) slots.push("arguments[]");
+      }
+      return `func(${slots.join(",")})=>${typeKey(t.ret)}`;
+    }
     case "object":
       return `object:${t.className}`;
     case "classval":
@@ -1348,6 +1411,11 @@ export interface IrContracts {
    * instance's lifetime, so the backend may keep them in the instance itself
    * (ir/inline-arrays.ts). */
   inlineArrays?: string[];
+  /** Classes declared `implements SingleOwner`: the instances of one may
+   * have a single owner, which backend/tree-classes.ts proves before it
+   * drops their reference count and frees a subtree through its owner. A
+   * class the proof rejects is a compile error (SC7010). */
+  singleOwner?: string[];
 }
 
 export type IrFfiValueParamClass =
@@ -2029,6 +2097,17 @@ export function isDirentShape(shape: IrRecordShape): boolean {
 /** The hidden field that marks the perf_hooks entry row (type-mapper's
  * perfEntryShape). */
 export const PERF_ENTRY_MARKER = "%perfEntry";
+
+/** PerformanceEntry's toJSON field order (the entry row's shape also
+ * carries the resource-timing fields; JSON.stringify runs the entry's
+ * toJSON, so only these serialize). */
+export const PERF_ENTRY_JSON_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "detail",
+] as const;
 
 /** perf_hooks entry rows: the marker field names the shape (nothing else
  * interns a '%perfEntry' field; user object literals with a '%' key get a
@@ -4910,6 +4989,7 @@ export const DYN_HANDLE_KINDS: ReadonlyMap<string, { tag: string; cls: string }>
   ["spawnRes", { tag: "SCR_DYNH_SPAWN_RES", cls: "SpawnSyncReturns" }],
   ["cryptoHash", { tag: "SCR_DYNH_HASH", cls: "Hash" }],
   ["cryptoHmac", { tag: "SCR_DYNH_HMAC", cls: "Hmac" }],
+  ["statWatcher", { tag: "SCR_DYNH_STAT_WATCHER", cls: "StatWatcher" }],
 ]);
 
 /** How a Node island's own instance of a native platform class comes to sit in
@@ -5343,6 +5423,16 @@ function canDynCheckToAt(
     return result;
   }
   return false;
+}
+
+/** How many hidden trailing native parameters a function VALUE's lifted
+ * signature carries after the ones `params` spells: the checked-dynamic
+ * rest array, or the actual-argument array an `argumentsAll` value
+ * receives (one slot serves both when the type is checked-dynamic
+ * variadic), or the actual-argument array that follows a typed rest
+ * array. */
+export function funcHiddenParamCount(t: IrType & { kind: "func" }): number {
+  return t.argumentsAll === true || (t.rest === true && t.restAbi === undefined) ? 1 : 0;
 }
 
 /** A closure type that can BOX into the checked-dynamic tree's function kind (dynFrom):

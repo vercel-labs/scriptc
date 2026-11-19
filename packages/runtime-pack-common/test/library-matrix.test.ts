@@ -155,6 +155,8 @@ test("Wasm packs include reactor runtimes without thread-local state or a JS eng
     const sources = wasm.flavors[name].runtime_units.map((unit) => unit.source);
     expect(sources).toContain("scr_library.c");
     expect(sources).not.toContain("scr_island.c");
-    expect(sources).not.toContain("scr_async.c");
+    // The wasm pack adds the EventTarget unit to every flavor, and that unit
+    // spawns through the async runtime, so the library flavors link it.
+    expect(sources).toContain("scr_async.c");
   }
 });

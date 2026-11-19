@@ -1732,12 +1732,20 @@ bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, si
   return scr_ee_emit_core(em, name, NULL, args ? args : scr_ee_no_args, argc, NULL);
 }
 
-bool scr_emitter_emit_message(ScrEmitter *em, ScrStr *name, const struct ScrMessage *message,
-                              ScrDyn *(*decode)(const struct ScrMessage *)) {
+bool scr_emitter_emit_message_out(ScrEmitter *em, ScrStr *name, const struct ScrMessage *message,
+                                  ScrDyn *(*decode)(const struct ScrMessage *), ScrDyn **out) {
   ScrEeMessage state = {message, decode, NULL};
   bool had = scr_ee_emit_core(em, name, NULL, NULL, 0, &state);
-  scr_dyn_release(state.decoded);
+  if (out)
+    *out = state.decoded;
+  else
+    scr_dyn_release(state.decoded);
   return had;
+}
+
+bool scr_emitter_emit_message(ScrEmitter *em, ScrStr *name, const struct ScrMessage *message,
+                              ScrDyn *(*decode)(const struct ScrMessage *)) {
+  return scr_emitter_emit_message_out(em, name, message, decode, NULL);
 }
 
 /* emit(name, ...args) through an untyped value: the arguments as given.

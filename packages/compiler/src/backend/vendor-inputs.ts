@@ -1,6 +1,7 @@
 /** The pinned QuickJS, mbedTLS, zlib, brotli, and zstd inputs used by native
  * recipes. */
 export const QJS_COMMIT = "3c8f3d68953955950074c41c6e4d999562ae82a7";
+export const MLKEM_VERSION = "2.0.0";
 export const MBEDTLS_VERSION = "3.6.7";
 /** The zlib Node v24.22.1 bundles (`process.versions.zlib` there), the
  * Chromium fork in Node's deps/zlib (packages/runtime/vendor/zlib). */
@@ -9,6 +10,10 @@ export const ZLIB_VERSION = "1.3.2.1-motley-285e94b";
 export const BROTLI_VERSION = "1.2.0";
 /** The zstd release Node v24.22.1 bundles (packages/runtime/vendor/zstd). */
 export const ZSTD_VERSION = "1.5.7";
+
+/** SQLite's amalgamation, the copy Node v24.22.1 bundles in deps/sqlite
+ * (process.versions.sqlite). */
+export const SQLITE_VERSION = "3.53.4";
 /** ICU4C release 78.3 — the exact version Node v24.22.1 bundles
  * (`process.versions.icu` there), from the `release-78.3` tag. ICU is not
  * vendored: the build fetches the release's own source tarball and data zip
@@ -184,6 +189,37 @@ export const ZSTD_SOURCES = [
  * rejects the nbWorkers parameter Node accepts. packages/runtime-pack-common/
  * scripts/zstd-inputs.mjs keeps the same table for the runtime packs.
  * `triple` is an LLVM or Zig target triple. */
+/** The SQLite amalgamation's translation unit, defines and flags. Node's
+ * deps/sqlite/sqlite.gyp selects the defines; they decide which extensions
+ * the engine carries and what `pragma compile_options` reports. */
+export function sqliteInputs(_triple: string): {
+  sources: string[];
+  defines: string[];
+  compileFlags: string[];
+} {
+  return {
+    sources: ["sqlite3.c"],
+    defines: [
+      "SQLITE_DEFAULT_MEMSTATUS=0",
+      "SQLITE_ENABLE_COLUMN_METADATA",
+      "SQLITE_ENABLE_DBSTAT_VTAB",
+      "SQLITE_ENABLE_FTS3",
+      "SQLITE_ENABLE_FTS3_PARENTHESIS",
+      "SQLITE_ENABLE_FTS5",
+      "SQLITE_ENABLE_GEOPOLY",
+      "SQLITE_ENABLE_MATH_FUNCTIONS",
+      "SQLITE_ENABLE_PERCENTILE",
+      "SQLITE_ENABLE_PREUPDATE_HOOK",
+      "SQLITE_ENABLE_RBU",
+      "SQLITE_ENABLE_RTREE",
+      "SQLITE_ENABLE_SESSION",
+    ],
+    // Node builds the amalgamation at -O2 with its default flags; the
+    // engine's own SQLITE_LIKE-like tuning is all in-tree.
+    compileFlags: [],
+  };
+}
+
 export function zstdInputs(triple: string): {
   sources: string[];
   defines: string[];

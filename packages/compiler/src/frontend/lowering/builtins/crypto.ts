@@ -702,6 +702,19 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  if (bi.member === "argon2Sync" || bi.member === "argon2") {
+    const async = bi.member === "argon2";
+    const { stmts, args: values } = dynCallArgs(lowerer, expr, async ? 3 : 2);
+    const call: IrExpr = {
+      kind: "libCall",
+      fn: async ? "crypto.argon2Cb" : "crypto.argon2Sync",
+      args: [{ kind: "dynArrLit", elems: values, type: DYN, loc }],
+      type: async ? VOID : DYN,
+      loc,
+    };
+    if (stmts.length === 0) return call;
+    return { kind: "seqExpr", stmts, result: call, type: call.type, loc };
+  }
   if (bi.member === "hash") {
     // A missing, surplus or non-string algorithm takes Node's checks at
     // run time, in its order: algorithm, input, then options.
@@ -1838,6 +1851,8 @@ function lowerPkiCall(
     privateEncrypt: ["crypto.privateEncrypt", 2, 2, "privateEncrypt(key, buffer)"],
     publicDecrypt: ["crypto.publicDecrypt", 2, 2, "publicDecrypt(key, buffer)"],
     diffieHellman: ["crypto.diffieHellman", 1, 2, "diffieHellman(options[, callback])"],
+    encapsulate: ["crypto.encapsulate", 0, 2, "encapsulate(key[, callback])"],
+    decapsulate: ["crypto.decapsulate", 0, 3, "decapsulate(key, ciphertext[, callback])"],
     createSign: ["crypto.createSign", 0, 2, "createSign(algorithm[, options])"],
     createVerify: ["crypto.createVerify", 0, 2, "createVerify(algorithm[, options])"],
     setEngine: ["crypto.setEngine", 1, 2, "setEngine(engine[, flags])"],

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/prototype-reflection-with-a-typed-field-read.ts"
+ ],
+ "diags": []
+}

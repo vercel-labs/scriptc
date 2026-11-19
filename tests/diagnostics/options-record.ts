@@ -43,9 +43,10 @@ tls.createServer({ cert: "c", key: "k", ciphers: "TLS_AES_128_GCM_SHA256" }, () 
 tls.createServer({ cert: "c", key: "k", ticketKeys: new Uint8Array(48) }, () => {});
 
 // fs.watch: the options that would CHANGE behavior fence by name; the
-// stated defaults are accepted (corpus 1751).
+// stated defaults are accepted (corpus 1751), and `persistent` is lowered
+// (corpus fs-watch-ref-unref).
 fs.watch("/tmp", { recursive: true }, () => {});
-fs.watch("/tmp", { persistent: false }, () => {});
+fs.watch("/tmp", { encoding: "buffer" }, () => {});
 
 
 // A bare __proto__: value entry is not an ordinary undocumented key: it

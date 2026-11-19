@@ -39,7 +39,12 @@ import { generatorDrain } from "../iterator-adapters.js";
 import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
-import { arrayValueStore, primitiveElement, unionReadAsArray } from "../array-values.js";
+import {
+  arrayValueStore,
+  optionalSlotValue,
+  primitiveElement,
+  unionReadAsArray,
+} from "../array-values.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { iteratorCanStep } from "../iterator-consumption.js";
 import { withoutParentheses } from "../../outer-expressions.js";
@@ -845,7 +850,7 @@ export function lowerArrayLiteral(
         ts.isPropertyAccessExpression(el.expression) &&
         (el.expression.name.text === "pop" || el.expression.name.text === "shift"));
     if (directOptionalCandidate) {
-      const raw = lowerer.lowerExpr(el);
+      const raw = optionalSlotValue(lowerer, lowerer.lowerExpr(el), type);
       if (!typeEquals(raw.type, type.elem)) {
         needsStateBuild = true;
         return raw;

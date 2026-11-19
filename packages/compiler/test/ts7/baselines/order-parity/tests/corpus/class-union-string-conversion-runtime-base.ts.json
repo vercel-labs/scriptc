@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-union-string-conversion-runtime-base.ts"
+ ],
+ "diags": []
+}

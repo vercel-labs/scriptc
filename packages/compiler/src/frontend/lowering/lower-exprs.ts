@@ -1,3 +1,7 @@
+import {
+  lowerCjsExportsObjectCall,
+  lowerCjsExportsObjectRead,
+} from "./cjs-exports-object-value.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import {
   arrayClassMemberOwner,
@@ -83,7 +87,11 @@ import {
   locOf,
   orderedImportsOf,
 } from "../program.js";
-import { cjsExportChangesAfterInit, cjsNamespaceTargetOf } from "./cjs-inline-require.js";
+import {
+  cjsExportChangesAfterInit,
+  cjsNamespaceTargetOf,
+  cjsRuntimeOptionalExportStorage,
+} from "./cjs-inline-require.js";
 import { npmStaticLexerVisibleNames } from "../npm-static.js";
 import {
   ARRAY_CALLBACK_METHODS,
@@ -1047,6 +1055,12 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isBinaryExpression(expr))
     return lowerNewTargetComparison(lowerer, expr) ?? lowerer.lowerBinary(expr);
   if (ts.isCallExpression(expr)) {
+    // A member call of a module whose exports object some code takes calls
+    // through that object (cjs-exports-object-value.ts).
+    if (lowerer.cjsExportsObjects.size > 0) {
+      const viaObject = lowerCjsExportsObjectCall(lowerer, expr);
+      if (viaObject) return viaObject;
+    }
     // `h.return?.()` on a helper object: the method exists, so the
     // optional call is the call.
     const helperReturn = lowerHelperReturnCall(lowerer, expr);
@@ -1061,8 +1075,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   if (ts.isElementAccessExpression(expr)) return lowerer.lowerElementAccess(expr);
   if (ts.isConditionalExpression(expr)) return lowerTernary(lowerer, expr);
 
-  if (ts.isPropertyAccessExpression(expr))
+  if (ts.isPropertyAccessExpression(expr)) {
+    // A member of a module whose exports object some code takes reads
+    // through that object (cjs-exports-object-value.ts).
+    if (lowerer.cjsExportsObjects.size > 0) {
+      const viaObject = lowerCjsExportsObjectRead(lowerer, expr);
+      if (viaObject) return viaObject;
+    }
     return lowerNewTargetName(lowerer, expr) ?? lowerPropertyAccessExpr(lowerer, expr, loc);
+  }
 
   // Meta-properties, named: `new.target` reflects HOW a function was
   // invoked (compiled functions are never constructors of themselves —
@@ -2741,6 +2762,25 @@ export function runtimeOptionalStorageOperand(
 ): IrExpr | null {
   let expr = node;
   while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  // A CommonJS module member whose export the module may leave unassigned:
+  // its slot holds the undefined arm even though the checker's type for the
+  // import names none.
+  if (
+    ts.isPropertyAccessExpression(expr) &&
+    expr.questionDotToken === undefined &&
+    ts.isIdentifier(expr.name)
+  ) {
+    const storage = cjsRuntimeOptionalExportStorage(lowerer, expr);
+    if (storage !== null) {
+      const checked = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (
+        checked === null ||
+        (checked.kind === "union" && lowerer.armTag(checked.unionId, UNDEFINED_T) >= 0)
+      )
+        return null;
+      return storage;
+    }
+  }
   if (!ts.isIdentifier(expr)) return null;
   // Only storage that can actually receive an absent value without the
   // checker seeing it qualifies; other declared-optional bindings keep the
@@ -3096,6 +3136,7 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "AbortSignal",
   "Blob",
   "BroadcastChannel",
+  "CloseEvent",
   "CustomEvent",
   "DOMException",
   "Event",
@@ -3414,6 +3455,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "httpClientReq":
     case "secureCtx":
     case "fsWatcher":
+    case "statWatcher":
     case "cryptoHash":
     case "cryptoHmac":
     case "childStream":
@@ -4018,7 +4060,7 @@ export function staticRegexPatternOf(lowerer: Lowerer, e: ts.Expression): string
     return text.slice(1, text.lastIndexOf("/"));
   }
   if (
-    ts.isNewExpression(expr) &&
+    (ts.isNewExpression(expr) || ts.isCallExpression(expr)) &&
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "RegExp" &&
     lowerer.isStdlibGlobal(expr.expression, "RegExp") &&

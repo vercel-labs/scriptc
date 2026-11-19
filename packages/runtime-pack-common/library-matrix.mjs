@@ -1,6 +1,16 @@
 /** Runtime library modes have distinct trap and state ownership contracts. */
 export function withLibraryRuntimeFlavors(matrix) {
-  const omitted = new Set(["scr_async.c", "scr_crypto_async.c", "scr_child.c", "scr_ffi.c"]);
+  // A wasm pack carries the EventTarget unit in every flavor (AbortSignal
+  // dispatches through it, and the wasm build lists it in extraRuntimeSources),
+  // and that unit propagates an abort through the async unit's spawn-after.
+  // Omitting scr_async.c there leaves scr_async_spawn_after and the promise
+  // calls it makes undefined when a library flavor links.
+  const omitted = new Set([
+    ...(matrix.target.object_format === "wasm" ? [] : ["scr_async.c"]),
+    "scr_crypto_async.c",
+    "scr_child.c",
+    "scr_ffi.c",
+  ]);
   const optional = new Set([
     "scr_regex.c",
     "scr_path_win32_relative.c",

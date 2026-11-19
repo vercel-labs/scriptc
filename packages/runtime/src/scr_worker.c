@@ -1,4 +1,7 @@
 #include "scr_worker.h"
+/* scr_thread_cpu_user/system: the calling thread's own CPU clock, which
+ * worker.cpuUsage() reports (scr_lib.c). */
+#include "scr_lib.h"
 
 #ifdef SCR_WORKERS
 #include <stdatomic.h>
@@ -66,6 +69,15 @@ struct ScrWorkerThread {
   ScrContextEnv *environment;
   ScrStr *name; /* threadName: immortal copy shared by both threads */
   unsigned capture; /* 1 stdout, 2 stderr: writes go to the parent as events */
+  /* worker.performance: the loop snapshot this thread publishes for its
+   * creator (scr_worker_publish_loop_metrics), behind a seqlock; the values
+   * travel as their bit patterns so every access is atomic */
+  _Atomic uint64_t metrics_seq;
+  _Atomic uint64_t metrics_loop_start_bits;
+  _Atomic uint64_t metrics_idle_bits;
+  /* the constructor's resourceLimits (young, old, codeRange, stack), read
+   * back by this thread's own resourceLimits */
+  double limits[4];
   int argc;
   char **argv;
   bool joined;
@@ -240,6 +252,17 @@ void scr_worker_set_stdin_attach(void (*attach)(void)) {
   atomic_store_explicit(&scr_worker_stdin_attach, attach, memory_order_relaxed);
 }
 
+static _Atomic(void (*)(void)) scr_worker_events_attach;
+static _Atomic(void (*)(void)) scr_worker_events_detach;
+
+void scr_worker_set_events_attach(void (*attach)(void)) {
+  atomic_store_explicit(&scr_worker_events_attach, attach, memory_order_relaxed);
+}
+
+void scr_worker_set_events_detach(void (*detach)(void)) {
+  atomic_store_explicit(&scr_worker_events_detach, detach, memory_order_relaxed);
+}
+
 bool scr_worker_thread_post_stdin(ScrWorkerThread *worker, const void *data, size_t len, bool end) {
   ScrMailEvent *event = scr_worker_event(SCR_WORKER_STDIN, 0, 0, NULL);
   if (!end) {
@@ -255,6 +278,73 @@ bool scr_worker_post_parent(ScrMessage *message) {
   if (!scr_worker_current) { scr_message_free(message); return false; }
   return scr_mailbox_post(scr_worker_current->parent,
     scr_worker_event(SCR_WORKER_MESSAGE, scr_worker_current->id, 0, message));
+}
+
+/* worker.performance: the perf_hooks loop metrics publish a worker thread's
+ * snapshot on each turn (scr_context_publish_loop_metrics), and the thread
+ * that created the worker reads the last one. */
+static void scr_worker_publish_loop_metrics(double loop_start_ms, double idle_ms) {
+  ScrWorkerThread *worker = scr_worker_current;
+  if (!worker) return;
+  uint64_t start_bits;
+  uint64_t idle_bits;
+  memcpy(&start_bits, &loop_start_ms, sizeof start_bits);
+  memcpy(&idle_bits, &idle_ms, sizeof idle_bits);
+  uint64_t seq = atomic_load_explicit(&worker->metrics_seq, memory_order_relaxed);
+  atomic_store_explicit(&worker->metrics_seq, seq + 1, memory_order_release);
+  atomic_store_explicit(&worker->metrics_loop_start_bits, start_bits, memory_order_relaxed);
+  atomic_store_explicit(&worker->metrics_idle_bits, idle_bits, memory_order_relaxed);
+  atomic_store_explicit(&worker->metrics_seq, seq + 2, memory_order_release);
+}
+
+bool scr_worker_thread_metrics(ScrWorkerThread *worker, double *loop_start_ms, double *idle_ms) {
+  for (;;) {
+    uint64_t before = atomic_load_explicit(&worker->metrics_seq, memory_order_acquire);
+    if (before & 1) continue; /* the thread is writing; it never waits on us */
+    if (before == 0) return false; /* its loop has not turned yet */
+    uint64_t start_bits =
+        atomic_load_explicit(&worker->metrics_loop_start_bits, memory_order_relaxed);
+    uint64_t idle_bits = atomic_load_explicit(&worker->metrics_idle_bits, memory_order_relaxed);
+    atomic_thread_fence(memory_order_acquire);
+    if (atomic_load_explicit(&worker->metrics_seq, memory_order_relaxed) == before) {
+      memcpy(loop_start_ms, &start_bits, sizeof start_bits);
+      memcpy(idle_ms, &idle_bits, sizeof idle_bits);
+      return true;
+    }
+  }
+}
+
+/* worker.cpuUsage(): the parent asks the worker's thread, which measures
+ * itself and answers. The measure is the thread's own CPU clock, so it
+ * works while another thread's code is running and while the worker blocks:
+ * only a worker that never returns to its event loop leaves the request
+ * queued. */
+bool scr_worker_thread_post_cputime(ScrWorkerThread *worker, int seq) {
+  return scr_mailbox_post(worker->inbox, scr_worker_event(SCR_WORKER_CPUTIME, 0, seq, NULL));
+}
+
+bool scr_worker_post_parent_cputime(int seq, uint64_t user_us, uint64_t system_us) {
+  if (!scr_worker_current) return false;
+  ScrMailEvent *event = scr_worker_event(SCR_WORKER_CPUTIME_RESULT, scr_worker_current->id, seq, NULL);
+  uint64_t values[2] = {user_us, system_us};
+  event->data = malloc(sizeof values);
+  if (!event->data) scr_trap("scriptc: out of memory\n");
+  memcpy(event->data, values, sizeof values);
+  event->length = sizeof values;
+  return scr_mailbox_post(scr_worker_current->parent, event);
+}
+
+bool scr_worker_thread_current_limits(double out[4]) {
+  if (!scr_worker_current) return false;
+  for (int i = 0; i < 4; i++) out[i] = scr_worker_current->limits[i];
+  return true;
+}
+
+void scr_worker_thread_cpu_usage(uint64_t *user_us, uint64_t *system_us) {
+  double user = scr_thread_cpu_user();
+  double system = scr_thread_cpu_system();
+  *user_us = user > 0 ? (uint64_t)user : 0;
+  *system_us = system > 0 ? (uint64_t)system : 0;
 }
 
 /* The stdout and stderr options: a captured write reaches the parent's
@@ -319,6 +409,13 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
   scr_context_env_enter(worker->environment);
   worker->environment = NULL;
   scr_worker_current = worker;
+  /* worker.performance reads this thread's loop metrics from its creator. */
+  scr_context_publish_loop_metrics = scr_worker_publish_loop_metrics;
+  /* The inbox is watched from the first loop pass: worker.cpuUsage() is
+   * answered by this thread even when its script never names
+   * worker_threads. */
+  void (*events_attach)(void) = atomic_load_explicit(&scr_worker_events_attach, memory_order_relaxed);
+  if (events_attach) events_attach();
   scr_context_report_error = scr_worker_report_error;
   if (worker->capture & 3) scr_stdio_capture = scr_worker_capture;
   if (worker->capture & 4) {
@@ -330,6 +427,10 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
   scr_context_note_script_end(); /* when the program frees nothing at exit */
   scr_mailbox_close(worker->inbox);
   scr_stdin_fed_clear(); /* chunks the worker never read */
+  /* Before the context's exit stack: that stack carries the reference-count
+   * audit, which must see nothing this thread's worker events still hold. */
+  void (*events_detach)(void) = atomic_load_explicit(&scr_worker_events_detach, memory_order_relaxed);
+  if (events_detach) events_detach();
   scr_context_cleanup();
   /* Frees the group arenas and chunks the thread kept for reuse before the
    * parent sees the exit. */
@@ -377,9 +478,9 @@ static void *scr_worker_thread_main(void *data) {
 ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
                                         ScrMessage *data, bool environment_data,
                                         ScrMailbox *parent, ScrArr *arguments,
-                                        size_t stack_size, const ScrStr *name,
-                                        unsigned capture, ScrContextEnv *environment,
-                                        bool share_environment) {
+                                        size_t stack_size, const double limits[4],
+                                        const ScrStr *name, unsigned capture,
+                                        ScrContextEnv *environment, bool share_environment) {
   ScrWorkerThread *worker = calloc(1, sizeof(*worker));
   if (!worker) scr_trap("scriptc: out of memory\n");
   atomic_init(&worker->references, 2); /* owner and native thread */
@@ -397,6 +498,7 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
   worker->data = data;
   worker->environment_data = environment_data;
   worker->capture = capture;
+  for (int i = 0; i < 4; i++) worker->limits[i] = limits ? limits[i] : 0;
   /* SHARE_ENV shares the environment of the thread that creates the worker,
    * not the process environment: a worker with its own env option shares
    * that one with its children (and is NULL, the process environment, only

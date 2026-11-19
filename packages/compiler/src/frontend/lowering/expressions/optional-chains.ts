@@ -119,8 +119,35 @@ export function isOptionalChainTail(lowerer: Lowerer, expr: ts.Expression): bool
   // undefined-armed value, and `a[0]?.b.c` must then short-circuit `.c`
   // too. The chain lowering inspects the lowered receiver: a present value
   // re-dispatches the plain lowering, so only genuinely optional receivers
-  // change shape.
-  return lowerer.isRuntimeOptionalOrigin(tail.expression);
+  // change shape. A conditional or logical expression that carries such a
+  // read in an arm carries the absent arm through, so it qualifies too
+  // (`(flag ? capture : capture)?.inner.label`).
+  return chainReceiverMayBeAbsent(lowerer, tail.expression);
+}
+
+/** Whether the lowered value of `node` can hold a hidden undefined the
+ * checker type does not admit: the runtime-optional origins the lowerer
+ * already names, and the lazy logical/conditional operators that carry an
+ * operand's absent arm through to their result. */
+function chainReceiverMayBeAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
+  let e: ts.Expression = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (lowerer.isRuntimeOptionalOrigin(e)) return true;
+  if (
+    ts.isConditionalExpression(e) &&
+    (chainReceiverMayBeAbsent(lowerer, e.whenTrue) ||
+      chainReceiverMayBeAbsent(lowerer, e.whenFalse))
+  )
+    return true;
+  if (
+    ts.isBinaryExpression(e) &&
+    (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      e.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) &&
+    (chainReceiverMayBeAbsent(lowerer, e.left) || chainReceiverMayBeAbsent(lowerer, e.right))
+  )
+    return true;
+  return false;
 }
 
 /** True when an EARLIER step of this access chain carries `?.` — JS

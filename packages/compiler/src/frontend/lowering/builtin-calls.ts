@@ -1,8 +1,14 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
-import { lowerFsWatchFileCall } from "./builtins/filesystem.js";
+import {
+  lowerFsPromisesWatchCall,
+  lowerFsWatchFileCall,
+  lowerMkdtempDisposableCall,
+} from "./builtins/filesystem.js";
 import {
   lowerEventLoopUtilizationCall,
+  lowerTimerifyCall,
   lowerMonitorEventLoopDelayCall,
+  lowerCreateHistogramCall,
 } from "./builtins/performance.js";
 import {
   lowerEnvironmentData,
@@ -176,11 +182,31 @@ export function lowerBuiltinCall(
   if (bi.module === "buffer" && (bi.member === "atob" || bi.member === "btoa")) {
     return lowerBase64Call(lowerer, expr, bi.member, loc);
   }
+  if (bi.module === "buffer" && bi.member === "resolveObjectURL") {
+    // buffer.resolveObjectURL(id): the Blob registered under an object URL's
+    // id, or undefined when nothing is registered under it. Node coerces the
+    // argument with the template-literal ToString, so any value is boxed and
+    // the runtime converts it — a symbol throws there, as Node's does.
+    const args = expr.arguments.nodes;
+    if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+      lowerer.noLowering("buffer.resolveObjectURL with this argument shape", expr);
+    }
+    const value = lowerer.lowerExpr(args[0]!);
+    const id: IrExpr =
+      value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    return { kind: "libCall", fn: "buffer.resolveObjectURL", args: [id], type: DYN, loc };
+  }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
     return lowerMonitorEventLoopDelayCall(lowerer, expr);
   }
+  if (bi.module === "perf_hooks" && bi.member === "createHistogram") {
+    return lowerCreateHistogramCall(lowerer, expr);
+  }
   if (bi.module === "perf_hooks" && bi.member === "eventLoopUtilization") {
     return lowerEventLoopUtilizationCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "timerify") {
+    return lowerTimerifyCall(lowerer, expr, loc);
   }
   if (bi.module === "events") {
     const helper = lowerEventsEmitterHelper(lowerer, expr, bi.member, loc);
@@ -214,6 +240,32 @@ export function lowerBuiltinCall(
   if (bi.module === "fs" && (bi.member === "watchFile" || bi.member === "unwatchFile")) {
     const polling = lowerFsWatchFileCall(lowerer, expr, loc, bi.member === "unwatchFile");
     if (polling) return polling;
+  }
+  // fsPromises.watch: the async iterator a `for await` drains (the
+  // lowering of that loop drives it; any other use has no lowering and is
+  // refused where it stands).
+  // fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync: the created
+  // directory plus its removal and disposal hooks.
+  if (
+    (bi.module === "fs/promises" && bi.member === "mkdtempDisposable") ||
+    (bi.module === "fs" && bi.member === "mkdtempDisposableSync")
+  ) {
+    const disposable = lowerMkdtempDisposableCall(
+      lowerer,
+      expr,
+      bi.member === "mkdtempDisposable",
+      loc,
+    );
+    if (disposable) return disposable;
+  }
+  if (bi.module === "fs/promises" && bi.member === "watch") {
+    const watching = lowerFsPromisesWatchCall(lowerer, expr, loc);
+    if (watching) return watching;
+    lowerer.noLowering(
+      "fsPromises.watch outside a for await",
+      expr,
+      "the iterator is consumed by `for await (const info of fsPromises.watch(path, options))`, which is the only supported shape",
+    );
   }
   const fsLadder = lowerer.lowerFsLadderCall(expr, bi, loc);
   if (fsLadder) return fsLadder;

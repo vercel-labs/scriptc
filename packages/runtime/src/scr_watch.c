@@ -145,6 +145,8 @@ struct ScrWatcher {
   alignas(DWORD) char buf[4096]; /* FILE_NOTIFY_INFORMATION entries */
 #endif
   bool closed;  /* close() called: off the liveness count, listeners gone */
+  bool reffed;  /* keeps the loop alive (Node's persistent default);
+                 * unref() clears it, ref() sets it again */
   ScrStr *path; /* the watched path — the reopen-after-rename target */
   ScrWatchL *ls;
   size_t n, cap;
@@ -152,7 +154,8 @@ struct ScrWatcher {
 };
 
 static SCR_TL ScrWatcher *scr_watchers = NULL;
-static SCR_TL size_t scr_watchers_open = 0; /* liveness: open (unclosed) watchers */
+static SCR_TL size_t scr_watchers_open = 0;   /* every open (unclosed) watcher: io interest */
+static SCR_TL size_t scr_watchers_reffed = 0; /* the reffed ones: the loop's liveness */
 
 static void scr_watch_close_tick(ScrClosure *cb);
 
@@ -201,13 +204,6 @@ static SCR_TL int scr_watch_ino = -1; /* created with the first watch */
   (IN_ATTRIB | IN_CREATE | IN_MODIFY | IN_DELETE | IN_DELETE_SELF |              \
    IN_MOVE_SELF | IN_MOVED_FROM | IN_MOVED_TO)
 
-static ScrWatcher *scr_watch_by_wd(int wd) {
-  if (wd < 0) return NULL;
-  for (ScrWatcher *w = scr_watchers; w != NULL; w = w->next) {
-    if (!w->closed && w->wd == wd) return w;
-  }
-  return NULL;
-}
 #endif
 
 #ifdef SCR_HAVE_RDCW
@@ -286,8 +282,10 @@ void scr_watcher_release_v(void *p) { scr_watcher_release((ScrWatcher *)p); }
 /* fs.watch(path, cb?) — opens the path NOW (throwing Node's fs error on
  * failure), registers the watcher with the loop, and arms the vnode
  * filter. cb (nullable) moves in as the first listener. Result +1. */
+static void scr_watch_set_reffed(ScrWatcher *w, bool reffed);
+
 ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWatchFn fn,
-                         bool wants_name) {
+                         bool wants_name, bool persistent) {
   /* getValidatedPath: a null byte throws ERR_INVALID_ARG_VALUE before the
    * path reaches the platform call. */
   if (!scr_fs_path_ok(path, "path")) {
@@ -412,7 +410,27 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
   w->next = scr_watchers;
   scr_watchers = scr_watcher_retain(w);
   scr_watchers_open++;
+  scr_watch_set_reffed(w, persistent);
   return w;
+}
+
+/* The loop-liveness toggle behind Node's `persistent` option and
+ * FSWatcher.ref()/unref(): a reffed open watcher keeps the loop alive, an
+ * unref'd one does not (the loop still polls it while anything else keeps
+ * the process running). Node's methods are no-ops on a closed watcher. */
+static void scr_watch_set_reffed(ScrWatcher *w, bool reffed) {
+  if (w->reffed == reffed) return;
+  w->reffed = reffed;
+  if (reffed) scr_watchers_reffed++;
+  else scr_watchers_reffed--;
+}
+
+void scr_watcher_ref(ScrWatcher *w) {
+  if (!w->closed) scr_watch_set_reffed(w, true);
+}
+
+void scr_watcher_unref(ScrWatcher *w) {
+  if (!w->closed) scr_watch_set_reffed(w, false);
 }
 
 /* watcher.close() — idempotent: drops the filter (closing the fd deletes
@@ -424,6 +442,7 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
 void scr_watcher_close(ScrWatcher *w) {
   if (w->closed) return;
   w->closed = true;
+  scr_watch_set_reffed(w, false);
   /* The 'close' listeners leave the LIVE list and run on the next tick,
    * in registration order, exactly once (Node emits 'close' after the
    * first close() returns). */
@@ -441,10 +460,21 @@ void scr_watcher_close(ScrWatcher *w) {
   }
 #ifdef SCR_HAVE_INOTIFY
   if (w->wd >= 0) {
-    /* The queued IN_IGNORED this rm produces finds no open watcher and is
-     * skipped; wd numbers are issued cyclically, so it cannot collide
-     * with a watch created afterwards. */
-    if (scr_watch_ino >= 0) (void)inotify_rm_watch(scr_watch_ino, w->wd);
+    /* inotify is refcounted by PATH: every watcher on one path shares its
+     * descriptor, and inotify_rm_watch drops it for all of them. Only the
+     * last open watcher on the descriptor removes it, so closing one
+     * watcher leaves its peers delivering. The queued IN_IGNORED a real
+     * removal produces finds no open watcher and is skipped; wd numbers
+     * are issued cyclically, so it cannot collide with a watch created
+     * afterwards. */
+    bool shared_by_peer = false;
+    for (ScrWatcher *peer = scr_watchers; peer != NULL; peer = peer->next) {
+      if (peer != w && !peer->closed && peer->wd == w->wd) {
+        shared_by_peer = true;
+        break;
+      }
+    }
+    if (!shared_by_peer && scr_watch_ino >= 0) (void)inotify_rm_watch(scr_watch_ino, w->wd);
     w->wd = -1;
   }
 #endif
@@ -612,7 +642,10 @@ static void scr_watch_fire(ScrWatcher *w, const char *event, const char *filenam
 /* Liveness: every un-closed watcher holds the loop (Node's persistent
  * default) — a watcher with no event source (fd < 0) included, exactly
  * like Node's. */
-static bool scr_watch_pending(void) { return scr_watchers_open > 0; }
+static bool scr_watch_pending(void) { return scr_watchers_reffed > 0; }
+/* Events from unref'd watchers still reach their listeners whenever the
+ * loop runs for other work — they just do not hold it. */
+static bool scr_watch_io(void) { return scr_watchers_open > 0; }
 
 static int scr_watch_pollfd(void) {
 #ifdef SCR_HAVE_KQUEUE
@@ -683,20 +716,28 @@ static void scr_watch_dispatch(void) {
     for (char *p = buf; p < buf + n;) {
       const struct inotify_event *e = (const struct inotify_event *)p;
       p += sizeof *e + e->len;
-      ScrWatcher *w = scr_watch_by_wd(e->wd);
-      if (w == NULL) continue; /* closed, or a stale post-close IN_IGNORED */
+      /* inotify_add_watch is refcounted by PATH, so every watch on one
+       * path shares a descriptor: deliver the event to each open watcher
+       * holding it, not just the first (Node's per-FSWatcher delivery).
+       * A listener may close another watcher as it runs — closed ones are
+       * skipped, and close() drops the wd, so the walk stays honest. */
       /* libuv's mapping, probed against Linux Node: IN_ATTRIB/IN_MODIFY
        * fire "change"; every other delivered mask — IN_DELETE_SELF,
        * IN_MOVE_SELF, the name-level events, and IN_IGNORED itself —
        * fires "rename". */
       bool change = (e->mask & (IN_ATTRIB | IN_MODIFY)) != 0;
-      if (e->mask & IN_IGNORED) w->wd = -1; /* the kernel dropped the watch:
-                                             * no further events (no reopen), like Node */
-      /* libuv's filename rule: the entry name for a directory event, the
-       * watched path's basename otherwise (uv__basename_r). */
-      const char *name = e->len ? e->name : scr_watch_basename(w->path->data);
-      scr_watch_fire(w, change ? "change" : "rename", name);
-      if (scr_exc_pending()) return; /* the loop surfaces it */
+      bool ignored = (e->mask & IN_IGNORED) != 0;
+      for (ScrWatcher *w = scr_watchers; w != NULL; w = w->next) {
+        if (w->closed || w->wd != e->wd) continue;
+        /* The kernel dropped the watch: no further events (no reopen),
+         * like Node. */
+        if (ignored) w->wd = -1;
+        /* libuv's filename rule: the entry name for a directory event,
+         * the watched path's basename otherwise (uv__basename_r). */
+        const char *name = e->len ? e->name : scr_watch_basename(w->path->data);
+        scr_watch_fire(w, change ? "change" : "rename", name);
+        if (scr_exc_pending()) return; /* the loop surfaces it */
+      }
     }
     if (scr_loop_has_ready()) return; /* microtasks interleave first */
   }
@@ -776,6 +817,7 @@ static void scr_watch_cleanup_atexit(void) {
     if (!w->closed) {
       w->closed = true;
       scr_watchers_open--;
+      scr_watch_set_reffed(w, false);
     }
 #ifdef SCR_HAVE_RDCW
     scr_watch_backend_drop(w);
@@ -805,4 +847,5 @@ void scr_watch_install(void) {
   installed = true;
   scr_atexit(scr_watch_cleanup_atexit);
   scr_loop_set_watch(&scr_watch_pending, &scr_watch_dispatch, &scr_watch_pollfd);
+  scr_loop_set_watch_io(&scr_watch_io);
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/arguments-sloppy-optional-parameter-alias.ts"
+ ],
+ "diags": []
+}

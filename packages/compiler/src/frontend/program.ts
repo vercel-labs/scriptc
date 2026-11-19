@@ -43,6 +43,7 @@ import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "./outer-expressions.js";
+import { padded } from "./define-branches.js";
 import { InternalCompilerError } from "../errors.js";
 import { moduleKindName, scriptTargetName } from "./ts7/enums.js";
 import { isSourcePhaseImport } from "./ts7/ast-node.js";
@@ -58,7 +59,9 @@ import {
 } from "../diagnostics/diagnostic.js";
 import {
   isInstalledPackagePath,
+  isInstalledSourcePackage,
   isNodeModulesPath,
+  isSourcePackagePath,
   isPathSpecifier,
   nearestInvalidPackageJsonPath,
   nearestPackageType,
@@ -156,6 +159,7 @@ import {
 import {
   ADOPTED_OPTIONS,
   type AdmittedOpinion,
+  isCheckedJsSourceFile,
   isJsSourceFileName,
   jsOpinion,
   jsTscCodeTriage,
@@ -217,7 +221,11 @@ import {
   jsxEmitName,
   jsxEmitPlan,
   jsxPragmas,
+  isIntrinsicJsxName,
+  jsxSlotNeedsContext,
   lowerJsx,
+  type JsxContextTypes,
+  type JsxTypeHelpers,
   type LoweredJsx,
 } from "./jsx-source.js";
 
@@ -442,6 +450,10 @@ function adoptProjectConfig7(
   projectLib?: readonly string[];
   forcedStrictNullChecks?: boolean;
   checkJs?: boolean;
+  /** The project's own sources: the files its `files` and `include` name
+   * outside node_modules, which tsc compiles as the project itself rather
+   * than as a dependency it merely imports. */
+  sources?: readonly string[];
   /** The project's own declarations: the `.d.ts` files its `files` and
    * `include` name, and the entry declarations of the packages its `types`
    * names. They join the program as roots. */
@@ -517,6 +529,11 @@ function adoptProjectConfig7(
   const declarations = parsed.fileNames.filter(
     (file) => /\.d\.[mc]?ts$/.test(file) && !isNodeModulesPath(file),
   );
+  // The project's own source files, as its `files`/`include` naming decides
+  // them. A JavaScript file that is not one of them reached the program
+  // through an import: it is a dependency's shipped code, which tsc compiles
+  // as an external library rather than as project source.
+  const sources = parsed.fileNames.filter((file) => !isNodeModulesPath(file));
   // `types`: the type packages whose globals the project asks for. "node"
   // is resolved on its own (resolveNodeTypes7); a name that resolves to
   // nothing is tsc's error to report, not a reason to stop here.
@@ -576,6 +593,7 @@ function adoptProjectConfig7(
     ...(projectLib === undefined ? {} : { projectLib }),
     forcedStrictNullChecks,
     checkJs: parsed.options["checkJs"] === true,
+    ...(sources.length > 0 ? { sources } : {}),
     ...(declarations.length > 0 ? { declarations } : {}),
     ...(parsed.options["module"] === undefined
       ? {}
@@ -696,6 +714,10 @@ export interface TypeWorldDifferences {
   /** The project's tsconfig sets `checkJs` (scriptc's own checker always
    * reads JavaScript files; this records whether the project's does). */
   projectCheckJs: boolean;
+  /** The project's own source files, from its tsconfig's `files`/`include`
+   * (normalized paths), or null when the project has no tsconfig. A
+   * JavaScript file outside this set is a dependency's shipped code. */
+  projectSources: ReadonlySet<string> | null;
   /** The files with decorators the project compiles under
    * `experimentalDecorators`: refused by name (SC0016), which stands in for
    * the checker's errors about those decorators' signatures. */
@@ -797,6 +819,10 @@ export interface LoadResult {
   /** How scriptc's type world differs from the project's own tsc setup —
    * used only to label the TypeScript errors those differences cause. */
   typeWorld?: TypeWorldDifferences;
+  /** Whether a file is a dependency's shipped JavaScript (see
+   * dependencyJsPredicate): preflight reports no checker diagnostics for it,
+   * and the lowering compiles it as unchecked JavaScript. */
+  dependencyJs?: (file: string) => boolean;
   /** Coverage-only external host modules: exact bare specifier → local
    * declaration file. These participate in checker resolution but never
    * become runtime module edges. */
@@ -1015,6 +1041,22 @@ function externalTypeFileClosure7(
   return new Map([...ownersByFile].map(([file, owners]) => [file, [...owners]] as const));
 }
 
+/** The runtime implementations of the project's own declarations: a
+ * declaration beside the JavaScript Node loads (`lib.d.ts` next to
+ * `lib.js`) describes that module, and the JavaScript is the code that
+ * compiles (resolve.ts's projectDtsRuntimeSibling). The checker resolves
+ * the import to the declaration, so the implementation joins the program
+ * as a root. */
+function declarationTwinRoots7(program: ts.Program): string[] {
+  const roots: string[] = [];
+  for (const sf of program.getSourceFiles()) {
+    if (!sf.isDeclarationFile) continue;
+    const sibling = projectDtsRuntimeSibling(sf.fileName);
+    if (sibling !== null) roots.push(sibling);
+  }
+  return roots;
+}
+
 /** The fallback declaration files of the Node modules the program's files
  * name (fallbackModulesNamedIn) that the program does not hold yet. Each
  * file is read as tsgo reads it; the TypeScript libraries and scriptc's own
@@ -1218,6 +1260,27 @@ export function entryPackageFilePredicate(entryPath: string): (file: string) => 
   };
 }
 
+/** Whether `file` is a dependency's shipped JavaScript: not an explicit
+ * entry package's own source, under node_modules or a workspace package's
+ * shipped files, or outside the project's own sources (the files its
+ * tsconfig's `files`/`include` names). Preflight reports no checker
+ * diagnostics for such a file, and the lowering compiles it as unchecked
+ * JavaScript so the two stances agree. The project's `checkJs` asks tsc to
+ * check the project's own JavaScript, not a package's; `// @ts-check` is the
+ * module author's own request to be checked and still applies. */
+export function dependencyJsPredicate(
+  entryFileName: string,
+  projectSources: ReadonlySet<string> | null,
+): (file: string) => boolean {
+  const entryPackageFile = entryPackageFilePredicate(entryFileName);
+  return (file) => {
+    if (entryPackageFile(file)) return false;
+    if (isNodeModulesPath(file)) return true;
+    if (workspacePackageOfPath(file) !== null && !isWorkspaceSourcePath(file)) return true;
+    return projectSources !== null && !projectSources.has(tsgoPath(resolve(file)));
+  };
+}
+
 /** A module edge of a file: its specifier and the resolution kind preflight
  * uses for it. */
 export interface ModuleEdge {
@@ -1299,12 +1362,15 @@ function entryPackageProgramRoots7(
    * already holds, or an edge that names no compiled JavaScript. */
   const rootOf = (from: string, spec: string, kind: "import" | "require"): string | null => {
     // The project edge, from any program file: a relative import, or a
-    // tsconfig path, that lands on the entry package's JavaScript or on an
-    // opted-in package's.
+    // tsconfig path, that lands on the entry package's JavaScript, on an
+    // opted-in package's, or on a source package's (tsgo's own walk loads
+    // no JavaScript under node_modules).
     const target = resolveProjectModule(from, spec);
     if (
       target !== null &&
-      (belongsToEntry(target) || npmStaticPackageOfPath(target) !== null) &&
+      (belongsToEntry(target) ||
+        npmStaticPackageOfPath(target) !== null ||
+        isSourcePackagePath(target)) &&
       isJsSourceFileName(target)
     )
       return program.getSourceFile(target) === undefined ? target : null;
@@ -1399,6 +1465,7 @@ function lowerProgramJsx7(
   const sources = new Map<string, LoweredJsx>();
   const mode = jsxEmitName(options.jsx as string | number | undefined);
   if (mode === undefined) return { sources, refusal: null };
+  const contextTypes = jsxContextTypes7(program);
   for (const sf of program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile || /\.[mc]?ts$/.test(sf.fileName) || !containsJsx(sf)) continue;
     const at = firstJsx(sf)!;
@@ -1424,9 +1491,316 @@ function lowerProgramJsx7(
       },
       jsxPragmas(sf.text),
     );
-    sources.set(sf.fileName, lowerJsx(sf, plan));
+    sources.set(sf.fileName, lowerJsx(sf, plan, contextTypes));
   }
   return { sources, refusal: null };
+}
+
+/** The constraint the rewrite places on a JSX slot expression that needs
+ * one, or undefined. A TypeScript file's implicit-any report stops the
+ * build; a JavaScript file admits it (the JS_OPINIONS rows), so it keeps the
+ * lowering it had. A component's slot is read through the component's own
+ * props type, which names a module-private prop type the site cannot spell;
+ * elsewhere the slot's contextual type is printed with fully qualified names
+ * (`import("react").MouseEventHandler<HTMLButtonElement>`) so the text reads
+ * the same from the rewritten file. A spread is constrained to the partial
+ * props type, since the element's other attributes supply the rest. The
+ * checker is asked only for the sites whose functions need it, and is built
+ * on the first such site. */
+function jsxContextTypes7(program: ts.Program): JsxContextTypes {
+  let checker: ReturnType<ts.Program["getTypeChecker"]> | null = null;
+  const cached = new Map<ts.Expression, string | undefined>();
+  return (expression, helpers) => {
+    if (!/\.[mc]?tsx$/i.test(expression.getSourceFile().fileName)) return undefined;
+    if (cached.has(expression)) return cached.get(expression);
+    let text: string | undefined;
+    if (jsxSlotNeedsContext(expression)) {
+      try {
+        checker ??= program.getTypeChecker();
+        const slot = jsxSlot7(expression);
+        text = slot === null ? undefined : jsxElementSlotText7(checker, slot, helpers);
+        if (text === undefined) {
+          const contextual = jsxContextTypeText7(checker, expression);
+          // A spread supplies only the props its object has: the element's
+          // other attributes supply the rest.
+          text =
+            contextual === undefined
+              ? undefined
+              : slot !== null && slot.name === null
+                ? `${helpers.partial()}<${contextual}>`
+                : contextual;
+        }
+      } catch {
+        text = undefined;
+      }
+    }
+    cached.set(expression, text);
+    return text;
+  };
+}
+
+type JsxChecker = ReturnType<ts.Program["getTypeChecker"]>;
+
+/** The slot's constraint read from the element: the props member the
+ * expression fills, or the partial props type for a spread. Reading it
+ * through the tag keeps a type whose name the site cannot see (a component's
+ * module-private prop type) usable, because the indexed access resolves where
+ * the component is declared. A union props type is narrowed to the arm the
+ * element's discriminant selects, since indexing the union itself would lose
+ * it. Undefined for an intrinsic tag, a tag that is not an entity name, a
+ * `key` or `ref` (which JSX types itself), a union no single discriminant
+ * selects, and a generic component (whose instantiated props the printed
+ * contextual type names). */
+function jsxElementSlotText7(
+  checker: JsxChecker,
+  slot: JsxSlot7,
+  helpers: JsxTypeHelpers,
+): string | undefined {
+  const element = jsxElementPropsTag7(checker, slot.opening);
+  if (element === undefined) return undefined;
+  const props = `${helpers.known()}<${helpers.props()}<typeof ${element.tagText}>>`;
+  // A spread provides only some props; the element's other attributes supply
+  // the rest, and which union arm they select is the printed contextual type.
+  if (slot.name === null)
+    return element.arm === undefined
+      ? `${helpers.partial()}<${props} & { ref?: any; key?: any }>`
+      : undefined;
+  const target =
+    element.arm === undefined ? props : `${helpers.arm()}<${props}, ${element.arm.text}>`;
+  if (slot.name === "children" && slot.index !== undefined) {
+    // One child of several is typed by one member of the children prop, and
+    // the element passes them as an array or a tuple in source order.
+    const children = jsxPropertyType7(
+      checker,
+      element.arm?.type ?? element.props,
+      "children",
+      slot.opening,
+    );
+    if (children === undefined || !(checker.isArrayType(children) || checker.isTupleType(children)))
+      return undefined;
+    return `${target}["children"][${slot.index}]`;
+  }
+  return `${target}[${JSON.stringify(slot.name)}]`;
+}
+
+/** A named property's type on `type`, or undefined. */
+function jsxPropertyType7(
+  checker: JsxChecker,
+  type: ts.Type,
+  name: string,
+  location: ts.Node,
+): ts.Type | undefined {
+  const symbol = checker.getPropertyOfType(type, name);
+  return symbol === undefined ? undefined : checker.getTypeOfSymbolAtLocation(symbol, location);
+}
+
+/** The tag of a value-based element whose props type the tag names exactly:
+ * a function component checked against one non-generic call signature, or a
+ * class component. A union props type carries the discriminant the element
+ * provides, so the selected arm names the callback the site checked. */
+function jsxElementPropsTag7(
+  checker: JsxChecker,
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+): { tagText: string; props: ts.Type; arm?: { type: ts.Type; text: string } } | undefined {
+  const tagText = jsxValueTagText(opening.tagName);
+  if (tagText === undefined) return undefined;
+  const tagType = checker.getTypeAtLocation(opening.tagName);
+  const construct = checker.getConstructSignatures(tagType);
+  const call = checker.getCallSignatures(tagType);
+  const classLike = construct.length > 0;
+  const signatures = classLike ? construct : call;
+  // JSX checks a function component against one call signature; an overload
+  // set would name a different one.
+  if (!classLike && call.length !== 1) return undefined;
+  // A generic component instantiates its props at the JSX site; naming the
+  // component's own type would name another instantiation.
+  if (signatures.some((signature) => signature.getTypeParameters().length > 0)) return undefined;
+  const signature = signatures[0];
+  if (signature === undefined) return undefined;
+  const props = jsxSignaturePropsType7(checker, signature, opening, classLike);
+  if (props === undefined) return undefined;
+  if (!props.isUnionType()) return { tagText, props };
+  // Indexing the union would lose the arm the element's discriminant selects.
+  const arm = jsxDiscriminant7(checker, props, opening);
+  return arm === undefined ? undefined : { tagText, props, arm };
+}
+
+/** The type literal an element's literal attribute uses to select one arm of
+ * a union props type, or undefined when no single arm is selected. */
+function jsxDiscriminant7(
+  checker: JsxChecker,
+  props: ts.Type,
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+): { type: ts.Type; text: string } | undefined {
+  for (const property of opening.attributes.properties.nodes) {
+    if (!ts.isJsxAttribute(property) || !ts.isIdentifier(property.name)) continue;
+    const attribute = property.name.text;
+    if (attribute === undefined) continue;
+    const literal = jsxAttributeLiteral7(property.initializer);
+    if (literal === undefined) continue;
+    const name = /^[A-Za-z_$][\w$]*$/.test(attribute) ? attribute : JSON.stringify(attribute);
+    const matches = props.getTypes().filter((arm) => {
+      const member = checker.getPropertyOfType(arm, attribute);
+      if (member === undefined) return false;
+      const type = checker.getTypeOfSymbolAtLocation(member, opening);
+      return checker
+        .typeToString(type)
+        .split(" | ")
+        .some((part) => part === literal);
+    });
+    if (matches.length === 1) return { type: matches[0]!, text: `{ ${name}: ${literal} }` };
+  }
+  return undefined;
+}
+
+/** A JSX attribute value that is a literal type, as type text. */
+function jsxAttributeLiteral7(value: ts.JsxAttributeValue | undefined): string | undefined {
+  if (value === undefined) return "true";
+  if (ts.isStringLiteral(value)) return JSON.stringify(value.text);
+  if (!ts.isJsxExpression(value) || value.expression === undefined) return undefined;
+  const expression = value.expression;
+  if (ts.isStringLiteral(expression)) return JSON.stringify(expression.text);
+  if (ts.isNumericLiteral(expression)) return expression.text;
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return "true";
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return "false";
+  return undefined;
+}
+
+/** The props type a component signature declares: a class instance's `props`
+ * member, or a function component's first parameter. */
+function jsxSignaturePropsType7(
+  checker: JsxChecker,
+  signature: ReturnType<JsxChecker["getSignaturesOfType"]>[number],
+  location: ts.Node,
+  classLike: boolean,
+): ts.Type | undefined {
+  if (classLike) {
+    const instance = checker.getReturnTypeOfSignature(signature);
+    const props = checker.getPropertyOfType(instance, "props");
+    return props === undefined ? undefined : checker.getTypeOfSymbolAtLocation(props, location);
+  }
+  const parameter = signature.getParameters()[0];
+  return parameter === undefined
+    ? undefined
+    : checker.getTypeOfSymbolAtLocation(parameter, location);
+}
+
+/** The contextual type the as-written program gives the expression. */
+function jsxContextTypeText7(checker: JsxChecker, expression: ts.Expression): string | undefined {
+  const type = checker.getContextualType(expression);
+  if (type === undefined) return undefined;
+  const text = checker.typeToString(
+    type,
+    expression,
+    ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseFullyQualifiedType,
+  );
+  // A type without a call signature gives the functions no parameter type,
+  // and printer comments (`/*unresolved*/`) do not parse.
+  if (
+    text === "" ||
+    text === "any" ||
+    text === "unknown" ||
+    text === "never" ||
+    text === "error" ||
+    text.includes("/*")
+  )
+    return undefined;
+  return text;
+}
+
+/** The JSX slot an expression fills, and the element whose attributes type
+ * gives it its type, or null when the expression is not in a slot a
+ * component's props type answers (an intrinsic tag's attribute is answered
+ * by JSX.IntrinsicElements; a fragment has no tag; a ref, a key and one of
+ * several children keep the contextual type the checker reported). */
+interface JsxSlot7 {
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement;
+  /** The props member the expression fills; null for a spread of props. */
+  name: string | null;
+  /** For one child of several: its position among the element's children. */
+  index?: number;
+}
+
+function jsxSlot7(expression: ts.Expression): JsxSlot7 | null {
+  const holder = expression.parent;
+  if (holder === undefined) return null;
+  if (ts.isJsxSpreadAttribute(holder)) return jsxSlotOfAttributes(holder.parent, null);
+  if (!ts.isJsxExpression(holder) || holder.parent === undefined) return null;
+  const parent = holder.parent;
+  if (ts.isJsxAttribute(parent)) {
+    const name = jsxAttributeNameText(parent.name);
+    // JSX types a key and a ref through its own attributes as well as props.
+    if (name === undefined || name === "key" || name === "ref") return null;
+    return jsxSlotOfAttributes(parent.parent, name);
+  }
+  if (ts.isJsxElement(parent)) {
+    // A spread child shifts the positions the rest fill, and an element with
+    // one child passes that child itself rather than an array or a tuple.
+    const position = jsxChildPosition7(parent, holder);
+    if (position === undefined) return null;
+    return {
+      opening: parent.openingElement,
+      name: "children",
+      ...(position.count > 1 ? { index: position.index } : {}),
+    };
+  }
+  return null;
+}
+
+/** The child's zero-based position among the element's value-emitting
+ * children, and how many there are; undefined when a spread child makes the
+ * positions the type does not fix. */
+function jsxChildPosition7(
+  node: ts.JsxElement,
+  child: ts.JsxChild,
+): { index: number; count: number } | undefined {
+  let count = 0;
+  let position: number | undefined;
+  for (const candidate of node.children.nodes) {
+    if (ts.isJsxExpression(candidate) && candidate.dotDotDotToken !== undefined) return undefined;
+    if (!jsxChildEmits7(candidate)) continue;
+    if (candidate === child) position = count;
+    count++;
+  }
+  return position === undefined ? undefined : { index: position, count };
+}
+
+function jsxChildEmits7(child: ts.JsxChild): boolean {
+  if (ts.isJsxText(child)) return !child.containsOnlyTriviaWhiteSpaces;
+  if (ts.isJsxExpression(child)) return child.expression !== undefined;
+  return true;
+}
+
+function jsxSlotOfAttributes(node: ts.Node | undefined, name: string | null): JsxSlot7 | null {
+  const parent = node?.parent;
+  if (parent === undefined) return null;
+  if (ts.isJsxOpeningElement(parent) || ts.isJsxSelfClosingElement(parent))
+    return { opening: parent, name };
+  return null;
+}
+
+function jsxAttributeNameText(name: ts.JsxAttributeName): string | undefined {
+  if (ts.isIdentifier(name)) return name.text;
+  if (ts.isJsxNamespacedName(name)) return `${name.namespace.text}:${name.name.text}`;
+  return undefined;
+}
+
+/** The tag's text when it names a value a type query can read
+ * (`Tag`, `UI.Tag`), or undefined for an intrinsic tag, a namespaced one, and
+ * an expression such as `this.Tag`. */
+function jsxValueTagText(tag: ts.JsxTagNameExpression): string | undefined {
+  if (ts.isIdentifier(tag)) return isIntrinsicJsxName(tag.text) ? undefined : tag.text;
+  if (ts.isPropertyAccessExpression(tag)) return jsxEntityText(tag);
+  return undefined;
+}
+
+function jsxEntityText(node: ts.Expression): string | undefined {
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isPropertyAccessExpression(node)) {
+    const left = jsxEntityText(node.expression);
+    return left === undefined ? undefined : `${left}.${node.name.text}`;
+  }
+  return undefined;
 }
 
 function loadProgram7(
@@ -1530,6 +1904,7 @@ function loadProgram7(
         ...(nodeTypes === null
           ? fallbackModuleRoots7(program, host)
           : nodeTypesSupplementRoots7(program, host)),
+        ...declarationTwinRoots7(program),
         ...entryPackageProgramRoots7(program, entryPath, packageRoots),
         ...createRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),
@@ -1590,6 +1965,21 @@ function loadProgram7(
     if (importTypeSources.size > 0) {
       const previous = program;
       for (const [file, text] of importTypeSources) host.addVirtualFile(file, text);
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
+    }
+    // `export * from` a CommonJS module: Node forwards the module's lexer
+    // facade, which TypeScript does not model as a star source (an
+    // `export =` target is refused outright with TS2498). The rewrite gives
+    // the checker the names Node serves (cjsStarReexportSources). Rewriting
+    // before the JSX world below keeps both worlds on one text, and the
+    // rewrite keeps every existing offset in place.
+    for (let pass = 0; ; pass++) {
+      const starSources = cjsStarReexportSources(program);
+      if (starSources.size === 0) break;
+      if (pass === 8) throw new Error("CommonJS star re-export rewriting did not converge");
+      const previous = program;
+      for (const [file, text] of starSources) host.addVirtualFile(file, text);
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
     }
@@ -1837,6 +2227,10 @@ function loadProgram7(
     const entry = program.getSourceFile(entryPath);
     if (!entry) throw new Error(`could not load ${entryPath}`);
     const externalTypeSpecifiersByFile = externalTypeFileClosure7(program, externalTypes);
+    const projectSources =
+      config.sources === undefined
+        ? null
+        : new Set(config.sources.map((file) => tsgoPath(resolve(file))));
     let projectWorld: ts.Program | null = null;
     const projectLibraries = projectOnlyLibraries(config.projectLib);
     let libraryWorld: ts.Program | null = null;
@@ -1864,11 +2258,13 @@ function loadProgram7(
       ...(importWarnings.length > 0 ? { importWarnings } : {}),
       ...(elidedSources.size > 0 ? { elidedSources } : {}),
       ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
+      dependencyJs: dependencyJsPredicate(entry.fileName, projectSources),
       typeWorld: {
         nodeFallback: nodeTypes === null,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,
+        projectSources,
         legacyDecoratorFiles,
         projectModule: config.module ?? null,
       },
@@ -2000,8 +2396,10 @@ export function loadProgram(
   // The project's type patches (type-patches/layer.ts), read by every host
   // this load creates; nothing at all without `scriptc.typePatches`.
   configureTypePatches(entryPath, (path, text, kind) => services.parse(path, text, kind));
+  // A source package compiles from its TypeScript (isSourcePackagePath), never
+  // from published JavaScript, even when named.
   const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])].filter(
-    (name) => !npmStaticOmitsPackage(entryPath, name),
+    (name) => !npmStaticOmitsPackage(entryPath, name) && !isInstalledSourcePackage(entryPath, name),
   );
   // Resolve authored declaration entries before enabling the JS-only
   // package resolver. Safe overload metadata binds through the runtime
@@ -2118,15 +2516,16 @@ export function loadProgram(
     if (probe?.workspaceDir !== undefined)
       registerWorkspacePackage(probe.packageName, probe.workspaceDir);
   }
-  // Declaration-twin hiding is scoped to the entry's own package realm
-  // (see projectDtsRuntimeSibling) — set before the host exists so the
-  // program never sees an out-of-realm twin hidden.
+  // The project package realm (see projectDtsRuntimeSibling) is set before
+  // the host exists, so the twin roots below answer for this program's
+  // entry realm.
   setProjectRealm(entryPath);
-  // Two fs shadows compose: --npm-static's per-package hiding, and the
-  // always-on project declaration-TWIN hiding (a .d.ts beside runtime JS
-  // outside node_modules — the classic typed-JS-library entry — must not exist for
-  // the checker, so its resolution lands on the JS Node actually loads;
-  // resolve.ts answers the same sibling for scriptc's own edges).
+  // --npm-static's per-package hiding: an opted-in package's declaration
+  // entry points must not exist for the checker, so its resolution lands on
+  // the JavaScript Node actually loads. A PROJECT declaration twin (.d.ts
+  // beside runtime JS outside node_modules) is not hidden: TypeScript
+  // resolves the import to the declaration, and the JavaScript joins the
+  // program as the module's implementation (declarationTwinRoots7).
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
   setProgramDefines(opts?.define);
@@ -2160,8 +2559,7 @@ export function loadProgram(
           definedSource(services, path) ??
           undefined,
       ),
-    hideFile: (path: string) =>
-      (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
+    hideFile: (path: string) => npmShadow?.hideFile(path) ?? false,
   };
   const authoredShadow = {
     readFile: (path: string) => voidCasts(path, scriptcManifest(path)),
@@ -2431,7 +2829,7 @@ function jsOpinionOf7(
   if (syntacticOf(sf).some((s) => s.code === d.code && s.pos === pos && s.end === end)) return null;
   if (nodeFree) return opinion;
   const node = diagnosticNode7(sf, pos, end);
-  if (opinion.site !== undefined && !opinion.site(node, d, p)) return null;
+  if (opinion.site !== undefined && !opinion.site(node, d, p, projectCheckJs)) return null;
   if (opinion.view === "island" && isStrictCode(node)) return null;
   return opinion;
 }
@@ -3491,8 +3889,15 @@ function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
     }
     const parent = outer.parent;
     if (parent !== undefined && ts.isExpressionStatement(parent)) return;
-    if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === outer)
-      return;
+    // A TOP-LEVEL declaration initializing from require() has its own
+    // statement edge (requiresOf7 above). A nested one evaluates the
+    // module where the declaration sits — lazy when it is in a deferred
+    // position — so it is an inline edge here.
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === outer) {
+      const list = parent.parent;
+      const stmt = list?.parent;
+      if (stmt !== undefined && ts.isSourceFile(stmt.parent)) return;
+    }
     out.push(n);
   });
   return out;
@@ -4832,7 +5237,7 @@ export function makeCycleAdmission(
     bindingUses.set(sf, uses);
     return uses;
   };
-  // The CommonJS cluster verdict, same keying (cjsCycleRefusal7).
+  // The CommonJS cluster verdict, same keying (cjsCycleAdmission7).
   const cjsVerdict = new Map<ts.SourceFile[], string | null>();
   return (importer: ts.SourceFile, e: CycleEdge): string | null => {
     if (e.stmt === undefined) {
@@ -7826,9 +8231,9 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
   //    closing edge's bindings are used only in deferred positions, so no
   //    read can execute before every member initialized);
   //  - the EXACT INITIALIZATION rule: an ES-module cluster whose early
-  //    reads are all let/const bindings with module storage — the
-  //    lowering checks each one (cycleEarlyBindings) and throws Node's
-  //    ReferenceError on a read before the declaration ran.
+  //    reads are all let/const bindings with module storage, or classes —
+  //    the lowering checks each one (cycleEarlyBindings) and throws
+  //    Node's ReferenceError on a read before the declaration ran.
   // require() of an ES module is Node 24's synchronous require(esm) — unless
   // the target is still evaluating, which Node refuses with
   // ERR_REQUIRE_CYCLE_MODULE. Every such target carries a %evaluating flag
@@ -8464,6 +8869,36 @@ function preflightGate7(load: LoadResult): PreflightGate {
       keptApartFromOpinionTextually(d) &&
       !inferredJsDiagnosticSuppressed(p, d) &&
       !isNpmStaticSubclassArgument(p, d);
+    // A dependency's JavaScript: a JS file outside the project's own sources
+    // — a vendored package, or a module reached only through an import — that
+    // the project's tsconfig does not check (dependencyJsPredicate above;
+    // the lowering reads the same predicate, so both stances agree). TypeScript never reports a
+    // dependency's checker opinions: a JavaScript file it does not name is
+    // either an external library it does not typecheck, or (outside
+    // node_modules) plain JavaScript, where only grammar and early errors
+    // are reported. scriptc still compiles that JavaScript, as
+    // checked-dynamic code whose values are checked at every typed boundary,
+    // so the checker's type opinions about it are not build errors. The codes
+    // that stay are the ones scriptc itself adjudicates: a triage row (a
+    // grammar or early error Node rejects too, or a construct the lowering
+    // cannot build, where the refusal stands until a lowering proof lands),
+    // an admitted opinion above, and the file's own parse errors — no
+    // lowering can compile what the parser could not read. A JSDoc error sits
+    // in a comment and tsc reports it only for a file it checks, so it goes.
+    const dependencyJsFile = load.dependencyJs ?? (() => false);
+    const dependencyJsCheckDiagnostic = (d: ts.Diagnostic): boolean => {
+      if (d.fileName === undefined || !isJsSourceFileName(d.fileName)) return false;
+      const sf = p.getSourceFile(d.fileName);
+      // A dependency's shipped JavaScript is external to the project in the
+      // `maxNodeModuleJsDepth` sense: the project's `checkJs` asks tsc to
+      // check the project's JavaScript, not a package's. `// @ts-check` is
+      // the module author's own request to be checked, and stays.
+      if (sf === undefined || isCheckedJsSourceFile(sf, false)) return false;
+      if (!dependencyJsFile(sf.fileName)) return false;
+      if (d.pos !== undefined && insideBlockComment(sf.text, d.pos)) return true;
+      if (jsTscCodeTriage(d.code) !== null) return false;
+      return !syntacticOf(sf).some((s) => s.code === d.code && s.pos === d.pos && s.end === d.end);
+    };
     const admitted: { d: ts.Diagnostic; opinion: Opinion }[] = [];
     const kept = all.filter((d) => {
       if (d.category !== ts.DiagnosticCategory.Error) return false;
@@ -8495,7 +8930,7 @@ function preflightGate7(load: LoadResult): PreflightGate {
         admitted.push({ d, opinion });
         return false;
       }
-      return keptApartFromOpinion(d);
+      return keptApartFromOpinion(d) && !dependencyJsCheckDiagnostic(d);
     });
     for (const { d, opinion } of admitted) {
       // No span, no site: nothing a view's lowering could be gated on.
@@ -8652,6 +9087,246 @@ export function cjsReexportedModules(program: ts.Program, dep: ts.SourceFile): t
 export function cjsNamespaceExportNames(program: ts.Program, dep: ts.SourceFile): Set<string> {
   const names = cjsVisibleNames(dep, lexWithAccessorNames, cjsReexportDep7(program), new Map());
   return new Set([...names, "default", "module.exports"]);
+}
+
+/** Whether the checker can read `name` as a property of a CommonJS module's
+ * `export =` value, the surface a named re-export of the module binds. */
+function cjsWholeExportHasProperty(
+  checker: ts.TypeChecker,
+  wholeExport: ts.Symbol,
+  at: ts.Node,
+  name: string,
+): boolean {
+  const value =
+    (wholeExport.flags & ts.SymbolFlags.Alias) !== 0
+      ? checker.getAliasedSymbol(wholeExport)
+      : wholeExport;
+  const type = checker.getTypeOfSymbolAtLocation(value, at);
+  return (
+    checker.getPropertyOfType(type, name) !== undefined ||
+    checker.getPropertyOfType(type, ts.escapedSymbolName(name) as unknown as string) !== undefined
+  );
+}
+
+/** The binding names a declaration name introduces (`a`, `{ b, c: d }`,
+ * `[e, ...f]`). */
+function declaredBindingNames(name: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(name)) {
+    out.add(name.text);
+    return;
+  }
+  for (const element of name.elements.nodes) {
+    if (ts.isOmittedExpression(element) || element.name === undefined) continue;
+    declaredBindingNames(element.name, out);
+  }
+}
+
+/** The names a module exports itself, from its syntax: `export`-modified
+ * declarations, export lists naming local bindings, named re-exports, and
+ * export assignments. `default` is included; a star export is not, and
+ * neither is a type-only declaration (it has no runtime export to shadow a
+ * star with). */
+function ownExportNamesOf(sf: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  for (const stmt of sf.statements.nodes) {
+    if (ts.isExportDeclaration(stmt)) {
+      const clause = stmt.exportClause;
+      if (stmt.isTypeOnly || clause === undefined) continue;
+      if (ts.isNamedExports(clause)) {
+        for (const element of clause.elements.nodes)
+          if (!element.isTypeOnly) names.add(element.name.text);
+      } else {
+        names.add(clause.name.text);
+      }
+      continue;
+    }
+    if (ts.isExportAssignment(stmt)) {
+      names.add("default");
+      continue;
+    }
+    if (ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) continue;
+    const modifiers = ts.getModifiers(stmt as unknown as ts.Declaration);
+    if (modifiers === undefined) continue;
+    if (!modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword)) continue;
+    if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)) {
+      names.add("default");
+      continue;
+    }
+    if (ts.isVariableStatement(stmt)) {
+      for (const declaration of stmt.declarationList.declarations.nodes)
+        if (declaration.name !== undefined) declaredBindingNames(declaration.name, names);
+      continue;
+    }
+    const name = (stmt as { name?: ts.Node }).name;
+    if (name !== undefined && ts.isIdentifier(name)) names.add(name.text);
+  }
+  return names;
+}
+
+/* ── `export *` over a CommonJS module ───────────────────────────────────
+ * Node serves a CommonJS module to the ES module graph through the facade
+ * its lexer describes, so `export * from "./x.cjs"` forwards every name of
+ * that facade except `default` — `module.exports` included, the module's
+ * whole export value. TypeScript does not model that facade as a star
+ * source. When the module's shape is an `export =` it refuses the form
+ * outright (TS2498, "uses 'export =' and cannot be used with 'export *'")
+ * and binds none of the names; when its `exports.name` writes type as named
+ * exports it binds those but has no `module.exports` to forward, and the
+ * lowering's link check does not follow the star. Either way the checker,
+ * every importer of the re-export, and the lowering miss exports Node
+ * serves.
+ *
+ * The rewrite below gives the checker the facade Node builds. Each star
+ * statement becomes a side-effect import where it stood — Node initializes a
+ * module's dependencies in source order, so the CommonJS module keeps its
+ * place among them — and the names arrive as explicit re-exports appended
+ * after the last statement, where nothing that already exists moves:
+ *
+ *   export * from "./x.cjs";
+ * becomes (in place)   import "./x.cjs";
+ * and (appended)       export { "a", "b" } from "./x.cjs";
+ *                        import __scriptcCjsStar0 from "./x.cjs";
+ *                        export { __scriptcCjsStar0 as "module.exports" };
+ *
+ * Node's precedence rules decide the names: a name the file exports itself
+ * wins over the star, and a name two DIFFERENT re-exported modules provide
+ * is ambiguous and excluded (probed). A name TypeScript cannot type on the
+ * CommonJS module — a lexer-detected name its JavaScript inference has no
+ * declaration for — is left out as well: the program could not refer to it,
+ * though Node's namespace would still show it. */
+export function cjsStarReexportSources(program: ts.Program): Map<string, string> {
+  const out = new Map<string, string>();
+  const checker = program.getTypeChecker();
+  for (const sf of program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile || isCjsJsFile7(sf, program)) continue;
+    // Every `export *` of the file takes part in Node's shadowing and
+    // ambiguity rules, so each one's names are collected; only the CommonJS
+    // targets are rewritten.
+    const reexports: {
+      stmt: ts.ExportDeclaration;
+      spec: string;
+      specNode: ts.StringLiteral;
+      target: ts.SourceFile;
+      /** The names the target's namespace contributes to the star, without
+       * `default`: Node's lexer facade names for a CommonJS module, the
+       * resolved export names for an ES module. */
+      names: Set<string>;
+      /** The CommonJS names the checker can type, the ones re-exported. */
+      typed: string[];
+      commonjs: boolean;
+    }[] = [];
+    for (const stmt of sf.statements.nodes) {
+      if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly || stmt.exportClause !== undefined)
+        continue;
+      const specNode = stmt.moduleSpecifier;
+      if (specNode === undefined || !ts.isStringLiteral(specNode)) continue;
+      const spec = specNode.text;
+      const target = resolveImport7(program, sf, spec) ?? npmStaticDepSf7(program, sf, spec);
+      if (target === null || target.isDeclarationFile || target.fileName.endsWith(".json"))
+        continue;
+      reexports.push({
+        stmt,
+        spec,
+        specNode,
+        target,
+        names: new Set(),
+        typed: [],
+        commonjs: isCjsJsFile7(target, program),
+      });
+    }
+    if (!reexports.some((entry) => entry.commonjs)) continue;
+    // A file without a CommonJS star never pays for the name census below.
+    for (const entry of reexports) {
+      const moduleSymbol = checker.getSymbolAtLocation(entry.specNode);
+      if (entry.commonjs) {
+        const wholeExport = moduleSymbol?.getExports().get("export=" as ts.__String);
+        // A name the checker gives the CommonJS module binds: a property of
+        // its `export =` value, or an export of a JavaScript module whose
+        // `exports.name` writes it types as one.
+        let plainNames: Set<string> | null = null;
+        const binds = (name: string): boolean => {
+          if (wholeExport !== undefined)
+            return cjsWholeExportHasProperty(checker, wholeExport, entry.target, name);
+          if (moduleSymbol === undefined) return false;
+          plainNames ??= new Set(
+            checker.getExportsOfModule(moduleSymbol).map((symbol) => ts.symbolName(symbol)),
+          );
+          return plainNames.has(name);
+        };
+        for (const name of cjsNamespaceExportNames(program, entry.target)) {
+          if (name === "default") continue;
+          entry.names.add(name);
+          if (name !== "module.exports" && binds(name)) entry.typed.push(name);
+        }
+      } else if (moduleSymbol !== undefined) {
+        for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
+          const name = ts.symbolName(symbol);
+          if (name !== "default") entry.names.add(name);
+        }
+      }
+    }
+    const stars = reexports.filter((entry) => entry.commonjs);
+    if (stars.length === 0) continue;
+    // Node's precedence: a name the module exports itself wins over every
+    // star, and a name two DIFFERENT re-exported modules provide is
+    // ambiguous and absent (twice from the SAME module is one binding).
+    const providers = new Map<string, Set<ts.SourceFile>>();
+    for (const entry of reexports) {
+      for (const name of entry.names) {
+        let seen = providers.get(name);
+        if (seen === undefined) providers.set(name, (seen = new Set()));
+        seen.add(entry.target);
+      }
+    }
+    const own = ownExportNamesOf(sf);
+    const kept = (name: string): boolean => !own.has(name) && providers.get(name)?.size === 1;
+    const edits = stars
+      .map((star) => ({
+        start: ts.tokenStartOfNode(star.stmt),
+        end: star.stmt.end,
+        text: `import ${JSON.stringify(star.spec)};`,
+      }))
+      .sort((a, b) => a.start - b.start);
+    const emitted = new Set<ts.SourceFile>();
+    const appended = stars.flatMap((star) => {
+      // Two star statements naming the same module forward one set of names.
+      if (emitted.has(star.target)) return [];
+      emitted.add(star.target);
+      const names = star.typed.filter(kept);
+      return names.length === 0
+        ? []
+        : [
+            `export { ${names.map((name) => JSON.stringify(name)).join(", ")} } from ${JSON.stringify(star.spec)};`,
+          ];
+    });
+    // `module.exports` forwards the module's whole export value, which is
+    // its default import; two different modules providing it are ambiguous.
+    const wholeProviders = providers.get("module.exports");
+    const whole =
+      wholeProviders !== undefined && wholeProviders.size === 1 && kept("module.exports")
+        ? stars.find((star) => wholeProviders.has(star.target))!.spec
+        : null;
+    if (whole !== null) {
+      let binding = "__scriptcCjsStar";
+      for (let n = 0; sf.text.includes(binding); n++) binding = `__scriptcCjsStar${n}`;
+      appended.push(
+        `import ${binding} from ${JSON.stringify(whole)};`,
+        `export { ${binding} as "module.exports" };`,
+      );
+    }
+    let text = "";
+    let at = 0;
+    for (const edit of edits) {
+      text +=
+        sf.text.slice(at, edit.start) + padded(sf.text.slice(edit.start, edit.end), edit.text);
+      at = edit.end;
+    }
+    text += sf.text.slice(at);
+    if (appended.length > 0) text += `\n${appended.join("\n")}\n`;
+    out.set(sf.fileName, text);
+  }
+  return out;
 }
 
 /** The export names a CommonJS module assigns inside functions
@@ -8966,11 +9641,14 @@ function analyzeEsmNamedImportLinks(
     return npmStaticDepSf7(program, from, spec);
   };
 
+  /** One identity per CommonJS module a star re-export spreads, so a name
+   * the same module contributes through two paths stays unambiguous. */
+  const cjsStarExports = new Map<ts.SourceFile, object>();
   const runtimeExport = (
     dep: ts.SourceFile,
     name: string,
     seenModules: ReadonlySet<ts.SourceFile> = new Set(),
-  ): ts.Symbol | undefined => {
+  ): unknown => {
     if (seenModules.has(dep)) return undefined;
     const nextSeen = new Set(seenModules);
     nextSeen.add(dep);
@@ -9013,14 +9691,56 @@ function analyzeEsmNamedImportLinks(
     // resolved symbol may arrive through multiple stars, while distinct
     // symbols make the name unavailable. `default` never star-reexports.
     if (name === "default") return undefined;
-    let starExport: ts.Symbol | undefined;
+    let starExport: unknown;
     for (const stmt of dep.statements.nodes) {
       if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly || stmt.exportClause !== undefined)
         continue;
       if (stmt.moduleSpecifier === undefined || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
       const target = resolveEdge(dep, stmt.moduleSpecifier.text);
-      if (target === null || target.fileName.endsWith(".json") || !isNodeEsmFile7(target, program))
+      if (target === null || target.fileName.endsWith(".json")) continue;
+      if (!isNodeEsmFile7(target, program)) {
+        // `export *` over a CommonJS module: Node re-exports the names its
+        // lexer detects through the module's ESM facade (a member a branch
+        // attaches counts — the lexer reads bytes, not control flow), its
+        // CommonJS re-exports included, and never `default`. Each CommonJS
+        // module contributes bindings of its own, so one name arriving from
+        // two of them is ambiguous exactly as two ES modules' would be.
+        if (!isCjsJsFile7(target, program)) continue;
+        if (!cjsNamespaceExportNames(program, target).has(name)) continue;
+        // The member's own symbol when the checker declares it: a named
+        // re-export of the same member (`export { name } from './x.cjs'`,
+        // reached directly or through another star) resolves to that symbol,
+        // so both paths agree and the name is not called ambiguous. Node
+        // spreads bindings, not paths.
+        const member = checker
+          .getSymbolAtLocation(target)
+          ?.getExports()
+          .get(ts.escapedSymbolName(name));
+        if (member !== undefined) {
+          let resolved = member;
+          const seenSymbols = new Set<ts.Symbol>();
+          while ((resolved.flags & ts.SymbolFlags.Alias) !== 0 && !seenSymbols.has(resolved)) {
+            seenSymbols.add(resolved);
+            resolved = checker.getAliasedSymbol(resolved);
+          }
+          if (resolved.flags & ts.SymbolFlags.Value) {
+            if (starExport !== undefined && starExport !== resolved) return undefined;
+            starExport = resolved;
+            continue;
+          }
+        }
+        // A name only the lexer detects (the checker declares no member):
+        // one identity per contributing module, so the same module reached
+        // through two stars stays unambiguous.
+        let sentinel = cjsStarExports.get(target);
+        if (sentinel === undefined) {
+          sentinel = { commonJsStar: target.fileName };
+          cjsStarExports.set(target, sentinel);
+        }
+        if (starExport !== undefined && starExport !== sentinel) return undefined;
+        starExport = sentinel;
         continue;
+      }
       const candidate = runtimeExport(target, name, nextSeen);
       if (candidate === undefined) continue;
       if (starExport !== undefined && starExport !== candidate) return undefined;
@@ -9345,24 +10065,7 @@ export function isJsSourceFile(sf: ts.SourceFile): boolean {
   return isJsSourceFileName(sf.fileName);
 }
 
-/** True for a JavaScript file of the program that TypeScript type-checks:
- * one with a `// @ts-check` comment before its first statement, or any
- * file of a project whose tsconfig sets `checkJs` unless the file has a
- * `// @ts-nocheck` comment. Files under node_modules are never checked. */
-export function isCheckedJsSourceFile(sf: ts.SourceFile, projectCheckJs: boolean): boolean {
-  if (!isJsSourceFile(sf) || isNodeModulesPath(sf.fileName)) return false;
-  let checked = projectCheckJs;
-  const head = sf.text.slice(
-    0,
-    (sf.statements.nodes.length === 0 ? undefined : ts.tokenStartOfNode(sf.statements.nodes[0]!)) ??
-      sf.text.length,
-  );
-  for (const line of head.split("\n")) {
-    const directive = /^\s*\/\/\s*@ts-(no)?check\b/.exec(line);
-    if (directive) checked = directive[1] === undefined;
-  }
-  return checked;
-}
+export { isCheckedJsSourceFile };
 
 export function orderedImportsOf(
   program: ts.Program,
@@ -9688,6 +10391,230 @@ export function cjsVoidInitPreambleReals(
     reals.set(name, real);
   }
   return reals;
+}
+
+/** Whether `e` is `void <operand>` or `undefined` as written. */
+function isVoidWritten(e: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return e.kind === ts.SyntaxKind.VoidExpression || (ts.isIdentifier(e) && e.text === "undefined");
+}
+
+/** The operand a `void <operand>` expression evaluates, or null when the
+ * value is `undefined` itself (nothing to run). */
+function voidValueOperand(e: ts.Expression): ts.Expression | null {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return e.kind === ts.SyntaxKind.VoidExpression
+    ? ((e.expression as ts.Expression | undefined) ?? null)
+    : null;
+}
+
+/** Whether evaluating `operand` runs nothing: a literal, `undefined`, a
+ * sign applied to one, or a `void` of such. */
+function pureVoidOperand(operand: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+  if (
+    ts.isNumericLiteral(operand) ||
+    ts.isStringLiteral(operand) ||
+    ts.isNoSubstitutionTemplateLiteral(operand)
+  )
+    return true;
+  if (
+    operand.kind === ts.SyntaxKind.TrueKeyword ||
+    operand.kind === ts.SyntaxKind.FalseKeyword ||
+    operand.kind === ts.SyntaxKind.NullKeyword
+  )
+    return true;
+  if (ts.isIdentifier(operand) && operand.text === "undefined") return true;
+  if (operand.kind === ts.SyntaxKind.VoidExpression) {
+    const inner = operand.expression as ts.Expression | undefined;
+    return inner === undefined || pureVoidOperand(inner);
+  }
+  if (
+    ts.isPrefixUnaryExpression(operand) &&
+    (operand.operator === ts.SyntaxKind.MinusToken || operand.operator === ts.SyntaxKind.PlusToken)
+  )
+    return pureVoidOperand(operand.operand);
+  return false;
+}
+
+/** The export member `exports.<name>` / `module.exports.<name>` names, or
+ * null for any other target. Syntactic: callers have already established
+ * that the receiver is the module's exports object. */
+function writtenExportMemberName(target: ts.Expression): string | null {
+  if (
+    !ts.isPropertyAccessExpression(target) ||
+    target.questionDotToken ||
+    !ts.isIdentifier(target.name)
+  )
+    return null;
+  const recv = target.expression;
+  const isExports = ts.isIdentifier(recv) && recv.text === "exports";
+  return isExports || isModuleExportsAccess(recv) ? target.name.text : null;
+}
+
+/** Whether `expr` assigns export member `name` a value other than
+ * `void 0`/`undefined`, directly or through a chain
+ * (`exports.a = exports.name = value`). */
+function assignsExportMember(expr: ts.Expression, name: string): boolean {
+  let e: ts.Expression = expr;
+  for (;;) {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+      return false;
+    if (writtenExportMemberName(e.left) === name && !isVoidWritten(e.right))
+      // A value that reads the member it initializes observes `undefined`
+      // before the store, so the statement is a read, not an assignment.
+      return !readsExportMember(e.right, name);
+    e = e.right;
+  }
+}
+
+/** Whether running `node` can read export member `name` through the
+ * exports object. Nested function bodies are skipped: they run later, if at
+ * all (`this` is declined for a different reason). */
+function readsExportMember(node: ts.Node, name: string): boolean {
+  let found = false;
+  ts.walkPreorder(node, (n) => {
+    if (found) return "stop";
+    if (n !== node && ts.isFunctionLike(n)) return "skip";
+    if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.name) && n.name.text === name) {
+      const recv = n.expression;
+      if ((ts.isIdentifier(recv) && recv.text === "exports") || isModuleExportsAccess(recv)) {
+        found = true;
+        return "stop";
+      }
+    }
+    return undefined;
+  });
+  return found;
+}
+
+/** How a statement bears on whether export member `name` is assigned before
+ * the statement list ends: it assigns it (`assigns`), it lets execution
+ * continue without touching it (`neutral`), or it can end execution, or
+ * observe the member while it is still `undefined`, first (`exits`). */
+type ExportAssignState = "assigns" | "neutral" | "exits";
+
+function exportAssignState(stmt: ts.Statement, name: string): ExportAssignState {
+  if (ts.isExpressionStatement(stmt)) {
+    if (assignsExportMember(stmt.expression, name)) return "assigns";
+    return readsExportMember(stmt.expression, name) ? "exits" : "neutral";
+  }
+  if (ts.isVariableStatement(stmt)) {
+    for (const declaration of stmt.declarationList.declarations.nodes)
+      if (declaration.initializer !== undefined && readsExportMember(declaration.initializer, name))
+        return "exits";
+    return "neutral";
+  }
+  if (ts.isFunctionDeclaration(stmt) || ts.isEmptyStatement(stmt)) return "neutral";
+  // A class declaration runs its heritage and static initializers here.
+  if (ts.isClassDeclaration(stmt)) return "exits";
+  if (ts.isBlock(stmt)) {
+    for (const inner of stmt.statements.nodes) {
+      const state = exportAssignState(inner, name);
+      if (state !== "neutral") return state;
+    }
+    return "neutral";
+  }
+  if (ts.isIfStatement(stmt)) {
+    // The condition runs before either arm and may observe the member.
+    if (readsExportMember(stmt.expression, name)) return "exits";
+    const thenState = exportAssignState(stmt.thenStatement, name);
+    const elseState =
+      stmt.elseStatement === undefined ? "neutral" : exportAssignState(stmt.elseStatement, name);
+    if (thenState === "assigns" && elseState === "assigns") return "assigns";
+    if (thenState === "exits" || elseState === "exits") return "exits";
+    return "neutral";
+  }
+  // Loops may run zero times or observe the member, `try` may not reach its
+  // assignments, and the abrupt-completion statements end execution here.
+  return "exits";
+}
+
+/** A `void 0` export preamble write the lowering may elide. */
+export interface CjsVoidInitPreamble {
+  /** The export members the chain writes, outermost first. */
+  targets: ts.PropertyAccessExpression[];
+  /** The `void` operand the write evaluates (and whose value is discarded),
+   * or null for a pure `void 0`/`undefined`. The operand's effects still
+   * run when the write is elided. */
+  effect: ts.Expression | null;
+}
+
+/** The export preamble a `void`-valued assignment chain writes
+ * (`exports.a = exports.b = void 0` names both, outermost first), or null
+ * when any target is not such a member or the chain ends in something
+ * else. */
+function voidInitExportTargets(assign: ts.BinaryExpression): CjsVoidInitPreamble | null {
+  const targets: ts.PropertyAccessExpression[] = [];
+  let e: ts.Expression = assign;
+  for (;;) {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken)
+      return null;
+    if (writtenExportMemberName(e.left) === null) return null;
+    targets.push(e.left as ts.PropertyAccessExpression);
+    let right: ts.Expression = e.right;
+    while (ts.isParenthesizedExpression(right)) right = right.expression;
+    if (ts.isBinaryExpression(right) && right.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      e = right;
+      continue;
+    }
+    if (!isVoidWritten(right)) return null;
+    const operand = voidValueOperand(right);
+    return { targets, effect: operand !== null && !pureVoidOperand(operand) ? operand : null };
+  }
+}
+
+/** The `void` operand an export assignment chain would evaluate before
+ * discarding its value, or null when the chain is not a `void` write or its
+ * operand is provably pure. */
+export function cjsVoidInitWriteEffect(assign: ts.BinaryExpression): ts.Expression | null {
+  return voidInitExportTargets(assign)?.effect ?? null;
+}
+
+/** The export members of a tsc-style `void 0` preamble write
+ * (`exports.name = void 0`, or a chain of them) whose member every path
+ * continuing past the write's statement list assigns a real value before
+ * execution ends or a statement that mentions the member, or null when the
+ * write should keep its ordinary lowering. The export takes its value at
+ * those assignments, so a lowering may elide the write — the same reasoning
+ * as the top-level preamble, extended to a preamble whose real assignments
+ * sit inside a conditional (scheduler's `if (…performance…) { exports.now =
+ * f } else { exports.now = g }`). A write that some path or some statement
+ * the scan reaches can observe keeps its ordinary lowering (Node answers
+ * `undefined` there); a call in the window that reaches module code reading
+ * the member is the same transient-undefined window the top-level preamble
+ * accepts. An elided write still evaluates an effectful `void` operand. */
+export function cjsVoidInitPreambleTargets(
+  assign: ts.BinaryExpression,
+): CjsVoidInitPreamble | null {
+  const target = voidInitExportTargets(assign);
+  if (target === null) return null;
+  let outer: ts.Node = assign;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  const stmt = outer.parent;
+  if (stmt === undefined || !ts.isExpressionStatement(stmt) || stmt.expression !== outer)
+    return null;
+  const list = stmt.parent;
+  if (list === undefined || (!ts.isBlock(list) && !ts.isSourceFile(list))) return null;
+  const index = list.statements.nodes.indexOf(stmt);
+  if (index < 0) return null;
+  for (const access of target.targets) {
+    const name = (access.name as ts.Identifier).text;
+    let assigned = false;
+    for (let i = index + 1; i < list.statements.nodes.length; i++) {
+      const state = exportAssignState(list.statements.nodes[i]!, name);
+      if (state === "exits") return null;
+      if (state === "assigns") {
+        assigned = true;
+        break;
+      }
+    }
+    if (!assigned) return null;
+  }
+  return target;
 }
 
 /** The members and shared value of a CHAINED member export

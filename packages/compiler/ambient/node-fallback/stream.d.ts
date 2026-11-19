@@ -230,6 +230,11 @@ declare module "stream" {
     resume(): this;
     isPaused(): boolean;
     setEncoding(encoding: string): this;
+    /* Reads the old-style stream into this one: its 'data' chunks are
+     * pushed (pausing it while this readable is full), its 'end' ends this
+     * one, and its 'error' destroys it. The source must be a native
+     * readable stream. */
+    wrap(stream: Readable): this;
     pipe<T extends NodeJS.WritableStream>(destination: T, options?: { end?: boolean }): T;
     unpipe(destination?: NodeJS.WritableStream): this;
     destroy(error?: Error): this;
@@ -254,6 +259,10 @@ declare module "stream" {
     static from(iterable: unknown, options?: ReadableOptions): Readable;
     /* stream.isDisturbed. */
     static isDisturbed(stream: unknown): boolean;
+    /* A web ReadableStream over this readable's chunks: a byte chunk arrives
+     * as a Uint8Array and an encoded stream's chunk as its string. The
+     * options have no lowering yet. */
+    static toWeb(readable: Readable, options?: {}): ReadableStream<Uint8Array>;
     /* A Readable over a web ReadableStream's reader. */
     static fromWeb(
       readableStream: globalThis.ReadableStream,
@@ -355,6 +364,15 @@ declare module "stream" {
     constructor(opts: ObjectWritableOptions);
     constructor(opts: StringWritableOptions);
     constructor(opts?: WritableOptions);
+    /* A Writable over a web WritableStream's writer: a write completes when
+     * the writer's write() settles, end() closes the writer and destroy()
+     * aborts it. The options have no lowering yet. */
+    static fromWeb(writableStream: WritableStream<Uint8Array>, options?: {}): Writable;
+    /* A web WritableStream over this writable: a writer's write() completes
+     * when the writable accepts the chunk (at its 'drain' when the write was
+     * backpressured) and rejects with the stream's error when that write
+     * fails; close() ends the writable and abort() destroys it. */
+    static toWeb(writable: Writable): WritableStream<Uint8Array>;
     /* The underscore-method surface (see Readable). */
     _write(chunk: any, encoding: string, callback: (error?: Error | null) => void): void;
     _writev(
@@ -439,6 +457,24 @@ declare module "stream" {
     /* Duplex.from: an async generator function, an iterable, a string or
      * a stream (duplexify.js). */
     static from(body: unknown): Duplex;
+    /* A Duplex over a web stream pair: the readable side reads `readable`
+     * and the writable side writes `writable` (Node's web-pair adapter). The
+     * pair is `unknown`, like `from`'s body: a pair-shaped parameter here
+     * would make typeof Duplex incompatible with typeof Readable, and
+     * constructor registries typed `(typeof Readable)[]` (Transform,
+     * PassThrough) must keep type checking. The lowering validates the
+     * argument and the runtime validates the pair. The options have no
+     * lowering yet. */
+    static fromWeb(pair: unknown, options?: {}): Duplex;
+    /* The web { writable, readable } pair over this duplex: a writer's
+     * write() completes when the duplex accepts the chunk and rejects with
+     * its error when that write fails, and the readable side ends with the
+     * duplex. The result is `any`: Duplex here extends Readable, so a pair
+     * return type would make typeof Duplex — and every stream subclass in a
+     * `(typeof Readable)[]` — fail against Readable.toWeb's ReadableStream.
+     * The lowering answers a checked-dynamic pair, so member reads stay
+     * dynamic. The options have no lowering yet. */
+    static toWeb(streamDuplex: Duplex, options?: {}): any;
     constructor(opts: ObjectDuplexOptions);
     constructor(opts: StringDuplexOptions);
     constructor(opts?: DuplexOptions);
@@ -593,6 +629,9 @@ declare module "stream" {
   /* compose(...streams): a Duplex that writes to the first stage and
    * reads from the last, with the stages running as a pipeline. */
   function compose(...streams: ComposeStage[]): Duplex;
+  /* Two Duplexes connected to each other: whatever one is written, the
+   * other reads. A write completes once the other side reads the chunk. */
+  function duplexPair(options?: DuplexOptions): [Duplex, Duplex];
   /* finished's options: readable/writable choose which ends count,
    * error: false ignores 'error' events, signal aborts the wait. */
   interface FinishedOptions {
@@ -607,9 +646,13 @@ declare module "stream" {
     options: FinishedOptions | null,
     callback: (err?: Error | null) => void,
   ): () => void;
-  /* Folds to the TARGET platform's default at compile time (win32 16384,
-   * else 65536 — Node's own state.js split); literal argument only. */
+  /* The runtime's default for new streams: 65536 bytes on every platform
+   * but a win32 target (16384), and 16 objects — Node's own state.js
+   * split — which setDefaultHighWaterMark changes. */
   function getDefaultHighWaterMark(objectMode: boolean): number;
+  /* Sets the default for streams created after the call; a negative or
+   * fractional value throws ERR_OUT_OF_RANGE. */
+  function setDefaultHighWaterMark(objectMode: boolean, value: number): void;
   /* Node's duck-typed state predicates. A native stream answers from its
    * state, and a primitive as Node's property reads do; isDestroyed,
    * isReadable and isWritable answer null for a value without that side.
@@ -653,8 +696,10 @@ declare module "stream" {
     addAbortSignal,
     pipeline,
     compose,
+    duplexPair,
     finished,
     getDefaultHighWaterMark,
+    setDefaultHighWaterMark,
     isDestroyed,
     isErrored,
     isReadable,

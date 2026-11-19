@@ -7,6 +7,31 @@ import {
 import { extendsElementOf } from "../heritage-elements.js";
 import { bindsIslandExport } from "./lower-node-island.js";
 
+/** Whether a literal method implements a protocol the ENGINE reaches by
+ * the object's own property rather than by a member call: the conversion
+ * protocols String(), `+` and template literals use, and the iteration
+ * protocols for-of and spread use. Such a method that reads its receiver
+ * keeps the literal a live object, because the engine's lookup is not a
+ * member call and a record's field cannot answer it. A method that does not
+ * read the receiver keeps its record, whose conversion path reads the
+ * object it came from (wider-record-sources). */
+function conversionProtocolMethod(property: ts.ObjectLiteralElementLike): boolean {
+  if (!ts.isMethodDeclaration(property) || property.body === undefined) return false;
+  const name = property.name;
+  if (name === undefined) return false;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name))
+    return name.text === "toString" || name.text === "valueOf" || name.text === "toLocaleString";
+  if (!ts.isComputedPropertyName(name)) return false;
+  const key = name.expression;
+  if (!ts.isPropertyAccessExpression(key) || !ts.isIdentifier(key.expression)) return false;
+  if (key.expression.text !== "Symbol") return false;
+  return (
+    key.name.text === "toPrimitive" ||
+    key.name.text === "iterator" ||
+    key.name.text === "asyncIterator"
+  );
+}
+
 /** Index only program classes. Ambient declarations describe APIs, not
  * compiled implementations, and must not change a protocol's storage. */
 export class ClassProtocols {
@@ -160,19 +185,47 @@ export class ClassProtocols {
         }
       }
       if (ts.isObjectLiteralExpression(node)) {
+        // A receiver-dependent method of a DICTIONARY literal keeps checked
+        // identity: its type is an open key set, so every read and write of
+        // the object goes through the keyed path, and the live object is the
+        // representation that path already models (`methods.twice()` over
+        // `{ [key: string]: () => number }`).
+        const dictionary = (): boolean => {
+          for (const type of [
+            this.checker.getTypeAtLocation(node),
+            this.checker.getContextualType(node),
+          ]) {
+            if (
+              type !== undefined &&
+              attempt(() => this.checker.getIndexInfosOfType(type).length > 0) === true
+            )
+              return true;
+          }
+          return false;
+        };
+        const receiverDependent = (property: ts.ObjectLiteralElementLike): boolean => {
+          if (!property.body || !usesReceiver(property.body)) return false;
+          if (ts.isMethodDeclaration(property)) return dictionary();
+          return ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property);
+        };
         if (
           node.properties.nodes.some(
             (property) =>
-              (ts.isMethodDeclaration(property) ||
-                ts.isGetAccessorDeclaration(property) ||
-                ts.isSetAccessorDeclaration(property)) &&
-              property.body !== undefined &&
-              usesReceiver(property.body),
+              (conversionProtocolMethod(property) && usesReceiver(property.body!)) ||
+              receiverDependent(property),
           )
         ) {
-          // Receiver-dependent methods and accessors need a live object even
-          // without a class implementation. Receiver-free methods keep their
-          // native callable fields, including async callbacks.
+          // A receiver-dependent ACCESSOR needs a live object even without a
+          // class implementation: its slot is a closure pair with no
+          // receiver, so only the checked-dynamic object keeps the accessor
+          // live and gives it one. A method's own `this` is the call's
+          // receiver (a record's function field reads it like any function),
+          // so receiver-dependent methods keep their native callable fields
+          // and the literal stays a record. A member implementing a
+          // conversion or iteration protocol (`toString`, `valueOf`, a
+          // `Symbol.iterator`) is reached by the ENGINE, not by a member
+          // call, so its literal stays a live object too: a record's field
+          // is not what `${o}` or `for (const x of o)` looks up.
           add(this.checker.getTypeAtLocation(node));
           const contextual = this.checker.getContextualType(node);
           if (contextual) add(contextual);

@@ -34,6 +34,7 @@ import {
   F64,
   ffiClassType,
   ffiSourceParamTypes,
+  funcHiddenParamCount,
   isDirentShape,
   isDynTypedRefType,
   isLiveDynRefType,
@@ -2930,21 +2931,19 @@ function validateFunction(
         });
         // Result func type must match the target's signature. A VARIADIC
         // (rest-marked) type hides one synthetic trailing dyn-array param
-        // in the lifted function (the thunk fills it) — the type's
-        // declared params plus that one must match.
+        // in the lifted function (the thunk fills it), and so does an
+        // `argumentsAll` value — after a typed rest array when it has one
+        // (funcHiddenParamCount) — so the type's declared params plus
+        // those hidden slots must match.
         if (e.type.kind === "func") {
           const wantRet = callSiteReturnType(target);
-
-          // array param — the lifted signature matches directly, no
-          // hidden slot.
-          const hiddenRest = e.type.rest === true && e.type.restAbi === undefined;
-          const declared = hiddenRest ? target.params.slice(0, -1) : target.params;
-          const restOk =
-            !hiddenRest ||
-            (target.params.length === e.type.params.length + 1 &&
-              target.params[target.params.length - 1]!.type.kind === "dyn");
+          const hidden = funcHiddenParamCount(e.type);
+          const declared = target.params.slice(0, target.params.length - hidden);
+          const hiddenOk =
+            target.params.length === declared.length + hidden &&
+            target.params.every((p, i) => i < declared.length || p.type.kind === "dyn");
           if (
-            !restOk ||
+            !hiddenOk ||
             e.type.params.length !== declared.length ||
             !e.type.params.every((p, i) => typeEquals(p, declared[i]!.type)) ||
             !typeEquals(e.type.ret, wantRet)
@@ -2967,19 +2966,17 @@ function validateFunction(
         }
         const ft = e.callee.type;
         // A checked-dynamic variadic value's lifted signature carries one
-        // trailing dyn array after its declared parameters.
-        const hiddenRest = ft.rest === true && ft.restAbi === undefined;
-        if (ft.params.length + (hiddenRest ? 1 : 0) !== e.args.length) {
-          err(
-            `callValue: ${e.args.length} args, expected ${ft.params.length + (hiddenRest ? 1 : 0)}`,
-            e.loc,
-          );
+        // trailing dyn array after its declared parameters, and so does an
+        // `argumentsAll` value, after a typed rest array when it has one.
+        const hidden = funcHiddenParamCount(ft);
+        if (ft.params.length + hidden !== e.args.length) {
+          err(`callValue: ${e.args.length} args, expected ${ft.params.length + hidden}`, e.loc);
         }
         e.args.forEach((a, i) => {
           const p = ft.params[i];
           if (p) expectType(a, p, `callValue arg ${i}`);
         });
-        const hiddenArg = hiddenRest ? e.args[ft.params.length] : undefined;
+        const hiddenArg = hidden > 0 ? e.args[ft.params.length] : undefined;
         if (hiddenArg !== undefined && hiddenArg.type.kind !== "dyn") {
           err(`callValue hidden rest argument is ${hiddenArg.type.kind}, not dyn`, e.loc);
         }
@@ -4372,6 +4369,7 @@ function validateFunction(
       e.fn === "writable.writeU" ||
       e.fn === "writable.writeEnc" ||
       e.fn === "writable.end" ||
+      e.fn === "writable.endEcb" ||
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
       e.fn === "rl.createSignal";
@@ -4666,6 +4664,96 @@ function validateFunction(
           `libCall ${e.fn} must take (stream, objectMode, highWaterMark, encoding) and return a Readable`,
           e.loc,
         );
+      return true;
+    }
+    if (e.fn === "webstream.toWebReadable") {
+      // Readable.toWeb: (readable, flags) → a web ReadableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (readable, flags) and return a web stream`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.duplexFromWeb") {
+      // Duplex.fromWeb: (pair, flags) → a Duplex.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (pair, flags) and return a Duplex`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.writableFromWeb") {
+      // Writable.fromWeb: (writableStream, flags) → a Writable.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (writableStream, flags) and return a Writable`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.toWebReadableDyn") {
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
+      return true;
+    }
+
+    if (e.fn === "webstream.writableToWeb") {
+      // Writable.toWeb: (writable, flags) → a web WritableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (writable, flags) and return a web stream`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.toWebDuplex" || e.fn === "webstream.toWebDuplexDyn") {
+      // Duplex.toWeb: (duplex, flags) → the web { writable, readable } pair.
+      const argKind = e.fn === "webstream.toWebDuplex" ? "object" : "dyn";
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== argKind ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (duplex, flags) and return the web pair`, e.loc);
+      return true;
+    }
+    if (e.fn === "stream.duplexPair") {
+      // stream.duplexPair(options) → the array of the two connected Duplexes.
+      if (
+        e.args.length !== 1 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.type.kind !== "array" ||
+        e.type.elem.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (options) and return the two Duplexes`, e.loc);
+      return true;
+    }
+    if (e.fn === "stream.wrap" || e.fn === "stream.wrapDyn") {
+      // readable.wrap(source) → the readable.
+      const srcKind = e.fn === "stream.wrap" ? "object" : "dyn";
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== srcKind ||
+        e.type.kind !== "object"
+      )
+        err(`libCall ${e.fn} must take (readable, source) and return the readable`, e.loc);
       return true;
     }
     if (e.fn === "fetch.readerRead") {
@@ -5331,7 +5419,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "dgram.address") {
+    if (e.fn === "dgram.address" || e.fn === "dgram.remoteAddress" || e.fn === "dgram.bindSync") {
       // Result is the {address, family, port} record.
       const shape = e.type.kind === "record" ? records.get(e.type.shapeId) : undefined;
       const ok =
@@ -5344,13 +5432,15 @@ function validateFunction(
         shape.fields[2]!.name === "port" &&
         shape.fields[2]!.type.kind === "f64";
       if (!ok) {
-        err(`libCall dgram.address must return the {address, family, port} record`, e.loc);
+        err(`libCall ${e.fn} must return the {address, family, port} record`, e.loc);
       }
       return true;
     }
     if (
       e.fn === "fs.readdirTypesSync" ||
+      e.fn === "fs.readdirTypesRecursiveSync" ||
       e.fn === "fsp.readdirTypes" ||
+      e.fn === "fsp.readdirTypesRecursive" ||
       e.fn === "fs.globTypesSync" ||
       e.fn === "fsp.globTypes"
     ) {
@@ -5358,12 +5448,8 @@ function validateFunction(
       // name: string, parentPath: string} rows (canonical field
       // order; the structure lowerFsReaddirTypesCall pinned). The glob
       // forms answer the array itself.
-      const result =
-        e.fn === "fsp.readdirTypes"
-          ? e.type.kind === "promise"
-            ? e.type.inner
-            : undefined
-          : e.type;
+      const promiseForm = e.fn === "fsp.readdirTypes" || e.fn === "fsp.readdirTypesRecursive";
+      const result = promiseForm ? (e.type.kind === "promise" ? e.type.inner : undefined) : e.type;
       const shape =
         result?.kind === "array" && result.elem.kind === "record"
           ? records.get(result.elem.shapeId)
@@ -5371,7 +5457,7 @@ function validateFunction(
       const ok = shape !== undefined && isDirentShape(shape);
       if (!ok) {
         err(
-          `libCall ${e.fn} must return ${e.fn === "fsp.readdirTypes" ? "a promise of " : ""}the Dirent record array`,
+          `libCall ${e.fn} must return ${promiseForm ? "a promise of " : ""}the Dirent record array`,
           e.loc,
         );
       }
@@ -5405,6 +5491,12 @@ function validateFunction(
           e.loc,
         );
       }
+      return true;
+    }
+    if (e.fn === "watchEvents.take") {
+      // Result: the dynamic `{ eventType, filename }` record the iterator
+      // queued (the loop checks it into the binding's record type).
+      if (e.type.kind !== "dyn") err(`libCall ${e.fn} must return a dynamic record`, e.loc);
       return true;
     }
     if (e.fn === "os.networkInterfaces") {
@@ -6022,6 +6114,7 @@ function validateFunction(
       e.fn === "stream.duplexifyReadable" ||
       e.fn === "stream.duplexifyWritable" ||
       e.fn === "stream.duplexifyPair" ||
+      e.fn === "stream.duplexifyPairHalf" ||
       e.fn === "stream.duplexFromPromise" ||
       e.fn === "stream.duplexFromAsyncFn" ||
       e.fn === "stream.duplexFromGenSignal" ||
@@ -6092,12 +6185,25 @@ function validateFunction(
       if (
         e.fn === "stream.duplexifyReadable" ||
         e.fn === "stream.duplexifyWritable" ||
-        e.fn === "stream.duplexifyPair"
+        e.fn === "stream.duplexifyPair" ||
+        e.fn === "stream.duplexifyPairHalf"
       ) {
-        // Duplex.from over streams: (r), (w) or (r, w) → a Duplex.
-        const want = e.fn === "stream.duplexifyPair" ? 2 : 1;
-        if (e.args.length !== want || !e.args.every((a) => isStreamObject(a.type)))
-          err(`libCall ${e.fn} takes ${want} stream argument(s)`, e.loc);
+        // Duplex.from over streams: (r), (w) or (r, w) → a Duplex;
+        // Duplex.fromWeb's pair adds allowHalfOpen.
+        const want = e.fn === "stream.duplexifyPair" || e.fn === "stream.duplexifyPairHalf" ? 2 : 1;
+        const half = e.fn === "stream.duplexifyPairHalf";
+        const streams = half ? e.args.slice(0, 2) : e.args;
+        if (
+          e.args.length !== (half ? want + 1 : want) ||
+          !streams.every((a) => isStreamObject(a.type)) ||
+          (half && e.args[2]?.type.kind !== "bool")
+        )
+          err(
+            half
+              ? `libCall ${e.fn} takes two streams and the allowHalfOpen flag`
+              : `libCall ${e.fn} takes ${want} stream argument(s)`,
+            e.loc,
+          );
         if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream class`, e.loc);
         return true;
       }
@@ -6386,6 +6492,7 @@ function validateFunction(
         e.fn === "readable.resume" ||
         e.fn === "readable.unpipe" ||
         e.fn === "writable.end" ||
+        e.fn === "writable.endEcb" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
         e.fn === "readable.encodingName" ||

@@ -80,6 +80,10 @@ typedef struct {
   const ScrDyn *input;
   ScrDyn *view;
   ScrDyn *keys;
+  /* A Map or Set node's children in encoding order (key, value per entry for
+   * a Map; one per entry for a Set), snapshotted at the node so the walk is
+   * iterative: a nested collection becomes a node of its own on the stack. */
+  ScrDyn *parts;
   ScrStr *text; /* a STRING or BIGINT node's text, until the message is packed */
   size_t cursor;
   bool uncaught; /* an Error encoded as an uncaught exception */
@@ -333,6 +337,55 @@ static void scr_message_property(ScrMessageEncoder *encoder, size_t id,
                                   const ScrStr *key, size_t value, bool hidden);
 static bool scr_message_drain(ScrMessageEncoder *encoder, size_t base);
 
+static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input);
+
+/* A Map or Set the wire format carries, or 0 for a value another case
+ * owns. */
+static int scr_message_collection_kind(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_HANDLE) return 0;
+  if (scr_dyn_native_map_is(value)) return SCR_MESSAGE_MAP;
+  if (scr_dyn_native_set_is(value)) return SCR_MESSAGE_SET;
+  return 0;
+}
+
+/* A collection's entries are snapshotted here, not encoded from here: the
+ * handle's own get answers the collection's members, never its entries, so
+ * the walk reads them once into the visit and lets the stack encode each
+ * child exactly as it encodes an object's or an array's. Nothing recurses on
+ * the C stack, so a deeply nested Map or Set cannot exhaust it, and no node
+ * pointer is held across an encode (the node table may move). */
+static bool scr_message_collection(ScrMessageEncoder *encoder, size_t id, ScrDyn *value, int kind) {
+  ScrMap *map = value->v.handle.ptr;
+  bool is_map = kind == SCR_MESSAGE_MAP;
+  encoder->nodes[id].kind = (unsigned char)kind;
+  ScrDyn *keys = scr_dyn_new_arr();
+  ScrDyn *parts = scr_dyn_new_arr();
+  encoder->visits[id].keys = keys;
+  encoder->visits[id].parts = parts;
+  char digits[32];
+  bool ok = true;
+  size_t per_entry = is_map ? 2 : 1;
+  scr_map_iter_enter(map);
+  for (double i = 0; ok && i < scr_map_iter_count(map); i++) {
+    if (!scr_map_iter_live(map, i)) continue;
+    for (size_t part = 0; part < per_entry; part++) {
+      ScrDyn *child = part == 0 ? scr_map_dyn_key(map, i) : scr_map_dyn_value(map, i);
+      if (!child) { ok = false; break; }
+      size_t index = parts->v.arr.len;
+      int length = snprintf(digits, sizeof digits, "%zu", index);
+      ScrStr *key = scr_str_new(digits, (size_t)length);
+      scr_dyn_arr_push(keys, scr_dyn_new_str(key));
+      scr_str_release(key);
+      scr_dyn_arr_push(parts, child); /* moves the reference */
+    }
+  }
+  scr_map_iter_exit(map);
+  if (!ok) return false;
+  encoder->nodes[id].v.length = parts->v.arr.len;
+  scr_message_push(encoder, id);
+  return true;
+}
+
 static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input) {
   bool uncaught = encoder->uncaught;
   encoder->uncaught = false;
@@ -476,6 +529,17 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     scr_message_push(encoder, id);
     return id;
   }
+  const ScrMessageWrapperOps *wrapper_ops =
+      atomic_load_explicit(&scr_message_wrapper_ops, memory_order_relaxed);
+  if (wrapper_ops && wrapper_ops->is_wrapper(value)) {
+    /* Its [[PrimitiveValue]] rides an internal slot the message format does
+     * not carry; encoding the object would send a silently empty one. */
+    static const char message[] =
+        "carrying a primitive wrapper object (new String/Number/Boolean or Object(primitive)) "
+        "through a message is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return SIZE_MAX;
+  }
   switch (value->kind) {
   case SCR_DYN_UNDEF: node->kind = SCR_MESSAGE_UNDEFINED; break;
   case SCR_DYN_NULL: node->kind = SCR_MESSAGE_NULL; break;
@@ -507,6 +571,13 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     break;
   case SCR_DYN_BYTES:
   case SCR_DYN_HANDLE: {
+    if (value->kind == SCR_DYN_HANDLE) {
+      int collection = scr_message_collection_kind(value);
+      if (collection) {
+        if (!scr_message_collection(encoder, id, value, collection)) return SIZE_MAX;
+        return id;
+      }
+    }
     if (value->kind == SCR_DYN_HANDLE && scr_message_port_ops && scr_message_port_ops->is_port(value)) {
       int side = 0;
       ScrChannel *channel = scr_message_listed(encoder, value)
@@ -848,6 +919,21 @@ static bool scr_message_drain(ScrMessageEncoder *encoder, size_t base) {
   while (encoder->depth > base && !scr_exc_pending()) {
     size_t id = encoder->stack[encoder->depth - 1];
     ScrMessageVisit *visit = &encoder->visits[id];
+    unsigned char node_kind = encoder->nodes[id].kind;
+    if (node_kind == SCR_MESSAGE_MAP || node_kind == SCR_MESSAGE_SET) {
+      /* The snapshot's next child: what it is, if a container, goes on the
+       * stack and comes back here after this node's next child. Both tables
+       * may move while a child is encoded, so every read of the visit goes
+       * through the encoder again. */
+      size_t index = encoder->visits[id].cursor++;
+      if (index == encoder->visits[id].parts->v.arr.len) { encoder->depth--; continue; }
+      ScrDyn *child = encoder->visits[id].parts->v.arr.items[index];
+      size_t next = scr_message_value(encoder, child);
+      if (next == SIZE_MAX) return false;
+      const ScrDyn *key = encoder->visits[id].keys->v.arr.items[index];
+      scr_message_property(encoder, id, key->v.str, next, false);
+      continue;
+    }
     if (visit->cursor == visit->keys->v.arr.len) { encoder->depth--; continue; }
     ScrDyn *key = visit->keys->v.arr.items[visit->cursor++];
     bool error = encoder->nodes[id].kind == SCR_MESSAGE_ERROR;
@@ -879,6 +965,7 @@ static ScrMessage *scr_message_encode_run(ScrMessageEncoder *encoder, const ScrD
   for (size_t i = 0; i < encoder->count; i++) {
     ScrMessageVisit *visit = &encoder->visits[i];
     scr_dyn_release(visit->keys);
+    scr_dyn_release(visit->parts);
     if (visit->view != visit->input) scr_dyn_release(visit->view);
     scr_dyn_release((ScrDyn *)visit->input);
     scr_str_release(visit->text);
@@ -975,6 +1062,18 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
       for (size_t j = 0; j < node->v.length; j++) scr_dyn_arr_push_hole(values[i]);
       break;
     case SCR_MESSAGE_OBJECT: values[i] = scr_dyn_new_obj(); break;
+    case SCR_MESSAGE_MAP: {
+      ScrMap *map = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_REF, &scr_map_dyn_map_ops);
+      values[i] = map ? scr_dyn_native_map(map) : NULL;
+      scr_map_release(map);
+      break;
+    }
+    case SCR_MESSAGE_SET: {
+      ScrMap *set = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
+      values[i] = set ? scr_dyn_native_set(set) : NULL;
+      scr_map_release(set);
+      break;
+    }
     case SCR_MESSAGE_ERROR: {
       scr_error_set_traced();
       ScrError *error = scr_error_new((int)node->v.number, NULL);
@@ -1013,6 +1112,32 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
   }
   for (size_t i = 0; i < message->count; i++) {
     const ScrMessageNode *node = &message->nodes[i];
+    if (node->kind == SCR_MESSAGE_MAP || node->kind == SCR_MESSAGE_SET) {
+      /* The children arrive in insertion order: key then value per entry for
+       * a Map, one element per entry for a Set. */
+      ScrMap *map = values[i]->v.handle.ptr;
+      ScrDyn *pending = NULL;
+      for (size_t j = 0; j < node->count; j++) {
+        const ScrMessageProperty *property = &node->properties[j];
+        size_t index = scr_message_array_index(property->key, property->length, SIZE_MAX);
+        if (index == SIZE_MAX) continue;
+        ScrDyn *value = scr_dyn_retain(values[property->value]);
+        if (node->kind == SCR_MESSAGE_SET) {
+          scr_map_dyn_set(map, value, NULL, true);
+          scr_dyn_release(value);
+        } else if ((index & 1) == 0) {
+          scr_dyn_release(pending);
+          pending = value;
+        } else {
+          scr_map_dyn_set(map, pending ? pending : scr_dyn_undefined(), value, false);
+          scr_dyn_release(pending);
+          pending = NULL;
+          scr_dyn_release(value);
+        }
+      }
+      scr_dyn_release(pending);
+      continue;
+    }
     for (size_t j = 0; j < node->count; j++) {
       const ScrMessageProperty *property = &node->properties[j];
       ScrDyn *value = scr_dyn_retain(values[property->value]);

@@ -1,4 +1,5 @@
 /* Binary operators: arithmetic, comparisons and equality, logical and nullish pairs, and string conversion for concatenation. */
+import { lowerCjsExportsObjectWrite } from "../cjs-exports-object-value.js";
 import {
   fenceConsoleMutation,
   isConsoleExpression,
@@ -107,6 +108,7 @@ import {
   cjsInFileExportGlobalOf,
   cjsPartialExportMirror,
 } from "../cjs-exports-object.js";
+import { cjsRuntimeOptionalExportStorage } from "../cjs-inline-require.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
 import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
@@ -419,6 +421,8 @@ function mayLowerAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
     );
   }
   if (ts.isPropertyAccessExpression(expr)) {
+    // A CommonJS module member the module may leave unassigned.
+    if (cjsRuntimeOptionalExportStorage(lowerer, expr) !== null) return true;
     const type = lowerer.checker.getTypeAtLocation(expr.expression);
     if (lowerer.checker.getPropertyOfType(type, expr.name.text)) return false;
     return lowerer.checker.getIndexInfosOfType(type).length > 0;
@@ -2055,6 +2059,18 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
               locOf(expr.left.argumentExpression),
               expr.left.argumentExpression,
             );
+          // A JavaScript file's typed-array store with a checked-dynamic
+          // index (`used[a] = 1`, an untyped parameter): the write goes
+          // through the checked-dynamic property store, whose integer-indexed
+          // exotic write coerces the value and ignores an out-of-range index,
+          // exactly as Node's does. The statement form of the store takes the
+          // same route (element-access.ts, lowerElementWrite).
+          if (index.type.kind === "dyn" && recv.type.kind === "bytes")
+            return lowerDynMemberAssignment(
+              lowerer,
+              expr,
+              lowerer.coerceInto(expr.left.expression, recv, DYN),
+            );
           if (index.type.kind !== "f64")
             lowerer.unsupported(
               "SC1090",
@@ -2169,6 +2185,26 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
       // RHS value is the expression's value — its OWN type, so the
       // consumer sees exactly what the checker typed.
       if (ts.isPropertyAccessExpression(expr.left) && !expr.left.questionDotToken) {
+        // A member of a module whose exports object some code takes is
+        // written through that object (cjs-exports-object-value.ts).
+        {
+          let inFunction = false;
+          for (let p: ts.Node | undefined = expr.parent; p !== undefined; p = p.parent) {
+            if (ts.isFunctionLike(p) || ts.isClassDeclaration(p) || ts.isClassExpression(p)) {
+              inFunction = true;
+              break;
+            }
+          }
+          const viaObject = lowerCjsExportsObjectWrite(
+            lowerer,
+            expr.left,
+            expr.right,
+            inFunction
+              ? cjsExportMemberWriteGlobalOf(lowerer, expr.left)
+              : cjsInFileExportGlobalOf(lowerer, expr.left),
+          );
+          if (viaObject) return viaObject;
+        }
         // `const src = exports.src = []`: an export member assigned in
         // value position writes its export global and yields the value.
         {

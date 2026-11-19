@@ -101,6 +101,37 @@ export function nativePartitionPaths(path: string, count: number): string[] {
   return paths;
 }
 
+/** The frame that threw, as an error's stack names it, for a failure that
+ * carries no message of its own. */
+function throwingFrame(error: Error): string | null {
+  const stack = error.stack;
+  if (stack === undefined) return null;
+  for (const line of stack.split("\n").slice(1)) {
+    const text = line.trim();
+    if (text !== "") return text.replace(/^at\s+/, "");
+  }
+  return null;
+}
+
+/** The text a native-pipeline failure reports. An error thrown without a
+ * message — a compiler-internal refusal has none — still names what failed
+ * and where it was thrown, so an SC3004 never ends at its code alone. */
+export function failureText(error: unknown): string {
+  if (!(error instanceof Error)) {
+    // A thrown string (or another non-Error value) can be empty; the build
+    // still has to say that the failure was the compiler's own.
+    const text = String(error);
+    return text.trim() === "" ? "internal compiler error (a non-Error value was thrown)" : text;
+  }
+  if (error.message !== "") return error.message;
+  const frame = throwingFrame(error);
+  const what =
+    error.name === "" || error.name === "Error"
+      ? "internal compiler error"
+      : `internal compiler error (${error.name})`;
+  return frame === null ? what : `${what} at ${frame}`;
+}
+
 export class NativeCodegenError extends Error {
   constructor(
     readonly diagnosticCode: "SC3002" | "SC3003" | "SC3004",
@@ -167,27 +198,39 @@ export function nativeHelperFailureMessage(failure: NativeHelperFailure): {
 } {
   const stderr = typeof failure.stderr === "string" ? failure.stderr : "";
   const parsed = parseJsonObject(stderr.trim());
-  if (typeof parsed?.["message"] === "string") {
+  if (typeof parsed?.["message"] === "string" && parsed["message"].trim() !== "") {
     return {
       ...(typeof parsed["code"] === "string" ? { code: parsed["code"] } : {}),
       message: parsed["message"],
     };
   }
-  // The helper did not report one of its structured diagnostics, so the child's
-  // exit status, signal and output are all the evidence there is: a loader,
-  // allocation or abort message names a cause that the command line alone does
-  // not. The diagnostic goes to stderr; stdout only carries a profile report,
-  // which a failing helper may still have written before it ended.
-  const printed = (
-    stderr.trim() !== "" ? stderr : typeof failure.stdout === "string" ? failure.stdout : ""
-  ).trim();
+  // The helper reported no structured diagnostic, or one whose message is
+  // blank (a native panic that named only its code): the child's exit status,
+  // signal and output are then all the evidence there is. A loader, allocation
+  // or abort message names a cause that the command line alone does not. The
+  // diagnostic goes to stderr; stdout only carries a profile report, which a
+  // failing helper may still have written before it ended.
+  const structured = parsed !== null && typeof parsed["message"] === "string";
+  const printed = structured
+    ? ""
+    : (stderr.trim() !== ""
+        ? stderr
+        : typeof failure.stdout === "string"
+          ? failure.stdout
+          : ""
+      ).trim();
   const ending = helperEnding(failure);
   const status = ending === "" ? "" : ` (${ending})`;
   const output =
     printed === ""
-      ? ""
+      ? structured
+        ? ": the native helper gave no reason"
+        : ""
       : `: ${printed.slice(0, MAX_HELPER_FAILURE_OUTPUT)}${printed.length > MAX_HELPER_FAILURE_OUTPUT ? "…" : ""}`;
-  return { message: `${helperCommand(failure)}${status}${output}` };
+  return {
+    ...(structured && typeof parsed["code"] === "string" ? { code: parsed["code"] } : {}),
+    message: `${helperCommand(failure)}${status}${output}`,
+  };
 }
 
 export interface NativeCodegenVersion {

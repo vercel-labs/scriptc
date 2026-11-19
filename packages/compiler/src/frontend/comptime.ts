@@ -5,6 +5,7 @@
  * goes in and only that text comes back, so nothing the callback builds is
  * ever called or read inside the compiler. */
 import { execFileSync } from "node:child_process";
+import { ensureExecutable } from "../executable-mode.js";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -162,8 +163,10 @@ export function createComptimeEvaluator(
     try {
       const path = join(stage, "eval.js");
       writeFileSync(path, script);
+      const executable = evaluator();
+      ensureExecutable(executable);
       const result = execFileSync(
-        evaluator(),
+        executable,
         [path, String(limits.timeoutMs), String(limits.memoryMb)],
         // The evaluator writes at most 64 MB of result text.
         {

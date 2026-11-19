@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/fs-promises-watch-unused.ts"
+ ],
+ "diags": []
+}

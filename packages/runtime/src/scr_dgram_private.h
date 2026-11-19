@@ -25,9 +25,20 @@ typedef struct {
 struct ScrDgramSocket {
   size_t rc;
   int fd; /* -1 until bound/connected, -1 again once closed */
+  bool v6; /* udp6: every sockaddr this socket makes is sockaddr_in6 */
   bool reuse_addr;
+  bool reuse_port;
+  bool ipv6_only;
+  /* Constructor recv/send buffer sizes (createSocket options), applied
+   * when the descriptor starts receiving, as Node's startReceiving does;
+   * 0 means the option was absent. */
+  double init_recv_size;
+  double init_send_size;
   bool bound;
   bool connected;
+  /* connectSync made the association: Node's connect state is CONNECTED
+   * before the 'connect' emission, so disconnect() already works. */
+  bool connected_sync;
   bool closing;       /* close() called; 'close' fires at the next sweep */
   bool close_emitted; /* settled: off the registry, listeners dropped */
   bool unrefed;       /* waives loop liveness, Node's unref */
@@ -35,6 +46,13 @@ struct ScrDgramSocket {
   bool emit_listening;
   bool emit_connect;
   ScrStr *pending_err; /* deferred bind/connect/send failure */
+  /* pending_err's code when its message does not name one (static
+   * storage; NULL = the code the message maps to) */
+  const char *pending_code;
+  /* The options' net.BlockList filters (retained handles; NULL when the
+   * option was absent): sendBlockList gates outgoing destinations,
+   * receiveBlockList drops incoming sources. */
+  ScrDyn *send_block_list, *recv_block_list;
   ScrDgramLs msg_ls, err_ls, listening_ls, close_ls, conn_ls;
   bool in_registry;
   struct ScrDgramSocket *next;

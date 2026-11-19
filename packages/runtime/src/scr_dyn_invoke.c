@@ -2525,14 +2525,23 @@ static const char dyn_s46[] SCR_DYN_COMPAT_STR = "Proxy";
 static const char dyn_s47[] SCR_DYN_COMPAT_STR = "Constructor %s requires 'new'";
 static const char dyn_s48[] SCR_DYN_COMPAT_STR = "isPrototypeOf";
 static const char dyn_s49[] SCR_DYN_COMPAT_STR = "WeakRef";
+static const char dyn_s50[] SCR_DYN_COMPAT_STR = "MessageChannel";
+static const char dyn_s51[] SCR_DYN_COMPAT_STR = "Cannot call constructor without `new`";
+static const char dyn_s52[] SCR_DYN_COMPAT_STR = "AbortController";
+static const char dyn_s53[] SCR_DYN_COMPAT_STR = "Event";
+static const char dyn_s54[] SCR_DYN_COMPAT_STR = "CustomEvent";
+static const char dyn_s55[] SCR_DYN_COMPAT_STR = "EventTarget";
+static const char dyn_s56[] SCR_DYN_COMPAT_STR = "DOMException";
+static const char dyn_s57[] SCR_DYN_COMPAT_STR = "Class constructor %s cannot be invoked without 'new'";
 
 static const char *const dyn_global_ctor_names[] = {
   dyn_s26, dyn_s29, dyn_s25, dyn_s30, dyn_s31, dyn_s21, dyn_s22, dyn_s24, dyn_s35,
-  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46, dyn_s49,
+  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46, dyn_s49, dyn_s50,
+  dyn_s52, dyn_s53, dyn_s54, dyn_s55, dyn_s56,
 };
 #define DYN_GLOBAL_CTORS (sizeof dyn_global_ctor_names / sizeof dyn_global_ctor_names[0])
 /* Each constructor's own length, indexed like dyn_global_ctor_names. */
-static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2, 1};
+static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2, 1, 0, 0, 1, 1, 0, 0};
 /* The first of the constructors that only `new` builds
  * (SharedArrayBuffer onward): calling one throws Node's TypeError. */
 #define DYN_GLOBAL_NEW_ONLY 9
@@ -2546,15 +2555,140 @@ static void dyn_global_ctors_cleanup(void) {
   }
 }
 
+/* The units that build the instances two of these constructors make link
+ * only into programs that use them: scr_worker_events.c for MessageChannel,
+ * and the regex engine (scr_regex.c) for RegExp. A program that reads the
+ * constructor value without building one therefore keeps its exact
+ * executable, and a build that linked no such unit answers the refusal the
+ * value always gave. */
+extern ScrDyn *scr_worker_message_channel(void) __attribute__((weak));
+
+/* MessageChannel lives in scr_worker_events.c, which only a worker build compiles. A program
+ * without workers must not name the symbol at all: the header declares it non-weak, so merely
+ * referencing it left the program with an undefined _scr_worker_message_channel at link time. */
+#ifdef SCR_WORKERS
+static ScrDyn *dyn_worker_channel(void) { return scr_worker_message_channel(); }
+#else
+static ScrDyn *dyn_worker_channel(void) { return NULL; }
+#endif
+/* The runtime-provided host classes whose constructors the runtime builds:
+ * the abort unit (scr_fetch.c), the event-target unit, and the base error
+ * unit's DOMException. */
+extern ScrError *scr_domex_new(const ScrDyn *message, const ScrDyn *name_or_options)
+    __attribute__((weak));
+/* Mach-O refuses an undefined weak *reference* in an executable, so the
+ * optional constructor units get weak definitions there: a program that
+ * links none of them still links, and the units' strong definitions replace
+ * them. The linked flags answer the capability tests the NULL checks give on
+ * the other formats — a defined stub can no longer be told apart by its
+ * address. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_abort_unit_linked = 0;
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_fetch_abort_controller_new(void) { return NULL; }
+__attribute__((weak)) ScrDyn *scr_event_target_new(void) { return NULL; }
+__attribute__((weak)) ScrDyn *scr_event_new(ScrDyn *args) {
+  (void)args;
+  return NULL;
+}
+__attribute__((weak)) ScrDyn *scr_custom_event_new(ScrDyn *args) {
+  (void)args;
+  return NULL;
+}
+static bool dyn_abort_available(void) { return scr_dyn_abort_unit_linked != 0; }
+static bool dyn_event_available(void) { return scr_dyn_event_target_unit_linked != 0; }
+#else
+extern ScrDyn *scr_fetch_abort_controller_new(void) __attribute__((weak));
+extern ScrDyn *scr_event_target_new(void) __attribute__((weak));
+extern ScrDyn *scr_event_new(ScrDyn *args) __attribute__((weak));
+extern ScrDyn *scr_custom_event_new(ScrDyn *args) __attribute__((weak));
+static bool dyn_abort_available(void) { return scr_fetch_abort_controller_new != NULL; }
+static bool dyn_event_available(void) {
+  return scr_event_new != NULL && scr_custom_event_new != NULL && scr_event_target_new != NULL;
+}
+#endif
+/* Mach-O refuses an undefined weak *reference* in an executable, so the
+ * regex entries get weak definitions there: a program that links no regex
+ * unit still links, and the unit's strong definitions replace them. The
+ * linked flag answers the capability test the NULL check gives on the other
+ * formats — a defined stub can no longer be told apart by its address. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_regex_unit_linked = 0;
+__attribute__((weak)) ScrRegex *scr_regex_new_checked(const ScrDyn *pattern,
+                                                      const ScrDyn *flags) {
+  (void)pattern;
+  (void)flags;
+  return NULL;
+}
+__attribute__((weak)) ScrDyn *scr_dyn_native_regex(ScrRegex *value) {
+  (void)value;
+  return NULL;
+}
+__attribute__((weak)) bool scr_dyn_native_regex_is(const ScrDyn *value) {
+  (void)value;
+  return false;
+}
+__attribute__((weak)) void scr_regex_release(ScrRegex *value) { (void)value; }
+static bool dyn_regex_available(void) { return scr_dyn_regex_unit_linked != 0; }
+#else
+extern ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags)
+    __attribute__((weak));
+extern ScrDyn *scr_dyn_native_regex(ScrRegex *value) __attribute__((weak));
+extern bool scr_dyn_native_regex_is(const ScrDyn *value) __attribute__((weak));
+extern void scr_regex_release(ScrRegex *value) __attribute__((weak));
+static bool dyn_regex_available(void) {
+  return scr_regex_new_checked != NULL && scr_dyn_native_regex != NULL &&
+         scr_dyn_native_regex_is != NULL && scr_regex_release != NULL;
+}
+#endif
+
+/* `new RegExp(pattern, flags)` and `RegExp(pattern, flags)` through the
+ * interned constructor: the same native engine the regex literals and the
+ * direct `new` run, so invalid flags throw Node's SyntaxError here. The call
+ * form answers `pattern` itself when it is a native RegExp and no flags were
+ * passed (ECMA-262 22.2.3.1 step 2; a compiled program cannot replace the
+ * `constructor` that step compares, since a write of that member is
+ * refused); `new` always builds a copy. */
+static ScrDyn *dyn_regex_construct(const ScrDyn *pattern, const ScrDyn *flags, bool identity) {
+  if (!dyn_regex_available()) {
+    char message[128];
+    int length = snprintf(message, sizeof message, identity ? dyn_s0 : dyn_s33, dyn_s25, dyn_s32);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
+    return NULL;
+  }
+  if (identity && flags->kind == SCR_DYN_UNDEF && scr_dyn_native_regex_is(pattern))
+    return scr_dyn_retain((ScrDyn *)pattern);
+  ScrRegex *regex = scr_regex_new_checked(pattern, flags);
+  if (!regex) return NULL;
+  ScrDyn *result = scr_dyn_native_regex(regex);
+  scr_regex_release(regex);
+  return result;
+}
+
 static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const char *name = closure->fn;
   for (size_t i = DYN_GLOBAL_NEW_ONLY; i < DYN_GLOBAL_CTORS; i++) {
     if (name != dyn_global_ctor_names[i]) continue;
+    /* Node's host classes say it in their own words. */
+    if (name == dyn_s50) {
+      scr_throw_error_msg(SCR_ERR_TYPE, dyn_s51, sizeof dyn_s51 - 1);
+      return NULL;
+    }
+    if (name == dyn_s52 || name == dyn_s53 || name == dyn_s54 || name == dyn_s55 ||
+        name == dyn_s56) {
+      char host_message[96];
+      int host_length = snprintf(host_message, sizeof host_message, dyn_s57, name);
+      scr_throw_error_msg(SCR_ERR_TYPE, host_message, (size_t)host_length);
+      return NULL;
+    }
     char message[64];
     int length = snprintf(message, sizeof message, dyn_s47, name);
     scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
     return NULL;
   }
+  if (name == dyn_s25)
+    return dyn_regex_construct(argc ? args[0] : scr_dyn_undefined(),
+                               argc > 1 ? args[1] : scr_dyn_undefined(), true);
   bool object = strcmp(name, dyn_s26) == 0;
   if (object) {
     const ScrDyn *value = argc ? args[0] : scr_dyn_undefined();
@@ -2571,9 +2705,21 @@ static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, si
   return NULL;
 }
 
-/* `new C(...args)` through a stored Object, Date, Map, Set, WeakMap or
- * WeakSet builds what the `new` expression builds. The other constructors,
- * and Object over a primitive (a wrapper object), are fenced. */
+/* `new C(...args)` through a stored Object, Date, RegExp, Map, Set, WeakMap,
+ * WeakSet, WeakRef, MessageChannel, AbortController, Event, CustomEvent,
+ * EventTarget or DOMException builds what the `new` expression builds. The
+ * other constructors, Object over a primitive (a wrapper object), and a
+ * class whose implementing unit the program did not link, are fenced. */
+/* The error a constructor the runtime has no build for raises. MessageChannel takes it when no
+ * worker build supplied the channel, as it did before the branch stopped probing the symbol. */
+static void dyn_unsupported_constructor(const char *name, ScrDyn **result) {
+  char message[128];
+  int length = snprintf(message, sizeof message, dyn_s33, name,
+                        strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
+  *result = NULL;
+}
+
 static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) {
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != dyn_global_ctor_call) return false;
   const char *name = callee->v.fn.clo->fn;
@@ -2587,16 +2733,36 @@ static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDy
     *result = argc == 0 ? scr_dyn_native_date_new(args)
             : argc == 1 ? scr_dyn_native_date_new_value(args)
             : scr_dyn_native_date_new_fields(args);
+  else if (strcmp(name, dyn_s25) == 0)
+    *result = dyn_regex_construct(first, argc > 1 ? items[1] : scr_dyn_undefined(), false);
   else if (strcmp(name, dyn_s30) == 0) *result = scr_dyn_native_map_new(first);
   else if (strcmp(name, dyn_s31) == 0) *result = scr_dyn_native_set_new(first);
   else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
   else if (strcmp(name, dyn_s49) == 0) *result = scr_weak_ref_new((ScrDyn *)first);
-  else {
-    char message[128];
-    int length = snprintf(message, sizeof message, dyn_s33, name, strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
-    *result = NULL;
+  else if (strcmp(name, dyn_s50) == 0) {
+    /* One construction: a probe call in the condition built a second channel, and the first
+     * was never released. Without a worker build there is no channel, and the construction is
+     * unsupported like any other the runtime has no build for. */
+    ScrDyn *channel = dyn_worker_channel();
+    if (channel != NULL) *result = channel;
+    else dyn_unsupported_constructor(name, result);
+  } else if (strcmp(name, dyn_s52) == 0 && dyn_abort_available()) {
+    *result = scr_fetch_abort_controller_new();
+  } else if (strcmp(name, dyn_s53) == 0 && dyn_event_available()) {
+    *result = scr_event_new((ScrDyn *)args);
+  } else if (strcmp(name, dyn_s54) == 0 && dyn_event_available()) {
+    *result = scr_custom_event_new((ScrDyn *)args);
+  } else if (strcmp(name, dyn_s55) == 0 && dyn_event_available()) {
+    *result = scr_event_target_new();
+  } else if (strcmp(name, dyn_s56) == 0 && scr_domex_new != NULL) {
+    ScrError *error = scr_domex_new(first, argc > 1 ? items[1] : scr_dyn_undefined());
+    if (error) {
+      *result = scr_dyn_from_error(error);
+      scr_error_release(error);
+    }
+  } else {
+    dyn_unsupported_constructor(name, result);
   }
   return true;
 }
@@ -2645,14 +2811,12 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
   return ctor;
 }
 
-#ifdef SCR_JS_OBJECT_MODEL
-/* The object model build answers a DataView's `constructor` through this hook
- * (scr_json.c). A program that never reads a global constructor as a value
- * does not link this unit, and the read keeps its named refusal there. */
+/* A value's `constructor` (a DataView's, a DOMException's) is answered through
+ * this hook (scr_json.c) with the global's own interned value. A program that
+ * never asks does not link this unit, and the read keeps its named refusal. */
 __attribute__((constructor)) static void dyn_global_constructor_hook_install(void) {
   scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
 }
-#endif
 
 /* Object.prototype.toString's tag: errors answer "[object Error]" (the
  * shared tag walk in scr_json.c answers "[object Object]" for them). */

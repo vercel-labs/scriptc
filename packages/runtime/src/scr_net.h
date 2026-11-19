@@ -160,6 +160,8 @@ double scr_net_server_idle_ms(ScrNetServer *s);
  * keepAliveTimeoutBuffer. Typed reads validate that no dynamic write left
  * a non-number in the ordinary JS property slot. */
 double scr_net_server_timeout_get(ScrNetServer *s, double field);
+/* As the HTTP timeout checker reads a field: a non-number reads 0. */
+double scr_net_server_timeout_raw(ScrNetServer *s, double field);
 void scr_net_server_timeout_set(ScrNetServer *s, double field, double value);
 void scr_net_server_set_timeout_plain(ScrNetServer *s, double ms);
 void scr_net_server_set_timeout_cb(ScrNetServer *s, double ms, ScrClosure *cb /*moves*/, ScrNetConnFn fn);
@@ -229,6 +231,9 @@ enum {
   SCR_NET_OFF_DROP = 6,
   SCR_NET_OFF_NEW_LISTENER = 7,
   SCR_NET_OFF_CLIENT_ERROR = 8,
+  /* The TLS handshake-complete list ('secureConnection'), which fires
+   * beside the 'connection' list but is a separate registry. */
+  SCR_NET_OFF_SECURE_CONNECTION = 9,
 };
 void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 /* server.listeners(event): a +1 closure array of the event's listeners in
@@ -368,6 +373,7 @@ ScrDyn *scr_net_socket_address_parse(const ScrDyn *input);
 bool scr_net_is_socket_address(const ScrDyn *value);
 ScrDyn *scr_net_block_list_new(const ScrDyn *args);
 bool scr_net_is_block_list(const ScrDyn *value);
+bool scr_net_block_list_blocks(const ScrDyn *list, const char *ip, int family);
 /* net.BoundSocket: construction validates its options and binds (TCP or a
  * Unix-socket path); server.listen(bound[, cb]) adopts the descriptor. All
  * +1, borrowed arguments; may throw. */
@@ -564,6 +570,7 @@ void scr_net_sock_on_established(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool
  * tls.createServer's handler is the 'secureConnection' event, fired with
  * the socket only once the TLS layer stands (Node's timing). */
 void scr_net_server_defer_connections(ScrNetServer *s);
+bool scr_net_server_is_tls(const ScrNetServer *s);
 /* The current native-connection hook (the https wrapper reads the http
  * parser installer it is about to wrap). */
 void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, void **ctx, void (**ctx_free)(void *));

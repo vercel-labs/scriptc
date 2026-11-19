@@ -1,0 +1,27 @@
+process-emit-unsupported.ts:4:1 - error SC1090: process.emit('exit') (not supported yet: this event's listeners or its default handling have no checked-dynamic dispatch) is not supported yet
+
+  3 | // and a computed event name are refused.
+  4 | process.emit("exit", 0);
+    | ^~~~~~~~~~~~~~~~~~~~~~~
+  5 | process.emit("SIGINT");
+
+process-emit-unsupported.ts:5:1 - error SC1090: process.emit('SIGINT') (not supported yet: this event's listeners or its default handling have no checked-dynamic dispatch) is not supported yet
+
+  4 | process.emit("exit", 0);
+  5 | process.emit("SIGINT");
+    | ^~~~~~~~~~~~~~~~~~~~~~
+  6 | process.emit("warning", new Error("w"));
+
+process-emit-unsupported.ts:6:1 - error SC1090: process.emit('warning') (not supported yet: this event's listeners or its default handling have no checked-dynamic dispatch) is not supported yet
+
+  5 | process.emit("SIGINT");
+  6 | process.emit("warning", new Error("w"));
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  7 | const eventName = "uncaughtException";
+
+process-emit-unsupported.ts:8:14 - error SC1090: process.emit with a computed event name (write the event name as a string literal, so the lowering can dispatch it) is not supported yet
+
+  7 | const eventName = "uncaughtException";
+  8 | process.emit(eventName, new Error("e"));
+    |              ^~~~~~~~~
+  9 | 

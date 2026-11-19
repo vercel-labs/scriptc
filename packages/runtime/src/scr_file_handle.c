@@ -35,6 +35,7 @@ struct ScrFileHandle {
   /* Node's kRefs: the handle itself counts 1, every stream over it one
    * more. close() resolves once the count reaches zero. */
   size_t refs;
+  bool locked; /* readableWebStream opened a stream on it */
   ScrFileHandleHook *hooks; /* 'close' listeners (the streams' close()) */
   ScrPromise *close_wait;   /* close() waiting for the streams, or NULL */
 };
@@ -340,6 +341,10 @@ int scr_file_handle_stream_unref(ScrFileHandle *h) {
   return fd;
 }
 
+
+bool scr_file_handle_is_locked(const ScrFileHandle *h) { return h->locked; }
+void scr_file_handle_lock(ScrFileHandle *h) { h->locked = true; }
+
 ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx) {
   ScrFileHandleHook *k = malloc(sizeof *k);
   if (!k) scr_trap("scriptc: out of memory\n");
@@ -452,9 +457,25 @@ void scr_file_handle_write_file_bytes(ScrFileHandle *h, ScrBytes *data) {
 
 /* FileHandle.writeFile over a checked data argument: a string or any
  * Buffer/TypedArray/DataView, whose bytes are written as they are. */
-static void scr_file_handle_write_file_data(ScrFileHandle *h, const ScrDyn *data) {
+/* A string written with the encoding the record named: utf8 (and the
+ * absent default) copies its bytes, every other name encodes them, so the
+ * checked-dynamic path writes what the statically-string path writes. */
+static void scr_file_handle_write_str_encoded(ScrFileHandle *h, ScrStr *data, ScrStr *encoding) {
+  if (encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding)) {
+    scr_file_handle_write_file(h, data);
+    return;
+  }
+  ScrBytes *bytes = scr_bytes_from_str(data, encoding);
+  if (bytes) {
+    scr_file_handle_write_file_bytes(h, bytes);
+    scr_bytes_release(bytes);
+  }
+}
+
+static void scr_file_handle_write_file_data(ScrFileHandle *h, const ScrDyn *data,
+                                            ScrStr *encoding) {
   if (data->kind == SCR_DYN_STR) {
-    scr_file_handle_write_file(h, data->v.str);
+    scr_file_handle_write_str_encoded(h, data->v.str, encoding);
     return;
   }
   if (data->kind == SCR_DYN_BYTES) {
@@ -513,6 +534,11 @@ ScrPromise *scr_file_handle_chmod_promise(ScrFileHandle *h, double mode) {
   return scr_promise_settled_void();
 }
 
+ScrPromise *scr_file_handle_chown_promise(ScrFileHandle *h, double uid, double gid) {
+  if (scr_file_handle_require_open(h)) scr_fs_fchown((double)h->fd, uid, gid);
+  return scr_promise_settled_void();
+}
+
 ScrPromise *scr_file_handle_utimes_promise(ScrFileHandle *h, const ScrDyn *atime, const ScrDyn *mtime) {
   if (scr_file_handle_require_open(h)) {
     double access = scr_fs_timestamp_value(atime, "atime");
@@ -536,8 +562,10 @@ double scr_file_handle_writev(ScrFileHandle *h, ScrArr *buffers, double position
 
 ScrPromise *scr_file_handle_read_file_promise(ScrFileHandle *h,
                                               ScrStr *encoding) {
-  (void)encoding;
-  return scr_promise_settled_str(scr_file_handle_read_file(h));
+  /* Node checks the handle before it validates the options, then decodes
+   * the bytes with the encoding the record named (utf8 by default). */
+  if (!scr_file_handle_require_open(h)) return scr_promise_settled_str(NULL);
+  return scr_promise_settled_str(scr_fs_read_fd_encoded((double)h->fd, encoding));
 }
 
 ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h,
@@ -548,18 +576,29 @@ ScrPromise *scr_file_handle_read_file_bytes_promise(ScrFileHandle *h,
                                  &scr_bytes_release_v, NULL);
 }
 
+/* The write family's shared front: Node checks the handle, then validates
+ * the encoding name (getOptions runs assertEncoding whatever the data
+ * kind), and only then writes. The name selects the codec for string data
+ * and has no effect on bytes; utf8 (and the absent default) copies the
+ * string's bytes without an intermediate Buffer. */
+static bool scr_file_handle_write_encoding_ok(ScrFileHandle *h, ScrStr *encoding) {
+  if (!scr_file_handle_require_open(h)) return false;
+  scr_fs_check_read_encoding(encoding);
+  return !scr_exc_pending();
+}
+
 ScrPromise *scr_file_handle_write_file_promise(ScrFileHandle *h,
                                                ScrStr *data,
                                                ScrStr *encoding) {
-  (void)encoding; /* frontend admits utf8 only; evaluation is observable */
-  scr_file_handle_write_file(h, data);
+  if (!scr_file_handle_write_encoding_ok(h, encoding)) return scr_promise_settled_void();
+  scr_file_handle_write_str_encoded(h, data, encoding);
   return scr_promise_settled_void();
 }
 
 ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h,
                                                      ScrBytes *data,
                                                      ScrStr *encoding) {
-  (void)encoding;
+  if (!scr_file_handle_write_encoding_ok(h, encoding)) return scr_promise_settled_void();
   scr_file_handle_write_file_bytes(h, data);
   return scr_promise_settled_void();
 }
@@ -567,8 +606,8 @@ ScrPromise *scr_file_handle_write_file_bytes_promise(ScrFileHandle *h,
 ScrPromise *scr_file_handle_write_file_data_promise(ScrFileHandle *h,
                                                     const ScrDyn *data,
                                                     ScrStr *encoding) {
-  (void)encoding;
-  scr_file_handle_write_file_data(h, data);
+  if (!scr_file_handle_write_encoding_ok(h, encoding)) return scr_promise_settled_void();
+  scr_file_handle_write_file_data(h, data, encoding);
   return scr_promise_settled_void();
 }
 

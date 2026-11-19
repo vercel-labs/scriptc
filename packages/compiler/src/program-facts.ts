@@ -81,6 +81,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["memberReceivers"],
   },
   {
+    name: "cjs-exports-object",
+    file: `${SRC}/frontend/lowering/cjs-exports-object-value.ts`,
+    symbol: "cjsExportsObjectModules",
+    source: "symbols",
+    scope: "file",
+    setBy:
+      "a CommonJS module binding or inline require() of a table module used as a value (anything but a static export's member read or call), or a plain write of one of its exports",
+    gates:
+      "that module's exports: its export writes also fill a real exports object, and every static member read, call and write of the module goes through that object",
+    narrower:
+      "the reads that can observe a write made through the object, by escape analysis of the object value; today every static member access of the module pays the checked-dynamic read",
+    tracked: "DESIGN.md (cjs-exports object)",
+    lowererFields: [],
+  },
+  {
     name: "thenables-may-be-defined",
     file: `${SRC}/frontend/lowering/thenables.ts`,
     symbol: "programMayDefineThenables",
@@ -273,6 +288,35 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     gates:
       "typed handle receivers of the granted classes are boxed into their checked-dynamic value",
     narrower: "per handle class already; per value needs a table on the handle",
+    tracked: "designs/handle-expandos",
+    lowererFields: [],
+  },
+  {
+    name: "fetch-handle-additions",
+    file: `${SRC}/frontend/lowering/handle-properties.ts`,
+    symbol: "functionsUseFetch",
+    source: "ir",
+    scope: "program",
+    setBy: "any fetch libCall in the IR (`fetch.function`, `fetch.requestNew` and the rest)",
+    gates:
+      "%main installs the handle property table, so a write onto a fetch Request, Response or Headers value adds an own property instead of throwing",
+    narrower:
+      "the written value's class, at run time; fetch values are checked-dynamic, so the census of typed handle receivers cannot see the write",
+    tracked: "designs/handle-expandos",
+    lowererFields: [],
+  },
+  {
+    name: "fetch-member-additions",
+    file: `${SRC}/frontend/lowering/handle-properties.ts`,
+    symbol: "fetchAdditions",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "a write, delete or definition of any member name in any implementation file, and a key the walk cannot read (a computed key, a non-literal Object.assign source) which names every member",
+    gates:
+      "a typed `json()`, `text()`, `bytes()` or `arrayBuffer()` call on a Response keeps its native body read only when no write can name that member; otherwise the call takes the checked-dynamic dispatch, whose handle-table lookup answers the own property before the prototype method",
+    narrower:
+      "the written value, at run time: a fetch handle is checked-dynamic in both tiers, so no write can be attributed to one statically",
     tracked: "designs/handle-expandos",
     lowererFields: [],
   },
@@ -745,11 +789,22 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "computed-environment-write",
   ),
+  decides(
+    "frontend/lowering/cjs-exports-object-value.ts#cjsExportsObjectModules",
+    1,
+    "cjs-exports-object",
+  ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#cjsExportEvaluations",
     1,
     "closed-world",
     "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsRuntimeWholeExportValueWritesOf",
+    1,
+    "prefilter",
+    "a module whose whole export is chosen at run time has to spell `module.exports`; every write it finds is decided from its target's symbol and its value's type",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
@@ -774,12 +829,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "a file that never spells `extends` declares no derived class",
-  ),
-  scan(
-    "frontend/lowering/cycle-initialization.ts#earlyHeritageReference",
-    1,
-    "closed-world",
-    "references to one class of an import cycle",
   ),
   scan(
     "frontend/lowering/cycle-initialization.ts#classLocalNames",
@@ -830,6 +879,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   decides("frontend/lowering/handle-properties.ts#childAdditions", 2, "child-additions"),
   decides("frontend/lowering/handle-properties.ts#handleAdditions", 1, "handle-additions"),
+  decides("frontend/lowering/handle-properties.ts#fetchAdditions", 1, "fetch-member-additions"),
   scan(
     "frontend/lowering/handle-properties.ts#programHasJsSource",
     1,
@@ -979,6 +1029,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "program roots named by createRequire calls",
   ),
   scan(
+    "frontend/lowering/cycle-initialization.ts#earlyHeritageReferences",
+    1,
+    "closed-world",
+    "the `extends` clauses that read a class of an import cycle before its declaration, each of which carries the class's initialization check at its own statement",
+  ),
+  scan(
     "frontend/program.ts#boundedDynamicImportRoots7",
     1,
     "discovery",
@@ -989,6 +1045,18 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots of the entry package",
+  ),
+  scan(
+    "frontend/program.ts#declarationTwinRoots7",
+    1,
+    "discovery",
+    "program roots for the runtime implementation of each project declaration the program holds (a `.d.ts` beside the JavaScript it describes)",
+  ),
+  scan(
+    "frontend/program.ts#cjsStarReexportSources",
+    2,
+    "discovery",
+    "the files whose `export *` re-exports a CommonJS module, which the lowering rewrites with the Node lexer's names; the text test picks a helper binding the file does not already spell",
   ),
   decides("frontend/program.ts#programNamesTemporal7", 2, "names-temporal"),
   scan(

@@ -12,8 +12,9 @@ export function isConsoleLog(lowerer: Lowerer, call: ts.CallExpression): boolean
 export type ConsoleOutputMember = "log" | "info" | "debug" | "error" | "warn";
 
 /** The rest of the lowered global console surface (lower-console.ts):
- * counters, timers, groups, assert, dir/dirxml, table, clear, trace, and
- * the inspector-only profile/profileEnd/timeStamp. trace prints the
+ * counters, timers, groups, assert, dir/dirxml, table, clear, trace, the
+ * inspector-only profile/profileEnd/timeStamp, and createTask (the task
+ * object the runtime's console member builds). trace prints the
  * captured frames with scriptc's own function and file text (SEMANTICS
  * divergence 11), the same frames an uncaught Error's report carries. */
 export type ConsoleMethodMember =
@@ -33,7 +34,8 @@ export type ConsoleMethodMember =
   | "timeEnd"
   | "timeLog"
   | "timeStamp"
-  | "trace";
+  | "trace"
+  | "createTask";
 
 const CONSOLE_METHOD_MEMBERS: ReadonlySet<string> = new Set<ConsoleMethodMember>([
   "assert",
@@ -53,6 +55,7 @@ const CONSOLE_METHOD_MEMBERS: ReadonlySet<string> = new Set<ConsoleMethodMember>
   "timeLog",
   "timeStamp",
   "trace",
+  "createTask",
 ]);
 
 /** The console member of a `console.<member>(...)` call, for the lowered

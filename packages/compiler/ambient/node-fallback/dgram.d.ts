@@ -1,13 +1,23 @@
 /* node:dgram — UDP sockets over the event loop (scr_dgram.c, linked only
- * into using binaries). createSocket takes "udp4" or the
- * { type: "udp4", reuseAddr? } literal; bind/connect bind NOW and defer
- * 'listening'/'connect' to the next loop turn; send takes one string or
- * Buffer datagram with an explicit port + address (the connected-send
- * and callback forms have no lowering); address() returns the real
- * {address, family, port} record and THROWS "Not running" before bind,
- * like Node. The socket options throw Node's errors (EBADF before bind);
- * add/dropMembership before bind is refused at run time (SC2020). 'error'
- * with no listener exits 1 (the unhandled EventEmitter 'error' behavior). */
+ * into using binaries). udp4 and udp6; createSocket and `new Socket` take
+ * the bare type string or the options record (type, reuseAddr, ipv6Only,
+ * reusePort, recvBufferSize, sendBufferSize), with the message listener as
+ * the second argument. bind/connect bind NOW and defer 'listening'/
+ * 'connect' to the next loop turn; bindSync/connectSync do the same
+ * synchronously and throw their failures; send takes one string or Buffer
+ * datagram with an explicit port + address (the connected-send and
+ * callback forms ride the checked-dynamic ladder). address() and
+ * remoteAddress() return the real {address, family, port} record and
+ * THROW Node's state errors ("Not running" after close(), getsockname's
+ * EBADF before bind, ERR_SOCKET_DGRAM_NOT_CONNECTED for remoteAddress()).
+ * The socket options throw Node's errors (EBADF before bind);
+ * add/dropMembership implicitly binds an unbound socket, like Node.
+ * 'error' with no listener exits 1 (the unhandled EventEmitter 'error'
+ * behavior). receiveBlockList drops packets from a blocked source before
+ * they reach 'message'; sendBlockList makes a blocked send fail its
+ * callback with ERR_IP_BLOCKED and never reach the wire. The options with
+ * no native behavior yet (signal, lookup) are refused at run time with an
+ * SC2020 Error. */
 declare module "dgram" {
   export interface AddressInfo {
     address: string;
@@ -20,14 +30,79 @@ declare module "dgram" {
     port: number;
     size: number;
   }
+  export interface BindOptions {
+    port?: number;
+    address?: string;
+    exclusive?: boolean;
+  }
+  export interface SocketOptions {
+    type: "udp4" | "udp6";
+    reuseAddr?: boolean;
+    ipv6Only?: boolean;
+    reusePort?: boolean;
+    recvBufferSize?: number;
+    sendBufferSize?: number;
+    signal?: AbortSignal;
+    lookup?: (
+      hostname: string,
+      options: unknown,
+      callback: (err: Error | null, address: string, family: number) => void,
+    ) => void;
+    receiveBlockList?: import("net").BlockList;
+    sendBlockList?: import("net").BlockList;
+  }
   export interface Socket {
-    bind(port: number, address?: string, callback?: () => void): void;
+    type: "udp4" | "udp6";
+    bind(port?: number, address?: string, callback?: () => void): void;
     bind(port: number, callback: () => void): void;
+    bind(options: BindOptions, callback?: () => void): void;
+    bindSync(options?: BindOptions): AddressInfo;
     connect(port: number, address?: string, callback?: () => void): void;
-    send(msg: string | Uint8Array, port: number, address: string): void;
-    address(): AddressInfo;
-    close(callback?: () => void): void;
+    connect(port: number, callback: () => void): void;
+    connectSync(port: number, address?: string): void;
     disconnect(): void;
+    /* Node's send ladder: one datagram or a list of chunks, a connected
+     * send, the offset/length slice, and the completion callback in any of
+     * its positions. */
+    send(
+      msg: string | Uint8Array | readonly unknown[],
+      port?: number,
+      address?: string,
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    send(
+      msg: string | Uint8Array | readonly unknown[],
+      port?: number,
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    send(
+      msg: string | Uint8Array | readonly unknown[],
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    send(
+      msg: string | Uint8Array,
+      offset: number,
+      length: number,
+      port?: number,
+      address?: string,
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    send(
+      msg: string | Uint8Array,
+      offset: number,
+      length: number,
+      port?: number,
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    send(
+      msg: string | Uint8Array,
+      offset: number,
+      length: number,
+      callback?: (error: Error | null, bytes: number) => void,
+    ): void;
+    address(): AddressInfo;
+    remoteAddress(): AddressInfo;
+    close(callback?: () => void): void;
     unref(): void;
     ref(): void;
     setBroadcast(flag: boolean): void;
@@ -37,6 +112,16 @@ declare module "dgram" {
     setMulticastInterface(multicastInterface: string): void;
     addMembership(multicastAddress: string, multicastInterface?: string): void;
     dropMembership(multicastAddress: string, multicastInterface?: string): void;
+    addSourceSpecificMembership(
+      sourceAddress: string,
+      groupAddress: string,
+      multicastInterface?: string,
+    ): void;
+    dropSourceSpecificMembership(
+      sourceAddress: string,
+      groupAddress: string,
+      multicastInterface?: string,
+    ): void;
     getRecvBufferSize(): number;
     getSendBufferSize(): number;
     setRecvBufferSize(size: number): void;
@@ -49,9 +134,22 @@ declare module "dgram" {
     once(event: "message", listener: (msg: Buffer, rinfo: RemoteInfo) => void): void;
     once(event: "listening" | "close" | "connect", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    [Symbol.asyncDispose](): Promise<void>;
   }
-  export function createSocket(type: "udp4"): Socket;
-  export function createSocket(options: { type: "udp4"; reuseAddr?: boolean }): Socket;
+  /** The class value createSocket builds: `new dgram.Socket(type | options[,
+   * listener])` and `x instanceof dgram.Socket`. */
+  export const Socket: {
+    new (type: "udp4" | "udp6", listener?: (msg: Buffer, rinfo: RemoteInfo) => void): Socket;
+    new (options: SocketOptions, listener?: (msg: Buffer, rinfo: RemoteInfo) => void): Socket;
+  };
+  export function createSocket(
+    type: "udp4" | "udp6",
+    callback?: (msg: Buffer, rinfo: RemoteInfo) => void,
+  ): Socket;
+  export function createSocket(
+    options: SocketOptions,
+    callback?: (msg: Buffer, rinfo: RemoteInfo) => void,
+  ): Socket;
 }
 
 declare module "node:dgram" {

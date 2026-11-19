@@ -54,6 +54,10 @@ void scr_assert_partial_deep_result(bool equal, bool negated, ScrStr *msg, bool 
 bool scr_assert_partial_eq_dyn(const ScrDyn *a, const ScrDyn *b);
 ScrStr *scr_assert_inspect_str(const ScrStr *s); /* util.inspect quoting; +1 */
 void scr_assert_ok(bool pass, ScrStr *message, bool generated);
+/* assert.fail(actual, expected[, message[, operator[, stackStartFn]]]) —
+ * the deprecated form; everything moves in, throws. */
+void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *message,
+                                ScrDyn *operator_value, ScrDyn *default_operator);
 bool scr_assert_same_value_f64(double a, double b); /* Object.is */
 /* deepStrictEqual over cyclic values: pair memo (enter answers true for
  * a pair already being compared — Node's coinductive memo; leave pops).
@@ -132,6 +136,12 @@ void scr_assert_loose_result(bool equal, bool negated, ScrStr *actual,
  * AssertionError with the throws (or rejects) operator. */
 void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, bool has_msg,
                                 bool rejection);
+/* A string in the expectation position is the assertion's message, and
+ * Node refuses the call as ambiguous when the thrown value makes the other
+ * reading possible: an object whose `message` is that string, or the
+ * string itself (ERR_AMBIGUOUS_ARGUMENT, a TypeError). Only after the
+ * callback threw; borrows both. */
+void scr_assert_throws_ambiguous(ScrDyn *actual, ScrStr *message);
 void scr_assert_throws_none(bool rejection, ScrStr *ename, bool has_ename,
                             ScrStr *msg, bool has_msg);
 void scr_assert_throws_mismatch(ScrStr *expected_name, ScrError *err,

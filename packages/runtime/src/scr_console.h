@@ -74,6 +74,29 @@ ScrStr *scr_console_time(ScrStr *label);
 ScrStr *scr_console_time_end(ScrStr *label);
 ScrStr *scr_console_time_log(ScrStr *label);
 void scr_console_group(double delta);
+
+/* The same members on a Console instance: the instance owns its counters,
+ * timers and group indentation, and every line goes to the instance's own
+ * stdout/stderr target (kWriteToConsole). count prints "label: n";
+ * countReset answers the warning text for an unknown (or non-string) label,
+ * "" otherwise; time answers the duplicate-label warning text or "";
+ * timeEnd/timeLog answer the formatted elapsed time, or "" for an unknown
+ * label. group adds (+1) or removes (-1) one indentation step of the
+ * instance's groupIndentationWidth. clear writes the cursor-home and
+ * erase-down sequences when the instance's stdout is a terminal. table
+ * renders and prints Node's table for a dyn value whose cells the instance's
+ * stdout receives. trace prints "Trace[: text]" and the captured frames to
+ * the instance's stderr. An argument that is not a Console instance throws
+ * the "no lowering" boundary like the other instance entries. */
+void scr_console_inst_count(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_count_reset(ScrDyn *console, ScrDyn *label);
+ScrStr *scr_console_inst_time(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_time_end(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_time_log(ScrDyn *console, ScrStr *label);
+void scr_console_inst_group(ScrDyn *console, double delta);
+void scr_console_inst_clear(ScrDyn *console);
+void scr_console_inst_table(ScrDyn *console, ScrDyn *data, ScrDyn *properties);
+void scr_console_inst_trace(ScrDyn *console, ScrStr *text);
 void scr_console_clear(void);
 void scr_console_table(ScrDyn *data, ScrDyn *properties);
 ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);

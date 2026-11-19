@@ -39,11 +39,13 @@ import {
   DYN,
   type IrExpr,
   type IrGlobal,
+  type IrLocal,
   type IrStmt,
   type IrType,
   STRING,
   type SrcLoc,
   typeKey,
+  UNDEFINED_T,
   VOID,
 } from "../../ir/ir.js";
 import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
@@ -345,8 +347,58 @@ export function constructorReturnPlan(
       plan = { returns, slot, primitiveFlag, foreign };
     }
   }
+  // A class whose base's constructor can return an existing instance: its
+  // `super()` rebinds `this` to that instance when it already is one of the
+  // class being constructed (reboundSuperResult), and the constructor
+  // publishes the instance it ends with in the class's own result slot, for
+  // the construction and for a subclass's `super()` to read.
+  if (
+    plan?.slot == null &&
+    info.localClass === undefined &&
+    rebindingBase(lowerer, info) !== null
+  ) {
+    const slot: IrGlobal = {
+      id: `%g.${info.def.name}.%constructorResult`,
+      name: `${info.def.name}.%constructorResult`,
+      type: lowerer.withUndefinedArm(instanceType(info)),
+      mutable: true,
+    };
+    lowerer.globalsList.push(slot);
+    plan =
+      plan === null
+        ? { returns: new Map(), slot, primitiveFlag: null, foreign: null }
+        : { ...plan, slot };
+  }
   byClass.set(info.def.name, plan);
   return plan;
+}
+
+/** The nearest base of `info` whose constructor can answer an existing
+ * instance (a result slot of its own or inherited), or null. */
+export function rebindingBase(lowerer: Lowerer, info: ClassInfo): ClassInfo | null {
+  const base = info.base;
+  if (base === null || base.def.runtime) return null;
+  return constructorReturnPlan(lowerer, base)?.slot != null ? base : null;
+}
+
+/** Whether the checked-dynamic `value` wraps an instance of `info` or of a
+ * class below it. */
+function instanceBrandTest(info: ClassInfo, value: IrExpr, loc: SrcLoc): IrExpr {
+  const classes: ClassInfo[] = [];
+  const visit = (cls: ClassInfo): void => {
+    if (cls.localClass === undefined) classes.push(cls);
+    for (const sub of cls.subclasses) visit(sub);
+  };
+  visit(info);
+  return classes
+    .map((cls): IrExpr => ({
+      kind: "libCall",
+      fn: "dyn.typedRefBrandIs",
+      args: [value, { kind: "strLit", value: typeKey(instanceType(cls)), type: STRING, loc }],
+      type: BOOL,
+      loc,
+    }))
+    .reduce((left, right) => ({ kind: "logical", op: "||", left, right, type: BOOL, loc }));
 }
 
 function foreignObjectFeature(info: ClassInfo): string {
@@ -356,6 +408,22 @@ function foreignObjectFeature(info: ClassInfo): string {
 
 /** `return <expr>` inside a class constructor whose value may be an
  * object. Null when the statement keeps the ordinary lowering. */
+/** Records that this construction's answer is the value the constructor
+ * returned, so a `finally` that runs afterwards leaves the published
+ * instance alone (lower-classes.ts constructorEpilogue). */
+function markValueReturn(lowerer: Lowerer, loc: SrcLoc): IrStmt[] {
+  const flag = lowerer.ctx.constructorValueReturn;
+  if (flag === undefined) return [];
+  return [
+    {
+      kind: "assign",
+      localId: flag.id,
+      value: { kind: "boolLit", value: true, type: BOOL, loc },
+      loc,
+    },
+  ];
+}
+
 export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrStmt | null {
   const info = lowerer.currentClass;
   if (info === null || info.ctor === null || stmt.expression === undefined) return null;
@@ -378,6 +446,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
       body: [
         { kind: "assign", localId: plan.slot!.id, value, loc },
         ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
+        ...markValueReturn(lowerer, loc),
         { kind: "return", value: null, loc },
       ],
       loc,
@@ -421,6 +490,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
         loc,
       },
       ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
+      ...markValueReturn(lowerer, loc),
       { kind: "return", value: null, loc },
     ];
   } else {
@@ -468,21 +538,8 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
             ? [
                 {
                   kind: "if" as const,
-                  cond: {
-                    kind: "libCall" as const,
-                    fn: "dyn.typedRefBrandIs" as const,
-                    args: [
-                      read,
-                      {
-                        kind: "strLit" as const,
-                        value: typeKey(instanceType(info)),
-                        type: STRING,
-                        loc,
-                      },
-                    ],
-                    type: BOOL,
-                    loc,
-                  },
+                  // An instance of the class or of a class below it.
+                  cond: instanceBrandTest(info, read, loc),
                   then: [
                     {
                       kind: "assign" as const,
@@ -494,6 +551,7 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
                       loc,
                     },
                     ...(insideFinallyBlock(stmt, info.ctor) ? clearPrimitiveFlag(plan, loc) : []),
+                    ...markValueReturn(lowerer, loc),
                     { kind: "return" as const, value: null, loc },
                   ],
                   else_: null,
@@ -522,6 +580,10 @@ export function lowerConstructorReturn(lowerer: Lowerer, stmt: ts.ReturnStatemen
             },
           ]
         : []),
+      // A value that is not an object answers the constructed `this`
+      // (spec 10.2.2). A constructor whose `this` a base rebound publishes
+      // that instance here, exactly as a bare return does.
+      ...(lowerer.ctx.constructorEpilogue?.("return") ?? []),
       { kind: "return", value: null, loc },
     ],
     loc,
@@ -700,7 +762,32 @@ export function constructedValue(lowerer: Lowerer, info: ClassInfo, constructed:
       loc,
     });
   }
-  return { kind: "call", callee: name, args: [constructed], type, loc };
+  const call: IrExpr = { kind: "call", callee: name, args: [constructed], type, loc };
+  return slot === null ? call : beforeConstruction(lowerer, [slot], call, loc);
+}
+
+/** `read` (a construction that reads the result `slots` after it runs)
+ * with the slots cleared first: a construction abandoned after its
+ * constructor published an instance (a `finally` that throws after the
+ * return) leaves its slot set, and this construction must not answer it. */
+function beforeConstruction(
+  lowerer: Lowerer,
+  slots: IrGlobal[],
+  read: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "seqExpr",
+    stmts: slots.map((slot) => ({
+      kind: "assign" as const,
+      localId: slot.id,
+      value: lowerer.wrappedUndefined(slot.type, loc)!,
+      loc,
+    })),
+    result: read,
+    type: read.type,
+    loc,
+  };
 }
 
 /** The statements that drop the foreign result a constructor recorded. */
@@ -867,37 +954,139 @@ export function constructedFromValue(
   blame: ts.Node,
 ): IrExpr {
   const pending = [...info.subclasses];
+  // Descendants whose constructor can end with an instance other than the
+  // one the construction allocated publish it in their result slot; the
+  // construction takes it from the slot of the class it built.
+  const slotted: ClassInfo[] = [];
   while (pending.length > 0) {
     const sub = pending.pop()!;
     pending.push(...sub.subclasses);
     const plan = constructorReturnPlan(lowerer, sub);
-    if (
-      plan === null ||
-      (plan.slot === null && plan.primitiveFlag === null && plan.foreign === null)
-    )
+    if (plan === null || (plan.primitiveFlag === null && plan.foreign === null)) {
+      if (plan?.slot != null) slotted.push(sub);
       continue;
+    }
     const display = sub.def.name.replace(/^%|^%m\d+\./, "");
     lowerer.unsupported(
       "SC1090",
       blame,
-      plan.slot !== null
-        ? `constructing through a class value that may hold '${display}', whose constructor can return an existing instance`
-        : plan.primitiveFlag !== null
-          ? `constructing through a class value that may hold '${display}', whose constructor can return a primitive`
-          : `constructing through a class value that may hold '${display}', whose constructor can return an object of another kind`,
+      plan.primitiveFlag !== null
+        ? `constructing through a class value that may hold '${display}', whose constructor can return a primitive`
+        : `constructing through a class value that may hold '${display}', whose constructor can return an object of another kind`,
     );
   }
-  return constructedValue(lowerer, info, constructed);
+  const value = constructedValue(lowerer, info, constructed);
+  if (slotted.length === 0) return value;
+  const loc = constructed.loc;
+  const type = instanceType(info);
+  const name = `%${info.def.name}.%constructedFromValue`;
+  if (lowerer.liftedFnNamed(name) === undefined) {
+    const instance = { id: "instance.0", name: "instance", type, mutable: false };
+    const body: IrStmt[] = [];
+    const locals: IrLocal[] = [instance];
+    slotted.forEach((sub, index) => {
+      const slot = constructorReturnPlan(lowerer, sub)!.slot!;
+      const subType = instanceType(sub);
+      const held = { id: `held${index}.0`, name: `held${index}`, type: slot.type, mutable: false };
+      locals.push(held);
+      body.push(
+        { kind: "varDecl", localId: held.id, init: varRef(slot.id, slot.type, loc), loc },
+        {
+          kind: "if",
+          cond: {
+            kind: "logical",
+            op: "&&",
+            // The slot answers this construction only when the object this
+            // construction allocated is that descendant: a sibling class
+            // constructed and abandoned while the arguments ran leaves its
+            // own slot set, and that instance is not this one.
+            left: {
+              kind: "instanceOf",
+              value: varRef(instance.id, type, loc),
+              className: sub.def.name,
+              type: BOOL,
+              loc,
+            },
+            right: {
+              kind: "unionIsTag",
+              unionId: (slot.type as Extract<IrType, { kind: "union" }>).unionId,
+              tag: lowerer.armTag(
+                (slot.type as Extract<IrType, { kind: "union" }>).unionId,
+                UNDEFINED_T,
+              ),
+              negated: true,
+              value: varRef(held.id, slot.type, loc),
+              type: BOOL,
+              loc,
+            },
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "assign",
+              localId: slot.id,
+              value: lowerer.wrappedUndefined(slot.type, loc)!,
+              loc,
+            },
+            {
+              kind: "return",
+              value: lowerer.upcastTo(
+                {
+                  kind: "orDefault",
+                  left: varRef(held.id, slot.type, loc),
+                  right: {
+                    kind: "downcast",
+                    value: varRef(instance.id, type, loc),
+                    type: subType,
+                    loc,
+                  },
+                  type: subType,
+                  loc,
+                },
+                info.def.name,
+              ),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        },
+      );
+    });
+    body.push({ kind: "return", value: varRef(instance.id, type, loc), loc });
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: instance.id, name: instance.name, type }],
+      returnType: type,
+      locals,
+      body,
+      loc,
+    });
+  }
+  return beforeConstruction(
+    lowerer,
+    slotted.map((sub) => constructorReturnPlan(lowerer, sub)!.slot!),
+    { kind: "call", callee: name, args: [value], type, loc },
+    loc,
+  );
 }
 
 /** `super()` into a class with a result slot, from the constructor of
  * class `sub`: `call` runs the base constructor over `self` (the
  * subclass's `this`, upcast to the base). Node rebinds the subclass's
- * `this` to an instance the base constructor returns, which has no
- * representation. A TypeScript subclass refuses. In JavaScript the base
- * stores the instance it returns in its slot, and a per-subclass helper
- * reads and clears the slot after the call: an instance other than `self`
- * refuses at run time. Unchanged for bases without a result slot. */
+ * `this` to an instance the base constructor returns. The rebinding is
+ * exact when that instance already is an instance of `sub` (made as the
+ * class or a class below it): a per-subclass helper reads and clears
+ * the base's slot after the call and answers it, and `rebind` (the
+ * subclass constructor's `this`, mutable for this) takes it, so the rest
+ * of the constructor (the subclass's field initializers included) runs on
+ * it. Any other returned instance has no representation as a `sub`
+ * instance and refuses at run time. A function-local class constructs
+ * through its own environment, which has no result slot (`rebind` null):
+ * it keeps the earlier contract, refused in TypeScript and, in JavaScript,
+ * refused at run time unless the base returned the subclass's own `this`.
+ * Unchanged for bases without a result slot. */
 export function superIntoResultSlot(
   lowerer: Lowerer,
   base: ClassInfo,
@@ -905,6 +1094,7 @@ export function superIntoResultSlot(
   call: IrStmt,
   self: IrExpr,
   blame: ts.Node,
+  rebind: IrLocal | null,
 ): IrStmt {
   const plan = constructorReturnPlan(lowerer, base);
   const slot = plan?.slot ?? null;
@@ -912,19 +1102,28 @@ export function superIntoResultSlot(
   const foreign = plan?.foreign ?? null;
   if (plan === null || (slot === null && flag === null && foreign === null)) return call;
   const display = base.def.name.replace(/^%|^%m\d+\./, "");
-  const feature =
-    slot === null
-      ? `extending a class whose constructor can return a primitive ('super()' raises the TypeError Node raises for a derived constructor's non-object result)`
-      : `extending a class whose constructor can return an existing instance ('super()' would rebind 'this' to the instance '${display}' returns)`;
-  // A TypeScript subclass of a class with a result slot or a primitive
-  // return refuses here. A foreign result alone is tested at run time in
-  // either language, as the base's own return was before it had a slot.
-  if (!isJsSourceFile(ts.getSourceFileOfNode(blame)) && (slot !== null || flag !== null)) {
-    lowerer.unsupported("SC1090", blame, feature);
+  const subDisplay = sub.def.name.replace(/^%|^%m\d+\./, "");
+  // A TypeScript subclass of a class with a primitive return refuses here.
+  // A foreign result alone is tested at run time in either language, as the
+  // base's own return was before it had a slot.
+  if (!isJsSourceFile(ts.getSourceFileOfNode(blame)) && flag !== null) {
+    lowerer.unsupported(
+      "SC1090",
+      blame,
+      `extending a class whose constructor can return a primitive ('super()' raises the TypeError Node raises for a derived constructor's non-object result)`,
+    );
+    return call;
+  }
+  const rebinds = slot !== null && rebind !== null;
+  const unboundFeature = `extending a class whose constructor can return an existing instance from a function-local class ('super()' would rebind 'this' to the instance '${display}' returns)`;
+  if (slot !== null && !rebinds && !isJsSourceFile(ts.getSourceFileOfNode(blame))) {
+    lowerer.unsupported("SC1090", blame, unboundFeature);
     return call;
   }
   const loc = locOf(blame);
   const type = instanceType(base);
+  const subType = instanceType(sub);
+  const answerType = rebinds ? lowerer.withUndefinedArm(subType) : VOID;
   const name = `%${sub.def.name}.%superResult`;
   if (lowerer.liftedFnNamed(name) === undefined) {
     const instance = { id: "instance.0", name: "instance", type, mutable: false };
@@ -934,8 +1133,12 @@ export function superIntoResultSlot(
       type: slot?.type ?? type,
       mutable: false,
     };
+    const existing = { id: "existing.0", name: "existing", type, mutable: false };
     const body: IrStmt[] = [];
     if (slot !== null) {
+      const feature = rebinds
+        ? `constructing '${subDisplay}' when the constructor of '${display}' returns an existing instance that is not a '${subDisplay}' ('super()' rebinds 'this' to that instance, which must already be an instance of the class being constructed: create it as that class or a class below it)`
+        : unboundFeature;
       const diag = unsupportedDiag("SC1090", loc, feature);
       lowerer.runtimeFences.push(diag);
       const line =
@@ -944,22 +1147,59 @@ export function superIntoResultSlot(
         { kind: "varDecl", localId: returned.id, init: varRef(slot.id, slot.type, loc), loc },
         { kind: "assign", localId: slot.id, value: lowerer.wrappedUndefined(slot.type, loc)!, loc },
         {
+          kind: "varDecl",
+          localId: existing.id,
+          init: {
+            kind: "orDefault",
+            left: varRef(returned.id, slot.type, loc),
+            right: varRef(instance.id, type, loc),
+            type,
+            loc,
+          },
+          loc,
+        },
+        {
           kind: "if",
           cond: {
             kind: "bin",
             op: "!==",
-            left: {
-              kind: "orDefault",
-              left: varRef(returned.id, slot.type, loc),
-              right: varRef(instance.id, type, loc),
-              type,
-              loc,
-            },
+            left: varRef(existing.id, type, loc),
             right: varRef(instance.id, type, loc),
             type: BOOL,
             loc,
           },
           then: [
+            ...(rebinds
+              ? [
+                  {
+                    kind: "if" as const,
+                    cond: {
+                      kind: "instanceOf" as const,
+                      value: varRef(existing.id, type, loc),
+                      className: sub.def.name,
+                      type: BOOL,
+                      loc,
+                    },
+                    then: [
+                      {
+                        kind: "return" as const,
+                        value: lowerer.coerceToExpected(
+                          {
+                            kind: "downcast",
+                            value: varRef(existing.id, type, loc),
+                            type: subType,
+                            loc,
+                          },
+                          answerType,
+                        ),
+                        loc,
+                      },
+                    ],
+                    else_: null,
+                    loc,
+                  },
+                ]
+              : []),
             {
               kind: "runtimeFence",
               code: diag.code,
@@ -995,20 +1235,96 @@ export function superIntoResultSlot(
         loc,
       });
     }
-    body.push({ kind: "return", value: null, loc });
+    body.push({
+      kind: "return",
+      value: rebinds ? lowerer.wrappedUndefined(answerType, loc)! : null,
+      loc,
+    });
     lowerer.liftedFns.push({
       name,
       params: [{ localId: instance.id, name: instance.name, type }],
-      returnType: VOID,
-      locals: slot === null ? [instance] : [instance, returned],
+      returnType: answerType,
+      locals: slot === null ? [instance] : [instance, returned, existing],
       body,
       loc,
     });
   }
-  const check: IrStmt = {
-    kind: "exprStmt",
-    expr: { kind: "call", callee: name, args: [self], type: VOID, loc },
+  const answer: IrExpr = { kind: "call", callee: name, args: [self], type: answerType, loc };
+  // The base's slot is cleared before the call, so the helper reads only
+  // what this call's constructor published (beforeConstruction).
+  const clear: IrStmt[] =
+    slot === null
+      ? []
+      : [
+          {
+            kind: "assign",
+            localId: slot.id,
+            value: lowerer.wrappedUndefined(slot.type, loc)!,
+            loc,
+          },
+        ];
+  if (!rebinds)
+    return { kind: "block", body: [...clear, call, { kind: "exprStmt", expr: answer, loc }], loc };
+  // `this` takes the instance the helper answers, and keeps itself when it
+  // answers undefined.
+  return {
+    kind: "block",
+    body: [
+      ...clear,
+      call,
+      {
+        kind: "assign",
+        localId: rebind!.id,
+        value: {
+          kind: "orDefault",
+          left: answer,
+          right: varRef(rebind!.id, subType, loc),
+          type: subType,
+          loc,
+        },
+        loc,
+      },
+    ],
     loc,
   };
-  return { kind: "block", body: [call, check], loc };
+}
+
+/** The class's result slot that its constructor clears on entry, or null.
+ * The construction site clears the slot before the arguments evaluate; a
+ * construction nested in those arguments that is abandoned after publishing
+ * its instance (a `finally` that throws after the return) would otherwise
+ * leave that instance for this construction's read. Cheap for classes
+ * without a result slot: only a class whose base can answer an existing
+ * instance, or whose own constructor returns a value, computes the plan. */
+export function constructorEntrySlot(lowerer: Lowerer, info: ClassInfo): IrGlobal | null {
+  if (info.localClass !== undefined || info.decl === null) return null;
+  const rebinding = rebindingBase(lowerer, info);
+  const ctor = info.ctor;
+  if (rebinding === null && (ctor?.body === undefined || ownValueReturns(ctor).length === 0))
+    return null;
+  return constructorReturnPlan(lowerer, info)?.slot ?? null;
+}
+
+/** The statement a constructor whose `this` may have been rebound
+ * (superIntoResultSlot) runs where it finishes: the instance it ends with
+ * goes to the class's result slot, where the construction (constructedValue)
+ * and a subclass's `super()` read it. Every completion publishes, not only
+ * a rebound one: a construction that ran inside this constructor's own
+ * evaluation may have been abandoned after publishing (a `finally` that
+ * throws after its return), and the read that follows this constructor
+ * must find this constructor's instance, not that abandoned one. */
+export function publishConstructorResult(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  self: IrLocal,
+  loc: SrcLoc,
+): IrStmt {
+  const slot = constructorReturnPlan(lowerer, info)!.slot!;
+  const type = instanceType(info);
+  return {
+    kind: "assign",
+    localId: slot.id,
+    value: lowerer.coerceToExpected(varRef(self.id, type, loc), slot.type),
+    loc,
+  };
 }

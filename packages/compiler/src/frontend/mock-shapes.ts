@@ -94,6 +94,10 @@ export function mockContextType(
     { name: "%impl", type: fn },
     { name: "%once", type: { kind: "array", elem: onceEntry } as IrType },
     { name: "%original", type: fn },
+    /* The mock's { times }: how many calls its implementation serves before
+     * restore() brings the original back; -1 without one (Node's Infinity,
+     * since `nextCall + 1 === times` never holds for it). */
+    { name: "%times", type: F64 },
     {
       name: "%unmock",
       type: { kind: "array", elem: { kind: "func", params: [], ret: VOID } } as IrType,

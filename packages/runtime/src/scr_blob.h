@@ -16,8 +16,16 @@
  * dyn value) that settle on Node's microtask turn for the Blob's part
  * count. scr_blob_is answers `v instanceof Blob` (kind 0) or `File` (1). */
 ScrDyn *scr_blob_new(ScrDyn *args);
+/* stream/consumers blob(): the collected bytes as a Blob with an empty
+ * type (+1, or NULL with the construction's exception pending). Borrows
+ * the bytes. In the blob unit so the consumers' settlement carries only a
+ * weak reference to it. */
+ScrDyn *scr_sc_blob_value(ScrBytes *all);
 ScrDyn *scr_file_new(ScrDyn *args);
 ScrDyn *scr_blob_slice(ScrDyn *self, ScrDyn *args);
+/* buffer.resolveObjectURL(id): ToString(id), then the Blob registered under
+ * the object URL's id as a fresh handle (+1), or undefined. */
+ScrDyn *scr_buffer_resolve_object_url(const struct ScrDyn *id);
 ScrPromise *scr_blob_text(ScrDyn *self);
 ScrPromise *scr_blob_bytes(ScrDyn *self);
 ScrPromise *scr_blob_array_buffer(ScrDyn *self);
@@ -56,27 +64,56 @@ ScrDyn *scr_module_namespace_copy_value(ScrStr *id, ScrDyn *object);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);
+/* A Console's counter or timer entry: a label and the counter value or the
+ * start reading. The stores are tiny linear tables, as a program holds a
+ * handful of labels at a time (scr_console_native.c). */
+typedef struct ScrConsoleSlot {
+  ScrStr *label;    /* owned */
+  double count;     /* counters */
+  uint64_t started; /* timers: scr_hrtime_ns at console.time */
+} ScrConsoleSlot;
+
+typedef struct ScrConsoleStore {
+  ScrConsoleSlot *slots;
+  size_t len, cap;
+} ScrConsoleStore;
+
+/* One Console's counters, timers and group indentation. Node keeps them
+ * per instance; the global console owns the thread's (scr_console_native.c),
+ * and every Console instance owns the same structure, so a group opened on
+ * one console never indents another's lines. `width` is Node's
+ * groupIndentationWidth (groupIndentation, default 2); `indent` is the
+ * current indentation in spaces. */
+typedef struct ScrConsoleState {
+  ScrConsoleStore counts, timers;
+  size_t width;
+  size_t indent;
+} ScrConsoleState;
+
 /* node:console Console instances: a native handle over the stdout/stderr
  * targets — process stdio (fd 1/2) or a writable stream bound by
  * scr_console_bind (scr_stream.c, which also installs the stream writer so
- * console-only programs never link the stream unit) — and the
- * ignoreErrors flag. new answers a +1 handle with both targets set to
- * the given fds (0 = a stream is bound next); bind retains the stream.
- * write prints `text\n` to the selected target: a stream receives ONE
- * write, wrapped in Node's ignoreErrors handling (a noop 'error' listener
- * around the call, a completion handler that swallows the write's own
- * error, synchronous throws discarded); the global console handle writes
- * the process streams like console.log/error. */
+ * console-only programs never link the stream unit) — the ignoreErrors
+ * flag and the instance's counters, timers and group indentation. new
+ * answers a +1 handle with both targets set to the given fds (0 = a stream
+ * is bound next) and group width; bind retains the stream. write prints
+ * `text\n` to the selected target: a stream receives ONE write, wrapped in
+ * Node's ignoreErrors handling (a noop 'error' listener around the call, a
+ * completion handler that swallows the write's own error, synchronous
+ * throws discarded); the global console handle writes the process streams
+ * like console.log/error. */
 typedef struct ScrConsoleInst {
   size_t rc;
   double fd[2];                /* 1/2 process stdio targets; 0 when stream[i] is bound */
   ScrStream *stream[2];        /* owned */
   ScrClosure *on_written[2];   /* owned: the per-stream completion handlers */
   bool ignore_errors;
+  ScrConsoleState state;       /* this console's counters, timers and group indentation */
   void (*stream_write)(struct ScrConsoleInst *, int which, ScrStr *line);
   void (*stream_drop)(struct ScrConsoleInst *); /* releases the bound streams */
 } ScrConsoleInst;
-ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors);
+ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors,
+                        ScrDyn *group_indentation);
 void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
 void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
 ScrDyn *scr_process_stdio(double fd);

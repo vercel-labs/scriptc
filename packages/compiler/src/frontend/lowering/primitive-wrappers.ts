@@ -157,7 +157,6 @@ export const GUARDED_CONSUMERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "json.stringifyValue",
   "json.stringifyReplacer",
   "util.isDeepStrictEqual",
-  "dyn.structuredClone",
   "assert.looseDeepDyn",
   "assert.partialDeepDyn",
   "console.dirDyn",

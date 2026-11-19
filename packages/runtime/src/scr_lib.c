@@ -7143,6 +7143,133 @@ static ScrStr *scr_fs_mkdtemp_op(ScrStr *prefix, bool sync) {
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, true); }
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, false); }
 
+/* ── fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync ─────────
+ * The created directory plus its removal and disposal hooks. Node keeps the
+ * created path resolved against the cwd at creation, so a later
+ * process.chdir cannot change what remove() deletes; the answer's `path`
+ * stays the spelling mkdtemp produced. */
+typedef struct ScrMkdtempResult {
+  size_t rc;
+  ScrStr *path; /* +1: the created path, as mkdtemp answered it */
+  ScrStr *full; /* +1: that path resolved against the cwd at creation */
+} ScrMkdtempResult;
+
+static ScrMkdtempResult *scr_mkdtemp_result_new(ScrStr *created /* +1 moves in */) {
+  ScrMkdtempResult *r = malloc(sizeof *r);
+  if (!r) scr_trap("scriptc: out of memory\n");
+  r->rc = 1;
+  r->path = created;
+  /* Node resolves the created path against the cwd at creation, and
+   * path.resolve already supplies the cwd as its final argument: one part is
+   * the whole answer. The variant has to be the host platform's — win32
+   * absolutises a drive-qualified or UNC path and the POSIX rules do not —
+   * so the removal never points at a working directory joined to a path
+   * that was already absolute. */
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 1);
+  scr_arr_push_ref(parts, scr_str_retain(created));
+#ifdef _WIN32
+  r->full = scr_path_win32_resolve(parts);
+#else
+  r->full = scr_path_resolve(parts);
+#endif
+  scr_arr_release(parts);
+  return r;
+}
+
+ScrMkdtempResult *scr_mkdtemp_result_retain(ScrMkdtempResult *r) {
+  if (r->rc != SIZE_MAX) r->rc++;
+  return r;
+}
+
+void *scr_mkdtemp_result_retain_v(void *p) {
+  return scr_mkdtemp_result_retain((ScrMkdtempResult *)p);
+}
+
+void scr_mkdtemp_result_release(ScrMkdtempResult *r) {
+  if (!r || r->rc == SIZE_MAX) return;
+  if (--r->rc == 0) {
+    scr_str_release(r->path);
+    scr_str_release(r->full);
+    free(r);
+  }
+}
+
+void scr_mkdtemp_result_release_v(void *p) {
+  scr_mkdtemp_result_release((ScrMkdtempResult *)p);
+}
+
+/* The promise entries the fs.mkdtempDisposable helpers need. The promise
+ * unit (scr_async.c) defines them strongly; these weak definitions answer a
+ * program that links scr_lib.c without it (a runtime unit test, or a hello
+ * build) without pulling the promise machinery into its binary — a
+ * constructor that named the unit did — and they leave no undefined runtime
+ * symbol behind, which a localized library archive would otherwise carry to
+ * the embedder's link. Only a program that linked the unit can reach the
+ * helpers (they answer promises), so the fallback traps; the weak
+ * definition loses to the unit's strong one. */
+__attribute__((weak)) ScrPromise *scr_promise_new(void) {
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
+__attribute__((weak)) void scr_promise_reject_pending(ScrPromise *p) {
+  (void)p;
+  scr_trap("scriptc: the promise unit is not linked\n");
+}
+__attribute__((weak)) ScrPromise *scr_promise_settled_ref(
+    void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace) {
+  (void)v;
+  (void)retain;
+  (void)release;
+  (void)trace;
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
+__attribute__((weak)) ScrPromise *scr_promise_settled_void(void) {
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
+
+/* A promise already rejected by the pending exception, through the promise
+ * unit's entries. */
+static ScrPromise *scr_mkdtemp_rejected_promise(void) {
+  if (!scr_promise_new || !scr_promise_reject_pending)
+    scr_trap("scriptc: the promise unit is not linked\n");
+  ScrPromise *p = scr_promise_new();
+  scr_promise_reject_pending(p);
+  return p;
+}
+
+ScrMkdtempResult *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix) {
+  ScrStr *created = scr_fs_mkdtemp(prefix); /* +1; throws */
+  if (created == NULL) return NULL;
+  return scr_mkdtemp_result_new(created);
+}
+
+ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix) {
+  ScrStr *created = scr_fs_mkdtemp(prefix); /* +1; throws */
+  if (created == NULL) return scr_mkdtemp_rejected_promise();
+  ScrMkdtempResult *r = scr_mkdtemp_result_new(created);
+  if (!scr_promise_settled_ref) scr_trap("scriptc: the promise unit is not linked\n");
+  return scr_promise_settled_ref(r, scr_mkdtemp_result_retain_v,
+                                 scr_mkdtemp_result_release_v, NULL);
+}
+
+ScrStr *scr_mkdtemp_result_path(ScrMkdtempResult *r) { return scr_str_retain(r->path); }
+
+/* remove(): Node's rimraf over the resolved path — recursive, and a missing
+ * tree is not a failure (rimraf's own option set), with no retries. Any
+ * other failure rejects the promise the async hook answers. */
+ScrPromise *scr_mkdtemp_result_remove(ScrMkdtempResult *r) {
+  scr_fs_rm_opts(r->full, true, true);
+  if (scr_exc_pending()) return scr_mkdtemp_rejected_promise();
+  if (!scr_promise_settled_void) scr_trap("scriptc: the promise unit is not linked\n");
+  return scr_promise_settled_void();
+}
+
+void scr_mkdtemp_result_remove_sync(ScrMkdtempResult *r) {
+  scr_fs_rm_opts(r->full, true, true);
+}
+
 /* Node's GetValidFileMode for access(): a finite number whose int32 value
  * lies in F_OK .. R_OK | W_OK | X_OK. False with the RangeError thrown. */
 bool scr_fs_access_mode_valid(double mode) {
@@ -8578,6 +8705,83 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
   return object;
 }
 
+/* ── checked-dynamic Dirent values (fs.readdir's callback form) ──────
+ * The Dirent rows the promise form answers as interned records cross a
+ * callback boundary as dynamic objects: an enumerable name and parentPath,
+ * and a non-enumerable %dtype the prototype's is*() probes read (the same
+ * libuv UV_DIRENT encoding the scandir snapshot uses). */
+static SCR_TL ScrDyn *scr_dirent_proto = NULL;
+
+static ScrDyn *scr_dirent_method(ScrDynThunk thunk, uint32_t arity, const char *name, double kind) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[0], kind);
+  return scr_dyn_new_func(closure, thunk, arity, "native:fs.Dirent", name);
+}
+
+static ScrDyn *scr_dirent_type_test(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  if (self->kind == SCR_DYN_UNDEF || self->kind == SCR_DYN_NULL) {
+    char message[96];
+    int n = snprintf(message, sizeof message, "Cannot read properties of %s (reading 'isFile')",
+                     self->kind == SCR_DYN_UNDEF ? "undefined" : "null");
+    scr_dyn_release(self);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+    return NULL;
+  }
+  ScrDyn *kind = scr_dyn_obj_read(self, "%dtype", 6);
+  scr_dyn_release(self);
+  if (!kind) return NULL;
+  double entry = scr_dyn_number_constructor(kind);
+  scr_dyn_release(kind);
+  return scr_dyn_new_bool(!scr_exc_pending() && entry == scr_box_get_f64(closure->caps[0]));
+}
+
+static void scr_dirent_proto_teardown(void) {
+  if (!scr_dirent_proto) return;
+  scr_dirent_proto->v.obj.class_name = NULL;
+  scr_dyn_release(scr_dirent_proto);
+  scr_dirent_proto = NULL;
+}
+
+static ScrDyn *scr_dirent_prototype(void) {
+  if (scr_dirent_proto) return scr_dirent_proto;
+  static const struct {
+    const char *name;
+    double kind;
+  } tests[] = {
+    { "isFile", 1 },
+    { "isDirectory", 2 },
+    { "isSymbolicLink", 3 },
+    { "isFIFO", 4 },
+    { "isSocket", 5 },
+    { "isCharacterDevice", 6 },
+    { "isBlockDevice", 7 },
+  };
+  ScrDyn *proto = scr_dyn_new_obj();
+  proto->v.obj.class_name = "Dirent";
+  for (size_t i = 0; i < sizeof tests / sizeof tests[0]; i++)
+    scr_dyn_obj_set(proto, tests[i].name, strlen(tests[i].name),
+                    scr_dirent_method(scr_dirent_type_test, 0, NULL, tests[i].kind));
+  scr_dirent_proto = proto;
+  scr_atexit(scr_dirent_proto_teardown);
+  return proto;
+}
+
+/* One Dirent value: borrows the name and parent strings, +1 result. */
+ScrDyn *scr_dirent_dyn(ScrStr *name, ScrStr *parent, double kind) {
+  ScrDyn *object = scr_dyn_new_obj();
+  object->prototype = scr_dyn_retain(scr_dirent_prototype());
+  /* scr_dyn_new_str keeps its own reference, so the entry's strings are
+   * retained once: the caller's reference stays the caller's. */
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(name));
+  scr_dyn_obj_set(object, "parentPath", 10, scr_dyn_new_str(parent));
+  scr_stats_define(object, "%dtype", scr_dyn_new_num(kind), NULL, NULL, false);
+  return object;
+}
+
 /* ── checked-dynamic Stats values back to the snapshot ─────────────── */
 
 /* One integer member of a dynamic Stats object: a number member (Stats) and
@@ -8676,6 +8880,48 @@ ScrArr *scr_fs_readdir(ScrStr *path) {
   return arr;
 }
 
+/* fs.readdirSync(path, { encoding }): the directory's names decoded with
+ * that encoding, in the same order scr_fs_readdir lists them. utf8 (and the
+ * absent default) is scr_fs_readdir itself; every other name decodes the
+ * entry's raw bytes, as Buffer#toString does. */
+ScrArr *scr_fs_readdir_encoded(ScrStr *path, ScrStr *encoding) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  if (encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding)) return scr_fs_readdir(path);
+  ScrScandir *scan = scr_fs_scandir(path);
+  if (!scan) return NULL;
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, scr_fs_scandir_count(scan));
+  for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+    ScrBytes *raw = scr_fs_scandir_bytes(scan, i);
+    ScrStr *text = scr_bytes_to_str_checked(raw, encoding);
+    scr_bytes_release(raw);
+    if (!text) break; /* an invalid encoding throws before any name */
+    scr_arr_push_ref(arr, text);
+  }
+  scr_fs_scandir_free(scan);
+  if (scr_exc_pending()) {
+    scr_arr_release(arr);
+    return NULL;
+  }
+  return arr;
+}
+
+/* fs.readdirSync(path, { encoding: 'buffer' }): the directory's names as
+ * Buffers, in the same order scr_fs_readdir lists them. */
+ScrArr *scr_fs_readdir_bytes(ScrStr *path) {
+  if (!scr_fs_path_ok(path, "path")) return NULL;
+  ScrScandir *scan = scr_fs_scandir(path);
+  if (!scan) return NULL;
+  ScrArr *arr = scr_arr_new(SCR_ELEM_BYTES, scr_fs_scandir_count(scan));
+  for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+    /* Node answers Buffers, not bare Uint8Arrays. */
+    ScrBytes *raw = scr_fs_scandir_bytes(scan, i);
+    scr_arr_push_ref(arr, scr_bytes_as_buffer(raw));
+    scr_bytes_release(raw);
+  }
+  scr_fs_scandir_free(scan);
+  return arr;
+}
+
 /* fs.readdirSync(path, { recursive: true }): Node's readdirSyncRecursive.
  * Directories are listed in queue order: the base, then each directory in
  * the order its entry was listed. Each entry's path is path.join of its
@@ -8737,6 +8983,8 @@ ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
 struct ScrScandir {
   size_t len, cap;
   ScrStr **names;
+  ScrBytes **raws; /* the entry name's bytes: readdir(path, { encoding: 'buffer' }) */
+  ScrStr **parents; /* the recursive Dirent form's relative parent directory, or NULL */
   unsigned char *kinds;
 };
 
@@ -8764,12 +9012,19 @@ static ScrScandir *scr_fs_scandir_from_rows(ScrScandirEntry *rows, size_t len) {
   s->len = len;
   s->cap = len;
   s->names = len ? malloc(len * sizeof *s->names) : NULL;
+  s->raws = len ? malloc(len * sizeof *s->raws) : NULL;
+  s->parents = NULL; /* only the recursive walk fills these */
   s->kinds = len ? malloc(len) : NULL;
-  if (len && (!s->names || !s->kinds)) scr_trap("scriptc: out of memory\n");
+  if (len && (!s->names || !s->raws || !s->kinds)) scr_trap("scriptc: out of memory\n");
   qsort(rows, len, sizeof *rows, scr_fs_scandir_cmp);
   for (size_t i = 0; i < len; i++) {
-    /* Decoded as UTF-8 with U+FFFD for malformed bytes, as Node does. */
-    s->names[i] = scr_str_from_utf8_lossy((const uint8_t *)rows[i].raw, strlen(rows[i].raw));
+    size_t raw_len = strlen(rows[i].raw);
+    /* Decoded as UTF-8 with U+FFFD for malformed bytes, as Node does; the
+     * raw bytes stay for the `encoding: 'buffer'` form, which answers them
+     * untouched. */
+    s->names[i] = scr_str_from_utf8_lossy((const uint8_t *)rows[i].raw, raw_len);
+    s->raws[i] = scr_bytes_new(SCR_BYTES_U8, (double)raw_len);
+    if (raw_len) memcpy(s->raws[i]->data, rows[i].raw, raw_len);
     s->kinds[i] = rows[i].kind;
     free(rows[i].raw);
   }
@@ -8834,10 +9089,20 @@ static ScrScandir *scr_fs_scandir_windows(ScrStr *path) {
     if (scan->len == scan->cap) {
       scan->cap = scan->cap ? scan->cap * 2 : 8;
       scan->names = realloc(scan->names, scan->cap * sizeof *scan->names);
+      scan->raws = realloc(scan->raws, scan->cap * sizeof *scan->raws);
       scan->kinds = realloc(scan->kinds, scan->cap);
-      if (!scan->names || !scan->kinds) scr_trap("scriptc: out of memory\n");
+      if (!scan->names || !scan->raws || !scan->kinds) scr_trap("scriptc: out of memory\n");
     }
     scan->names[scan->len] = name;
+    /* The name's UTF-8 bytes are the raw bytes on this platform. */
+    {
+      char *owned = NULL;
+      const char *utf8 = scr_str_utf8(name, &owned);
+      size_t utf8_len = strlen(utf8);
+      scan->raws[scan->len] = scr_bytes_new(SCR_BYTES_U8, (double)utf8_len);
+      if (utf8_len) memcpy(scan->raws[scan->len]->data, utf8, utf8_len);
+      scr_str_utf8_end(owned);
+    }
     scan->kinds[scan->len++] = (entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
         scr_stats_is_link_tag(entry.dwReserved0) ? 3 :
         (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 2 : 1;
@@ -8929,12 +9194,316 @@ ScrStr *scr_fs_scandir_name(const ScrScandir *s, size_t i) {
   return scr_str_retain(s->names[i]);
 }
 
+/* The raw bytes of entry i (`readdir(path, { encoding: 'buffer' })`): +1. */
+ScrBytes *scr_fs_scandir_bytes(const ScrScandir *s, size_t i) {
+  if (!s || i >= s->len) return NULL;
+  return scr_bytes_retain(s->raws[i]);
+}
+
 double scr_fs_scandir_type(const ScrScandir *s, size_t i) { return (double)s->kinds[i]; }
+
+/* The recursive Dirent form's parent directory (`readdir` with recursive
+ * and withFileTypes): the entry's parent relative to the base, or the base
+ * itself for the top level. +1. */
+ScrStr *scr_fs_scandir_parent(const ScrScandir *s, size_t i) {
+  if (!s || !s->parents || i >= s->len) return NULL;
+  return scr_str_retain(s->parents[i]);
+}
+
+/* The same walk as the Dirent form wants: every entry below `base` in
+ * Node's queue order (each directory's entries in the order their listing
+ * produced them), each with its basename, the directory holding it (the
+ * base as given for the top level, base-relative below it) and its kind.
+ * A symlink is followed to decide whether it is a directory, like the
+ * names-only walk above. */
+static ScrStr *scr_fs_join2(ScrStr *left, ScrStr *right) {
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+  scr_arr_push_ref(parts, scr_str_retain(left));
+  scr_arr_push_ref(parts, scr_str_retain(right));
+  ScrStr *joined = scr_path_join(parts);
+  scr_arr_release(parts);
+  return joined;
+}
+
+ScrScandir *scr_fs_scandir_recursive(ScrStr *base) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrScandir *out = calloc(1, sizeof *out);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t qlen = 1, qcap = 8;
+  ScrStr **queue = malloc(qcap * sizeof *queue);
+  ScrStr **rel = malloc(qcap * sizeof *rel);
+  if (!queue || !rel) scr_trap("scriptc: out of memory\n");
+  queue[0] = scr_str_retain(base);
+  rel[0] = NULL;
+  bool failed = false;
+  for (size_t at = 0; at < qlen && !failed; at++) {
+    ScrScandir *scan = scr_fs_scandir(queue[at]);
+    if (!scan) {
+      failed = true;
+      break;
+    }
+    ScrStr *parent = rel[at] == NULL ? scr_str_retain(base) : scr_fs_join2(base, rel[at]);
+    for (size_t i = 0; i < scr_fs_scandir_count(scan) && !failed; i++) {
+      if (out->len == out->cap) {
+        out->cap = out->cap ? out->cap * 2 : 8;
+        out->names = realloc(out->names, out->cap * sizeof *out->names);
+        out->raws = realloc(out->raws, out->cap * sizeof *out->raws);
+        out->parents = realloc(out->parents, out->cap * sizeof *out->parents);
+        out->kinds = realloc(out->kinds, out->cap);
+        if (!out->names || !out->raws || !out->parents || !out->kinds)
+          scr_trap("scriptc: out of memory\n");
+      }
+      ScrStr *name = scr_fs_scandir_name(scan, i); /* +1 */
+      out->names[out->len] = name;
+      out->raws[out->len] = scr_fs_scandir_bytes(scan, i);
+      out->parents[out->len] = scr_str_retain(parent);
+      out->kinds[out->len] = (unsigned char)scr_fs_scandir_type(scan, i);
+      out->len++;
+      int kind = (int)out->kinds[out->len - 1];
+      bool is_dir = kind == 2;
+      if (!is_dir && (kind == 0 || kind == 3)) {
+        /* DT_UNKNOWN and symlinks need stat(2); a failed stat leaves the
+         * entry out of the queue, like the names-only walk. */
+        ScrStr *full = scr_fs_join2(queue[at], name);
+        struct stat st;
+        is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        if (!is_dir) scr_str_release(full);
+        else {
+          if (qlen == qcap) {
+            qcap *= 2;
+            queue = realloc(queue, qcap * sizeof *queue);
+            rel = realloc(rel, qcap * sizeof *rel);
+            if (!queue || !rel) scr_trap("scriptc: out of memory\n");
+          }
+          queue[qlen] = full;
+          rel[qlen++] = rel[at] == NULL ? scr_str_retain(name) : scr_fs_join2(rel[at], name);
+        }
+      } else if (is_dir) {
+        if (qlen == qcap) {
+          qcap *= 2;
+          queue = realloc(queue, qcap * sizeof *queue);
+          rel = realloc(rel, qcap * sizeof *rel);
+          if (!queue || !rel) scr_trap("scriptc: out of memory\n");
+        }
+        queue[qlen] = scr_fs_join2(queue[at], name);
+        rel[qlen++] = rel[at] == NULL ? scr_str_retain(name) : scr_fs_join2(rel[at], name);
+      }
+    }
+    scr_str_release(parent);
+    scr_fs_scandir_free(scan);
+  }
+  for (size_t i = 0; i < qlen; i++) {
+    scr_str_release(queue[i]);
+    if (rel[i] != NULL) scr_str_release(rel[i]);
+  }
+  free(queue);
+  free(rel);
+  if (failed) {
+    scr_fs_scandir_free(out);
+    return NULL;
+  }
+  return out;
+}
+
+
+/* The fs/promises recursive walk: Node's async readdir keeps a STACK of
+ * pending directories (the last one listed is walked first), where the
+ * synchronous walk uses a queue — the two orders differ as soon as a
+ * directory has more than one subdirectory. `follow_links` descends into a
+ * symlinked directory: the names-only promise form does, the withFileTypes
+ * promise form does not (Node's own asymmetry, which the entries' kinds
+ * decide here). */
+typedef struct {
+  ScrStr *dir; /* the directory's path */
+  ScrStr *rel; /* ...relative to the base, NULL at the top level */
+} ScrWalkStack;
+
+ScrScandir *scr_fs_scandir_recursive_async(ScrStr *base, bool follow_links) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrScandir *out = calloc(1, sizeof *out);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t len = 1, cap = 8;
+  ScrWalkStack *stack = malloc(cap * sizeof *stack);
+  if (!stack) scr_trap("scriptc: out of memory\n");
+  stack[0].dir = scr_str_retain(base);
+  stack[0].rel = NULL;
+  bool failed = false;
+  while (len > 0 && !failed) {
+    ScrWalkStack top = stack[--len];
+    ScrScandir *scan = scr_fs_scandir(top.dir);
+    if (!scan) {
+      scr_str_release(top.dir);
+      if (top.rel) scr_str_release(top.rel);
+      failed = true;
+      break;
+    }
+    ScrStr *parent = top.rel == NULL ? scr_str_retain(base) : scr_fs_join2(base, top.rel);
+    /* The subdirectories this listing turns up, pushed in listing order so
+     * the last one is walked first. */
+    size_t sub_len = 0, sub_cap = 8;
+    ScrWalkStack *subs = malloc(sub_cap * sizeof *subs);
+    if (!subs) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < scr_fs_scandir_count(scan) && !failed; i++) {
+      if (out->len == out->cap) {
+        out->cap = out->cap ? out->cap * 2 : 8;
+        out->names = realloc(out->names, out->cap * sizeof *out->names);
+        out->raws = realloc(out->raws, out->cap * sizeof *out->raws);
+        out->parents = realloc(out->parents, out->cap * sizeof *out->parents);
+        out->kinds = realloc(out->kinds, out->cap);
+        if (!out->names || !out->raws || !out->parents || !out->kinds)
+          scr_trap("scriptc: out of memory\n");
+      }
+      ScrStr *name = scr_fs_scandir_name(scan, i); /* +1 */
+      out->names[out->len] = name;
+      out->raws[out->len] = scr_fs_scandir_bytes(scan, i);
+      out->parents[out->len] = scr_str_retain(parent);
+      out->kinds[out->len] = (unsigned char)scr_fs_scandir_type(scan, i);
+      out->len++;
+      int kind = (int)out->kinds[out->len - 1];
+      bool is_dir = kind == 2;
+      if (!is_dir && kind == 0) {
+        /* DT_UNKNOWN still needs stat(2) to know what the entry is. */
+        ScrStr *full = scr_fs_join2(top.dir, name);
+        struct stat st;
+        is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        scr_str_release(full);
+      } else if (!is_dir && kind == 3) {
+        /* A symlink is a directory only when the walk follows links. */
+        if (follow_links) {
+          ScrStr *full = scr_fs_join2(top.dir, name);
+          struct stat st;
+          is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+          scr_str_release(full);
+        }
+      }
+      if (!is_dir) continue;
+      if (sub_len == sub_cap) {
+        sub_cap *= 2;
+        subs = realloc(subs, sub_cap * sizeof *subs);
+        if (!subs) scr_trap("scriptc: out of memory\n");
+      }
+      subs[sub_len].dir = scr_fs_join2(top.dir, name);
+      subs[sub_len].rel = top.rel == NULL ? scr_str_retain(name) : scr_fs_join2(top.rel, name);
+      sub_len++;
+    }
+    scr_str_release(parent);
+    scr_fs_scandir_free(scan);
+    scr_str_release(top.dir);
+    if (top.rel) scr_str_release(top.rel);
+    /* Push them so the LAST listing entry is on top of the stack. */
+    for (size_t i = 0; i < sub_len; i++) {
+      if (len == cap) {
+        cap *= 2;
+        stack = realloc(stack, cap * sizeof *stack);
+        if (!stack) scr_trap("scriptc: out of memory\n");
+      }
+      stack[len++] = subs[i];
+    }
+    free(subs);
+  }
+  while (len > 0) {
+    ScrWalkStack top = stack[--len];
+    scr_str_release(top.dir);
+    if (top.rel) scr_str_release(top.rel);
+  }
+  free(stack);
+  if (failed) {
+    scr_fs_scandir_free(out);
+    return NULL;
+  }
+  return out;
+}
+
+/* fs.promises.readdir(path, { recursive: true }): the same depth-first
+ * order as the Dirent form, answering the path of every entry relative to
+ * the base. */
+ScrArr *scr_fs_readdir_recursive_async(ScrStr *base) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  size_t len = 1, cap = 8;
+  ScrWalkStack *stack = malloc(cap * sizeof *stack);
+  if (!stack) scr_trap("scriptc: out of memory\n");
+  stack[0].dir = scr_str_retain(base);
+  stack[0].rel = NULL;
+  bool failed = false;
+  while (len > 0 && !failed) {
+    ScrWalkStack top = stack[--len];
+    ScrScandir *scan = scr_fs_scandir(top.dir);
+    if (!scan) {
+      scr_str_release(top.dir);
+      if (top.rel) scr_str_release(top.rel);
+      failed = true;
+      break;
+    }
+    size_t sub_len = 0, sub_cap = 8;
+    ScrWalkStack *subs = malloc(sub_cap * sizeof *subs);
+    if (!subs) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < scr_fs_scandir_count(scan) && !failed; i++) {
+      ScrStr *name = scr_fs_scandir_name(scan, i); /* +1 */
+      ScrStr *rel = top.rel == NULL ? scr_str_retain(name) : scr_fs_join2(top.rel, name);
+      scr_arr_push_ref(out, rel);
+      int kind = (int)scr_fs_scandir_type(scan, i);
+      bool is_dir = kind == 2;
+      if (!is_dir && kind == 0) {
+        ScrStr *full = scr_fs_join2(top.dir, name);
+        struct stat st;
+        is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        scr_str_release(full);
+      } else if (!is_dir && kind == 3) {
+        /* The names-only form follows a symlinked directory. */
+        ScrStr *full = scr_fs_join2(top.dir, name);
+        struct stat st;
+        is_dir = stat(full->data, &st) == 0 && S_ISDIR(st.st_mode);
+        scr_str_release(full);
+      }
+      if (is_dir) {
+        if (sub_len == sub_cap) {
+          sub_cap *= 2;
+          subs = realloc(subs, sub_cap * sizeof *subs);
+          if (!subs) scr_trap("scriptc: out of memory\n");
+        }
+        subs[sub_len].dir = scr_fs_join2(top.dir, name);
+        subs[sub_len].rel = scr_str_retain(rel);
+        sub_len++;
+      }
+      scr_str_release(name);
+    }
+    scr_fs_scandir_free(scan);
+    scr_str_release(top.dir);
+    if (top.rel) scr_str_release(top.rel);
+    for (size_t i = 0; i < sub_len; i++) {
+      if (len == cap) {
+        cap *= 2;
+        stack = realloc(stack, cap * sizeof *stack);
+        if (!stack) scr_trap("scriptc: out of memory\n");
+      }
+      stack[len++] = subs[i];
+    }
+    free(subs);
+  }
+  while (len > 0) {
+    ScrWalkStack top = stack[--len];
+    scr_str_release(top.dir);
+    if (top.rel) scr_str_release(top.rel);
+  }
+  free(stack);
+  if (failed) {
+    scr_arr_release(out);
+    return NULL;
+  }
+  return out;
+}
 
 void scr_fs_scandir_free(ScrScandir *s) {
   if (!s) return;
-  for (size_t i = 0; i < s->len; i++) scr_str_release(s->names[i]);
+  for (size_t i = 0; i < s->len; i++) {
+    scr_str_release(s->names[i]);
+    scr_bytes_release(s->raws[i]);
+    if (s->parents) scr_str_release(s->parents[i]);
+  }
   free(s->names);
+  free(s->raws);
+  free(s->parents);
   free(s->kinds);
   free(s);
 }
@@ -10951,6 +11520,11 @@ struct ScrCryptoHash {
    * repeated final() or an update() after it throws (Hmac answers an empty
    * digest instead). */
   bool mac;
+  /* createMac's KMAC: the Keccak sponge's inner state holds the absorbed
+   * key prefix, and the message continues from there. The digest kind is
+   * the matching KECCAK-KMAC one, whose xof size supplies the default
+   * output length. */
+  bool kmac;
   /* The digest was computed, by digest() or by the stream's flush. Node's
    * native handle keeps it, so a Hash flushed as a stream answers one more
    * digest() with it, and every later update fails. */
@@ -11402,6 +11976,12 @@ static bool scr_crypto_integer(double value, const char *name, double min, doubl
  * computed. A Hash keeps a copy for a later digest() or flush. */
 static size_t scr_crypto_hash_compute(ScrCryptoHash *hash, unsigned char *out) {
   hash->digested = true;
+  if (hash->kmac) {
+    scr_kmac_final(&hash->inner.state.keccak, hash->out_len, hash->out_len * 8, out);
+    size_t n = hash->out_len;
+    scr_crypto_hash_cache(hash, out, n);
+    return n;
+  }
   if (hash->hmac) return scr_hmac_final(&hash->inner, &hash->outer, out);
   size_t n;
   if (scr_digest_info[hash->inner.alg].xof) {
@@ -11987,6 +12567,53 @@ static void scr_crypto_mac_digest_unsupported(void) {
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
+/* OpenSSL's KMAC refuses an output length above 2^21 - 1 bytes with
+ * EVP_R_INVALID_OUTPUT_LENGTH, which createMac rethrows with its message
+ * and reason properties. */
+static void scr_crypto_mac_output_length(void) {
+  static const char message[] = "error:1C8000D9:Provider routines::invalid output length";
+  static const char code[] = "ERR_OSSL_INVALID_OUTPUT_LENGTH";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("Provider routines", 17)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("invalid output length", 21)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* OpenSSL's KMAC accepts a customization of at most 512 bytes and answers
+ * EVP_R_INVALID_CUSTOM_LENGTH beyond it. */
+static void scr_crypto_mac_custom_length(void) {
+  static const char message[] = "error:1C80006F:Provider routines::invalid custom length";
+  static const char code[] = "ERR_OSSL_INVALID_CUSTOM_LENGTH";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("Provider routines", 17)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("invalid custom length", 21)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* OpenSSL's KMAC key length lies between 4 and 512 bytes; outside it the
+ * provider answers EVP_R_INVALID_KEY_LENGTH, which Node rethrows as its
+ * empty-error message with the reason properties. */
+static void scr_crypto_mac_key_length(void) {
+  static const char message[] = "error:1C800069:Provider routines::invalid key length";
+  static const char code[] = "ERR_OSSL_INVALID_KEY_LENGTH";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("Provider routines", 17)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("invalid key length", 18)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 /* Node's normalizeKey(): a secret KeyObject's bytes, an ArrayBuffer, a
  * Buffer, a TypedArray or a DataView. A private or public KeyObject gets
  * the same argument-type error, named by its class. +1 or NULL. */
@@ -12251,6 +12878,7 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
   const ScrDyn *digest = NULL;
   bool has_cipher = false, has_iv = false, has_customization = false, has_salt = false;
   bool has_output_length = false;
+  double output_length = 0;
   if (options->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *value = scr_dyn_typed_ref_materialize(options);
     if (!value) return NULL;
@@ -12293,7 +12921,7 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
     if (option) {
       double length;
       if (!scr_crypto_uint32(option, "options.outputLength", &length)) return NULL;
-      (void)length;
+      output_length = length;
       has_output_length = true;
     }
   }
@@ -12303,6 +12931,75 @@ ScrDyn *scr_crypto_mac_new_dyn(ScrDyn *algorithm, ScrDyn *key, ScrDyn *options) 
     scr_crypto_invalid_mac(name);
     scr_bytes_release(bytes);
     return NULL;
+  }
+  bool kmac256 = false;
+  bool kmac = scr_digest_name_is(name->data, name->len, "kmac128") ||
+              scr_digest_name_is(name->data, name->len, "kmac-128");
+  if (!kmac) {
+    kmac256 = scr_digest_name_is(name->data, name->len, "kmac256") ||
+              scr_digest_name_is(name->data, name->len, "kmac-256");
+    kmac = kmac256;
+  }
+  if (kmac) {
+    /* KMAC's options are the customization and the output length; the
+     * HMAC-only option names draw Node's unsupported-option error, spelled
+     * with the algorithm name as the caller wrote it. */
+    static const char *const unsupported[4] = {"options.digest", "options.cipher", "options.iv",
+                                               "options.salt"};
+    bool const present[4] = {digest != NULL, has_cipher, has_iv, has_salt};
+    for (int i = 0; i < 4; i++) {
+      if (!present[i]) continue;
+      scr_crypto_mac_option_unsupported(unsupported[i], name);
+      scr_bytes_release(bytes);
+      return NULL;
+    }
+    double out = has_output_length ? output_length : kmac256 ? 64 : 32;
+    /* OpenSSL's KMAC refuses output lengths above 2^21 - 1 bytes. */
+    if (out > 2097151) {
+      scr_crypto_mac_output_length();
+      scr_bytes_release(bytes);
+      return NULL;
+    }
+    ScrBytes *custom = NULL;
+    if (has_customization) {
+      const ScrDyn *option = scr_crypto_option(options, "customization");
+      custom = option ? scr_bytes_buffer_source(option) : NULL;
+      if (!custom) {
+        scr_bytes_release(bytes);
+        return NULL;
+      }
+      /* The provider sets the customization before the key, so a too-long
+       * customization reports first. */
+      if (scr_bytes_byte_len(custom) > 512) {
+        scr_bytes_release(custom);
+        scr_bytes_release(bytes);
+        scr_crypto_mac_custom_length();
+        return NULL;
+      }
+    }
+    size_t keylen = (size_t)scr_bytes_byte_len(bytes);
+    if (keylen < 4 || keylen > 512) {
+      scr_bytes_release(custom);
+      scr_crypto_mac_key_length();
+      scr_bytes_release(bytes);
+      return NULL;
+    }
+    ScrCryptoHash *mac = calloc(1, sizeof *mac);
+    if (!mac) scr_trap("scriptc: out of memory\n");
+    mac->rc = 1;
+    mac->kmac = true;
+    mac->mac = true;
+    mac->out_len = (size_t)out;
+    mac->inner.alg = kmac256 ? SCR_DIGEST_KECCAK_KMAC256 : SCR_DIGEST_KECCAK_KMAC128;
+    scr_kmac_init(&mac->inner.state.keccak, kmac256, bytes->data, keylen, keylen * 8,
+                  custom ? custom->data : NULL,
+                  custom ? (size_t)scr_bytes_byte_len(custom) : 0);
+    scr_bytes_release(custom);
+    scr_bytes_release(bytes);
+    scr_crypto_mac_dyn_install();
+    ScrDyn *box = scr_dyn_new_handle(mac, SCR_DYNH_MAC);
+    scr_crypto_hash_release(mac);
+    return box;
   }
   if (!scr_digest_name_is(name->data, name->len, "hmac")) {
     static const char msg[] =
@@ -13207,6 +13904,10 @@ static ScrDyn *scr_key_object_new(const unsigned char *data, size_t len) {
   return box;
 }
 
+ScrDyn *scr_crypto_secret_key_object_from_bytes(const unsigned char *data, size_t len) {
+  return scr_key_object_new(data, len);
+}
+
 /* The key bytes of a KeyObject value, or NULL for any other value. */
 const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
   if (value->kind != SCR_DYN_HANDLE || value->v.handle.tag != SCR_DYNH_KEY_OBJECT) return NULL;
@@ -13216,6 +13917,12 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
 }
 
 void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
+
+/* KeyObject.toCryptoKey and KeyObject.from; scr_webcrypto.c installs both
+ * when WebCrypto is linked. */
+ScrDyn *(*scr_crypto_to_crypto_key)(const ScrDyn *key, const ScrDyn *const *args, size_t argc) =
+    NULL;
+ScrDyn *(*scr_crypto_key_object_from)(const ScrDyn *crypto_key) = NULL;
 
 int (*scr_crypto_crypto_key_info)(const ScrDyn *value, const unsigned char **bytes, size_t *len) = NULL;
 
@@ -13316,9 +14023,13 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
     return scr_dyn_new_bool(equal && diff == 0);
   }
   if (strcmp(method, "toCryptoKey") == 0) {
-    static const char message[] = "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return NULL;
+    if (!scr_crypto_to_crypto_key) {
+      static const char message[] =
+          "KeyObject.toCryptoKey() needs WebCrypto CryptoKey values, which have no native lowering";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+    return scr_crypto_to_crypto_key(self, args, argc);
   }
   scr_lib_throw_not_a_function(what);
   return NULL;

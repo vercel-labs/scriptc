@@ -20,10 +20,13 @@ import {
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
 import {
+  failureText,
   nativeBuildPartitions,
+  nativeHelperFailureMessage,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "./native-codegen-core.js";
+import { nativeCodegenDiag } from "../diagnostics/diagnostic.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -357,9 +360,21 @@ test("reports a missing platform package as an actionable installation diagnosti
 });
 
 test.skipIf(process.platform === "win32")(
-  "reports unreadable or non-executable helper binaries as installation failures",
+  "repairs a writable helper binary installed without execute bits",
   async () => {
-    for (const mode of [0o111, 0o644]) {
+    const pkg = await fakePackage();
+    await chmod(pkg.bin, 0o644);
+    const output = join(pkg.root, "repaired.o");
+    await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+    expect((await stat(pkg.bin)).mode & 0o111).not.toBe(0);
+    expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "reports an unreadable or read-only helper binary as an installation failure",
+  async () => {
+    for (const mode of [0o111, 0o444]) {
       const pkg = await fakePackage();
       await chmod(pkg.bin, mode);
       await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
@@ -698,3 +713,59 @@ test.skipIf(process.platform === "win32")(
     expect(await readFile(output, "utf8")).toContain("define i32 @answer");
   },
 );
+
+test("an error without a message names what failed and where it was thrown", () => {
+  class Refusal extends Error {
+    override name = "Refusal";
+  }
+  const unnamed = failureText(new Refusal());
+  expect(unnamed).toContain("internal compiler error (Refusal)");
+  expect(unnamed).toContain("native-codegen.test");
+  expect(failureText(new Error("the linker ran out of memory"))).toBe(
+    "the linker ran out of memory",
+  );
+  expect(failureText("not an error")).toBe("not an error");
+});
+
+test("a native-helper diagnostic never reports an empty message", () => {
+  for (const code of ["SC3002", "SC3003", "SC3004"] as const) {
+    const diagnostic = nativeCodegenDiag(code, "   ", "entry.ts");
+    expect(diagnostic.code).toBe(code);
+    expect(diagnostic.message.trim()).not.toBe("");
+  }
+  expect(nativeCodegenDiag("SC3004", "the helper wrote no object", "entry.ts").message).toBe(
+    "the helper wrote no object",
+  );
+});
+
+test("a helper diagnostic with a blank reason reports how the helper ended", () => {
+  // A native panic can answer its structured diagnostic with a code and an
+  // empty message. The build must still name the failure instead of ending
+  // the message at its colon.
+  const structured = nativeHelperFailureMessage({
+    message: "Command failed: scriptc-llvm-codegen emit",
+    code: 1,
+    stderr: '{"code":"emit_failed","message":""}',
+  });
+  expect(structured.code).toBe("emit_failed");
+  expect(structured.message.trim()).not.toBe("");
+  expect(structured.message).toContain("exit status 1");
+  expect(structured.message).toContain("gave no reason");
+  const signal = nativeHelperFailureMessage({
+    message: "Command failed: scriptc-llvm-codegen emit",
+    signal: "SIGKILL",
+    stderr: '{"message":"   "}',
+  });
+  expect(signal.message).toContain("signal SIGKILL");
+  expect(signal.message.trim()).not.toBe("");
+  // A structured message is still reported verbatim.
+  expect(
+    nativeHelperFailureMessage({ message: "Command failed", stderr: '{"message":"boom"}' }).message,
+  ).toBe("boom");
+});
+
+test("a non-Error thrown without text still names the internal failure", () => {
+  expect(failureText("")).toBe("internal compiler error (a non-Error value was thrown)");
+  expect(failureText("   ")).toBe("internal compiler error (a non-Error value was thrown)");
+  expect(failureText("plain text")).toBe("plain text");
+});

@@ -23,6 +23,7 @@ import { parallelMap } from "./parallel-map.mjs";
 import { profileMatchSummary } from "./profile-match.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
 import { zstdInputs } from "./zstd-inputs.mjs";
+import { sqliteInputs } from "./sqlite-inputs.mjs";
 import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
 import { assertUnwindTails, moveUnwindTailLast, unwindTailCompileFlags } from "./unwind-tail.mjs";
 
@@ -121,8 +122,10 @@ async function build() {
   const quickjs = join(vendorRoot, "quickjs-ng");
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
+  const mlkem = join(vendorRoot, "mlkem-native");
   const brotli = join(vendorRoot, "brotli", "c");
   const zstd = join(vendorRoot, "zstd", "lib");
+  const sqlite = join(vendorRoot, "sqlite");
   // ICU is fetched from its pinned release, not vendored (see icu-inputs.mjs),
   // and only a pack that ships it pays for the download.
   const icuSourceRoot = async () =>
@@ -130,6 +133,7 @@ async function build() {
   const lreSources = ["libregexp.c", "libunicode.c"];
   const zlibBuild = zlibInputs(config.target.llvm_triple);
   const zstdBuild = zstdInputs(config.target.llvm_triple);
+  const sqliteBuild = sqliteInputs(config.target.llvm_triple);
   const sha256 = async (path) =>
     createHash("sha256")
       .update(await readFile(path))
@@ -479,6 +483,7 @@ async function build() {
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
               ...(unit.source === "scr_zstd.c" ? ["-I", zstd] : []),
+              ...(unit.source === "scr_sqlite.c" ? ["-I", sqlite] : []),
               // scr_intl.c includes ICU's C API headers straight from the
               // fetched release: the core ones in source/common/unicode/*.h,
               // and the format ones (udat.h, unumberformatter.h) in
@@ -602,6 +607,51 @@ async function build() {
       ...codeAlignment,
       ...(config.runtimeDefines ?? []).map((define) => `-D${define}`),
     ];
+    // ML-KEM (mlkem-native): the C backend compiled once per parameter
+    // set; the multilevel build keeps the shared code in the 768 object and
+    // prefixes the level-dependent symbols.
+    const mlkemArchive = async () => {
+      process.stdout.write(`building ${packageManifest.name} mlkem archive\n`);
+      const root = join(stagedOutputRoot, "vendor", "mlkem");
+      const objectRoot = join(root, "objects");
+      const flags = [
+        ...vendorTarget,
+        "-std=c11",
+        "-O2",
+        "-I",
+        mlkem,
+        "-I",
+        join(mlkem, "src"),
+        ...vendorHardening,
+      ];
+      const levels = [
+        { set: 512, name: "mlkem512", define: "MLK_CONFIG_MULTILEVEL_NO_SHARED" },
+        { set: 768, name: "mlkem768", define: "MLK_CONFIG_MULTILEVEL_WITH_SHARED" },
+        { set: 1024, name: "mlkem1024", define: "MLK_CONFIG_MULTILEVEL_NO_SHARED" },
+      ];
+      await parallel(levels, async (level) =>
+        compile(join(mlkem, "mlkem_native.c"), join(objectRoot, `${level.name}.o`), [
+          ...flags,
+          `-DMLK_CONFIG_PARAMETER_SET=${level.set}`,
+          "-DMLK_CONFIG_MULTILEVEL_BUILD",
+          `-D${level.define}`,
+        ]),
+      );
+      const output = join(root, "libscriptc-mlkem.a");
+      await createDeterministicArchive(
+        archiver,
+        output,
+        levels.map((level) => join(objectRoot, `${level.name}.o`)),
+        archiverArgs,
+      );
+      await rm(objectRoot, { recursive: true, force: true });
+      return {
+        id: "mlkem",
+        path: artifactPath(output),
+        sha256: await sha256(output),
+        size: (await stat(output)).size,
+      };
+    };
     // zlib, brotli, zstd and mbedtls parse untrusted input and get every
     // protection; libregexp keeps its flags (see hardening.mjs).
     const vendorHardening = runtimeHardeningFlags(config, {
@@ -669,7 +719,23 @@ async function build() {
                   ]),
                 ]
               : []),
+            ...(requestedArchives.has("sqlite")
+              ? [
+                  await archive("sqlite", sqliteBuild.sources, sqlite, [
+                    ...vendorTarget,
+                    "-std=c11",
+                    // Node builds the amalgamation at -O2.
+                    "-O2",
+                    ...sqliteBuild.defines.map((define) => `-D${define}`),
+                    ...sqliteBuild.compileFlags,
+                    ...vendorHardening,
+                    "-I",
+                    sqlite,
+                  ]),
+                ]
+              : []),
             ...(requestedArchives.has("icu") ? [await icuArchive()] : []),
+            ...(requestedArchives.has("mlkem") ? [await mlkemArchive()] : []),
             ...(requestedArchives.has("mbedtls")
               ? [
                   await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [
@@ -769,6 +835,8 @@ async function build() {
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
+      [join(mlkem, "LICENSE"), "artifacts/licenses/mlkem.txt", "Apache-2.0"],
+      [join(sqlite, "NOTICE"), "artifacts/licenses/sqlite.txt", "Public-Domain"],
       // ICU's terms cover both the sources and the data file it ships; only a
       // pack that ships them carries its license.
       ...(requestedArchives.has("icu")
@@ -794,7 +862,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
+      runtime_abi: { version: 51, marker: "scr_runtime_abi_v51" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

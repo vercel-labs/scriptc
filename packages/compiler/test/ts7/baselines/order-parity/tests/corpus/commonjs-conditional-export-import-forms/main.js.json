@@ -1,0 +1,15 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/prod.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/dev.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/index.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/relay.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/member.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/reexport.js",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/member-star.js",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/member-named.js",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/member-relay.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-import-forms/main.js"
+ ],
+ "diags": []
+}

@@ -518,8 +518,11 @@ export function lowerErrorCaptureStackTraceCall(
   }
   const target = lowerer.lowerExpr(args[0]!);
   // Primitives (and unions of them) reach the runtime, which throws V8's
-  // TypeError for them; objects without a checked-dynamic view are refused,
-  // since a boxed copy would not show the stack.
+  // TypeError for them; a function value is one object the boxed target
+  // really is (its own property table), so the stack a program reads back
+  // through the function is the one captured. Other typed objects without a
+  // checked-dynamic view are refused, since a boxed copy would not show the
+  // stack.
   const primitive =
     ["f64", "string", "bool", "nullT", "undefinedT", "bigint"].includes(target.type.kind) ||
     (target.type.kind === "union" &&
@@ -527,11 +530,17 @@ export function lowerErrorCaptureStackTraceCall(
       (lowerer.unions.get(target.type.unionId)?.arms ?? []).every((arm) =>
         ["f64", "string", "bool", "nullT", "undefinedT", "bigint"].includes(arm.kind),
       ));
-  if (target.type.kind !== "dyn" && !primitive && !isErrorClassType(lowerer, target.type)) {
+  const functionTarget = target.type.kind === "func" && lowerer.dynConvertible(target.type);
+  if (
+    target.type.kind !== "dyn" &&
+    !primitive &&
+    !functionTarget &&
+    !isErrorClassType(lowerer, target.type)
+  ) {
     lowerer.noLowering(
       `Error.captureStackTrace on '${lowerer.fmt(target.type)}' values`,
       args[0]!,
-      "pass an Error instance, or an untyped object in JavaScript",
+      "pass an Error instance, a function, or an untyped object in JavaScript",
     );
   }
   let through = "";

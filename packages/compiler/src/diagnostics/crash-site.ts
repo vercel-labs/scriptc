@@ -54,6 +54,8 @@ export function compilerCrashDiag(error: Error, fallback: SrcLoc): ScrDiagnostic
   const loc = crashSiteOf(error) ?? fallback;
   if (process.env["SCRIPTC_CRASH_STACK"] === "1" && error.stack !== undefined)
     process.stderr.write(`${error.stack}\n`);
-  const detail = error.message.split("\n", 1)[0]!;
+  const detail =
+    error.message.split("\n", 1)[0]!.trim() ||
+    `${error.name === "" ? "an Error" : error.name} without a message`;
   return isCheckerPanic(error) ? checkerPanicDiag(detail, loc) : iceDiag(detail, loc);
 }

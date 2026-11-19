@@ -23,13 +23,41 @@ void scr_dgram_release(ScrDgramSocket *s);
 void *scr_dgram_retain_v(void *p);
 void scr_dgram_release_v(void *p);
 
-ScrDgramSocket *scr_dgram_create(bool reuse_addr); /* +1 */
-/* bind/connect: host borrowed; "" binds 0.0.0.0 (bind's Node default).
- * The callback (nullable, moves) registers as once('listening') /
- * once('connect'). Both THROW Node's state errors on a bound/connected/
+/* udp4/udp6 in one handle: `v6` makes every sockaddr address family
+ * AF_INET6, and `ipv6_only` sets IPV6_V6ONLY. recv_size/send_size are the
+ * createSocket buffer options (0 = absent), applied when the descriptor
+ * starts receiving. +1. */
+ScrDgramSocket *scr_dgram_create(bool v6, bool reuse_addr, bool ipv6_only, bool reuse_port,
+                                 double recv_size, double send_size);
+/* socket.type: "udp4" or "udp6" (+1). */
+ScrStr *scr_dgram_type_str(ScrDgramSocket *s);
+/* createSocket(type | options[, listener]) over the checked-dynamic
+ * argument: Node's Socket constructor, with the options it cannot honor
+ * yet (signal, lookup, the block lists) refused explicitly. The listener
+ * (nullable, moves) becomes on('message'). NULL with the exception
+ * pending. */
+ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb /*moves, nullable*/,
+                                     ScrDgramMsgFn fn);
+/* bind(options[, callback]) and bindSync(options) over the untyped options
+ * object (Node's { port, address, exclusive, fd }). */
+void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *cb /*moves, nullable*/);
+void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options);
+/* bind/connect: host borrowed; "" binds the wildcard (0.0.0.0 / ::) and
+ * connect's absent host is its loopback (127.0.0.1 / ::1), Node's
+ * defaults. The callback (nullable, moves) registers as once('listening')
+ * / once('connect'). Both THROW Node's state errors on a bound/connected/
  * closed socket; runtime failures (EADDRINUSE) are the async 'error'. */
 void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+/* bindSync/connectSync (Node's synchronous counterparts): a numeric host
+ * only, the state errors throw synchronously, and bindSync answers the
+ * resolved address through the address() parts. has_host distinguishes an
+ * absent argument from "". */
+void scr_dgram_bind_sync(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, bool has_host);
+void scr_dgram_connect_sync(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, bool has_host);
 void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+/* connect with an untyped JavaScript completion callback: it receives the
+ * refusal as Node's nextTick(callback, ex) does. */
+void scr_dgram_connect_dyn(ScrDgramSocket *s, double port, ScrStr *host, const struct ScrDyn *cb);
 void scr_dgram_send_str(ScrDgramSocket *s, ScrStr *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
 void scr_dgram_send_bytes(ScrDgramSocket *s, ScrBytes *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
 /* The send argument-validation ladder over dyn arguments (Node's
@@ -47,11 +75,19 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
  * (+1), or NULL with the path-annotated TypeError pending. */
 ScrDyn *scr_dgram_to_dyn(ScrDgramSocket *s);
 ScrDgramSocket *scr_dgram_from_dyn(const ScrDyn *d, const ScrDynPath *path, const char *want);
-/* address() parts: ip THROWS "Not running" before bind/connect (+1
- * otherwise); family/port are only called after ip succeeded. */
+/* `x instanceof dgram.Socket` over a checked-dynamic value. */
+bool scr_dgram_is_dyn(const ScrDyn *d);
+/* address() parts: ip carries the state errors ("Not running" after
+ * close(), getsockname's EBADF before bind; +1 otherwise); family/port
+ * are only called after ip succeeded. */
 ScrStr *scr_dgram_addr_ip(ScrDgramSocket *s);     /* +1, may throw */
 ScrStr *scr_dgram_addr_family(ScrDgramSocket *s); /* +1 */
 double scr_dgram_addr_port(ScrDgramSocket *s);
+/* remoteAddress() parts: ip carries Node's healthCheck /
+ * ERR_SOCKET_DGRAM_NOT_CONNECTED / getpeername errors; family then port. */
+ScrStr *scr_dgram_remote_ip(ScrDgramSocket *s);     /* +1, may throw */
+ScrStr *scr_dgram_remote_family(ScrDgramSocket *s); /* +1 */
+double scr_dgram_remote_port(ScrDgramSocket *s);
 void scr_dgram_close(ScrDgramSocket *s, ScrClosure *cb /*moves, nullable*/); /* throws on closed */
 void scr_dgram_unref(ScrDgramSocket *s);
 void scr_dgram_ref(ScrDgramSocket *s);
@@ -73,6 +109,14 @@ bool scr_dgram_set_multicast_loopback(ScrDgramSocket *s, bool flag);
 void scr_dgram_set_multicast_interface(ScrDgramSocket *s, ScrStr *iface);
 void scr_dgram_add_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, bool has_iface);
 void scr_dgram_drop_membership(ScrDgramSocket *s, ScrStr *group, ScrStr *iface, bool has_iface);
+/* Source-specific multicast (IP_ADD_SOURCE_MEMBERSHIP / MCAST_JOIN_SOURCE_GROUP):
+ * numeric source and group literals, the optional interface parsed the same
+ * way; an unbound socket binds the wildcard first (libuv's deferred bind),
+ * and an unparseable address or interface is EINVAL. */
+void scr_dgram_add_source_membership(ScrDgramSocket *s, ScrStr *source, ScrStr *group,
+                                     ScrStr *iface, bool has_iface);
+void scr_dgram_drop_source_membership(ScrDgramSocket *s, ScrStr *source, ScrStr *group,
+                                      ScrStr *iface, bool has_iface);
 double scr_dgram_get_recv_buffer_size(ScrDgramSocket *s);
 double scr_dgram_get_send_buffer_size(ScrDgramSocket *s);
 void scr_dgram_set_recv_buffer_size(ScrDgramSocket *s, double size);
@@ -105,6 +149,9 @@ bool scr_dns_hints_flags(const ScrDyn *options, int *ai_flags);
 /* util.promisify(dns.lookup) and util.promisify(dns.lookupService): a +1
  * promise of the checked-dynamic result; never throws. */
 typedef struct ScrPromise ScrPromise;
+/* socket[Symbol.asyncDispose](): a +1 promise of 'close' (already
+ * fulfilled for a socket whose handle is gone). */
+ScrPromise *scr_dgram_async_dispose(ScrDgramSocket *s);
 ScrPromise *scr_dns_lookup_promise(const ScrDyn *hostname, const ScrDyn *options);
 ScrPromise *scr_dns_lookup_service_promise(const ScrDyn *address, const ScrDyn *port);
 /* node:dns/promises (scr_dns_promises.c, linked only for the module's

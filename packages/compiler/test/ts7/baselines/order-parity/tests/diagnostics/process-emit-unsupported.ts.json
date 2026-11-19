@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/process-emit-unsupported.ts"
+ ],
+ "diags": []
+}

@@ -1518,6 +1518,17 @@ export function runtimeOptionalReceiverRead(
   }
   const narrowed = lowerer.mapTypeOf(lowerer.typeOf(narrowedNode));
   if (!narrowed || isUnitType(narrowed)) {
+    // A CALL of the capture (`createRoot(container)` on a named import of a
+    // module whose export table is chosen at run time) does not need the
+    // checker's narrowed signature: Node reads the value the slot holds and
+    // calls it. A signature type can be unrepresentable only in its
+    // parameters or result (a DOM class in a package's declarations), which
+    // the checked-dynamic call carries — the callee is a boxed function the
+    // runtime invokes with the arguments as dyn values, and an undefined
+    // slot throws Node's "<callee> is not a function" at the call.
+    if (property === null && lowerer.dynConvertible(local.type)) {
+      return lowerer.coerceToExpected(varRef(local.id, local.type, loc), DYN);
+    }
     lowerer.unsupported(
       "SC1090",
       expr,

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/webcrypto-ecdh-key-agreement.ts"
+ ],
+ "diags": []
+}

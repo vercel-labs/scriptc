@@ -176,3 +176,11 @@ declare namespace __scriptcInferredCollections {
   const array_number: number[];
   const array_boolean: boolean[];
 }
+
+/* The @types/node declaration of BufferConstructor's copyBytesFrom lives in
+ * the TS 5.7 `global {}` augmentation block, which the lowering program's
+ * declaration merge does not carry into BufferConstructor; the member is
+ * lowered (bytes.ts), so the lowering world declares it here. */
+interface BufferConstructor {
+  copyBytesFrom(view: NodeJS.TypedArray, offset?: number, length?: number): Buffer;
+}

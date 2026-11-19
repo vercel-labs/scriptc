@@ -144,9 +144,30 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
     case "tls.connectCb":
       if (args[3] !== undefined) host.toHeap(args[3]);
       return finishRuntimeCall(host, e, "scr_tls_connect_dyn", [...a.slice(0, 3), a[3] ?? ptr()]);
+    case "tls.connectPath": {
+      // The slot holds the callback, or a dyn undefined for the form
+      // without one (the C side takes a null closure then).
+      const hasCb = args[2] !== undefined && e.args[2]!.type.kind === "func";
+      if (hasCb) host.toHeap(args[2]!);
+      return finishRuntimeCall(host, e, "scr_tls_connect_path", [
+        a[0]!,
+        a[1]!,
+        hasCb ? a[2]! : ptr(),
+      ]);
+    }
     case "tls.sockOnSecureConnect":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure_connect", a);
+    case "tls.sockDynMember":
+      return finishRuntimeCall(host, e, "scr_tls_sock_dyn_member", a);
+    case "tls.sockExportKeyingMaterial":
+      return finishRuntimeCall(host, e, "scr_tls_sock_export_keying_material", a);
+    case "tls.serverIs":
+      return finishRuntimeCall(host, e, "scr_net_server_is_tls", a);
+    case "tls.serverIsDyn":
+      return finishRuntimeCall(host, e, "scr_tls_server_is_dyn", a);
+    case "tls.sockDisableRenegotiation":
+      return finishRuntimeCall(host, e, "scr_tls_sock_disable_renegotiation", a);
     case "tls.sockOnSecure":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure", a);

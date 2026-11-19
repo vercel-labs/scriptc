@@ -632,11 +632,17 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // A program that can register an 'error' listener on a child installs
   // the builder of a failed spawn's error object (runtime-features.ts).
   const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
-  const usesFsWatch = runtimeFeatures.fsWatch;
+  // fsPromises.watch iterates over the watcher unit, so it installs the
+  // same loop hooks.
+  const usesFsWatch = runtimeFeatures.fsWatch || runtimeFeatures.fsWatchEvents;
   // fs.watchFile programs register the poller unit's exit cleanup — the
   // same one-line gating (native/executable.ts links scr_watch_file.c on
   // the same predicate).
   const usesFsWatchFile = runtimeFeatures.fsWatchFile;
+  // fsPromises.watch programs register the iterator unit's exit cleanup —
+  // the same one-line gating (native/executable.ts links scr_watch_async.c
+  // on the same predicate).
+  const usesFsWatchEvents = runtimeFeatures.fsWatchEvents;
   // Programs that call into Node record the libnode pack and its Node
   // version before %main (scr_node_island.c).
   const usesNodeIsland = runtimeFeatures.nodeIsland;
@@ -661,6 +667,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
+  const usesAsyncHooks = runtimeFeatures.asyncHooks;
   // URL programs give the host parser the IDNA unit's ToASCII.
   const usesUrlIdna = runtimeFeatures.urlIdna;
   // Programs whose checked-dynamic reads answer Buffer.prototype methods by
@@ -686,6 +693,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // emitter: node:test owns the final status when present; otherwise an
   // embedded process.exitCode owns it; ordinary programs return zero.
   const usesNodeTest = runtimeFeatures.nodeTest;
+  /* The entry file path the runner's tracing events carry, interned here so
+   * the string constant exists before the globals are written. */
+  const testEntryPtr = usesNodeTest ? emitter.cstr(emitter.mod.sourceFile) : "";
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
@@ -724,6 +734,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     emitter.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
   if (usesFsWatchFile) emitter.declare(`declare void @scr_watch_file_install()`);
+  if (usesFsWatchEvents) emitter.declare(`declare void @scr_watch_events_install()`);
   if (usesNodeIsland) emitter.declare(`declare void @scr_node_island_install(ptr, ptr)`);
   // Interned now: the C-string constants flush before main assembles.
   const nodeIslandConfig = usesNodeIsland
@@ -749,6 +760,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
+  if (usesAsyncHooks) emitter.declare(`declare void @scr_async_hooks_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
   if (usesSymbolFor) emitter.declare(`declare void @scr_sym_for_install()`);
@@ -756,7 +768,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
-    emitter.declare(`declare void @scr_test_init()`);
+    emitter.declare(`declare void @scr_test_init(ptr)`);
   }
   if (snapshotsTlsCa) {
     emitter.declare(`declare void @scr_tls_ca_install()`);
@@ -1536,6 +1548,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // fs.watchFile programs register the poller unit's atexit cleanup the
     // same way — scr_watch_file.c links only when this line is emitted.
     ...(usesFsWatchFile ? [`  call void @scr_watch_file_install()`] : []),
+    ...(usesFsWatchEvents ? [`  call void @scr_watch_events_install()`] : []),
     ...(nodeIslandConfig
       ? [
           `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,
@@ -1545,6 +1558,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
+    ...(usesAsyncHooks ? [`  call void @scr_async_hooks_install()`] : []),
     ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
     ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),
@@ -1559,7 +1573,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
     // node:test takes Node's runtime options (the snapshot update flag and
     // the reporter options) out of argv first.
-    ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
+    ...(usesNodeTest ? [`  call void @scr_test_init(ptr ${testEntryPtr})`] : []),
     ...(asyncEntry
       ? [`  %top = call ptr @${mangleAsyncSpawn(emitter.mod.entry)}()`]
       : // The entry runs once: `noinline` keeps LLVM from inlining the

@@ -99,8 +99,21 @@ export function lowerClassMethodValue(
       loc,
     };
   };
+  // A method a JavaScript file TypeScript does not check declares has no
+  // signature contract: a subclass replaces it with whatever arity it likes
+  // (three's `Loader.load()` is overridden by `GLTFLoader.load(url, onLoad,
+  // onProgress, onError)`), so the value a base-typed receiver answers is
+  // whatever the instance's own class holds. Reading it as a value keeps it
+  // checked-dynamic, and every arm boxes its own method without a signature
+  // view (a static view would refuse the family).
+  const methodDecl = lowerer.checker.getSymbolAtLocation(expr.name)?.declarations[0];
+  const advisoryDeclaration =
+    methodDecl !== undefined &&
+    isJsSourceFile(ts.getSourceFileOfNode(methodDecl)) &&
+    !lowerer.checkedJsFile(ts.getSourceFileOfNode(methodDecl));
   const checked =
-    isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.dynConvertible(value.type);
+    (isJsSourceFile(ts.getSourceFileOfNode(expr)) || advisoryDeclaration) &&
+    lowerer.dynConvertible(value.type);
   if (checked) value = lowerer.coerceToExpected(value, DYN);
   // Select the declaration when extracting the value. Calling the value
   // later must not redispatch the method name on a different receiver.
@@ -619,7 +632,7 @@ function reflectedMethodValue(
     // asks the class value's table, which is where a subclass's
     // redeclaration answers. An accessor's getter/setter receives the same
     // receiver from the table.
-    const value = lowerer.lowerLambda(member, tableValue && staticMethod);
+    const value = lowerer.lowerLambda(member, tableValue && staticMethod, tableValue);
     const pending = lowerer.methodLambdasInProgress.get(member);
     if (
       pending &&

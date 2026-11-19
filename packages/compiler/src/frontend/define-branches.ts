@@ -88,7 +88,7 @@ export function resolveDefinedBranches(sf: ts.SourceFile, defines: Defines): str
 /** `text` in place of `replaced`, whose other characters become spaces and
  * keep its line breaks. The text takes the first run of those spaces long
  * enough to hold it, so nothing after the span moves. */
-function padded(replaced: string, text: string): string {
+export function padded(replaced: string, text: string): string {
   const blank = replaced.replace(/[^\r\n]/g, " ");
   const at = blank.indexOf(" ".repeat(text.length));
   return at < 0 ? text + blank : blank.slice(0, at) + text + blank.slice(at + text.length);

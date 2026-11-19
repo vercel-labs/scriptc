@@ -1,7 +1,7 @@
 scriptc coverage tests/coverage-fixtures/node-islands/main.ts
 
-  statements analyzed   29
-  compile statically    28  (96%)
+  statements analyzed   32
+  compile statically    31  (96%)
     in dynamic tier     14  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
@@ -18,8 +18,8 @@ scriptc coverage tests/coverage-fixtures/node-islands/main.ts
     runtime       ni-eval@1.0.0
           tests/coverage-fixtures/node-islands/node_modules/ni-eval/index.js:4:10: R1.1 code from strings: new Function()
     object-model  ni-ctor@1.0.0
-          tests/coverage-fixtures/node-islands/node_modules/ni-ctor/index.js:9:1: R2.1 constructor functions: a write of 'Counter.prototype.add'
-          +1 more reason in 1 module; carries ni-dep
+          tests/coverage-fixtures/node-islands/node_modules/ni-ctor/index.js:26:1: R2.3 shape mutation outside the checker's view: a write of the class prototype 'Meter.prototype.reset'
+          carries ni-dep
     packaging     ni-bundled@1.0.0
           SC2013: its shipped JS carries build-transform markers (bundled/transpiled dist)
     reached from native code and from an island: ni-typed

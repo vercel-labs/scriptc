@@ -104,7 +104,7 @@ fenced.ts:81:15 - error SC2020: 'ReadableStream.tee in a static build' is typed 
      |               ^~~~~~~~
   82 |   body["tee"]();
 
-  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
+  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo(), pipeThrough() and values() as direct calls; [Symbol.asyncIterator]() compiles when consumed directly by for await, while explicit symbol access remains unsupported
 
 fenced.ts:83:22 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
 
@@ -113,7 +113,7 @@ fenced.ts:83:22 - error SC2020: 'ReadableStream.tee in a static build' is typed 
      |                      ^~~~~~~~~~~
   84 | }
 
-  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
+  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo(), pipeThrough() and values() as direct calls; [Symbol.asyncIterator]() compiles when consumed directly by for await, while explicit symbol access remains unsupported
 
 fenced.ts:89:23 - error SC2020: 'util.callbackify into a callback whose error parameter excludes null' is part of the standard library types but has no scriptc lowering yet
 
@@ -147,18 +147,18 @@ fenced.ts:99:1 - error SC2020: 'DiffieHellman.toString' is part of the standard 
    98 | import { createDiffieHellman } from "node:crypto";
    99 | createDiffieHellman(Buffer.from([23])).toString();
       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  100 | /* WebCrypto beyond the secret-key slice: @types/node declares the whole
+  100 | /* WebCrypto beyond the native slice: @types/node declares the whole
 
   hint: generateKeys(), computeSecret(), getPrime(), getGenerator(), getPublicKey(), getPrivateKey(), setPublicKey(), setPrivateKey() and verifyError are supported
 
-fenced.ts:104:9 - error SC2020: 'crypto.subtle.getPublicKey' is part of the standard library types but has no scriptc lowering yet
+fenced.ts:104:9 - error SC2020: 'crypto.subtle.encapsulateBits' is part of the standard library types but has no scriptc lowering yet
 
-  103 | async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
-  104 |   await crypto.subtle.getPublicKey(key, ["verify"]);
-      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  103 | async function encapsulatedWithWebCrypto(key: import("node:crypto").webcrypto.CryptoKey): Promise<void> {
+  104 |   await crypto.subtle.encapsulateBits("ML-KEM-768", key);
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   105 | }
 
-  hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC or AES-CTR, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, deriveBits and deriveKey with PBKDF2 or HKDF, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
+  hint: the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC, AES-CTR or RSA-OAEP, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, deriveBits and deriveKey with PBKDF2, HKDF, ECDH, X25519 or X448, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, generateKey, importKey and exportKey for ECDH, X25519, X448 and RSA-OAEP, getPublicKey for an asymmetric private key, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle
 
 fenced.ts:109:7 - error SC2020: 'LockManager' is typed by @types/node but has no scriptc lowering yet
 

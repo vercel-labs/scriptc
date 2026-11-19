@@ -497,8 +497,9 @@ test("the island-rule marker reads the test body as its variant runs it", () => 
   try {
     // No island construct.
     expect(islandRuleMarker("assert.sameValue(1 + 1, 2);", "strict")).toBeNull();
-    // An object-model rule, in either mode.
-    const define = 'var o = {}; Object.defineProperty(o, "x", { value: 1 });';
+    // An object-model rule, in either mode: a class prototype grown at run
+    // time (a definition on an object the program builds compiles natively).
+    const define = "class C {} C.prototype.x = 1;";
     expect(islandRuleMarker(define, "strict")).toEqual({ rule: "R2.3", reason: "define-property" });
     expect(islandRuleMarker(define, "sloppy")).toEqual({ rule: "R2.3", reason: "define-property" });
     // A sloppy-only construct marks the sloppy variant only: the strict
@@ -511,15 +512,12 @@ test("the island-rule marker reads the test body as its variant runs it", () => 
     expect(islandRuleMarker(block, "strict")).toBeNull();
     // A runtime rule outranks an object-model rule that comes first.
     expect(
-      islandRuleMarker(
-        'Object.defineProperty({}, "x", { value: 1 }); new Function("return 1");',
-        "strict",
-      ),
+      islandRuleMarker('class C {} C.prototype.x = 1; new Function("return 1");', "strict"),
     ).toEqual({ rule: "R1.1", reason: "code-from-string" });
     // A syntax negative has no module to scan, whatever construct the
     // parser's recovered tree holds: the test's metadata decides, because
     // the parser does not throw on a syntax error.
-    const broken = 'Object.defineProperty({}, "x", { value: 1 }); var = ;';
+    const broken = "class C {} C.prototype.x = 1; var = ;";
     expect(islandRuleMarker(broken, "strict", true)).toBeNull();
     expect(islandRuleMarker(broken, "sloppy", true)).toBeNull();
     expect(islandRuleMarker("var = ;", "strict", true)).toBeNull();

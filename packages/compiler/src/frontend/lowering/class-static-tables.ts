@@ -13,7 +13,8 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
-import type { Lowerer } from "./lowerer.js";
+import { unsupportedDiag, type ScrDiagnostic } from "../../diagnostics/diagnostic.js";
+import { PoisonError, type Lowerer } from "./lowerer.js";
 import {
   classMemberNameOf,
   classValueRef,
@@ -146,6 +147,90 @@ function ownStaticsRepresentable(lowerer: Lowerer, info: ClassInfo): boolean {
   return true;
 }
 
+/** The installer could not answer a member the table would hold. */
+const REFUSED = Symbol("refused");
+
+/** The value the table defines for the static member `method` (an accessor
+ * half is `get:x` or `set:x`): null when the member has no value form, and
+ * REFUSED when its own lowering refused one. That refusal's diagnostic is
+ * dropped — no source asked for this member — and the caller keeps the
+ * class's runtime fence rather than a table that answers a member it does not
+ * hold as `undefined`. */
+/** The table entry of a static whose value has no checked-dynamic form: a
+ * function that throws the refusal where the member is called. Node's class
+ * object still has the property, and a static a program never calls must not
+ * fail the build, so the table installs around it and `coverage` reports the
+ * fence. The caller has pushed the diagnostic. */
+function staticMemberFence(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  display: string,
+  refused?: ScrDiagnostic,
+): IrExpr {
+  const before = lowerer.diags.length;
+  lowerer.pushDiag(
+    refused ??
+      unsupportedDiag(
+        "SC1090",
+        locOf(info.decl!),
+        `the value of the static '${display}' (it has no checked-dynamic form)`,
+      ),
+  );
+  const fence = lowerer.deferToRuntimeFence(before, info.decl!, {
+    kind: "closure" as const,
+    name: `%static.fence:${info.def.name}.${display}`,
+    params: [],
+    returnType: DYN,
+    type: { kind: "func", params: [], ret: DYN },
+    allowDiagSink: true,
+  });
+  if (fence === null) {
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        locOf(info.decl!),
+        `the value of the static '${display}' (it has no checked-dynamic form)`,
+      ),
+    );
+    lowerer.unsupported("SC1090", info.decl!, `the value of the static '${display}'`);
+  }
+  return fence;
+}
+
+function staticTableMemberValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  method: string,
+): IrExpr | null | typeof REFUSED {
+  const before = lowerer.diags.length;
+  try {
+    return reflectedClassStaticMethodValueForTable(lowerer, info, method);
+  } catch (error) {
+    if (!(error instanceof PoisonError)) throw error;
+    const refused = lowerer.diags.splice(before);
+    if (refused.length === 0) throw error;
+    // The member's body or signature refused. The class value is still a
+    // value in Node, so its table holds a function that throws the refusal
+    // where the member is called.
+    return staticMemberFence(lowerer, info, method, refused[0]);
+  }
+}
+
+/** A table entry coerced into the checked-dynamic value every entry is. The
+ * coercion adapts what it can (a boxable function, a namespace promise from a
+ * dynamic import), and a member whose value it cannot convert becomes the
+ * fence instead of malformed IR. */
+function tableEntryValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  value: IrExpr,
+  display: string,
+): IrExpr {
+  const coerced = lowerer.coerceToExpected(value, DYN);
+  if (coerced.type.kind === "dyn") return coerced;
+  return lowerer.coerceToExpected(staticMemberFence(lowerer, info, display), DYN);
+}
+
 /** The lifted function that installs `info`'s static table on the class
  * value it receives: the class's property table linked to its base's, with
  * the class's own statics defined in JavaScript's own-key order (`length`
@@ -227,14 +312,15 @@ export function classStaticsInstaller(
     if (key === null) continue;
     const at = locOf(member);
     if (ts.isMethodDeclaration(member)) {
-      const value = reflectedClassStaticMethodValueForTable(lowerer, info, key);
+      const value = staticTableMemberValue(lowerer, info, key);
+      if (value === REFUSED) return null;
       if (!value) continue;
       statements.push(
         define(
           key,
           descriptor(
             [
-              { key: "value", value: lowerer.coerceToExpected(value, DYN) },
+              { key: "value", value: tableEntryValue(lowerer, info, value, key) },
               { key: "writable", value: flag(true, at) },
               { key: "enumerable", value: flag(false, at) },
               { key: "configurable", value: flag(true, at) },
@@ -247,19 +333,20 @@ export function classStaticsInstaller(
       continue;
     }
     if (!ts.isAccessor(member) || setters.has(key)) continue;
-    const getter = findStaticAccessorOn(info, key)?.get
-      ? reflectedClassStaticMethodValueForTable(lowerer, info, `get:${key}`)
-      : null;
-    const setter = findStaticAccessorOn(info, key)?.set
-      ? reflectedClassStaticMethodValueForTable(lowerer, info, `set:${key}`)
-      : null;
+    const halves = findStaticAccessorOn(info, key);
+    const getter = halves?.get ? staticTableMemberValue(lowerer, info, `get:${key}`) : null;
+    if (getter === REFUSED) return null;
+    const setter = halves?.set ? staticTableMemberValue(lowerer, info, `set:${key}`) : null;
+    if (setter === REFUSED) return null;
     if (!getter && !setter) continue;
     const entries: { key: string; value: IrExpr }[] = [
       { key: "enumerable", value: flag(false, at) },
       { key: "configurable", value: flag(true, at) },
     ];
-    if (getter) entries.unshift({ key: "get", value: lowerer.coerceToExpected(getter, DYN) });
-    if (setter) entries.push({ key: "set", value: lowerer.coerceToExpected(setter, DYN) });
+    if (getter)
+      entries.unshift({ key: "get", value: tableEntryValue(lowerer, info, getter, `get:${key}`) });
+    if (setter)
+      entries.push({ key: "set", value: tableEntryValue(lowerer, info, setter, `set:${key}`) });
     statements.push(define(key, descriptor(entries, at), at));
     setters.add(key);
   }

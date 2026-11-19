@@ -25,7 +25,7 @@ async function llvmFor(source: string): Promise<string> {
 function bodiesContaining(llvm: string, fragment: string): string[] {
   const out: string[] = [];
   for (const match of llvm.matchAll(
-    /define internal [^\n]+ @(\S+)\([^\n]*\) #\d+ \{([\s\S]*?)\n\}/g,
+    /define internal [^\n]+ @(\S+)\([^\n]*\) align 64 #\d+ \{([\s\S]*?)\n\}/g,
   ))
     if (match[1]!.includes(fragment)) out.push(match[2]!);
   return out;

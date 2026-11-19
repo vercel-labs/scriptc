@@ -3,6 +3,7 @@ import { STRING, type IrType } from "../../ir/ir.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import {
+  type AbiArgument,
   abiValue,
   callRuntime,
   callbackAdapter,
@@ -101,12 +102,57 @@ function lookupAdapter(host: LlvmEmitterContext, cb: LlValue): string {
   return symbol;
 }
 
+/** The {address, family, port} record the frontend pins for address(),
+ * remoteAddress() and bindSync(): the ip part carries the state errors
+ * (the pending check runs before anything else), then family and port
+ * fill the record. `e.type` is the record. */
+function emitDgramAddressRecord(
+  host: LlvmEmitterContext,
+  e: LibCallExpr,
+  a: AbiArgument[],
+  ipFn: string,
+  familyFn: string,
+  portFn: string,
+): LlValue {
+  const type = e.type;
+  if (type.kind !== "record") throw new InternalCompilerError("datagram address must be a record");
+  const socket = [a[0]!]; // the address parts take the socket alone
+  const ip = host.own({ name: callRuntime(host, ipFn, "ptr", socket), type: STRING });
+  host.emitPendingCheck();
+  const record = host.B.tmp();
+  host.B.line(`${record} = call ptr @${mangleRecordNew(type.shapeId)}()`);
+  const out = host.own({ name: record, type });
+  host.toHeap(ip);
+  const shape = host.recordsById.get(type.shapeId);
+  if (shape === undefined) throw new InternalCompilerError("missing datagram address shape");
+  for (const field of ["address", "family", "port"]) {
+    const index = shape.fields.findIndex((item) => item.name === field);
+    if (index < 0) throw new InternalCompilerError(`missing datagram address field ${field}`);
+    const ty = field === "port" ? "double" : "ptr";
+    const value =
+      field === "address"
+        ? ip.name
+        : callRuntime(host, field === "family" ? familyFn : portFn, ty, socket);
+    const slot = host.B.tmp();
+    host.B.line(
+      `${slot} = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr ${record}, i64 0, i32 ${index + host.nullableUnions.fieldBase(type.shapeId)}`,
+    );
+    host.B.line(`store ${ty} ${value}, ptr ${slot}`);
+  }
+  return out;
+}
+
 export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const args = e.args.map((arg) => host.emitExpr(arg)),
     a = args.map((arg) => abiValue(host, arg));
   host.usesTimers = true;
   const direct: Record<string, string> = {
-    "dgram.createSocket": "scr_dgram_create",
+    "dgram.connectSync": "scr_dgram_connect_sync",
+    "dgram.addSourceMembership": "scr_dgram_add_source_membership",
+    "dgram.dropSourceMembership": "scr_dgram_drop_source_membership",
+    "dgram.type": "scr_dgram_type_str",
+    "dgram.isSocket": "scr_dgram_is_dyn",
+    "dgram.asyncDispose": "scr_dgram_async_dispose",
     "dgram.sendStr": "scr_dgram_send_str",
     "dgram.sendBytes": "scr_dgram_send_bytes",
     "dgram.sendChk": "scr_dgram_send_chk",
@@ -156,43 +202,63 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
         e.fn.startsWith("dgram.bind") ? "scr_dgram_bind" : "scr_dgram_connect",
         [...a.slice(0, 3), a[3] ?? ptr()],
       );
+    case "dgram.connectDyn":
+      if (args[3] !== undefined) host.toHeap(args[3]);
+      return finishRuntimeCall(host, e, "scr_dgram_connect_dyn", a);
     case "dgram.close":
     case "dgram.closeCb":
       if (args[1] !== undefined) host.toHeap(args[1]);
       return finishRuntimeCall(host, e, "scr_dgram_close", [a[0]!, a[1] ?? ptr()]);
-    case "dgram.address": {
-      const type = e.type;
-      if (type.kind !== "record")
-        throw new InternalCompilerError("datagram address must be a record");
-      const ip = host.own({ name: callRuntime(host, "scr_dgram_addr_ip", "ptr", a), type: STRING });
+    case "dgram.address":
+      return emitDgramAddressRecord(
+        host,
+        e,
+        a,
+        "scr_dgram_addr_ip",
+        "scr_dgram_addr_family",
+        "scr_dgram_addr_port",
+      );
+    case "dgram.remoteAddress":
+      return emitDgramAddressRecord(
+        host,
+        e,
+        a,
+        "scr_dgram_remote_ip",
+        "scr_dgram_remote_family",
+        "scr_dgram_remote_port",
+      );
+    case "dgram.bindSync":
+      callRuntime(host, "scr_dgram_bind_sync_chk", "void", a);
       host.emitPendingCheck();
-      const record = host.B.tmp();
-      host.B.line(`${record} = call ptr @${mangleRecordNew(type.shapeId)}()`);
-      const out = host.own({ name: record, type });
-      host.toHeap(ip);
-      const shape = host.recordsById.get(type.shapeId);
-      if (shape === undefined) throw new InternalCompilerError("missing datagram address shape");
-      for (const field of ["address", "family", "port"]) {
-        const index = shape.fields.findIndex((item) => item.name === field);
-        if (index < 0) throw new InternalCompilerError(`missing datagram address field ${field}`);
-        const ty = field === "port" ? "double" : "ptr";
-        const value =
-          field === "address"
-            ? ip.name
-            : callRuntime(
-                host,
-                field === "family" ? "scr_dgram_addr_family" : "scr_dgram_addr_port",
-                ty,
-                a,
-              );
-        const slot = host.B.tmp();
-        host.B.line(
-          `${slot} = getelementptr inbounds %${mangleRecordStruct(type.shapeId)}, ptr ${record}, i64 0, i32 ${index + host.nullableUnions.fieldBase(type.shapeId)}`,
-        );
-        host.B.line(`store ${ty} ${value}, ptr ${slot}`);
-      }
-      return out;
+      return emitDgramAddressRecord(
+        host,
+        e,
+        a,
+        "scr_dgram_addr_ip",
+        "scr_dgram_addr_family",
+        "scr_dgram_addr_port",
+      );
+    case "dgram.createSocketCb": {
+      const cb = args[1]!,
+        type = callbackType(cb);
+      const adapter =
+        type.params.length === 0
+          ? "scr_dgram_msg_thunk0"
+          : type.params.length === 1
+            ? "scr_dgram_msg_thunk1"
+            : messageAdapter(host, type.params[1]!);
+      // Program-specific adapters are definitions, so do not redeclare them.
+      host.toHeap(cb);
+      if (type.params.length < 2)
+        host.declare(`declare void @${adapter}(ptr, ptr, ptr, ptr, double, double)`);
+      return finishRuntimeCall(host, e, "scr_dgram_create_chk", [a[0]!, a[1]!, ptr("@" + adapter)]);
     }
+    case "dgram.createSocket":
+      return finishRuntimeCall(host, e, "scr_dgram_create_chk", [a[0]!, ptr(), ptr()]);
+    case "dgram.bindOpts":
+    case "dgram.bindOptsCb":
+      if (args[2] !== undefined) host.toHeap(args[2]);
+      return finishRuntimeCall(host, e, "scr_dgram_bind_opts", [a[0]!, a[1]!, a[2] ?? ptr()]);
     case "dgram.onMessage": {
       const cb = args[1]!,
         type = callbackType(cb);

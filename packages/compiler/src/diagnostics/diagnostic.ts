@@ -228,6 +228,14 @@ export interface TypeFailure {
 /** SC3002–SC3004 — native-helper target, installation, and execution
  * failures. These are ordinary build diagnostics: a missing optional package
  * or malformed LLVM input must never surface as an internal compiler error. */
+
+/** What each native-helper diagnostic says when its site supplied no reason:
+ * the code alone would not tell a user which stage failed. */
+const NATIVE_CODEGEN_FALLBACK: Record<"SC3002" | "SC3003" | "SC3004", string> = {
+  SC3002: "the native target was refused without a stated reason",
+  SC3003: "the native helper installation or version check failed without a stated reason",
+  SC3004: "the native helper code generation failed without a stated reason",
+};
 export function nativeCodegenDiag(
   code: "SC3002" | "SC3003" | "SC3004",
   message: string,
@@ -241,7 +249,7 @@ export function nativeCodegenDiag(
       : undefined);
   return {
     code,
-    message,
+    message: message.trim() === "" ? NATIVE_CODEGEN_FALLBACK[code] : message,
     loc: { file, start: 0, end: 0 },
     ...(shown !== undefined ? { hint: shown } : {}),
   };
@@ -1238,16 +1246,17 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // declaration carry an initialization check (Node's TDZ ReferenceError).
   // SC1016 remains for the shapes without an exact representation —
   // top-level await, default-export expressions, namespace imports or
-  // re-exports of cycle members, var or class bindings reachable before
-  // their declaration ran, a mixed ES-module/CommonJS cluster that a
-  // require() edge does not turn into Node's ERR_REQUIRE_CYCLE_MODULE,
-  // and top-level code that reaches another member of a require cycle
-  // only through a call or an escaping value. The message names the
-  // offending construct.
+  // re-exports of cycle members, var bindings reachable before their
+  // declaration ran (classes carry an initialization check like the
+  // let/const bindings they behave as), a mixed ES-module/CommonJS
+  // cluster that a require() edge does not turn into Node's
+  // ERR_REQUIRE_CYCLE_MODULE, and top-level code that reaches another
+  // member of a require cycle only through a call or an escaping value.
+  // The message names the offending construct.
   SC1016: {
     feature: "circular imports",
     milestone: "later",
-    hint: "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge",
+    hint: "ES-module cycles of let/const/function/class bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var) or break the named edge",
   },
   // Class DECLARATIONS shipped; SC1020's remaining use is class expressions.
   SC1020: { feature: "class expressions", milestone: "later" },
@@ -1260,9 +1269,9 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // `var` declarations shipped (function-scope hoisting, redeclaration
   // merge, the shared-binding loop capture semantics). SC1030's remaining
   // uses are the var edges with no honest lowering — each names its shape
-  // and remedy inline (a reference above the declaration whose early reads
-  // would be an unrepresentable `undefined`; `var` loop bindings in
-  // `for await`).
+  // and remedy inline (a reference above the declaration that can run
+  // before its first store, where Node's `undefined` is unrepresentable;
+  // `var` loop bindings in `for await`).
   SC1030: {
     feature: "var declarations",
     milestone: "later",
@@ -2569,9 +2578,12 @@ export function libIntBoundaryDiag(
 }
 
 export function iceDiag(message: string, loc: SrcLoc): ScrDiagnostic {
+  // An invariant that failed without a message still has to say that it did:
+  // "internal compiler error:  — please report this" reads like a truncation.
+  const detail = message.trim() === "" ? "a compiler invariant failed without a message" : message;
   return {
     code: "SC9001",
-    message: `internal compiler error: ${message} — please report this`,
+    message: `internal compiler error: ${detail} — please report this`,
     loc,
   };
 }

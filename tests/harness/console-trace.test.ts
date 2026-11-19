@@ -243,4 +243,37 @@ console.log("after");
     expect(traceLines(native.stderr)).toEqual(["Trace: 1 2"]);
     expect(traceLines(native.stderr)).toEqual(traceLines(node.stderr));
   });
+
+  test("a Console instance writes the line and the frames to its own stderr", async () => {
+    const { native, node } = await runBoth(
+      "trace-instance",
+      `const { Console } = require("node:console");
+const c = new Console(process.stdout, process.stderr);
+function inner(n) { c.trace("value", n); }
+function outer() { inner(7); }
+outer();
+`,
+    );
+    expect(native.exitCode).toBe(0);
+    expect(native.stdout).toBe("");
+    expect(traceLines(native.stderr)).toEqual(["Trace: value 7"]);
+    expect(traceLines(native.stderr)).toEqual(traceLines(node.stderr));
+    // The frames are the program's call chain, as the global console's are.
+    const frames = frameLines(native.stderr);
+    expect(frames[0]).toContain("inner");
+    expect(frames[1]).toContain("outer");
+  });
+
+  test("an instance's frames follow Error.stackTraceLimit when the call runs", async () => {
+    const { native, node } = await runBoth(
+      "trace-instance-limit",
+      `const { Console } = require("node:console");
+const c = new Console(process.stdout, process.stderr);
+Error.stackTraceLimit = 0;
+c.trace("bare");
+`,
+    );
+    expect(native.stderr).toBe("Trace: bare\n");
+    expect(traceLines(native.stderr)).toEqual(traceLines(node.stderr));
+  });
 });

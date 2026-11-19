@@ -100,6 +100,9 @@ ScrUrl *scr_url_from_path_w32(ScrStr *path); /* +1, or throws */
  * this serialized URL (fetch's request URL, no fragment), or NULL. */
 ScrStr *scr_url_create_object_url(ScrDyn *blob);     /* +1, or throws */
 ScrDyn *scr_url_lookup_object_url(const ScrStr *id); /* +1 or NULL */
+/* buffer.resolveObjectURL's registration lookup: the registered Blob (+1) for
+ * the object URL's id, or NULL when the id names nothing. */
+ScrDyn *scr_url_resolve_object_url(const ScrStr *id);
 
 /* URL.revokeObjectURL(id): the id is already coerced to a string; the
  * registration whose id is exactly that string is dropped, and any other

@@ -13,6 +13,7 @@ import {
   funcOf,
 } from "../../ir/ir.js";
 import { numLit } from "../../ir/build.js";
+import { requireLiveBytes } from "./buffers.js";
 import { transformStmtList } from "../../ir/traverse.js";
 
 type SortLocal = IrExpr & { kind: "varRef" };
@@ -1127,6 +1128,10 @@ export function buildBytesSortFn(
   copyFirst: boolean,
   order: 1 | -1 | null,
   loc: SrcLoc,
+  /** The method name whose detached-receiver TypeError Node raises before
+   * the sort reads %TypedArrayLength (`sort`/`toSorted`); null keeps the
+   * historic body. */
+  guardMethod: string | null = null,
 ): IrFunction {
   const b = new SortIr(loc);
   const a = b.local("a", type),
@@ -1145,6 +1150,7 @@ export function buildBytesSortFn(
   const body: IrStmt[] = copyFirst
     ? [b.bind(src, { kind: "bytesIntrinsic", method: "slice", receiver: a, args: [], type, loc })]
     : [];
+  if (guardMethod !== null) body.unshift(requireLiveBytes(a, guardMethod, loc));
   const compare: IrStmt[] =
     f === null ? [] : [{ kind: "exprStmt", expr: intrinsic("sortCompare", f), loc }];
   if (f === null) body.push({ kind: "exprStmt", expr: intrinsic("sortNumeric", b.num(0)), loc });

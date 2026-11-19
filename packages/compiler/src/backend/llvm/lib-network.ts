@@ -421,6 +421,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     e.fn === "http.reqOnAborted" ||
     e.fn === "http.resOnClose" ||
     e.fn === "http.resOnPrefinish" ||
+    e.fn === "http.resOnDrain" ||
+    e.fn === "http.clientOnDrain" ||
     e.fn === "http.clientOnTimeout" ||
     e.fn === "http.clientOnClose" ||
     e.fn === "http.clientOnFinish" ||
@@ -443,6 +445,8 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
       "http.reqOnAborted": "scr_http_req_on_aborted",
       "http.resOnClose": "scr_http_res_on_close",
       "http.resOnPrefinish": "scr_http_res_on_prefinish",
+      "http.resOnDrain": "scr_http_res_on_drain",
+      "http.clientOnDrain": "scr_http_client_on_drain",
       "http.clientOnTimeout": "scr_http_client_on_timeout",
       "http.clientOnClose": "scr_http_client_on_close",
       "http.clientOnFinish": "scr_http_client_on_finish",
@@ -873,11 +877,48 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     );
     return { name: "", type: e.type };
   }
-  if (e.fn === "http.resOnFinish" || e.fn === "http.resOnEndCallback") {
+  if (
+    e.fn === "http.resWriteContinueCb" ||
+    e.fn === "http.resWriteProcessingCb" ||
+    e.fn === "http.resWriteEarlyHintsCb"
+  ) {
+    // The informational writers move the callback into the response's
+    // write-flush list; the caller must not release it after the call.
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[args.length - 1]!);
+    const entry =
+      e.fn === "http.resWriteContinueCb"
+        ? "scr_http_res_write_continue_cb"
+        : e.fn === "http.resWriteProcessingCb"
+          ? "scr_http_res_write_processing_cb"
+          : "scr_http_res_write_early_hints_cb";
+    if (e.fn === "http.resWriteEarlyHintsCb") {
+      host.declare(`declare void @${entry}(ptr, ptr, ptr)`);
+      B.line(
+        `call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name})`,
+      );
+    } else {
+      host.declare(`declare void @${entry}(ptr, ptr)`);
+      B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
+    }
+    // The writers can throw (ERR_HTTP_HEADERS_SENT, invalid headers); the
+    // surrounding catch must see the pending exception.
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (
+    e.fn === "http.resOnFinish" ||
+    e.fn === "http.resOnEndCallback" ||
+    e.fn === "http.resOnWriteFlush"
+  ) {
     const args = e.args.map((a) => host.emitExpr(a));
     host.toHeap(args[1]!);
     const entry =
-      e.fn === "http.resOnFinish" ? "scr_http_res_on_finish" : "scr_http_res_on_end_callback";
+      e.fn === "http.resOnFinish"
+        ? "scr_http_res_on_finish"
+        : e.fn === "http.resOnEndCallback"
+          ? "scr_http_res_on_end_callback"
+          : "scr_http_res_on_write_flush";
     host.declare(`declare void @${entry}(ptr, ptr)`);
     B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
     return { name: "", type: e.type };

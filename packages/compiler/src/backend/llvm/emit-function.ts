@@ -23,6 +23,7 @@ import { constructorClass } from "../../ir/final-fields.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
+import { findStringCursorLoops } from "./string-cursor-loops.js";
 import {
   findMapReadBorrows,
   findMapReadLifetimes,
@@ -319,6 +320,20 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   );
   emitter.localUnionStorage = new Map();
   emitter.walkBorrows = emitter.walkBorrowsByFunction.get(fn.name) ?? new Set();
+  const reboundParameters = emitter.reboundByFunction.get(fn.name);
+  emitter.stringCursorLoops =
+    emitter.debug === null
+      ? findStringCursorLoops(fn, {
+          plain: (id) =>
+            !emitter.valueBindings.has(id) &&
+            !emitter.walkBorrows.has(id) &&
+            !emitter.lazyCaptureBoxes.has(id) &&
+            !emitter.privateSplitLocals.has(id) &&
+            reboundParameters?.has(id) !== true,
+          captured: emitter.captureIds,
+          parameters: new Set(fn.params.map((param) => param.localId)),
+        })
+      : new Map();
   const slotFacts = emitter.int32Slots.facts(fn.name);
   const rangeFacts = analyzeIntegerRangeFacts(numericFn, slotFacts);
   emitter.integerRanges = rangeFacts.ranges;
@@ -635,15 +650,26 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // while suspended. The active exception context owns the chain, so
   // concurrent fibers isolate it.
   emitter.framePositions = null;
-  emitter.currentFrameName = emitter.conversionTrace ? emitter.frameNameOf(fn) : undefined;
+  emitter.frameActive = false;
+  emitter.currentFrameName =
+    emitter.conversionTrace || emitter.stackPositions ? emitter.frameNameOf(fn) : undefined;
   const positions = emitter.framePositionsOf(fn);
+  // A module's top-level code (its `%init.<n>`) keeps a frame when its
+  // positions are recorded: Node prints that frame for a stack captured at
+  // module scope.
+  const initFrame = emitter.stackPositions && fn.name.startsWith("%init.");
   if (
     emitter.stackTraces &&
     !emitter.wasi &&
-    (fn.sourceName !== undefined || positions !== null) &&
+    (fn.sourceName !== undefined ||
+      positions !== null ||
+      initFrame ||
+      (emitter.stackPositions &&
+        emitter.currentFrameName !== undefined &&
+        !emitter.constructorCapturesOntoSelf(fn.name))) &&
     !emitter.unframedFunctions.has(fn.name)
   ) {
-    B.entryAllocas.push(`%source_frame = alloca { ptr, ptr }`);
+    B.entryAllocas.push(`%source_frame = alloca { ptr, ptr, ptr, ptr, i32, i32 }`);
     // Until its first statement runs, a positioned frame names the function
     // itself (the stack guard's RangeError is raised there).
     const frame = emitter.cstr(
@@ -658,7 +684,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       emitter.mod.workers !== true &&
       emitter.sizeType === "i64" &&
       // Unoptimized code would keep the inline push's values in stack
-      // slots of their own; the calls add the frame's 16 bytes and no more.
+      // slots of their own; the calls add the frame's 40 bytes and no more.
       !emitter.positionedFrames
     ) {
       // Executables link the active-cell pointer as a plain global, and a
@@ -672,6 +698,15 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       B.line(`store ptr %source_frame.previous, ptr %source_frame`);
       B.line(`%source_frame.text = getelementptr inbounds i8, ptr %source_frame, i64 8`);
       B.line(`store ptr ${frame}, ptr %source_frame.text`);
+      // No call/throw site runs yet: the frame holds its constant line.
+      B.line(`%source_frame.fn = getelementptr inbounds i8, ptr %source_frame, i64 16`);
+      B.line(`store ptr null, ptr %source_frame.fn`);
+      B.line(`%source_frame.script = getelementptr inbounds i8, ptr %source_frame, i64 24`);
+      B.line(`store ptr null, ptr %source_frame.script`);
+      B.line(`%source_frame.line = getelementptr inbounds i8, ptr %source_frame, i64 32`);
+      B.line(`store i32 0, ptr %source_frame.line`);
+      B.line(`%source_frame.column = getelementptr inbounds i8, ptr %source_frame, i64 36`);
+      B.line(`store i32 0, ptr %source_frame.column`);
       B.line(`store ptr %source_frame, ptr %source_frame.chain`);
       B.returnEpilogue = `store ptr %source_frame.previous, ptr %source_frame.chain`;
     } else {
@@ -681,10 +716,12 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
       B.returnEpilogue = `call void @scr_stack_leave(ptr %source_frame)`;
     }
     emitter.framePositions = positions;
+    emitter.frameActive = true;
   }
   if (emitter.stackChecks?.has(fn.name)) emitter.emitStackCheck();
   if (emitter.workerEntryPolls?.has(fn.name)) emitter.emitPendingCheck(undefined, true);
   emitter.emitStmts(fn.body, true);
+  emitter.frameActive = false;
   emitter.framePositions = null;
   // Implicit exit of a void function: release the function scope unless
   // the body already terminated its final block (return, or a throw

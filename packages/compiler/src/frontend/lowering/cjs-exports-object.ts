@@ -472,6 +472,28 @@ export function cjsExportCallIgnoresThis(
   return result;
 }
 
+/** Whether every value `expr` can hold is something a call cannot invoke: a
+ * `void`/`undefined` write (the `exports.name = void 0` preamble of a
+ * tsc-emitted module), a primitive literal, or an object or array literal.
+ * A call that reaches one throws in Node before it can read its receiver,
+ * so the value says nothing about `this` being needed. */
+function holdsNoCallable(expr: ts.Expression): boolean {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return (
+    e.kind === ts.SyntaxKind.VoidExpression ||
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    ts.isNumericLiteral(e) ||
+    ts.isStringLiteral(e) ||
+    ts.isNoSubstitutionTemplateLiteral(e) ||
+    ts.isRegularExpressionLiteral(e) ||
+    ts.isObjectLiteralExpression(e) ||
+    ts.isArrayLiteralExpression(e)
+  );
+}
+
 function computeExportCallIgnoresThis(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -517,7 +539,13 @@ function computeExportCallIgnoresThis(
   if (values.length === 0) return shorthandOnly;
   return values.every((v) => {
     let e = v;
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    // A chain `exports.a = exports.b = value` stores `value` in both
+    // members; an assignment's own value is its right-hand side.
+    for (;;) {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) break;
+      e = e.right;
+    }
     if (
       ts.isFunctionExpression(e) ||
       ts.isArrowFunction(e) ||
@@ -525,6 +553,10 @@ function computeExportCallIgnoresThis(
       ts.isCallExpression(e)
     )
       return moduleExportIgnoresThis(lowerer, e);
+    // A value no call can invoke (the `void 0` a tsc-emitted module opens
+    // each export with, a primitive, a plain object): reaching it throws
+    // whatever receiver the call would have had, so it cannot read `this`.
+    if (holdsNoCallable(e)) return true;
     // Another module's member (`exports.f = require("./lib").f`, or through
     // a module binding): that module's own export values decide.
     if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) {

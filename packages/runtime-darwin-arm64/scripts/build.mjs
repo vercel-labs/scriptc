@@ -21,6 +21,7 @@ import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
 import { zlibInputs } from "../../runtime-pack-common/scripts/zlib-inputs.mjs";
 import { zstdInputs } from "../../runtime-pack-common/scripts/zstd-inputs.mjs";
+import { sqliteInputs } from "../../runtime-pack-common/scripts/sqlite-inputs.mjs";
 
 const run = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -85,9 +86,11 @@ async function build() {
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
   const zstd = join(vendorRoot, "zstd", "lib");
+  const sqlite = join(vendorRoot, "sqlite");
   const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
   const ZLIB_BUILD = zlibInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
   const ZSTD_BUILD = zstdInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
+  const SQLITE_BUILD = sqliteInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
 
   // Speed-flavor executable units are emitted through the host LLVM helper
   // (runtime-unit.mjs), which promotes their local symbols and applies the
@@ -187,6 +190,7 @@ async function build() {
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
               ...(unit.source === "scr_zstd.c" ? ["-I", zstd] : []),
+              ...(unit.source === "scr_sqlite.c" ? ["-I", sqlite] : []),
             ];
             const unitFlags = [
               ...commonFlags,
@@ -304,6 +308,18 @@ async function build() {
         "-I",
         zstd,
       ]),
+      await archive("sqlite", SQLITE_BUILD.sources, sqlite, [
+        "-target",
+        RUNTIME_PACK_MATRIX.target.llvm_triple,
+        "-std=c11",
+        "-O2",
+        ...SQLITE_BUILD.defines.map((define) => `-D${define}`),
+        ...SQLITE_BUILD.compileFlags,
+        ...codeAlignment,
+        ...vendorHardening,
+        "-I",
+        sqlite,
+      ]),
       await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -338,6 +354,7 @@ async function build() {
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
+      [join(sqlite, "NOTICE"), "artifacts/licenses/sqlite.txt", "Public-Domain"],
     ];
     await Promise.all(
       licensed.map(async ([source, destination]) => {
@@ -353,7 +370,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: RUNTIME_PACK_MATRIX.target,
-      runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
+      runtime_abi: { version: 51, marker: "scr_runtime_abi_v51" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

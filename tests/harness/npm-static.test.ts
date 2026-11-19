@@ -1056,9 +1056,9 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
   });
 
   test.each([
-    'import { Console as Logger } from "node:console"; new Logger({ stdout: process.stdout }).dir(1);',
-    'import * as output from "console"; new output.Console(process.stdout).table([1, 2]);',
-    'import { Console } from "node:console"; new Console({ stdout: process.stdout }).table([1, 2]);',
+    'import { Console as Logger } from "node:console"; new Logger({ stdout: process.stdout }).dir(1, { colors: true });',
+    'import * as output from "console"; new output.Console(process.stdout).dir(1, { colors: true });',
+    'import { Console } from "node:console"; new Console({ stdout: process.stdout }).dir(1, { colors: true });',
     'import { assert } from "node:console"; declare const message: unknown; assert(false, message);',
   ])("unsupported console members retain a use-site diagnostic: %s", (source) => {
     const dir = mkdtempSync(join(tmpdir(), "scriptc-console-import-"));
@@ -2441,6 +2441,56 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     const { coverage } = analyze(entry, { npmStatic: "auto" });
     expect(coverage.npmStatic).toEqual([{ package: "gtable", status: "static" }]);
     expect(coverage.preflightFailed).toBe(false);
+  }, 120_000);
+
+  // A package's declarations may name a member its shipped JavaScript never
+  // defines (scheduler's log hooks, which react-dom reads): Node answers
+  // undefined, and the read keeps the declaration's type beside the
+  // undefined arm so a guard still compiles.
+  test("a declared member the shipped JavaScript omits reads undefined", async () => {
+    const dir = mkdtempSync("/tmp/scriptc-absent-member-");
+    try {
+      const pkg = join(dir, "node_modules", "declared-gap");
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(
+        join(pkg, "package.json"),
+        JSON.stringify({
+          name: "declared-gap",
+          version: "1.0.0",
+          main: "index.js",
+          types: "index.d.ts",
+        }),
+      );
+      writeFileSync(join(pkg, "index.js"), "'use strict';\nexports.present = 42;\n");
+      writeFileSync(
+        join(pkg, "index.d.ts"),
+        "export declare const present: number;\nexport declare const absent: number;\nexport declare const maybe?: string;\n",
+      );
+      const entry = join(dir, "main.mjs");
+      writeFileSync(
+        entry,
+        'import lib from "declared-gap";\n' +
+          'console.log(lib.present, lib.absent, typeof lib.absent, lib.maybe ?? "none");\n',
+      );
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: ["declared-gap"],
+        sanitize,
+        outDir: join(dir, "out"),
+        outPath: join(dir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toEqual(reference.exitCode);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 120_000);
 
   // The COPIED workspace shape classifies exactly like the symlinked one:

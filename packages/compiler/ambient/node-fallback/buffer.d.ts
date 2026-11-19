@@ -14,6 +14,7 @@ declare module "buffer" {
   export const INSPECT_MAX_BYTES: number;
   export const constants: { MAX_LENGTH: number; MAX_STRING_LENGTH: number };
   export const Buffer: BufferConstructor;
+  export function resolveObjectURL(id: string): globalThis.Blob | undefined;
   export type Blob = globalThis.Blob;
   export type File = globalThis.File;
   export const Blob: typeof globalThis.Blob;

@@ -117,6 +117,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   arrJoinStr: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
+  sqlite: boolean;
   largePages: boolean;
   webStreams: boolean;
   webBodies: boolean;
@@ -417,6 +418,7 @@ export function effectiveRuntimeFeatures(
     arrJoinStr: features.arrJoinStr === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
+    sqlite: features.sqlite === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
     webBodies: features.webBodies === true,

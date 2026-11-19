@@ -18,10 +18,3 @@ generic-methods.ts:35:1 - error SC1090: constructing through a class value whose
   35 | new GenericOver();
      | ^~~~~~~~~~~~~~~~~
   36 | 
-
-generic-methods.ts:42:18 - error SC1090: references to 'this' in object literal methods are not supported yet
-
-  41 |   m<T>(x: T): T {
-  42 |     const self = this;
-     |                  ^~~~
-  43 |     return x;

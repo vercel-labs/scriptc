@@ -59,6 +59,16 @@ console.log(fileURLToPath(pathToFileURL("/tmp/a b")));
     anchor: "scr_url_from_path",
   },
   {
+    name: "sqlite",
+    source: `import { DatabaseSync } from "node:sqlite";
+const db = new DatabaseSync(":memory:");
+db.exec("CREATE TABLE t (a); INSERT INTO t VALUES (1)");
+console.log(db.prepare("SELECT a FROM t").get()?.a);
+db.close();
+`,
+    anchor: "scr_sqlite_db_new",
+  },
+  {
     name: "json-parse",
     source: `console.log(JSON.parse('{"ok":true}').ok);
 `,
@@ -145,6 +155,9 @@ nativeToolchainTest(
       // The generator runtime installs its tag reader with its first
       // generator; a load-time constructor would retain it everywhere.
       "scr_gen_tag",
+      // node:sqlite's unit and the vendored SQLite engine it links.
+      "scr_sqlite_db_new",
+      "sqlite3_step",
     ]) {
       expect(helloSymbols, `hello retains ${family}`).not.toContain(family);
     }

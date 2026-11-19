@@ -71,6 +71,9 @@ export interface NativeExecutableInput {
   /** Divergence warnings (SC6xxx) the lowering found; cached with the
    * input so a frontend-cache hit reports them too. */
   warnings?: ScrDiagnostic[];
+  /** With unit reuse: the emitted-function names this build lowered rather
+   * than applied (PreparedExecutableModule.changedUnits). */
+  changedUnits?: readonly string[];
   /** partsDigest of `llvm`, when the frontend cache has computed it: the key
    * of the text's `frontend-llvm` entry. */
   llvmDigest?: string;
@@ -654,6 +657,7 @@ export function prepareNativeExecutable(
           ...(carriesDebugSources(options.optimization, options.strip)
             ? { debugSources: prepared.sourceTexts }
             : {}),
+          positionSources: prepared.sourceTexts,
           ...(conversionTrace ? { conversionTrace: true } : {}),
           ...(islandModuleData === undefined ? {} : { nodeIslandModuleData: islandModuleData }),
         });
@@ -668,6 +672,7 @@ export function prepareNativeExecutable(
     llvm,
     ir,
     sidecarJson: null,
+    ...(prepared.changedUnits !== undefined ? { changedUnits: prepared.changedUnits } : {}),
     features,
     sources: [...prepared.sourceTexts],
     ...(prepared.warnings.length > 0 ? { warnings: prepared.warnings } : {}),

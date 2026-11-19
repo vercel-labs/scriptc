@@ -1540,6 +1540,106 @@ static ScrArr *scr_fs_cb_vectors(const ScrDyn *buffers) {
   return out;
 }
 
+/* fs.readdir's callback form: getOptions' walk (a bare encoding string, or
+ * the record's `encoding`, `withFileTypes` and `recursive`), then the
+ * listing with that encoding — the entry names decoded from their raw bytes,
+ * Buffers for 'buffer', or Dirent values for withFileTypes. Node's callback
+ * form walks recursively in the synchronous queue order. +1 result, or NULL
+ * with the exception pending. */
+static ScrDyn *scr_fs_cb_readdir(const ScrDyn *options, ScrStr *path, bool *throw_now) {
+  ScrStr *encoding = NULL; /* +1 when the options named one */
+  bool with_types = false;
+  bool recursive = false;
+  if (options != NULL && options->kind == SCR_DYN_STR) {
+    encoding = scr_str_retain(options->v.str);
+  } else if (options != NULL && !scr_fs_dyn_absent(options) && options->kind != SCR_DYN_FUNC) {
+    /* A record reaches the ladder as a plain object or as a typed-ref box
+     * (scr_fs_cb_option materializes either); the callback itself is the
+     * two-argument form's second slot. */
+    ScrDyn *enc = scr_fs_cb_option(options, "encoding");
+    if (enc == NULL) {
+      /* The member read threw: getOptions runs at the call, so it throws. */
+      *throw_now = true;
+      return NULL;
+    }
+    /* assertEncoding: only a truthy value is checked, and every truthy
+     * value that is not an encoding name is Node's ERR_INVALID_ARG_VALUE at
+     * the call — a non-string one is the same error, not a type error. */
+    if (scr_dyn_truthy(enc)) {
+      if (enc->kind != SCR_DYN_STR) {
+        scr_dyn_arg_value_fail("encoding", "is invalid encoding", enc);
+        *throw_now = true;
+        scr_dyn_release(enc);
+        return NULL;
+      }
+      encoding = scr_str_retain(enc->v.str);
+    }
+    scr_dyn_release(enc);
+    with_types = scr_fs_cb_option_bool(options, "withFileTypes");
+    recursive = scr_fs_cb_option_bool(options, "recursive");
+  }
+  /* 'buffer' is getOptions' own spelling for the raw entry names, so it is
+   * not one of the decoder's encodings. */
+  const bool buffer =
+      encoding != NULL && encoding->len == 6 && memcmp(encoding->data, "buffer", 6) == 0;
+  if (encoding != NULL && !buffer && !scr_fs_read_encoding_valid(encoding)) {
+    /* getOptions runs assertEncoding before the request, so this reaches the
+     * caller as a throw rather than the callback. */
+    scr_str_release(encoding);
+    *throw_now = true;
+    return NULL;
+  }
+  const bool utf8 = encoding == NULL || encoding->len == 0 || scr_fs_read_utf8(encoding);
+  ScrDyn *out = NULL;
+  if (with_types && (buffer || !utf8)) {
+    static const char message[] =
+        "fs.readdir with withFileTypes and a non-utf8 encoding has no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    *throw_now = true;
+  } else if (!with_types && recursive && (buffer || !utf8)) {
+    static const char message[] =
+        "fs.readdir with recursive and a non-utf8 encoding has no native lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    *throw_now = true;
+  } else if (with_types) {
+    ScrScandir *scan = recursive ? scr_fs_scandir_recursive(path) : scr_fs_scandir(path);
+    if (scan != NULL) {
+      out = scr_dyn_new_arr();
+      for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+        ScrStr *name = scr_fs_scandir_name(scan, i); /* +1 */
+        ScrStr *parent = recursive ? scr_fs_scandir_parent(scan, i) : scr_str_retain(path);
+        scr_dyn_arr_push(out, scr_dirent_dyn(name, parent, scr_fs_scandir_type(scan, i)));
+        scr_str_release(name);
+        if (parent != NULL) scr_str_release(parent);
+      }
+      scr_fs_scandir_free(scan);
+    }
+  } else if (buffer) {
+    ScrArr *names = scr_fs_readdir_bytes(path);
+    if (names != NULL) {
+      out = scr_dyn_new_arr();
+      for (size_t i = 0; i < (size_t)scr_arr_len(names); i++) {
+        ScrBytes *bytes = scr_arr_get_ref(names, (double)i); /* +1 */
+        scr_dyn_arr_push(out, scr_dyn_new_buffer(bytes));
+        scr_bytes_release(bytes); /* the Buffer value keeps its own */
+      }
+      scr_arr_release(names);
+    }
+  } else {
+    ScrArr *names = recursive ? scr_fs_readdir_recursive(path)
+                              : utf8 ? scr_fs_readdir(path)
+                                     : scr_fs_readdir_encoded(path, encoding);
+    if (names != NULL) {
+      out = scr_dyn_new_arr();
+      for (size_t i = 0; i < (size_t)scr_arr_len(names); i++)
+        scr_dyn_arr_push(out, scr_fs_cb_string(scr_arr_get_ref(names, (double)i)));
+      scr_arr_release(names);
+    }
+  }
+  if (encoding != NULL) scr_str_release(encoding);
+  return out;
+}
+
 static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc) {
   /* fs.realpath.native is Node's realpath binding under a second name, so
    * both spellings take the realpath path. */
@@ -2157,16 +2257,13 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     if (timestamp_fd) scr_fs_futimes(fd, access, modified);
     else scr_fs_utimes(path, access, modified, !strcmp(op, "lutimes"));
   } else if (!strcmp(op, "readdir")) {
-    if (scr_fs_cb_refuse_option(ARG(1), "encoding") || scr_fs_cb_option_bool(ARG(1), "withFileTypes") || scr_fs_cb_option_bool(ARG(1), "recursive")) {
-      if (!scr_exc_pending()) { const char *message = "Recursive readdir and Dirent results have no native lowering"; scr_throw_error_msg_code(SCR_ERR_ERROR, message, strlen(message), "SC2020"); }
-      goto done;
+    bool throw_now = false;
+    ScrDyn *names = scr_fs_cb_readdir(ARG(1), path, &throw_now);
+    if (throw_now) {
+      scr_str_release(path);
+      return NULL;
     }
-    ScrArr *names = scr_fs_readdir(path);
-    if (names) {
-      result = scr_dyn_new_arr();
-      for (size_t i = 0; i < (size_t)scr_arr_len(names); i++) scr_dyn_arr_push(result, scr_fs_cb_string(scr_arr_get_ref(names, (double)i)));
-      scr_arr_release(names);
-    }
+    result = names;
   } else {
     char message[160];
     int length = snprintf(message, sizeof message, "Native filesystem callback fs.%s with these options has no lowering", op);
@@ -2345,6 +2442,34 @@ ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
   return scr_buffer_concat_dyn_impl(list, total, true);
 }
 
+/* Buffer.concat(list, totalLength) where the argument list kept an undefined
+ * total: Node's concat sums the parts when totalLength is undefined, before
+ * the list validates (an empty list answers an empty Buffer either way). A
+ * supplied total follows Node's own order — the list is an Array, an empty
+ * one answers an empty Buffer, and only then does the total convert and
+ * range — so a null total on an empty list does not throw, and an invalid
+ * list is reported as the list. */
+ScrBytes *scr_buffer_concat_len_dyn_opt(const ScrDyn *list, const ScrDyn *total) {
+  if (total->kind == SCR_DYN_UNDEF) return scr_buffer_concat_dyn(list);
+  ScrDyn *materialized = NULL;
+  if (list->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(list) != NULL) {
+    materialized = scr_dyn_typed_ref_materialize(list);
+    list = materialized;
+  }
+  ScrBytes *out = NULL;
+  if (list->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("list", "an instance of Array", list);
+  } else if (list->v.arr.len == 0) {
+    out = scr_buffer_concat_dyn(list);
+  } else if (total->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("length", "of type number", total);
+  } else {
+    out = scr_buffer_concat_len_dyn(list, total->v.num);
+  }
+  scr_dyn_release(materialized);
+  return out;
+}
+
 /* Buffer.from(arrayBuffer, byteOffset, length) over a checked ArrayBuffer
  * or SharedArrayBuffer, as Node's fromArrayBuffer: a Buffer that shares its
  * memory. The offset converts with ToNumber, where a missing offset (NULL)
@@ -2400,19 +2525,130 @@ static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *of
   return out;
 }
 
-ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
-  if (value->kind == SCR_DYN_STR) return scr_bytes_from_str(value->v.str, encoding);
-  /* The second argument here is an encoding name, which as a byte offset
-   * converts to NaN: offset 0. */
-  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL, NULL);
+/* An untyped object literal holds an array-valued field as a typed
+ * reference; the array it stands for is what shape checks and element
+ * reads see. *materialized owns the array when one was built. */
+static ScrDyn *scr_dyn_array_value(const ScrDyn *value, ScrDyn **materialized) {
+  *materialized = NULL;
+  if (value->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(value) != NULL) {
+    *materialized = scr_dyn_typed_ref_materialize(value);
+    return *materialized;
+  }
+  return (ScrDyn *)value;
+}
+
+/* The answer of value's valueOf() as Node's from() reads it: a non-null
+ * answer other than the value itself is returned (owned by the caller) when
+ * it is a string or an object; anything else falls through to the shape
+ * checks. A dictionary object has no prototype to read; an object that has
+ * one (a primitive wrapper, Object.create) reads it through the chain, where
+ * a String wrapper's valueOf answers the primitive string. A non-callable
+ * hook throws the same "is not a function" TypeError Node's call raises,
+ * leaving it pending. */
+static ScrDyn *scr_buffer_value_of(const ScrDyn *value) {
+  const ScrDyn *hook = NULL;
+  ScrDyn *inherited = NULL;
+  ScrDyn *owned = NULL;
+  if (value->prototype) {
+    ScrStr *name = scr_str_new("valueOf", 7);
+    ScrDyn *key = scr_dyn_new_str(name);
+    scr_str_release(name);
+    inherited = scr_dyn_reflect_get((ScrDyn *)value, key, (ScrDyn *)value);
+    scr_dyn_release(key);
+    if (!inherited) return NULL;
+    hook = inherited;
+  } else {
+    /* The hook can free its own property while it runs (a single-use lazy
+     * source that deletes or replaces itself); the call holds its own
+     * reference, so the running function and its captures stay alive. */
+    const ScrDyn *found = scr_dyn_obj_get(value, "valueOf", 7);
+    if (found) owned = scr_dyn_retain((ScrDyn *)found);
+    hook = owned;
+  }
+  ScrDyn *answer = NULL;
+  if (hook && scr_dyn_truthy(hook)) {
+    scr_dyn_this_push_dyn(value);
+    answer = scr_dyn_call(hook, NULL, 0, "value.valueOf");
+    scr_dyn_this_pop();
+  }
+  scr_dyn_release(owned);
+  scr_dyn_release(inherited);
+  if (!answer) return NULL;
+  if (answer == value) {
+    scr_dyn_release(answer);
+    return NULL;
+  }
+  return answer;
+}
+
+/* A string source converts with the second argument's encoding when the
+ * call has one (Node's fromString: a non-empty string names a Buffer
+ * encoding and anything else is utf8), and with the encoding passed by name
+ * in the one-argument form otherwise. */
+static ScrBytes *scr_buffer_from_dyn_str(const ScrStr *s, const ScrStr *encoding,
+                                         const ScrDyn *second) {
+  if (!second) return scr_bytes_from_str(s, encoding);
+  if (second->kind == SCR_DYN_STR && second->v.str->len > 0)
+    return scr_buffer_from_str_checked(s, second->v.str);
+  ScrStr *utf8 = scr_str_new("utf8", 4);
+  ScrBytes *out = scr_buffer_from_str(s, utf8);
+  scr_str_release(utf8);
+  return out;
+}
+
+/* Buffer.from(value) and Buffer.from(value, second[, third]) for a value
+ * that is not a string or an ArrayBuffer. Node's own from() recursion: an
+ * object's valueOf() answer that is a string or an object converts with the
+ * same second and third arguments — a string answer takes the second as its
+ * encoding, an ArrayBuffer answer as its byte offset, and either converts
+ * the way the recursive call would — and only then do the object shapes
+ * speak. `second` and `third` are NULL in the one-argument form, whose
+ * `encoding` names the string conversion. */
+static ScrBytes *scr_buffer_from_dyn_impl(const ScrDyn *value, const ScrStr *encoding,
+                                          const ScrDyn *second, const ScrDyn *third) {
+  /* Node recurses through from() once per valueOf() answer; the check
+   * compiled frames make before their own bodies keeps a chain deep enough
+   * to exhaust the stack reporting Node's RangeError instead of faulting. */
+  if (scr_stack_guard != 0 && (uintptr_t)&value < scr_stack_guard) {
+    scr_stack_overflow();
+    return NULL;
+  }
+  if (value->kind == SCR_DYN_STR) return scr_buffer_from_dyn_str(value->v.str, encoding, second);
+  if (scr_buffer_storage_is(value))
+    return second ? scr_buffer_from_storage(value, second, third)
+                  : scr_buffer_from_storage(value, NULL, NULL);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(SCR_BYTES_U8, value->v.bytes);
-  if (value->kind == SCR_DYN_ARR) {
-    return scr_buffer_from_array_like(value, (double)value->v.arr.len);
+  if (value->kind == SCR_DYN_ARR || (value->kind == SCR_DYN_TYPED_REF &&
+      scr_dyn_typed_ref_array_ops(value) != NULL)) {
+    ScrDyn *materialized;
+    const ScrDyn *array = scr_dyn_array_value(value, &materialized);
+    if (!array) return NULL;
+    ScrBytes *out = scr_buffer_from_array_like(array, (double)array->v.arr.len);
+    scr_dyn_release(materialized);
+    return out;
   }
   if (value->kind == SCR_DYN_OBJ) {
-    const ScrDyn *hook = scr_dyn_obj_get(value, "valueOf", 7);
-    if (hook && scr_dyn_truthy(hook)) {
-      return scr_buffer_from_refusal("with a custom valueOf");
+    /* Node reads valueOf() first; an answer that is not a string or an
+     * object (including the inherited Object.prototype.valueOf, which
+     * answers the object itself) leaves the original to the shape checks
+     * below: the array-like `length` branch, then the Buffer JSON shape. */
+    ScrDyn *answer = scr_buffer_value_of(value);
+    if (!answer && scr_exc_pending()) return NULL;
+    if (answer) {
+      ScrBytes *out = NULL;
+      if (answer->kind == SCR_DYN_STR) {
+        out = scr_buffer_from_dyn_str(answer->v.str, encoding, second);
+      } else if (scr_buffer_storage_is(answer)) {
+        out = scr_buffer_from_storage(answer, second, third);
+      } else if (answer->kind == SCR_DYN_OBJ || answer->kind == SCR_DYN_ARR ||
+                 answer->kind == SCR_DYN_BYTES ||
+                 (answer->kind == SCR_DYN_TYPED_REF &&
+                  scr_dyn_typed_ref_array_ops(answer) != NULL)) {
+        out = scr_buffer_from_dyn_impl(answer, encoding, second, third);
+      }
+      bool threw = scr_exc_pending();
+      scr_dyn_release(answer);
+      if (out || threw) return out;
     }
     const ScrDyn *length = scr_dyn_obj_get(value, "length", 6);
     if (length && length->kind != SCR_DYN_UNDEF) {
@@ -2421,13 +2657,32 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
     const ScrDyn *type = scr_dyn_obj_get(value, "type", 4);
     const ScrDyn *data = scr_dyn_obj_get(value, "data", 4);
     if (type && type->kind == SCR_DYN_STR && type->v.str->len == 6 &&
-        memcmp(type->v.str->data, "Buffer", 6) == 0 && data && data->kind == SCR_DYN_ARR) {
+        memcmp(type->v.str->data, "Buffer", 6) == 0 && data &&
+        (data->kind == SCR_DYN_ARR || (data->kind == SCR_DYN_TYPED_REF &&
+                                       scr_dyn_typed_ref_array_ops(data) != NULL))) {
       /* Element coercion may mutate the parent and replace `data`. */
-      ScrDyn *held = scr_dyn_retain((ScrDyn *)data);
+      ScrDyn *materialized;
+      const ScrDyn *array = scr_dyn_array_value(data, &materialized);
+      if (!array) return NULL;
+      ScrDyn *held = scr_dyn_retain(array);
       ScrBytes *out = scr_buffer_from_array_like(held, (double)held->v.arr.len);
       scr_dyn_release(held);
+      scr_dyn_release(materialized);
       return out;
     }
+  }
+  if (value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE) {
+    /* Node's from() finds no length, buffer or Buffer shape on a Date and
+     * falls to Symbol.toPrimitive, whose "string" hint renders the date as
+     * its toString does. */
+    ScrStr *text = scr_dyn_to_string(value, NULL);
+    if (!text || scr_exc_pending()) {
+      scr_str_release(text);
+      return NULL;
+    }
+    ScrBytes *out = scr_buffer_from_dyn_str(text, encoding, second);
+    scr_str_release(text);
+    return out;
   }
   if (value->kind == SCR_DYN_TYPED_REF || value->kind == SCR_DYN_HANDLE) {
     return scr_buffer_from_refusal("with an opaque reference");
@@ -2440,6 +2695,10 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
       received);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
   return NULL;
+}
+
+ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
+  return scr_buffer_from_dyn_impl(value, encoding, NULL, NULL);
 }
 
 /* Buffer.from over a checked value, with Node's pooling: strings take
@@ -2460,7 +2719,7 @@ ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding
 /* scr_buffer_from_dyn_pooled for values that can be a typed array crossing
  * an untyped slot by reference (a number[] passed to an untyped parameter,
  * as yazl's Buffer.from(something, encoding) receives it): the array copies
- * like the array it is. Used by the runtime-encoding Buffer.from forms. */
+ * like the array it is. */
 ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *encoding) {
   if (value->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(value) != NULL) {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
@@ -2476,11 +2735,10 @@ ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *enco
 }
 
 /* Buffer.from(value, second) over checked values whose second argument is
- * not a literal encoding name: an ArrayBuffer or SharedArrayBuffer takes it
- * as the byte offset (scr_buffer_from_storage); a string takes it as the
- * encoding (Node's fromString: utf8 unless it is a non-empty string, which
- * must name a Buffer encoding or throw ERR_UNKNOWN_ENCODING); other values
- * convert as scr_buffer_from_dyn_ref_pooled with utf8. */
+ * not a literal encoding name: a string takes it as the encoding, an
+ * ArrayBuffer or SharedArrayBuffer as the byte offset, and every other
+ * value converts through Node's from() recursion, where an object's
+ * valueOf() answer sees the same second argument. */
 ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *second) {
   if (value->kind == SCR_DYN_STR) {
     if (second->kind == SCR_DYN_STR && second->v.str->len > 0)
@@ -2491,20 +2749,25 @@ ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *s
     return out;
   }
   if (!scr_buffer_storage_is(value)) {
-    ScrStr *utf8 = scr_str_new("utf8", 4);
-    ScrBytes *out = scr_buffer_from_dyn_ref_pooled(value, utf8);
-    scr_str_release(utf8);
-    return out;
+    ScrBytes *out = scr_buffer_from_dyn_impl(value, NULL, second, NULL);
+    if (!out) return NULL;
+    out->is_buffer = true;
+    return scr_buffer_pool_adopt(out);
   }
   return scr_buffer_from_storage(value, second, NULL);
 }
 
 /* Buffer.from(value, second, third): an ArrayBuffer or SharedArrayBuffer
- * takes them as its byte offset and length; other values convert as
- * scr_buffer_from_dyn_offset_pooled does, without the third argument. */
+ * takes them as its byte offset and length; every other value converts
+ * through the same recursion with all three arguments. */
 ScrBytes *scr_buffer_from_dyn_range_pooled(const ScrDyn *value, const ScrDyn *second,
                                            const ScrDyn *third) {
-  if (!scr_buffer_storage_is(value)) return scr_buffer_from_dyn_offset_pooled(value, second);
+  if (!scr_buffer_storage_is(value)) {
+    ScrBytes *out = scr_buffer_from_dyn_impl(value, NULL, second, third);
+    if (!out) return NULL;
+    out->is_buffer = true;
+    return scr_buffer_pool_adopt(out);
+  }
   return scr_buffer_from_storage(value, second, third);
 }
 

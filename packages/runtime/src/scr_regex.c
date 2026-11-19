@@ -9,6 +9,13 @@
 #include "libregexp.h"
 #include "scr_regex_native.h"
 
+#if defined(__APPLE__)
+/* scr_dyn_invoke.c defines this weakly for Mach-O's linker: the regex
+ * unit's strong definition tells a linked program that RegExp construction
+ * is available. */
+int scr_dyn_regex_unit_linked = 1;
+#endif
+
 static void scr_regex_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
@@ -3330,6 +3337,16 @@ ScrDyn *scr_dyn_native_regex(ScrRegex *value) {
   };
   scr_dyn_handle_install(SCR_DYNH_REGEXP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_REGEXP);
+}
+
+/* `RegExp(pattern, flags)` called without `new`: a native RegExp pattern
+ * whose flags argument is undefined is the pattern itself (ECMA-262
+ * 22.2.3.1 step 2), so the caller keeps one object — identity and
+ * lastIndex included; every other pair constructs a copy. */
+ScrRegex *scr_regex_call_checked(const ScrDyn *pattern, const ScrDyn *flags) {
+  if (flags->kind == SCR_DYN_UNDEF && scr_dyn_native_regex_is(pattern))
+    return scr_regex_retain(pattern->v.handle.ptr);
+  return scr_regex_new_checked(pattern, flags);
 }
 
 ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags) {

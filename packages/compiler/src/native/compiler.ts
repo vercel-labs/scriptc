@@ -42,6 +42,7 @@ import {
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
 import { codegenServerName } from "../backend/codegen-server.js";
 import {
+  failureText,
   NativeCodegenError,
   nativePartitionPaths,
   nativeProgramPartitions,
@@ -122,9 +123,7 @@ interface NativeObjects {
 function failure(error: unknown, entry: string, sources: Map<string, string>): CompileFailure {
   return {
     ok: false,
-    diagnostics: [
-      nativeCodegenDiag("SC3004", error instanceof Error ? error.message : String(error), entry),
-    ],
+    diagnostics: [nativeCodegenDiag("SC3004", failureText(error), entry)],
     sourceTexts: sources,
   };
 }

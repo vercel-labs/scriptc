@@ -4,22 +4,6 @@
   "compilerVersion": "0.4.15",
   "refusals": [
     {
-      "row": "crypto:d61ebc090db7",
-      "layer": "static",
-      "chapter": "crypto",
-      "apiSymbol": "crypto.setFips",
-      "kind": "method",
-      "label": "crypto.setFips(bool)",
-      "manifestId": "node-builtin.crypto.setFips",
-      "binding": {
-        "module": "node:crypto",
-        "path": [
-          "setFips"
-        ],
-        "access": "call"
-      }
-    },
-    {
       "binding": {
         "module": "node:_http_agent",
         "access": "import"

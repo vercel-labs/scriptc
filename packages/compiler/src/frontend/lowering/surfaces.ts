@@ -3983,11 +3983,6 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "the callback forms execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback) lower; " +
       "maxBuffer limits each stream as in Node; other options and reached no-callback calls remain fenced, while util.promisify(execFile) retains its wider options slice",
   },
-  crypto: {
-    setFips:
-      "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
-      "in a non-FIPS build — getFips() answers 0 here",
-  },
   http2: {
     connect:
       "HTTP/2 client sessions have no lowering — the lowered http2 surface is the SERVER side: " +

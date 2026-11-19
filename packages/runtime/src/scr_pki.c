@@ -5789,6 +5789,12 @@ void scr_crypto_set_engine(ScrDyn *engine, ScrDyn *flags) {
   sp_throw_engine_unknown(id);
 }
 
+/* The FIPS flag crypto.setFips stores and crypto.getFips reads. Node's
+ * setFips in a build without a FIPS provider only records the requested
+ * state: the C-level FIPS mode is not switched, and getFips reports the
+ * flag. */
+static bool sp_fips_enabled = false;
+
 /* crypto.fips is getFips() behind a deprecation wrapper: the DEP0093
  * report is emitted once per process, at the first read. */
 double scr_crypto_fips_get(void) {
@@ -5800,8 +5806,15 @@ double scr_crypto_fips_get(void) {
     scr_emit_warning("DeprecationWarning", "DEP0093", message);
     scr_str_release(message);
   }
-  return 0;
+  return sp_fips_enabled ? 1 : 0;
 }
+
+/* crypto.getFips(): the flag, without the deprecation report. */
+double scr_crypto_fips_get_quiet(void) { return sp_fips_enabled ? 1 : 0; }
+
+/* crypto.setFips(fips): the argument's truthiness becomes the flag; the
+ * call answers undefined. */
+void scr_crypto_fips_set(ScrDyn *value) { sp_fips_enabled = scr_dyn_truthy(value); }
 
 /* ── Sign and Verify objects ──────────────────────────────────────────── */
 

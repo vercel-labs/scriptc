@@ -1125,14 +1125,16 @@ declare module "crypto" {
     exportPublicKey(spkac: BinaryLike, encoding?: string): Buffer;
     verifySpkac(spkac: BinaryLike): boolean;
   }
-  /* The crypto introspection statics: getFips() answers 0 (a compiled
-   * binary is never a FIPS build), the three name lists bake as fresh
+  /* The crypto introspection statics: setFips stores its argument's
+   * truthiness as the FIPS flag (a compiled binary has no provider to
+   * switch), getFips reports it, the three name lists bake as fresh
    * string[] literals of Node v24 answers, and constants (below) bakes
    * per member like http2.constants. */
   export function getFips(): 1 | 0;
-  /* Deprecated alias of getFips() (Node answers the number 0 here); each
-   * process reports DEP0093 once, on the first read. The exports object
-   * owns it as a getter, so only require() and a default import see it. */
+  export function setFips(fips: boolean): void;
+  /* Deprecated alias of getFips(); each process reports DEP0093 once, on
+   * the first read. The exports object owns it as a getter, so only
+   * require() and a default import see it. */
   export const fips: 0 | 1;
   /* OpenSSL 3 registers only the "dynamic" engine in a compiled binary:
    * that id is accepted, and every other id is Node's

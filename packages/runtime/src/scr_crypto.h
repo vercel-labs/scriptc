@@ -421,9 +421,13 @@ ScrDyn *scr_crypto_public_decrypt(ScrDyn *key, ScrDyn *buffer);
  * compiled binary registers is "dynamic"; every other id throws
  * ERR_CRYPTO_ENGINE_UNKNOWN. Borrows both arguments. */
 void scr_crypto_set_engine(ScrDyn *engine, ScrDyn *flags);
-/* The deprecated crypto.fips read: getFips() (0 here), reporting DEP0093
+/* The deprecated crypto.fips read and crypto.getFips(): the flag
+ * crypto.setFips stores (0 until set); the deprecated form reports DEP0093
  * once per process. */
 double scr_crypto_fips_get(void);
+double scr_crypto_fips_get_quiet(void);
+/* crypto.setFips(fips): the argument's truthiness becomes the flag. */
+void scr_crypto_fips_set(ScrDyn *value);
 /* crypto.diffieHellman(options[, callback]): the shared secret, or undefined
  * with the callback, which receives it in a later macrotask. */
 ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback);

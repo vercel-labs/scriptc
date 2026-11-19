@@ -10484,9 +10484,24 @@ static ScrDyn *scr_http_agent_hook_value(ScrHttpAgent *a, bool keep) {
 /* agent.createConnection(options[, callback]): Node's default dialer is
  * net.createConnection, so the net unit's dynamic entry does the work — its
  * argument ladder, validation and dial. The `signal` option rides the signal
- * unit's abort-listener entry when the program links it. */
+ * unit's abort-listener entry when the program links it. Mach-O refuses an
+ * undefined weak reference, so Apple gets a weak definition and the unit's
+ * linked flag as the capability test, as the abort unit's bindings above do. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
+#else
+extern int scr_dyn_event_target_unit_linked __attribute__((weak));
 extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
     __attribute__((weak));
+#endif
+static bool scr_http_event_target_linked(void) {
+  return scr_dyn_event_target_unit_linked != 0;
+}
 
 static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *args,
                                                  size_t argc) {
@@ -10505,7 +10520,7 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
   ScrNetSocket *sock = scr_net_connect_dyn(
       argc > 0 ? args[0] : scr_dyn_undefined(), argc > 1 ? args[1] : NULL,
       argc > 2 ? args[2] : NULL, NULL,
-      scr_events_add_abort_listener != NULL ? scr_events_add_abort_listener : NULL, fence);
+      scr_http_event_target_linked() ? scr_events_add_abort_listener : NULL, fence);
   scr_str_release(fence);
   if (sock == NULL) return NULL; /* an exception is pending */
   ScrDyn *out = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);

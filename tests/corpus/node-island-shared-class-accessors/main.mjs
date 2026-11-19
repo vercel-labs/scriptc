@@ -3,7 +3,7 @@
 // or writes them, and instances of shared subclasses answer instanceof for
 // every class of their chain on the island side.
 import { requireModule } from "@scriptc/node";
-import { make } from "./shapes.mjs";
+import { make, touches } from "./shapes.mjs";
 
 const island = requireModule("./island.mjs");
 
@@ -19,3 +19,5 @@ console.log("box classes:", island.classes(box));
 console.log("tagged classes:", island.classes(t));
 console.log("leaf classes:", island.classes(leaf));
 console.log("own:", island.own(box));
+console.log("inherited name:", island.inherited(box));
+console.log("accessor writes a shared export:", island.counted(box), touches);

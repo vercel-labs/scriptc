@@ -1,3 +1,7 @@
+// A module-level binding an accessor writes, so island code that reads it after the getter
+// sees the new value (the shared module's accessor refreshes as the call returns).
+export let touches = 0;
+
 export class Box {
   constructor(name) {
     this.name = name;
@@ -15,6 +19,13 @@ export class Box {
   }
   set only(value) {
     this.title = `only ${value}`;
+  }
+  get counted() {
+    touches += 1;
+    return `${this.name}:${touches}`;
+  }
+  get toString() {
+    return `Box(${this.name})`;
   }
   add(item) {
     this.items.push(item);

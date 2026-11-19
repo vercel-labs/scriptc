@@ -1108,11 +1108,14 @@ static bool ni_class_has_accessor(const ScrDyn *target, const ScrDyn *key, char 
 }
 
 /* Runs accessor half `fn` with the capsule as `this` (+1 result, NULL with
- * the exception pending). */
+ * the exception pending), and refreshes the shared bindings: an accessor can
+ * write a shared module's state, and island code reads the new value as soon
+ * as the call returns. */
 static ScrDyn *ni_run_accessor(ScrDyn *fn, ScrDyn *target, ScrDyn *const *args, size_t argc) {
   scr_dyn_this_push_dyn(target);
   ScrDyn *result = scr_dyn_call(fn, args, argc, "accessor");
   scr_dyn_this_pop();
+  scr_ni_shared_refresh();
   return result;
 }
 
@@ -1273,6 +1276,30 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
     scr_dyn_release(k);
     if (method != NULL) return ni_returned(method, out);
     return 2;
+  }
+  if (present && pk->kind == SCR_DYN_STR && !scr_exc_pending() && ni_inherited_name(target, pk)) {
+    /* A compiled accessor named after an Object.prototype property
+     * (`__proto__`, `toString`, `constructor`) is the class's own: the name
+     * is "in" the instance through the prototype chain, which is why the
+     * branch above did not run, but the table's accessor answers it. */
+    ScrDyn *getter = ni_class_accessor(target, pk, 'g');
+    if (getter != NULL) {
+      ScrDyn *value = ni_run_accessor(getter, target, NULL, 0);
+      scr_dyn_release(getter);
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      if (value == NULL || scr_exc_pending()) {
+        scr_dyn_release(value);
+        return ni_threw(out);
+      }
+      return ni_returned(value, out);
+    }
+    if (ni_class_has_accessor(target, pk, 's')) {
+      /* A setter without a getter reads undefined. */
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      return ni_returned(scr_dyn_retain(scr_dyn_undefined()), out);
+    }
   }
   ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_reflect_get(target, pk, target);
   if (result != NULL && result->kind == SCR_DYN_UNDEF) {

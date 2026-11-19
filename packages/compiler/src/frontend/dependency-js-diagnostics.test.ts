@@ -82,11 +82,12 @@ test("a dependency's parse errors and unlowered constructs still report", () => 
   expect(
     diagnostics({ ...program(["*.ts"]), "lib.js": "export function broken( {\n" }).length,
   ).toBeGreaterThan(0);
-  // TS2416: a subclass member whose type differs from its base's. The triage
-  // table refuses the shape until the lowering proves it, so it survives the
-  // dependency stance.
+  // TS2416: a subclass member whose type differs from its base's. An
+  // override that reads `arguments` has no checked-dynamic family slot, so
+  // the triage table refuses it, and the refusal survives the dependency
+  // stance.
   const overrides = `export class Base { /** @returns {number} */ copy(source) { return 1; } }
-export class Derived extends Base { copy(source) { return [source]; } }
+export class Derived extends Base { copy(source) { return [source, arguments.length]; } }
 `;
   expect(diagnostics({ ...program(["*.ts"]), "lib.js": overrides }).length).toBeGreaterThan(0);
 });

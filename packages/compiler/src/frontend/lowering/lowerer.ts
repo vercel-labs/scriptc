@@ -4553,6 +4553,32 @@ export class Lowerer {
     return value;
   }
 
+  /** Whether a JavaScript property read whose receiver is checked-dynamic
+   * (`this.attributes.tangent` over a JSDoc `Object<string, (A|B)>` the
+   * field stores as a checked-dynamic value) resolves to the receiver's
+   * string index signature, whose typed value does not admit undefined. The
+   * read is a JavaScript property read: a missing key answers undefined, as
+   * a record's index-signature read does, so a binding it initializes keeps
+   * the undefined arm. */
+  dynIndexSignatureRead(e: ts.PropertyAccessExpression): boolean {
+    if (!isJsSourceFile(ts.getSourceFileOfNode(e))) return false;
+    // The checker's own type of the receiver: typeOf answers `unknown` for a
+    // read of a checked-dynamic field, whose JSDoc type still names the
+    // index signature the property read resolves to.
+    const receiverType = this.checker.getTypeAtLocation(e.expression);
+    if ((receiverType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
+    if (this.checker.getPropertyOfType(receiverType, e.name.text) !== undefined) return false;
+    const signature = this.checker
+      .getIndexInfosOfType(receiverType)
+      .find((info) => (info.keyType.flags & ts.TypeFlags.String) !== 0);
+    if (signature === undefined) return false;
+    const value = panicSafe(() => this.mapTypeOf(signature.type), null);
+    if (!value || value.kind === "dyn" || value.kind === "void" || isUnitType(value)) return false;
+    if (value.kind === "union" && this.armTag(value.unionId, UNDEFINED_T) >= 0) return false;
+    const read = panicSafe(() => this.mapTypeOf(this.typeOf(e)), null);
+    return !(read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0);
+  }
+
   /** The index value of a keyed read of a record's index signature that
    * can answer undefined for a missing key while its checker type does not
    * admit undefined, or null. A literal key naming a declared field is a
@@ -11489,6 +11515,7 @@ export class Lowerer {
       if (!answersIndexSignature) return false;
       const receiver = this.mapTypeOf(this.typeOf(e.expression));
       if (receiver?.kind === "object") return this.classIndexSignatureRead(e) !== null;
+      if (receiver?.kind === "dyn") return this.dynIndexSignatureRead(e);
       if (receiver?.kind !== "record") return false;
       const shape = this.shapes.get(receiver.shapeId);
       if (!shape || shape.tuple || !shape.indexValue || shape.indexValue.kind === "dyn")

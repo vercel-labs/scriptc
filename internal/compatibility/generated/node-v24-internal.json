@@ -30387,7 +30387,8 @@
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
           "tests/corpus/2214-dc-bind-store.cjs",
-          "tests/corpus/diagnostics-channel-audit.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs",
+          "tests/corpus/diagnostics-channel-store-order.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -32190,6 +32191,7 @@
         "evidence": "compiler-feature:diagnostics_channel.channel.bindStore",
         "tests": [
           "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-store-order.cjs",
           "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
@@ -32217,6 +32219,7 @@
         "evidence": "compiler-feature:diagnostics_channel.channel.unbindStore",
         "tests": [
           "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-store-order.cjs",
           "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },
@@ -32244,6 +32247,7 @@
         "evidence": "compiler-feature:diagnostics_channel.channel.runStores",
         "tests": [
           "tests/corpus/2214-dc-bind-store.cjs",
+          "tests/corpus/diagnostics-channel-store-order.cjs",
           "tests/corpus/diagnostics-channel-audit.cjs"
         ]
       },

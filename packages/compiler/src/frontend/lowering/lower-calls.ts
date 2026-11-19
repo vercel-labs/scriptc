@@ -7073,7 +7073,11 @@ function lowerPrimitiveProtoCall(
     (name === "toFixed" || name === "toExponential") &&
     call.arguments.nodes.length <= 1 &&
     !call.arguments.nodes.some(ts.isSpreadElement) &&
-    isJsSourceFile(ts.getSourceFileOfNode(call))
+    // toFixed's digits conversion is the same for a typed file: a
+    // fractionDigits the checker cannot type (an `any` value) is what Node's
+    // ToIntegerOrInfinity answers, and the other casts below stay for the
+    // untyped-JavaScript forms.
+    (name === "toFixed" || isJsSourceFile(ts.getSourceFileOfNode(call)))
   ) {
     const operand = lowerer.lowerExpr(recv);
     if (

@@ -55,6 +55,8 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_assert_register", a);
     case "test.ctxCustomAssert":
       return finishRuntimeCall(host, e, "scr_test_ctx_custom_assert", a);
+    case "test.ctxTags":
+      return finishRuntimeCall(host, e, "scr_test_ctx_tags", a);
     case "test.ctxName":
       return finishRuntimeCall(host, e, "scr_test_ctx_name", a);
     case "test.ctxFullName":

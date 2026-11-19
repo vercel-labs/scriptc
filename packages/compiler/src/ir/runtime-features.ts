@@ -151,6 +151,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
+  // DEP0094 for assert.fail's deprecated multi-argument form.
+  "assert.failDeprecation",
   // util.aborted answers a checked-dynamic promise, and so do the
   // functions util.debounce and util.throttle return.
   "util.aborted",
@@ -366,6 +368,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebDuplex",
   "webstream.toWebDuplexDyn",
   "readable.iterator",
+  "webstream.duplexFromWeb",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -384,6 +387,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexifyReadable",
   "stream.duplexifyWritable",
   "stream.duplexifyPair",
+  "stream.duplexifyPairHalf",
   "stream.duplexPair",
   "stream.wrap",
   "stream.wrapDyn",
@@ -459,6 +463,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebDuplex",
   "webstream.toWebDuplexDyn",
   "readable.iterator",
+  "webstream.duplexFromWeb",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -2001,6 +2006,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
+      "webstream.duplexFromWeb",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
@@ -2350,6 +2356,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
+      "webstream.duplexFromWeb",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.

@@ -714,6 +714,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.wrap",
   "stream.wrapDyn",
   "webstream.writableFromWeb",
+  "webstream.duplexFromWeb",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -977,6 +978,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "date.argumentsTime",
   "date.checkedValue",
   "util.parseArgs",
+  "util.getCallSites",
   "util.parseEnv",
   "util.getSystemErrorName",
   "util.getSystemErrorMessage",
@@ -1380,6 +1382,7 @@ const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [
   "buffer.concatLen",
   "buffer.concatDyn",
   "buffer.concatLenDyn",
+  "buffer.concatLenDynOpt",
   "buffer.fromDyn",
   "buffer.fromStrChecked",
   "buffer.alloc",
@@ -1601,6 +1604,9 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   // and the shape accumulator's begin/slot/test calls throws the
   // catchable AssertionError on failure.
   "assert.ok",
+  "assert.failDeprecated",
+  // The warning runs process.emitWarning, which a program can replace.
+  "assert.failDeprecation",
   "assert.errorNew",
   "assert.eqF64",
   "assert.eqBigInt",

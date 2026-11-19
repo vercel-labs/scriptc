@@ -121,6 +121,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "arrayBuffer.viewDV": "scr_array_buffer_view_dv",
 
   "util.parseArgs": "scr_util_parse_args",
+  "util.getCallSites": "scr_util_call_sites",
   "util.parseEnv": "scr_util_parse_env",
   "util.getSystemErrorName": "scr_util_system_error_name",
   "util.getSystemErrorMessage": "scr_util_system_error_message",
@@ -621,6 +622,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // node:assert (scr_assert.c): all args borrowed; failures throw the
   // catchable AssertionError. The never-throwing members ride along.
   "assert.ok": "scr_assert_ok",
+  "assert.failDeprecated": "scr_assert_deprecated_fail",
+  "assert.failDeprecation": "scr_assert_fail_deprecation",
   "assert.record": "scr_assert_record_dyn",
   "assert.errorNew": "scr_assert_error_new",
   "assert.eqF64": "scr_assert_eq_f64",
@@ -679,6 +682,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.concatLen": "scr_buffer_concat_len",
   "buffer.concatDyn": "scr_buffer_concat_dyn",
   "buffer.concatLenDyn": "scr_buffer_concat_len_dyn",
+  "buffer.concatLenDynOpt": "scr_buffer_concat_len_dyn_opt",
   "buffer.alloc": "scr_buffer_alloc",
   "buffer.allocValue": "scr_buffer_alloc_value",
   "buffer.allocUnsafe": "scr_buffer_alloc_unsafe",
@@ -1757,6 +1761,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.duplexifyReadable": "scr_stream_duplexify_readable",
   "stream.duplexifyWritable": "scr_stream_duplexify_writable",
   "stream.duplexifyPair": "scr_stream_duplexify_pair",
+  "stream.duplexifyPairHalf": "scr_stream_duplexify_pair_opt",
   "stream.duplexPair": "scr_stream_duplexpair",
   "stream.wrap": "scr_stream_wrap",
   "stream.wrapDyn": "scr_stream_wrap_dyn",
@@ -1769,6 +1774,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "webstream.toWebReadableDyn": "scr_stream_to_web_readable_dyn",
   "webstream.writableFromWeb": "scr_stream_writable_from_web",
   "webstream.writableToWeb": "scr_stream_writable_to_web",
+  "webstream.duplexFromWeb": "scr_stream_duplex_from_web",
   "webstream.toWebDuplex": "scr_stream_to_web_duplex",
   "webstream.toWebDuplexDyn": "scr_stream_to_web_duplex_dyn",
   "writable.writeEncoding": "scr_stream_write_encoding",
@@ -2436,6 +2442,9 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   // The deprecated Buffer constructor reports DEP0005, and SlowBuffer
   // DEP0030, on the next tick.
   "buffer.deprecation",
+  // assert.fail's deprecated form reports DEP0094 through the same warning
+  // machinery on the first multi-argument call.
+  "assert.failDeprecation",
   "buffer.slowBuffer",
   // The wrappers schedule warnings and callbacks on the tick queue.
   "util.deprecate",

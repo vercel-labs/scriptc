@@ -2593,6 +2593,24 @@ void scr_buffer_deprecation(void) {
   scr_buffer_ctor_warned = true;
 }
 
+/* assert.fail(actual, expected, ...) reports DEP0094 on the first
+ * multi-argument call, as Node's deprecate() wrapper does. */
+void scr_assert_fail_deprecation(void) {
+  static SCR_TL bool warned = false;
+  if (warned) return;
+  warned = true;
+  static const char text[] =
+      "assert.fail() with more than one argument is deprecated. Please use "
+      "assert.strictEqual() instead or only pass a message.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0094", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
 /* SlowBuffer(size): Node 24's deprecate() wrapper reports DEP0030 on the
  * first call, then allocUnsafeSlow validates the size (a number,
  * ERR_INVALID_ARG_TYPE otherwise; ERR_OUT_OF_RANGE past [0, kMaxLength])

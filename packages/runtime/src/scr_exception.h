@@ -76,6 +76,11 @@ typedef struct ScrStackFrame {
 void scr_stack_enter(ScrStackFrame *frame, const char *text);
 void scr_stack_leave(ScrStackFrame *frame);
 ScrStr *scr_stack_capture(void); /* +1, NULL when no source frames exist */
+/* util.getCallSites([frameCount][, options]): the running source frames as
+ * { functionName, scriptId, scriptName, lineNumber, columnNumber, column },
+ * top first; scriptId is "0" (compiled programs have no V8 script ids).
+ * Validates its arguments like Node and THROWS otherwise; +1 array. */
+ScrDyn *scr_util_call_sites(ScrDyn *frame_count, ScrDyn *options);
 ScrStr *scr_stack_capture_after(const char *through); /* +1, NULL when none remain */
 double scr_stack_limit_get(void);
 void scr_stack_limit_set(double limit);

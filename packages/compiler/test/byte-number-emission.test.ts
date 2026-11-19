@@ -17,7 +17,7 @@ test("numeric byte pipelines retain checked fallbacks and use field widths on bo
     const body = (ll: string, name: string): string =>
       ll.match(
         new RegExp(
-          `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+          `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{([\\s\\S]*?)\\n\\}`,
         ),
       )![1]!;
     for (const pointerBits of [32, 64] as const) {

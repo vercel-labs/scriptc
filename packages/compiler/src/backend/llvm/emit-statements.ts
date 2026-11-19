@@ -158,6 +158,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.line(`store ptr ${v}, ptr ${b.slot}`);
         break;
       }
+      if (emitter.isTreeBorrow(s.localId) && b.kind === "local" && !owning) {
+        // A borrowed tree local: a pointer into a node someone else owns.
+        // A tree has no count to raise, and releasing the local at scope
+        // exit would destroy its owner's subtree, so it gets neither.
+        const v = s.init === null ? "null" : emitter.emitReadReceiver(s.init).name;
+        B.line(`store ptr ${v}, ptr ${b.slot}`);
+        break;
+      }
       const slice = emitter.scalarStringSlices.get(s.localId);
       // A slice of a string cursor's local: the cursor keeps the string the
       // local entered its loop with, so a snapshot of that slot would hold

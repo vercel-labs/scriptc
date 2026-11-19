@@ -292,7 +292,9 @@ typedef struct ScrFseQueue {
 } ScrFseQueue;
 
 static ScrFseApi scr_fse_api_state;
-static bool scr_fse_loaded;
+/* The API load runs once, whichever thread starts the first recursive
+ * watch; a concurrent starter must not observe a half-initialized table. */
+static pthread_once_t scr_fse_load_once = PTHREAD_ONCE_INIT;
 static void *scr_fse_dispatch_queue;
 static pthread_mutex_t scr_fse_reg_mu = PTHREAD_MUTEX_INITIALIZER;
 static ScrFseQueue *scr_fse_queues;
@@ -304,9 +306,7 @@ static void *scr_fse_sym(void *handle, const char *name) {
   return handle != NULL ? dlsym(handle, name) : NULL;
 }
 
-static bool scr_fse_load(void) {
-  if (scr_fse_loaded) return scr_fse_api_state.ok;
-  scr_fse_loaded = true;
+static void scr_fse_load_init(void) {
   void *cs = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices",
                     RTLD_LAZY | RTLD_LOCAL);
   if (cs == NULL)
@@ -336,7 +336,11 @@ static bool scr_fse_load(void) {
   if (a->ok && scr_fse_dispatch_queue == NULL)
     scr_fse_dispatch_queue = dispatch_queue_create("scriptc.watch.fsevents", NULL);
   if (scr_fse_dispatch_queue == NULL) a->ok = false;
-  return a->ok;
+}
+
+static bool scr_fse_load(void) {
+  pthread_once(&scr_fse_load_once, scr_fse_load_init);
+  return scr_fse_api_state.ok;
 }
 
 /** Unregisters a thread's queue as the thread exits, so the stream callback

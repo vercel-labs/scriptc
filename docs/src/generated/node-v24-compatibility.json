@@ -19636,9 +19636,9 @@
       "anchor": "err_http2_headers_after_respond",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20230,9 +20230,9 @@
       "anchor": "err_http2_stream_error",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20338,9 +20338,9 @@
       "anchor": "err_http2_trailers_not_ready",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20860,9 +20860,9 @@
       "anchor": "err_invalid_async_id",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -21454,9 +21454,9 @@
       "anchor": "err_ip_blocked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22822,9 +22822,9 @@
       "anchor": "err_tls_invalid_state",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -38826,7 +38826,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -39010,7 +39010,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -39378,7 +39378,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -40574,7 +40574,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -40712,7 +40712,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -40735,7 +40735,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -40758,7 +40758,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -40804,7 +40804,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -40873,7 +40873,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -40988,7 +40988,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -41011,7 +41011,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -41034,7 +41034,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -41080,7 +41080,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -41172,7 +41172,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -41218,7 +41218,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -41241,7 +41241,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -41264,7 +41264,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
@@ -76748,7 +76748,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }

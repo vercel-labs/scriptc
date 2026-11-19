@@ -92,22 +92,24 @@ test("slots.get reads the slot word, the page and the entry inline", () => {
     new RegExp(`%${mangleClassStruct("Leaf")} = type \\{ i64, i32, ptr, (i32|double) \\}`),
   );
   expect(llvm).toMatch(new RegExp(`%${mangleClassStruct("Plain")} = type \\{ i64, ptr \\}`));
-  // One block per family name.
-  expect(llvm).toMatch(
-    /@sc_slots_0 = internal global \{ ptr, i32, i32, ptr, ptr \} zeroinitializer/,
-  );
-  expect(llvm).toMatch(
-    /@sc_slots_1 = internal global \{ ptr, i32, i32, ptr, ptr \} zeroinitializer/,
-  );
+  // One block per family name, each named from its family.
+  const blockNames = [
+    ...llvm.matchAll(/^@(sc_slots_\d+) = internal global \{ ptr, i32, i32, ptr, ptr \}/gm),
+  ].map((match) => match[1]!);
+  expect(blockNames).toHaveLength(2);
   const main = body(llvm, "sc_f_main");
   expect(main).toMatch(
     /getelementptr inbounds %\S+, ptr %\S+, i64 0, i32 1\n {2}(%\S+) = load atomic i32, ptr %\S+ monotonic, align 4\n {2}%\S+ = lshr i32 \1, 10/,
   );
   expect(main).not.toMatch(/call ptr @scr_slots_get/);
   expect(main).toMatch(
-    /call void @scr_slots_set\(ptr @sc_slots_0, ptr %\S+, ptr %\S+, ptr %\S+, ptr @\S+\)/,
+    new RegExp(
+      `call void @scr_slots_set\\(ptr @${blockNames[0]}, ptr %\\S+, ptr %\\S+, ptr %\\S+, ptr @\\S+\\)`,
+    ),
   );
-  expect(main).toMatch(/call zeroext i1 @scr_slots_delete\(ptr @sc_slots_1, ptr %\S+\)/);
+  expect(main).toMatch(
+    new RegExp(`call zeroext i1 @scr_slots_delete\\(ptr @${blockNames[1]}, ptr %\\S+\\)`),
+  );
 });
 
 test("freeing a key releases its values when its slot word is set", () => {

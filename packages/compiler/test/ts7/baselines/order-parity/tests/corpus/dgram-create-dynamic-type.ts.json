@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dgram-create-dynamic-type.ts"
+ ],
+ "diags": []
+}

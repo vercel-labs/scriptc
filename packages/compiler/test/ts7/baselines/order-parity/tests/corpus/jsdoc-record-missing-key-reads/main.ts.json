@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/jsdoc-record-missing-key-reads/geometry.js",
+  "<repo>/tests/corpus/jsdoc-record-missing-key-reads/main.ts"
+ ],
+ "diags": []
+}

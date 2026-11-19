@@ -344,7 +344,8 @@ test.each([32, 64] as const)(
     const mod = fixture();
     mod.functions[0]!.body = [{ kind: "exprStmt", expr: strings, loc }];
     const llvm = emitLlvmModule(mod, { pointerBits: bits });
-    const data = /^@sc_tsa_0_data = internal constant .*$/m.exec(llvm)![0];
+    const site = /^@(sc_tsa_\d+)_data = internal constant .*$/m.exec(llvm)!;
+    const data = site[0];
     // The runtime reads each slot as 8 bytes; an array without states
     // (`spare` 0 in its header) has no state bytes after them.
     if (bits === 64) expect(data).toMatch(/^\S+ = internal constant \[3 x ptr\] /);
@@ -354,7 +355,10 @@ test.each([32, 64] as const)(
     }
     expect(data).not.toContain("x i8]");
     expect(llvm).toMatch(
-      /^@sc_tsa_0 = internal global %ScrArr \{ i\d+ -1, i32 3, i32 3, i8 2, i8 0, i16 0, i32 3, /m,
+      new RegExp(
+        `^@${site[1]} = internal global %ScrArr \\{ i\\d+ -1, i32 3, i32 3, i8 2, i8 0, i16 0, i32 3, `,
+        "m",
+      ),
     );
   },
 );

@@ -6148,6 +6148,21 @@ export function fieldTarget(
       fieldType: F64,
     };
   }
+  // `Error.prepareStackTrace`: program state, as in Node — a program may
+  // save it, replace it (typically with `void 0`) and restore it. The
+  // runtime holds the value and its default function, which throws the
+  // named refusal if called (native code has no V8 call-site formatter).
+  if (
+    access.name.text === "prepareStackTrace" &&
+    lowerer.isStdlibGlobal(access.expression, "Error")
+  ) {
+    return {
+      container: "errorPrepareStackTrace",
+      obj: { kind: "numLit", value: 0, type: F64, loc: locOf(access) },
+      field: "prepareStackTrace",
+      fieldType: DYN,
+    };
+  }
   // `this.#x` in a function-local class's prototype method: the field of
   // the brand-checked receiver (checkedPrivateReceiver).
   if (
@@ -6606,6 +6621,9 @@ export function fieldGetExpr(
     return errorPropertyRead(lowerer, target.obj, target.field);
   if (target.container === "errorStackLimit") {
     return { kind: "libCall", fn: "error.stackLimitGet", args: [], type: F64, loc };
+  }
+  if (target.container === "errorPrepareStackTrace") {
+    return { kind: "libCall", fn: "error.prepareStackTraceGet", args: [], type: DYN, loc };
   }
   if (target.container === "errorCause") {
     return { kind: "libCall", fn: "error.cause", args: [target.obj], type: DYN, loc };

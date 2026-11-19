@@ -9906,30 +9906,30 @@ export class LlEmitter {
     return (this.jsIcSitesMemo ??= new JsIcSites(this.mod));
   }
 
-  jsIcSite(): string {
-    const name = this.contentSymbol(
-      "@sc_js_ic_",
-      `${this.currentFunctionName}\u0000${this.siteOrdinal.js++}`,
-    );
+  jsIcSite(
+    owner: string = this.currentFunctionName,
+    ordinal: number = this.siteOrdinal.js++,
+  ): string {
+    const name = this.contentSymbol("@sc_js_ic_", `${owner}\u0000${ordinal}`);
     if (!this.icSiteNames.has(name)) {
       this.icSiteNames.add(name);
       this.jsIcGlobals.push(name);
     }
-    this.journal?.site(name, "jsIcSite");
+    this.journal?.site(name, "jsIcSite", [owner, ordinal]);
     return name;
   }
 
   /** A fresh guard-group record (js-groups.ts). */
-  jsGroup(): string {
-    const name = this.contentSymbol(
-      "@sc_js_group_",
-      `${this.currentFunctionName}\u0000${this.siteOrdinal.group++}`,
-    );
+  jsGroup(
+    owner: string = this.currentFunctionName,
+    ordinal: number = this.siteOrdinal.group++,
+  ): string {
+    const name = this.contentSymbol("@sc_js_group_", `${owner}\u0000${ordinal}`);
     if (!this.icSiteNames.has(name)) {
       this.icSiteNames.add(name);
       this.jsGroupGlobals.push(name);
     }
-    this.journal?.site(name, "jsGroup");
+    this.journal?.site(name, "jsGroup", [owner, ordinal]);
     return name;
   }
 
@@ -9952,28 +9952,27 @@ export class LlEmitter {
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */
-  dynReadIcSite(): string {
-    const name = this.contentSymbol(
-      "@sc_dyn_read_ic_",
-      `${this.currentFunctionName}\u0000${this.siteOrdinal.dynRead++}`,
-    );
+  dynReadIcSite(
+    owner: string = this.currentFunctionName,
+    ordinal: number = this.siteOrdinal.dynRead++,
+  ): string {
+    const name = this.contentSymbol("@sc_dyn_read_ic_", `${owner}\u0000${ordinal}`);
     if (!this.icSiteNames.has(name)) {
       this.icSiteNames.add(name);
       this.dynReadIcGlobals.push(name);
     }
-    this.journal?.site(name, "dynReadIcSite");
+    this.journal?.site(name, "dynReadIcSite", [owner, ordinal]);
     return name;
   }
 
   /** A fresh speculative loop site: the global that counts its bailing
    * entries in a row. */
-  speculativeLoopSite(): string {
-    const name = this.contentSymbol(
-      "@sc_spec_bails_",
-      `${this.currentFunctionName}\u0000${this.siteOrdinal.spec++}`,
-    );
-    this.journal?.site(name, "speculativeLoopSite");
-    this.journal?.opened("speculativeLoopSite");
+  speculativeLoopSite(
+    owner: string = this.currentFunctionName,
+    ordinal: number = this.siteOrdinal.spec++,
+  ): string {
+    const name = this.contentSymbol("@sc_spec_bails_", `${owner}\u0000${ordinal}`);
+    this.journal?.allocated(name, "speculativeLoopSite", [owner, ordinal]);
     this.declare(`${name} = internal global i8 0`);
     this.journal?.built();
     return name;
@@ -10521,3 +10520,17 @@ for (const op of [
   registerReplay(op, (emitter, args) => emitter.walkers.replayHelper(op, args));
 for (const op of ["publish.walker", "publish.refusal"])
   registerReplay(op, (emitter, args) => emitter.publishWalkers.replayHelper(op, args));
+
+// A site record carries the function and ordinal it was named from, so
+// replaying it on the merging emitter names the site the same whatever that
+// emitter is emitting at the time.
+registerReplay("jsIcSite", (emitter, args) =>
+  emitter.jsIcSite(args[0] as string, args[1] as number),
+);
+registerReplay("jsGroup", (emitter, args) => emitter.jsGroup(args[0] as string, args[1] as number));
+registerReplay("dynReadIcSite", (emitter, args) =>
+  emitter.dynReadIcSite(args[0] as string, args[1] as number),
+);
+registerReplay("speculativeLoopSite", (emitter, args) =>
+  emitter.speculativeLoopSite(args[0] as string, args[1] as number),
+);

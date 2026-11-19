@@ -99229,10 +99229,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.snapshot",
         "tests": [
+          "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/fixtures/node-test/cases/snapshot-serializer-values.ts",
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/harness/node-test.test.ts"
         ]
       },

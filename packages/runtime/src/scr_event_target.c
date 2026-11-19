@@ -459,8 +459,8 @@ static ScrEtListener *scr_et_append(ScrEventTargetCore *core, ScrStr *type, ScrD
 /* The owner's notification after a listener leaves the core, however it
  * left: removeEventListener, a `{ once: true }` listener firing, or an
  * AbortSignal removing its listener. */
-static void scr_et_changed(ScrEventTargetCore *core) {
-  if (core->changed) core->changed(core->changed_ctx);
+static void scr_et_changed(ScrEventTargetCore *core, const ScrStr *type) {
+  if (core->changed) core->changed(core->changed_ctx, type);
 }
 
 static void scr_et_remove_matching(ScrEventTargetCore *core, const ScrStr *type,
@@ -473,7 +473,7 @@ static void scr_et_remove_matching(ScrEventTargetCore *core, const ScrStr *type,
       scr_et_listener_remove(h);
       root->size--;
       if (root->size == 0) scr_et_root_unmap(core, root);
-      scr_et_changed(core);
+      scr_et_changed(core, type);
       return;
     }
   }
@@ -864,7 +864,7 @@ void scr_et_dispatch(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *event) {
     if (handler->flags & SCR_ET_ONCE) {
       scr_et_listener_remove(handler);
       root->size--;
-      scr_et_changed(core);
+      scr_et_changed(core, ev->type);
     }
     bool passive = (handler->flags & SCR_ET_PASSIVE) != 0;
     if (passive) ev->in_passive = true;
@@ -2210,7 +2210,7 @@ static void scr_et_broadcast_dispatch_type(ScrEventTargetCore *core, ScrDyn *sel
 }
 
 static void scr_et_broadcast_watch(ScrEventTargetCore *core, void *ctx,
-                                   void (*changed)(void *ctx)) {
+                                   void (*changed)(void *ctx, const ScrStr *type)) {
   core->changed = changed;
   core->changed_ctx = ctx;
 }

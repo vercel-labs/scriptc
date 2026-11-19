@@ -191,6 +191,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.observerDisconnect",
   "perf.observerTake",
   "perf.listEntries",
+  // performance.timerify: the wrapper, its entry and the options histogram
+  // (scr_perf.c; a program that only wraps a function still needs it).
+  "perf.timerify",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
   "als.bindCallbackDyn",

@@ -6,6 +6,7 @@ import {
 } from "./builtins/filesystem.js";
 import {
   lowerEventLoopUtilizationCall,
+  lowerTimerifyCall,
   lowerMonitorEventLoopDelayCall,
   lowerCreateHistogramCall,
 } from "./builtins/performance.js";
@@ -203,6 +204,9 @@ export function lowerBuiltinCall(
   }
   if (bi.module === "perf_hooks" && bi.member === "eventLoopUtilization") {
     return lowerEventLoopUtilizationCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "timerify") {
+    return lowerTimerifyCall(lowerer, expr, loc);
   }
   if (bi.module === "events") {
     const helper = lowerEventsEmitterHelper(lowerer, expr, bi.member, loc);

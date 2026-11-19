@@ -2464,6 +2464,13 @@
       "note": "the global performance object and the performance.now.bind(performance) function value reach the same clock"
     },
     {
+      "id": "node-builtin.perf_hooks.timerify",
+      "kind": "node-builtin",
+      "name": "perf_hooks.timerify",
+      "status": "static",
+      "note": "performance.timerify and perf_hooks.timerify are the same wrapper: a timed call records a 'function' entry, delivered to the observers watching that type"
+    },
+    {
       "id": "node-builtin.process",
       "kind": "node-builtin",
       "name": "process",

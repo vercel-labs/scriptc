@@ -738,6 +738,7 @@ function buildLibFnSignatures() {
      * entryResourceNum/Str read a view entry's resource fields by the
      * selector order builtins/performance.ts defines. */
     "perf.resourceMark": { argTypes: [DYN], result: F64 },
+    "perf.timerify": { argTypes: [DYN], result: DYN },
     "perf.resourceClear": { argTypes: [DYN], result: VOID },
     "perf.resourceBufferSize": { argTypes: [DYN], result: VOID },
     "perf.entryResourceNum": { argTypes: [F64, F64], result: F64 },
@@ -2558,6 +2559,10 @@ function buildLibFnSignatures() {
       argTypes: [DGRAMSOCK_T, F64, STRING, { kind: "func", params: [], ret: VOID }],
       result: VOID,
     },
+    /** A connect completion callback read as an untyped value: the runtime
+     * calls it with the error when the connection is refused (Node's
+     * nextTick(callback, ex)), so a JavaScript callback sees its argument. */
+    "dgram.connectDyn": { argTypes: [DGRAMSOCK_T, F64, STRING, DYN], result: VOID },
     "dgram.sendStr": { argTypes: [DGRAMSOCK_T, STRING, F64, STRING], result: VOID },
     "dgram.sendBytes": { argTypes: [DGRAMSOCK_T, BYTES_U8, F64, STRING], result: VOID },
     /** Connected AF_UNIX datagram sockets for the hot-shots package shim
@@ -3414,6 +3419,12 @@ function buildLibFnSignatures() {
     /** tlsSocket.servername (string or false) and getSession() (a Buffer
      * or null) as dyn values, and disableRenegotiation's no-op. */
     "tls.sockDynMember": { argTypes: [NETSOCKET_T, F64], result: DYN },
+    /** tlsSocket.exportKeyingMaterial(length, label[, context]); the flag
+     * says whether the call supplied a context argument. */
+    "tls.sockExportKeyingMaterial": {
+      argTypes: [NETSOCKET_T, DYN, DYN, DYN, BOOL],
+      result: BYTES_U8,
+    },
     /** `x instanceof tls.Server`: the server handle's TLS marker. */
     "tls.serverIs": { argTypes: [NETSERVER_T], result: BOOL },
     /** The same test over a checked-dynamic value (a union operand). */

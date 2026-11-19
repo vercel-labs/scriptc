@@ -6731,6 +6731,20 @@ static bool scr_net_sock_ip_blocked(ScrNetSocket *s, const char *ip, int family)
   return blocked;
 }
 
+/* Whether `ip` (family 4 or 6) is blocked by `list`, a net.BlockList
+ * handle — the dgram send/receive filters read it. A non-list blocks
+ * nothing. */
+bool scr_net_block_list_blocks(const ScrDyn *list, const char *ip, int family) {
+  if (!scr_net_is_block_list(list)) return false;
+  const ScrNetBlockList *l = (const ScrNetBlockList *)list->v.handle.ptr;
+  if (l == NULL) return false;
+  ScrStr *text = scr_str_new(ip, strlen(ip));
+  ScrNetIp parsed;
+  bool blocked = scr_net_ip_parse(text, family, &parsed) && scr_net_blocklist_check_ip(l, &parsed);
+  scr_str_release(text);
+  return blocked;
+}
+
 
 static void scr_net_blocklist_remove(ScrNetBlockList *l, const ScrNetBlockRule *rule);
 static bool scr_net_blocklist_has_address(const ScrNetBlockList *l, const ScrNetIp *ip);

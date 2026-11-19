@@ -2322,6 +2322,17 @@ void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */
 void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+/* The next error view built on this thread takes this own property before
+ * its class name. AssertionError's constructor assigns generatedMessage
+ * before name, and the view's shape is still being laid out when the first
+ * extra property is attached. Moves value; a pending seed is dropped when
+ * replaced. */
+void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value);
+/* The seed if no view consumed it (+1), else NULL. */
+ScrDyn *scr_error_take_seed(void);
+/* Exit-cleanup registrations the seed made on this thread: one, however
+ * many assertions seed (the runtime tests pin it). */
+size_t scr_error_seed_registration_count(void);
 /* scr_throw_node_coded with an own `url` property (error.nodeThrow's
  * fourth argument). Borrows the strings; always throws. */
 SCR_COLD void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg,
@@ -2492,6 +2503,12 @@ ScrDyn *scr_dyn_call(const ScrDyn *d, ScrDyn *const *args, size_t argc, const ch
  * `f(...args)` after the emitted argument array is built): argv IS the
  * array's items. Borrows both; result owned (+1), or NULL pending. */
 ScrDyn *scr_dyn_apply(const ScrDyn *d, const ScrDyn *args, const char *what);
+/* The timerified wrapper's construct form (scr_perf.c installs it): answers
+ * true when `callee` is such a wrapper and stores the construction in
+ * *result. NULL until a wrapper exists, so a program without timerify never
+ * reaches the perf unit. */
+extern SCR_TL bool (*scr_dyn_timerified_construct_fn)(const ScrDyn *callee,
+                                                      const ScrDyn *args, ScrDyn **result);
 /* Function.bind borrows its target and arguments, returns a fresh callable. */
 ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc);
 

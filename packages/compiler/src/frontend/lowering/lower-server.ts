@@ -6880,10 +6880,11 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
   let opts: IrExpr;
   let literal: ts.Expression | null = optsNode;
   while (literal !== null && ts.isParenthesizedExpression(literal)) literal = literal.expression;
+  const literalObject =
+    literal !== null && ts.isObjectLiteralExpression(literal) ? literal : null;
   const literalHasSocket =
-    literal !== null &&
-    ts.isObjectLiteralExpression(literal) &&
-    literal.properties.nodes.some(
+    literalObject !== null &&
+    literalObject.properties.nodes.some(
       (p) =>
         (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
         ts.isIdentifier(p.name) &&
@@ -6897,19 +6898,18 @@ function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Src
   // walk is the validator here, so build the checked-dynamic literal and
   // let it read the members.
   const literalSpreadsUnion =
-    literal !== null &&
-    ts.isObjectLiteralExpression(literal) &&
-    literal.properties.nodes.some((p) => {
+    literalObject !== null &&
+    literalObject.properties.nodes.some((p) => {
       if (!ts.isSpreadAssignment(p)) return false;
       let source: ts.Expression = p.expression;
       while (ts.isParenthesizedExpression(source)) source = source.expression;
       return lowerer.mapTypeOf(lowerer.typeOf(source))?.kind === "union";
     });
-  if (literalHasSocket || literalSpreadsUnion) {
+  if (literalObject !== null && (literalHasSocket || literalSpreadsUnion)) {
     // A socket member is a handle the record form cannot box, and a union
     // spread builds a field set the record form cannot choose an arm for:
     // the literal builds the checked-dynamic object member by member.
-    opts = lowerDynObjectLiteral(lowerer, literal!);
+    opts = lowerDynObjectLiteral(lowerer, literalObject);
   } else if (optsNode !== null) {
     const o = lowerer.lowerExpr(optsNode);
     if (o.type.kind === "dyn") {

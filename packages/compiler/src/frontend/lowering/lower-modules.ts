@@ -2617,6 +2617,36 @@ export function collectGlobals(
   // register their module globals first — reads inside function bodies
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
+  // A split require binding (`var m; m = require("./x")`) of a partial
+  // cycle module keeps the exports object its require answered, like the
+  // const form.
+  for (const stmt of topStmts) {
+    if (!ts.isExpressionStatement(stmt)) continue;
+    const e = stmt.expression;
+    if (
+      !ts.isBinaryExpression(e) ||
+      e.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      !ts.isIdentifier(e.left)
+    )
+      continue;
+    const split = splitRequireBindingOfIdent(lowerer, e.left);
+    if (split === null || split.assign !== e) continue;
+    if (!lowerer.program.analysis.partialCjsCycleMembers.has(split.dep)) continue;
+    const symbol =
+      lowerer.checker.getSymbolAtLocation(e.left) ??
+      lowerer.resolveValueSymbol(e.left) ??
+      undefined;
+    if (symbol === undefined) continue;
+    const id = `%g.${tag}%splitRequiredObject.${e.left.text}.${positionTag(lowerer, stmt)}`;
+    const object: IrGlobal = {
+      id,
+      name: `%splitRequiredObject.${e.left.text}`,
+      type: DYN,
+      mutable: true,
+    };
+    if (!lowerer.globalsList.some((g) => g.id === id)) lowerer.globalsList.push(object);
+    lowerer.cjsPartialRequireObjects.set(symbol, { object, dep: split.dep });
+  }
   for (const stmt of topStmts) {
     if (ts.isEnumDeclaration(stmt)) {
       registerEnumObjectGlobals(lowerer, stmt, tag);
@@ -4289,10 +4319,19 @@ function registerRequireDeclBindings(
   if (snapshots !== null) {
     for (const binding of snapshots.bindings.values()) names.push(binding.name);
   }
+  // A partial require() cycle's destructured binding holds the live
+  // exports object's member (checked-dynamic), not the exporter's static
+  // storage.
+  const partialSnapshotNames =
+    snapshots !== null && lowerer.program.analysis.partialCjsCycleMembers.has(snapshots.dep)
+      ? new Set([...snapshots.bindings.values()].map((binding) => binding.name.text))
+      : null;
   for (const nameNode of names) {
     const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
     if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
-    const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
+    const mapped = partialSnapshotNames?.has(nameNode.text)
+      ? DYN
+      : lowerer.mapTypeOf(lowerer.typeOf(nameNode));
     const type = mapped && mapped.kind !== "void" ? mapped : DYN;
     const g: IrGlobal = {
       id: `%g.${tag}${nameNode.text}`,
@@ -4305,8 +4344,37 @@ function registerRequireDeclBindings(
         : {}),
     };
     lowerer.globalsBySymbol.set(symbol, g);
+    // The checker's narrowing does not describe a partial cycle's live
+    // member, which can be undefined: reads stay checked-dynamic.
+    if (partialSnapshotNames?.has(nameNode.text)) lowerer.jsWidenedBindings.add(symbol);
     lowerer.globalsList.push(g);
     if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+  }
+  // A `const m = require("./x")` binding over a partial cycle module keeps
+  // the exports object its require answered, so a member a LATER
+  // `module.exports = { … }` in the target adds is not visible through it
+  // (Node's object identity).
+  if (ts.isIdentifier(decl.name)) {
+    const dep = lowerer.cjsModuleRefDepOf(decl.initializer!);
+    const symbol =
+      lowerer.checker.getSymbolAtLocation(decl.name) ??
+      lowerer.resolveValueSymbol(decl.name) ??
+      undefined;
+    if (
+      dep !== null &&
+      lowerer.program.analysis.partialCjsCycleMembers.has(dep) &&
+      symbol !== undefined
+    ) {
+      const id = `%g.${tag}%requiredObject.${decl.name.text}`;
+      const object: IrGlobal = {
+        id,
+        name: `%requiredObject.${decl.name.text}`,
+        type: DYN,
+        mutable: true,
+      };
+      if (!lowerer.globalsList.some((g) => g.id === id)) lowerer.globalsList.push(object);
+      lowerer.cjsPartialRequireObjects.set(symbol, { object, dep });
+    }
   }
 }
 
@@ -4544,6 +4612,17 @@ export function lowerFileInit(
       header.push({
         kind: "assign",
         localId: guardId,
+        value: { kind: "boolLit", value: true, type: BOOL, loc: loc0 },
+        loc: loc0,
+      });
+    }
+    // Modules Node can revisit mid-evaluation (a require(esm) cycle test)
+    // mark their evaluation window before their dependencies run.
+    const evaluatingId = lowerer.moduleEvaluatingOf.get(sf);
+    if (evaluatingId !== undefined) {
+      header.push({
+        kind: "assign",
+        localId: evaluatingId,
         value: { kind: "boolLit", value: true, type: BOOL, loc: loc0 },
         loc: loc0,
       });
@@ -4964,9 +5043,20 @@ export function lowerFileInit(
         loc: loc0,
       };
     }
+    // The evaluation window closes when the body returns; a cache-hit
+    // revisit returned above without touching it.
+    if (evaluatingId !== undefined) {
+      body.push({
+        kind: "assign",
+        localId: evaluatingId,
+        value: { kind: "boolLit", value: false, type: BOOL, loc: loc0 },
+        loc: loc0,
+      });
+    }
     const moduleRef = cjsModuleRef(lowerer, sf);
     if (moduleRef !== null) {
-      const guardedBody = body.splice(guardId !== undefined ? 2 : 0);
+      const preamble = (guardId !== undefined ? 2 : 0) + (evaluatingId !== undefined ? 1 : 0);
+      const guardedBody = body.splice(preamble);
       const catchLocal = lowerer.declareHiddenLocal("%moduleError", { kind: "caught" });
       guardedBody.unshift({
         kind: "exprStmt",

@@ -599,6 +599,7 @@ describe("library profile fences", () => {
       "node-builtin.perf_hooks.performance.markResourceTiming",
       "node-builtin.perf_hooks.performance.measure",
       "node-builtin.perf_hooks.performance.now",
+      "node-builtin.perf_hooks.timerify",
     ]);
     expect(r.profile.fences[2]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
   });

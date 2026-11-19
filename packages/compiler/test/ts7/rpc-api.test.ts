@@ -386,7 +386,10 @@ test("real server refusals leave the production process channel reusable", () =>
 test("failed process startup has no uncaught error or leaked exit hook", async () => {
   const before = process.listenerCount("exit");
   expect(() => spawnTs7Wire(join(tempRoot, "scriptc-ts7-does-not-exist", "tsgo"), [])).toThrow(
-    "Unable to start TypeScript server",
+    // A missing toolchain payload is reported by the toolchain-mode repair
+    // when the compiler that carries it is installed, and by the FIFO launch
+    // otherwise (this branch and its merge with main differ in that).
+    /Unable to start TypeScript server|toolchain executable .* is missing; reinstall scriptc/,
   );
   await new Promise<void>((resolve) => setImmediate(resolve));
   expect(process.listenerCount("exit")).toBe(before);

@@ -20,6 +20,9 @@ try {
 // ahead of a revoking one for the same CA verifies; the reverse revokes.
 const cleanCrl = readFileSync(`${D}/crl-clean.pem`);
 const revokedCrl = readFileSync(`${D}/crl-revoked.pem`);
+const expiredCrl = readFileSync(`${D}/crl-expired.pem`);
+const futureCrl = readFileSync(`${D}/crl-future.pem`);
+const badsigCrl = readFileSync(`${D}/crl-badsig.pem`);
 for (const [name, crl] of [
   ["crl-clean", readFileSync(`${D}/crl-clean.pem`)],
   ["crl-revoked", revokedCrl],
@@ -31,6 +34,12 @@ for (const [name, crl] of [
   ["crl-array-first", [cleanCrl, revokedCrl]],
   ["crl-array-last", [revokedCrl, cleanCrl]],
   ["crl-array-strings", [cleanCrl.toString(), revokedCrl.toString()]],
+  ["crl-array-expired-first", [expiredCrl, cleanCrl]],
+  ["crl-array-future-first", [futureCrl, cleanCrl]],
+  ["crl-array-badsig-first", [badsigCrl, cleanCrl]],
+  ["crl-array-expired-badsig", [expiredCrl, badsigCrl, cleanCrl]],
+  ["crl-array-expired-clean-badsig", [expiredCrl, cleanCrl, badsigCrl]],
+  ["crl-array-expired-revoked", [expiredCrl, revokedCrl]],
 ]) {
   const server = tls.createServer({ cert, key }, (socket) => socket.end("ok"));
   server.on("tlsClientError", () => {});

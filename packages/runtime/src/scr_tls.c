@@ -191,6 +191,12 @@ static int scr_tls_parse_crt(mbedtls_x509_crt *crt, const char *pem, size_t len)
 
 /* tls.connect's crl option (one PEM/DER CRL, or an array whose PEM blocks
  * join on line boundaries): mbedTLS parses the whole PEM bundle. */
+static bool scr_tls_crl_same_issuer(const mbedtls_x509_crl *a, const mbedtls_x509_crl *b) {
+  return a->issuer_raw.len == b->issuer_raw.len &&
+         (a->issuer_raw.len == 0 ||
+          memcmp(a->issuer_raw.p, b->issuer_raw.p, a->issuer_raw.len) == 0);
+}
+
 static int scr_tls_parse_crl(mbedtls_x509_crl *crl, const char *pem, size_t len) {
   unsigned char *buf = malloc(len + 1);
   if (!buf) scr_tls_oom();
@@ -199,27 +205,68 @@ static int scr_tls_parse_crl(mbedtls_x509_crl *crl, const char *pem, size_t len)
   int r = mbedtls_x509_crl_parse(crl, buf, len + 1);
   free(buf);
   if (r != 0) return r;
-  /* OpenSSL keeps the FIRST CRL it reads for an issuer and ignores later
-   * ones for that issuer; mbedTLS checks every chained CRL, so drop the
-   * duplicates to match (a clean CRL followed by a revoking one for the
-   * same CA verifies in Node). */
-  for (mbedtls_x509_crl *first = crl; first != NULL; first = first->next) {
-    mbedtls_x509_crl *prev = first;
-    mbedtls_x509_crl *at = first->next;
-    while (at != NULL) {
-      if (at->issuer_raw.len == first->issuer_raw.len &&
-          memcmp(at->issuer_raw.p, first->issuer_raw.p, first->issuer_raw.len) == 0) {
-        prev->next = at->next;
-        at->next = NULL;
-        mbedtls_x509_crl_free(at);
-        free(at);
-        at = prev->next;
-      } else {
-        prev = at;
-        at = at->next;
-      }
-    }
+  /* OpenSSL uses the FIRST CRL for an issuer that is inside its validity
+   * window and ignores later ones for that issuer; an expired or
+   * not-yet-valid CRL is skipped when a current one follows, while a CRL
+   * with a bad signature still blocks when it is the selected one (the
+   * signature is checked later, against the issuer key). mbedTLS checks
+   * every chained CRL, so reduce each issuer to its selected CRL. The
+   * caller-owned head struct cannot be removed, so when its issuer's
+   * selection is a later node their contents are swapped and the tail is
+   * dropped. */
+  size_t count = 0;
+  for (mbedtls_x509_crl *n = crl; n != NULL; n = n->next) count++;
+  mbedtls_x509_crl **nodes = malloc(count * sizeof *nodes);
+  if (nodes == NULL) scr_tls_oom();
+  size_t at = 0;
+  for (mbedtls_x509_crl *n = crl; n != NULL;) {
+    mbedtls_x509_crl *next = n->next;
+    nodes[at++] = n;
+    n->next = NULL; /* rebuilt below */
+    n = next;
   }
+  bool *done = calloc(count, sizeof *done);
+  bool *keep = calloc(count, sizeof *keep);
+  if (done == NULL || keep == NULL) {
+    free(done);
+    free(keep);
+    free(nodes);
+    scr_tls_oom();
+  }
+  for (size_t i = 0; i < count; i++) {
+    if (done[i]) continue;
+    size_t chosen = SIZE_MAX;
+    for (size_t j = i; j < count; j++) {
+      if (done[j] || !scr_tls_crl_same_issuer(nodes[j], nodes[i])) continue;
+      done[j] = true;
+      if (chosen == SIZE_MAX && !mbedtls_x509_time_is_past(&nodes[j]->next_update) &&
+          !mbedtls_x509_time_is_future(&nodes[j]->this_update))
+        chosen = j;
+    }
+    if (chosen == SIZE_MAX) chosen = i; /* none current: the first reports why */
+    if (i == 0 && chosen != 0) {
+      mbedtls_x509_crl tmp = *nodes[0];
+      *nodes[0] = *nodes[chosen];
+      *nodes[chosen] = tmp;
+      chosen = 0;
+    }
+    for (size_t j = i; j < count; j++)
+      if (scr_tls_crl_same_issuer(nodes[j], nodes[i])) keep[j] = (j == chosen);
+  }
+  mbedtls_x509_crl *tail = NULL;
+  for (size_t i = 0; i < count; i++) {
+    if (!keep[i]) {
+      mbedtls_x509_crl_free(nodes[i]);
+      free(nodes[i]);
+      continue;
+    }
+    nodes[i]->next = NULL;
+    if (tail != NULL) tail->next = nodes[i];
+    tail = nodes[i];
+  }
+  free(done);
+  free(keep);
+  free(nodes);
   return 0;
 }
 

@@ -437,9 +437,10 @@ function prepareRound(
       : decideNodeIslands(entryPath, opts, state.firstLoad, lowerIslands, lowerModules);
   if (state.firstLoad === null || islandDecision === null || islandDecision.errors.length > 0) {
     const selected = new Set(inputs.loadPolicy.forcedNode.keys());
-    first = loadWithShimFallback(inputs.loadPolicy, selected, () =>
+    first = loadWithShimFallback(inputs.loadPolicy, selected, (islandShims) =>
       createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
         forcedNode: selected,
+        ...(islandShims === undefined ? {} : { islandPackages: islandShims }),
         islandScan,
         ...(opts.define !== undefined ? { define: opts.define } : {}),
       }),

@@ -51,10 +51,11 @@ export function analyzeWithFrontend(
   // decideNodeIslands), including a package the policy forces into Node.
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const forcedNode = new Set(policy.forcedNode.keys());
-  const fe = loadWithShimFallback(policy, forcedNode, () =>
+  const fe = loadWithShimFallback(policy, forcedNode, (islandShims) =>
     createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
       nodeIslands: true,
       forcedNode,
+      ...(islandShims === undefined ? {} : { islandPackages: islandShims }),
       ...(opts.define !== undefined ? { define: opts.define } : {}),
     }),
   );

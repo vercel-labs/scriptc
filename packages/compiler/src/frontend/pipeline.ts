@@ -124,6 +124,7 @@ export type ProgramLoader = (
  * Frontend shape. */
 export interface Frontend {
   preflight: ScrDiagnostic[];
+  admittedOpinions?: LoadResult["admittedOpinions"];
   /** Loaded partial shim entries that can use the installed declarations. */
   loadedIslandShims?: () => string[];
   /** The entry source file's text for diagnostics and source annotations. */
@@ -1217,6 +1218,7 @@ function loadFrontend(
     preflight: withoutIslandModules(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
     ),
+    admittedOpinions: load.admittedOpinions,
     loadedIslandShims: () =>
       loadedIslandShims((file) => finalLoad.program.getSourceFile(file) !== undefined),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),

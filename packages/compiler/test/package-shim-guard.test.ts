@@ -145,6 +145,41 @@ describe("package shims compile without refusals", () => {
 
 describe("partial package shim selection", () => {
   const proxy = join(repoRoot, "tests/fixtures/undici8/proxy.ts");
+  test.each(["proxy.mjs", "proxy.cjs"])(
+    "%s selects the installed proxy without a fence",
+    (file) => {
+      const { coverage } = analyze(join(dirname(proxy), file));
+      expect(coverage.diagnostics).toEqual([]);
+      expect(coverage.runtimeFences ?? []).toEqual([]);
+      expect(
+        coverage.nodeIslands?.islands.map((island) => [island.package, island.decision]),
+      ).toEqual([["undici", "auto"]]);
+    },
+    120_000,
+  );
+
+  test("only falls back for a CommonJS property the installed package adds", () => {
+    const dir = join(scratch, "js-package-property");
+    mkdirSync(dir);
+    symlinkSync(join(dirname(proxy), "node_modules"), join(dir, "node_modules"), "junction");
+    const entry = join(dir, "main.cjs");
+    for (const [member, expected] of [
+      ["ProxyAgent", ["undici"]],
+      ["request", []],
+      ["ProxxyAgent", []],
+    ] as const) {
+      writeFileSync(
+        entry,
+        `const undici = require("undici");\nconsole.log(typeof undici.${member});\n`,
+      );
+      const { coverage } = analyze(entry);
+      expect(coverage.diagnostics, member).toEqual([]);
+      expect(coverage.nodeIslands?.islands.map((island) => island.package) ?? [], member).toEqual(
+        expected,
+      );
+    }
+  }, 120_000);
+
   test("explicit mode and a forced native package keep the shim's export error", () => {
     for (const nodeIslands of [{ mode: "explicit" as const }, { native: ["undici"] }]) {
       const { coverage } = analyze(proxy, { nodeIslands });

@@ -197,12 +197,16 @@ describe("package shims", () => {
     expect(island.coverage.nodeIslands?.islands.map((item) => item.package)).toContain("undici");
   }, 120_000);
 
-  test.skipIf(libnodePack() === null)(
-    "undici8: both proxy agents forward HTTP with just the libnode pack",
-    async () => {
+  test.skipIf(libnodePack() === null).each([
+    { file: "proxy.ts", requests: 2 },
+    { file: "proxy.mjs", requests: 1 },
+    { file: "proxy.cjs", requests: 1 },
+  ])(
+    "undici8: $file forwards HTTP with just the libnode pack",
+    async ({ file, requests }) => {
       const dir = join(repoRoot, "tests/fixtures/undici8");
-      const entry = join(dir, "proxy.ts");
-      const out = join(scratch, "undici8-proxy");
+      const entry = join(dir, file);
+      const out = join(scratch, `undici8-${file}`);
       const result = await compile(entry, {
         outPath: join(out, "client"),
         outDir: out,
@@ -213,7 +217,7 @@ describe("package shims", () => {
         const expected = await runBinary(process.execPath, [entry, url], dir);
         expect(expected.exitCode).toBe(0);
         expect(expected.stdout.toString()).toBe(
-          "200 GET http://origin.invalid/probe?q=1\n".repeat(2),
+          "200 GET http://origin.invalid/probe?q=1\n".repeat(requests),
         );
         const actual = await runBinary(result.binaryPath, [url], dir);
         expect({ ...actual, stderr: programStderr(actual.stderr) }).toEqual(expected);

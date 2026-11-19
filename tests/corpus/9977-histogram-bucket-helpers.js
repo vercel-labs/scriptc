@@ -50,3 +50,9 @@ for (const [label, run] of [
     console.log("invalid", label, error.name, error.code, error.message);
   }
 }
+
+// A sample below the histogram's lowest resolution sits in bucket zero; the
+// map counts it at the first bucket.
+const lowResolution = createHistogram({ lowest: 10 });
+for (const value of [5, 5, 25]) lowResolution.record(value);
+console.log("linear-low", pairs(lowResolution.linearBuckets(10)));

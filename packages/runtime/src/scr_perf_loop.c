@@ -1550,7 +1550,18 @@ static void scr_buckets_cleanup(void) {
   scr_buckets_view.len = scr_buckets_view.cap = 0;
 }
 
+/* The view is per thread and program-lived: its arrays are freed at exit.
+ * The cleanup registers on first use, so a program that never builds a
+ * bucket map allocates nothing. */
+static bool scr_buckets_registered;
+static void scr_buckets_ensure_cleanup(void) {
+  if (scr_buckets_registered) return;
+  scr_buckets_registered = true;
+  scr_atexit(scr_buckets_cleanup);
+}
+
 static bool scr_buckets_push(double key, int64_t count) {
+  scr_buckets_ensure_cleanup();
   if (scr_buckets_view.len == scr_buckets_view.cap) {
     size_t cap = scr_buckets_view.cap ? scr_buckets_view.cap * 2 : 32;
     double *keys = realloc(scr_buckets_view.key, cap * sizeof *keys);
@@ -1682,6 +1693,9 @@ double scr_histo_linear_buckets_count(ScrDyn *handle, double step_d) {
     if (layout.counts[i] <= 0) continue;
     int64_t repr = layout.value_at(layout.owner, i);
     int64_t index = (repr + step - 1) / step;
+    /* A sample below the layout's lowest resolution sits in bucket zero,
+     * whose representative is 0; the map starts at the first bucket. */
+    if (index < 1) index = 1;
     if (index > max_index) max_index = index;
   }
   if (max_index == 0) return 0;
@@ -1696,6 +1710,7 @@ double scr_histo_linear_buckets_count(ScrDyn *handle, double step_d) {
     if (layout.counts[i] <= 0) continue;
     int64_t repr = layout.value_at(layout.owner, i);
     int64_t index = (repr + step - 1) / step;
+    if (index < 1) index = 1;
     counts[index - 1] += layout.counts[i];
   }
   bool ok = true;

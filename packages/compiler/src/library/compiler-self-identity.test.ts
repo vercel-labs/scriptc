@@ -348,3 +348,20 @@ test("a dependency record without a content digest does not match", async () => 
   ];
   expect(await compilerImplementationDependenciesStillMatch(legacy as never)).toBe(false);
 });
+
+test("an identity proofs a package with more files than one batch", async () => {
+  // More entries than the check reads at once: an unchanged package must
+  // still prove, so no more files are open than the batch allows.
+  const root = await fixture();
+  const files = 200;
+  await Promise.all(
+    Array.from({ length: files }, (_, index) =>
+      writeFile(join(root, `file-${index}.ts`), `export const value${index} = ${index};\n`),
+    ),
+  );
+  const first = await compilerImplementationIdentity(true, root);
+  expect(first.dependencies.length).toBeGreaterThan(files);
+  expect(await compilerImplementationDependenciesStillMatch(first.dependencies)).toBe(true);
+  await writeFile(join(root, "file-77.ts"), "export const value77 = -1;\n");
+  expect(await compilerImplementationDependenciesStillMatch(first.dependencies)).toBe(false);
+});

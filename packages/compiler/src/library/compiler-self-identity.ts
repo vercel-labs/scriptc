@@ -260,17 +260,26 @@ export async function compilerImplementationDependenciesStillMatch(
   // The proof compares each entry's kind and CONTENT, not its metadata: a
   // rebuild that rewrites the compiler's files with identical bytes leaves
   // its identity (and every cache entry keyed by it) intact.
-  const current = await Promise.all(
-    dependencies.map(async (expected) => {
-      const info = await lstat(expected.path).catch(() => null);
-      if (info === null) return false;
-      const observed = await entryContent(expected.path, info).catch(() => null);
-      return (
-        observed !== null &&
-        observed.kind === expected.kind &&
-        observed.content === expected.content
-      );
-    }),
-  );
-  return current.every(Boolean);
+  //
+  // Read bounded batches: a compiler package can hold more files than the
+  // process may keep open at once, and opening them all would fail the proof
+  // for an unchanged package — and with it every cache fast path keyed by the
+  // identity.
+  const batchSize = 64;
+  for (let start = 0; start < dependencies.length; start += batchSize) {
+    const batch = await Promise.all(
+      dependencies.slice(start, start + batchSize).map(async (expected) => {
+        const info = await lstat(expected.path).catch(() => null);
+        if (info === null) return false;
+        const observed = await entryContent(expected.path, info).catch(() => null);
+        return (
+          observed !== null &&
+          observed.kind === expected.kind &&
+          observed.content === expected.content
+        );
+      }),
+    );
+    if (!batch.every(Boolean)) return false;
+  }
+  return true;
 }

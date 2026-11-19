@@ -325,12 +325,13 @@ import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
 import { PROGRAM_FACTS } from "../../program-facts.js";
-import { unitsObserveEnabled } from "../../units/mode.js";
+import { unitsCollectingEnabled } from "../../units/mode.js";
 import {
   packageDirectorySources,
   packageOfFile,
   type PackageScopeCache,
 } from "../../units/packages.js";
+import { isProgramWideHelperName } from "../../units/ir.js";
 import { classNumbering } from "../../units/summary.js";
 import type {
   UnitDeclarationFact,
@@ -2499,7 +2500,7 @@ function lowerToIrWithIslands(
   // per-file summary data from the pass whose result stands. Report-only —
   // nothing read here reaches the IR, and a failure to collect never fails
   // the build.
-  if (unitsObserveEnabled() && result.module !== null) {
+  if (unitsCollectingEnabled() && result.module !== null) {
     try {
       result = {
         ...result,
@@ -3638,7 +3639,7 @@ export class Lowerer {
     generic: string,
     instance: string,
   ): void {
-    if (!unitsObserveEnabled()) return;
+    if (!unitsCollectingEnabled()) return;
     const owner = this.closureRoot;
     const key = `${kind}\0${generic}\0${instance}\0${owner}`;
     if (this.unitGenericDemandKeys.has(key)) return;
@@ -16598,7 +16599,7 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    if (unitsObserveEnabled()) {
+    if (unitsCollectingEnabled()) {
       // The observation resolves each demanded instance's owner (a closure
       // root name) to the file that declares it.
       const sources = new Map<string, ts.Node>();
@@ -16835,14 +16836,10 @@ export class Lowerer {
     // from. Synthetic functions with no source file are left out: they
     // belong to no unit.
     //
-    // The class-dispatch helpers are left out too. Their bodies are
-    // regenerated every build from every unit's class lists and site
-    // requests, and their numbers depend on the program's class and site
-    // counts, so a build of another app names and shapes them differently
-    // (measured on todo vs counter: `%dyn.class.property.N` alone made two SDK
-    // units' pins differ, and `%class.branchPropertiesOrEmpty:*` alone made the
-    // 151-file unit differ). They are not a unit's functions to reuse.
-    //
+    // Program-wide helpers are left out (isProgramWideHelperName): their
+    // bodies and names come from every unit's classes and the program's
+    // sites, and every build regenerates them. On todo vs counter they were
+    // the last difference between the 151-file SDK unit's pins.
     // A generic instance's body carries its family's declaration as `loc`,
     // so an app-demanded instance is attributed to the package that declares
     // the generic. M1-3's pin rule needs the demanding unit instead (an
@@ -16851,7 +16848,7 @@ export class Lowerer {
     // REPORT.md — so the attribution stays by declaration until it does.
     const pinFunctions: { module: string; name: string }[] = [];
     for (const fn of module.functions) {
-      if (fn.name.startsWith("%dyn.class.") || fn.name.startsWith("%class.")) continue;
+      if (isProgramWideHelperName(fn.name)) continue;
       const module = relativeOf.get(fn.loc.file);
       if (module === undefined) continue;
       pinFunctions.push({ module, name: fn.name });

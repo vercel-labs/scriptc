@@ -39,7 +39,7 @@ import {
 } from "../frontend/input-tracker.js";
 import { compilerOwnedFileRoots } from "../frontend/dts-paths.js";
 import { frontendEnvironment } from "../frontend/environment.js";
-import { unitsObserveEnabled } from "../units/mode.js";
+import { unitsMode, unitsObserveEnabled } from "../units/mode.js";
 import { ffiProfileDigest } from "../units/key.js";
 import { observeUnits } from "../units/observe.js";
 import { unitsStoreRoot } from "../units/store.js";
@@ -622,8 +622,8 @@ export function prepareNativeExecutable(
   });
   const { prepared, islandModuleData } = lowered;
   if (!prepared.ok) return prepared;
-  // SCRIPTC_UNITS=observe: the same report and store entry the Node host
-  // makes, with the native toolchain's identity and triple. Report-only.
+  // SCRIPTC_UNITS=observe|split: the same report and store entries the Node
+  // host makes, with the native toolchain's identity and triple.
   if (prepared.unitObservation !== undefined) {
     try {
       observeUnits(prepared.unitObservation, {
@@ -634,6 +634,8 @@ export function prepareNativeExecutable(
         ffiDigest: ffi === null ? null : ffiProfileDigest(ffi),
         environment: frontendEnvironment().map(([name, value]) => [name, value ?? ""] as const),
         storeRoot: unitsStoreRoot(),
+        mode: unitsMode() ?? "observe",
+        module: prepared.mod,
       });
     } catch {
       /* the observation is a report, not a build step */

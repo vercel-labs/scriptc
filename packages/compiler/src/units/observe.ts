@@ -1,15 +1,18 @@
-/* SCRIPTC_UNITS=observe (M0): after a normal build lowered the program,
- * compute the unit graph, each unit's key and summary, write them to the unit
- * store, and print one `scriptc units {…}` line on stderr.
+/* SCRIPTC_UNITS=observe and SCRIPTC_UNITS=split: after a build lowered the
+ * program, compute the unit graph, each unit's key, summary and pins, write
+ * them to the unit store, and print one `scriptc units {…}` line on stderr.
+ * `split` also stores each non-app unit's lowered IR (units/ir.ts).
  *
- * The output is a report. It changes no IR, no executable and no diagnostic;
- * the units written to the store are M1's inputs, and the line is what
- * measures how much of the SDK's lowering facts change from one app to
- * another. */
+ * The output is a report. Neither mode changes the IR, the executable or a
+ * diagnostic; the entries written to the store are what a later split build
+ * reuses, and the line measures how much of the SDK's lowering facts and
+ * lowered functions change from one app to another. */
 
 import { performance } from "node:perf_hooks";
+import type { IrModule } from "../ir/ir.js";
 import { canonicalJson, type CanonicalValue } from "./canonical.js";
 import { buildUnitGraph, unitIdByFile } from "./graph.js";
+import { UNIT_IR_SCHEMA, unitModuleSlice, type UnitIrSlice } from "./ir.js";
 import { digestOfText, loweringKeyValue, unitKey, unitKeyParts, type UnitKeyInput } from "./key.js";
 import { buildUnitSummary, summaryText } from "./summary.js";
 import { protectUnitEntry, readUnitEntry, unitsStoreRoot, writeUnitEntry } from "./store.js";
@@ -19,6 +22,7 @@ import type {
   UnitNode,
   UnitObservation,
   UnitObservationInput,
+  UnitStoreIr,
   UnitStoreMeta,
   UnitSummary,
 } from "./types.js";
@@ -38,6 +42,12 @@ export interface UnitsHostContext {
   /** The unit store root the host prepared, when it differs from the
    * process default (the build cache root, `units-v2`). */
   storeRoot?: string | null;
+  /** The mode this build selected. `split` also stores each non-app unit's
+   * IR (units/ir.ts); `observe` only reports. */
+  mode?: "observe" | "split";
+  /** The final lowered module. `split` slices each non-app unit's IR out of
+   * it; a build that does not project the module stores no IR. */
+  module?: IrModule;
 }
 
 /** One unit's observation result. */
@@ -63,12 +73,14 @@ export interface UnitReportEntry {
    * to a file. Their values are pinned (they are in the comparison); the
    * attribution is what M1-3's base-union-app rule needs. */
   unattributedFacts: readonly string[];
+  /** The IR this build stored for the unit (`split` only). */
+  ir: UnitStoreIr | null;
 }
 
 export interface UnitsReport {
   graph: UnitGraph;
   entries: readonly UnitReportEntry[];
-  timings: { graphMs: number; summaryMs: number; keyMs: number; totalMs: number };
+  timings: { graphMs: number; summaryMs: number; keyMs: number; irMs: number; totalMs: number };
   /** Total summary bytes written or computed. */
   summaryBytes: number;
   /** The store root used, or null when the build had no shared cache. */
@@ -241,6 +253,9 @@ export function observeUnits(
   };
   const graph = buildUnitGraph(input);
   const graphMs = performance.now() - started;
+  // Each program file's package-relative path, for slicing a unit's IR.
+  const fileModule = new Map(input.files.map((file) => [file.file, file.relative]));
+  let irMs = 0;
   const unitOfModule = modulesByUnit(graph);
   const byModule = (module: string): string | null => unitOfModule.get(module) ?? null;
 
@@ -297,6 +312,50 @@ export function observeUnits(
       wouldHit = pinsEqual;
     }
     const unattributed = unattributedFacts(summary.summary.facts);
+    // Split: the unit's lowered IR, cut from the final module. The app's
+    // functions are regenerated on every build, and a unit whose lowering
+    // produced no function has nothing to store.
+    let irSlice: UnitIrSlice | null = null;
+    if (
+      context.mode === "split" &&
+      !node.app &&
+      context.module !== undefined &&
+      storeRoot !== null
+    ) {
+      const irStarted = performance.now();
+      const unitModules = new Set(node.files);
+      const ownClasses = new Set<string>();
+      for (const entry of observation.classes) {
+        const at = fileModule.get(entry.file);
+        if (at !== undefined && unitModules.has(at)) ownClasses.add(entry.name);
+      }
+      try {
+        irSlice = unitModuleSlice(
+          context.module,
+          unitModules,
+          (file) => fileModule.get(file),
+          ownClasses,
+        );
+      } catch {
+        // A slice that cannot round-trip is not stored; the unit simply has
+        // no entry IR until the next cold build, and the exit stays correct.
+        irSlice = null;
+      }
+      irMs += performance.now() - irStarted;
+    }
+    const irMeta: UnitStoreIr | null =
+      irSlice === null
+        ? null
+        : {
+            schema: UNIT_IR_SCHEMA,
+            digest: irSlice.digest,
+            bytes: irSlice.bytes.length,
+            functions: irSlice.functions.length,
+            globals: irSlice.globals.length,
+            classes: irSlice.classes.length,
+            records: irSlice.records.length,
+            unions: irSlice.unions.length,
+          };
     if (storeRoot !== null) {
       const meta: UnitStoreMeta = {
         schema: "scriptc.unit-meta.v0",
@@ -307,9 +366,10 @@ export function observeUnits(
         compiler: context.compilerIdentity,
         keyParts: unitKeyParts(keyInputs.get(node.id)!),
         timings: { graphMs, summaryMs, keyMs },
+        ...(irMeta === null ? {} : { ir: irMeta }),
       };
       try {
-        writeUnitEntry(storeRoot, key, summary.text, meta);
+        writeUnitEntry(storeRoot, key, summary.text, meta, irSlice?.bytes);
         if (protectedPaths !== undefined) protectUnitEntry(storeRoot, key, protectedPaths);
       } catch {
         /* the store is an optimization; the summary was already computed */
@@ -327,12 +387,14 @@ export function observeUnits(
       wouldHit,
       pinsEqual,
       unattributedFacts: unattributed,
+      ir: irMeta,
     });
   }
   const timings = {
     graphMs: Math.round(graphMs * 100) / 100,
     summaryMs: Math.round(summaryMs * 100) / 100,
     keyMs: Math.round(keyMs * 100) / 100,
+    irMs: Math.round(irMs * 100) / 100,
     totalMs: Math.round((performance.now() - started) * 100) / 100,
   };
   const report: UnitsReport = { graph, entries, timings, summaryBytes, storeRoot };
@@ -361,6 +423,7 @@ export function observeUnits(
       // attribute before it can compare a base contribution against an app's.
       safeToUse: entry.wouldHit === true,
       unattributedFacts: entry.unattributedFacts,
+      ir: entry.ir === null ? null : { bytes: entry.ir.bytes, functions: entry.ir.functions },
     })),
   };
   process.stderr.write(`scriptc units ${JSON.stringify(line)}\n`);

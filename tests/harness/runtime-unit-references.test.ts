@@ -137,11 +137,6 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   // and regex units.
   "scr_stream.c -> scr_readline_tty.c": ["scr_rl_keypress_events"],
   "scr_stream.c -> scr_stream_ops.c": ["scr_stream_from_dyn_iter"],
-  // blob() collects a readable into a Blob. The reference sits in the
-  // consumers' shared settlement function, which only a stream/consumers
-  // call reaches; every such call now selects the checked-dynamic async
-  // unit, which links scr_blob.c.
-  "scr_stream.c -> scr_blob.c": ["scr_blob_new"],
   // A failing test's message: every test.* call selects the inspect unit,
   // and a held TestContext type reaches neither. The custom-inspector retry
   // renders through the same functions the message does.

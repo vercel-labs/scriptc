@@ -840,6 +840,11 @@ export interface ClassMethodSignature {
   abstract?: true;
   async?: true;
   gen?: NonNullable<IrFunction["generator"]>;
+  /** Set when a JavaScript override in this method's family needs the
+   * checked-dynamic parameter ABI: every declaration of the method (this
+   * one included) then takes each argument boxed, so a call through any
+   * declaration converts it exactly once, where the override reads it. */
+  dynParams?: true;
 }
 
 export interface ClassInfo {
@@ -4577,6 +4582,12 @@ export function collectClassShapeInner(
             ft.params = shapes.map((shape) => shape.type);
             ft.ret = overridden.sig.ret;
             if (overridden.sig.async === true) thunkAsyncSlot(overridden, mName);
+            // Every declaration of the method above this one takes the same
+            // boxed arguments: a call typed as the base (or an intermediate
+            // class) then converts its value once, where the override reads
+            // it, instead of passing a native object into an override that
+            // treats its parameter as a checked value.
+            widenJsOverrideFamily(lowerer, overridden.declarer, mName, arity);
           } else if (
             // A JavaScript override of a shape the checked-dynamic slot cannot
             // carry (above), or the TypeScript form (class-member-refusals.ts):
@@ -9405,7 +9416,40 @@ function overrideReturnAbi(
   return declared;
 }
 
+/** Widen every declaration of `mName` at or above `declarer` to the
+ * checked-dynamic parameter ABI (arity included): a JavaScript override
+ * that declares a different signature reads whichever value a call passes,
+ * so the whole family must box its arguments rather than hand a call typed
+ * as one declaration a native value the override reads as a checked one. */
+function widenJsOverrideFamily(
+  lowerer: Lowerer,
+  declarer: ClassInfo,
+  mName: string,
+  arity: number,
+): void {
+  for (let c: ClassInfo | null = declarer; c !== null; c = c.base) {
+    const sig = c.methods.get(mName);
+    if (sig === undefined || sig.dynParams === true) continue;
+    const own = sig.params;
+    sig.params = Array.from({ length: Math.max(arity, own.length) }, (_, index): ParamShape => {
+      const inherited = own[index];
+      if (inherited === undefined) return { type: DYN, mode: "omittable" };
+      return {
+        type: DYN,
+        mode:
+          inherited.mode === "omittable"
+            ? "omittable"
+            : inherited.mode === "dynRest"
+              ? "dynRest"
+              : "required",
+      };
+    });
+    sig.dynParams = true;
+  }
+}
+
 /** The nearest declaration of `name` at or above `info` — the method a
+ * receiver of that static class runs when nothing below overrides it. *//** The nearest declaration of `name` at or above `info` — the method a
  * receiver of that static class runs when nothing below overrides it. */
 export function findMethodOn(
   lowerer: Lowerer,

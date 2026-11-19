@@ -33,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu";
+  id: "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu" | "mlkem";
   predicate: RuntimePredicate;
 }
 

@@ -206,6 +206,29 @@ function classExpressionOf(ident: ts.Identifier): ts.ClassExpression | null {
   return ts.isClassExpression(initializer) ? initializer : null;
 }
 
+/** The class a variable's initializer aliases: an identifier or a property
+ * access (`export const Base = C.Base;`) whose symbol resolves, through
+ * import and export aliases, to the class declaration it names
+ * (`checker.getAliasedSymbol` then `valueDeclaration`). A module that binds
+ * another module's classes locally to share them (the dev host's
+ * dev-globals.ts) exports them this way, and each one needs its method
+ * table registered like a declared class's. */
+function aliasedClass(lowerer: Lowerer, ident: ts.Identifier): ts.ClassLikeDeclaration | null {
+  const decl = ident.parent;
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return null;
+  const initializer = withoutParenthesesTypeWrappers(decl.initializer);
+  if (!ts.isIdentifier(initializer) && !ts.isPropertyAccessExpression(initializer)) return null;
+  let symbol = lowerer.checker.getSymbolAtLocation(
+    ts.isPropertyAccessExpression(initializer) ? initializer.name : initializer,
+  );
+  if (symbol === undefined) return null;
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  const value = symbol.valueDeclaration;
+  return value !== undefined && ts.isClassDeclaration(value) ? value : null;
+}
+
 /** The name of a class imported from `spec` that the island file extends
  * (`class X extends Base` or `extends ns.Base`), or null. */
 function extendedImport(text: string, spec: string): string | null {
@@ -563,21 +586,21 @@ export function sharedInitFlagStores(lowerer: Lowerer, stmt: ts.Statement): IrSt
 }
 
 /** The class an export's value is, or null: the class its declaration
- * declares, or the class expression that initializes a variable nothing
+ * declares, the class expression that initializes a variable nothing
  * reassigns (`var Shape = class { … }; export { Shape }`, the form
- * bundlers write for a class declaration). Island code constructs it and
- * calls its methods like a declared class's. */
+ * bundlers write for a class declaration), or the class another module's
+ * binding names (`export const Base = C.Base;`, the form a module that
+ * shares another module's classes locally writes). Island code constructs
+ * it and calls its methods like a declared class's. */
 function exportedClass(lowerer: Lowerer, e: SharedExport): ts.ClassLikeDeclaration | null {
   const decl = e.ident.parent;
   if (decl === undefined) return null;
   if (ts.isClassDeclaration(decl)) return decl;
-  const initializer = classExpressionOf(e.ident);
-  if (initializer === null) return null;
   if (e.kind !== "const") {
     const symbol = lowerer.checker.getSymbolAtLocation(e.ident);
     if (!symbol || !bindingNeverReassigned(lowerer.bindingScope(), symbol, decl)) return null;
   }
-  return initializer;
+  return classExpressionOf(e.ident) ?? aliasedClass(lowerer, e.ident);
 }
 
 /** The registrations the entry's %init runs first: one nodeIsland.share

@@ -58,6 +58,18 @@ function answers(mod: IrModule): Record<string, IrExpr> {
   return Object.fromEntries(names.map((name, i) => [name, elems[i]!]));
 }
 
+/** A value a `dyn` coercion wrapped, without the wrapper. */
+function unwrapDyn(e: IrExpr): IrExpr {
+  return e.kind === "dynFrom" ? e.value : e;
+}
+
+/** The lifted function a class-table argument names, or "" for anything
+ * else (the undefined fallback a class the program could not find gets). */
+function liftedName(e: IrExpr): string {
+  const value = unwrapDyn(e);
+  return value.kind === "varRef" ? value.localId : value.kind === "closure" ? value.fnName : "";
+}
+
 /** The flag an answer tests before it reads the export, or null. */
 function flagOf(answer: IrExpr): string | null {
   return answer.kind === "ternary" && answer.cond.kind === "varRef" ? answer.cond.localId : null;
@@ -124,6 +136,90 @@ test("a shared module's var export is read only after its declaration ran", asyn
     kind: "ternary",
     else_: { kind: "libCall", fn: "nodeIsland.sharedTdz" },
   });
+});
+
+/** The accessor's answer for each export of the shared module whose export
+ * table names `exportName` (a program may have more than one). */
+function answersOf(mod: IrModule, exportName: string): Record<string, IrExpr> {
+  const share = calls(mod, "nodeIsland.share");
+  const index = share.findIndex((call) => {
+    const table = call.args[1]!;
+    return (
+      table.kind === "strLit" &&
+      (JSON.parse(table.value) as { name: string }[]).some((e) => e.name === exportName)
+    );
+  });
+  expect(index, `a shared module exports ${exportName}`).toBeGreaterThanOrEqual(0);
+  const table = share[index]!.args[1]!;
+  if (table.kind !== "strLit") throw new Error("the export table is not a literal");
+  const names = (JSON.parse(table.value) as { name: string }[]).map((e) => e.name);
+  const accessor = mod.functions.find((f) => f.name === `%island.shared:${index}`);
+  const answer = accessor?.body[0];
+  if (answer?.kind !== "return" || answer.value?.kind !== "dynArrLit")
+    throw new Error("the accessor does not answer an array");
+  const elems = answer.value.elems;
+  expect(elems).toHaveLength(names.length);
+  return Object.fromEntries(names.map((name, i) => [name, elems[i]!]));
+}
+
+test("a shared module's aliased class export registers the class's methods", async () => {
+  const mod = await lower({
+    "main.mjs": `import { requireModule } from "@scriptc/node";
+import { Base, Derived, instance } from "./shared.mjs";
+const plugin = requireModule("./plugin.mjs");
+console.log(instance.x, instance.m(), instance instanceof Base, plugin.name);
+`,
+    "plugin.mjs": `import { Base, Derived, instance } from "./shared.mjs";
+export const name = String(instance instanceof Base) + typeof Derived;
+`,
+    // The form the dev host's globals module writes: each class bound to a
+    // local const, because re-exports are not shared at all (NI-6).
+    "shared.mjs": `import * as C from "./classes.mjs";
+export const Base = C.Base;
+export const Derived = C.Derived;
+export const instance = C.instance;
+`,
+    "classes.mjs": `export class Base {
+  get x() {
+    return 7;
+  }
+  m() {
+    return "base:" + this.x;
+  }
+}
+export class Derived extends Base {
+  get x() {
+    return 9;
+  }
+}
+export const instance = new Derived();
+`,
+  });
+  const shared = answersOf(mod, "Base");
+  for (const name of ["Base", "Derived"]) {
+    const answer = shared[name]!;
+    if (answer.kind !== "ternary" || answer.then.kind !== "libCall")
+      throw new Error(`${name} is not wrapped in a class table`);
+    expect(answer.then.fn).toBe("nodeIsland.classMethodsOf");
+    // The class the alias names, resolved through import and export
+    // aliases: a method table and a construct helper, not the fallbacks a
+    // class the program could not find gets.
+    const [, table, construct] = answer.then.args;
+    const methodTable = liftedName(table!);
+    expect(methodTable, `${name} method table`).toMatch(/^%island\.methods:/);
+    expect(methodTable.endsWith(`.${name}`), `${name} names its class`).toBe(true);
+    expect(mod.functions.some((f) => f.name === methodTable)).toBe(true);
+    const constructor = liftedName(construct!);
+    expect(constructor, `${name} construct helper`).toMatch(/^%island\.new:/);
+    expect(constructor.endsWith(`.${name}`), `${name} constructs its class`).toBe(true);
+    expect(mod.functions.some((f) => f.name === constructor)).toBe(true);
+  }
+  // An aliased instance is not a class: no table.
+  const instance = shared["instance"]!;
+  if (instance.kind !== "ternary") throw new Error("the instance export is not guarded");
+  expect(instance.then.kind === "libCall" && instance.then.fn === "nodeIsland.classMethodsOf").toBe(
+    false,
+  );
 });
 
 test("island code constructs the class a shared module's variable holds", async () => {

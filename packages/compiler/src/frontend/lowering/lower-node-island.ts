@@ -2088,7 +2088,10 @@ function classMethodsBuilderOf(
     c !== undefined;
     c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
   ) {
-    for (const m of c.def.methods ?? [])
+    // Generic methods never enter `def.methods` (they have no single ABI
+    // signature and no vtable slot), but their erased instance is a method
+    // value the island calls like any other (`document.querySelectorAll`).
+    for (const m of [...(c.def.methods ?? []), ...(c.genericMethods?.keys() ?? [])])
       if (!names.includes(m) && (islandMethodName(m) || islandAccessorName(m))) names.push(m);
   }
   if (names.length === 0) return null;

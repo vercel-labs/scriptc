@@ -974,6 +974,7 @@ static const ScrDynHandleOps scr_sqlite_iter_ops = {
     .to_string_tag = "Iterator",
     .methods = scr_sqlite_iter_methods,
     .inspect_view = scr_sqlite_no_own_view,
+    .inspect_view_empty = true,
     .own_names = scr_sqlite_no_own_names,
     .own_view = scr_sqlite_no_own_view,
 };
@@ -1243,6 +1244,7 @@ static const ScrDynHandleOps scr_sqlite_stmt_ops = {
     .own_view = scr_sqlite_stmt_own_view,
     .own_descriptor = scr_sqlite_stmt_own_descriptor,
     .delete_key = scr_sqlite_stmt_own_delete,
+    .inspect_bracketed_past_depth = true,
 };
 
 /* ── SQLTagStore ────────────────────────────────────────────────────── */
@@ -1504,6 +1506,7 @@ static const ScrDynHandleOps scr_sqlite_tag_ops = {
     .own_view = scr_sqlite_tag_own_view,
     .own_descriptor = scr_sqlite_tag_own_descriptor,
     .delete_key = scr_sqlite_tag_own_delete,
+    .inspect_bracketed_past_depth = true,
 };
 
 /* DatabaseSync::CreateTagStore. +1 or NULL with the exception pending. */
@@ -1731,7 +1734,9 @@ static ScrDyn *scr_sqlite_limits_own_view(void *h) {
 }
 
 static const ScrDynHandleOps scr_sqlite_limits_ops = {
-    .cls = "DatabaseSyncLimits",
+    /* Node's limits object is a null-prototype dictionary, which Node names
+     * "Object" when a render stops at the depth limit. */
+    .cls = "Object",
     .retain = scr_sqlite_limits_retain,
     .release = scr_sqlite_limits_release,
     .invoke = scr_sqlite_limits_invoke,
@@ -1744,6 +1749,7 @@ static const ScrDynHandleOps scr_sqlite_limits_ops = {
     .own_view = scr_sqlite_limits_own_view,
     .own_descriptor = scr_sqlite_limits_descriptor,
     .delete_key = scr_sqlite_limits_delete,
+    .inspect_bracketed_past_depth = true,
 };
 
 /* ── sqlite.backup ──────────────────────────────────────────────────── */
@@ -2952,6 +2958,7 @@ static const ScrDynHandleOps scr_sqlite_session_ops = {
     .invoke = scr_sqlite_session_invoke,
     .get = scr_sqlite_session_get,
     .inspect_view = scr_sqlite_session_inspect_view,
+    .inspect_view_empty = true,
     .json_empty_object = true,
     .symbol_get = scr_sqlite_session_symbol_get,
     .methods = scr_sqlite_session_methods,
@@ -3666,12 +3673,38 @@ static ScrDyn *scr_sqlite_expando_descriptor(const ScrDyn *expandos, const char 
 
 /* An inspect view: the accessors as getter properties (so the inspector
  * prints [Getter] without reading them) and the added properties. */
-static ScrDyn *scr_sqlite_inspect_of(ScrDynHandleTag tag, const char *const *names, size_t count,
-                                     const ScrDyn *expandos) {
+/* An inspect view's getters close over the handle they read, so
+ * util.inspect's `getters: true` answers the class's values while the view
+ * object (not the handle) is the receiver. */
+static ScrDyn *scr_sqlite_inspect_getter_call(ScrClosure *closure, ScrDyn *const *args,
+                                              size_t argc) {
+  (void)args;
+  (void)argc;
+  const char *name = closure->fn;
+  ScrDyn *receiver = scr_box_get_ref(closure->caps[0]);
+  ScrDyn *result = NULL;
+  if (receiver != NULL) {
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(receiver);
+    if (ops->get != NULL) result = ops->get(receiver->v.handle.ptr, name, strlen(name));
+    if (result == NULL && !scr_exc_pending()) result = scr_dyn_retain(scr_dyn_undefined());
+    scr_dyn_release(receiver);
+  }
+  return result;
+}
+
+static ScrDyn *scr_sqlite_inspect_getter(ScrDynHandleTag tag, const char *name, void *h) {
+  ScrClosure *closure = scr_closure_new((void *)name, 1);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_dyn_new_handle(h, tag));
+  return scr_dyn_new_func(closure, scr_sqlite_inspect_getter_call, 0, "native:function", "");
+}
+
+static ScrDyn *scr_sqlite_inspect_of(ScrDynHandleTag tag, void *h, const char *const *names,
+                                     size_t count, const ScrDyn *expandos) {
   ScrDyn *view = scr_dyn_new_obj();
   for (size_t i = 0; i < count; i++) {
     size_t len = strlen(names[i]);
-    scr_dyn_obj_set_accessor(view, names[i], len, scr_sqlite_accessor_fn(tag, names[i]), NULL);
+    scr_dyn_obj_set_accessor(view, names[i], len, scr_sqlite_inspect_getter(tag, names[i], h), NULL);
   }
   scr_sqlite_add_expandos(view, expandos);
   return view;
@@ -3716,7 +3749,7 @@ static ScrDyn *scr_sqlite_stmt_own_names(void *h) {
 
 static ScrDyn *scr_sqlite_stmt_inspect_view(void *h) {
   ScrSqliteStmt *s = h;
-  return scr_sqlite_inspect_of(SCR_DYNH_SQLITE_STATEMENT, scr_sqlite_stmt_own,
+  return scr_sqlite_inspect_of(SCR_DYNH_SQLITE_STATEMENT, h, scr_sqlite_stmt_own,
                                SCR_SQLITE_STMT_OWN_COUNT, s->expandos);
 }
 
@@ -3765,7 +3798,7 @@ static ScrDyn *scr_sqlite_tag_own_names(void *h) {
 
 static ScrDyn *scr_sqlite_tag_inspect_view(void *h) {
   ScrSqliteTagStore *store = h;
-  return scr_sqlite_inspect_of(SCR_DYNH_SQLITE_TAG_STORE, scr_sqlite_tag_own,
+  return scr_sqlite_inspect_of(SCR_DYNH_SQLITE_TAG_STORE, h, scr_sqlite_tag_own,
                                SCR_SQLITE_TAG_OWN_COUNT, store->expandos);
 }
 
@@ -3830,7 +3863,7 @@ static void scr_sqlite_db_add_brand(ScrDyn *view) {
 
 static ScrDyn *scr_sqlite_db_inspect_view(void *h) {
   ScrSqliteDb *db = h;
-  ScrDyn *view = scr_sqlite_inspect_of(SCR_DYNH_SQLITE_DB, scr_sqlite_db_own,
+  ScrDyn *view = scr_sqlite_inspect_of(SCR_DYNH_SQLITE_DB, h, scr_sqlite_db_own,
                                        SCR_SQLITE_DB_OWN_COUNT, db->expandos);
   scr_sqlite_db_add_brand(view);
   return view;
@@ -3956,6 +3989,7 @@ static const ScrDynHandleOps scr_sqlite_db_ops = {
     .own_descriptor = scr_sqlite_db_own_descriptor,
     .delete_key = scr_sqlite_db_own_delete,
     .own_symbols = scr_sqlite_db_own_symbols,
+    .inspect_bracketed_past_depth = true,
 };
 
 /* A handle box around a live database (the SQLTagStore#db getter). */

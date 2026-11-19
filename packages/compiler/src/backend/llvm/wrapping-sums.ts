@@ -79,12 +79,17 @@ export function integerOrNaNIndex(
   host: LlvmEmitterContext,
   value: LlValue,
   expr: IrExpr | undefined,
-): { wide: string; ordered: string } | null {
+): { wide: string; ordered: string; bounded: boolean } | null {
   const range = expr ? integerOrNaNRange(host, expr) : null;
   if (!range) return null;
+  // The conversion is exact only where the i64 range holds the value: past
+  // 2^63 fptosi is poison and freeze would hand the caller an arbitrary
+  // integer. `bounded` says whether the range proves that; an unbounded one
+  // leaves the caller to test the double itself before using the conversion.
+  const bounded = range.min >= -(2 ** 63) && range.max <= 2 ** 63 - 1;
   // A value that carries its integer and ordered bit needs no conversion.
   if (value.nanInteger !== undefined && value.ordered !== undefined)
-    return { wide: value.nanInteger, ordered: value.ordered };
+    return { wide: value.nanInteger, ordered: value.ordered, bounded };
   const B = host.B;
   const wide = B.tmp();
   let ordered = value.ordered;
@@ -101,7 +106,7 @@ export function integerOrNaNIndex(
     B.line(`${raw} = fptosi double ${value.name} to i64`);
     B.line(`${wide} = freeze i64 ${raw}`);
   }
-  return { wide, ordered };
+  return { wide, ordered, bounded };
 }
 
 const ELEMENT_RANGES: Partial<Record<string, IntegerRange>> = {

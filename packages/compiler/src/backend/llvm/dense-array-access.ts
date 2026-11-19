@@ -112,9 +112,19 @@ function emitDenseGuard(
     // double's path.
     wide = integer;
   } else if (nanIndex) {
-    // An exact integer or NaN is an index exactly when it is ordered.
+    // An exact integer or NaN is an index exactly when it is ordered. Where
+    // the range does not hold the value in an i64 (an unbounded expression),
+    // a magnitude test on the double keeps the poison conversion out of the
+    // capacity comparison without paying a round trip.
     wide = nanIndex.wide;
-    integral = nanIndex.ordered;
+    if (nanIndex.bounded) integral = nanIndex.ordered;
+    else {
+      const magnitude = B.tmp(),
+        inRange = B.tmp();
+      B.line(`${magnitude} = fcmp olt double ${index.name}, 0x43E0000000000000`);
+      integral = B.tmp();
+      B.line(`${integral} = and i1 ${nanIndex.ordered}, ${magnitude}`);
+    }
   } else {
     // freeze keeps NaN/out-of-range conversions from producing poison; the
     // exact round-trip comparison then rejects every value that is not an

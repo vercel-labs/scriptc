@@ -1,5 +1,6 @@
 import { everyModuleNode, everyStmtList } from "../ir/traverse.js";
 import type { LlvmUnsupportedError } from "./llvm/emitter.js";
+import { SingleOwnerError } from "./llvm/single-owner.js";
 import { iceDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { type IrModule, type SrcLoc } from "../ir/ir.js";
 import type { IrLibFn } from "../ir/builtin-signatures.js";
@@ -101,7 +102,9 @@ export function llvmRefusalDiag(err: LlvmUnsupportedError, entryPath: string): S
       { file: entryPath, start: 0, end: 0 },
     );
   return {
-    code: "SC3001",
+    // A marked SingleOwner class the emission's proof rejected is a broken
+    // contract, not a construct this backend does not lower.
+    code: err instanceof SingleOwnerError ? "SC7010" : "SC3001",
     message: err.describe(),
     loc: err.loc,
     ...(err.hint === undefined ? {} : { hint: err.hint }),

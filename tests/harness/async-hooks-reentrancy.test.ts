@@ -111,6 +111,38 @@ setTimeout(() => console.log('done'), 0);
     expect(r.stdout).toBe("read rejected\ndone\n");
   });
 
+  test("a byte-stream read released in its init hook frees its auto-allocated buffer", async () => {
+    const r = await compileAndRun(
+      "init-byte-read",
+      `'use strict';
+const { ReadableStream } = require('stream/web');
+const { createHook } = require('async_hooks');
+const stream = new ReadableStream(
+  { type: 'bytes', autoAllocateChunkSize: 16384, start(c) {}, pull() {} },
+  { highWaterMark: 0 },
+);
+const reader = stream.getReader();
+let released = false;
+const hook = createHook({
+  init(id, type) {
+    if (type !== 'PROMISE' || released) return;
+    released = true;
+    try { reader.releaseLock(); } catch {}
+  },
+});
+hook.enable();
+let pending;
+try { pending = reader.read(); } catch { pending = null; }
+hook.disable();
+if (pending) pending.then(() => console.log('read resolved'), () => console.log('read rejected'));
+else console.log('read threw');
+setTimeout(() => console.log('done'), 0);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("read rejected\ndone\n");
+  });
+
   test("a destroy hook can refresh the one-shot timeout being destroyed", async () => {
     const r = await compileAndRun(
       "timer-refresh",

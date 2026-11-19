@@ -1546,10 +1546,13 @@ static ScrDyn *ws_bytes_read(WsReader *r) {
     if (!view) return NULL;
     ScrPromise *p = scr_promise_new();
     if (r->stream == NULL) {
-      /* The init hook released the lock while the promise was built. */
+      /* The init hook released the lock while the promise was built. The
+       * auto-allocated destination is no longer handed to a request, so its
+       * reference is released here. */
       ws_reject(p, ws_reader_releasing_error());
       ScrPromise *result = scr_promise_retain(p);
       scr_promise_release(p);
+      scr_bytes_release(view);
       return ws_promise_box(result);
     }
     WsPullInto *d = ws_pull_into_new(view, 1, false, p);

@@ -3069,6 +3069,9 @@ void scr_dyn_check_listener(const ScrDyn *cb, const char *argname);
  * generic ERR_INVALID_ARG_TYPE thrower over it (`expected` is the whole
  * "of type ..." clause). The handle dispatchers' per-arg gates. */
 const char *scr_dyn_specific_type(const ScrDyn *v, char *buf, size_t cap);
+/* The same tail with its true length in *len: a string value keeps the NUL
+ * bytes %s would stop at, so the message builders append it by length. */
+const char *scr_dyn_specific_type_len(const ScrDyn *v, char *buf, size_t cap, size_t *len);
 /* Registers a namespace object built by scr_module_namespace_dyn.c, whose
  * objects are ordinary dyn objects; util.types.isModuleNamespaceObject
  * tests the registry (V8's private-slot brand). The registry borrows the

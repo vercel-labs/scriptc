@@ -1047,6 +1047,32 @@ function verifyInt32Selection(
  * shows: a body that tests the flag without raising, or a raising
  * function's address in text the emitter generates. Each emission that
  * ends this way marks `llvm-emit-unwind-retry`. */
+/** The alignment of every emitted function's entry. Each definition pads to
+ * it, so a change in one function's size cannot move another function's code
+ * relative to a cache-line boundary: the hot loops inside that function keep
+ * the alignment, and the timing, they had before the change. */
+const FUNCTION_ENTRY_ALIGNMENT = 64;
+
+/** Adds the entry alignment to every function definition in `parts`, after
+ * its parameter list (where LLVM's grammar puts it, ahead of the attribute
+ * group and the personality). */
+function alignFunctionEntries(parts: string[]): string[] {
+  const align = (line: string): string => {
+    const open = line.indexOf("(", line.indexOf("@"));
+    if (open < 0) return line;
+    let depth = 0;
+    for (let i = open; i < line.length; i++) {
+      if (line[i] === "(") depth++;
+      else if (line[i] === ")" && --depth === 0)
+        return `${line.slice(0, i + 1)} align ${FUNCTION_ENTRY_ALIGNMENT}${line.slice(i + 1)}`;
+    }
+    return line;
+  };
+  return parts.map((part) =>
+    part.includes("define ") ? part.replace(/^define .*$/gm, (line) => align(line)) : part,
+  );
+}
+
 function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
   const prepared = prepareModule(input, options);
   const given = options.unwindExcluded ?? new Set<string>();
@@ -2560,13 +2586,11 @@ export class LlEmitter {
     // A release build whose program observes stacks records the position of
     // each call and throw site in the frame, instead of the per-statement
     // text a dev build stores. A sanitized build keeps the release frames:
-    // ASan instruments every store, and dev builds already skip positions
-    // there for the same reason.
-    this.stackPositions =
-      !this.positionedFrames &&
-      this.stackTraces &&
-      options.sanitizeAttributes === false &&
-      options.positionSources !== undefined;
+    // Every build that observes stacks records its call and throw sites:
+    // a dev build keeps its per-statement text for uncaught reports as
+    // well, and a sanitized build accepts the instrumented stores so that
+    // calls such as util.getCallSites answer real positions there too.
+    this.stackPositions = this.stackTraces && options.positionSources !== undefined;
     const positionSources = options.positionSources;
     this.positionSourcesValue = positionSources;
     this.positionOf =
@@ -3474,7 +3498,8 @@ export class LlEmitter {
             this.cpuCopies,
             this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
           );
-    return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    const all = this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    return alignFunctionEntries(all);
   }
 
   /** The entry point and JavaScript name of each named function the

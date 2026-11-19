@@ -187,14 +187,14 @@ test("without the option, and off Linux, emission keeps the pending-flag ABI", a
 
 test("bridgePlainUnwindCalls keeps the pending-flag contract at plain calls of raising functions", () => {
   const raising = [
-    "define internal ptr @sc_bf_raises(ptr %p) #0 { ; raises",
+    "define internal ptr @sc_bf_raises(ptr %p) align 64 #0 { ; raises",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
     "}",
   ].join("\n");
   const caller = [
-    "define internal ptr @sc_f_adapter(ptr %p0) #0 {",
+    "define internal ptr @sc_f_adapter(ptr %p0) align 64 #0 {",
     "entry:",
     "  %result = call ptr @sc_bf_raises(ptr %p0) ; borrowed result",
     "  br label %next",
@@ -211,21 +211,21 @@ test("bridgePlainUnwindCalls keeps the pending-flag contract at plain calls of r
   // The split block's successor now comes from its last part.
   expect(out).toContain("%v = phi ptr [ %result, %ub.ok.0 ]");
   expect(out).toMatch(
-    /define internal ptr @sc_f_adapter\(ptr %p0\) #0 personality ptr @__gcc_personality_v0 \{/,
+    /define internal ptr @sc_f_adapter\(ptr %p0\) align 64 #0 personality ptr @__gcc_personality_v0 \{/,
   );
   expect(out).toContain("declare i32 @__gcc_personality_v0(...)");
 });
 
 test("an invoked wrapper of a raising function resumes the unwind; its address must not escape", () => {
   const raising = [
-    "define internal double @sc_bf_body.i32(i32 %a) #0 {",
+    "define internal double @sc_bf_body.i32(i32 %a) align 64 #0 {",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
     "}",
   ].join("\n");
   const wrapper = [
-    "define internal double @sc_bf_body(double %a) #0 {",
+    "define internal double @sc_bf_body(double %a) align 64 #0 {",
     "entry:",
     "  %i = fptosi double %a to i32",
     "  %r = call double @sc_bf_body.i32(i32 %i)",
@@ -233,7 +233,7 @@ test("an invoked wrapper of a raising function resumes the unwind; its address m
     "}",
   ].join("\n");
   const caller = [
-    "define internal double @sc_bf_caller(double %a) #0 personality ptr @__gcc_personality_v0 {",
+    "define internal double @sc_bf_caller(double %a) align 64 #0 personality ptr @__gcc_personality_v0 {",
     "entry:",
     "  %r = invoke double @sc_bf_body(double %a) to label %ok unwind label %lp",
     "lp:",
@@ -268,21 +268,21 @@ test("an invoked wrapper of a raising function resumes the unwind; its address m
 
 test("an invoked function that never tests the pending flag needs no raise", () => {
   const raising = [
-    "define internal void @sc_bf_raises() #0 {",
+    "define internal void @sc_bf_raises() align 64 #0 {",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
     "}",
   ].join("\n");
   const leaf = [
-    "define internal double @sc_bf_leaf() #0 {",
+    "define internal double @sc_bf_leaf() align 64 #0 {",
     "entry:",
     "  ret double 1.0",
     "}",
   ].join("\n");
   const caller = (callee: string) =>
     [
-      "define internal double @sc_bf_caller() #0 personality ptr @__gcc_personality_v0 {",
+      "define internal double @sc_bf_caller() align 64 #0 personality ptr @__gcc_personality_v0 {",
       "entry:",
       `  %r = invoke double @${callee}() to label %ok unwind label %lp`,
       "lp:",
@@ -307,7 +307,7 @@ test("an invoked function that never tests the pending flag needs no raise", () 
 
 test("an invoked function's source-frame push is not a pending-flag test", () => {
   const raising = [
-    "define internal void @sc_bf_raises() #0 {",
+    "define internal void @sc_bf_raises() align 64 #0 {",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
@@ -315,7 +315,7 @@ test("an invoked function's source-frame push is not a pending-flag test", () =>
   ].join("\n");
   const framed = (body: string) =>
     [
-      "define internal double @sc_bf_leaf() #0 {",
+      "define internal double @sc_bf_leaf() align 64 #0 {",
       "entry:",
       "  %source_frame.cell = load ptr, ptr @scr_exc_active",
       "  %source_frame.chain = getelementptr inbounds i8, ptr %source_frame.cell, i64 56",
@@ -326,7 +326,7 @@ test("an invoked function's source-frame push is not a pending-flag test", () =>
       "}",
     ].join("\n");
   const caller = [
-    "define internal double @sc_bf_caller() #0 personality ptr @__gcc_personality_v0 {",
+    "define internal double @sc_bf_caller() align 64 #0 personality ptr @__gcc_personality_v0 {",
     "entry:",
     "  %r = invoke double @sc_bf_leaf() to label %ok unwind label %lp",
     "lp:",
@@ -351,7 +351,7 @@ test("an invoked function's source-frame push is not a pending-flag test", () =>
 
 test("calls that cannot unwind are marked nounwind", () => {
   const raising = [
-    "define internal void @sc_bf_raises(ptr %b) #0 {",
+    "define internal void @sc_bf_raises(ptr %b) align 64 #0 {",
     "entry:",
     "  %n = call i64 @scr_bytes_length(ptr %b) ; length",
     "  call void @scr_bytes_release(ptr %b), !dbg !4",
@@ -361,7 +361,7 @@ test("calls that cannot unwind are marked nounwind", () => {
     "}",
   ].join("\n");
   const resuming = [
-    "define internal void @sc_bf_resumes(ptr %b) #0 personality ptr @__gcc_personality_v0 {",
+    "define internal void @sc_bf_resumes(ptr %b) align 64 #0 personality ptr @__gcc_personality_v0 {",
     "entry:",
     "  invoke void @sc_bf_raises(ptr %b) to label %ok unwind label %lp",
     "ok:",
@@ -385,20 +385,20 @@ test("calls that cannot unwind are marked nounwind", () => {
 
 test("functions without a plain call of a raising function change only their call lines", () => {
   const raising = [
-    "define internal void @sc_bf_raises() #0 {",
+    "define internal void @sc_bf_raises() align 64 #0 {",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
     "}",
   ].join("\n");
   const other = [
-    "define internal void @sc_bf_raises.copy() #0 {",
+    "define internal void @sc_bf_raises.copy() align 64 #0 {",
     "entry:",
     "  ret void",
     "}",
   ].join("\n");
   const plain = [
-    "define internal double @sc_f_plain(ptr %p) #0 {",
+    "define internal double @sc_f_plain(ptr %p) align 64 #0 {",
     "entry: ; call sites below",
     "  %a = call double @sc_f_other(ptr %p)",
     "  %b = tail call double @sc_f_other(ptr %p) ; mentions @ and @sc_bf_raises.copy",

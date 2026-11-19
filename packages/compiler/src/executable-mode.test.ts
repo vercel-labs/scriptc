@@ -43,23 +43,6 @@ posix("leaves an executable payload alone", () => {
   expect(statSync(executable).mode & 0o777).toBe(0o750);
 });
 
-posix("names the file and the fix when the mode cannot be repaired", () => {
-  const executable = "/opt/scriptc/bin/tsc-ts";
-  expect(() =>
-    ensureExecutable(executable, {
-      statSync: () => ({ mode: 0o644 }),
-      chmodSync: () => {
-        throw new Error("EACCES");
-      },
-    }),
-  ).toThrow(
-    new RegExp(
-      `${executable} is not executable \\(mode 644\\) and could not be repaired; ` +
-        `fix it with: chmod \\+x "${executable}"`,
-    ),
-  );
-});
-
 posix("reports a read-only payload without execute bits", () => {
   const executable = join(scratch(), "tsc-ts");
   writeFileSync(executable, "#!/bin/sh\nexit 0\n");

@@ -22,17 +22,23 @@
  * failing-section "test at" line), "" when unknown. `plan` is the { plan }
  * count, -1 without one; `timeout` is the { timeout } in ms, read with flag
  * 8; `concurrency` is the { concurrency } count, -1 for `true`, read with
- * flag 16. An out-of-range timeout or concurrency throws Node's
- * ERR_OUT_OF_RANGE and registers nothing. */
+ * flag 16. `tags` is the { tags } list (a checked-dynamic array of
+ * strings) or NULL/undefined without the option; each value must be a
+ * non-empty string (ERR_INVALID_ARG_TYPE for a non-string,
+ * ERR_INVALID_ARG_VALUE for an empty one) and the list is lowercased and
+ * de-duplicated. An out-of-range timeout or concurrency
+ * throws Node's ERR_OUT_OF_RANGE and registers nothing. */
 typedef struct ScrTestCtx ScrTestCtx;
 ScrTestCtx *scr_testctx_retain(ScrTestCtx *t);
 void scr_testctx_release(ScrTestCtx *t);
 void *scr_testctx_retain_v(void *t);
 void scr_testctx_release_v(void *t);
 void scr_test_register(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at,
-                       double plan, double timeout, double concurrency, ScrDyn *signal);
+                       double plan, double timeout, double concurrency, ScrDyn *signal,
+                       ScrDyn *tags);
 void scr_test_suite(ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, ScrStr *at,
-                    double flags, double concurrency, double timeout, ScrDyn *signal);
+                    double flags, double concurrency, double timeout, ScrDyn *signal,
+                    ScrDyn *tags);
 /* before/after/beforeEach/afterEach on the CURRENT registration parent
  * (`which`: 0 before, 1 after, 2 beforeEach, 3 afterEach); `at` is the
  * hook call's "file:line:col". The root's before and after hooks run
@@ -41,7 +47,8 @@ void scr_test_hook(double which, ScrClosure *cb, double flags, ScrStr *at);
 /* t.test(...): registers under `t`, runs the subtest INLINE on the
  * runner fiber, and returns the settled promise the `await` consumes (+1). */
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name, double mode, ScrStr *msg, ScrClosure *cb, double flags, ScrStr *at,
-                         double plan, double timeout, double concurrency, ScrDyn *signal);
+                         double plan, double timeout, double concurrency, ScrDyn *signal,
+                         ScrDyn *tags);
 void scr_test_ctx_skip(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_todo(ScrTestCtx *t, ScrStr *msg);
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg);
@@ -54,6 +61,10 @@ void scr_test_ctx_log(ScrTestCtx *t, ScrStr *msg);
  * t.error: Node's ERR_TEST_FAILURE wrapper over the failure (+1), or null. */
 ScrDyn *scr_test_ctx_signal(ScrTestCtx *t);
 ScrDyn *scr_test_ctx_error(ScrTestCtx *t);
+/* t.tags: the flattened, lowercased, de-duplicated tag set inherited from
+ * the ancestor suites, as a frozen string array (+1; the same array on every
+ * read). */
+ScrArr *scr_test_ctx_tags(ScrTestCtx *t);
 /* snapshot.setDefaultSnapshotSerializers(serializers): the list every later
  * snapshot assertion without its own serializers runs through. */
 void scr_test_snapshot_set_default_serializers(ScrDyn *serializers);
@@ -64,9 +75,12 @@ void scr_test_snapshot_set_resolve_path(ScrClosure *cb);
 ScrStr *scr_test_snapshot_path(ScrStr *file);
 void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags);
 /* t.plan(count[, { wait }]): `has_wait` says whether the options object
- * carried the property; a shortfall then waits that many ms for the
- * assertions still running before it fails. */
-void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait);
+ * carried a numeric wait; a shortfall then waits that many ms for the
+ * assertions still running before it fails. `indefinite` is `{ wait: true }`:
+ * a shortfall then waits until the plan is met. Node's validateUint32 on
+ * the count and its wait range check throw ERR_OUT_OF_RANGE. */
+void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait,
+                       bool indefinite);
 /* mock.getter/mock.setter: the accessor's descriptor along the object's
  * prototype chain (+1; undefined without one), and Node's check that the
  * descriptor carries the accessor the mock replaces (throws

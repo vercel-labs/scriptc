@@ -41,7 +41,9 @@ console.log(spaces("a b c"), letters("abC1z"), chars("xyz").join("-"), chars("é
     const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
     const body = (name: string): string =>
       ll.match(
-        new RegExp(`define internal [^\\n]+ @sc_bf_${name}\\([^\\n]*\\) #0 \\{[\\s\\S]*?\\n\\}`),
+        new RegExp(
+          `define internal [^\\n]+ @sc_bf_${name}\\([^\\n]*\\) align 64 #0 \\{[\\s\\S]*?\\n\\}`,
+        ),
       )![0];
     // The byte copy follows the checked one, and the units copy (for
     // strings that are not ASCII) follows it.

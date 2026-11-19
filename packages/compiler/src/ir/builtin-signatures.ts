@@ -1696,6 +1696,7 @@ function buildLibFnSignatures() {
      * validate their values when leaving that tree. The native parser may
      * throw Node's coded validation/grammar TypeErrors. */
     "util.parseArgs": { argTypes: [DYN], result: DYN },
+    "util.getCallSites": { argTypes: [DYN, DYN], result: DYN },
     "util.parseEnv": { argTypes: [DYN], result: DYN },
     "util.getSystemErrorName": { argTypes: [DYN], result: STRING },
     "util.getSystemErrorMessage": { argTypes: [DYN], result: STRING },
@@ -1733,6 +1734,9 @@ function buildLibFnSignatures() {
     /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
      * option flags; a web WritableStream. */
     "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
+    /** Duplex.fromWeb (scr_stream_duplex_from_web.c): the { readable,
+     * writable } pair and the option flags; a Duplex. */
+    "webstream.duplexFromWeb": { argTypes: [DYN, F64], result: VOID },
     /** Duplex.toWeb (scr_stream_to_web_pair.c): the duplex and the option
      * flags; the { writable, readable } pair. */
     "webstream.toWebDuplex": { argTypes: [null, F64], result: DYN },
@@ -2666,28 +2670,30 @@ function buildLibFnSignatures() {
      * the loop-run emitted (usesTimers) so the runner fiber drains. */
     // The trailing three are the { plan, timeout, concurrency } options (plan
     // -1 without one; timeout read under flag 8; concurrency read under flag
-    // 16, -1 for true). An out-of-range timeout or concurrency throws.
+    // 16, -1 for true). An out-of-range timeout or concurrency throws. The
+    // last argument is the { tags } list (a dyn array of strings, undefined
+    // without the option).
     "test.register": {
-      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     "test.registerEmpty": {
-      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     // The suite body takes no parameters or its SuiteContext (flag 2).
     "test.suite": {
-      argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     // The trailing string is the hook call's "file:line:col".
     "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
     "test.sub": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN, DYN],
       result: { kind: "promise", inner: VOID },
     },
     "test.subEmpty": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
@@ -2703,6 +2709,8 @@ function buildLibFnSignatures() {
      * Node's check that it carries the mocked accessor. */
     "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
+    // t.tags: the flattened tag set (a frozen array of strings).
+    "test.ctxTags": { argTypes: [TESTCTX_T], result: arrayOf(STRING) },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
@@ -2718,7 +2726,7 @@ function buildLibFnSignatures() {
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
     // t.plan(count[, { wait }]) — hasWait says whether the options object
     // carried the property; the count of one t.assert call follows.
-    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64], result: VOID },
+    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64, BOOL], result: VOID },
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
@@ -4546,6 +4554,7 @@ function buildLibFnSignatures() {
      * negative/non-integer total (may-throw seed). */
     "buffer.concatLen": { argTypes: [arrayOf(BYTES_U8), F64], result: BYTES_U8 },
     "buffer.concatLenDyn": { argTypes: [DYN, F64], result: BYTES_U8 },
+    "buffer.concatLenDynOpt": { argTypes: [DYN, DYN], result: BYTES_U8 },
     // The checked-dynamic compare/equals validators (Node's argument
     // ladders over dyn-boxed invalid-input probes).
     /** The checked-dynamic compare/equals validators (scr_bytes_io.c) —
@@ -6225,6 +6234,7 @@ function buildLibFnSignatures() {
     "stream.duplexifyReadable": { argTypes: [null], result: VOID },
     "stream.duplexifyWritable": { argTypes: [null], result: VOID },
     "stream.duplexifyPair": { argTypes: [null, null], result: VOID },
+    "stream.duplexifyPairHalf": { argTypes: [null, null, BOOL], result: VOID },
     /** Duplex.from(promise): the promise and its box helper. */
     "stream.duplexFromPromise": { argTypes: [null, null], result: VOID },
     /** Duplex.from(asyncFunction): the stage, its source helper and the

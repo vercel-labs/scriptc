@@ -2451,11 +2451,6 @@ static SCR_TL ScrError *scr_stream_cb_error = NULL;
  * (ScrFsRenameFn: (cb, err-or-NULL) — NULL is Node's null). */
 static void *scr_stream_ecb_retain(void *p) { return p; }
 static void scr_stream_ecb_release(void *p) { (void)p; }
-static void scr_stream_ecb_trace(void *p, ScrTraceVisit visit, void *ctx) {
-  (void)p;
-  (void)visit;
-  (void)ctx;
-}
 static void scr_stream_ecb_fire(ScrClosure *wrapper) {
   ScrClosure *user = (ScrClosure *)scr_box_get_ref(wrapper->caps[0]);
   ScrFsRenameFn fn = (ScrFsRenameFn)scr_box_get_ref(wrapper->caps[1]);
@@ -2466,13 +2461,17 @@ ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
   ScrClosure *w = scr_closure_new((void *)scr_stream_ecb_fire, 2);
   w->caps[0] = scr_box_new_obj(scr_closure_retain_v, scr_closure_release_v, scr_closure_trace_v);
   scr_box_set_ref(w->caps[0], cb);
-  w->caps[1] = scr_box_new_obj(scr_stream_ecb_retain, scr_stream_ecb_release, scr_stream_ecb_trace);
+  /* The adapter is a raw function pointer, not a collectable object: a
+   * NULL trace keeps the collector from visiting it as one. */
+  w->caps[1] = scr_box_new_obj(scr_stream_ecb_retain, scr_stream_ecb_release, NULL);
   scr_box_set_ref(w->caps[1], (void *)fn);
   return w;
 }
+ScrError *scr_stream_write_cb_error(void) { return scr_stream_cb_error; }
 #else
 #define SCR_WCB_CALL(cb, err) ((void (*)(ScrClosure *))(cb)->fn)(cb)
 #define SCR_WCB_CALL_ERROF(cb, st) SCR_WCB_CALL(cb, NULL)
+ScrError *scr_stream_write_cb_error(void) { return NULL; }
 #endif
 
 /* errorBuffer: once destroyed, the buffered writes' callbacks and the
@@ -5411,6 +5410,12 @@ typedef struct ScrDuplexify {
   ScrClosure *drain_l, *finish_l, *readable_l, *end_l; /* +1, the listeners, or NULL */
   ScrClosure *r_eos, *w_eos; /* +1: the eos listeners' cleanups, or NULL */
   bool readable, writable;
+  /* Duplex.fromWeb's pair: destroying it without an error closes the web
+   * sides cleanly, Node's web-pair adapter (no synthesized AbortError). */
+  bool web_pair;
+  /* The error this duplexify was destroyed with while the peers settle
+   * (the destroy callback receives it, not a peer's secondary error). +1. */
+  ScrError *destroy_err;
   bool ondrain, onfinish, onreadable;
   int onclose; /* _duplexify's onclose: undefined, null, or d's destroy callback */
   struct ScrDuplexify *live_prev, *live_next;
@@ -5430,6 +5435,7 @@ static void scr_dupx_release_v(void *p) {
   if (x->w_eos) scr_closure_release(x->w_eos);
   if (x->r) scr_stream_release(x->r);
   if (x->w) scr_stream_release(x->w);
+  if (x->destroy_err) scr_error_release(x->destroy_err);
   free(x);
 }
 
@@ -5503,7 +5509,12 @@ static void scr_dupx_onfinished(ScrDuplexify *x, ScrError *err) {
   x->onclose = SCR_DUPX_NULL;
   if (!x->d) return;
   if (onclose == SCR_DUPX_WAIT) {
-    scr_dupx_destroyed(x, err);
+    ScrError *own = x->destroy_err;
+    x->destroy_err = NULL;
+    /* The web pair reports the error it was destroyed with (none for a
+     * clean destroy); every other duplexify keeps the peer's outcome. */
+    scr_dupx_destroyed(x, x->web_pair ? own : err);
+    if (own) scr_error_release(own);
   } else if (err) {
     ScrStream *d = scr_stream_retain(x->d);
     scr_stream_release(scr_stream_destroy(d, err));
@@ -5532,9 +5543,34 @@ static void scr_dupx_r_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
 }
 
 /* d._write: w.write(chunk) ? callback() : (ondrain = callback) */
+/* The inner writable completed a write: the duplex's write completes with the
+ * same outcome, so a failing web sink reaches the caller's write callback. */
+static void scr_dupx_write_done(ScrClosure *cb) {
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  /* The completion may arrive after the duplex was torn down (a web sink
+   * that settles late): there is no stream left to complete. */
+  if (!x->d) {
+    scr_dupx_release_v(x);
+    return;
+  }
+  ScrError *err = scr_stream_write_cb_error();
+  scr_stream_write_done(x->d, err ? scr_error_retain(err) : NULL);
+  scr_dupx_release_v(x);
+}
+
 static void scr_dupx_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
   ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
   const ScrStreamTypedDesc *desc = s->st->w.cur_desc;
+  if (x->web_pair) {
+    /* The web pair completes a write when the web sink does: a rejected sink
+     * write reaches the caller's write callback. */
+    ScrClosure *done = scr_dupx_closure((void *)&scr_dupx_write_done, x);
+    (void)(desc                        ? scr_stream_write_typed(x->w, chunk, desc, done)
+           : scr_stream_writes_values(s) ? scr_stream_write_dyn(x->w, (ScrDyn *)chunk, done)
+                                         : scr_stream_write(x->w, chunk, done));
+    scr_dupx_release_v(x);
+    return;
+  }
   bool ok = desc                        ? scr_stream_write_typed(x->w, chunk, desc, NULL)
             : scr_stream_writes_values(s) ? scr_stream_write_dyn(x->w, (ScrDyn *)chunk, NULL)
                                         : scr_stream_write(x->w, chunk, NULL);
@@ -5635,12 +5671,14 @@ static void scr_dupx_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   (void)s;
   ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
   ScrError *e = err ? scr_error_retain(err) : NULL;
-  if (!e && x->onclose != SCR_DUPX_NULL) e = scr_compose_abort_error();
+  if (!e && x->onclose != SCR_DUPX_NULL && !x->web_pair) e = scr_compose_abort_error();
   x->onreadable = x->ondrain = x->onfinish = false;
   if (x->onclose == SCR_DUPX_NULL) {
     if (x->d) scr_dupx_destroyed(x, e);
   } else {
     x->onclose = SCR_DUPX_WAIT;
+    if (x->destroy_err) scr_error_release(x->destroy_err);
+    x->destroy_err = e ? scr_error_retain(e) : NULL;
     if (x->w && !x->w->st->destroyed) scr_stream_release(scr_stream_destroy(x->w, e));
     if (x->r && !x->r->st->destroyed) scr_stream_release(scr_stream_destroy(x->r, e));
   }
@@ -5650,13 +5688,14 @@ static void scr_dupx_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
 
 /* _duplexify({ readable: r, writable: w }): r and w borrowed, either NULL.
  * +1. */
-ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
+static ScrStream *scr_stream_duplexify_impl(ScrStream *r, ScrStream *w, bool web_pair) {
   ScrDuplexify *x = calloc(1, sizeof *x);
   if (!x) scr_stream_oom();
   x->rc = 1;
   x->r = r ? scr_stream_retain(r) : NULL;
   x->w = w ? scr_stream_retain(w) : NULL;
   x->onclose = SCR_DUPX_UNSET;
+  x->web_pair = web_pair;
   x->readable = r && scr_stream_prop(r, "readable") != 0;
   x->writable = w && scr_stream_prop(w, "writable") != 0;
   /* new Duplexify({ readableObjectMode, writableObjectMode, readable, writable }) */
@@ -5695,6 +5734,10 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
   if (scr_dupx_live) scr_dupx_live->live_prev = x;
   scr_dupx_live = x; /* the reference x was created with */
   return d;
+}
+
+ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
+  return scr_stream_duplexify_impl(r, w, false);
 }
 
 /* Duplex.from(promise) (duplexify.js): a Duplexify({ objectMode: true,
@@ -5757,6 +5800,14 @@ ScrStream *scr_stream_duplex_from_promise(ScrPromise *p, ScrClosure *box) {
 ScrStream *scr_stream_duplexify_readable(ScrStream *r) { return scr_stream_duplexify(r, NULL); }
 ScrStream *scr_stream_duplexify_writable(ScrStream *w) { return scr_stream_duplexify(NULL, w); }
 ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w) { return scr_stream_duplexify(r, w); }
+/* Duplex.fromWeb's pair: duplexify defaults allowHalfOpen true, while Node's
+ * adapter passes false (adapters.js's newStreamDuplexFromReadableWritablePair
+ * defaults it). */
+ScrStream *scr_stream_duplexify_pair_opt(ScrStream *r, ScrStream *w, bool allow_half_open) {
+  ScrStream *d = scr_stream_duplexify_impl(r, w, true);
+  if (d->st) d->st->allow_half_open = allow_half_open;
+  return d;
+}
 
 /* ── node:stream/promises ─────────────────────────────────────────────
  * The promise forms ride the callback machinery above with a settling

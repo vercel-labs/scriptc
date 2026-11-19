@@ -35,7 +35,7 @@ console.log(safe(0.5));
     const llBody = (name: string): string =>
       ll.match(
         new RegExp(
-          `define internal [^\\n]+ @sc_f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+          `define internal [^\\n]+ @sc_f_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{([\\s\\S]*?)\\n\\}`,
         ),
       )![1]!;
     expect(llBody("safe")).toContain(" = add nsw i64 ");

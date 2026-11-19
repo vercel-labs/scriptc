@@ -23623,6 +23623,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   case SCR_DYN_HANDLE:
     if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&
         key->v.handle.tag != SCR_DYNH_WEAK_SET && key->v.handle.tag != SCR_DYNH_FINALIZATION_REGISTRY &&
+        key->v.handle.tag != SCR_DYNH_WEAK_REF &&
         key->v.handle.tag != SCR_DYNH_STDIO &&
         key->v.handle.tag != SCR_DYNH_FETCH_REQUEST && key->v.handle.tag != SCR_DYNH_FETCH_RESPONSE &&
         key->v.handle.tag != SCR_DYNH_WEB_STREAM &&
@@ -24645,6 +24646,11 @@ static void *scr_weak_ref_retain(void *ptr) {
 static void scr_weak_ref_release(void *ptr) {
   ScrWeakRef *ref = ptr;
   if (--ref->rc) return;
+  /* A WeakRef is an object, so it is a weak key and an unregister token
+   * (three.js registers each tracked texture with its WeakRef as both the
+   * held value and the token): weak collections keyed by it drop their
+   * entries. */
+  scr_weak_dispose(ref);
   scr_dyn_release(ref->target);
   free(ref);
 }

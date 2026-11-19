@@ -906,11 +906,19 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "http.resOnFinish" || e.fn === "http.resOnEndCallback") {
+  if (
+    e.fn === "http.resOnFinish" ||
+    e.fn === "http.resOnEndCallback" ||
+    e.fn === "http.resOnWriteFlush"
+  ) {
     const args = e.args.map((a) => host.emitExpr(a));
     host.toHeap(args[1]!);
     const entry =
-      e.fn === "http.resOnFinish" ? "scr_http_res_on_finish" : "scr_http_res_on_end_callback";
+      e.fn === "http.resOnFinish"
+        ? "scr_http_res_on_finish"
+        : e.fn === "http.resOnEndCallback"
+          ? "scr_http_res_on_end_callback"
+          : "scr_http_res_on_write_flush";
     host.declare(`declare void @${entry}(ptr, ptr)`);
     B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
     return { name: "", type: e.type };

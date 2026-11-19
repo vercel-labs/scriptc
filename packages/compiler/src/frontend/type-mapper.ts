@@ -311,6 +311,8 @@ export const CIPHER_TYPE_NAMES: ReadonlySet<string> = new Set([
  * accessor) and the DebugLoggerFunction its callback receives. Values
  * behind this surface use the checked-dynamic tree; see mapTypeInner. */
 const PARSE_ARGS_DYN_TYPES = new Set([
+  "CallSiteObject",
+  "GetCallSitesOptions",
   "DebugLogger",
   "DebugLoggerFunction",
   "ParseArgsConfig",
@@ -4769,6 +4771,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     psym !== undefined &&
     psymName === "AsyncLocalStorage" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return F64;
+  }
+  // async_hooks.AsyncHook: a 1-based f64 handle into the runtime's hook
+  // registry (the AsyncLocalStorage story).
+  if (
+    psym !== undefined &&
+    psymName === "AsyncHook" &&
     psym.declarations.some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&

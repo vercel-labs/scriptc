@@ -230,8 +230,13 @@ function enforceExprBoundary(lowerer: Lowerer, node: IrExpr): void {
     if (e.callee.type.kind !== "func") return; // validator's ICE otherwise
     const params = e.callee.type.params;
     // A checked-dynamic variadic value hides one trailing dyn array after
-    // its declared parameters (the slot its lifted signature carries).
-    const hidden = e.callee.type.rest === true && e.callee.type.restAbi === undefined ? 1 : 0;
+    // its declared parameters (the slot its lifted signature carries). A
+    // typed rest keeps its array in the parameters, so the only slot hidden
+    // after them is the actual-argument array the body reads
+    // (argumentsAll), which completion passes after the rest position.
+    const hidden =
+      (e.callee.type.rest === true && e.callee.type.restAbi === undefined ? 1 : 0) +
+      (e.callee.type.argumentsAll === true ? 1 : 0);
     if (e.args.length !== params.length + hidden) {
       fence(
         lowerer,

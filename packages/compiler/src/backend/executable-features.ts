@@ -29,7 +29,9 @@ export function executableLinkFeatures(
   // and a native signal then stands for it (scr_node_island_abort.c); a
   // FileHandle web stream reaches the stream machinery's signals too.
   const abortSignal =
-    features.abortSignal || features.httpSignal || features.fsWebStream ||
+    features.abortSignal ||
+    features.httpSignal ||
+    features.fsWebStream ||
     (features.nodeIsland && features.eventTarget);
   // A feature that calls into another feature's units links those too
   // (LINK_FEATURE_REQUIREMENTS), whichever fact selected it.

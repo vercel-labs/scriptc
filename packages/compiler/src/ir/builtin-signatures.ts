@@ -738,6 +738,7 @@ function buildLibFnSignatures() {
      * entryResourceNum/Str read a view entry's resource fields by the
      * selector order builtins/performance.ts defines. */
     "perf.resourceMark": { argTypes: [DYN], result: F64 },
+    "perf.timerify": { argTypes: [DYN], result: DYN },
     "perf.resourceClear": { argTypes: [DYN], result: VOID },
     "perf.resourceBufferSize": { argTypes: [DYN], result: VOID },
     "perf.entryResourceNum": { argTypes: [F64, F64], result: F64 },
@@ -1696,6 +1697,7 @@ function buildLibFnSignatures() {
      * validate their values when leaving that tree. The native parser may
      * throw Node's coded validation/grammar TypeErrors. */
     "util.parseArgs": { argTypes: [DYN], result: DYN },
+    "util.getCallSites": { argTypes: [DYN, DYN], result: DYN },
     "util.parseEnv": { argTypes: [DYN], result: DYN },
     "util.getSystemErrorName": { argTypes: [DYN], result: STRING },
     "util.getSystemErrorMessage": { argTypes: [DYN], result: STRING },
@@ -1733,6 +1735,27 @@ function buildLibFnSignatures() {
     /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
      * option flags; a web WritableStream. */
     "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
+    /** Duplex.fromWeb (scr_stream_duplex_from_web.c): the { readable,
+     * writable } pair and the option flags; a Duplex. */
+    "webstream.duplexFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Duplex.toWeb (scr_stream_to_web_pair.c): the duplex and the option
+     * flags; the { writable, readable } pair. */
+    "webstream.toWebDuplex": { argTypes: [null, F64], result: DYN },
+    /** Duplex.toWeb over a checked-dynamic value: a boxed native duplex
+     * unwraps, anything else throws ERR_INVALID_ARG_TYPE. */
+    "webstream.toWebDuplexDyn": { argTypes: [DYN, F64], result: DYN },
+    /** stream.duplexPair (scr_stream_pair.c): the options value (borrowed;
+     * NULL means none) and the two connected Duplexes. */
+    "stream.duplexPair": {
+      argTypes: [DYN],
+      result: { kind: "array", elem: { kind: "object", className: "%Duplex" } },
+    },
+    /** readable.wrap(stream) (scr_stream_wrap.c): the readable and the
+     * native source; answers the readable. */
+    "stream.wrap": { argTypes: [null, null], result: VOID },
+    /** The same over a checked-dynamic source: a boxed native readable
+     * unwraps, anything else throws the not-supported Error. */
+    "stream.wrapDyn": { argTypes: [null, DYN], result: VOID },
     "webstream.class": { argTypes: [F64], result: DYN },
     "webstream.from": { argTypes: [DYN], result: DYN },
     "webstream.instanceOf": { argTypes: [DYN, F64], result: BOOL },
@@ -2648,28 +2671,30 @@ function buildLibFnSignatures() {
      * the loop-run emitted (usesTimers) so the runner fiber drains. */
     // The trailing three are the { plan, timeout, concurrency } options (plan
     // -1 without one; timeout read under flag 8; concurrency read under flag
-    // 16, -1 for true). An out-of-range timeout or concurrency throws.
+    // 16, -1 for true). An out-of-range timeout or concurrency throws. The
+    // last argument is the { tags } list (a dyn array of strings, undefined
+    // without the option).
     "test.register": {
-      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     "test.registerEmpty": {
-      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     // The suite body takes no parameters or its SuiteContext (flag 2).
     "test.suite": {
-      argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64, DYN],
+      argTypes: [STRING, F64, STRING, null, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     // The trailing string is the hook call's "file:line:col".
     "test.hook": { argTypes: [F64, null, F64, STRING], result: VOID },
     "test.sub": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, null, F64, STRING, F64, F64, F64, DYN, DYN],
       result: { kind: "promise", inner: VOID },
     },
     "test.subEmpty": {
-      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN],
+      argTypes: [TESTCTX_T, STRING, F64, STRING, F64, STRING, F64, F64, F64, DYN, DYN],
       result: VOID,
     },
     "test.ctxSkip": { argTypes: [TESTCTX_T, STRING], result: VOID },
@@ -2681,6 +2706,12 @@ function buildLibFnSignatures() {
     // ERR_TEST_FAILURE wrapper over the failure, or null.
     "test.ctxSignal": { argTypes: [TESTCTX_T], result: DYN },
     "test.ctxError": { argTypes: [TESTCTX_T], result: DYN },
+    /** mock.getter/mock.setter's descriptor along the prototype chain, and
+     * Node's check that it carries the mocked accessor. */
+    "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
+    "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
+    // t.tags: the flattened tag set (a frozen array of strings).
+    "test.ctxTags": { argTypes: [TESTCTX_T], result: arrayOf(STRING) },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
     "test.ctxFullName": { argTypes: [TESTCTX_T], result: STRING },
     // t.passed, and t.workerId's Number(NODE_TEST_WORKER_ID) with 0 for
@@ -2696,7 +2727,7 @@ function buildLibFnSignatures() {
     "test.ctxHook": { argTypes: [TESTCTX_T, F64, null, F64], result: VOID },
     // t.plan(count[, { wait }]) — hasWait says whether the options object
     // carried the property; the count of one t.assert call follows.
-    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64], result: VOID },
+    "test.ctxPlan": { argTypes: [TESTCTX_T, F64, BOOL, F64, BOOL], result: VOID },
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
@@ -2843,6 +2874,11 @@ function buildLibFnSignatures() {
     "http.resHasHeader": { argTypes: [HTTPRES_T, STRING], result: BOOL },
     "http.resRemoveHeader": { argTypes: [HTTPRES_T, STRING], result: VOID },
     "http.resOnFinish": {
+      argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
+    /** write(chunk, cb)'s callback slot: fires once the data is flushed. */
+    "http.resOnWriteFlush": {
       argTypes: [HTTPRES_T, { kind: "func", params: [], ret: VOID }],
       result: VOID,
     },
@@ -3384,6 +3420,12 @@ function buildLibFnSignatures() {
     /** tlsSocket.servername (string or false) and getSession() (a Buffer
      * or null) as dyn values, and disableRenegotiation's no-op. */
     "tls.sockDynMember": { argTypes: [NETSOCKET_T, F64], result: DYN },
+    /** tlsSocket.exportKeyingMaterial(length, label[, context]); the flag
+     * says whether the call supplied a context argument. */
+    "tls.sockExportKeyingMaterial": {
+      argTypes: [NETSOCKET_T, DYN, DYN, DYN, BOOL],
+      result: BYTES_U8,
+    },
     /** `x instanceof tls.Server`: the server handle's TLS marker. */
     "tls.serverIs": { argTypes: [NETSERVER_T], result: BOOL },
     /** The same test over a checked-dynamic value (a union operand). */
@@ -3697,6 +3739,10 @@ function buildLibFnSignatures() {
     },
     "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
     "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
+    /** setHeader / appendHeader with a string, number, null or array value;
+     * the stored value keeps its type for getHeader/getHeaders. MAY THROW. */
+    "http.clientSetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
+    "http.clientAppendHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
     "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientHasHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
     "http.clientRemoveHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
@@ -4515,6 +4561,7 @@ function buildLibFnSignatures() {
      * negative/non-integer total (may-throw seed). */
     "buffer.concatLen": { argTypes: [arrayOf(BYTES_U8), F64], result: BYTES_U8 },
     "buffer.concatLenDyn": { argTypes: [DYN, F64], result: BYTES_U8 },
+    "buffer.concatLenDynOpt": { argTypes: [DYN, DYN], result: BYTES_U8 },
     // The checked-dynamic compare/equals validators (Node's argument
     // ladders over dyn-boxed invalid-input probes).
     /** The checked-dynamic compare/equals validators (scr_bytes_io.c) —
@@ -6124,6 +6171,8 @@ function buildLibFnSignatures() {
     "sc.text": { argTypes: [null], result: { kind: "promise", inner: STRING } },
     "sc.json": { argTypes: [null], result: { kind: "promise", inner: DYN } },
     "sc.buffer": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
+    /** blob(stream): the concatenated chunks as a Blob (dyn). */
+    "sc.blob": { argTypes: [null], result: { kind: "promise", inner: DYN } },
     /** bytes(stream): sc.buffer's bytes as a plain Uint8Array. */
     "sc.bytes": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },
     "sc.arrayBuffer": { argTypes: [null], result: { kind: "promise", inner: DYN } },
@@ -6159,9 +6208,9 @@ function buildLibFnSignatures() {
     "readable.pushNull": { argTypes: [null], result: BOOL },
     "readable.pushU": { argTypes: [null, null], result: BOOL },
     "readable.pushDyn": { argTypes: [null, DYN], result: BOOL },
-    "readable.unshift": { argTypes: [null, BYTES_U8], result: VOID },
-    "readable.unshiftDyn": { argTypes: [null, DYN], result: VOID },
-    "readable.unshiftStr": { argTypes: [null, STRING], result: VOID },
+    "readable.unshift": { argTypes: [null, BYTES_U8], result: BOOL },
+    "readable.unshiftDyn": { argTypes: [null, DYN], result: BOOL },
+    "readable.unshiftStr": { argTypes: [null, STRING], result: BOOL },
     "stream.onDyn": { argTypes: [null, STRING, DYN, BOOL, BOOL], result: VOID },
     "readable.readDyn": { argTypes: [null, DYN], result: DYN },
     "readable.read": { argTypes: [null, F64], result: VOID },
@@ -6192,6 +6241,7 @@ function buildLibFnSignatures() {
     "stream.duplexifyReadable": { argTypes: [null], result: VOID },
     "stream.duplexifyWritable": { argTypes: [null], result: VOID },
     "stream.duplexifyPair": { argTypes: [null, null], result: VOID },
+    "stream.duplexifyPairHalf": { argTypes: [null, null, BOOL], result: VOID },
     /** Duplex.from(promise): the promise and its box helper. */
     "stream.duplexFromPromise": { argTypes: [null, null], result: VOID },
     /** Duplex.from(asyncFunction): the stage, its source helper and the
@@ -6302,6 +6352,10 @@ function buildLibFnSignatures() {
      * callback takes the completion's error (Node's null on success). */
     "writable.writeEcb": { argTypes: [null, F64, null, DYN, null], result: BOOL },
     "writable.end": { argTypes: [null, F64], result: VOID },
+    /** writable.end with an error-first completion callback: the same
+     * arguments; the callback takes (error: Error | null) and receives
+     * ERR_STREAM_ALREADY_FINISHED when the stream already finished. */
+    "writable.endEcb": { argTypes: [null, F64], result: VOID },
     "writable.cork": { argTypes: [null], result: VOID },
     "writable.uncork": { argTypes: [null], result: VOID },
     "stream.destroy": { argTypes: [null], result: VOID },
@@ -6389,6 +6443,11 @@ function buildLibFnSignatures() {
      * no-op and everything else here (Node throws for falsy values too).
      * All arguments are borrowed. */
     "assert.ok": { argTypes: [BOOL, STRING, BOOL], result: VOID },
+    /** fail(actual, expected, message|null, operator, has_message): the
+     * deprecated form's AssertionError, built by the runtime. */
+    "assert.failDeprecated": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
+    /** DEP0094 for the first deprecated fail call (the events unit). */
+    "assert.failDeprecation": { argTypes: [], result: VOID },
     /** The next AssertionError's actual, expected and operator, recorded on
      * a failure branch. */
     "assert.record": { argTypes: [DYN, DYN, STRING], result: VOID },
@@ -6665,6 +6724,8 @@ function buildLibFnSignatures() {
      * The first is a record type, the second dyn (borrowed). Never throws. */
     "record.sourceNote": { argTypes: [null, DYN], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
+    "insp.property": { argTypes: [STRING, STRING, BOOL], result: STRING },
+    "insp.propChild": { argTypes: [BOOL], result: VOID },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },
     /** A nested inspect inside a custom rendering (PerformanceEntry's
@@ -7045,6 +7106,26 @@ function buildLibFnSignatures() {
     /** AsyncLocalStorage.snapshot(): a dyn function (cb, ...args) that runs
      * cb in the context active at the snapshot. */
     "als.snapshot": { argTypes: [], result: DYN },
+    /** node:async_hooks (scr_async_dyn.c): createHook(callbacks) validates
+     * its five callbacks with Node's ERR_ASYNC_CALLBACK and answers a 1-based
+     * AsyncHook handle (MAY THROW); enable/disable answer the handle;
+     * executionId/triggerId read the execution's ids. The ids are scriptc's
+     * own sequence (Node's counter also numbers its module loading). */
+    "ah.createHook": { argTypes: [DYN], result: F64 },
+    /** createHook over an inline literal's five callbacks (each DYN,
+     * undefined for an absent member): the literal converts member by
+     * member, so a function member boxes as the checked-dynamic function
+     * the registry calls. */
+    "ah.createHookParts": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
+    "ah.enable": { argTypes: [F64], result: F64 },
+    "ah.disable": { argTypes: [F64], result: F64 },
+    /** asyncWrapProviders: Node's provider-name → id table as a
+     * null-prototype checked-dynamic object (scr_ah_providers builds it; no
+     * program code runs, and a compiled binary has no provider ids of its
+     * own — the value is Node's published table). */
+    "ah.providers": { argTypes: [], result: DYN },
+    "ah.executionId": { argTypes: [], result: F64 },
+    "ah.triggerId": { argTypes: [], result: F64 },
     /** AsyncLocalStorage.withScope(store): enters the store now and answers
      * the native RunScope handle whose dispose()/[Symbol.dispose] installs
      * the value getStore() answered before it again. */
@@ -7194,6 +7275,8 @@ function buildLibFnSignatures() {
     "crypto.createPrivateKey": { argTypes: [DYN], result: DYN },
     "crypto.createPublicKey": { argTypes: [DYN], result: DYN },
     "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.encapsulate": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.decapsulate": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
     "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.signOneshotCb": { argTypes: [DYN, DYN, DYN, DYN], result: VOID },

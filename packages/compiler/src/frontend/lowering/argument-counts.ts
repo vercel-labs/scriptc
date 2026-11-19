@@ -236,6 +236,20 @@ export function usedAsValue(
   return found;
 }
 
+/** Whether the function being lowered, or the ordinary function an arrow in
+ * it inherits `arguments` from, receives the hidden array of the arguments
+ * actually passed (ParamMode "arguments"). A parameter that can be absent
+ * makes the count a per-call fact, so such a function reads the array
+ * instead of folding `arguments.length` to a constant. */
+export function readsHiddenArguments(lowerer: Lowerer): boolean {
+  for (let i = lowerer.fnStack.length - 1; i >= 0; i--) {
+    const ctx = lowerer.fnStack[i]!;
+    if (ctx.argumentsLocal) return true;
+    if (!ctx.inheritsArguments) return false;
+  }
+  return false;
+}
+
 function fixedArity(fn: ts.FunctionLikeDeclaration): boolean {
   return fn.parameters.nodes.every(
     (p) =>

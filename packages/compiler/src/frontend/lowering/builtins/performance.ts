@@ -98,6 +98,30 @@ export function lowerPerfHooksTypeof(lowerer: Lowerer, expression: ts.Expression
  * toJSON() answers its plain object. Other members on the performance
  * object fence by name; null for non-perf_hooks callees (the call chain
  * keeps trying). */
+/** performance.timerify(fn[, options]) and perf_hooks.timerify: the runtime
+ * validates the callable and the options object, then wraps the call and
+ * hands observers a 'function' entry whose detail is the argument list. */
+export function lowerTimerifyCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = expr.arguments.nodes;
+  if (args.length > 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering("timerify with this argument shape", expr, "use timerify(fn[, options])");
+  }
+  return {
+    kind: "libCall",
+    fn: "perf.timerify",
+    args: [
+      {
+        kind: "dynArrLit",
+        elems: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      },
+    ],
+    type: DYN,
+    loc,
+  };
+}
+
 export function lowerPerfHooksCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -105,6 +129,9 @@ export function lowerPerfHooksCall(
 ): IrExpr | null {
   if (access.questionDotToken) return null;
   const loc = locOf(expr);
+  if (access.name.text === "timerify" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
+    return lowerTimerifyCall(lowerer, expr, loc);
+  }
   if (access.name.text === "now" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
     // performance.now takes no arguments and ignores what it is given, but
     // a call's arguments still evaluate, in source order, before the clock
@@ -1655,12 +1682,14 @@ export function lowerMonitorEventLoopDelayCall(lowerer: Lowerer, expr: ts.CallEx
           "resolution is the one option",
         );
       }
-      // An undefined resolution takes the default, as Node's destructuring.
+      // An undefined resolution takes the default, as Node's destructuring;
+      // a supplied one is validated, so a null does not convert to 0.
       resolution = lowerOptionalArgument(
         lowerer,
         shorthand ? property.name : property.initializer,
         F64,
         numLit(10, loc),
+        { nullArm: "reject" },
       );
     }
   }

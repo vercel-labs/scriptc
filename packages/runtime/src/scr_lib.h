@@ -366,6 +366,9 @@ ScrDyn *scr_perf_entry_ref(double i);
  * is `value instanceof PerformanceObserver` (0) or
  * `PerformanceObserverEntryList` (1). */
 ScrDyn *scr_perf_observer_new(ScrDyn *args);
+/* performance.timerify(fn[, options]) (scr_perf.c): the argument vector,
+ * +1 wrapped function. */
+ScrDyn *scr_perf_timerify(ScrDyn *args);
 void scr_perf_observer_observe(ScrDyn *observer, ScrDyn *args);
 void scr_perf_observer_disconnect(ScrDyn *observer);
 double scr_perf_observer_take(ScrDyn *observer);

@@ -19,19 +19,19 @@ declare void @runtime(ptr)
 @hidden_value = internal global i64 7
 @public_value = constant i64 11
 
-define internal i64 @left() #0 {
+define internal i64 @left() align 64 #0 {
 entry:
   %v = load i64, ptr @hidden_value
   ret i64 %v
 }
 
-define internal i64 @right() #0 {
+define internal i64 @right() align 64 #0 {
 entry:
   %v = call i64 @left()
   ret i64 %v
 }
 
-define i64 @public_entry() #0 {
+define i64 @public_entry() align 64 #0 {
 entry:
   %a = call i64 @right()
   %b = load i64, ptr @public_value
@@ -50,7 +50,7 @@ test("splits generated LLVM functions and promotes only private cross-shard defi
   expect(splitLlvmProgram(SAMPLE)).toBeNull();
   const large = SAMPLE.replace(
     "define i64 @public_entry",
-    `${Array.from({ length: 80 }, (_, i) => `define internal i64 @pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`).join("\n")}\ndefine i64 @public_entry`,
+    `${Array.from({ length: 80 }, (_, i) => `define internal i64 @pad_${i}() align 64 #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`).join("\n")}\ndefine i64 @public_entry`,
   );
   const actual = splitLlvmProgram(large, { minimumBytes: 0, targetBytes: 64 * 1024 });
   expect(actual).not.toBeNull();
@@ -70,8 +70,8 @@ test("splits generated LLVM functions and promotes only private cross-shard defi
   expect(
     actual!.shards.some(
       (shard) =>
-        !shard.source().includes("define hidden i64 @right() #0") &&
-        shard.source().includes("declare hidden i64 @right() #0"),
+        !shard.source().includes("define hidden i64 @right() align 64 #0") &&
+        shard.source().includes("declare hidden i64 @right() align 64 #0"),
     ),
   ).toBe(true);
 });
@@ -91,7 +91,7 @@ test("thread-local definitions and declarations preserve their storage model acr
 const PADDING = Array.from(
   { length: 80 },
   (_, i) =>
-    `define internal i64 @pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`,
+    `define internal i64 @pad_${i}() align 64 #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`,
 ).join("\n");
 
 /** SAMPLE with more globals after @public_value and enough functions to
@@ -265,7 +265,7 @@ test("shared metadata bounds shard growth while preserving every definition", ()
   const body = names
     .map(
       (name) =>
-        `define internal i64 @${name}() #0 {\nentry:\n  ; ${"x".repeat(32 * 1024)}\n  ret i64 1\n}\n`,
+        `define internal i64 @${name}() align 64 #0 {\nentry:\n  ; ${"x".repeat(32 * 1024)}\n  ret i64 1\n}\n`,
     )
     .join("\n");
   const source =
@@ -300,7 +300,7 @@ function debugSample(): string {
     const scope = debug.function({ name, loc, params: [], locals: [], body: [], returnType: VOID });
     const location = debug.location(loc, scope);
     source = source.replace(
-      new RegExp(`(@${name}\\(\\) #0) \\{([\\s\\S]*?)\\n\\}`),
+      new RegExp(`(@${name}\\(\\) align 64 #0) \\{([\\s\\S]*?)\\n\\}`),
       (_, header: string, body: string) =>
         `${header} !dbg ${scope} {${body
           .split("\n")
@@ -369,7 +369,7 @@ test("personality routines stay on definitions when splitting LLVM modules", asy
   // Functions with landing pads (Linux unwinding) carry a personality; every
   // other shard declares them, and a declaration must not repeat it.
   const source =
-    SAMPLE.replaceAll(") #0 {", ") #0 personality ptr @__gcc_personality_v0 {") +
+    SAMPLE.replaceAll(") align 64 #0 {", ") align 64 #0 personality ptr @__gcc_personality_v0 {") +
     "declare i32 @__gcc_personality_v0(...)\n";
   const split = splitLlvmProgram(source, { minimumBytes: 0 });
   expect(split).not.toBeNull();
@@ -396,7 +396,7 @@ test("dev libraries split at the measured 2MB crossover while executables retain
   const body = Array.from(
     { length: 700 },
     (_, i) =>
-      `define internal i64 @library_pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(3072)}\n  ret i64 ${i}\n}\n`,
+      `define internal i64 @library_pad_${i}() align 64 #0 {\nentry:\n  ; ${"x".repeat(3072)}\n  ret i64 ${i}\n}\n`,
   ).join("\n");
   const source = SAMPLE.replace("define i64 @public_entry", `${body}\ndefine i64 @public_entry`);
   expect(Buffer.byteLength(source)).toBeGreaterThan(2 * 1024 * 1024);
@@ -412,7 +412,7 @@ test("every shard compiles and its merged object exposes only canonical public d
   const body = Array.from(
     { length: 120 },
     (_, i) =>
-      `define internal i64 @pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`,
+      `define internal i64 @pad_${i}() align 64 #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`,
   ).join("\n");
   const split = splitLlvmProgram(
     SAMPLE.replace("define i64 @public_entry", `${body}\ndefine i64 @public_entry`),

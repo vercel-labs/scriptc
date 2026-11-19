@@ -56,8 +56,6 @@ const KNOWN: Record<string, Known> = {
   chalk4: { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
-  "commander-calc": { run: "SC1090", argvs: [["--help"]] },
-  "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },
   "dotfolder": { island: true },
   "dual-package-kinds": { island: true },

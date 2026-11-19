@@ -26,6 +26,7 @@ function run(path: string, withBody: boolean): Promise<void> {
         const request = withBody
           ? client.request({ ":path": path }, { endStream: false })
           : client.request({ ":path": path });
+        lines.push(`${path} client endAfterHeaders ${request.endAfterHeaders}`);
         request.on("response", (headers) => lines.push(`${path} response ${headers[":status"]}`));
         request.resume();
         request.on("end", () => {

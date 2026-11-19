@@ -2685,7 +2685,13 @@ static ScrStr *scr_h2_req_pseudo(ScrHttpReq *r, const char *name, size_t len) {
   return value != NULL ? value : scr_str_new("", 0);
 }
 
-ScrStr *scr_http2_req_authority(ScrHttpReq *r) { return scr_h2_req_pseudo(r, ":authority", 10); }
+ScrStr *scr_http2_req_authority(ScrHttpReq *r) {
+  /* Node's getAuthority: :authority, else the host field. */
+  ScrStr *authority = scr_h2_req_pseudo(r, ":authority", 10);
+  if (authority->len > 0) return authority;
+  scr_str_release(authority);
+  return scr_h2_req_pseudo(r, "host", 4);
+}
 ScrStr *scr_http2_req_scheme(ScrHttpReq *r) { return scr_h2_req_pseudo(r, ":scheme", 7); }
 
 ScrH2Session *scr_http2_stream_session(ScrH2Stream *st) {
@@ -3674,7 +3680,8 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   scr_h2_send_headers(s, st->id, &block, end);
   free(block.data);
   if (end) {
-    st->end_after_headers = true;
+    /* Node reports endAfterHeaders only on a server stream whose request
+     * ended at its HEADERS block; a client stream always answers false. */
     scr_h2_stream_mark_local_closed(st);
   }
   return st; /* the create ref moves out; the session's vector holds its own */

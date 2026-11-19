@@ -4641,6 +4641,14 @@ static ScrDyn *scr_dyn_handle_own_symbols(const ScrDyn *v) {
   return ops->own_symbols ? ops->own_symbols(v->v.handle.ptr) : NULL;
 }
 
+/* The class's own enumerable keys when it declares them (an added property
+ * may be non-enumerable), else NULL. */
+static ScrDyn *scr_dyn_handle_own_enum_names(const ScrDyn *v) {
+  if (v->kind != SCR_DYN_HANDLE) return NULL;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(v);
+  return ops->own_enumerable_names ? ops->own_enumerable_names(v->v.handle.ptr) : NULL;
+}
+
 /* Whether `key` is one of a handle class's own property names. */
 static bool scr_dyn_handle_own_name(const ScrDyn *v, const ScrStr *key) {
   ScrDyn *names = scr_dyn_handle_own_names(v);
@@ -12669,6 +12677,16 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     if (!defined) return NULL;
     scr_dyn_release(defined);
     return scr_dyn_retain(target);
+  }
+  if (target->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(target)->define_own) {
+    /* The class's own properties: a class accessor with Node's identity
+     * rule, or a property the class adds. */
+    ScrStr *name = scr_dyn_property_key(key);
+    if (!name) return NULL;
+    bool done =
+        scr_dyn_handle_ops_of(target)->define_own(target->v.handle.ptr, name->data, name->len, descriptor);
+    scr_str_release(name);
+    return done && !scr_exc_pending() ? scr_dyn_retain(target) : NULL;
   }
   if (target->kind != SCR_DYN_OBJ) {
     static const char msg[] = "Object.defineProperty called on non-object";
@@ -21366,7 +21384,8 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     /* The key list needs no values, so it stays exact while the class's
      * state is gone (Object.keys of a closed database's limits). */
     if (mode == SCR_OBJWALK_KEYS) {
-      ScrDyn *names = scr_dyn_handle_own_names(v);
+      ScrDyn *names = scr_dyn_handle_own_enum_names(v);
+      if (names == NULL && !scr_exc_pending()) names = scr_dyn_handle_own_names(v);
       scr_dyn_release(out);
       if (names) return names;
       if (scr_exc_pending()) return NULL;
@@ -21554,7 +21573,8 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
       scr_throw_error_msg_code(SCR_ERR_ERROR, island_msg, sizeof island_msg - 1, "SC1090");
       return NULL;
     }
-    ScrDyn *names = scr_dyn_handle_own_names(v);
+    ScrDyn *names = scr_dyn_handle_own_enum_names(v);
+    if (names == NULL && !scr_exc_pending()) names = scr_dyn_handle_own_names(v);
     if (names) return names;
     return scr_exc_pending() ? NULL : scr_dyn_new_arr();
   }

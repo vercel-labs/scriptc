@@ -2761,6 +2761,17 @@ typedef struct ScrDynHandleOps {
    * when the class has none. Object.getOwnPropertySymbols,
    * getOwnPropertyDescriptors, hasOwn and `in` read it; NULL hook = none. */
   ScrDyn *(*own_symbols)(void *h);
+  /* The class's own enumerable string keys as a fresh array (+1), in
+   * enumeration order, answered without reading native state (so a closed
+   * database's Object.keys and for-in keep working). NULL hook = the
+   * own_names list, all of whose properties are enumerable. */
+  ScrDyn *(*own_enumerable_names)(void *h);
+  /* Object.defineProperty and Reflect.defineProperty on the class's own
+   * properties, `descriptor` read as any descriptor object: the class
+   * applies the definition (an added property, or a class accessor's
+   * identity rule) or raises Node's TypeError. True when handled (defined
+   * or threw); false to leave the definition to the ordinary path. */
+  bool (*define_own)(void *h, const char *key, size_t key_len, ScrDyn *descriptor);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),

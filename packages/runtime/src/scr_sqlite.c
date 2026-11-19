@@ -158,26 +158,47 @@ static ScrDyn *scr_sqlite_db_box(ScrSqliteDb *db);
  * the properties JavaScript added), and the hooks reflection reads them
  * through. Implemented once the getters above exist, below their class. */
 static ScrDyn *scr_sqlite_stmt_own_names(void *h);
+static ScrDyn *scr_sqlite_stmt_own_enum_names(void *h);
 static ScrDyn *scr_sqlite_stmt_own_view(void *h);
 static ScrDyn *scr_sqlite_stmt_inspect_view(void *h);
+static bool scr_sqlite_stmt_define_own(void *h, const char *key, size_t key_len, ScrDyn *descriptor);
 static ScrDyn *scr_sqlite_stmt_own_descriptor(void *h, const char *key, size_t key_len);
 static bool scr_sqlite_stmt_own_set(void *h, const char *key, size_t key_len, const ScrDyn *value);
 static bool scr_sqlite_stmt_own_delete(void *h, const char *key, size_t key_len);
 static ScrDyn *scr_sqlite_tag_own_names(void *h);
+static ScrDyn *scr_sqlite_tag_own_enum_names(void *h);
 static ScrDyn *scr_sqlite_tag_own_view(void *h);
 static ScrDyn *scr_sqlite_tag_inspect_view(void *h);
+static bool scr_sqlite_tag_define_own(void *h, const char *key, size_t key_len, ScrDyn *descriptor);
 static ScrDyn *scr_sqlite_tag_own_descriptor(void *h, const char *key, size_t key_len);
 static bool scr_sqlite_tag_own_set(void *h, const char *key, size_t key_len, const ScrDyn *value);
 static bool scr_sqlite_tag_own_delete(void *h, const char *key, size_t key_len);
 static ScrDyn *scr_sqlite_db_own_names(void *h);
+static ScrDyn *scr_sqlite_db_own_enum_names(void *h);
 static ScrDyn *scr_sqlite_db_own_view(void *h);
 static ScrDyn *scr_sqlite_db_inspect_view(void *h);
+static bool scr_sqlite_db_define_own(void *h, const char *key, size_t key_len, ScrDyn *descriptor);
 static ScrDyn *scr_sqlite_db_own_descriptor(void *h, const char *key, size_t key_len);
 static bool scr_sqlite_db_own_set(void *h, const char *key, size_t key_len, const ScrDyn *value);
 static bool scr_sqlite_db_own_delete(void *h, const char *key, size_t key_len);
 static ScrDyn *scr_sqlite_db_own_symbols(void *h);
 /* Symbol.for("sqlite-type"), the brand DatabaseSync carries. */
 static ScrSym *scr_sqlite_type_symbol_of(void);
+/* An added property read as an ordinary object read (getters run with the
+ * handle as `this`), +1 or NULL when the table has no such property. */
+static ScrDyn *scr_sqlite_table_read(const ScrDyn *table, const char *key, size_t len, void *h,
+                                     ScrDynHandleTag tag);
+static bool scr_sqlite_table_prop(const ScrDyn *table, const char *key, size_t len,
+                                  ScrDynProp *out);
+static bool scr_sqlite_table_write(ScrDyn **expandos, const char *cls, void *h, ScrDynHandleTag tag,
+                                   const char *key, size_t len, const ScrDyn *value);
+static bool scr_sqlite_define_own(const char *const *names, size_t count, ScrDynHandleTag tag,
+                                  void *h, ScrDyn **expandos, const char *key, size_t len,
+                                  ScrDyn *descriptor);
+static void scr_sqlite_inspect_expandos(ScrDyn *view, const ScrDyn *expandos, ScrDynHandleTag tag,
+                                        void *h);
+static void scr_sqlite_add_expandos(ScrDyn *view, const ScrDyn *expandos, void *h,
+                                    ScrDynHandleTag tag);
 
 /* ── small helpers ──────────────────────────────────────────────────── */
 
@@ -1211,8 +1232,7 @@ static ScrDyn *scr_sqlite_stmt_get(void *h, const char *key, size_t len) {
     return d;
   }
   /* A property JavaScript added to the statement object. */
-  const ScrDyn *added = s->expandos != NULL ? scr_dyn_obj_get(s->expandos, key, len) : NULL;
-  return added != NULL ? scr_dyn_retain((ScrDyn *)added) : NULL;
+  return scr_sqlite_table_read(s->expandos, key, len, s, SCR_DYNH_SQLITE_STATEMENT);
 }
 
 static const ScrDynHandleMethod scr_sqlite_stmt_methods[] = {
@@ -1244,6 +1264,8 @@ static const ScrDynHandleOps scr_sqlite_stmt_ops = {
     .own_view = scr_sqlite_stmt_own_view,
     .own_descriptor = scr_sqlite_stmt_own_descriptor,
     .delete_key = scr_sqlite_stmt_own_delete,
+    .own_enumerable_names = scr_sqlite_stmt_own_enum_names,
+    .define_own = scr_sqlite_stmt_define_own,
     .inspect_bracketed_past_depth = true,
 };
 
@@ -1479,8 +1501,7 @@ static ScrDyn *scr_sqlite_tag_get(void *h, const char *key, size_t len) {
   if (len == 4 && memcmp(key, "size", 4) == 0) return scr_dyn_new_num((double)store->count);
   if (len == 2 && memcmp(key, "db", 2) == 0) return scr_sqlite_db_box(store->db);
   /* A property JavaScript added to the store object. */
-  const ScrDyn *added = store->expandos != NULL ? scr_dyn_obj_get(store->expandos, key, len) : NULL;
-  return added != NULL ? scr_dyn_retain((ScrDyn *)added) : NULL;
+  return scr_sqlite_table_read(store->expandos, key, len, store, SCR_DYNH_SQLITE_TAG_STORE);
 }
 
 static const ScrDynHandleMethod scr_sqlite_tag_methods[] = {
@@ -1506,6 +1527,8 @@ static const ScrDynHandleOps scr_sqlite_tag_ops = {
     .own_view = scr_sqlite_tag_own_view,
     .own_descriptor = scr_sqlite_tag_own_descriptor,
     .delete_key = scr_sqlite_tag_own_delete,
+    .own_enumerable_names = scr_sqlite_tag_own_enum_names,
+    .define_own = scr_sqlite_tag_define_own,
     .inspect_bracketed_past_depth = true,
 };
 
@@ -1573,8 +1596,7 @@ static ScrDyn *scr_sqlite_limits_get(void *h, const char *key, size_t len) {
   int index = scr_sqlite_limit_index(key, len);
   if (index < 0) {
     /* Not a limit: a JavaScript-added property of this limits object. */
-    const ScrDyn *added = l->expandos != NULL ? scr_dyn_obj_get(l->expandos, key, len) : NULL;
-    return added != NULL ? scr_dyn_retain(added) : NULL;
+    return scr_sqlite_table_read(l->expandos, key, len, l, SCR_DYNH_SQLITE_LIMITS);
   }
   if (!scr_sqlite_limits_open(l)) {
     scr_sqlite_invalid_state("database is not open");
@@ -1591,8 +1613,8 @@ static bool scr_sqlite_limits_set(void *h, const char *key, size_t len, const Sc
      * (the table hangs off the object Node would have extended, so equality
      * across reads still holds). */
     if (l->expandos == NULL) l->expandos = scr_dyn_new_obj_null_proto();
-    scr_dyn_obj_set(l->expandos, key, len, scr_dyn_retain((ScrDyn *)value));
-    return true;
+    return scr_sqlite_table_write(&l->expandos, "Object", l, SCR_DYNH_SQLITE_LIMITS, key, len,
+                                  value);
   }
   if (!scr_sqlite_limits_open(l)) {
     scr_sqlite_invalid_state("database is not open");
@@ -1657,6 +1679,28 @@ static ScrDyn *scr_sqlite_limits_own_names(void *h) {
   return names;
 }
 
+static ScrDyn *scr_sqlite_limits_enum_names(void *h) {
+  ScrSqliteLimits *l = h;
+  ScrDyn *names = scr_dyn_new_arr();
+  if (l->expandos != NULL) {
+    ScrDyn *added = scr_dyn_obj_own_keys(l->expandos);
+    for (size_t i = 0; i < added->v.arr.len; i++) {
+      const ScrStr *name = added->v.arr.items[i]->v.str;
+      ScrDynProp prop;
+      if (scr_sqlite_table_prop(l->expandos, name->data, name->len, &prop) && prop.enumerable)
+        scr_dyn_arr_push(names, scr_dyn_retain(added->v.arr.items[i]));
+    }
+    scr_dyn_release(added);
+  }
+  for (size_t i = 0; i < SCR_SQLITE_LIMIT_COUNT; i++) {
+    const char *name = scr_sqlite_limit_names[i];
+    ScrStr *key = scr_str_new(name, strlen(name));
+    scr_dyn_arr_push(names, scr_dyn_new_str(key));
+    scr_str_release(key);
+  }
+  return names;
+}
+
 /* The descriptor of one own property. The limits are the connection's live
  * values (Node's data properties: writable and enumerable, not
  * configurable), so a closed database raises the read's error, while a
@@ -1677,16 +1721,13 @@ static ScrDyn *scr_sqlite_limits_descriptor(void *h, const char *key, size_t len
     scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(false));
     return out;
   }
-  const ScrDyn *value = l->expandos != NULL ? scr_dyn_obj_get(l->expandos, key, len) : NULL;
-  if (value == NULL) {
-    scr_dyn_release(out);
-    return scr_dyn_retain(scr_dyn_undefined());
-  }
-  scr_dyn_obj_set(out, "value", 5, scr_dyn_retain((ScrDyn *)value));
-  scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(true));
-  scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(true));
-  scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(true));
-  return out;
+  ScrDynProp prop;
+  scr_dyn_release(out);
+  if (!scr_sqlite_table_prop(l->expandos, key, len, &prop)) return scr_dyn_retain(scr_dyn_undefined());
+  ScrStr *name = scr_str_new(key, len);
+  out = scr_dyn_own_descriptor(l->expandos, name);
+  scr_str_release(name);
+  return out != NULL ? out : scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
 }
 
 /* `delete limits[key]`: the limits themselves are not configurable (Node's
@@ -1694,7 +1735,9 @@ static ScrDyn *scr_sqlite_limits_descriptor(void *h, const char *key, size_t len
 static bool scr_sqlite_limits_delete(void *h, const char *key, size_t len) {
   ScrSqliteLimits *l = h;
   if (scr_sqlite_limit_index(key, len) >= 0) return false;
-  if (l->expandos == NULL || !scr_dyn_obj_get(l->expandos, key, len)) return true;
+  ScrDynProp prop;
+  if (!scr_sqlite_table_prop(l->expandos, key, len, &prop)) return true;
+  if (!prop.configurable) return false;
   ScrStr *name = scr_str_new(key, len);
   scr_dyn_obj_delete_field(l->expandos, name);
   scr_str_release(name);
@@ -1714,15 +1757,7 @@ static ScrDyn *scr_sqlite_limits_own_view(void *h) {
   }
   ScrDyn *view = scr_dyn_new_obj();
   /* The JavaScript-added properties come first, as V8 lists them. */
-  if (l->expandos != NULL) {
-    ScrDyn *added = scr_dyn_obj_own_keys(l->expandos);
-    for (size_t i = 0; i < added->v.arr.len; i++) {
-      const ScrStr *key = added->v.arr.items[i]->v.str;
-      const ScrDyn *value = scr_dyn_obj_get(l->expandos, key->data, key->len);
-      if (value != NULL) scr_dyn_obj_set(view, key->data, key->len, scr_dyn_retain((ScrDyn *)value));
-    }
-    scr_dyn_release(added);
-  }
+  scr_sqlite_add_expandos(view, l->expandos, l, SCR_DYNH_SQLITE_LIMITS);
   for (size_t i = 0; i < SCR_SQLITE_LIMIT_COUNT; i++) {
     const char *name = scr_sqlite_limit_names[i];
     size_t len = strlen(name);
@@ -1731,6 +1766,56 @@ static ScrDyn *scr_sqlite_limits_own_view(void *h) {
     scr_dyn_obj_set_attrs_at(view, scr_dyn_obj_index_of(view, name, len), true, true, false);
   }
   return view;
+}
+
+/* The object util.inspect shows: the added accessors stay [Getter]s. */
+static ScrDyn *scr_sqlite_limits_inspect_view(void *h) {
+  ScrSqliteLimits *l = h;
+  if (!scr_sqlite_limits_open(l)) {
+    /* Node's inspector reads the limits, so a closed database throws. */
+    scr_sqlite_invalid_state("database is not open");
+    return NULL;
+  }
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_sqlite_inspect_expandos(view, l->expandos, SCR_DYNH_SQLITE_LIMITS, h);
+  for (size_t i = 0; i < SCR_SQLITE_LIMIT_COUNT; i++) {
+    const char *name = scr_sqlite_limit_names[i];
+    size_t len = strlen(name);
+    scr_dyn_obj_set(view, name, len,
+                    scr_dyn_new_num((double)sqlite3_limit(l->db->conn, (int)i, -1)));
+    scr_dyn_obj_set_attrs_at(view, scr_dyn_obj_index_of(view, name, len), true, true, false);
+  }
+  return view;
+}
+
+/* Object.defineProperty on the limits object: a limit keeps its attributes
+ * (Node applies a value through the limit's setter and ignores writable),
+ * while any other key is an added property. */
+static bool scr_sqlite_limits_define(void *h, const char *key, size_t len, ScrDyn *descriptor) {
+  ScrSqliteLimits *l = h;
+  if (scr_sqlite_limit_index(key, len) < 0) {
+    if (l->expandos == NULL) l->expandos = scr_dyn_new_obj_null_proto();
+    return scr_sqlite_define_own(NULL, 0, SCR_DYNH_SQLITE_LIMITS, h, &l->expandos, key, len,
+                                 descriptor);
+  }
+  ScrDyn *snapshot = scr_dyn_descriptor_snapshot(descriptor);
+  if (snapshot == NULL) return true;
+  ScrDyn *configurable = scr_dyn_obj_get(snapshot, "configurable", 12);
+  ScrDyn *enumerable = scr_dyn_obj_get(snapshot, "enumerable", 10);
+  ScrDyn *get = scr_dyn_obj_get(snapshot, "get", 3);
+  ScrDyn *set = scr_dyn_obj_get(snapshot, "set", 3);
+  ScrDyn *value = scr_dyn_obj_get(snapshot, "value", 5);
+  bool refuse = (configurable != NULL && scr_dyn_truthy(configurable)) ||
+                (enumerable != NULL && !scr_dyn_truthy(enumerable)) || get != NULL || set != NULL;
+  if (refuse) {
+    char message[160];
+    snprintf(message, sizeof message, "Cannot redefine property: %.*s", (int)len, key);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+  } else if (value != NULL) {
+    (void)scr_sqlite_limits_set(h, key, len, value);
+  }
+  scr_dyn_release(snapshot);
+  return true;
 }
 
 static const ScrDynHandleOps scr_sqlite_limits_ops = {
@@ -1742,13 +1827,15 @@ static const ScrDynHandleOps scr_sqlite_limits_ops = {
     .invoke = scr_sqlite_limits_invoke,
     .get = scr_sqlite_limits_get,
     .set = scr_sqlite_limits_set,
-    .inspect_view = scr_sqlite_limits_own_view,
+    .inspect_view = scr_sqlite_limits_inspect_view,
     .inspect_view_bare = true,
     .json_empty_object = true,
     .own_names = scr_sqlite_limits_own_names,
+    .own_enumerable_names = scr_sqlite_limits_enum_names,
     .own_view = scr_sqlite_limits_own_view,
     .own_descriptor = scr_sqlite_limits_descriptor,
     .delete_key = scr_sqlite_limits_delete,
+    .define_own = scr_sqlite_limits_define,
     .inspect_bracketed_past_depth = true,
 };
 
@@ -3482,8 +3569,7 @@ static ScrDyn *scr_sqlite_db_get(void *h, const char *key, size_t len) {
     return scr_dyn_new_handle(l, SCR_DYNH_SQLITE_LIMITS);
   }
   /* A property JavaScript added to the database object. */
-  const ScrDyn *added = db->expandos != NULL ? scr_dyn_obj_get(db->expandos, key, len) : NULL;
-  return added != NULL ? scr_dyn_retain((ScrDyn *)added) : NULL;
+  return scr_sqlite_table_read(db->expandos, key, len, db, SCR_DYNH_SQLITE_DB);
 }
 
 /* ── the classes' own properties ──────────────────────────────────────
@@ -3634,14 +3720,66 @@ static ScrDyn *scr_sqlite_own_names_of(const char *const *names, size_t count,
   return out;
 }
 
-/* Appends the added properties to a snapshot view. */
-static void scr_sqlite_add_expandos(ScrDyn *view, const ScrDyn *expandos) {
+/* An added property of a class object: the handle classes keep the
+ * properties JavaScript adds in a table, so their attributes (and any
+ * accessor) behave as an ordinary object's. */
+static bool scr_sqlite_table_prop(const ScrDyn *table, const char *key, size_t len,
+                                  ScrDynProp *out) {
+  if (table == NULL) return false;
+  size_t at = scr_dyn_obj_index_of(table, key, len);
+  if (at == SIZE_MAX) return false;
+  *out = scr_dyn_obj_prop_at(table, at);
+  return true;
+}
+
+/* Calls `fn` with the handle as `this` (+1 result). */
+static ScrDyn *scr_sqlite_call_with_handle(const ScrDyn *fn, ScrDyn *const *args, size_t argc,
+                                           void *h, ScrDynHandleTag tag) {
+  ScrDyn *receiver = scr_dyn_new_handle(h, tag);
+  scr_dyn_this_push_dyn(receiver);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, "accessor");
+  scr_dyn_this_pop();
+  scr_dyn_release(receiver);
+  return result;
+}
+
+/* Reads an added property as an ordinary object read would: its data
+ * value, or its getter called with the handle as `this`. NULL when the
+ * table has no such property. */
+static ScrDyn *scr_sqlite_table_read(const ScrDyn *table, const char *key, size_t len, void *h,
+                                     ScrDynHandleTag tag) {
+  ScrDynProp prop;
+  if (!scr_sqlite_table_prop(table, key, len, &prop)) return NULL;
+  if (!prop.accessor) return scr_dyn_retain(prop.value);
+  if (prop.getter == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_sqlite_call_with_handle(prop.getter, NULL, 0, h, tag);
+}
+
+/* The addresses of the added properties in enumeration order. */
+static bool scr_sqlite_assign_added(ScrDyn **expandos, const char *key, size_t len,
+                                    const ScrDyn *value) {
+  if (*expandos == NULL) *expandos = scr_dyn_new_obj();
+  scr_dyn_obj_set(*expandos, key, len, scr_dyn_retain((ScrDyn *)value));
+  return true;
+}
+
+/* Appends the added properties to a snapshot view, the way JSON, the key
+ * walks and util.inspect read them: enumerable ones, with an accessor's
+ * getter run (the handle is its receiver). */
+static void scr_sqlite_add_expandos(ScrDyn *view, const ScrDyn *expandos, void *h,
+                                    ScrDynHandleTag tag) {
   if (expandos == NULL) return;
   ScrDyn *added = scr_dyn_obj_own_keys(expandos);
-  for (size_t i = 0; i < added->v.arr.len; i++) {
+  for (size_t i = 0; i < added->v.arr.len && !scr_exc_pending(); i++) {
     const ScrStr *name = added->v.arr.items[i]->v.str;
-    const ScrDyn *value = scr_dyn_obj_get(expandos, name->data, name->len);
-    if (value != NULL) scr_dyn_obj_set(view, name->data, name->len, scr_dyn_retain((ScrDyn *)value));
+    ScrDynProp prop;
+    if (!scr_sqlite_table_prop(expandos, name->data, name->len, &prop) || !prop.enumerable) continue;
+    ScrDyn *value = prop.accessor
+                        ? (prop.getter != NULL
+                               ? scr_sqlite_call_with_handle(prop.getter, NULL, 0, h, tag)
+                               : scr_dyn_retain(scr_dyn_undefined()))
+                        : scr_dyn_retain(prop.value);
+    if (value != NULL) scr_dyn_obj_set(view, name->data, name->len, value);
   }
   scr_dyn_release(added);
 }
@@ -3661,14 +3799,126 @@ static ScrDyn *scr_sqlite_accessor_descriptor(ScrDynHandleTag tag, const char *n
  * state, so it answers on a closed database too). */
 static ScrDyn *scr_sqlite_expando_descriptor(const ScrDyn *expandos, const char *key,
                                              size_t len) {
-  const ScrDyn *value = expandos != NULL ? scr_dyn_obj_get(expandos, key, len) : NULL;
-  if (value == NULL) return scr_dyn_retain(scr_dyn_undefined());
-  ScrDyn *out = scr_dyn_new_obj();
-  scr_dyn_obj_set(out, "value", 5, scr_dyn_retain((ScrDyn *)value));
-  scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(true));
-  scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(true));
-  scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(true));
+  ScrDynProp prop;
+  if (!scr_sqlite_table_prop(expandos, key, len, &prop))
+    return scr_dyn_retain(scr_dyn_undefined());
+  ScrStr *name = scr_str_new(key, len);
+  ScrDyn *out = scr_dyn_own_descriptor(expandos, name);
+  scr_str_release(name);
+  return out != NULL ? out : scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* The class's own enumerable names: the accessors (all enumerable), then
+ * the added properties that are enumerable. */
+static ScrDyn *scr_sqlite_enum_names_of(const char *const *names, size_t count,
+                                        const ScrDyn *expandos) {
+  ScrDyn *out = scr_dyn_new_arr();
+  for (size_t i = 0; i < count; i++) {
+    ScrStr *name = scr_str_new(names[i], strlen(names[i]));
+    scr_dyn_arr_push(out, scr_dyn_new_str(name));
+    scr_str_release(name);
+  }
+  if (expandos != NULL) {
+    ScrDyn *added = scr_dyn_obj_own_keys(expandos);
+    for (size_t i = 0; i < added->v.arr.len; i++) {
+      const ScrStr *name = added->v.arr.items[i]->v.str;
+      ScrDynProp prop;
+      if (scr_sqlite_table_prop(expandos, name->data, name->len, &prop) && prop.enumerable)
+        scr_dyn_arr_push(out, scr_dyn_retain(added->v.arr.items[i]));
+    }
+    scr_dyn_release(added);
+  }
   return out;
+}
+
+/* V8's TypeError for writing a property that has only a getter. */
+static void scr_sqlite_getter_only(const char *cls, const char *key, size_t len) {
+  char message[192];
+  snprintf(message, sizeof message, "Cannot set property %.*s of #<%s> which has only a getter",
+           (int)len, key, cls);
+  scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+}
+
+/* A write of an added property: an accessor runs its setter (a getter-only
+ * accessor refuses as V8 does, which sloppy code ignores), a non-writable
+ * data property refuses, anything else stores. */
+static bool scr_sqlite_table_write(ScrDyn **expandos, const char *cls, void *h,
+                                   ScrDynHandleTag tag, const char *key, size_t len,
+                                   const ScrDyn *value) {
+  ScrDynProp prop;
+  if (scr_sqlite_table_prop(*expandos, key, len, &prop)) {
+    if (prop.accessor) {
+      if (prop.setter == NULL) {
+        scr_sqlite_getter_only(cls, key, len);
+        scr_dyn_assign_failure_note();
+        return true;
+      }
+      ScrDyn *const args[] = {(ScrDyn *)value};
+      ScrDyn *result = scr_sqlite_call_with_handle(prop.setter, args, 1, h, tag);
+      scr_dyn_release(result);
+      return true;
+    }
+    if (!prop.writable) {
+      char message[192];
+      snprintf(message, sizeof message,
+               "Cannot assign to read only property %.*s of object '#<%s>'", (int)len, key, cls);
+      scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+      scr_dyn_assign_failure_note();
+      return true;
+    }
+  }
+  return scr_sqlite_assign_added(expandos, key, len, value);
+}
+
+/* Defines an added property with an ordinary object's rules. */
+static bool scr_sqlite_define_added(ScrDyn **expandos, const char *key, size_t len,
+                                    ScrDyn *snapshot) {
+  if (*expandos == NULL) *expandos = scr_dyn_new_obj();
+  ScrStr *name = scr_str_new(key, len);
+  ScrDyn *key_value = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *defined = scr_dyn_define_property(*expandos, key_value, snapshot);
+  scr_dyn_release(key_value);
+  bool ok = defined != NULL && !scr_exc_pending();
+  scr_dyn_release(defined);
+  return ok;
+}
+
+/* Object.defineProperty on a class object: a class accessor answers only
+ * its own getter and attributes (V8's identity rule for a non-configurable
+ * accessor), and any other key is an added property. */
+static bool scr_sqlite_define_own(const char *const *names, size_t count, ScrDynHandleTag tag,
+                                  void *h, ScrDyn **expandos, const char *key, size_t len,
+                                  ScrDyn *descriptor) {
+  ScrDyn *snapshot = scr_dyn_descriptor_snapshot(descriptor);
+  if (snapshot == NULL) return true;
+  const char *accessor_name = scr_sqlite_own_name(names, count, key, len);
+  if (accessor_name == NULL) {
+    /* An added property: the ordinary rules (attributes, non-configurable
+     * properties, accessors). A refusal leaves its TypeError pending. */
+    (void)scr_sqlite_define_added(expandos, key, len, snapshot);
+    scr_dyn_release(snapshot);
+    return true;
+  }
+  ScrDyn *get = scr_dyn_obj_get(snapshot, "get", 3);
+  ScrDyn *set = scr_dyn_obj_get(snapshot, "set", 3);
+  ScrDyn *value = scr_dyn_obj_get(snapshot, "value", 5);
+  ScrDyn *writable = scr_dyn_obj_get(snapshot, "writable", 8);
+  ScrDyn *enumerable = scr_dyn_obj_get(snapshot, "enumerable", 10);
+  ScrDyn *configurable = scr_dyn_obj_get(snapshot, "configurable", 12);
+  ScrDyn *expected = scr_sqlite_accessor_fn(tag, accessor_name);
+  bool same_getter = get != NULL && get->kind == SCR_DYN_FUNC && scr_dyn_strict_eq(get, expected);
+  bool allowed = same_getter && set == NULL && value == NULL && writable == NULL &&
+                 (enumerable == NULL || scr_dyn_truthy(enumerable)) &&
+                 (configurable == NULL || !scr_dyn_truthy(configurable));
+  scr_dyn_release(expected);
+  if (!allowed) {
+    char message[160];
+    snprintf(message, sizeof message, "Cannot redefine property: %.*s", (int)len, key);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+  }
+  scr_dyn_release(snapshot);
+  return true;
 }
 
 /* An inspect view: the accessors as getter properties (so the inspector
@@ -3699,6 +3949,54 @@ static ScrDyn *scr_sqlite_inspect_getter(ScrDynHandleTag tag, const char *name, 
   return scr_dyn_new_func(closure, scr_sqlite_inspect_getter_call, 0, "native:function", "");
 }
 
+/* An added property's accessor, closed over the handle it must see as
+ * `this` when util.inspect's getters run it. */
+static ScrDyn *scr_sqlite_inspect_user_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrDyn *receiver = scr_box_get_ref(closure->caps[0]);
+  ScrDyn *fn = scr_box_get_ref(closure->caps[1]);
+  ScrDyn *result = NULL;
+  if (receiver != NULL && fn != NULL) {
+    scr_dyn_this_push_dyn(receiver);
+    result = scr_dyn_call(fn, NULL, 0, "get");
+    scr_dyn_this_pop();
+  }
+  scr_dyn_release(fn);
+  scr_dyn_release(receiver);
+  return result;
+}
+
+static ScrDyn *scr_sqlite_inspect_user_fn(ScrDynHandleTag tag, void *h, ScrDyn *fn) {
+  ScrClosure *closure = scr_closure_new(NULL, 2);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_dyn_new_handle(h, tag));
+  closure->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[1], scr_dyn_retain(fn));
+  return scr_dyn_new_func(closure, scr_sqlite_inspect_user_call, 0, "native:function", "");
+}
+
+/* The added properties for an inspect view: enumerable ones, with accessors
+ * kept as [Getter]/[Setter] rather than their values. */
+static void scr_sqlite_inspect_expandos(ScrDyn *view, const ScrDyn *expandos, ScrDynHandleTag tag,
+                                        void *h) {
+  if (expandos == NULL) return;
+  ScrDyn *added = scr_dyn_obj_own_keys(expandos);
+  for (size_t i = 0; i < added->v.arr.len && !scr_exc_pending(); i++) {
+    const ScrStr *name = added->v.arr.items[i]->v.str;
+    ScrDynProp prop;
+    if (!scr_sqlite_table_prop(expandos, name->data, name->len, &prop) || !prop.enumerable) continue;
+    if (!prop.accessor) {
+      scr_dyn_obj_set(view, name->data, name->len, scr_dyn_retain(prop.value));
+      continue;
+    }
+    ScrDyn *getter = prop.getter != NULL ? scr_sqlite_inspect_user_fn(tag, h, prop.getter) : NULL;
+    ScrDyn *setter = prop.setter != NULL ? scr_sqlite_inspect_user_fn(tag, h, prop.setter) : NULL;
+    scr_dyn_obj_set_accessor(view, name->data, name->len, getter, setter);
+  }
+  scr_dyn_release(added);
+}
+
 static ScrDyn *scr_sqlite_inspect_of(ScrDynHandleTag tag, void *h, const char *const *names,
                                      size_t count, const ScrDyn *expandos) {
   ScrDyn *view = scr_dyn_new_obj();
@@ -3706,36 +4004,34 @@ static ScrDyn *scr_sqlite_inspect_of(ScrDynHandleTag tag, void *h, const char *c
     size_t len = strlen(names[i]);
     scr_dyn_obj_set_accessor(view, names[i], len, scr_sqlite_inspect_getter(tag, names[i], h), NULL);
   }
-  scr_sqlite_add_expandos(view, expandos);
+  scr_sqlite_inspect_expandos(view, expandos, tag, h);
   return view;
 }
 
 /* A write of a class accessor: V8's getter-only TypeError, as Node's
  * class accessors raise (no code), which sloppy-mode code ignores. Any
- * other key is added as an ordinary data property. */
+ * other key is an added property with an ordinary object's rules. */
 static bool scr_sqlite_own_set(const char *const *names, size_t count, const char *cls,
-                               const char *key, size_t len, const ScrDyn *value,
-                               ScrDyn **expandos) {
+                               ScrDynHandleTag tag, void *h, const char *key, size_t len,
+                               const ScrDyn *value, ScrDyn **expandos) {
   if (scr_sqlite_is_own_accessor(names, count, key, len)) {
-    char message[192];
-    snprintf(message, sizeof message, "Cannot set property %.*s of #<%s> which has only a getter",
-             (int)len, key, cls);
-    scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
+    scr_sqlite_getter_only(cls, key, len);
     /* The failure is noted so a sloppy-mode write drops it (V8 ignores a
      * getter-only assignment outside strict code). */
     scr_dyn_assign_failure_note();
     return true;
   }
-  if (*expandos == NULL) *expandos = scr_dyn_new_obj();
-  scr_dyn_obj_set(*expandos, key, len, scr_dyn_retain((ScrDyn *)value));
-  return true;
+  return scr_sqlite_table_write(expandos, cls, h, tag, key, len, value);
 }
 
-/* `delete`: the accessors are not configurable; an added property goes. */
+/* `delete`: the accessors are not configurable; an added property goes
+ * unless its own definition made it non-configurable. */
 static bool scr_sqlite_own_delete(const char *const *names, size_t count, const char *key,
                                   size_t len, ScrDyn **expandos) {
   if (scr_sqlite_is_own_accessor(names, count, key, len)) return false;
-  if (*expandos == NULL || scr_dyn_obj_get(*expandos, key, len) == NULL) return true;
+  ScrDynProp prop;
+  if (!scr_sqlite_table_prop(*expandos, key, len, &prop)) return true;
+  if (!prop.configurable) return false;
   ScrStr *name = scr_str_new(key, len);
   scr_dyn_obj_delete_field(*expandos, name);
   scr_str_release(name);
@@ -3745,6 +4041,11 @@ static bool scr_sqlite_own_delete(const char *const *names, size_t count, const 
 static ScrDyn *scr_sqlite_stmt_own_names(void *h) {
   ScrSqliteStmt *s = h;
   return scr_sqlite_own_names_of(scr_sqlite_stmt_own, SCR_SQLITE_STMT_OWN_COUNT, s->expandos);
+}
+
+static ScrDyn *scr_sqlite_stmt_own_enum_names(void *h) {
+  ScrSqliteStmt *s = h;
+  return scr_sqlite_enum_names_of(scr_sqlite_stmt_own, SCR_SQLITE_STMT_OWN_COUNT, s->expandos);
 }
 
 static ScrDyn *scr_sqlite_stmt_inspect_view(void *h) {
@@ -3768,7 +4069,7 @@ static ScrDyn *scr_sqlite_stmt_own_view(void *h) {
     return NULL;
   }
   scr_dyn_obj_set(view, "expandedSQL", 11, expanded);
-  scr_sqlite_add_expandos(view, s->expandos);
+  scr_sqlite_add_expandos(view, s->expandos, h, SCR_DYNH_SQLITE_STATEMENT);
   return view;
 }
 
@@ -3781,8 +4082,8 @@ static ScrDyn *scr_sqlite_stmt_own_descriptor(void *h, const char *key, size_t k
 
 static bool scr_sqlite_stmt_own_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
   ScrSqliteStmt *s = h;
-  return scr_sqlite_own_set(scr_sqlite_stmt_own, SCR_SQLITE_STMT_OWN_COUNT, "StatementSync", key,
-                            key_len, value, &s->expandos);
+  return scr_sqlite_own_set(scr_sqlite_stmt_own, SCR_SQLITE_STMT_OWN_COUNT, "StatementSync",
+                            SCR_DYNH_SQLITE_STATEMENT, h, key, key_len, value, &s->expandos);
 }
 
 static bool scr_sqlite_stmt_own_delete(void *h, const char *key, size_t key_len) {
@@ -3791,9 +4092,21 @@ static bool scr_sqlite_stmt_own_delete(void *h, const char *key, size_t key_len)
                                &s->expandos);
 }
 
+static bool scr_sqlite_stmt_define_own(void *h, const char *key, size_t key_len,
+                                       ScrDyn *descriptor) {
+  ScrSqliteStmt *s = h;
+  return scr_sqlite_define_own(scr_sqlite_stmt_own, SCR_SQLITE_STMT_OWN_COUNT,
+                               SCR_DYNH_SQLITE_STATEMENT, h, &s->expandos, key, key_len, descriptor);
+}
+
 static ScrDyn *scr_sqlite_tag_own_names(void *h) {
   ScrSqliteTagStore *store = h;
   return scr_sqlite_own_names_of(scr_sqlite_tag_own, SCR_SQLITE_TAG_OWN_COUNT, store->expandos);
+}
+
+static ScrDyn *scr_sqlite_tag_own_enum_names(void *h) {
+  ScrSqliteTagStore *store = h;
+  return scr_sqlite_enum_names_of(scr_sqlite_tag_own, SCR_SQLITE_TAG_OWN_COUNT, store->expandos);
 }
 
 static ScrDyn *scr_sqlite_tag_inspect_view(void *h) {
@@ -3823,7 +4136,7 @@ static ScrDyn *scr_sqlite_tag_own_view(void *h) {
     return NULL;
   }
   scr_dyn_obj_set(view, "size", 4, size);
-  scr_sqlite_add_expandos(view, store->expandos);
+  scr_sqlite_add_expandos(view, store->expandos, h, SCR_DYNH_SQLITE_TAG_STORE);
   return view;
 }
 
@@ -3836,8 +4149,8 @@ static ScrDyn *scr_sqlite_tag_own_descriptor(void *h, const char *key, size_t ke
 
 static bool scr_sqlite_tag_own_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
   ScrSqliteTagStore *store = h;
-  return scr_sqlite_own_set(scr_sqlite_tag_own, SCR_SQLITE_TAG_OWN_COUNT, "SQLTagStore", key,
-                            key_len, value, &store->expandos);
+  return scr_sqlite_own_set(scr_sqlite_tag_own, SCR_SQLITE_TAG_OWN_COUNT, "SQLTagStore",
+                            SCR_DYNH_SQLITE_TAG_STORE, h, key, key_len, value, &store->expandos);
 }
 
 static bool scr_sqlite_tag_own_delete(void *h, const char *key, size_t key_len) {
@@ -3846,9 +4159,22 @@ static bool scr_sqlite_tag_own_delete(void *h, const char *key, size_t key_len) 
                                &store->expandos);
 }
 
+static bool scr_sqlite_tag_define_own(void *h, const char *key, size_t key_len,
+                                      ScrDyn *descriptor) {
+  ScrSqliteTagStore *store = h;
+  return scr_sqlite_define_own(scr_sqlite_tag_own, SCR_SQLITE_TAG_OWN_COUNT,
+                               SCR_DYNH_SQLITE_TAG_STORE, h, &store->expandos, key, key_len,
+                               descriptor);
+}
+
 static ScrDyn *scr_sqlite_db_own_names(void *h) {
   ScrSqliteDb *db = h;
   return scr_sqlite_own_names_of(scr_sqlite_db_own, SCR_SQLITE_DB_OWN_COUNT, db->expandos);
+}
+
+static ScrDyn *scr_sqlite_db_own_enum_names(void *h) {
+  ScrSqliteDb *db = h;
+  return scr_sqlite_enum_names_of(scr_sqlite_db_own, SCR_SQLITE_DB_OWN_COUNT, db->expandos);
 }
 
 /* Adds DatabaseSync's Symbol(sqlite-type) brand to a view: the symbol Node
@@ -3898,7 +4224,7 @@ static ScrDyn *scr_sqlite_db_own_view(void *h) {
     return NULL;
   }
   scr_dyn_obj_set(view, "limits", 6, limits);
-  scr_sqlite_add_expandos(view, db->expandos);
+  scr_sqlite_add_expandos(view, db->expandos, h, SCR_DYNH_SQLITE_DB);
   return view;
 }
 
@@ -3911,14 +4237,21 @@ static ScrDyn *scr_sqlite_db_own_descriptor(void *h, const char *key, size_t key
 
 static bool scr_sqlite_db_own_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
   ScrSqliteDb *db = h;
-  return scr_sqlite_own_set(scr_sqlite_db_own, SCR_SQLITE_DB_OWN_COUNT, "DatabaseSync", key, key_len,
-                            value, &db->expandos);
+  return scr_sqlite_own_set(scr_sqlite_db_own, SCR_SQLITE_DB_OWN_COUNT, "DatabaseSync",
+                            SCR_DYNH_SQLITE_DB, h, key, key_len, value, &db->expandos);
 }
 
 static bool scr_sqlite_db_own_delete(void *h, const char *key, size_t key_len) {
   ScrSqliteDb *db = h;
   return scr_sqlite_own_delete(scr_sqlite_db_own, SCR_SQLITE_DB_OWN_COUNT, key, key_len,
                                &db->expandos);
+}
+
+static bool scr_sqlite_db_define_own(void *h, const char *key, size_t key_len,
+                                     ScrDyn *descriptor) {
+  ScrSqliteDb *db = h;
+  return scr_sqlite_define_own(scr_sqlite_db_own, SCR_SQLITE_DB_OWN_COUNT, SCR_DYNH_SQLITE_DB, h,
+                               &db->expandos, key, key_len, descriptor);
 }
 
 static ScrDyn *scr_sqlite_db_dispose_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
@@ -3989,6 +4322,8 @@ static const ScrDynHandleOps scr_sqlite_db_ops = {
     .own_descriptor = scr_sqlite_db_own_descriptor,
     .delete_key = scr_sqlite_db_own_delete,
     .own_symbols = scr_sqlite_db_own_symbols,
+    .own_enumerable_names = scr_sqlite_db_own_enum_names,
+    .define_own = scr_sqlite_db_define_own,
     .inspect_bracketed_past_depth = true,
 };
 

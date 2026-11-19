@@ -3907,8 +3907,13 @@ static bool scr_sqlite_define_own(const char *const *names, size_t count, ScrDyn
   ScrDyn *enumerable = scr_dyn_obj_get(snapshot, "enumerable", 10);
   ScrDyn *configurable = scr_dyn_obj_get(snapshot, "configurable", 12);
   ScrDyn *expected = scr_sqlite_accessor_fn(tag, accessor_name);
-  bool same_getter = get != NULL && get->kind == SCR_DYN_FUNC && scr_dyn_strict_eq(get, expected);
-  bool allowed = same_getter && set == NULL && value == NULL && writable == NULL &&
+  /* V8's validation for a non-configurable accessor: only the fields that
+   * leave it unchanged may be given (an absent field, the same getter, the
+   * absent setter, the same enumerable, a false configurable). */
+  bool get_unchanged =
+      get == NULL || (get->kind == SCR_DYN_FUNC && scr_dyn_strict_eq(get, expected));
+  bool set_unchanged = set == NULL || set->kind == SCR_DYN_UNDEF;
+  bool allowed = get_unchanged && set_unchanged && value == NULL && writable == NULL &&
                  (enumerable == NULL || scr_dyn_truthy(enumerable)) &&
                  (configurable == NULL || !scr_dyn_truthy(configurable));
   scr_dyn_release(expected);

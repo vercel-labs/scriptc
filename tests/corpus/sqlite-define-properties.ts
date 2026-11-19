@@ -63,6 +63,26 @@ attempt("redefine-class-same", () => {
   Object.defineProperty(db, "isOpen", { get: isOpenGetter });
   return "same";
 });
+attempt("redefine-class-empty", () => {
+  Object.defineProperty(db, "isTransaction", {});
+  return "unchanged";
+});
+const isTransactionGetter = Object.getOwnPropertyDescriptor(db, "isTransaction")!.get!;
+attempt("redefine-class-unchanged", () => {
+  Object.defineProperty(db, "isTransaction", {
+    get: isTransactionGetter,
+    set: undefined,
+    enumerable: true,
+    configurable: false,
+  });
+  return "unchanged";
+});
+attempt("redefine-class-configurable", () =>
+  Object.defineProperty(db, "isTransaction", { configurable: true }),
+);
+attempt("redefine-class-setter", () =>
+  Object.defineProperty(db, "isTransaction", { set: (_value: unknown) => undefined }),
+);
 attempt("redefine-class-hidden", () =>
   Object.defineProperty(db, "isOpen", { get: isOpenGetter, enumerable: false }),
 );
@@ -80,6 +100,12 @@ attempt("limits-define", () => {
   Object.defineProperty(db.limits, "tagged", { value: 7, enumerable: true });
   return limitsFields.tagged;
 });
+attempt("limits-redacted", () =>
+  JSON.parse(
+    JSON.stringify(db.limits, (key: string, value: unknown) => (key === "tagged" ? undefined : value)),
+  ),
+);
+attempt("limits-allowlist", () => JSON.parse(JSON.stringify(db.limits, ["length", "column"])));
 attempt("define-limit-value", () => {
   Object.defineProperty(db.limits, "length", { value: 2000000000 });
   return [db.limits.length, Object.getOwnPropertyDescriptor(db.limits, "length")];

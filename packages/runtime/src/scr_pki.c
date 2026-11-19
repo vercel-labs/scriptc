@@ -2588,10 +2588,21 @@ static void sp_incompatible_key_type(void) {
 static void sp_invalid_key_data(void) { sp_throw(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE", "Invalid key data"); }
 
 /* A key's raw encoding: an EC public point, compressed when asked, or the
- * private scalar at the curve's size, or an Ed25519 public key or seed.
- * raw-seed, and every encoding of an RSA key, throw
- * ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS. NULL with the error pending. */
+ * private scalar at the curve's size, an Ed25519 public key or seed, or an
+ * ML-KEM public key or 64-byte seed. raw-seed of other key types, and
+ * every encoding of an RSA key, throw ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS.
+ * NULL with the error pending. */
 static ScrDyn *sp_export_raw(SpKey *k, bool private_part, bool seed, bool compressed) {
+  /* ML-KEM keys hold no mbedTLS key context: their raw forms are the
+   * encoded public key and the seed (raw-private has no encoding). */
+  if (sp_is_mlkem(k)) {
+    if (private_part && !seed) {
+      sp_incompatible_key_type();
+      return NULL;
+    }
+    if (seed) return sp_dyn_buffer(k->mlkem_seed, 64);
+    return sp_dyn_buffer(k->mlkem_pk, sp_mlkem_pk_bytes(k->mlkem_level));
+  }
   if (seed || sp_is_rsa(k)) {
     sp_incompatible_key_type();
     return NULL;

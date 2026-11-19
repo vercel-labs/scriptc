@@ -316,7 +316,12 @@ export function observeUnits(
     // functions are regenerated on every build, and a unit whose lowering
     // produced no function has nothing to store.
     let irSlice: UnitIrSlice | null = null;
-    if (context.mode === "split" && !node.app && context.module !== undefined) {
+    if (
+      context.mode === "split" &&
+      !node.app &&
+      context.module !== undefined &&
+      storeRoot !== null
+    ) {
       const irStarted = performance.now();
       const unitModules = new Set(node.files);
       const ownClasses = new Set<string>();
@@ -324,12 +329,18 @@ export function observeUnits(
         const at = fileModule.get(entry.file);
         if (at !== undefined && unitModules.has(at)) ownClasses.add(entry.name);
       }
-      irSlice = unitModuleSlice(
-        context.module,
-        unitModules,
-        (file) => fileModule.get(file),
-        ownClasses,
-      );
+      try {
+        irSlice = unitModuleSlice(
+          context.module,
+          unitModules,
+          (file) => fileModule.get(file),
+          ownClasses,
+        );
+      } catch {
+        // A slice that cannot round-trip is not stored; the unit simply has
+        // no entry IR until the next cold build, and the exit stays correct.
+        irSlice = null;
+      }
       irMs += performance.now() - irStarted;
     }
     const irMeta: UnitStoreIr | null =

@@ -1,7 +1,8 @@
-/* Summary format v0 (M0): one unit's declarations' lowering facts, export
+/* Summary format v1 (M1-1): one unit's declarations' lowering facts, export
  * names, generic families and the instances the build demanded, class
  * numbering as today's backend assigns it, module init names, runtime
- * features, and the program facts' values.
+ * features, the program facts' values, and the unit's pins (the functions it
+ * defines and its classes' ids).
  *
  * Canonical JSON: sorted keys, no source positions, no absolute paths. The
  * leak report compares one unit's summaries from two apps; M1's consumer
@@ -121,13 +122,23 @@ export function buildUnitSummary(
   const inits = lowering.inits
     .filter((entry) => modules.has(entry.module))
     .map((entry) => ({ ...entry }));
+  const pinFunctions = [
+    ...new Set(
+      observation.pins.functions
+        .filter((entry) => modules.has(entry.module))
+        .map((entry) => entry.name),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+  const pinClasses = classes
+    .map((entry) => ({ name: entry.name, id: entry.id }))
+    .sort((a, b) => a.name.localeCompare(b.name));
   const facts: Record<string, UnitFactValue> = {};
   for (const name of Object.keys(lowering.facts).sort()) {
     const fact = lowering.facts[name]!;
     facts[name] = { value: fact.value, setByOwnFiles: fact.setByOwnFiles };
   }
   return {
-    schema: "scriptc.unit-summary.v0",
+    schema: "scriptc.unit-summary.v1",
     unit: {
       id: node.id,
       name: node.name,
@@ -139,6 +150,7 @@ export function buildUnitSummary(
     declarations,
     generics,
     classes,
+    pins: { functions: pinFunctions, classes: pinClasses },
     runtimeFeatures: {
       scope: "program-wide",
       features: observation.runtimeFeatures,
@@ -282,6 +294,10 @@ export function summaryText(summary: UnitSummary): string {
       id: entry.id,
       slots: [...entry.slots],
     })),
+    pins: {
+      functions: [...summary.pins.functions],
+      classes: summary.pins.classes.map((entry) => ({ name: entry.name, id: entry.id })),
+    },
     runtimeFeatures: {
       scope: "program-wide",
       features: featureValue(summary.runtimeFeatures.features),

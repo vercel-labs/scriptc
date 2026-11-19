@@ -112,6 +112,32 @@ test("the app's own copy never takes a dependency's plain id", () => {
   expect(graph.units[1]!.id).toMatch(/^self@1\.0\.0#/);
 });
 
+test("a unit's file set is its package as installed, not the files reached", () => {
+  // The app reaches only `index.ts`, but the installed package also holds
+  // `extra.ts`. An app that stops reaching `extra.ts` must keep the unit's
+  // key, so the graph lists both.
+  const graph = buildUnitGraph({
+    entry: app.file,
+    files: [app, lib],
+    edges: [{ from: app.file, to: lib.file }],
+    packages: [
+      {
+        name: "lib",
+        version: "2.0.0",
+        root: "/app/node_modules/lib",
+        files: [
+          { relative: "extra.ts", digest: "e".repeat(64) },
+          { relative: "index.ts", digest: "i".repeat(64) },
+        ],
+      },
+    ],
+  });
+  expect(graph.units[0]!.files).toEqual(["extra.ts", "index.ts"]);
+  // The app unit is never listed: its files are the ones this build reached.
+  expect(graph.units[1]!.files).toEqual(["main.ts"]);
+  expect(graph.stats.files).toBe(2);
+});
+
 test("the same input gives the same graph", () => {
   const input: UnitObservationInput = {
     entry: app.file,
@@ -122,4 +148,32 @@ test("the same input gives the same graph", () => {
     ],
   };
   expect(buildUnitGraph(input)).toEqual(buildUnitGraph(structuredClone(input)));
+});
+
+test("a cycle that merges the app keeps the app's reached files", () => {
+  // The merged unit holds app code, so its file set cannot come from the
+  // dependency's installed directory alone: two apps with the same cyclic
+  // dependency would share a key.
+  const graph = buildUnitGraph({
+    entry: app.file,
+    files: [app, lib],
+    edges: [
+      { from: app.file, to: lib.file },
+      { from: lib.file, to: app.file },
+    ],
+    packages: [
+      {
+        name: "lib",
+        version: "2.0.0",
+        root: "/app/node_modules/lib",
+        files: [
+          { relative: "extra.ts", digest: "e".repeat(64) },
+          { relative: "index.ts", digest: "i".repeat(64) },
+        ],
+      },
+    ],
+  });
+  expect(graph.units).toHaveLength(1);
+  expect(graph.units[0]!.app).toBe(true);
+  expect(graph.units[0]!.files).toEqual(["index.ts", "main.ts"]);
 });

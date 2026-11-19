@@ -1,12 +1,12 @@
-/* Separate compilation (M0): the unit graph, the unit key, the unit store and
- * the summary format. This module holds the plain data types the frontend
+/* Separate compilation (M0/M1): the unit graph, the unit key, the unit store
+ * and the summary format. This module holds the plain data types the frontend
  * hands the observer and the observer writes to the store. Nothing here reads
  * the program; the pieces that do live beside it.
  *
  * A unit is a package: the SDK runtime, an npm `package@version`, or the app.
- * M0 only observes: it computes the graph, keys and summaries after a normal
- * build and reports what a package's lowering facts would cost, and it changes
- * no build's output. */
+ * M1-1 still only observes: it records the key, the summary and the pin
+ * vector after a normal build and reports which units a later build would
+ * reuse, and it changes no build's output. */
 
 /** One implementation source file of the loaded program, attributed to the
  * package that owns it. Paths are forward-slash and the relative path and
@@ -35,6 +35,27 @@ export interface UnitFileEdge {
   to: string;
 }
 
+/** One implementation file of a package directory as installed, whether or
+ * not this build reached it. */
+export interface UnitPackageFile {
+  /** The file's path inside the package, forward slashes. */
+  relative: string;
+  /** sha256 of the file's content. */
+  digest: string;
+}
+
+/** An installed package directory the build loaded files from. A unit's file
+ * set is this directory's files, not the subset the app reached: a package
+ * whose reachable files shrink must keep its key, or a store entry for it
+ * would miss for a reason that has nothing to do with its content. */
+export interface UnitPackageDirectory {
+  name: string;
+  version: string;
+  /** The package root's realpath; a build-local lookup key, never stored. */
+  root: string;
+  files: readonly UnitPackageFile[];
+}
+
 /** Every program file's package attribution and the resolved module edges:
  * all the graph needs, and all of it a pure function of the load. */
 export interface UnitObservationInput {
@@ -42,6 +63,10 @@ export interface UnitObservationInput {
   entry: string;
   files: readonly UnitFileInput[];
   edges: readonly UnitFileEdge[];
+  /** The installed package directories the build loaded files from. A unit
+   * whose root appears here takes its file set from `files`; the app's own
+   * package is not listed (its key may vary with its directory). */
+  packages?: readonly UnitPackageDirectory[];
 }
 
 /** One unit of the graph. */
@@ -163,11 +188,30 @@ export interface UnitLoweringData {
   facts: Readonly<Record<string, UnitFactValue>>;
 }
 
+/** One function the lowering produced, attributed to the file whose body it
+ * came from. The pin vector records the set a unit defines, so a warm build
+ * can cut the reachable worklist at it and M1-3 can verify the stored IR
+ * still holds exactly those functions. */
+export interface UnitFunctionFact {
+  /** Package-relative module path. */
+  module: string;
+  /** The function's IR name. */
+  name: string;
+}
+
+/** The pin vector's lowerer-side data: the functions each unit defines.
+ * `buildUnitSummary` narrows it per unit. */
+export interface UnitPinData {
+  functions: readonly UnitFunctionFact[];
+}
+
 /** Everything a successful observe lowering returns to its host. */
 export interface UnitObservation {
   entry: string;
   files: readonly UnitFileInput[];
   edges: readonly UnitFileEdge[];
+  packages?: readonly UnitPackageDirectory[];
+  pins: UnitPinData;
   lowering: UnitLoweringData;
   classes: readonly { file: string; name: string; id: number; slots: readonly string[] }[];
   /** The program's runtime features. M0 does not restrict them per unit, so
@@ -175,9 +219,27 @@ export interface UnitObservation {
   runtimeFeatures: Readonly<Record<string, boolean>>;
 }
 
+/** One unit's pins: what its lowered output was computed from beside its own
+ * files. A warm build compares these against the stored entry (with the
+ * facts beside them, which carry their own attribution) and reuses the entry
+ * only when every value matches. See the handoff's "Fallback rule".
+ *
+ * M1-1 records the functions a unit defines and its classes' numbering. The
+ * class-dispatch requests and the IC sites belong to M1-2, where their
+ * names become content-derived and a per-unit identity exists to record. */
+export interface UnitPins {
+  /** Every function the unit's lowering produced, sorted by name. A warm
+   * build must lower exactly the functions this list does not name. */
+  functions: readonly string[];
+  /** The classes the unit declares, with the preorder ids today's backend
+   * assigns. M1-2 makes the ids symbolic; until then a shifted id is a pin
+   * mismatch. */
+  classes: readonly { name: string; id: number }[];
+}
+
 /** One unit's summary, in the canonical form written to the store. */
 export interface UnitSummary {
-  schema: "scriptc.unit-summary.v0";
+  schema: "scriptc.unit-summary.v1";
   unit: {
     id: string;
     name: string;
@@ -189,6 +251,7 @@ export interface UnitSummary {
   declarations: readonly UnitDeclarationFact[];
   generics: UnitGenericsFact;
   classes: readonly UnitClassFact[];
+  pins: UnitPins;
   runtimeFeatures: {
     scope: "program-wide";
     features: Readonly<Record<string, boolean>>;

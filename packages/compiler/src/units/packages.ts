@@ -10,9 +10,11 @@
  * The package root's realpath is part of the answer only to tell two copies
  * of one version apart. */
 
-import { readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
+import type { UnitPackageFile } from "./types.js";
 
 /** One file's package attribution. */
 export interface FilePackage {
@@ -150,4 +152,84 @@ export function packageOfFile(
 function relativeTo(root: string, file: string): string {
   const rel = forwardSlashes(relative(root, file));
   return rel === "" ? basename(file) : rel;
+}
+
+/** The extensions the frontend loads as implementation source. */
+const IMPLEMENTATION_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+]);
+
+/** Every implementation source file under an installed package root, with
+ * its content digest, sorted by package-relative path.
+ *
+ * A unit's file set is its package as installed, not the files this build
+ * reached: an app that stops reaching one file of a package must not change
+ * that package's key. Declaration files (`*.d.ts`) are left out (they carry
+ * no implementation and the frontend excludes them from the lowering), and
+ * so are nested `node_modules` directories (each package there is its own
+ * unit) and dot-directories. A file that cannot be read is left out too: it
+ * cannot affect a lowering that could not have loaded it. */
+export function packageDirectorySources(root: string): UnitPackageFile[] {
+  const out: UnitPackageFile[] = [];
+  const seen = new Set<string>();
+  const walk = (dir: string): void => {
+    let real: string;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (seen.has(real)) return;
+    seen.add(real);
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const name = entry.name;
+      const path = join(dir, name);
+      let isDirectory = entry.isDirectory();
+      let isFile = entry.isFile();
+      if (entry.isSymbolicLink()) {
+        try {
+          const stat = statSync(path);
+          isDirectory = stat.isDirectory();
+          isFile = stat.isFile();
+        } catch {
+          continue;
+        }
+      }
+      if (isDirectory) {
+        if (name === "node_modules" || name.startsWith(".")) continue;
+        walk(path);
+        continue;
+      }
+      if (!isFile) continue;
+      if (name.endsWith(".d.ts") || IMPLEMENTATION_EXTENSIONS.has(extname(name)) === false)
+        continue;
+      let contents: Buffer;
+      try {
+        contents = readFileSync(path);
+      } catch {
+        continue;
+      }
+      out.push({ relative: relativeTo(root, path), digest: digestOfFile(contents) });
+    }
+  };
+  walk(root);
+  return out.sort((a, b) => a.relative.localeCompare(b.relative));
+}
+
+/** sha256 of a file's bytes, hex. */
+function digestOfFile(contents: Buffer): string {
+  return createHash("sha256").update(contents).digest("hex");
 }

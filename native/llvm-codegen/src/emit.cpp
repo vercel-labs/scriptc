@@ -726,10 +726,13 @@ struct Pipeline {
 constexpr unsigned LightDispatchMinInstructions = 512;
 
 // Runs the O1 function simplification over the large generated dispatch
-// helpers and keeps the module pipeline from optimizing them again, so a
-// helper's own code gets the cheap O1 passes (memory promotion, constant
-// folding, branch simplification) without the O2 passes that scale with the
-// size of a body the program only ever calls.
+// helpers and then marks each `optnone noinline`. The module pipeline that
+// runs afterwards through the same PassBuilder — which, given the
+// instrumentation callbacks `Pipeline` passes it, registers the skip that
+// makes it leave `optnone` functions alone — therefore costs a helper
+// nothing: it gets the cheap O1 passes (memory promotion, constant folding,
+// branch simplification) without the O2 passes that scale with the size of a
+// body the program only ever calls.
 void simplifyDispatchHelpers(Module &M, Pipeline &P,
                              DispatchOptimization Mode) {
   if (Mode != DispatchOptimization::Light)

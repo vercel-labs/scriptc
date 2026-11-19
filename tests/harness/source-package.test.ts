@@ -8,6 +8,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -17,8 +18,8 @@ import { compile } from "@scriptc/compiler";
 // A package that declares `"scriptc": { "source": true }` ships TypeScript
 // meant to compile into the program that installs it. The fixture's dom-kit
 // is installed under node_modules (not linked), its runtime extends a base
-// class declared only in its own source, and the program extends the
-// runtime's class again.
+// class declared only in its own source, the program extends the runtime's
+// class again, and the runtime imports plain JavaScript helpers of its own.
 //
 // Node.js refuses to strip types under node_modules, so the oracle runs the
 // same files with the package linked from outside node_modules, the layout a
@@ -99,6 +100,51 @@ test.for([
         "",
       ].join("\n"),
     );
+  },
+  120_000,
+);
+
+// A package that publishes the JavaScript compiled from its TypeScript, with
+// each module's source beside it: Node loads the JavaScript, and scriptc
+// compiles the TypeScript it came from. Node runs this layout installed.
+test.for([
+  ["by default", undefined],
+  ["when --npm-static names it", ["dom-kit"]],
+] as const)(
+  "a source package whose entries are JavaScript with TypeScript twins compiles %s",
+  async ([label, npmStatic]) => {
+    const dir = copyFixture(`twins-${label.replaceAll(/\W+/g, "-")}`);
+    const pkgDir = join(dir, "node_modules/dom-kit");
+    const manifest = join(pkgDir, "package.json");
+    const pkg = JSON.parse(readFileSync(manifest, "utf8")) as Record<string, unknown>;
+    pkg["exports"] = {
+      "./runtime/dom": "./runtime/dom.js",
+      "./shared/node": "./shared/node.js",
+    };
+    writeFileSync(manifest, JSON.stringify(pkg, null, 2));
+    for (const module of ["shared/node", "runtime/dom"]) {
+      const source = join(pkgDir, `${module}.ts`);
+      const text = readFileSync(source, "utf8").replaceAll(
+        '"../shared/node.ts"',
+        '"../shared/node.js"',
+      );
+      writeFileSync(source, text);
+      writeFileSync(join(pkgDir, `${module}.js`), stripTypeScriptTypes(text));
+    }
+
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(dir, "program"),
+      outDir: join(dir, "out"),
+      backend: "llvm",
+      sanitize,
+      ...(npmStatic !== undefined ? { npmStatic } : {}),
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const native = await run(result.binaryPath, [], dir);
+    const node = await run(process.execPath, ["main.ts"], dir);
+    expect(native).toEqual(node);
+    expect(native.stdout).toContain("4 #text,BUTTON\n");
   },
   120_000,
 );

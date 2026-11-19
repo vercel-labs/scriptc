@@ -1215,6 +1215,9 @@ export function resolveWorkspaceSourceModule(
   ) {
     return null;
   }
+  // A source package's TypeScript is its implementation even where it also
+  // ships the JavaScript compiled from it: the mark names the sources.
+  if (isSourcePackageDir(source.workspaceDir)) return source;
   return resolveBareModule(fromFile, specifier, "runtime-js") === null ? source : null;
 }
 

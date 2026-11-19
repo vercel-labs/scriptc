@@ -61,6 +61,7 @@ import {
   isInstalledPackagePath,
   isInstalledSourcePackage,
   isNodeModulesPath,
+  isSourcePackagePath,
   isPathSpecifier,
   nearestInvalidPackageJsonPath,
   nearestPackageType,
@@ -1361,12 +1362,15 @@ function entryPackageProgramRoots7(
    * already holds, or an edge that names no compiled JavaScript. */
   const rootOf = (from: string, spec: string, kind: "import" | "require"): string | null => {
     // The project edge, from any program file: a relative import, or a
-    // tsconfig path, that lands on the entry package's JavaScript or on an
-    // opted-in package's.
+    // tsconfig path, that lands on the entry package's JavaScript, on an
+    // opted-in package's, or on a source package's (tsgo's own walk loads
+    // no JavaScript under node_modules).
     const target = resolveProjectModule(from, spec);
     if (
       target !== null &&
-      (belongsToEntry(target) || npmStaticPackageOfPath(target) !== null) &&
+      (belongsToEntry(target) ||
+        npmStaticPackageOfPath(target) !== null ||
+        isSourcePackagePath(target)) &&
       isJsSourceFileName(target)
     )
       return program.getSourceFile(target) === undefined ? target : null;

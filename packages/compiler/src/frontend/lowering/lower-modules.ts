@@ -38,7 +38,7 @@ import {
 import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
-import { isPathSpecifier, resolveNodeRuntimeModule } from "../resolve.js";
+import { isPathSpecifier, isSourcePackagePath, resolveNodeRuntimeModule } from "../resolve.js";
 import {
   assignmentChainValueOf,
   canonicalBuiltinModule,
@@ -817,10 +817,14 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // shape: `import "../node_modules/vercel/dist/index.js"`) is
       // package code too. Attribute it to the package so unselected source
       // receives a diagnostic instead of dropping the import.
-      const relPkg =
+      // A source package's files are program modules (isSourcePackagePath),
+      // so a relative import into one is a program edge.
+      const relTarget =
         npm === null && isRelativeSpecifier(spec)
-          ? packageNameOfPath(resolvePath(dirnamePath(fp.sf.fileName), spec))
+          ? resolvePath(dirnamePath(fp.sf.fileName), spec)
           : null;
+      const relPkg =
+        relTarget !== null && !isSourcePackagePath(relTarget) ? packageNameOfPath(relTarget) : null;
       const relIsJs = relPkg !== null && !/\.(ts|tsx|mts|cts)$/.test(spec);
       // A relative import INTO an opted-in --npm-static package is the
       // program-module path too (preflight resolved the file edge).

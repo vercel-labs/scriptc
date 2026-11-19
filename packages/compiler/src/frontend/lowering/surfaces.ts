@@ -2551,6 +2551,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     pathToFileURL: ["url.pathToFileURL", "url.pathToFileURLPlatform", "url.pathToFileURLWin32"],
   },
   fs: {
+    openAsBlob: ["fs.openAsBlob"],
     // Every flag and mode spelling the lowering selects: inline numeric O_*
     // flags (the target-neutral mask), raw open(2) bits, the octal-string
     // creation mode, and the forms whose flags or mode only the runtime
@@ -2934,6 +2935,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "fs.watchFile",
       fns: ["fs.watchFile", "statWatcher.ref", "statWatcher.unref"],
       note: "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused",
+    },
+    {
+      id: "node-builtin.fs.openAsBlob",
+      kind: "node-builtin",
+      name: "fs.openAsBlob",
+      fns: ["fs.openAsBlob"],
+      note: "a Blob over a file's bytes, read on demand: the open and fstat happen at the call, and every read re-checks the file's size and modification time",
     },
     {
       id: "node-builtin.fs.unwatchFile",

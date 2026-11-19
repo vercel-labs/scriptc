@@ -4870,6 +4870,7 @@ function buildLibFnSignatures() {
      * dynamic stream: the stdlib ReadableStream interface has no static
      * representation). */
     "fileHandle.readableWebStream": { argTypes: [FILEHANDLE_T, DYN], result: DYN },
+    "fs.openAsBlob": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
     "mkdtempResult.path": { argTypes: [MKDTEMPRESULT_T], result: STRING },
     "mkdtempResult.remove": {
       argTypes: [MKDTEMPRESULT_T],

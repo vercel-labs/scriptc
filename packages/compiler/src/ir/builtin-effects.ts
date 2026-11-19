@@ -1762,6 +1762,7 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // form turns them into a rejection, the sync form throws them).
   "fsp.mkdtempDisposable",
   "fs.mkdtempDisposableSync",
+  "fs.openAsBlob",
   "mkdtempResult.remove",
   "mkdtempResult.removeSync",
   "mkdtempResult.asyncDispose",

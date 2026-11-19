@@ -727,7 +727,7 @@
     { "chapter": "async_context", "parent": "Asynchronous context tracking", "signatures": ["Class: `RunScope`"], "status": "supported", "evidence": ["tests/corpus/async-local-storage-with-scope.cjs"] },
     { "chapter": "async_context", "parent": "Class: `RunScope`", "signatures": ["`scope.dispose()`"], "status": "supported", "evidence": ["tests/corpus/async-local-storage-with-scope.cjs"] },
     { "chapter": "events", "parent": "Events", "signatures": ["Class: `events.EventEmitterAsyncResource extends EventEmitter`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
-    { "chapter": "fs", "parent": "Callback API", "signatures": ["`fs.openAsBlob(path[, options])`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
+    { "chapter": "fs", "parent": "Callback API", "signatures": ["`fs.openAsBlob(path[, options])`"], "status": "supported", "evidence": ["tests/corpus/fs-open-as-blob.ts"] },
     { "chapter": "fs", "parent": "Callback API", "signatures": ["`fs.exists(path, callback)`"], "status": "supported", "evidence": ["tests/corpus/fs-exists-path-kinds.cjs", "tests/corpus/2595-fs-arg-ladders.cjs"] },
     { "chapter": "fs", "signatures": ["`fs.existsSync(path)`"], "status": "supported", "evidence": ["tests/corpus/fs-exists-path-kinds.cjs", "tests/corpus/fs-exists-optional-path.ts"] },
     { "chapter": "dns", "parent": "DNS", "signatures": ["Class: `dns.Resolver`"], "status": "supported", "evidence": ["tests/corpus/node-dns-resolver-class.ts", "tests/corpus/node-dns-resolve-errors.cjs", "tests/corpus/dns-promises-resolve.cjs", "tests/corpus/dns-promises-resolver.ts"] },

@@ -47151,6 +47151,7 @@
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
+          "tests/corpus/fs-open-as-blob.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-permissions-family.cjs",
@@ -47200,7 +47201,6 @@
           "tests/corpus/node24-fs-timestamps.ts",
           "tests/corpus/node24-fs-write-modes-sync.ts",
           "tests/corpus/node24-fs-write-options-flags.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/fixtures/node-types/fs-glob.ts",
           "tests/fixtures/node-types/fs-links.ts",
           "tests/fixtures/node-types/fs-statfs.ts",
@@ -49889,10 +49889,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.openAsBlob",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/fs-open-as-blob.ts"
         ]
       },
       "anchorSource": "exact"

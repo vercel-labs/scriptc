@@ -496,6 +496,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
+  unit((u) => u.opts.fsOpenAsBlob === true, "scr_fs_blob.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
   // epoll on Linux, WSAPoll on Windows — each TU is empty off its
   // platform, so all three link whenever a poller-using unit does and

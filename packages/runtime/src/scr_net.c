@@ -746,6 +746,11 @@ struct ScrNetSocket {
    * socket no consumer ever touched keeps its reads off: Node stops that
    * read (a paused never-read client neither buffers nor sees a FIN). */
   bool read_started;
+  /* A 'readable' listener pinned the stream in paused mode: Node's
+   * Readable.on('readable') clears the flow decision and nothing short of
+   * a new stream sets it again (resume() included). readableFlowing
+   * answers false from then on. */
+  bool readable_mode;
   /* new Socket({ allowHalfOpen: true }): the peer's FIN fires 'end' but
    * does not end the write half (Node's default ends it). */
   bool allow_half_open;
@@ -1429,9 +1434,13 @@ static void scr_net_sock_update_read(ScrNetSocket *s) {
   /* read ahead unless the program paused the socket before any read began
    * (Node stops that read: a paused never-read client neither buffers nor
    * sees a peer's FIN); once reading started, pause() leaves it reading
-   * ahead to the high-water mark */
-  bool read_ahead = (!s->user_paused || s->read_started) && !s->hold && !s->eof_pending &&
-                    s->rlen - s->rhead < s->read_ahead;
+   * ahead to the high-water mark. A paused transport keeps its reads OFF:
+   * its engine decrypts on demand, so reading while delivery is off would
+   * discard the plaintext — the ciphertext waits in the kernel until
+   * resume() reads it, as Node's paused TLS stream does. */
+  bool paused_transport = s->user_paused && s->tops != NULL;
+  bool read_ahead = !paused_transport && (!s->user_paused || s->read_started) && !s->hold &&
+                    !s->eof_pending && s->rlen - s->rhead < s->read_ahead;
   bool want = s->fd >= 0 && !s->connecting && !s->rd_eof && (consumer || read_ahead) &&
               !(s->tunnel != NULL && s->tunnel->send_only);
   if (want && !s->read_armed) {
@@ -1911,6 +1920,11 @@ static void scr_net_sock_read(ScrNetSocket *s) {
   size_t reads_left = 32; /* at most 2 MiB with the 64 KiB read buffer */
   if (s->tunnel != NULL) return; /* readiness feeds the tunnel pump instead */
   if (s->tops && !s->t_est) return; /* readiness feeds the handshake pump instead */
+  /* A paused transport reads nothing at all: the engine decrypts on
+   * demand, so a read now would hand the plaintext to a delivery path
+   * that discards it. The ciphertext stays in the kernel until resume()
+   * asks for it, as Node's paused TLS stream leaves it. */
+  if (s->user_paused && s->tops != NULL) return;
   for (;;) {
     if (s->fd < 0 || s->hold) return;
     /* pause() turns delivery off, not the reads: Node's paused stream keeps
@@ -6621,14 +6635,17 @@ bool scr_net_sock_readable_ended(ScrNetSocket *s) {
 }
 
 /* socket.readableFlowing: null before any flow decision, true in flowing
- * mode (a 'data'/pipe consumer or resume()), false after pause() or once
- * a 'readable' listener puts the stream in paused mode. */
+ * mode (resume(), or a 'data'/pipe consumer), false after pause() or once
+ * a 'readable' listener puts the stream in paused mode — Node's
+ * Readable.on('readable') clears the flow even when 'data' listeners are
+ * registered, and a later 'data' listener does not resume it. */
 ScrDyn *scr_net_sock_readable_flowing(ScrNetSocket *s) {
   if (s->adopted_by != NULL) return scr_net_sock_readable_flowing(s->adopted_by);
+  if (s->readable_mode) return scr_dyn_new_bool(false);
   if (s->user_paused) return scr_dyn_new_bool(false);
-  if (s->flowing || s->data_ls.n > 0 || s->pipe_dst != NULL || s->native_data != NULL)
+  if (s->flowing) return scr_dyn_new_bool(true);
+  if (s->data_ls.n > 0 || s->pipe_dst != NULL || s->native_data != NULL)
     return scr_dyn_new_bool(true);
-  if (s->readable_ls.n > 0) return scr_dyn_new_bool(false);
   return scr_dyn_new_null();
 }
 
@@ -8872,6 +8889,7 @@ void scr_net_sock_on_readable(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool on
     return;
   }
   s->read_started = true; /* paused mode: the stream reads ahead too */
+  s->readable_mode = true; /* Node: a 'readable' listener clears flowing */
   scr_net_ls_add(&s->readable_ls, cb, NULL, once);
   scr_net_sock_update_read(s);
 }

@@ -4,6 +4,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The tty color tables live in their own unit (scr_tty_colors.c), whose
+ * color-depth warning schedules through the async unit, which a library
+ * archive does not carry. A build that links this unit without them answers
+ * the tables' question with no color, so the archive links; every other
+ * build selects the unit (the stream color methods, an option-bearing
+ * Console, or any program linking this unit with the inspect unit) and its
+ * definition replaces this one. */
+__attribute__((weak)) bool scr_tty_console_auto_colors(bool is_tty) {
+  (void)is_tty;
+  return false;
+}
+
 /* The console object as a value. Its function-valued members are one
  * function object each per thread, so `console.log === console.log` holds
  * and a detached method needs no receiver (Node binds them the same way).

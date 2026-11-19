@@ -144,7 +144,7 @@ const isPassPhase = (phase: string): boolean =>
   phase.endsWith("-relower");
 
 /** The passes that lower the program, without the scans that follow them. */
-const phaseNames = ({ phases }: Lowering): string[] =>
+const phaseNames = ({ phases }: Pick<Lowering, "phases">): string[] =>
   phases.map((phase) => phase.phase).filter(isPassPhase);
 const passes = (lowering: Lowering): string[] => phaseNames(lowering);
 /** A stream program's passes: the push-down pass, the stream pass, and the

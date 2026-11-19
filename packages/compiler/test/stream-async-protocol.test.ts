@@ -129,15 +129,24 @@ function outcome({ result, phases }: Lowering): unknown {
       message: diagnostic.message,
       loc: diagnostic.loc,
     })),
-    passes: phases.map((phase) => phase.phase),
+    passes: phaseNames({ phases }),
   };
 }
 
+/** The pass-level records. #3915's per-pass timing lines (collect, scans,
+ * root-wave, drain, finish:*) describe work inside one pass and differ by
+ * construction between a pass that ends where it asks and one that runs to
+ * its end, so the comparison keeps the passes themselves. */
+const isPassPhase = (phase: string): boolean =>
+  phase === "ffi-validate" ||
+  phase === "reachable-emit" ||
+  phase === "async-protocol-flows" ||
+  phase.endsWith("-relower");
+
 /** The passes that lower the program, without the scans that follow them. */
-const passes = ({ phases }: Lowering): string[] => {
-  const names = phases.map((phase) => phase.phase);
-  return names.slice(0, names.indexOf("async-protocol-flows") + 1);
-};
+const phaseNames = ({ phases }: Lowering): string[] =>
+  phases.map((phase) => phase.phase).filter(isPassPhase);
+const passes = (lowering: Lowering): string[] => phaseNames(lowering);
 /** A stream program's passes: the push-down pass, the stream pass, and the
  * line that says the protocol analysis ran. No pass decides the protocol. */
 const PASSES = ["ffi-validate", "reachable-emit", "dyn-streams-relower", "async-protocol-flows"];

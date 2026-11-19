@@ -61416,8 +61416,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {
@@ -62589,8 +62589,8 @@
       },
       "static": {
         "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "detail": "Not implemented in scriptc's static module-loader subset yet.",
+        "verification": "declared-gap"
       }
     },
     {

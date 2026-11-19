@@ -612,9 +612,21 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.decapsulate",
+      "kind": "node-builtin",
+      "name": "crypto.decapsulate",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.diffieHellman",
       "kind": "node-builtin",
       "name": "crypto.diffieHellman",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.encapsulate",
+      "kind": "node-builtin",
+      "name": "crypto.encapsulate",
       "status": "static"
     },
     {

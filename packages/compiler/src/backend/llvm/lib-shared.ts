@@ -1603,6 +1603,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.signOneshotCb": "scr_crypto_sign_oneshot_async",
   "crypto.signOneshotMaybe": "scr_crypto_sign_oneshot_maybe",
   "crypto.diffieHellman": "scr_crypto_diffie_hellman",
+  "crypto.encapsulate": "scr_crypto_encapsulate_dyn",
+  "crypto.decapsulate": "scr_crypto_decapsulate_dyn",
   "crypto.verifyOneshot": "scr_crypto_verify_oneshot",
   "crypto.verifyOneshotCb": "scr_crypto_verify_oneshot_async",
   "crypto.verifyOneshotMaybe": "scr_crypto_verify_oneshot_maybe",
@@ -2382,6 +2384,8 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "crypto.verifyOneshotCb",
   "crypto.verifyOneshotMaybe",
   "crypto.diffieHellman",
+  "crypto.encapsulate",
+  "crypto.decapsulate",
   "crypto.checkPrimeCb",
   "crypto.generatePrimeCb",
   // The checked-dynamic KDF and random entries deliver a callback from the

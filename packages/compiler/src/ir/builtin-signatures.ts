@@ -7224,6 +7224,8 @@ function buildLibFnSignatures() {
     "crypto.createPrivateKey": { argTypes: [DYN], result: DYN },
     "crypto.createPublicKey": { argTypes: [DYN], result: DYN },
     "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.encapsulate": { argTypes: [DYN, DYN], result: DYN },
+    "crypto.decapsulate": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.generateKeyPairCb": { argTypes: [DYN, DYN, DYN], result: VOID },
     "crypto.signOneshot": { argTypes: [DYN, DYN, DYN], result: DYN },
     "crypto.signOneshotCb": { argTypes: [DYN, DYN, DYN, DYN], result: VOID },

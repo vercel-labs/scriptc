@@ -1762,6 +1762,8 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.createPublicKey",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
+  "crypto.encapsulate",
+  "crypto.decapsulate",
   // Argon2 reads its parameters object (whose members convert strings and
   // BufferSources) and may run program code through those conversions.
   "crypto.argon2Sync",

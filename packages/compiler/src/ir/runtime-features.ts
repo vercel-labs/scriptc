@@ -1119,6 +1119,8 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.spkacChallenge",
   "crypto.spkacPublicKey",
   "crypto.diffieHellman",
+  "crypto.encapsulate",
+  "crypto.decapsulate",
 ]);
 
 /** The WebCrypto algorithms scr_webcrypto_pki.c implements over the pki
@@ -1142,6 +1144,21 @@ function ed25519NameScan(): RuleScan {
   return {
     expr: (node) => {
       if (!named && node.kind === "strLit" && node.value.toLowerCase() === "ed25519") named = true;
+    },
+    result: () => named,
+  };
+}
+
+/** Whether a string literal names an ML-KEM parameter set (the node:crypto
+ * key types "ml-kem-512/768/1024" and the WebCrypto/JWK algorithm names
+ * "ML-KEM-<n>"): the mlkem unit links then, and with it the pki unit its
+ * hook installs into. */
+function mlkemNameScan(): RuleScan {
+  let named = false;
+  return {
+    expr: (node) => {
+      if (!named && node.kind === "strLit" && node.value.toLowerCase().startsWith("ml-kem"))
+        named = true;
     },
     result: () => named,
   };
@@ -2143,9 +2160,12 @@ const RUNTIME_FEATURE_RULES = {
   dh: rule({ fns: [...DH_LIB_FNS] }),
   /** Argon2: scr_argon2.c. */
   argon2: rule({ fns: ["crypto.argon2Sync", "crypto.argon2Cb"] }),
-  /** ML-KEM (mlkem-native): selected by the node:crypto encapsulate and
-   * WebCrypto ML-KEM lowerings, and links the vendored archive. */
-  mlkem: rule({ fns: [] }),
+  /** ML-KEM (mlkem-native): links the vendored archive and the scr_mlkem.c
+   * wrapper when a string literal names a parameter set or the program
+   * encapsulates/decapsulates through pki; the wrapper and the pki unit
+   * select each other (LINK_FEATURE_REQUIREMENTS), since pki reaches ML-KEM
+   * by run-time algorithm and key names. */
+  mlkem: rule({ fns: ["crypto.encapsulate", "crypto.decapsulate"], scan: mlkemNameScan }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),

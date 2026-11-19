@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/prototype-method-value-this.ts"
+ ],
+ "diags": []
+}

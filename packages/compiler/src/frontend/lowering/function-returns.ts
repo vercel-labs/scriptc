@@ -5,6 +5,7 @@ import { dynUndefinedExpr } from "../../ir/build.js";
 import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import { isRebindableFunction } from "./rebindable-functions.js";
 import {
   BOOL,
   DYN,
@@ -20,12 +21,18 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
+import {
+  documentedJsReturn,
+  returnedSlotIsClass,
+  returnsCheckedDynamicParameter,
+} from "./call-signatures.js";
 import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { returnsGuessedOverloadValue } from "./overload-choice.js";
+import { readsReboundRequireValue } from "./rebindable-requires.js";
 
 /** Keep the conservative completion rule shared by return construction
  * and inference. Nested control flow may still make completion unreachable. */
@@ -266,7 +273,53 @@ export function declaredReturnType(
   decl: ts.SignatureDeclaration,
   blame: ts.Node,
 ): IrType {
+  const ret = declaredReturnTypeInner(lowerer, decl, blame);
+  // A JavaScript file TypeScript does not check keeps a documented class
+  // result (`@returns {Color}`) and a result inferred from the function's own
+  // checked-dynamic parameter as hints, not promises: `reread(target = new
+  // Color()) { return target; }` answers the plain object a caller passed. A
+  // class-typed slot would convert it nominally and throw where Node answers
+  // it, so the result is checked-dynamic (an async function resolves one).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !lowerer.checkedJsFile(ts.getSourceFileOfNode(decl)) &&
+    (documentedJsReturn(decl) || returnsCheckedDynamicParameter(lowerer, decl)) &&
+    returnedSlotIsClass(lowerer, ret)
+  )
+    return ret.kind === "promise" ? { ...ret, inner: DYN } : DYN;
+  return ret;
+}
+
+function declaredReturnTypeInner(
+  lowerer: Lowerer,
+  decl: ts.SignatureDeclaration,
+  blame: ts.Node,
+): IrType {
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && ts.isGetAccessorDeclaration(decl)) return DYN;
+  // A JavaScript function that returns a binding a for-in head writes a key
+  // into (analyzeJsForInKeyBindings) answers the key string Node stored;
+  // the checker typed the return from the binding's declaration, so
+  // converting the returned value back to it would throw. An async function
+  // resolves that value. (A generator's result channel keeps the checker's
+  // generator shape, which its consumers are typed against; the prepass
+  // does not record one.)
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && lowerer.jsWidenedReturnDecls.has(decl)) {
+    const isAsync =
+      decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) ===
+      true;
+    return isAsync ? { kind: "promise", inner: DYN } : DYN;
+  }
+  // A JavaScript body that returns a call of a function declaration the
+  // program reassigns answers whatever that binding held, so the checker's
+  // inference from the declaration's own signature cannot settle the result.
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && returnsRebindableCall(lowerer, decl)) {
+    // An async function answers a promise of that value; a generator keeps
+    // its own channels.
+    const asyncDecl =
+      decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+    const generator = (decl as ts.FunctionLikeDeclaration).asteriskToken !== undefined;
+    return asyncDecl && !generator ? { kind: "promise", inner: DYN } : DYN;
+  }
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
   let retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
@@ -352,6 +405,21 @@ export function declaredReturnType(
     mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx) ?? mappedReturn;
   if (mappedReturn !== null)
     mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
+  // A JavaScript function whose body returns a value read out of a require
+  // binding the file reassigns (rebindable-requires.ts) has no static
+  // result: the program's storage answers the read.
+  if (
+    mappedReturn !== null &&
+    decl.asteriskToken === undefined &&
+    !decl.type &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !hasExplicitJsDocReturn(decl) &&
+    lowerer.rebindableRequireDecls.size > 0 &&
+    returnsReboundRequireValue(lowerer, decl)
+  )
+    mappedReturn = decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
     mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
@@ -928,4 +996,53 @@ export function widensReducedRecords(lowerer: Lowerer, narrow: IrType, wide: IrT
       );
     })
   );
+}
+
+/** Whether `decl`'s body returns a value read out of a require binding the
+ * file reassigns — directly, through a member read, or through a call
+ * (rebindable-requires.ts). Such a result has no static type: the program's
+ * storage answers the read. */
+function returnsReboundRequireValue(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
+  if (ts.isArrowFunction(decl) && !ts.isBlock(decl.body))
+    return readsReboundRequireValue(lowerer, decl.body);
+  let found = false;
+  const scan = (node: ts.Node): void => {
+    if (found || (node !== decl && ts.isFunctionLike(node))) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      if (readsReboundRequireValue(lowerer, node.expression)) found = true;
+      return;
+    }
+    ts.forEachChild(node, scan);
+  };
+  scan(decl);
+  return found;
+}
+
+/** Whether a JavaScript body returns a call of a function declaration the
+ * program reassigns (rebindable-functions.ts): the call answers whatever that
+ * binding held, so the checker's inference from the declaration's own
+ * signature cannot settle the enclosing result. A concise arrow's body IS
+ * the forwarded expression. */
+function returnsRebindableCall(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
+  const body = decl.body;
+  if (body === undefined) return false;
+  if (!ts.isBlock(body)) return isRebindableForwardCall(lowerer, body as ts.Expression);
+  let found = false;
+  ts.walkPreorder(body, (child) => {
+    if (found) return "skip";
+    if (child !== body && ts.isFunctionLike(child)) return "skip";
+    if (!ts.isReturnStatement(child) || child.expression === undefined) return undefined;
+    if (isRebindableForwardCall(lowerer, child.expression)) found = true;
+    return undefined;
+  });
+  return found;
+}
+
+/** Whether `expr` is a call of a function declaration the program reassigns. */
+function isRebindableForwardCall(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let value: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isCallExpression(value) || !ts.isIdentifier(value.expression)) return false;
+  const symbol = lowerer.resolveValueSymbol(value.expression);
+  return symbol !== null && symbol.declarations.some((d) => isRebindableFunction(lowerer, d));
 }

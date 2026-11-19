@@ -553,6 +553,113 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "fileHandle.readableWebStream") {
+    // A checked-dynamic web stream over the handle's reads. May throw (a
+    // closed or locked handle is Node's ERR_INVALID_STATE) — the standard
+    // pending check.
+    const handle = host.emitExpr(e.args[0]!);
+    const options = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_file_handle_readable_web_stream(ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_file_handle_readable_web_stream(ptr ${handle.name}, ptr ${options.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "fsp.mkdtempDisposable") {
+    // The temp directory plus its hooks. A failed mkdtemp settles the
+    // promise as a rejection, so there is no pending check here; the
+    // options were validated at the call.
+    const prefix = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fsp_mkdtemp_disposable(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_fsp_mkdtemp_disposable(ptr ${prefix.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "fs.mkdtempDisposableSync") {
+    // May throw (mkdtemp's own error) — the standard pending check.
+    const prefix = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fs_mkdtemp_disposable_sync(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_fs_mkdtemp_disposable_sync(ptr ${prefix.name})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "mkdtempResult.path") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_mkdtemp_result_path(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_mkdtemp_result_path(ptr ${handle.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "mkdtempResult.remove" || e.fn === "mkdtempResult.asyncDispose") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_mkdtemp_result_remove(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_mkdtemp_result_remove(ptr ${handle.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "mkdtempResult.removeSync" || e.fn === "mkdtempResult.dispose") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare void @scr_mkdtemp_result_remove_sync(ptr)`);
+    B.line(`call void @scr_mkdtemp_result_remove_sync(ptr ${handle.name})`);
+    host.emitPendingCheck();
+    return host.own({ name: "null", type: e.type });
+  }
+  if (e.fn === "fsp.watch") {
+    // fsPromises.watch(path, persistent, maxQueue, overflowIsError): the
+    // iterator state (+1). The watch opens NOW, so a bad or unopenable path
+    // throws here (Node's first next() does the same), as does a maxQueue
+    // validateInteger rejects; a reffed state holds the loop like a reffed
+    // fs.watch handle. The standard pending check.
+    host.usesTimers = true;
+    const path = host.emitExpr(e.args[0]!);
+    const persistent = host.emitExpr(e.args[1]!);
+    const maxQueue = host.emitExpr(e.args[2]!);
+    const overflowError = host.emitExpr(e.args[3]!);
+    host.declare(`declare ptr @scr_watch_events_new(ptr, i1 zeroext, double, i1 zeroext)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_watch_events_new(ptr ${path.name}, i1 zeroext ${persistent.name}, double ${maxQueue.name}, i1 zeroext ${overflowError.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "watchEvents.wait") {
+    // The loop's wait for the next event: a +1 bool promise, settled now
+    // with true when an entry is queued and false when the state closed.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_watch_events_wait(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_watch_events_wait(ptr ${st.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "watchEvents.take") {
+    // The dynamic `{ eventType, filename }` record the iterator queued
+    // (+1); the loop only takes one after a true wait, and checks it into
+    // the iteration record there. A queue that overflowed under
+    // overflow: "error" throws Node's ERR_FS_WATCH_QUEUE_OVERFLOW here —
+    // the standard pending check.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_watch_events_take(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_watch_events_take(ptr ${st.name})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "watchEvents.close") {
+    // The loop's finally: closes the watch (idempotent) and drops the
+    // queue. Never throws.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare void @scr_watch_events_close(ptr)`);
+    B.line(`call void @scr_watch_events_close(ptr ${st.name})`);
+    return host.own({ name: "null", type: e.type });
+  }
   if (e.fn === "watcher.on") {
     // (recv, event, flags, listener) — flags: 1 once, 2 prepend. The
     // listener MOVES in; the adapter follows the event (0 change, 1
@@ -635,11 +742,22 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.toHeap(cb);
     const adapter = `scr_watch_file_thunk${cbT.params.length}`;
     host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
-    host.declare(`declare void @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    host.declare(`declare ptr @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    const w = B.tmp();
     B.line(
-      `call void @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
+      `${w} = call ptr @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
     );
+    const out = host.own({ name: w, type: e.type });
     host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "statWatcher.ref" || e.fn === "statWatcher.unref") {
+    // The registration's loop-liveness toggle; a registration fs.unwatchFile
+    // already removed makes both no-ops, so neither throws.
+    const w = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "statWatcher.ref" ? "scr_stat_watcher_ref" : "scr_stat_watcher_unref";
+    host.declare(`declare void @${sym}(ptr)`);
+    B.line(`call void @${sym}(ptr ${w.name})`);
     return { name: "", type: e.type };
   }
   if (e.fn === "fs.unwatchFile") {
@@ -859,6 +977,82 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const rc = vAdapters(host.shapeHost, arrayT);
     host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
     host.toHeap(arrayOut); // promise fulfillment owns the result array
+    const promise = B.tmp();
+    B.line(
+      `${promise} = call ptr @scr_promise_settled_ref(ptr ${arr}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, arrayT)})`,
+    );
+    return host.own({ name: promise, type: e.type });
+  }
+  if (e.fn === "fs.readdirTypesRecursiveSync" || e.fn === "fsp.readdirTypesRecursive") {
+    // The recursive Dirent form: one walk snapshot (scr_fs_scandir_recursive)
+    // whose rows carry the basename and the directory holding it, assembled
+    // into the call site's Dirent record exactly like the one-directory form.
+    const promiseForm = e.fn === "fsp.readdirTypesRecursive";
+    const arrayT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
+    if (arrayT.kind !== "array" || arrayT.elem.kind !== "record") {
+      throw new InternalCompilerError(
+        `llvm emitter bug: ${e.fn} result is not a Dirent record array`,
+      );
+    }
+    const recT = arrayT.elem;
+    const path = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fs_scandir_recursive(ptr)`);
+    host.declare(`declare ptr @scr_fs_scandir_recursive_async(ptr, i1 zeroext)`);
+    host.declare(`declare ${host.sizeType} @scr_fs_scandir_count(ptr)`);
+    host.declare(`declare ptr @scr_fs_scandir_name(ptr, ${host.sizeType})`);
+    host.declare(`declare ptr @scr_fs_scandir_parent(ptr, ${host.sizeType})`);
+    host.declare(`declare double @scr_fs_scandir_type(ptr, ${host.sizeType})`);
+    host.declare(`declare void @scr_fs_scandir_free(ptr)`);
+    const snap = B.tmp();
+    // The promise form answers Node's async walk (depth-first, and it does
+    // not follow a symlinked directory); the sync form keeps the queue.
+    B.line(
+      promiseForm
+        ? `${snap} = call ptr @scr_fs_scandir_recursive_async(ptr ${path.name}, i1 false)`
+        : `${snap} = call ptr @scr_fs_scandir_recursive(ptr ${path.name})`,
+    );
+    if (!promiseForm) host.emitPendingCheck();
+    const cnt = B.tmp();
+    B.line(`${cnt} = call ${host.sizeType} @scr_fs_scandir_count(ptr ${snap})`);
+    const arr = B.tmp();
+    B.line(`${arr} = ${arrNewCall(host.shapeHost, recT, cnt)}`);
+    const arrayOut = host.own({ name: arr, type: arrayT });
+    const iSlot = B.slot();
+    B.entryAllocas.push(`${iSlot} = alloca ${host.sizeType}`);
+    B.line(`store ${host.sizeType} 0, ptr ${iSlot}`);
+    const lc = B.newLabel("sdr.c");
+    const lb = B.newLabel("sdr.b");
+    const le = B.newLabel("sdr.e");
+    B.br(lc);
+    B.startBlock(lc);
+    const i = B.tmp();
+    const cont = B.tmp();
+    B.line(`${i} = load ${host.sizeType}, ptr ${iSlot}`);
+    B.line(`${cont} = icmp ult ${host.sizeType} ${i}, ${cnt}`);
+    B.condBr(cont, lb, le);
+    B.startBlock(lb);
+    const row = B.tmp();
+    B.line(`${row} = call ptr @${mangleRecordNew(recT.shapeId)}()`);
+    const dt = B.tmp();
+    B.line(`${dt} = call double @scr_fs_scandir_type(ptr ${snap}, ${host.sizeType} ${i})`);
+    host.storeField(host.recordFieldPtr(row, recT.shapeId, "%dtype").ptr, F64, dt, false);
+    const nm = B.tmp();
+    B.line(`${nm} = call ptr @scr_fs_scandir_name(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${nm}, ptr ${host.recordFieldPtr(row, recT.shapeId, "name").ptr}`);
+    const par = B.tmp();
+    B.line(`${par} = call ptr @scr_fs_scandir_parent(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${par}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`);
+    host.arrPush(arr, "ref", row, null);
+    const i2 = B.tmp();
+    B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
+    B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
+    B.br(lc);
+    B.startBlock(le);
+    B.line(`call void @scr_fs_scandir_free(ptr ${snap})`);
+    if (!promiseForm) return arrayOut;
+    const rc = vAdapters(host.shapeHost, arrayT);
+    host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
+    host.toHeap(arrayOut);
     const promise = B.tmp();
     B.line(
       `${promise} = call ptr @scr_promise_settled_ref(ptr ${arr}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, arrayT)})`,

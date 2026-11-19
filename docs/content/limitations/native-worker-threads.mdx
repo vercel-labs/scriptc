@@ -3,16 +3,19 @@ Worker entry points must resolve at build time: use a source-relative `new URL("
 A computed entry the build can bound to a finite set of files (a `new URL` of bounded text against `import.meta.url`, the value a module-local function returns, a branch of `?:`, `??` or `||`) starts the compiled file its value names; a value outside that set throws `ERR_SCRIPTC_WORKER_ENTRY` when the constructor runs, where Node would start that file.
 Each worker initializes its own module state, event loop, environment snapshot, and reference-counted heap.
 Nested workers inherit their parent's environment snapshot.
-Supported constructor options are `workerData`, `argv`, a `transferList` of MessagePorts, `name` (reported by `threadName` and `worker.threadName`), `stdout`, `stderr` and `stdin`, and `resourceLimits.stackSizeMb`, which sets the worker thread's stack size (at least 192 KiB; without it a worker's stack is 8 MiB, where Node's is 4 MiB).
-The `resourceLimits` heap limits (`maxOldGenerationSizeMb`, `maxYoungGenerationSizeMb`, and `codeRangeSizeMb`), `worker.resourceLimits` while the worker runs, and `resourceLimits` read inside a worker are refused; in the main thread `resourceLimits` is `{}`, and after a worker exits `worker.resourceLimits` is `{}`, as in Node.
+Supported constructor options are `workerData`, `argv`, a `transferList` of MessagePorts, `name` (reported by `threadName` and `worker.threadName`), `stdout`, `stderr` and `stdin`, and `resourceLimits`, whose `stackSizeMb` sets the worker thread's stack size (at least 192 KiB; without it a worker's stack is 8 MiB, where Node's is 4 MiB).
+`worker.resourceLimits` reports the limits the constructor asked for, with `-1` for an unset heap limit and `4` for an unset stack, as in Node.
+A compiled program has one heap for every thread, so a heap limit (`maxOldGenerationSizeMb`, `maxYoungGenerationSizeMb`, or `codeRangeSizeMb`) cannot be enforced: asking for one is refused, at build time for an options literal and with an `ERR_SCRIPTC_WORKER_HEAP_LIMITS` error from an options object computed at run time, where Node would bound the worker's heap.
+`resourceLimits` read inside a worker reports the same four limits, where Node reports the isolate's V8 heap configuration; in the main thread it is `{}`, and after a worker exits `worker.resourceLimits` is `{}`, as in Node.
+`worker.performance.eventLoopUtilization` before the worker's `online` event, and after it exits, answers the zero object, as in Node.
 With the `stdout` or `stderr` option, the worker's writes to that stream reach `worker.stdout` or `worker.stderr`, a Readable that ends after the worker's `'exit'` event; its chunks arrive in order with the worker's other events.
-Without the option a worker writes to the process's own output, and reading `worker.stdout` or `worker.stderr` is refused.
+Without the option a worker writes to the process's own output, and `worker.stdout` or `worker.stderr` still answers the same Readable, which receives those writes as Node's pipe delivers them.
 With the `stdin` option, `worker.stdin` is a Writable whose chunks the worker reads from `process.stdin`, in order with the worker's other events, and `process.stdin` ends when `worker.stdin` ends; without it `worker.stdin` is `null` and the worker's `process.stdin` ends without data, as in Node.
 Runtime paths, `eval`, loaders, and shared environments are unsupported.
 `setEnvironmentData` and `getEnvironmentData` keep a map per thread with SameValueZero keys; each new Worker starts from a clone of its parent's entries taken by the constructor, which throws `DataCloneError` when an entry cannot be cloned.
 Worker argument strings containing null bytes are also unsupported.
 
-Workers support `online`, `message`, `error`, and `exit` events, `postMessage`, `terminate`, `ref`, and `unref`.
+Workers support `online`, `message`, `error`, and `exit` events, `postMessage`, `terminate`, `ref`, `unref`, `cpuUsage`, whose promise the worker's thread answers with its own CPU time, and `performance.eventLoopUtilization`, whose values advance when the worker's loop turns, as in Node.
 `worker[Symbol.asyncDispose]()` terminates the worker and resolves with `undefined` after its `exit` event, so `await using` disposes a Worker at the end of its block.
 A worker's uncaught exception reaches its `error` listeners as Node's error serializer sends it: an Error keeps the nearest of `Error` and its six native subclasses (an `AggregateError` arrives as an `Error` named `AggregateError`) along with its name, message, cause, and other data properties and their enumerability, and other thrown values clone as messages do.
 An unhandled rejection whose reason is not error-like arrives as an `UnhandledPromiseRejection` Error with code `ERR_UNHANDLED_REJECTION` quoting the reason.
@@ -26,7 +29,8 @@ A port's `onmessage` property and `addEventListener` are unsupported.
 `BroadcastChannel` delivers each message to every other open channel with the same name, in any thread, as a `'message'` `MessageEvent` through `onmessage` and `addEventListener`; an open channel keeps the process alive until `close()` or `unref()`.
 A `messageerror` event is never dispatched.
 The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`.
-Messages clone primitives, plain object graphs, arrays, errors, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases.
+Messages clone primitives, plain object graphs, arrays, errors, Maps, Sets, Blobs, Files, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases.
+A primitive wrapper object (from `new String`, `new Number`, `new Boolean` or `Object(primitive)`) cannot cross a message yet: it throws a catchable error naming the limitation, where Node clones it; `structuredClone` copies one.
 Program class instances arrive as plain objects with their own data properties, without their prototype, methods, accessors, or private fields, as in Node.
 `markAsUntransferable` marks objects for the current thread, and a marked ArrayBuffer or MessagePort in a transfer list throws `DataCloneError`, as does the ArrayBuffer of a pooled Buffer; marked objects other than ArrayBuffers stay alive until their thread exits.
 `markAsUncloneable` marks a plain object, an error, or a class instance, and `structuredClone` and `postMessage` then throw `DataCloneError` for it, also where it is nested; as in Node, the mark has no effect on primitives, arrays, typed arrays, and ArrayBuffers.

@@ -1,6 +1,7 @@
 /** The pinned QuickJS, mbedTLS, zlib, brotli, and zstd inputs used by native
  * recipes. */
 export const QJS_COMMIT = "3c8f3d68953955950074c41c6e4d999562ae82a7";
+export const MLKEM_VERSION = "2.0.0";
 export const MBEDTLS_VERSION = "3.6.7";
 /** The zlib Node v24.22.1 bundles (`process.versions.zlib` there), the
  * Chromium fork in Node's deps/zlib (packages/runtime/vendor/zlib). */

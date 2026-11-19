@@ -31,10 +31,18 @@ function declaredMethods(file: string, name: string): Map<string, DeclaredMethod
   expect(start, `${file} declares interface ${name}`).toBeGreaterThanOrEqual(0);
   const body = text.slice(text.indexOf("\n", start) + 1, text.indexOf("\n  }\n", start));
   const methods = new Map<string, DeclaredMethod[]>();
-  for (const line of body.split("\n")) {
-    const match = /^ {4}(\w+)\((.*)\): (.+);$/.exec(line);
-    // Every line of the interface is one method signature.
-    expect(match, `${file}: ${line}`).not.toBeNull();
+  // One declaration per ";": a signature may wrap across lines, and a
+  // plain property (no parameters) is not a handle member the table
+  // describes (the dedicated lowerings own those reads).
+  for (const declaration of body.split(";")) {
+    // Comments attached to a declaration are prose, not a signature.
+    const signature = declaration
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (signature === "" || !signature.includes("(")) continue;
+    const match = /^(\[[^\]]+\]|\w+)\((.*)\): (.+)$/.exec(signature);
+    expect(match, `${file}: ${signature}`).not.toBeNull();
     const [, member, params, result] = match!;
     const overloads = methods.get(member!) ?? [];
     overloads.push({ params: params === "" ? [] : params!.split(", "), result: result! });
@@ -71,7 +79,23 @@ const HANDLE_CLASSES: HandleClass[] = [
     name: "Socket",
     kind: "dgramSocket",
     table: DGRAM_SOCKET_MEMBERS,
-    dedicated: ["address", "bind", "close", "connect", "on", "once", "ref", "send", "unref"],
+    dedicated: [
+      "address",
+      "addSourceSpecificMembership",
+      "bind",
+      "bindSync",
+      "close",
+      "connect",
+      "connectSync",
+      "dropSourceSpecificMembership",
+      "on",
+      "once",
+      "ref",
+      "remoteAddress",
+      "send",
+      "unref",
+      "[Symbol.asyncDispose]",
+    ],
   },
 ];
 

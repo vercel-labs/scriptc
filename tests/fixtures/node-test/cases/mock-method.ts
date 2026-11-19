@@ -151,3 +151,54 @@ test("subtests have their own tracker", async (t) => {
   });
   assert.strictEqual(shared.now(), 0);
 });
+
+test("methods that read this, on records, instances, and prototypes", () => {
+  interface Counter {
+    base: number;
+    add(n: number): number;
+  }
+  const counter: Counter = {
+    base: 2,
+    add(n: number) {
+      this.base += n;
+      return this.base;
+    },
+  };
+  const add = mock.method(counter, "add", (n: number) => n * 2);
+  assert.strictEqual(counter.add(3), 6);
+  assert.strictEqual(counter.base, 2);
+  assert.ok(add.mock.calls[0]!.this === counter);
+  add.mock.restore();
+  assert.strictEqual(counter.add(3), 5);
+});
+
+class Greeter {
+  greeting = "hi";
+  greet(name: string): string {
+    return `${this.greeting} ${name}`;
+  }
+}
+
+test("class instances and prototype objects", () => {
+  const greeter = new Greeter();
+  const greet = mock.method(greeter, "greet", (name: string) => `mocked ${name}`);
+  assert.strictEqual(greeter.greet("x"), "mocked x");
+  assert.ok(greet.mock.calls[0]!.this === greeter);
+  greet.mock.restore();
+  assert.strictEqual(greeter.greet("x"), "hi x");
+
+  const proto = mock.method(
+    Greeter.prototype,
+    "greet",
+    function (this: Greeter, name: string) {
+      return `proto ${name} ${this.greeting}`;
+    },
+  );
+  assert.strictEqual(new Greeter().greet("y"), "proto y hi");
+  // The restored instance kept its own method, so the prototype replacement
+  // does not reach it.
+  assert.strictEqual(greeter.greet("z"), "hi z");
+  assert.strictEqual(proto.mock.callCount(), 1);
+  proto.mock.restore();
+  assert.strictEqual(new Greeter().greet("y"), "hi y");
+});

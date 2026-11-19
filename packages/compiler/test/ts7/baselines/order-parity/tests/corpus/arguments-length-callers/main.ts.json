@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/arguments-length-callers/lib.ts",
+  "<repo>/tests/corpus/arguments-length-callers/caller.js",
+  "<repo>/tests/corpus/arguments-length-callers/main.ts"
+ ],
+ "diags": []
+}

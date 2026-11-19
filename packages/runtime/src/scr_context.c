@@ -1,4 +1,8 @@
 #include "scr_runtime.h"
+/* worker.performance: a worker thread's loop-utilization snapshot, published
+ * by scr_perf_loop.c on each loop turn once the worker unit installs it. */
+SCR_TL void (*scr_context_publish_loop_metrics)(double loop_start_ms, double idle_ms) = NULL;
+
 
 #ifdef SCR_WORKERS
 #include <pthread.h>

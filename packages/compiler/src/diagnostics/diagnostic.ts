@@ -1246,13 +1246,14 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // declaration carry an initialization check (Node's TDZ ReferenceError).
   // SC1016 remains for the shapes without an exact representation —
   // CommonJS members, top-level await, default-export expressions,
-  // namespace imports or re-exports of cycle members, and var or class
-  // bindings reachable before their declaration ran. The message names
-  // the offending construct.
+  // namespace imports or re-exports of cycle members, and var bindings
+  // reachable before their declaration ran. Classes carry an
+  // initialization check like the let/const bindings they behave as. The
+  // message names the offending construct.
   SC1016: {
     feature: "circular imports",
     milestone: "later",
-    hint: "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge",
+    hint: "ES-module cycles of let/const/function/class bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var) or break the named edge",
   },
   // Class DECLARATIONS shipped; SC1020's remaining use is class expressions.
   SC1020: { feature: "class expressions", milestone: "later" },
@@ -1265,9 +1266,9 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // `var` declarations shipped (function-scope hoisting, redeclaration
   // merge, the shared-binding loop capture semantics). SC1030's remaining
   // uses are the var edges with no honest lowering — each names its shape
-  // and remedy inline (a reference above the declaration whose early reads
-  // would be an unrepresentable `undefined`; `var` loop bindings in
-  // `for await`).
+  // and remedy inline (a reference above the declaration that can run
+  // before its first store, where Node's `undefined` is unrepresentable;
+  // `var` loop bindings in `for await`).
   SC1030: {
     feature: "var declarations",
     milestone: "later",
@@ -2574,9 +2575,12 @@ export function libIntBoundaryDiag(
 }
 
 export function iceDiag(message: string, loc: SrcLoc): ScrDiagnostic {
+  // An invariant that failed without a message still has to say that it did:
+  // "internal compiler error:  — please report this" reads like a truncation.
+  const detail = message.trim() === "" ? "a compiler invariant failed without a message" : message;
   return {
     code: "SC9001",
-    message: `internal compiler error: ${message} — please report this`,
+    message: `internal compiler error: ${detail} — please report this`,
     loc,
   };
 }

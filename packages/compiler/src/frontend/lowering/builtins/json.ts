@@ -2,6 +2,7 @@ import { callbackTakesEveryArgument } from "../callback-arg.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
+import { isPerfEntryType } from "./performance.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -115,6 +116,19 @@ export function lowerJsonMethodCall(
         if (helper) value = { kind: "call", callee: helper, args: [value], type: narrowed, loc };
       }
     }
+    // A performance entry serializes through its toJSON, and the fields
+    // that answers depend on the entry's runtime class: a resource entry
+    // carries its timing fields and no detail, while a mark or measure
+    // carries detail. The static type does not say which class a value is
+    // (a PerformanceEntry-typed value can be either), so the record or the
+    // array crosses to the runtime walker, which runs the entry
+    // prototype's toJSON.
+    if (
+      (value.type.kind === "record" && isPerfEntryType(lowerer, value.type)) ||
+      (value.type.kind === "array" && isPerfEntryType(lowerer, value.type.elem))
+    ) {
+      value = { kind: "dynFrom", value, type: DYN, loc };
+    }
     const replacer = call.arguments.nodes[1];
     if (replacer && !jsonNullishArgument(lowerer, replacer)) {
       const callback = lowerJsonCallback(lowerer, replacer, "replacer");
@@ -173,6 +187,20 @@ export function lowerJsonMethodCall(
       value.type.kind === "object" &&
       lowerer.findMethodOn(lowerer.classes.get(value.type.className) ?? null, "toJSON") !== null &&
       lowerer.dynConvertible(value.type);
+    // A record that declares toJSON is serialized by the runtime walker for
+    // the same reason: the method runs with the record as receiver, and the
+    // value it answers is what gets serialized. Its other methods stay
+    // function-valued properties, which Node omits.
+    const toJsonRecord = recordDeclaresToJson(lowerer, value.type);
+    if (toJsonRecord && !lowerer.dynConvertible(value.type)) {
+      lowerer.unsupported(
+        "SC1090",
+        argNode,
+        `JSON.stringify of '${lowerer.fmt(value.type)}' values ` +
+          `(the record declares toJSON, which must be called, and the value cannot cross ` +
+          `into the checked-dynamic boundary)`,
+      );
+    }
     // A Buffer serializes through its toJSON ({ type: "Buffer", data }), and
     // another typed array as an object keyed by index: the runtime walker
     // tells them apart by the box.
@@ -181,6 +209,7 @@ export function lowerJsonMethodCall(
       value.type.kind === "dyn" ||
       value.type.kind === "bytes" ||
       toJsonClass ||
+      toJsonRecord ||
       isJsonStringifyDynamicType(
         value.type,
         (id) => lowerer.shapes.get(id),
@@ -230,7 +259,8 @@ export function lowerJsonMethodCall(
       // symbol). The result keeps the actual undefined unless every use
       // reads it as the text "undefined" (jsonResultTextOnly); those keep
       // the dyn-root string ABI.
-      return (value.type.kind === "dyn" || toJsonClass) && jsonResultTextOnly(lowerer, call)
+      return (value.type.kind === "dyn" || toJsonClass || toJsonRecord) &&
+        jsonResultTextOnly(lowerer, call)
         ? { kind: "toString", operand: raw, type: STRING, loc }
         : { kind: "dynCheck", value: raw, type: lowerer.withUndefinedArm(STRING), loc };
     }
@@ -264,6 +294,42 @@ export function lowerJsonMethodCall(
     return node;
   }
   return null; // unknown members are tsc errors before lowering
+}
+
+/** Whether a record reachable from `t` declares a toJSON method. Such a type
+ * cannot be serialized field by field: Node calls the method (with the record
+ * as receiver) and serializes what it answers, so the value takes the runtime
+ * walker. */
+function recordDeclaresToJson(
+  lowerer: Lowerer,
+  t: IrType,
+  visiting: Set<string> = new Set(),
+): boolean {
+  switch (t.kind) {
+    case "array":
+      return recordDeclaresToJson(lowerer, t.elem, visiting);
+    case "record": {
+      const shape = lowerer.shapes.get(t.shapeId);
+      if (shape === undefined || visiting.has(t.shapeId)) return false;
+      visiting.add(t.shapeId);
+      for (const field of shape.fields) {
+        if (field.name === "toJSON" && field.type.kind === "func") return true;
+        if (recordDeclaresToJson(lowerer, field.type, visiting)) return true;
+      }
+      return shape.indexValue !== undefined
+        ? recordDeclaresToJson(lowerer, shape.indexValue, visiting)
+        : false;
+    }
+    case "union": {
+      const def = lowerer.unions.get(t.unionId);
+      const key = `union:${t.unionId}`;
+      if (def === undefined || visiting.has(key)) return false;
+      visiting.add(key);
+      return def.arms.some((arm) => recordDeclaresToJson(lowerer, arm, visiting));
+    }
+    default:
+      return false;
+  }
 }
 
 function lowerOptionalStringifyRoot(

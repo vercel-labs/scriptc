@@ -73,11 +73,13 @@ test("a name only the project's libraries declare compiles; without the library 
 });
 
 test("a global Node defines is never treated as absent", async () => {
-  // The bundled Node declarations declare navigator, which Node 24 defines;
-  // the DOM library declares the rest, and Node defines them too, but the
-  // bundled declarations do not, so using one is refused by name.
+  // The bundled Node declarations declare navigator and BroadcastChannel,
+  // which Node 24 defines; the DOM library declares the rest, and Node
+  // defines them too, but the bundled declarations do not, so using one is
+  // refused by name.
   expect(await build(["es2023", "dom"], "console.log(typeof navigator);\n")).toEqual([]);
-  for (const name of ["WebSocket", "BroadcastChannel", "toString"]) {
+  expect(await build(["es2023", "dom"], "console.log(typeof BroadcastChannel);\n")).toEqual([]);
+  for (const name of ["WebSocket", "toString"]) {
     expect(await build(["es2023", "dom"], `console.log(typeof ${name});\n`), name).toEqual([
       expect.stringContaining(`SC0001: Cannot find name '${name}'.`),
     ]);

@@ -163,6 +163,37 @@ function builtinModuleBindingOf(
   return null;
 }
 
+/** A named import binding of a supported builtin module in `file` whose LOCAL
+ * name is `name` (the exported member is the alias's target). The checker
+ * resolves a value use of an import whose export is declared as a TYPE (an
+ * ambient interface) to the interface itself, so builtinImportOf sees no
+ * import specifier; the binding is still that module's member, and the read
+ * must keep the member's refusal rather than becoming a global read. */
+export function builtinImportBindingByName(
+  lowerer: Lowerer,
+  file: ts.SourceFile,
+  name: string,
+): { module: string; member: string } | null {
+  void lowerer;
+  const statements = file.statements.nodes;
+  for (let i = 0; i < statements.length; i++) {
+    const statement = statements[i]!;
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier))
+      continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+    const elements = bindings.elements.nodes;
+    for (let j = 0; j < elements.length; j++) {
+      const specifier = elements[j]!;
+      if (specifier.name.text !== name) continue;
+      const module = canonicalBuiltinModule(statement.moduleSpecifier.text);
+      if (module === null) return null;
+      return { module, member: specifier.propertyName?.text ?? specifier.name.text };
+    }
+  }
+  return null;
+}
+
 /** The ES module binding kind of `ident`: "namespace" for a namespace
  * import (`import * as events from "node:events"`), "named" for a named
  * import (`import { defaultMaxListeners } from "node:events"`, also through

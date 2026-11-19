@@ -222,6 +222,11 @@ typedef struct SpKey {
                  * bytes as given, before clamping, and the public key */
   uint8_t ed_seed[32];
   uint8_t ed_pub[32];
+  /* An X448 key: 56-byte private bytes as given (before clamping) and the
+   * 56-byte public key. */
+  bool x448;
+  uint8_t x448_seed[56];
+  uint8_t x448_pub[56];
   /* An RSA-PSS key (id-RSASSA-PSS): signatures only, with PSS padding.
    * With RSASSA-PSS-params it signs only with pss_md and MGF1 over
    * pss_mgf1, and salts of at least pss_salt bytes. */
@@ -286,6 +291,12 @@ static bool sp_is_ec(const SpKey *k) { return mbedtls_pk_get_type(&k->pk) == MBE
 static bool sp_is_ed(const SpKey *k) { return k->ed25519; }
 
 static bool sp_is_x(const SpKey *k) { return k->x25519; }
+static bool sp_is_x448(const SpKey *k) { return k->x448; }
+/* The OKP key material and its size: X25519 32 bytes, X448 56. */
+static const uint8_t *sp_okp_seed(const SpKey *k) { return k->x448 ? k->x448_seed : k->ed_seed; }
+static uint8_t *sp_okp_pub_mut(SpKey *k) { return k->x448 ? k->x448_pub : k->ed_pub; }
+static const uint8_t *sp_okp_pub(const SpKey *k) { return k->x448 ? k->x448_pub : k->ed_pub; }
+static size_t sp_okp_len(const SpKey *k) { return k->x448 ? 56 : 32; }
 
 /* The PSS fields of `from` on `to`. */
 static void sp_pss_copy(SpKey *to, const SpKey *from) {
@@ -309,7 +320,39 @@ static const char *sp_pss_md_name(mbedtls_md_type_t md) {
 }
 
 /* An Ed25519 or X25519 key: 32-byte private and public keys, no details. */
-static bool sp_is_okp(const SpKey *k) { return k->ed25519 || k->x25519; }
+static bool sp_is_okp(const SpKey *k) { return k->ed25519 || k->x25519 || k->x448; }
+
+/* X448(scalar, point) per RFC 7748 over mbedTLS's Curve448 group, or of the
+ * base point when point is NULL; the Montgomery ladder needs the RNG. */
+static bool sp_x448(const uint8_t scalar[56], const uint8_t *point, uint8_t out[56]) {
+  mbedtls_ecp_group grp;
+  mbedtls_ecp_point P, R;
+  mbedtls_mpi d;
+  mbedtls_ecp_group_init(&grp);
+  mbedtls_ecp_point_init(&P);
+  mbedtls_ecp_point_init(&R);
+  mbedtls_mpi_init(&d);
+  uint8_t k[56];
+  memcpy(k, scalar, 56);
+  k[0] &= 252;
+  k[55] |= 128;
+  size_t n = 0;
+  bool ok = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_CURVE448) == 0 &&
+            mbedtls_mpi_read_binary_le(&d, k, 56) == 0 &&
+            (point ? mbedtls_ecp_point_read_binary(&grp, &P, point, 56)
+                   : mbedtls_ecp_copy(&P, &grp.G)) == 0 &&
+            mbedtls_ecp_mul(&grp, &R, &d, &P, sp_random, NULL) == 0 &&
+            mbedtls_ecp_point_write_binary(&grp, &R, MBEDTLS_ECP_PF_UNCOMPRESSED, &n, out, 56) == 0 &&
+            n == 56;
+  uint8_t any = 0;
+  for (size_t i = 0; ok && i < 56; i++) any |= out[i];
+  mbedtls_platform_zeroize(k, sizeof k);
+  mbedtls_mpi_free(&d);
+  mbedtls_ecp_point_free(&R);
+  mbedtls_ecp_point_free(&P);
+  mbedtls_ecp_group_free(&grp);
+  return ok && any != 0;
+}
 
 /* X25519(scalar, point) per RFC 7748 over mbedTLS's Curve25519 group, or
  * of the base point when point is NULL. False when the result is the
@@ -393,15 +436,25 @@ static const uint8_t sp_x_pkcs8_prefix[16] = {0x30, 0x2e, 0x02, 0x01, 0x00, 0x30
                                               0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20};
 static const uint8_t sp_x_spki_prefix[12] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
                                              0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
+/* X448's (1.3.101.111), with 56-byte keys. */
+static const uint8_t sp_x448_pkcs8_prefix[16] = {0x30, 0x46, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+                                                 0x03, 0x2b, 0x65, 0x6f, 0x04, 0x3a, 0x04, 0x38};
+static const uint8_t sp_x448_spki_prefix[12] = {0x30, 0x42, 0x30, 0x05, 0x06, 0x03,
+                                                0x2b, 0x65, 0x6f, 0x03, 0x39, 0x00};
 
 /* Writes prefix || 32 bytes at the end of buf, as the mbedtls writers do. */
-static int sp_write_ed_der(const uint8_t *prefix, size_t prefix_len, const uint8_t key[32],
-                           unsigned char *buf, size_t size) {
-  size_t n = prefix_len + 32;
+static int sp_write_okp_der(const uint8_t *prefix, size_t prefix_len, const uint8_t *key,
+                            size_t key_len, unsigned char *buf, size_t size) {
+  size_t n = prefix_len + key_len;
   if (size < n) return MBEDTLS_ERR_ASN1_BUF_TOO_SMALL;
   memcpy(buf + size - n, prefix, prefix_len);
-  memcpy(buf + size - 32, key, 32);
+  memcpy(buf + size - key_len, key, key_len);
   return (int)n;
+}
+
+static int sp_write_ed_der(const uint8_t *prefix, size_t prefix_len, const uint8_t key[32],
+                           unsigned char *buf, size_t size) {
+  return sp_write_okp_der(prefix, prefix_len, key, 32, buf, size);
 }
 
 /* A digest AlgorithmIdentifier with NULL parameters, written backwards
@@ -482,8 +535,10 @@ static int sp_write_pss_alg(unsigned char **c, unsigned char *start, const SpKey
 static int sp_write_pkcs1_public_der(SpKey *k, unsigned char *buf, size_t size);
 
 static int sp_write_spki_der(SpKey *k, unsigned char *buf, size_t size) {
-  if (sp_is_okp(k))
+  if (sp_is_okp(k)) {
+    if (k->x448) return sp_write_okp_der(sp_x448_spki_prefix, 12, k->x448_pub, 56, buf, size);
     return sp_write_ed_der(sp_is_x(k) ? sp_x_spki_prefix : sp_ed_spki_prefix, 12, k->ed_pub, buf, size);
+  }
   if (!k->rsa_pss) return mbedtls_pk_write_pubkey_der(&k->pk, buf, size);
   /* SubjectPublicKeyInfo ::= SEQUENCE { AlgorithmIdentifier, BIT STRING
    * RSAPublicKey } */
@@ -513,8 +568,11 @@ static int sp_write_pkcs1_public_der(SpKey *k, unsigned char *buf, size_t size) 
  * parameters, or id-ecPublicKey with the curve OID), and the inner key,
  * which for EC omits the parameters field. */
 static int sp_write_pkcs8_der(SpKey *k, unsigned char *buf, size_t size) {
-  if (sp_is_okp(k))
-    return sp_write_ed_der(sp_is_x(k) ? sp_x_pkcs8_prefix : sp_ed_pkcs8_prefix, 16, k->ed_seed, buf, size);
+  if (sp_is_okp(k)) {
+    if (k->x448) return sp_write_okp_der(sp_x448_pkcs8_prefix, 16, k->x448_seed, 56, buf, size);
+    return sp_write_ed_der(sp_is_x(k) ? sp_x_pkcs8_prefix : sp_ed_pkcs8_prefix, 16, k->ed_seed, buf,
+                           size);
+  }
   unsigned char inner[SP_DER_MAX];
   size_t inner_len;
   if (sp_is_rsa(k)) {
@@ -1323,9 +1381,16 @@ static ScrDyn *sp_export_jwk(SpKey *k) {
   ScrDyn *jwk = scr_dyn_new_obj();
   if (sp_is_okp(k)) {
     sp_set(jwk, "kty", sp_dyn_str(scr_str_new("OKP", 3)));
-    sp_set(jwk, "crv", sp_dyn_str(sp_is_x(k) ? scr_str_new("X25519", 6) : scr_str_new("Ed25519", 7)));
-    sp_set(jwk, "x", sp_b64url(k->ed_pub, 32));
-    if (k->private_key) sp_set(jwk, "d", sp_b64url(k->ed_seed, 32));
+    if (k->x448) {
+      sp_set(jwk, "crv", sp_dyn_str(scr_str_new("X448", 4)));
+      sp_set(jwk, "x", sp_b64url(k->x448_pub, 56));
+      if (k->private_key) sp_set(jwk, "d", sp_b64url(k->x448_seed, 56));
+    } else {
+      sp_set(jwk, "crv",
+             sp_dyn_str(sp_is_x(k) ? scr_str_new("X25519", 6) : scr_str_new("Ed25519", 7)));
+      sp_set(jwk, "x", sp_b64url(k->ed_pub, 32));
+      if (k->private_key) sp_set(jwk, "d", sp_b64url(k->ed_seed, 32));
+    }
     return jwk;
   }
   if (sp_is_rsa(k)) {
@@ -1384,19 +1449,26 @@ static bool sp_jwk_read(const ScrDyn *jwk, const char *key, mbedtls_mpi *x) {
   return ok;
 }
 
-/* Decodes a 32-byte JWK base64url member; false when it is missing, not a
- * string, or another length. */
-static bool sp_jwk_bytes(const ScrDyn *jwk, const char *key, uint8_t out[32]) {
+/* Decodes a JWK base64url member of exactly `len` bytes; false when it is
+ * missing, not a string, or another length. */
+static bool sp_jwk_bytes_n(const ScrDyn *jwk, const char *key, uint8_t *out, size_t len) {
   const ScrDyn *v = sp_opt(jwk, key);
-  if (v->kind != SCR_DYN_STR || v->v.str->len != 43) return false;
-  unsigned char b64[44];
-  for (size_t i = 0; i < 43; i++) {
+  size_t encoded = (len * 4 + 2) / 3;
+  while (encoded % 4) encoded++;
+  if (v->kind != SCR_DYN_STR || v->v.str->len != (len * 4 + 2) / 3) return false;
+  unsigned char b64[128];
+  if (encoded > sizeof b64) return false;
+  for (size_t i = 0; i < v->v.str->len; i++) {
     char c = v->v.str->data[i];
     b64[i] = (unsigned char)(c == '-' ? '+' : c == '_' ? '/' : c);
   }
-  b64[43] = '=';
+  for (size_t i = v->v.str->len; i < encoded; i++) b64[i] = '=';
   size_t n = 0;
-  return mbedtls_base64_decode(out, 32, &n, b64, 44) == 0 && n == 32;
+  return mbedtls_base64_decode(out, len, &n, b64, encoded) == 0 && n == len;
+}
+
+static bool sp_jwk_bytes(const ScrDyn *jwk, const char *key, uint8_t out[32]) {
+  return sp_jwk_bytes_n(jwk, key, out, 32);
 }
 
 static void sp_invalid_jwk(void) {
@@ -1442,7 +1514,16 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
   if (sp_is_str(kty, "OKP")) {
     const ScrDyn *crv = sp_opt(jwk, "crv");
     bool x = sp_is_str(crv, "X25519");
-    if (!x && !sp_is_str(crv, "Ed25519")) {
+    bool x448 = sp_is_str(crv, "X448");
+    if (x448) {
+      k->x448 = true;
+      if (private_key) {
+        ok = sp_jwk_bytes_n(jwk, "d", k->x448_seed, 56);
+        if (ok) ok = sp_x448(k->x448_seed, NULL, k->x448_pub);
+      } else {
+        ok = sp_jwk_bytes_n(jwk, "x", k->x448_pub, 56);
+      }
+    } else if (!x && !sp_is_str(crv, "Ed25519")) {
       sp_key_release(k);
       if (crv->kind != SCR_DYN_STR) {
         scr_dyn_prop_type_fail("key.crv", "of type string", crv);
@@ -1451,22 +1532,24 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
       sp_not_supported("JWK keys of this crv");
       return NULL;
     }
-    k->ed25519 = !x;
-    k->x25519 = x;
-    if (private_key) {
-      ok = sp_jwk_bytes(jwk, "d", k->ed_seed);
-      if (ok && x) {
-        ok = sp_x25519(k->ed_seed, NULL, k->ed_pub);
-      } else if (ok) {
-        const ScrPkiEd25519 *ed = sp_ed();
-        if (!ed) {
-          sp_key_release(k);
-          return NULL;
+    if (!x448) {
+      k->ed25519 = !x;
+      k->x25519 = x;
+      if (private_key) {
+        ok = sp_jwk_bytes(jwk, "d", k->ed_seed);
+        if (ok && x) {
+          ok = sp_x25519(k->ed_seed, NULL, k->ed_pub);
+        } else if (ok) {
+          const ScrPkiEd25519 *ed = sp_ed();
+          if (!ed) {
+            sp_key_release(k);
+            return NULL;
+          }
+          ed->public_key(k->ed_pub, k->ed_seed);
         }
-        ed->public_key(k->ed_pub, k->ed_seed);
+      } else {
+        ok = sp_jwk_bytes(jwk, "x", k->ed_pub);
       }
-    } else {
-      ok = sp_jwk_bytes(jwk, "x", k->ed_pub);
     }
   } else if (sp_is_str(kty, "RSA")) {
     mbedtls_mpi n, e, d, p, q;
@@ -1540,7 +1623,9 @@ static SpKey *sp_public_of(SpKey *k) {
     SpKey *pub = sp_key_alloc(false);
     pub->ed25519 = k->ed25519;
     pub->x25519 = k->x25519;
+    pub->x448 = k->x448;
     memcpy(pub->ed_pub, k->ed_pub, 32);
+    memcpy(pub->x448_pub, k->x448_pub, 56);
     return pub;
   }
   unsigned char der[SP_DER_MAX];
@@ -1646,6 +1731,23 @@ static SpKey *sp_ed_from_der(const unsigned char *der, size_t len, bool private_
     SpKey *k = sp_key_alloc(false);
     k->x25519 = true;
     memcpy(k->ed_pub, der + 12, 32);
+    return k;
+  }
+  if (len == 72 && memcmp(der, sp_x448_pkcs8_prefix, 16) == 0) {
+    SpKey *k = sp_key_alloc(private_key);
+    k->x448 = true;
+    memcpy(k->x448_seed, der + 16, 56);
+    if (!sp_x448(k->x448_seed, NULL, k->x448_pub)) {
+      sp_key_release(k);
+      return NULL;
+    }
+    if (!private_key) mbedtls_platform_zeroize(k->x448_seed, 56);
+    return k;
+  }
+  if (!private_key && len == 68 && memcmp(der, sp_x448_spki_prefix, 12) == 0) {
+    SpKey *k = sp_key_alloc(false);
+    k->x448 = true;
+    memcpy(k->x448_pub, der + 12, 56);
     return k;
   }
   if (len == 48 && memcmp(der, sp_ed_pkcs8_prefix, 16) == 0) {
@@ -2273,7 +2375,8 @@ static ScrDyn *sp_export_raw(SpKey *k, bool private_part, bool seed, bool compre
     sp_incompatible_key_type();
     return NULL;
   }
-  if (sp_is_okp(k)) return sp_dyn_buffer(private_part ? k->ed_seed : k->ed_pub, 32);
+  if (sp_is_okp(k))
+    return sp_dyn_buffer(private_part ? sp_okp_seed(k) : sp_okp_pub(k), sp_okp_len(k));
   mbedtls_ecp_keypair *ec = mbedtls_pk_ec(k->pk);
   const mbedtls_ecp_group *grp = &ec->MBEDTLS_PRIVATE(grp);
   unsigned char buf[1 + 2 * 66];
@@ -2291,7 +2394,6 @@ static ScrDyn *sp_export_raw(SpKey *k, bool private_part, bool seed, bool compre
  * X448, Ed448 and the post-quantum types. */
 static const char *const sp_other_named_types[] = {
     "ed448",
-    "x448",
     "ml-dsa-44",
     "ml-dsa-65",
     "ml-dsa-87",
@@ -2346,10 +2448,11 @@ static SpKey *sp_key_from_raw(const ScrDyn *input, const ScrDyn *data, const Scr
     return NULL;
   }
   bool x = sp_is_str(type, "x25519");
+  bool x448 = sp_is_str(type, "x448");
   bool other = false;
   for (size_t i = 0; i < sizeof sp_other_named_types / sizeof sp_other_named_types[0]; i++)
     other = other || sp_is_str(type, sp_other_named_types[i]);
-  if (!ec && !ed && !x && !other) {
+  if (!ec && !ed && !x && !x448 && !other) {
     ScrStr *s = type->v.str;
     scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE", "Invalid asymmetricKeyType: %.*s", (int)s->len, s->data);
     return NULL;
@@ -2374,7 +2477,16 @@ static SpKey *sp_key_from_raw(const ScrDyn *input, const ScrDyn *data, const Scr
   size_t len = (size_t)scr_bytes_byte_len(bytes);
   SpKey *k = sp_key_alloc(!raw_public);
   bool ok = false;
-  if (x) {
+  if (x448) {
+    k->x448 = true;
+    if (len == 56 && raw_public) {
+      memcpy(k->x448_pub, p, 56);
+      ok = true;
+    } else if (len == 56) {
+      memcpy(k->x448_seed, p, 56);
+      ok = sp_x448(k->x448_seed, NULL, k->x448_pub);
+    }
+  } else if (x) {
     k->x25519 = true;
     if (len == 32 && raw_public) {
       memcpy(k->ed_pub, p, 32);
@@ -2649,8 +2761,11 @@ static ScrDyn *sp_key_invoke(void *h, ScrDyn *self, const char *method, ScrDyn *
     return scr_dyn_new_bool(same);
   }
   if (strcmp(method, "toCryptoKey") == 0) {
-    sp_not_supported("KeyObject.toCryptoKey");
-    return NULL;
+    if (!scr_crypto_to_crypto_key) {
+      sp_not_supported("KeyObject.toCryptoKey");
+      return NULL;
+    }
+    return scr_crypto_to_crypto_key(self, args, argc);
   }
   scr_pki_throw_fmt(SCR_ERR_TYPE, NULL, "%s is not a function", what);
   return NULL;
@@ -2662,6 +2777,7 @@ static ScrDyn *sp_key_get(void *h, const char *name, size_t len) {
     return k->private_key ? sp_dyn_str(scr_str_new("private", 7)) : sp_dyn_str(scr_str_new("public", 6));
   if (len == 17 && memcmp(name, "asymmetricKeyType", 17) == 0)
     return sp_is_ed(k)    ? sp_dyn_str(scr_str_new("ed25519", 7))
+           : sp_is_x448(k) ? sp_dyn_str(scr_str_new("x448", 4))
            : sp_is_x(k)   ? sp_dyn_str(scr_str_new("x25519", 6))
            : k->rsa_pss   ? sp_dyn_str(scr_str_new("rsa-pss", 7))
            : sp_is_rsa(k) ? sp_dyn_str(scr_str_new("rsa", 3))
@@ -2877,7 +2993,7 @@ static bool sp_check_encoding_plain(const ScrDyn *enc, const char *name, const S
 
 /* The key generateKeyPair makes, as sp_keygen_check reads it. */
 typedef struct {
-  enum { SP_GEN_RSA, SP_GEN_EC, SP_GEN_ED25519, SP_GEN_X25519 } kind;
+  enum { SP_GEN_RSA, SP_GEN_EC, SP_GEN_ED25519, SP_GEN_X25519, SP_GEN_X448 } kind;
   double bits, exponent; /* RSA */
   bool pss;              /* an RSA-PSS key, restricted when pss_params */
   bool pss_params, md_set, mgf1_set, salt_set;
@@ -3053,6 +3169,8 @@ static bool sp_keygen_check(const ScrDyn *type, const ScrDyn *options, SpKeyGen 
     gen->kind = SP_GEN_ED25519;
   } else if (sp_is_str(type, "x25519")) {
     gen->kind = SP_GEN_X25519;
+  } else if (sp_is_str(type, "x448")) {
+    gen->kind = SP_GEN_X448;
   } else {
     bool named = false;
     for (size_t i = 0; i < sizeof sp_other_named_types / sizeof sp_other_named_types[0]; i++)
@@ -3168,6 +3286,18 @@ static SpKey *sp_keygen_run(const SpKeyGen *gen, bool *job_error) {
     k->ed_seed[31] &= 127;
     k->ed_seed[31] |= 64;
     if (!sp_x25519(k->ed_seed, NULL, k->ed_pub)) {
+      sp_key_release(k);
+      sp_unsupported_input();
+      return NULL;
+    }
+    return k;
+  }
+  if (gen->kind == SP_GEN_X448) {
+    k->x448 = true;
+    sp_random(NULL, k->x448_seed, 56);
+    k->x448_seed[0] &= 252;
+    k->x448_seed[55] |= 128;
+    if (!sp_x448(k->x448_seed, NULL, k->x448_pub)) {
       sp_key_release(k);
       sp_unsupported_input();
       return NULL;
@@ -3989,7 +4119,7 @@ static bool sp_verify_hash(SpSigKey *key, mbedtls_md_type_t md, const unsigned c
 /* X25519 keys neither sign nor verify: OpenSSL's error, after the key
  * checks. Releases the key and answers true when it rejects. */
 static bool sp_reject_x25519(SpSigKey *k) {
-  if (!sp_is_x(k->key)) return false;
+  if (!sp_is_x(k->key) && !sp_is_x448(k->key)) return false;
   sp_key_release(k->key);
   sp_throw_openssl("03000096", "digital envelope routines", "operation not supported for this keytype",
                    "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", true);
@@ -5932,6 +6062,7 @@ static const char sp_dh_public_types[] =
 /* Node's message names: a KeyObject's asymmetricKeyType. */
 static const char *sp_type_name(const SpKey *k) {
   return sp_is_ed(k)   ? "ed25519"
+         : sp_is_x448(k) ? "x448"
          : sp_is_x(k)   ? "x25519"
          : k->rsa_pss   ? "rsa-pss"
          : sp_is_rsa(k) ? "rsa"
@@ -5968,6 +6099,16 @@ static void sp_dh_failed(bool props) {
 }
 
 static ScrDyn *sp_dh_compute(SpKey *priv, SpKey *pub, bool props) {
+  if (sp_is_x448(priv) && sp_is_x448(pub)) {
+    uint8_t out[56];
+    if (!sp_x448(priv->x448_seed, pub->x448_pub, out)) {
+      sp_dh_failed(props);
+      return NULL;
+    }
+    ScrDyn *secret = sp_dyn_buffer(out, 56);
+    mbedtls_platform_zeroize(out, sizeof out);
+    return secret;
+  }
   if (sp_is_x(priv) && sp_is_x(pub)) {
     uint8_t out[32];
     if (!sp_x25519(priv->ed_seed, pub->ed_pub, out)) {
@@ -6043,7 +6184,7 @@ ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback) {
   SpKey *a = sp_key_of(private_value), *b = sp_key_of(public_value);
   if (a && b && a->private_key) {
     const char *ta = sp_type_name(a), *tb = sp_type_name(b);
-    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a))) {
+    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a) && !sp_is_x448(a))) {
       scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_INCOMPATIBLE_KEY",
                         "Incompatible key types for Diffie-Hellman: %s and %s", ta, tb);
       goto done;
@@ -6086,6 +6227,15 @@ void scr_pki_key_release(ScrPkiKey *key) { sp_key_release(key); }
 
 bool scr_pki_key_is_private(const ScrPkiKey *key) { return key->private_key; }
 
+ScrPkiKey *scr_crypto_key_object_material(const ScrDyn *value) {
+  SpKey *key = sp_key_of(value);
+  return key ? sp_key_retain(key) : NULL;
+}
+
+ScrDyn *scr_crypto_key_object_from_material(ScrPkiKey *key) {
+  return sp_key_box(sp_key_retain(key));
+}
+
 bool scr_pki_key_is_rsa_pss(const ScrPkiKey *key) { return key->rsa_pss; }
 
 bool scr_pki_key_is_rsa(const ScrPkiKey *key) { return sp_is_rsa(key); }
@@ -6113,8 +6263,10 @@ ScrBytes *scr_pki_key_exponent(const ScrPkiKey *key) {
 ScrPkiKey *scr_pki_key_parse_der(const uint8_t *der, size_t len, bool private_key) {
   if ((private_key && len == 48 &&
        (memcmp(der, sp_ed_pkcs8_prefix, 16) == 0 || memcmp(der, sp_x_pkcs8_prefix, 16) == 0)) ||
+      (private_key && len == 72 && memcmp(der, sp_x448_pkcs8_prefix, 16) == 0) ||
       (!private_key && len == 44 &&
-       (memcmp(der, sp_ed_spki_prefix, 12) == 0 || memcmp(der, sp_x_spki_prefix, 12) == 0))) {
+       (memcmp(der, sp_ed_spki_prefix, 12) == 0 || memcmp(der, sp_x_spki_prefix, 12) == 0)) ||
+      (!private_key && len == 68 && memcmp(der, sp_x448_spki_prefix, 12) == 0)) {
     bool failed;
     return sp_ed_from_der(der, len, private_key, &failed);
   }
@@ -6228,6 +6380,35 @@ ScrPkiKey *scr_pki_key_from_x25519_raw(const uint8_t *raw, size_t len) {
 ScrBytes *scr_pki_export_x25519_raw(ScrPkiKey *key) {
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, 32);
   memcpy(out->data, key->ed_pub, 32);
+  return out;
+}
+
+ScrPkiKey *scr_pki_generate_x448(void) {
+  SpKey *k = sp_key_alloc(true);
+  k->x448 = true;
+  sp_random(NULL, k->x448_seed, 56);
+  k->x448_seed[0] &= 252;
+  k->x448_seed[55] |= 128;
+  if (!sp_x448(k->x448_seed, NULL, k->x448_pub)) {
+    sp_key_release(k);
+    return NULL;
+  }
+  return k;
+}
+
+bool scr_pki_key_is_x448(const ScrPkiKey *key) { return sp_is_x448(key); }
+
+ScrPkiKey *scr_pki_key_from_x448_raw(const uint8_t *raw, size_t len) {
+  if (len != 56) return NULL;
+  SpKey *k = sp_key_alloc(false);
+  k->x448 = true;
+  memcpy(k->x448_pub, raw, 56);
+  return k;
+}
+
+ScrBytes *scr_pki_export_x448_raw(ScrPkiKey *key) {
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, 56);
+  memcpy(out->data, key->x448_pub, 56);
   return out;
 }
 

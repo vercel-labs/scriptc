@@ -65,6 +65,10 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_builtin_values.c -> scr_symbol.c": ["scr_dyn_new_symbol", "scr_sym_new", "scr_sym_release"],
   "scr_dyn_builtin_stream.c -> scr_stream_dyn.c": ["scr_stream_dyn_native"],
   "scr_dyn_handle_props.c -> scr_async_dyn.c": ["scr_dyn_promise_resolve"],
+  // sqlite.backup is the only function of the unit that mints a promise
+  // (scr_dyn_new_promise). Its section is dropped from every program that
+  // does not call backup, and a program that does selects dynAsync with it.
+  "scr_sqlite.c -> scr_async_dyn.c": ["scr_dyn_new_promise"],
   "scr_dyn_handle_props.c -> scr_dyn_invoke.c": [
     "scr_dyn_define_props",
     "scr_dyn_define_props_pending",
@@ -134,8 +138,14 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_stream.c -> scr_readline_tty.c": ["scr_rl_keypress_events"],
   "scr_stream.c -> scr_stream_ops.c": ["scr_stream_from_dyn_iter"],
   // A failing test's message: every test.* call selects the inspect unit,
-  // and a held TestContext type reaches neither.
-  "scr_test.c -> scr_inspect.c": ["scr_insp_dyn", "scr_insp_str"],
+  // and a held TestContext type reaches neither. The custom-inspector retry
+  // renders through the same functions the message does.
+  "scr_test.c -> scr_inspect.c": [
+    "scr_insp_custom_inspect",
+    "scr_insp_dyn",
+    "scr_insp_layout",
+    "scr_insp_str",
+  ],
   // The module tables the compiler emits into a program that uses
   // WebAssembly (backend/llvm/wasm-modules.ts).
   "scr_wasm.c -> (the program)": ["scr_wasm_registry", "scr_wasm_untranslated"],

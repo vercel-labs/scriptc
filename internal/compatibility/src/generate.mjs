@@ -1160,6 +1160,11 @@ function publicDetail(tier) {
     ) {
       return "Answers what the compiled binary itself provides: inspector, uv, cached_builtins and tls_ocsp are false because it links no V8 inspector, libuv, builtin code cache or OCSP request, typescript is false because it cannot load TypeScript at run time, and ipv6, tls, tls_alpn, tls_sni, require_module and debug keep their Node values.";
     }
+    if (source.startsWith("compiler-feature:http.")) {
+      return tier.status === "supported"
+        ? "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node."
+        : "Implemented for the documented node:http server subset.";
+    }
     return "Implemented for the documented scriptc module-loader subset.";
   }
   if (source.startsWith("compiler-chapter-policy:")) {

@@ -272,6 +272,15 @@ ScrAlsCtx **scr_als_slot(void);
 #endif
 ScrAlsCtx *scr_als_ctx_retain(ScrAlsCtx *c);
 void scr_als_ctx_release(ScrAlsCtx *c);
+/* Live snapshots on this thread (the runtime tests assert a store <-> resource
+ * loop returns to its baseline). */
+long scr_als_live_contexts(void);
+#ifdef SCR_RC_AUDIT
+/* Runtime-test hook: called once while a snapshot's entries are being released
+ * (after the first one), so a test can force a collection pass at the exact
+ * point a snapshot is half-disposed. */
+extern void (*scr_als_ctx_release_probe)(void);
+#endif
 /* After an enterWith: on the main stack, queues the tick that ends it. */
 void scr_als_entered_with(void);
 ScrAlsCtx *scr_als_ctx_alloc(size_t len);
@@ -300,10 +309,60 @@ ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
  * pending for a non-object) and the name it carries (+1). */
 double scr_als_new_options(const ScrDyn *options);
 ScrDyn *scr_als_name(double id);
+/* ── node:trace_events (trace_events.Tracing — scr_async_dyn.c) ───────
+ * A compiled binary carries no trace-event agent, which is what Node's
+ * tracing objects drive; without the agent (Node run without
+ * --trace-event-* flags) what a program observes is the object's own
+ * bookkeeping: its categories string and its enabled flag, plus the
+ * process-wide enabled-categories list. The objects are native handles
+ * (typeof "object", no own keys, `Tracing { enabled: false, categories:
+ * 'v8,node' }`), so member reads and calls ride the checked-dynamic tree.
+ * scr_te_create applies createTracing's checks (options object, the
+ * categories array, its string members, at least one category) and answers
+ * the handle (+1) or NULL with the exception pending;
+ * scr_te_get_enabled_categories answers the sorted, de-duplicated list
+ * (+1) or the undefined value when no tracing object is enabled. */
+ScrDyn *scr_te_create(ScrDyn *options);
+ScrDyn *scr_te_get_enabled_categories(void);
+
 /* AsyncLocalStorage.bind over a dyn function and the dyn completion
  * callbacks (fn borrowed; +1), and AsyncLocalStorage.snapshot() (+1). */
 ScrDyn *scr_als_bind_dyn(ScrDyn *fn, bool always);
 ScrDyn *scr_als_snapshot(void);
+/* asyncLocalStorage.withScope(store): the store installed now (Node's
+ * enterWith), with the value getStore() answered before it kept for the
+ * scope's dispose. The result is a native RunScope handle whose dispose()
+ * and [Symbol.dispose] install that previous value again (a second dispose
+ * is a no-op). */
+ScrDyn *scr_als_with_scope(double id, ScrDyn *store);
+
+/* ── AsyncResource (node:async_hooks — scr_async_dyn.c) ───────────────
+ * Resources are process-lived 1-based f64 handles (the Channel story).
+ * A resource keeps the AsyncLocalStorage snapshot active at construction,
+ * the async id it was given, and the id that triggered it.
+ * runInAsyncScope installs that context and id for the call's synchronous
+ * extent; bind/bindStatic answer functions doing the same with their own
+ * arguments. Ids come from one counter whose root is the program's
+ * top-level execution (id 1, trigger 0); a resource built inside another
+ * one's scope answers that resource's id as its trigger. scr_ar_new validates
+ * Node's `type` string and the triggerAsyncId/requireManualDestroy
+ * options (NaN with the exception pending); runInScope/bind/bindStatic
+ * MAY THROW (their calls and Node's argument checks). */
+ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options);
+ScrDyn *scr_ar_run_in_scope(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args);
+ScrDyn *scr_ar_bind(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg);
+/* AsyncResource.bind(fn[, type[, thisArg]]): `type` falsy takes fn's name,
+ * and a name that is still falsy takes 'bound-anonymous-fn' (Node's). */
+ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg);
+ScrDyn *scr_ar_emit_destroy(ScrDyn *handle); /* answers the handle */
+/* The number of AsyncResource payloads alive: a dropped handle's payload is
+ * freed, so this returns to its old value (the runtime test pins it). */
+size_t scr_ar_live_resources(void);
+double scr_ar_async_id(ScrDyn *handle);
+double scr_ar_trigger_id(ScrDyn *handle);
+/* The execution context's ids: executionAsyncId()/triggerAsyncId(). */
+double scr_ar_execution_id(void);
+double scr_ar_execution_trigger(void);
 
 /* process.on/once('unhandledRejection', fn): dyn listeners dispatched
  * per never-observed rejection at the end of its nextTick/microtask
@@ -382,6 +441,16 @@ extern SCR_TL void (*scr_promise_inspect_dyn_fn)(const ScrPromise *p, bool *pend
 void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
+/* process.emit(event, ...args): dispatch to the listeners of the process
+ * events registered as checked-dynamic callbacks — the exception families,
+ * 'warning' and the rejection families — answering whether any listener
+ * existed (Node's EventEmitter return). The compiler refuses the typed
+ * listener families, and a name none of these matches answers false. */
+bool scr_process_emit_named(ScrDyn *event, ScrDyn *args);
+/* process.emit('error', ...): no 'error' listener can be registered, so
+ * Node's EventEmitter contract throws — an Error payload throws itself, any
+ * other payload throws ERR_UNHANDLED_ERROR. */
+void scr_process_emit_error(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
 /* process.emitWarning = fn (borrowed; the runtime keeps its own
  * reference). Later process.emitWarning(...) calls apply the replacement

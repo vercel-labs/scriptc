@@ -39,6 +39,7 @@ export const SUPPORTED_BUILTIN_MODULES = [
   "timers/promises",
   "diagnostics_channel",
   "sqlite",
+  "trace_events",
   "perf_hooks",
   "module",
   "console",

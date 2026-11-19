@@ -13,6 +13,7 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
+import { unsupportedDiag, type ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import {
   classMemberNameOf,
@@ -155,6 +156,47 @@ const REFUSED = Symbol("refused");
  * dropped — no source asked for this member — and the caller keeps the
  * class's runtime fence rather than a table that answers a member it does not
  * hold as `undefined`. */
+/** The table entry of a static whose value has no checked-dynamic form: a
+ * function that throws the refusal where the member is called. Node's class
+ * object still has the property, and a static a program never calls must not
+ * fail the build, so the table installs around it and `coverage` reports the
+ * fence. The caller has pushed the diagnostic. */
+function staticMemberFence(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  display: string,
+  refused?: ScrDiagnostic,
+): IrExpr {
+  const before = lowerer.diags.length;
+  lowerer.pushDiag(
+    refused ??
+      unsupportedDiag(
+        "SC1090",
+        locOf(info.decl!),
+        `the value of the static '${display}' (it has no checked-dynamic form)`,
+      ),
+  );
+  const fence = lowerer.deferToRuntimeFence(before, info.decl!, {
+    kind: "closure" as const,
+    name: `%static.fence:${info.def.name}.${display}`,
+    params: [],
+    returnType: DYN,
+    type: { kind: "func", params: [], ret: DYN },
+    allowDiagSink: true,
+  });
+  if (fence === null) {
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        locOf(info.decl!),
+        `the value of the static '${display}' (it has no checked-dynamic form)`,
+      ),
+    );
+    lowerer.unsupported("SC1090", info.decl!, `the value of the static '${display}'`);
+  }
+  return fence;
+}
+
 function staticTableMemberValue(
   lowerer: Lowerer,
   info: ClassInfo,
@@ -165,9 +207,28 @@ function staticTableMemberValue(
     return reflectedClassStaticMethodValueForTable(lowerer, info, method);
   } catch (error) {
     if (!(error instanceof PoisonError)) throw error;
-    lowerer.diags.splice(before);
-    return REFUSED;
+    const refused = lowerer.diags.splice(before);
+    if (refused.length === 0) throw error;
+    // The member's body or signature refused. The class value is still a
+    // value in Node, so its table holds a function that throws the refusal
+    // where the member is called.
+    return staticMemberFence(lowerer, info, method, refused[0]);
   }
+}
+
+/** A table entry coerced into the checked-dynamic value every entry is. The
+ * coercion adapts what it can (a boxable function, a namespace promise from a
+ * dynamic import), and a member whose value it cannot convert becomes the
+ * fence instead of malformed IR. */
+function tableEntryValue(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  value: IrExpr,
+  display: string,
+): IrExpr {
+  const coerced = lowerer.coerceToExpected(value, DYN);
+  if (coerced.type.kind === "dyn") return coerced;
+  return lowerer.coerceToExpected(staticMemberFence(lowerer, info, display), DYN);
 }
 
 /** The lifted function that installs `info`'s static table on the class
@@ -259,7 +320,7 @@ export function classStaticsInstaller(
           key,
           descriptor(
             [
-              { key: "value", value: lowerer.coerceToExpected(value, DYN) },
+              { key: "value", value: tableEntryValue(lowerer, info, value, key) },
               { key: "writable", value: flag(true, at) },
               { key: "enumerable", value: flag(false, at) },
               { key: "configurable", value: flag(true, at) },
@@ -282,8 +343,10 @@ export function classStaticsInstaller(
       { key: "enumerable", value: flag(false, at) },
       { key: "configurable", value: flag(true, at) },
     ];
-    if (getter) entries.unshift({ key: "get", value: lowerer.coerceToExpected(getter, DYN) });
-    if (setter) entries.push({ key: "set", value: lowerer.coerceToExpected(setter, DYN) });
+    if (getter)
+      entries.unshift({ key: "get", value: tableEntryValue(lowerer, info, getter, `get:${key}`) });
+    if (setter)
+      entries.push({ key: "set", value: tableEntryValue(lowerer, info, setter, `set:${key}`) });
     statements.push(define(key, descriptor(entries, at), at));
     setters.add(key);
   }

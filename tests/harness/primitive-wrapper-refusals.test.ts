@@ -8,13 +8,14 @@ import { compile } from "@scriptc/compiler";
 
 const execFileAsync = promisify(execFile);
 
-// JSON, util.inspect, structuredClone and deep equality cannot read a
-// wrapper's [[PrimitiveValue]] slot yet, so a wrapper anywhere in their
-// argument refuses with a catchable error instead of a silently wrong
-// answer, including one 100 levels deep or under a graph that shares its
-// objects. Values without a wrapper keep working in the same program, and
-// the search reaches each object once, so a cyclic value is checked in
-// linear time.
+// JSON, util.inspect and deep equality cannot read a wrapper's
+// [[PrimitiveValue]] slot yet, so a wrapper anywhere in their argument
+// refuses with a catchable error instead of a silently wrong answer,
+// including one 100 levels deep or under a graph that shares its objects.
+// structuredClone copies a wrapper through the unit that owns the slot, so
+// it answers a real copy where those consumers still refuse. Values without
+// a wrapper keep working in the same program, and the search reaches each
+// object once, so a cyclic value is checked in linear time.
 test("graph-walking consumers refuse primitive wrapper objects", async () => {
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-wrapper-refusals-"));
   const entry = join(outDir, "main.mjs");
@@ -57,10 +58,10 @@ attempt("cyclic inspect", () => util.inspect(cyclic));
     [
       `json ${refused("JSON.stringify")}`,
       `log ${refused("console.log/util.inspect")}`,
-      `clone ${refused("structuredClone")}`,
+      "clone ok",
       "plain json ok",
       "plain clone ok",
-      `deep clone ${refused("structuredClone")}`,
+      "deep clone ok",
       `shared log ${refused("console.log/util.inspect")}`,
       "cyclic inspect ok",
       "",

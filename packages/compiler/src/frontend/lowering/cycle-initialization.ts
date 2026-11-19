@@ -76,11 +76,11 @@ const NO_STATIC_GLOBALS: ReadonlySet<string> = new Set();
 /** Registers the initialization flags after global collection. Bindings
  * whose early access has no exact representation are refused: a `var`
  * (Node reads `undefined` there, but module storage only starts when the
- * declaring module's body starts), a binding without module storage, a
- * class that another module's `extends` clause can reach early (the
- * subclass is static), or one with a use the lowering resolves from the
- * binding's type (a property key, a `typeof` operand). Other classes get a
- * flag like their module's early-reached classes. */
+ * declaring module's body starts), a binding without module storage, or
+ * one with a use the lowering resolves from the binding's type (a
+ * property key, a `typeof` operand). A class gets a flag like the
+ * let/const bindings do — generic families included, and an `extends`
+ * clause in another module checks it where that class statement runs. */
 export function markCycleEarlyBindings(lowerer: Lowerer): void {
   const early = cycleEarlyBindings(
     lowerer.program,
@@ -109,11 +109,27 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
       const deferred = lowerer.deferredDiags.has(binding.symbol);
       if (deferred) lowerer.flushDeferred(binding.symbol);
       const info = lowerer.classBySymbol.get(binding.symbol);
-      const heritage = earlyHeritageReference(lowerer, binding);
-      if (info !== undefined && !info.generic && heritage === null)
+      if (info !== undefined) {
         registerClassInitFlag(lowerer, binding, info, true);
-      else if (!deferred || info !== undefined)
-        refuse(heritage ?? binding.reference, `the class ${where}`);
+        // Another module's `extends` clause reads the class value when
+        // that module's class statement runs: the subclass's layout is
+        // static, so the check goes at that statement (withClassInitFlag).
+        const flag = lowerer.classInitFlags.get(info.def.name);
+        if (flag !== undefined)
+          for (const decl of earlyHeritageReferences(lowerer, binding)) {
+            // A class EXPRESSION has no statement whose place the check can
+            // take, so its heritage read keeps the fence.
+            if (!ts.isClassDeclaration(decl)) {
+              refuse(decl, `the class ${where}`);
+              continue;
+            }
+            const checks = lowerer.heritageClassChecks.get(decl) ?? [];
+            if (!checks.includes(flag)) checks.push(flag);
+            lowerer.heritageClassChecks.set(decl, checks);
+          }
+      } else if (!deferred) {
+        refuse(binding.reference, `the class ${where}`);
+      }
       continue;
     }
     const global = lowerer.globalsBySymbol.get(binding.symbol);
@@ -271,37 +287,91 @@ function registerClassInitFlag(
   });
 }
 
-/** A reference to a cycle class in another class's `extends` clause, in a
- * module that can run before the class statement: Node evaluates the clause
- * when that module's class statement runs, but the compiled subclass is
- * static and has no access to check. Null when there is none. */
-function earlyHeritageReference(lowerer: Lowerer, binding: CycleEarlyBinding): ts.Node | null {
+/** The classes, in modules that can run before `binding`'s class statement,
+ * whose `extends` clause (or another heritage expression) reads the class
+ * value. Node evaluates the clause when that class statement runs, so the
+ * reference is a read of the binding at that point; the compiled subclass
+ * is static, so its statement carries the initialization check. */
+function earlyHeritageReferences(
+  lowerer: Lowerer,
+  binding: CycleEarlyBinding,
+): ts.ClassLikeDeclaration[] {
   const declaration = binding.name.parent;
+  const out: ts.ClassLikeDeclaration[] = [];
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || sf === binding.module || binding.settled.has(sf)) continue;
+    if (sf.isDeclarationFile || binding.settled.has(sf)) continue;
     const names = classLocalNames(lowerer, sf, binding.symbol, binding.name.text, true);
     if (names.size === 0) continue;
-    let found: ts.Node | null = null;
     ts.walkPreorder(sf, (node) => {
-      if (found !== null || node === declaration) return "skip";
-      if (!ts.isHeritageClause(node)) return undefined;
-      // Node evaluates the whole clause when the class statement runs:
-      // any reference inside it (parenthesized, a factory argument)
-      // reaches the class.
-      ts.walkPreorder(node, (inner) => {
-        if (found !== null) return "skip";
-        if (
-          ts.isIdentifier(inner) &&
-          names.has(inner.text) &&
-          resolvesTo(lowerer, inner, binding.symbol, true)
-        )
-          found = inner;
+      if (node === declaration) return "skip";
+      // Only an `extends` clause is EVALUATED: an `implements` clause and a
+      // heritage TYPE (`extends Base<C>`) name types, which Node erases, so
+      // no read of the class happens there.
+      if (!ts.isHeritageClause(node) || node.token !== ts.SyntaxKind.ExtendsKeyword)
         return undefined;
-      });
+      let found = false;
+      for (const base of node.types.nodes) {
+        if (found) break;
+        if (!ts.isExpressionWithTypeArguments(base)) continue;
+        // The check runs BEFORE the statement's own expression, so it is
+        // exact only where the heritage expression IS the read: a bare
+        // identifier (parenthesized, asserted) or a namespace member. Any
+        // other expression — a conditional, a call, a factory argument —
+        // performs work first, which Node runs before it reaches the class;
+        // pre-empting it with the ReferenceError would be a lie, so those
+        // shapes keep their unchecked read. A type argument is erased and
+        // never read at all.
+        const reference = bareHeritageReference(base.expression);
+        if (
+          reference !== null &&
+          names.has(reference.text) &&
+          resolvesTo(lowerer, reference, binding.symbol, true)
+        )
+          found = true;
+      }
+      if (found) {
+        const cls = enclosingClass7(node);
+        // In the declaring module the statements run in source order: a
+        // subclass below the declaration reads an initialized class.
+        const after =
+          sf === binding.module &&
+          declaration !== undefined &&
+          ts.tokenStartOfNode(cls ?? node) > ts.tokenStartOfNode(declaration);
+        if (cls !== null && !after && !out.includes(cls)) out.push(cls);
+      }
       return "skip";
     });
-    if (found !== null) return found;
   }
+  return out;
+}
+
+/** The identifier a heritage expression reads AS ITS WHOLE VALUE: the base
+ * name, unwrapped from parentheses, assertions and non-null marks, or the
+ * member of a namespace access (`ns.Base`). Null when the expression does
+ * any work of its own first. */
+function bareHeritageReference(expression: ts.Expression): ts.Identifier | null {
+  let e: ts.Expression = expression;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(e) ||
+      ts.isAsExpression(e) ||
+      ts.isNonNullExpression(e) ||
+      ts.isSatisfiesExpression(e)
+    ) {
+      e = e.expression;
+      continue;
+    }
+    break;
+  }
+  if (ts.isIdentifier(e)) return e;
+  if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) return e.name;
+  return null;
+}
+
+/** The class-like declaration a heritage clause belongs to. */
+function enclosingClass7(node: ts.Node): ts.ClassLikeDeclaration | null {
+  for (let p: ts.Node | undefined = node; p !== undefined; p = p.parent)
+    if (ts.isClassLikeDeclaration(p)) return p;
   return null;
 }
 
@@ -424,12 +494,66 @@ function coversReference(flag: CycleInitFlag, loc: SrcLoc): boolean {
 }
 
 /** The class statement's static initialization, followed by the store of
- * its initialization flag when it has one. */
+ * its initialization flag when it has one. A statement whose own `extends`
+ * clause reads a flagged class checks that flag first — Node evaluates the
+ * clause before everything else the statement runs. */
 export function withClassInitFlag(lowerer: Lowerer, info: ClassInfo, stmts: IrStmt[]): IrStmt[] {
-  const flag = lowerer.classInitFlags.get(info.def.name);
-  if (flag === undefined) return stmts;
   const loc = info.decl ? locOf(info.decl) : (stmts[0]?.loc ?? { file: "", start: 0, end: 0 });
-  return [{ kind: "block", body: [...stmts, setFlag(flag, loc)], loc }];
+  // A decorated class evaluates its decorator factories before it reads the
+  // heritage: its checks go inside that sequence (lowerClassDecoration),
+  // not before it.
+  const decorationsFirst =
+    info.classDecorators !== undefined &&
+    !info.classDecorators.poisoned &&
+    info.classDecorators.shapes !== undefined;
+  // A generic class's instantiations share the declaration; the family is
+  // the class whose statement runs, so only it emits the checks.
+  const checks =
+    !decorationsFirst && info.decl != null && info.genericInstance === undefined
+      ? lowerer.heritageClassChecks.get(info.decl)
+      : undefined;
+  const flag = lowerer.classInitFlags.get(info.def.name);
+  if (checks === undefined && flag === undefined) return stmts;
+  const body: IrStmt[] = [
+    ...(checks ?? []).map((base) => classInitCheck(base, loc)),
+    ...stmts,
+    ...(flag === undefined ? [] : [setFlag(flag, loc)]),
+  ];
+  return [{ kind: "block", body, loc }];
+}
+
+/** The checks a class statement emits for the cycle classes its `extends`
+ * clause reads, at `loc` (the statement). A decorated class calls this from
+ * its decoration sequence, after the decorator factories Node evaluates
+ * first; every other class gets them at the head of its statement
+ * (withClassInitFlag). */
+export function heritageChecksFor(
+  lowerer: Lowerer,
+  decl: ts.ClassLikeDeclaration,
+  loc: SrcLoc,
+): IrStmt[] {
+  const checks = lowerer.heritageClassChecks.get(decl);
+  return checks === undefined ? [] : checks.map((flag) => classInitCheck(flag, loc));
+}
+
+/** The check of a flagged class's initialization, throwing Node's
+ * ReferenceError naming the reference's own spelling. */
+function classInitCheck(flag: CycleInitFlag, loc: SrcLoc): IrStmt {
+  const name = coveredReference(flag, loc)?.name ?? flag.name;
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "intrinsic",
+      name: "module.tdzCheck",
+      args: [
+        { kind: "varRef", localId: flag.flagId, type: BOOL, loc },
+        { kind: "strLit", value: name, type: STRING, loc },
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
 }
 
 function registerInitFlag(
@@ -651,6 +775,20 @@ function rewriteFunction(
     active.get(localId) ?? statics.get(localId)?.find((flag) => coversReference(flag, loc));
   const namesStatic = (flag: CycleInitFlag, fnName: string): boolean =>
     (flag.staticOwners ?? []).some((owner) => fnName.startsWith(`%${owner}.static:`));
+  // A generic class's instantiations (`Box%<hex>`) are the class values
+  // that construction and `instanceof` name; the binding the program reads
+  // is the family (`Box`), which owns the initialization state.
+  const familyFlagOf = (className: string): CycleInitFlag | undefined => {
+    for (const [name, flag] of classes) {
+      if (
+        className.length > name.length &&
+        className.startsWith(name) &&
+        className[name.length] === "%"
+      )
+        return flag;
+    }
+    return undefined;
+  };
   const classFlagOf = (e: IrExpr): CycleInitFlag | undefined => {
     if (classes.size === 0) return undefined;
     switch (e.kind) {
@@ -658,7 +796,7 @@ function rewriteFunction(
       case "classRef":
       case "instanceOf":
       case "caughtCheck": {
-        const flag = classes.get(e.className);
+        const flag = classes.get(e.className) ?? familyFlagOf(e.className);
         return flag !== undefined && coversReference(flag, e.loc) ? flag : undefined;
       }
       case "call":

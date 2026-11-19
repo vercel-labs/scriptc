@@ -221,6 +221,7 @@ typedef enum {
   X(SHARED_ARRAY_BUFFER, 37) \
   X(SIGN, 67) /* node:crypto Sign (scr_pki.c) */ \
   X(SPAWN_RES, 99) /* child_process spawnSync result (scr_child.c) */ \
+  X(STAT_WATCHER, 103) /* fs.watchFile's StatWatcher (scr_watch_file.c) */ \
   X(STDIO, 27) /* stable process stdin/stdout/stderr values */ \
   X(STRING_DECODER, 78) /* compiled StringDecoder record (scr_text_codec_dyn.c) */ \
   X(TEXT_DECODER, 76) /* compiled TextDecoder record (scr_text_codec_dyn.c) */ \
@@ -261,19 +262,27 @@ typedef enum {
  * objects are pinned above at the values they had (100 to 102), so the two
  * Intl formatters could join without renumbering them. */
 #define SCR_DYNH_NEW_TAGS(Y) \
+  Y(ASYNC_RESOURCE) /* async_hooks AsyncResource (scr_async_dyn.c) */ \
   Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
+  Y(CLOSE_EVENT) /* CloseEvent (scr_event_target.c) */ \
   Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
   Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
+  Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
+  Y(HISTOGRAM) /* createHistogram RecordableHistogram (scr_perf_loop.c) */ \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
   Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
+  Y(SQLITE_SESSION) /* node:sqlite Session (scr_sqlite.c) */ \
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
+  Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
+  Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
@@ -386,6 +395,10 @@ typedef enum {
   SCR_MESSAGE_PORT,
   /* A native handle cloned through its unit's ScrDynHandleTransfer. */
   SCR_MESSAGE_HANDLE,
+  /* A Map: entries as decimal-keyed children, key then value per entry. */
+  SCR_MESSAGE_MAP,
+  /* A Set: one child per entry, in insertion order. */
+  SCR_MESSAGE_SET,
 } ScrMessageKind;
 
 /* Readers for compiled 'message' listeners (ScrDynMessageListener), which
@@ -1197,6 +1210,7 @@ ScrDyn *scr_dyn_native_map_new(const ScrDyn *seed);
 bool scr_dyn_native_map_is(const ScrDyn *value);
 void scr_regex_reset_last_index(ScrRegex *re, double index);
 ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags);
+ScrRegex *scr_regex_call_checked(const ScrDyn *pattern, const ScrDyn *flags);
 ScrDyn *scr_dyn_native_url(ScrUrl *value);
 bool scr_dyn_native_url_is(const ScrDyn *value);
 ScrDyn *scr_dyn_native_search_params(ScrSearchParams *value);
@@ -1324,12 +1338,11 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype);
 /* The interned builtin constructor `name` (Object, Date, RegExp, Map, Set,
  * Promise, WeakMap, WeakSet) as a dynamic function value: +1. */
 ScrDyn *scr_dyn_global_constructor(const ScrStr *name);
-#ifdef SCR_JS_OBJECT_MODEL
-/* That table as the object model build reaches it: this unit installs the
- * hook when a program links both builds, and scr_json.c keeps its named
- * refusal where it is NULL. */
+/* That table as another unit reaches it: scr_dyn_invoke.c installs the hook
+ * at startup when a program links it, and scr_json.c answers a value's
+ * `constructor` (a DataView's, a DOMException's) with the global's own value
+ * where it is set and keeps its named refusal where it is NULL. */
 extern ScrDyn *(*scr_dyn_global_constructor_hook)(const ScrStr *name);
-#endif
 /* The interned function value of an error constructor ("TypeError"), or
  * NULL for other names. */
 ScrDyn *scr_dyn_error_constructor(const char *name);
@@ -1844,6 +1857,10 @@ bool scr_js_wrapper_instance_of(ScrDyn *value, double kind);
 ScrStr *scr_js_wrapper_object_tag(ScrDyn *value);
 bool scr_js_wrapper_type_is(ScrDyn *value, ScrStr *probe);
 ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
+/* structuredClone's clone of a wrapper (scr_json.c's hook): +1 the same kind
+ * over the same primitive, or NULL when `value` is not a wrapper. Installed
+ * by the wrapper unit, so a program without one keeps the refusal. */
+extern SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);

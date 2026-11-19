@@ -81,7 +81,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v48(void);
+void scr_runtime_abi_v50(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -124,6 +124,12 @@ static inline void scr_glibc_random_buf(void *buf, size_t n) {
 #endif
 #endif
 _Noreturn void scr_trap_fmt(const char *fmt, ...);
+
+/* worker.performance: installed by the worker unit on a worker thread and
+ * called by the perf_hooks loop metrics on each loop turn with the loop's
+ * start and its idle time, both in milliseconds on the process timeline. One
+ * pointer, set only by a worker thread, so every flavor declares it. */
+extern SCR_TL void (*scr_context_publish_loop_metrics)(double loop_start_ms, double idle_ms);
 
 /* ── library mode (scr_library.c, linked only into library artifacts) ─────
  * A library artifact has no main, no event loop, no signal handlers, no

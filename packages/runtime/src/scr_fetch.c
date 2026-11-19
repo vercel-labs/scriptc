@@ -700,6 +700,15 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
   return out;
 }
 
+/* `value instanceof AbortSignal`: the handles this unit boxes are the only
+ * values that carry the signal tag, so a signal answers true and every other
+ * value — undefined, null, a controller, a plain object — answers false, as
+ * Node's prototype chain does for the interfaces' real instances. */
+bool scr_dyn_abort_signal_is(const ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_HANDLE &&
+      value->v.handle.tag == SCR_DYNH_ABORT_SIGNAL;
+}
+
 /* ── the test runner's t.signal ────────────────────────────────────────
  * The same native signal, exposed to scr_test.c, which reaches these through
  * weak declarations. They live in the fetch unit's shared part so the
@@ -707,6 +716,33 @@ ScrDyn *scr_fetch_abort_controller_new(void) {
  * them: a program that reads t.signal and one that also uses fetch each
  * resolve the runner's references. */
 ScrDyn *scr_test_abort_controller_new(void) { return scr_fetch_abort_controller_new(); }
+
+ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller);
+void scr_test_abort_controller_abort(ScrDyn *controller);
+
+/* The same native controller, reached by scr_http.c's IncomingMessage.signal
+ * through weak declarations: a program that never reads req.signal links
+ * neither the abort unit nor fetch. */
+ScrDyn *scr_abort_signal_controller_new(void) { return scr_fetch_abort_controller_new(); }
+
+ScrDyn *scr_abort_signal_signal(ScrDyn *controller) { return scr_test_abort_controller_signal(controller); }
+
+void scr_abort_signal_abort(ScrDyn *controller) { scr_test_abort_controller_abort(controller); }
+
+/* The request teardown's signal cleanup: an abort listener a request's
+ * signal collected usually captures the request (and often the response),
+ * and the request owns the signal, so the listener list is a reference cycle
+ * the runtime's counts cannot collect. Dropping the listeners when the
+ * request closes releases what they captured; the signal itself stays
+ * usable (addEventListener on it still works), as the box Node GCs would. */
+void scr_abort_signal_drop_listeners(ScrDyn *controller) {
+  if (controller == NULL || controller->kind != SCR_DYN_HANDLE ||
+      controller->v.handle.tag != SCR_DYNH_ABORT_CONTROLLER)
+    return;
+  SfSignal *s = controller->v.handle.ptr;
+  scr_et_core_drop(&s->core);
+  scr_et_core_init(&s->core, 0, "AbortSignal");
+}
 
 ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) {
   if (controller == NULL || controller->kind != SCR_DYN_HANDLE ||

@@ -58,7 +58,7 @@
       "name": "circular imports",
       "status": "unsupported",
       "code": "SC1016",
-      "note": "ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge"
+      "note": "ES-module cycles of let/const/function/class bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var) or break the named edge"
     },
     {
       "id": "diagnostic.sc1020",
@@ -1393,6 +1393,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.mkdtempDisposable",
+      "kind": "node-builtin",
+      "name": "fs.mkdtempDisposableSync / fsPromises.mkdtempDisposable",
+      "status": "static",
+      "note": "the created temp directory plus its path, remove() and disposal hooks; the path is a string, so only the utf8 encoding is accepted"
+    },
+    {
       "id": "node-builtin.fs.mkdtempSync",
       "kind": "node-builtin",
       "name": "fs.mkdtempSync",
@@ -1717,7 +1724,7 @@
       "kind": "node-builtin",
       "name": "fs.watchFile",
       "status": "static",
-      "note": "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused"
+      "note": "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused"
     },
     {
       "id": "node-builtin.fs.writeFileSync",
@@ -2353,6 +2360,13 @@
       "note": "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes"
     },
     {
+      "id": "node-builtin.perf_hooks.createHistogram",
+      "kind": "node-builtin",
+      "name": "perf_hooks.createHistogram",
+      "status": "static",
+      "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
+    },
+    {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
@@ -2391,6 +2405,13 @@
       "name": "perf_hooks.performance.mark",
       "status": "static",
       "note": "records a mark in the thread's performance timeline at the live clock or the given startTime"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.markResourceTiming",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.markResourceTiming",
+      "status": "static",
+      "note": "the PerformanceResourceTiming entries markResourceTiming builds from fetch timing info, clearResourceTimings and setResourceTimingBufferSize; the resource fields and toJSON"
     },
     {
       "id": "node-builtin.perf_hooks.performance.measure",
@@ -2929,14 +2950,6 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
-      "id": "node-builtin.stream.consumers.blob",
-      "kind": "node-builtin",
-      "name": "stream/consumers.blob",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "collecting a stream into a Blob is not supported yet — buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text"
-    },
-    {
       "id": "node-builtin.stream.promises",
       "kind": "node-builtin",
       "name": "stream/promises",
@@ -3059,6 +3072,25 @@
       "name": "tls.setDefaultCACertificates",
       "status": "static",
       "note": "replaces the default set and the client trust anchors for the rest of the process"
+    },
+    {
+      "id": "node-builtin.trace_events",
+      "kind": "node-builtin",
+      "name": "trace_events",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.trace_events.createTracing",
+      "kind": "node-builtin",
+      "name": "trace_events.createTracing",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.trace_events.getEnabledCategories",
+      "kind": "node-builtin",
+      "name": "trace_events.getEnabledCategories",
+      "status": "static"
     },
     {
       "id": "node-builtin.tty",

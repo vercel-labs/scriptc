@@ -8,7 +8,7 @@ import {
   workerSourcePath,
 } from "../../worker-target.js";
 import { boundLoadValues } from "../../specifier-bounds.js";
-import { tsgoPath } from "../../dts-paths.js";
+import { isFallbackDtsPath, tsgoPath } from "../../dts-paths.js";
 import { isIslandProgramModule } from "../../../node-islands/boundary.js";
 import { varRef } from "../../../ir/build.js";
 import {
@@ -41,7 +41,22 @@ export function lowerWorkerMetadata(lowerer: Lowerer, member: string, loc: SrcLo
     case "workerData":
       return { kind: "libCall", fn: "worker.data", args: [], type: DYN, loc };
     case "parentPort":
-      return { kind: "libCall", fn: "worker.parentPort", args: [], type: DYN, loc };
+      /* The port's EventTarget surface (onmessage, addEventListener)
+       * dispatches through the event target unit's table, so reading the
+       * port installs it before the program can register a listener. */
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "event.broadcastInstall", args: [], type: VOID, loc },
+            loc,
+          },
+        ],
+        result: { kind: "libCall", fn: "worker.parentPort", args: [], type: DYN, loc },
+        type: DYN,
+        loc,
+      };
     case "isInternalThread":
       return { kind: "boolLit", value: false, type: BOOL, loc };
     case "resourceLimits":
@@ -304,7 +319,7 @@ function lowerBoundedWorkerNew(
 
 /** `create` after the worker-stdio capture: the streams unit is entered
  * before the worker starts. */
-function workerStdioSequence(create: IrExpr, loc: SrcLoc): IrExpr {
+export function workerStdioSequence(create: IrExpr, loc: SrcLoc): IrExpr {
   return {
     kind: "seqExpr",
     stmts: [
@@ -343,8 +358,12 @@ const HEAP_LIMITS = new Set([
   "codeRangeSizeMb",
 ]);
 
-/** resourceLimits' V8 heap fields, when an options literal spells them
- * with numbers (Node ignores other values; the runtime refuses the rest). */
+/** resourceLimits' V8 heap fields, when an options literal spells them with
+ * numbers. A compiled program has one heap for every thread, so a heap limit
+ * cannot be enforced: requesting one is refused here, and the runtime
+ * refuses the same request when the options object is not a literal. A
+ * limit the program does not ask for stays unset, and `worker.resourceLimits`
+ * reports it as Node does (-1). */
 function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined): void {
   if (!options || !ts.isObjectLiteralExpression(options)) return;
   for (const option of options.properties.nodes) {
@@ -360,7 +379,7 @@ function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined):
       lowerer.noLowering(
         `Worker resourceLimits.${name}`,
         limit,
-        "worker threads have no separate V8 heap; resourceLimits supports stackSizeMb",
+        "worker threads share the process heap, so a heap limit cannot be enforced; resourceLimits supports stackSizeMb",
       );
     }
   }
@@ -372,7 +391,7 @@ function propertyNameText(name: ts.PropertyName): string | undefined {
 
 /** True when `node`'s type is worker_threads' `name` class (also reached
  * through its global). */
-function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: string): boolean {
+export function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: string): boolean {
   const t = lowerer.checker.getTypeAtLocation(node);
   const sym = t.getSymbol();
   if (sym === undefined || ts.symbolName(sym) !== name) return false;
@@ -385,7 +404,12 @@ function isWorkerThreadsClass(lowerer: Lowerer, node: ts.Expression, name: strin
         return up.name.text === "worker_threads" || up.name.text === "node:worker_threads";
       up = up.parent;
     }
-    return false;
+    /* The globals are the same classes: the fallback declares them beside
+     * the module files, which load only when the program imports them. */
+    return (
+      (name === "MessageChannel" || name === "MessagePort" || name === "BroadcastChannel") &&
+      isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName)
+    );
   });
 }
 
@@ -410,7 +434,50 @@ export function lowerMessageChannelNew(
     );
   }
   lowerer.usesWorkers = true;
-  return { kind: "libCall", fn: "worker.channel", args: [], type: DYN, loc: locOf(expression) };
+  const loc = locOf(expression);
+  /* The ports' EventTarget side dispatches through the event target unit's
+   * table, which the program installs before the channel opens. */
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "event.broadcastInstall", args: [], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: { kind: "libCall", fn: "worker.channel", args: [], type: DYN, loc },
+    type: DYN,
+    loc,
+  };
+}
+
+/** new MessagePort(): Node's constructor exists but throws
+ * ERR_CONSTRUCT_CALL_INVALID ("Constructor cannot be called") after its
+ * arguments evaluate. */
+export function lowerMessagePortNew(lowerer: Lowerer, expression: ts.NewExpression): IrExpr | null {
+  if (!isWorkerThreadsClass(lowerer, expression, "MessagePort")) return null;
+  if (lowerer.targetPlatform === "wasi") {
+    lowerer.noLowering("MessagePort in this target", expression, "use a native static executable");
+  }
+  /* The refusal lives in the worker events unit, which the call links. */
+  lowerer.usesWorkers = true;
+  const loc = locOf(expression);
+  const elems: IrExpr[] = [];
+  for (const arg of expression.arguments?.nodes ?? []) {
+    if (ts.isSpreadElement(arg)) {
+      lowerer.noLowering("MessagePort constructor with a spread argument", expression);
+      break;
+    }
+    elems.push(lowerer.lowerExprExpecting(arg, DYN));
+  }
+  return {
+    kind: "libCall",
+    fn: "worker.portConstruct",
+    args: [{ kind: "dynArrLit", elems, type: DYN, loc }],
+    type: DYN,
+    loc,
+  };
 }
 
 /** receiveMessageOnPort(port): { message } or undefined. */

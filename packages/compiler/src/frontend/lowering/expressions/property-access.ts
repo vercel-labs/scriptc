@@ -1,4 +1,5 @@
 import { callableMemberFieldTarget } from "../callable-properties.js";
+import { reboundRequireBindingOf } from "../rebindable-requires.js";
 import { reprototypedGuard } from "../reprototyped-reads.js";
 import { lowerIteratorMemberValue } from "../iterator-prototype.js";
 import { widensReducedRecords } from "../function-returns.js";
@@ -30,7 +31,11 @@ import { builtinNamespaceValue, wellKnownSymbolValue } from "../builtin-namespac
 import { staticallySelected } from "../static-typeof.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
-import { lowerHistogramProperty, lowerPerfHooksProperty } from "../builtins/performance.js";
+import {
+  lowerHistogramProperty,
+  lowerPerfHooksProperty,
+  lowerRecordableHistogramProperty,
+} from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import {
@@ -44,6 +49,7 @@ import {
   argumentCountSlot,
   contextualCallCount,
   handedWithoutCallCount,
+  readsHiddenArguments,
   usedAsValue,
 } from "../argument-counts.js";
 import {
@@ -113,6 +119,7 @@ import {
   BYTES_ELEMENT_SIZE,
   DYN_HANDLE_KINDS,
 } from "../../../ir/ir.js";
+import { isWorkerThreadsClass, workerStdioSequence } from "../builtins/workers.js";
 import { lowerNavigatorMember, navigatorValue } from "../builtins/navigator.js";
 import { lowerX509IssuerCertificate, lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
@@ -291,6 +298,7 @@ import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
 import { lowerChildPropertyRead, lowerHandlePropertyRead } from "../handle-properties.js";
 import { builtinConstructorNames } from "../held-constructors.js";
+import { lowerModuleNamespaceMember } from "../module-namespace-elements.js";
 
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
@@ -495,6 +503,58 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // worker.performance: the Worker's event-loop utilization object. It is a
+  // runtime call rather than a plain handle read so a program that reads it
+  // links the loop metrics and marks the loop's start, which is what the
+  // object reports.
+  if (
+    !expr.questionDotToken &&
+    expr.name.text === "performance" &&
+    isWorkerThreadsClass(lowerer, expr.expression, "Worker")
+  ) {
+    lowerer.usesWorkers = true;
+    return {
+      kind: "libCall",
+      fn: "worker.performance",
+      args: [lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN)],
+      type: DYN,
+      loc,
+    };
+  }
+  // worker.stdout and worker.stderr are Readables Node always answers, with
+  // or without the Worker's stdout/stderr option. The streams unit is entered
+  // before the read, so the stream the runtime creates on first read exists.
+  if (
+    !expr.questionDotToken &&
+    (expr.name.text === "stdout" || expr.name.text === "stderr") &&
+    isWorkerThreadsClass(lowerer, expr.expression, "Worker")
+  ) {
+    const read: IrExpr = {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+    return workerStdioSequence(read, loc);
+  }
+  // `fs.readFileSync` where `fs` is a require binding the file reassigns
+  // (rebindable-requires.ts): the binding's storage holds whatever the
+  // program stored, so the member is read from that checked-dynamic value.
+  if (
+    reboundRequireBindingOf(lowerer, expr.expression) !== null &&
+    // A private name is never a string key: it stays the class's own
+    // brand-checked access.
+    !ts.isPrivateIdentifier(expr.name)
+  ) {
+    return {
+      kind: "dynKeyGet",
+      value: lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      type: DYN,
+      loc,
+    };
+  }
   // A JavaScript source reading a member that resizes, grows or detaches a
   // buffer is the mutableBuffers fact (buffers.ts, t262-dc §2.4). The name
   // decides: the receiver may be a checked-dynamic value.
@@ -656,6 +716,20 @@ export function lowerPropertyAccessExpr(
       lowerBufferPrototypeMember(lowerer, expr) ?? lowerBufferPrototypeObject(lowerer, expr);
     if (member) return member;
   }
+  // socket.type: "udp4" or "udp6", the socket's own family.
+  if (
+    !expr.questionDotToken &&
+    expr.name.text === "type" &&
+    lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "dgramSocket"
+  ) {
+    return {
+      kind: "libCall",
+      fn: "dgram.type",
+      args: [lowerer.lowerExpr(expr.expression)],
+      type: STRING,
+      loc,
+    };
+  }
   // A dgram socket's method read as a value in JavaScript (`emit:
   // socket.emit.bind(socket)`): the socket crosses as its checked-dynamic
   // handle, whose methods are function values that dispatch on their
@@ -691,6 +765,11 @@ export function lowerPropertyAccessExpr(
   // An IntervalHistogram's readings (min, max, mean, stddev, count, exceeds).
   {
     const reading = lowerHistogramProperty(lowerer, expr);
+    if (reading) return reading;
+  }
+  // A createHistogram RecordableHistogram's readings and percentiles Map.
+  {
+    const reading = lowerRecordableHistogramProperty(lowerer, expr);
     if (reading) return reading;
   }
   // An X509Certificate's publicKey KeyObject.
@@ -1070,19 +1149,46 @@ export function lowerPropertyAccessExpr(
   // exact arity at every call site and call/apply/bind indirection is
   // fenced, so the actual count IS the declared count — a compile-time
   // constant. Arrows don't bind `arguments` (the walk skips them,
-  // exactly JS's scoping); variable-arity signatures keep the fence
-  // (the count would need a hidden argc). The JS-source variadic
-  // `arguments` object (dynRest) was claimed at identifier lowering.
+  // exactly JS's scoping). A signature with a parameter that can be
+  // absent receives the hidden array of the arguments actually passed
+  // instead (call-signatures.ts appendArgumentsParameter), and a
+  // JavaScript source reads its array through the checked-dynamic
+  // receiver path below.
   if (
     expr.name.text === "length" &&
     !expr.questionDotToken &&
     ts.isIdentifier(expr.expression) &&
     expr.expression.text === "arguments" &&
-    !lowerer.ctx.argumentsLocal &&
     ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "IArguments" &&
     lowerer.isStdlibSymbol(lowerer.typeOf(expr.expression).getSymbol())
   ) {
-    let fn: ts.Node | undefined = expr.parent;
+    // The hidden array of the arguments this call received: its length is
+    // the count.
+    if (readsHiddenArguments(lowerer) && !isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const recv = lowerer.lowerExpr(expr.expression);
+      if (recv.type.kind !== "dyn") {
+        throw new InternalCompilerError("lowerer bug: hidden arguments array is not dynamic");
+      }
+      return lowerer.maybeNarrow(
+        {
+          kind: "dynCheck",
+          value: {
+            kind: "dynKeyGet",
+            value: recv,
+            key: { kind: "strLit", value: "length", type: STRING, loc },
+            type: DYN,
+            loc,
+          },
+          type: F64,
+          loc,
+        },
+        expr,
+      );
+    }
+    // A JavaScript source with a hidden array keeps the read it always had,
+    // through the checked-dynamic receiver path below: there is no constant
+    // to fold.
+    let fn: ts.Node | undefined = readsHiddenArguments(lowerer) ? undefined : expr.parent;
     while (
       fn !== undefined &&
       !ts.isFunctionDeclaration(fn) &&
@@ -2090,6 +2196,17 @@ export function lowerPropertyAccessExpr(
       },
       expr,
     );
+  }
+  // The lowered receiver is a module namespace object the checker could not
+  // resolve (`(ns as any).name`): Node reads the namespace object like any
+  // other object, so an exported name answers the export and a name the
+  // module does not export answers undefined. Only an import of a missing
+  // name is a load-time error, and shipped JavaScript probes for a package's
+  // dev-only members exactly this way (`Scheduler.log` in react-dom's
+  // startup, which its production build does not export).
+  if (recvLowered.type.kind === "moduleNs") {
+    const read = lowerModuleNamespaceMember(lowerer, expr, recvLowered);
+    if (read !== null) return read;
   }
   // The lowered receiver is a RECORD the checker spelled wider —
   // `s.match(re).groups.key` in a JS file: the checker says
@@ -4166,7 +4283,7 @@ function staticRegexFlagsOf(lowerer: Lowerer, node: ts.Expression): string | nul
     return init !== null ? staticRegexFlagsOf(lowerer, init) : null;
   }
   if (
-    ts.isNewExpression(expr) &&
+    (ts.isNewExpression(expr) || ts.isCallExpression(expr)) &&
     ts.isIdentifier(expr.expression) &&
     lowerer.isStdlibGlobal(expr.expression, "RegExp")
   ) {

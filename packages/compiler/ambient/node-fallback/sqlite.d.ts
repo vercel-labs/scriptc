@@ -159,6 +159,17 @@ declare module "node:sqlite" {
     loadExtension(path: string, entryPoint?: string): void;
     enableLoadExtension(allow: boolean): void;
     enableDefensive(active: boolean): void;
+    setAuthorizer(
+      callback:
+        | ((
+            actionCode: number,
+            p1: string | null,
+            p2: string | null,
+            p3: string | null,
+            p4: string | null,
+          ) => number)
+        | null,
+    ): void;
     location(dbName?: string): string | null;
     exec(sql: string): void;
     function(name: string, func: (...args: SQLOutputValue[]) => SQLInputValue): void;
@@ -176,7 +187,7 @@ declare module "node:sqlite" {
     createSession(options?: CreateSessionOptions): Session;
     applyChangeset(changeset: ScriptcBufferView, options?: ApplyChangesetOptions): boolean;
     serialize(dbName?: string): Uint8Array;
-    deserialize(buffer: ScriptcBufferView, options?: { readBigInts?: boolean | undefined }): void;
+    deserialize(buffer: ScriptcBufferView, options?: { dbName?: string | undefined }): void;
     [Symbol.dispose](): void;
   }
   function backup(

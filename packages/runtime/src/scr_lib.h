@@ -6,6 +6,8 @@
 
 #include "scr_exception.h"
 
+typedef struct ScrBigInt ScrBigInt;
+
 /* ── standard library: process + node:fs (scr_lib.c) ─────────────────
  * Called once at the top of main, right after scr_init: stashes argc/argv
  * (the interned process.argv array is built lazily on first read) and
@@ -260,12 +262,48 @@ double scr_perf_node_loop_start(void);
 double scr_perf_loop_exit(void);
 double scr_perf_loop_count(void);
 double scr_perf_idle_time(void);
-double scr_eld_new(double resolution);
-bool scr_eld_enable(double handle);
-bool scr_eld_disable(double handle);
-void scr_eld_reset(double handle);
-double scr_eld_percentile(double handle, double percentile);
-double scr_eld_stat(double handle, double which);
+/* Histogram handles are refcounted checked-dynamic runtime objects (the
+ * release frees the buckets), shared by monitorEventLoopDelay and
+ * createHistogram, so a Histogram-typed value can be either. */
+ScrDyn *scr_eld_new(double resolution);
+bool scr_eld_enable(ScrDyn *handle);
+bool scr_eld_disable(ScrDyn *handle);
+void scr_eld_reset(ScrDyn *handle);
+double scr_eld_percentile(ScrDyn *handle, double percentile);
+double scr_eld_stat(ScrDyn *handle, double which);
+/* perf_hooks histograms (createHistogram), scr_perf_loop.c. A histogram is
+ * a handle; the options object is borrowed and validated as Node does. The
+ * stat selectors are the same as the ELD ones (0 count, 1 min, 2 max,
+ * 3 mean, 4 stddev, 5 exceeds); stat_big answers them as BigInt (count,
+ * min, max, exceeds). Percentiles are 0 < p <= 100. The percentiles view
+ * is rebuilt by scr_histo_percentiles_count and read by index. */
+ScrDyn *scr_histo_new(ScrDyn *options);
+void scr_histo_record_checked(ScrDyn *handle, double value);
+void scr_histo_record_big(ScrDyn *handle, ScrBigInt *value);
+void scr_histo_record_corrected_checked(ScrDyn *handle, double value, double expected);
+void scr_histo_record_delta(ScrDyn *handle);
+void scr_histo_reset(ScrDyn *handle);
+void scr_histo_add(ScrDyn *handle, ScrDyn *other);
+void scr_histo_subtract(ScrDyn *handle, ScrDyn *other);
+double scr_histo_stat(ScrDyn *handle, double which);
+ScrBigInt *scr_histo_stat_big(ScrDyn *handle, double which);
+double scr_histo_percentile(ScrDyn *handle, double percentile);
+ScrBigInt *scr_histo_percentile_big(ScrDyn *handle, double percentile);
+double scr_histo_count_at(ScrDyn *handle, double value);
+double scr_histo_cdf(ScrDyn *handle, double value);
+double scr_histo_ccdf(ScrDyn *handle, double value);
+/* The distribution comparisons accept either histogram table and reject an
+ * `other` that is not a Histogram with Node's ERR_INVALID_ARG_TYPE. */
+double scr_histo_ks_test(ScrDyn *handle, ScrDyn *other);
+double scr_histo_cohens_d(ScrDyn *handle, ScrDyn *other);
+double scr_histo_cliffs_d(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_u(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_z(ScrDyn *handle, ScrDyn *other);
+double scr_histo_mann_whitney_p(ScrDyn *handle, ScrDyn *other);
+double scr_histo_percentiles_count(ScrDyn *handle);
+double scr_histo_percentiles_key(ScrDyn *handle, double index);
+double scr_histo_percentiles_value(ScrDyn *handle, double index);
+void scr_histo_dispose(ScrDyn *handle);
 /* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
  * family and the clears take the call's dyn argument vector (borrowed)
  * and apply Node's validation and errors. mark and measure answer 1 and
@@ -287,6 +325,18 @@ ScrStr *scr_perf_entry_type(double i);
 double scr_perf_entry_start(double i);
 double scr_perf_entry_duration(double i);
 ScrDyn *scr_perf_entry_detail(double i);
+/* performance.markResourceTiming(timingInfo, ...): the PerformanceResourceTiming
+ * entry for fetch's timing info (MAY THROW), buffered and observed like a
+ * mark and readable through the accessors at index 0. clearResourceTimings
+ * and setResourceTimingBufferSize read their call's dyn argument vector.
+ * An entry's resource fields answer through resource_num/resource_str with
+ * the selector order performance.ts defines (0/"" for marks and
+ * measures). */
+double scr_perf_resource_mark(ScrDyn *args);
+void scr_perf_resource_clear(ScrDyn *args);
+void scr_perf_resource_buffer_size(ScrDyn *args);
+double scr_perf_entry_resource_num(double i, double which);
+ScrStr *scr_perf_entry_resource_str(double i, double which);
 /* The entry objects themselves: entry_keep stores the program's object
  * for the last mark or measure (borrowed, retained), entry_ref answers
  * entry i's stored object (+1), so the getters return the same objects
@@ -461,6 +511,14 @@ void scr_fs_mkdir(ScrStr *path);
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
+/* fs.readdirSync(path, { encoding: "buffer" }): the same names as Buffers. */
+ScrArr *scr_fs_readdir_bytes(ScrStr *path);
+/* fs.readdirSync(path, { encoding }): the same names decoded with that
+ * encoding (utf8 is scr_fs_readdir itself). */
+ScrArr *scr_fs_readdir_encoded(ScrStr *path, ScrStr *encoding);
+/* fs.promises.readdir(path, { recursive: true }) — the async walk's
+ * depth-first order, each entry's path relative to the base. */
+ScrArr *scr_fs_readdir_recursive_async(ScrStr *path);
 ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
@@ -482,6 +540,20 @@ void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_r
 bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay);
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix);
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error path */
+/* fsPromises.mkdtempDisposable(prefix[, options]) and
+ * fs.mkdtempDisposableSync(prefix[, options]): the created directory plus
+ * `path`, `remove()` and the disposal hook the object carries. The promise
+ * form settles a rejection for a failed mkdtemp; the sync form throws. */
+typedef struct ScrMkdtempResult ScrMkdtempResult;
+ScrMkdtempResult *scr_mkdtemp_result_retain(ScrMkdtempResult *r);
+void scr_mkdtemp_result_release(ScrMkdtempResult *r);
+void *scr_mkdtemp_result_retain_v(void *p);
+void scr_mkdtemp_result_release_v(void *p);
+ScrMkdtempResult *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix); /* +1 */
+ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix);           /* +1 */
+ScrStr *scr_mkdtemp_result_path(ScrMkdtempResult *r);             /* +1 */
+ScrPromise *scr_mkdtemp_result_remove(ScrMkdtempResult *r);       /* +1 */
+void scr_mkdtemp_result_remove_sync(ScrMkdtempResult *r);
 void scr_fs_access(ScrStr *path, double mode);
 ScrStr *scr_fs_read_fd(double fd);
 
@@ -714,7 +786,6 @@ double scr_stats_birthtime(ScrStats *s);
 /* BigIntStats members (scr_stats_bigint.c): every number member of Stats
  * as a bigint (+1), the `*Ns` nanosecond members, and the Date fields'
  * time values from the truncated `*Ms` member. */
-typedef struct ScrBigInt ScrBigInt;
 ScrBigInt *scr_stats_big_dev(ScrStats *s);
 ScrBigInt *scr_stats_big_mode(ScrStats *s);
 ScrBigInt *scr_stats_big_nlink(ScrStats *s);
@@ -748,6 +819,10 @@ ScrStats *scr_stats_zero(void);
  * binding's order, lazy Date accessors and the type tests on the
  * prototypes. Borrows s; +1. */
 ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint);
+/* fs.readdir's callback form: one Dirent value (+1) over borrowed name and
+ * parent strings and its UV_DIRENT kind; its prototype answers the is*()
+ * probes. */
+ScrDyn *scr_dirent_dyn(ScrStr *name, ScrStr *parent, double kind);
 /* A checked-dynamic Stats object back into the snapshot the typed members
  * read: +1, or NULL with the checked conversion's TypeError pending. The
  * `_opt` form answers NULL (no exception) for the dynamic undefined a
@@ -792,6 +867,11 @@ ScrPromise *scr_fsp_truncate(ScrStr *path, double length);
 ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_readdir(ScrStr *path);
+/* The same listing behind already-settled promises: the names decoded with
+ * the record's encoding, the names as Buffers, and the recursive walk. */
+ScrPromise *scr_fsp_readdir_encoded(ScrStr *path, ScrStr *encoding);
+ScrPromise *scr_fsp_readdir_bytes(ScrStr *path);
+ScrPromise *scr_fsp_readdir_recursive(ScrStr *path);
 ScrPromise *scr_fsp_rm(ScrStr *path);
 ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force);
 ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries,

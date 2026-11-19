@@ -175,6 +175,26 @@ describe(`node:test snapshot update mode${sanitize ? " (sanitized)" : ""}`, () =
   }, 120_000);
 });
 
+/* A plan's { wait } ends as soon as a subtest a timer registers meets the
+ * count, not when the window elapses. The two lanes report this shape
+ * differently — a compiled subtest runs inline and finishes before the plan
+ * is judged, where Node cancels it — so this checks the wall clock only: a
+ * regression sits out the fixture's five-second window. */
+describe(`node:test plan wait${sanitize ? " (sanitized)" : ""}`, () => {
+  test("a subtest meeting the plan ends the wait", async () => {
+    const fixture = join(fixturesRoot, "timing/plan-wait-subtest.ts");
+    const binary = await build(fixture);
+    const runTimed = async (cmd: string, args: string[]) => {
+      const started = performance.now();
+      const run = await runLane(cmd, args);
+      return { ...run, elapsed: performance.now() - started };
+    };
+    const [node, native] = await Promise.all([runTimed("node", [fixture]), runTimed(binary, [])]);
+    expect(native.elapsed).toBeLessThan(2000);
+    expect(node.elapsed).toBeLessThan(2000);
+  }, 120_000);
+});
+
 /* A timed-out t.waitFor() clears its poll timer, as Node's done() does, so
  * nothing outlives the result. The fixture's poll interval (5000ms)
  * dwarfs its timeout (30ms), so a leaked timer shows up as wall-clock time

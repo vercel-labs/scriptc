@@ -2721,6 +2721,62 @@ void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, b
   scr_assert_fail(text, true);
 }
 
+/* Throws ERR_AMBIGUOUS_ARGUMENT (a TypeError) with `text`; ownership of
+ * `text` moves in. */
+static void scr_assert_ambiguous_throw(ScrStr *text) {
+  static const char code_text[] = "ERR_AMBIGUOUS_ARGUMENT";
+  ScrStr *code = scr_str_new(code_text, sizeof code_text - 1);
+  scr_throw_node_coded(SCR_ERR_TYPE, code, text);
+  scr_str_release(code);
+  scr_str_release(text);
+}
+
+/* assert.throws/rejects with a STRING in the expectation position: the
+ * string is the assertion's message (lib/assert.js expectsError), and Node
+ * refuses the call as ambiguous — ERR_AMBIGUOUS_ARGUMENT, a TypeError —
+ * when the value the callback threw would support the other reading: an
+ * object whose `message` is that string, or the string itself. The message
+ * is an ordinary property read, as lib/assert.js's `actual.message` is: an
+ * inherited one counts and a getter runs, its exception propagating as
+ * Node's does. lib/assert.js reads it twice — in the comparison and again in
+ * the diagnostic's quoted text — so a matching getter runs a second time and
+ * a stateful one is quoted by its second answer. The check runs only once
+ * the callback threw; a callback that returned reaches the missing-exception
+ * throw instead. Borrows both. */
+void scr_assert_throws_ambiguous(ScrDyn *actual, ScrStr *message) {
+  const bool object = actual->kind == SCR_DYN_OBJ || actual->kind == SCR_DYN_ARR ||
+                      actual->kind == SCR_DYN_BYTES || actual->kind == SCR_DYN_HANDLE ||
+                      actual->kind == SCR_DYN_PROXY;
+  if (!object) {
+    if (actual->kind != SCR_DYN_STR || !scr_str_eq(actual->v.str, message)) return;
+    ScrAssertBuf b = {0};
+    ab_cstr(&b, "The \"error/message\" argument is ambiguous. The error \"");
+    ab_str(&b, actual->v.str);
+    ab_cstr(&b, "\" is identical to the message.");
+    scr_assert_ambiguous_throw(ab_take(&b));
+    return;
+  }
+  ScrDyn *member = scr_dyn_obj_read(actual, "message", 7);
+  if (member == NULL) return; /* the getter threw: its exception is pending */
+  const bool matched = member->kind == SCR_DYN_STR && scr_str_eq(member->v.str, message);
+  scr_dyn_release(member);
+  if (!matched) return;
+  /* The quoted text is a second read, as the diagnostic's interpolation is
+   * in lib/assert.js: a getter's exception propagates and a stateful getter
+   * answers with its second value. */
+  ScrDyn *quoted = scr_dyn_obj_read(actual, "message", 7);
+  if (quoted == NULL) return; /* pending */
+  ScrStr *text = scr_dyn_string_coerce_js(quoted);
+  scr_dyn_release(quoted);
+  if (text == NULL) return; /* pending: a Symbol answers no string */
+  ScrAssertBuf b = {0};
+  ab_cstr(&b, "The \"error/message\" argument is ambiguous. The error message \"");
+  ab_str(&b, text);
+  ab_cstr(&b, "\" is identical to the message.");
+  scr_str_release(text);
+  scr_assert_ambiguous_throw(ab_take(&b));
+}
+
 /* assert.throws(fn) that did NOT throw / assert.rejects whose promise
  * fulfilled: "Missing expected exception|rejection" with Node's details —
  * ` (${expected.name})` when the expected class or shape carries a name,

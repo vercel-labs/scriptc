@@ -41,10 +41,16 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_ctx_todo", a);
     case "test.ctxDiagnostic":
       return finishRuntimeCall(host, e, "scr_test_ctx_diagnostic", a);
+    case "test.ctxLog":
+      return finishRuntimeCall(host, e, "scr_test_ctx_log", a);
     case "test.ctxSignal":
       return finishRuntimeCall(host, e, "scr_test_ctx_signal", a);
     case "test.ctxError":
       return finishRuntimeCall(host, e, "scr_test_ctx_error", a);
+    case "test.accessorDescriptor":
+      return finishRuntimeCall(host, e, "scr_test_accessor_descriptor", a);
+    case "test.accessorRequire":
+      return finishRuntimeCall(host, e, "scr_test_accessor_require", a);
     case "test.ctxName":
       return finishRuntimeCall(host, e, "scr_test_ctx_name", a);
     case "test.ctxFullName":
@@ -75,6 +81,8 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
     }
     case "test.ctxCount":
       return finishRuntimeCall(host, e, "scr_test_ctx_count", a);
+    case "test.mockTimes":
+      return finishRuntimeCall(host, e, "scr_test_mock_times_checked", a);
     case "test.mockTrack":
       host.toHeap(args[0]!);
       return finishRuntimeCall(host, e, "scr_test_mock_track", a);
@@ -95,6 +103,13 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_ctx_snapshot", a);
     case "test.fileSnapshot":
       return finishRuntimeCall(host, e, "scr_test_file_snapshot", a);
+    case "test.snapshotSetDefaultSerializers":
+      return finishRuntimeCall(host, e, "scr_test_snapshot_set_default_serializers", a);
+    case "test.snapshotSetResolvePath":
+      host.toHeap(args[0]!);
+      return finishRuntimeCall(host, e, "scr_test_snapshot_set_resolve_path", a);
+    case "test.snapshotPath":
+      return finishRuntimeCall(host, e, "scr_test_snapshot_path", a);
     case "test.snapshotSerialize":
       return finishRuntimeCall(host, e, "scr_test_snapshot_serialize", a);
     case "test.mockTimersEnable":

@@ -25,6 +25,14 @@ export function executableLinkFeatures(
   debugSources = false,
 ): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
+  // A Node island can hand its own AbortSignal to any native receiver of one,
+  // and a native signal then stands for it (scr_node_island_abort.c); a
+  // FileHandle web stream reaches the stream machinery's signals too.
+  const abortSignal =
+    features.abortSignal ||
+    features.httpSignal ||
+    features.fsWebStream ||
+    (features.nodeIsland && features.eventTarget);
   // A feature that calls into another feature's units links those too
   // (LINK_FEATURE_REQUIREMENTS), whichever fact selected it.
   return withRequiredLinkFeatures({
@@ -38,7 +46,7 @@ export function executableLinkFeatures(
     bigintBytes: features.bigintBytes,
     fileHandle: features.fileHandle,
     fetch: features.fetch,
-    ...(features.eventTarget ? { eventTarget: true } : {}),
+    ...(features.eventTarget || features.fsWebStream ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.promiseRejectDyn ? { promiseRejectDyn: true } : {}),
@@ -66,7 +74,7 @@ export function executableLinkFeatures(
     ...(features.zstd ? { zstd: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
-    dynInvoke: features.dynInvoke,
+    dynInvoke: features.dynInvoke || features.fsWebStream,
     dc: features.dc,
     dynAsync: features.dynAsync,
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
@@ -98,14 +106,10 @@ export function executableLinkFeatures(
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.mime ? { mime: true } : {}),
     ...(features.sqlite ? { sqlite: true } : {}),
-    ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.webStreams || features.fsWebStream ? { webStreams: true } : {}),
+    ...(features.fsWebStream ? { fsWebStream: true } : {}),
     ...(features.webBodies ? { webBodies: true } : {}),
-    // A Node island can hand its own AbortSignal to any native receiver of
-    // one, and a native signal then stands for it (scr_node_island_abort.c):
-    // a program with islands and a receiver links the signal unit too.
-    ...(features.abortSignal || (features.nodeIsland && features.eventTarget)
-      ? { abortSignal: true }
-      : {}),
+    ...(abortSignal ? { abortSignal: true } : {}),
     ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.utilMarkPromiseAsHandled ? { utilMarkPromiseAsHandled: true } : {}),
     ...(features.utilTraceSigInt ? { utilTraceSigInt: true } : {}),
@@ -129,7 +133,10 @@ export function executableLinkFeatures(
     // util.promisify consults Symbol.for('nodejs.util.promisify.custom')
     // (utilPromisify): both build their symbol in scr_symbol.c.
     symbol:
-      features.symbol || features.inspectFunctionValue === true || features.utilPromisify === true,
+      features.symbol ||
+      features.fsWebStream ||
+      features.inspectFunctionValue === true ||
+      features.utilPromisify === true,
     bigint: features.bigint,
     ...(features.bigstats ? { bigstats: true } : {}),
     searchParams: features.searchParams,
@@ -147,8 +154,9 @@ export function executableLinkFeatures(
     dnsResolve: features.dnsResolve,
     dgramDyn: features.dgramDyn,
     textCodecDyn: features.textCodecDyn,
-    watch: features.fsWatch,
+    watch: features.fsWatch || features.fsWatchEvents,
     watchFile: features.fsWatchFile,
+    watchEvents: features.fsWatchEvents,
     foreignFfi: hasForeignFfiCallback(mod.ffiImports ?? []),
     nodeTest: features.nodeTest,
     tls: features.tls,
@@ -156,6 +164,8 @@ export function executableLinkFeatures(
     cipher: features.cipher,
     ecdh: features.ecdh,
     dh: features.dh,
+    argon2: features.argon2 || features.webcrypto,
+    mlkem: features.mlkem,
     pki: features.pki,
     ed25519: features.ed25519,
     x509: features.x509,

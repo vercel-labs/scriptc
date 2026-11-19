@@ -56,8 +56,6 @@ const KNOWN: Record<string, Known> = {
   chalk4: { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
-  "commander-calc": { run: "SC1090", argvs: [["--help"]] },
-  "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },
   "dotfolder": { island: true },
   "dual-package-kinds": { island: true },
@@ -92,7 +90,9 @@ const KNOWN: Record<string, Known> = {
   "node24-commonjs-metadata": { island: true },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },
-  "node24-diagnostics-tracing": { run: "SC1090" },
+  // Symbol channel names and the Channel value read now run; the program
+  // stops at the constructor of TracingChannel's collection members.
+  "node24-diagnostics-tracing": { run: "SC2020" },
   "node24-esm-metadata": { island: true },
   "node24-event-emitter": { run: "SC2020" },
   "node24-file-url-conversion": { island: true },

@@ -97,6 +97,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
+  // crypto.argon2 and crypto.argon2Sync.
+  ["scr_argon2.c", "argon2"],
   // The worker unit's SHARE_ENV symbol reaches the symbol unit
   // (scr_worker_events.c), which assembles symbol equality messages here.
   ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
@@ -197,6 +199,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
+  ["scr_fs_web_stream.c", "fsWebStream"],
   // The class installs (scr_dyn_handle_class_install) that web streams and
   // the stub resolver's Resolver classes need.
   ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve")],
@@ -244,12 +247,18 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     ),
   ],
   ["scr_stream.c", "stream"],
+  // stream.duplexPair builds two Duplexes wired to each other.
+  ["scr_stream_pair.c", "stream"],
+  // readable.wrap reads a native source's chunks into the receiver.
+  ["scr_stream_wrap.c", "stream"],
+  ["scr_stream_wrap_dyn.c", "streamDyn"],
   // Node's pipe lifecycle, installed into the stream unit for programs
   // that pipe, unpipe or build a pipeline.
   ["scr_stream_pipe_events.c", all("stream", "streamPipeEvents")],
   // The zlib stream classes reference both the zlib engine and the stream unit.
   ["scr_zlib_stream.c", all("zlib", "stream")],
   // The Readable operators await through the dyn-async unit.
+  ["scr_stream_iterator.c", all("stream", "dynAsync", "symbol")],
   ["scr_stream_ops.c", all("stream", "dynAsync")],
   // Checked-dynamic stream slots call JavaScript members through the dyn-invoke unit.
   ["scr_stream_dyn.c", "streamDyn"],
@@ -312,8 +321,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_dgram_dyn.c", all("dgram", "dgramDyn")],
   // TextEncoder and TextDecoder records boxed as untyped values.
   ["scr_text_codec_dyn.c", "textCodecDyn"],
-  ["scr_watch.c", "watch"],
+  ["scr_watch.c", any("watch", "watchEvents")],
   ["scr_watch_file.c", "watchFile"],
+  ["scr_watch_async.c", "watchEvents"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
@@ -354,6 +364,15 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // its file symbol in the executable, so no other program gets it.
   ["scr_node_island_child.c", "islandChild"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
+  // Readable.toWeb pulls a Node readable into a web stream.
+  ["scr_stream_to_web.c", all("stream", "webStreams", "dynAsync")],
+  // Writable.fromWeb wraps a web WritableStream's writer.
+  ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
+  // Writable.toWeb wraps a native writable in a web WritableStream.
+  ["scr_stream_writable_to_web.c", all("stream", "webStreams", "dynAsync")],
+  // Duplex.toWeb builds the readable and writable adapters over a duplex.
+  ["scr_stream_to_web_pair.c", all("stream", "webStreams", "dynAsync")],
+  ["scr_stream_to_web_pair_dyn.c", all("streamDyn", "webStreams", "dynAsync")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws
@@ -821,6 +840,9 @@ export function createRuntimePackMatrix({
     { id: "zstd", predicate: all("zlib", "zstd") },
     { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
+    // ML-KEM (mlkem-native): the post-quantum KEM surfaces of node:crypto
+    // and WebCrypto.
+    { id: "mlkem", predicate: "mlkem" },
     { id: "sqlite", predicate: "sqlite" },
   ];
   const matrix = withLibraryRuntimeFlavors(

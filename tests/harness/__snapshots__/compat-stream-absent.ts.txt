@@ -1,40 +1,6 @@
-compat-stream-absent.ts:9:30 - error SC0001: Property 'duplexPair' does not exist on type 'typeof import("stream")'.
+compat-stream-absent.ts:9:35 - error SC0001: Object literal may only specify known properties, and 'readable' does not exist in type 'ReadableStream<unknown>'.
 
-   8 | // A connected pair of Duplex streams.
-   9 | const [left, right] = stream.duplexPair();
-     |                              ^~~~~~~~~~
-  10 | left.write("x");
-
-  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'duplexPair' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
-
-compat-stream-absent.ts:16:32 - error SC0001: Property 'wrap' does not exist on type 'Readable'.
-
-  15 | const old = new PassThrough();
-  16 | const wrapped = new Readable().wrap(old);
-     |                                ^~~~
-  17 | wrapped.resume();
-
-compat-stream-absent.ts:20:31 - error SC0001: Property 'fromWeb' does not exist on type 'typeof Writable'.
-
-  19 | // The web-stream adapters coming in and the Duplex pair going out.
-  20 | const fromWritable = Writable.fromWeb(new WritableStream());
-     |                               ^~~~~~~
-  21 | const transform = new TransformStream();
-
-  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'fromWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
-
-compat-stream-absent.ts:22:35 - error SC0001: Object literal may only specify known properties, and 'readable' does not exist in type 'ReadableStream<unknown>'.
-
-  21 | const transform = new TransformStream();
-  22 | const fromPair = Duplex.fromWeb({ readable: transform.readable, writable: transform.writable });
+   8 | const transform = new TransformStream();
+   9 | const fromPair = Duplex.fromWeb({ readable: transform.readable, writable: transform.writable });
      |                                   ^~~~~~~~
-  23 | const pair = Duplex.toWeb(new PassThrough());
-
-compat-stream-absent.ts:23:21 - error SC0001: Property 'toWeb' does not exist on type 'typeof Duplex'.
-
-  22 | const fromPair = Duplex.fromWeb({ readable: transform.readable, writable: transform.writable });
-  23 | const pair = Duplex.toWeb(new PassThrough());
-     |                     ^~~~~
-  24 | console.log(typeof fromWritable, typeof fromPair, typeof pair);
-
-  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+  10 | console.log(typeof fromPair);

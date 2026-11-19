@@ -80,6 +80,37 @@ function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
   return out;
 }
 
+/** An object property's entry: marks the value as an object property's
+ * before it renders (compact: true indents it one level further) and
+ * composes Node's formatProperty entry from the rendered key and value. */
+function propertyEntry(key: IrExpr, value: IrExpr, loc: SrcLoc): IrExpr {
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "insp.propChild",
+          args: [boolLit(true, loc)],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: {
+      kind: "libCall",
+      fn: "insp.property",
+      args: [key, value, boolLit(true, loc)],
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+}
+
 /* ── property-name rendering (compile-time keys) ─────────────────────── */
 
 /** strEscape's quote ladder over a COMPILE-TIME string (record field
@@ -892,8 +923,11 @@ function errorInspectHelper(
         entry(
           concatAll(
             [
-              strLit(`${inspectKey(f.name)}: `, loc),
-              inspectExpr(lowerer, f.type, read, rPlus1(), d(), loc),
+              propertyEntry(
+                strLit(inspectKey(f.name), loc),
+                inspectExpr(lowerer, f.type, read, rPlus1(), d(), loc),
+                loc,
+              ),
             ],
             loc,
           ),
@@ -2596,7 +2630,21 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             loc,
           },
           then: strLit("PerformanceMark", loc),
-          else_: strLit("PerformanceMeasure", loc),
+          else_: {
+            kind: "ternary",
+            cond: {
+              kind: "strEq",
+              negated: false,
+              left: get("entryType", STRING),
+              right: strLit("measure", loc),
+              type: BOOL,
+              loc,
+            },
+            then: strLit("PerformanceMeasure", loc),
+            else_: strLit("PerformanceResourceTiming", loc),
+            type: STRING,
+            loc,
+          },
           type: STRING,
           loc,
         };
@@ -3141,7 +3189,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             continue;
           }
           const show = entry(
-            concatAll([strLit(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
+            propertyEntry(strLit(inspectKey(fname), loc), child(ft, get(fname, ft)), loc),
             boolLit(false, loc),
           );
           const present = lowerer.recordFieldPresent(v(), t.shapeId, fname, loc);
@@ -3485,7 +3533,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         const key = symNames.has(f.name) ? symbolFieldDisplayName(f.name) : inspectKey(f.name);
         body.push(
           entry(
-            concatAll([strLit(`${key}: `, loc), child(f.type, get(f.name, f.type))], loc),
+            propertyEntry(strLit(key, loc), child(f.type, get(f.name, f.type)), loc),
             boolLit(false, loc),
           ),
         );
@@ -3964,11 +4012,16 @@ function parseInspectOptions(
         );
       }
     } else if (key === "compact") {
-      // Node tries the single-line form and groups arrays only for a
-      // compact of at least 1; false and smaller numbers break every
-      // composite onto its own lines. compact: true is the older layout.
+      // Node tries the single-line form and groups arrays for a compact of
+      // at least 1; false and smaller numbers break every composite onto
+      // its own lines. compact: true is the older single-line/brace layout,
+      // -2 in the runtime.
+      if (value.kind === ts.SyntaxKind.TrueKeyword) {
+        options.compact = -2;
+        continue;
+      }
       const n = value.kind === ts.SyntaxKind.FalseKeyword ? 0 : numeric();
-      if (n === null && atRunTime && value.kind !== ts.SyntaxKind.TrueKeyword) {
+      if (n === null && atRunTime) {
         options.runtime = true;
         continue;
       }
@@ -3976,7 +4029,7 @@ function parseInspectOptions(
         lowerer.noLowering(
           `${surface} with this compact option`,
           value,
-          "compact must be false or a numeric literal (compact: true has no lowering)",
+          "compact must be true, false or a numeric literal",
         );
       }
       // false is -1: the same layout as 0, and custom inspect functions

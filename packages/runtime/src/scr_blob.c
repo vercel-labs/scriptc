@@ -11,12 +11,15 @@
 #include "scr_runtime.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 typedef struct ScrBlobStore {
-  size_t rc;
+  /* Atomic: a message carries a Blob to another thread, which shares these
+   * bytes and counts its reference from there. */
+  _Atomic size_t rc;
   size_t len;
   uint8_t data[];
 } ScrBlobStore;
@@ -33,7 +36,12 @@ typedef struct ScrBlob {
 } ScrBlob;
 
 static void scr_blob_store_release(ScrBlobStore *s) {
-  if (s && --s->rc == 0) free(s);
+  if (s && atomic_fetch_sub_explicit(&s->rc, 1, memory_order_acq_rel) == 1) free(s);
+}
+
+static ScrBlobStore *scr_blob_store_retain(ScrBlobStore *s) {
+  atomic_fetch_add_explicit(&s->rc, 1, memory_order_relaxed);
+  return s;
 }
 
 static void *scr_blob_retain_v(void *h) {
@@ -651,6 +659,82 @@ static ScrDyn *scr_blob_clone(void *ptr) {
   return scr_blob_box(out);
 }
 
+/* ── Blob and File in a message ───────────────────────────────────────
+ * A message shares a Blob with another thread: the payload is self-contained
+ * (the immutable store by reference, the rest copied) so the receiving thread
+ * builds its own Blob over the same bytes, as Node's serializer does. */
+typedef struct {
+  ScrBlobStore *store;
+  size_t off, len;
+  size_t nparts;
+  size_t *parts;
+  char *type;
+  size_t type_len, name_len;
+  char *name;
+  double last_modified;
+} ScrBlobPayload;
+
+static char *scr_blob_payload_text(const ScrStr *text, size_t *length) {
+  *length = text ? text->len : 0;
+  if (!text) return NULL;
+  char *copy = malloc(text->len ? text->len : 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  memcpy(copy, text->data, text->len);
+  return copy;
+}
+
+static void *scr_blob_share(void *h) {
+  ScrBlob *b = h;
+  ScrBlobPayload *payload = calloc(1, sizeof *payload);
+  if (!payload) scr_trap("scriptc: out of memory\n");
+  payload->store = scr_blob_store_retain(b->store);
+  payload->off = b->off;
+  payload->len = b->len;
+  payload->last_modified = b->last_modified;
+  payload->nparts = b->nparts;
+  if (b->nparts && b->parts) {
+    payload->parts = malloc(b->nparts * sizeof *payload->parts);
+    if (!payload->parts) scr_trap("scriptc: out of memory\n");
+    memcpy(payload->parts, b->parts, b->nparts * sizeof *payload->parts);
+  }
+  payload->type = scr_blob_payload_text(b->type, &payload->type_len);
+  payload->name = scr_blob_payload_text(b->name, &payload->name_len);
+  return payload;
+}
+
+static ScrDyn *scr_blob_adopt(void *payload) {
+  ScrBlobPayload *p = payload;
+  scr_blob_install();
+  ScrBlob *b = scr_blob_alloc();
+  b->store = p->store; /* moves the share's reference */
+  p->store = NULL;
+  b->off = p->off;
+  b->len = p->len;
+  b->last_modified = p->last_modified;
+  b->nparts = p->nparts;
+  b->parts = p->parts;
+  p->parts = NULL;
+  if (p->type) b->type = scr_str_new(p->type, p->type_len);
+  if (p->name) b->name = scr_str_new(p->name, p->name_len);
+  ScrDyn *out = scr_dyn_new_handle(b, p->name ? SCR_DYNH_FILE : SCR_DYNH_BLOB);
+  scr_blob_release_v(b);
+  return out;
+}
+
+static void scr_blob_transfer_drop(void *payload) {
+  ScrBlobPayload *p = payload;
+  if (!p) return;
+  scr_blob_store_release(p->store);
+  free(p->parts);
+  free(p->type);
+  free(p->name);
+  free(p);
+}
+
+static const ScrDynHandleTransfer scr_blob_transfer = {
+    scr_blob_share, scr_blob_adopt, scr_blob_transfer_drop,
+};
+
 static const ScrDynHandleOps scr_blob_ops = {
     .cls = "Blob",
     .retain = scr_blob_retain_v,
@@ -660,6 +744,7 @@ static const ScrDynHandleOps scr_blob_ops = {
     .set = scr_blob_set,
     .inspect_view = scr_blob_inspect_view,
     .clone = scr_blob_clone,
+    .transfer = &scr_blob_transfer,
     .json_empty_object = true,
     .inspect_bracketed_past_depth = true,
 };
@@ -673,6 +758,7 @@ static const ScrDynHandleOps scr_file_ops = {
     .set = scr_blob_set,
     .inspect_view = scr_blob_inspect_view,
     .clone = scr_blob_clone,
+    .transfer = &scr_blob_transfer,
     .json_empty_object = true,
     .inspect_bracketed_past_depth = true,
 };
@@ -693,6 +779,20 @@ ScrDyn *scr_blob_new(ScrDyn *args) {
   ScrDyn *const *items = argc ? args->v.arr.items : NULL;
   ScrBlob *b = scr_blob_construct(argc > 0 ? items[0] : NULL, argc > 1 ? items[1] : NULL);
   return b ? scr_blob_box(b) : NULL;
+}
+
+/* The stream/consumers blob() result: `new Blob([bytes])`, whose type is
+ * "" and whose size counts the bytes. */
+ScrDyn *scr_sc_blob_value(ScrBytes *all) {
+  /* The constructor's first argument is the list of parts, so the bytes
+   * ride in a one-element array inside the args. */
+  ScrDyn *list = scr_dyn_new_arr();
+  scr_dyn_arr_push(list, scr_dyn_new_bytes(all));
+  ScrDyn *args = scr_dyn_new_arr();
+  scr_dyn_arr_push(args, list);
+  ScrDyn *blob = scr_blob_new(args);
+  scr_dyn_release(args);
+  return blob;
 }
 
 ScrDyn *scr_file_new(ScrDyn *args) {

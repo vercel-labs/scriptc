@@ -212,6 +212,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "bigintStats":
     case "fileHandle":
     case "dir":
+    case "mkdtempResult":
     case "spawnRes":
     case "child":
     case "netServer":
@@ -227,6 +228,8 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "childWriter":
     case "procStream":
     case "fsWatcher":
+    case "watchEvents":
+    case "statWatcher":
     case "secureCtx":
     case "cryptoHash":
     case "cryptoHmac":

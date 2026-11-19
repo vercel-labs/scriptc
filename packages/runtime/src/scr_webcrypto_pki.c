@@ -29,11 +29,12 @@ typedef enum {
   SW_ECDH,
   SW_OAEP,
   SW_X25519,
+  SW_X448,
 } SwKind;
 
 static const char *const sw_names[] = {"ECDSA",          "RSASSA-PKCS1-v1_5", "RSA-PSS",
                                        "Ed25519",        "ECDH",              "RSA-OAEP",
-                                       "X25519"};
+                                       "X25519",         "X448"};
 
 static const char *const sw_curves[] = {"P-256", "P-384", "P-521"};
 
@@ -80,7 +81,7 @@ static ScrDyn *sw_key_algorithm(SwKey *k) {
   if (!k->algorithm) {
     ScrDyn *algorithm = scr_dyn_new_obj();
     scr_dyn_obj_set(algorithm, "name", 4, scr_wc_cstr(sw_names[k->kind]));
-    if (k->kind == SW_ED25519 || k->kind == SW_X25519) {
+    if (k->kind == SW_ED25519 || k->kind == SW_X25519 || k->kind == SW_X448) {
       /* { name } only */
     } else if (k->kind == SW_ECDSA || k->kind == SW_ECDH) {
       scr_dyn_obj_set(algorithm, "namedCurve", 10, scr_wc_cstr(scr_pki_key_curve(k->key)));
@@ -197,6 +198,7 @@ static SwKind sw_kind_of(const char *name) {
   if (strcmp(name, "ECDH") == 0) return SW_ECDH;
   if (strcmp(name, "RSA-OAEP") == 0) return SW_OAEP;
   if (strcmp(name, "X25519") == 0) return SW_X25519;
+  if (strcmp(name, "X448") == 0) return SW_X448;
   return strcmp(name, "RSA-PSS") == 0 ? SW_PSS : SW_RSASSA;
 }
 
@@ -213,11 +215,12 @@ static bool sw_is_sign_kind(SwKind kind) {
 }
 
 /* The key-agreement algorithms (ECDH and X25519). */
-static bool sw_is_derive_kind(SwKind kind) { return kind == SW_ECDH || kind == SW_X25519; }
+static bool sw_is_derive_kind(SwKind kind) { return kind == SW_ECDH || kind == SW_X25519 || kind == SW_X448; }
 
 /* The algorithms with a raw public-key encoding. */
 static bool sw_export_raw_kind(SwKind kind) {
-  return kind == SW_ECDSA || kind == SW_ED25519 || kind == SW_ECDH || kind == SW_X25519;
+  return kind == SW_ECDSA || kind == SW_ED25519 || kind == SW_ECDH || kind == SW_X25519 ||
+         kind == SW_X448;
 }
 
 /* The canonical algorithm name of an AlgorithmIdentifier the dispatcher
@@ -384,7 +387,7 @@ static ScrPromise *sw_generate_key(const ScrDyn *args) {
   const char *hash = NULL;
   double bits = 0;
   ScrBytes *exponent = NULL;
-  if (kind == SW_ED25519 || kind == SW_X25519) {
+  if (kind == SW_ED25519 || kind == SW_X25519 || kind == SW_X448) {
     /* no parameters */
   } else if (sw_is_ec_kind(kind)) {
     if (!scr_wc_is_object(plain)) {
@@ -430,6 +433,9 @@ static ScrPromise *sw_generate_key(const ScrDyn *args) {
     if (!key) goto done;
   } else if (kind == SW_X25519) {
     key = scr_pki_generate_x25519();
+    if (!key) goto done;
+  } else if (kind == SW_X448) {
+    key = scr_pki_generate_x448();
     if (!key) goto done;
   } else if (sw_is_ec_kind(kind)) {
     key = scr_pki_generate_ec(curve);
@@ -600,7 +606,7 @@ static ScrDyn *sw_import(const ScrDyn *args) {
   if (!plain) goto done;
   const char *curve = NULL;
   const char *hash = NULL;
-  if (kind == SW_ED25519 || kind == SW_X25519) {
+  if (kind == SW_ED25519 || kind == SW_X25519 || kind == SW_X448) {
     /* no parameters */
   } else if (sw_is_ec_kind(kind)) {
     if (!scr_wc_is_object(plain)) {
@@ -623,7 +629,8 @@ static ScrDyn *sw_import(const ScrDyn *args) {
   } else if (strcmp(format, "pkcs8") == 0) {
     private_key = true;
   } else if (strcmp(format, "spki") == 0 ||
-             ((sw_is_ec_kind(kind) || kind == SW_ED25519 || kind == SW_X25519) &&
+             ((sw_is_ec_kind(kind) || kind == SW_ED25519 || kind == SW_X25519 ||
+               kind == SW_X448) &&
               strcmp(format, "raw") == 0)) {
     private_key = false;
   } else {
@@ -643,8 +650,8 @@ static ScrDyn *sw_import(const ScrDyn *args) {
       goto done;
     }
     if (!sw_jwk_is(kty, sw_is_ec_kind(kind) ? "EC"
-                          : (kind == SW_ED25519 || kind == SW_X25519) ? "OKP"
-                                                                     : "RSA")) {
+                          : (kind == SW_ED25519 || kind == SW_X25519 || kind == SW_X448) ? "OKP"
+                                                                                          : "RSA")) {
       scr_throw_domex("DataError", "Invalid JWK \"kty\" Parameter");
       goto done;
     }
@@ -652,8 +659,9 @@ static ScrDyn *sw_import(const ScrDyn *args) {
       scr_throw_domex("DataError", "JWK \"crv\" does not match the requested algorithm");
       goto done;
     }
-    if ((kind == SW_ED25519 || kind == SW_X25519) &&
-        !sw_jwk_is(sw_jwk_member(jwk, "crv"), kind == SW_ED25519 ? "Ed25519" : "X25519")) {
+    if ((kind == SW_ED25519 || kind == SW_X25519 || kind == SW_X448) &&
+        !sw_jwk_is(sw_jwk_member(jwk, "crv"),
+                   kind == SW_ED25519 ? "Ed25519" : kind == SW_X448 ? "X448" : "X25519")) {
       scr_throw_domex("DataError", "JWK \"crv\" Parameter and algorithm name mismatch");
       goto done;
     }
@@ -688,6 +696,7 @@ static ScrDyn *sw_import(const ScrDyn *args) {
     if (strcmp(format, "raw") == 0)
       key = kind == SW_ED25519  ? scr_pki_key_from_ed25519_raw(view->data, len)
             : kind == SW_X25519 ? scr_pki_key_from_x25519_raw(view->data, len)
+            : kind == SW_X448   ? scr_pki_key_from_x448_raw(view->data, len)
                                 : scr_pki_key_from_point(curve, view->data, len);
     else key = scr_pki_key_parse_der(view->data, len, private_key);
   }
@@ -697,19 +706,23 @@ static ScrDyn *sw_import(const ScrDyn *args) {
   }
   bool key_matches = kind == SW_ED25519  ? scr_pki_key_is_ed25519(key)
                      : kind == SW_X25519 ? scr_pki_key_is_x25519(key)
+                     : kind == SW_X448   ? scr_pki_key_is_x448(key)
                      : sw_is_ec_kind(kind)
                          ? !scr_pki_key_is_rsa(key) && !scr_pki_key_is_ed25519(key) &&
-                               !scr_pki_key_is_x25519(key)
+                               !scr_pki_key_is_x25519(key) && !scr_pki_key_is_x448(key)
                          : scr_pki_key_is_rsa(key) && !scr_pki_key_is_rsa_pss(key);
   if (!key_matches) {
     scr_pki_key_release(key);
     scr_throw_domex("DataError", "Invalid key type");
     goto done;
   }
-  if (sw_is_ec_kind(kind) && strcmp(scr_pki_key_curve(key), curve) != 0) {
-    scr_pki_key_release(key);
-    scr_throw_domex("DataError", "Named curve mismatch");
-    goto done;
+  if (sw_is_ec_kind(kind)) {
+    const char *actual = scr_pki_key_curve(key);
+    if (actual == NULL || strcmp(actual, curve) != 0) {
+      scr_pki_key_release(key);
+      scr_throw_domex("DataError", "Named curve mismatch");
+      goto done;
+    }
   }
   if (private_key && usages == 0) {
     scr_pki_key_release(key);
@@ -766,6 +779,7 @@ static ScrDyn *sw_export(const ScrDyn *args) {
   } else if (strcmp(format, "raw") == 0 && sw_export_raw_kind(k->kind) && !private_key) {
     ScrBytes *point = k->kind == SW_ED25519  ? scr_pki_export_ed25519_raw(k->key)
                       : k->kind == SW_X25519 ? scr_pki_export_x25519_raw(k->key)
+                      : k->kind == SW_X448   ? scr_pki_export_x448_raw(k->key)
                                              : scr_pki_export_point(k->key);
     if (!point) {
       scr_throw_domex("OperationError", "Failed to export key");
@@ -788,7 +802,7 @@ static ScrDyn *sw_export(const ScrDyn *args) {
     static const char *const rsa_names[] = {"kty", "n", "e", "d", "p", "q", "dp", "dq", "qi"};
     static const char *const ec_names[] = {"kty", "x", "y", "crv", "d"};
     static const char *const okp_names[] = {"kty", "crv", "x", "d"};
-    bool okp = k->kind == SW_ED25519 || k->kind == SW_X25519;
+    bool okp = k->kind == SW_ED25519 || k->kind == SW_X25519 || k->kind == SW_X448;
     const char *const *names =
         sw_is_rsa_kind(k->kind) ? rsa_names : okp ? okp_names : ec_names;
     size_t count = sw_is_rsa_kind(k->kind) ? SCR_WC_COUNT(rsa_names)
@@ -909,6 +923,7 @@ static ScrPromise *sw_decrypt(const ScrDyn *args) { return sw_oaep(args, true); 
  * (an omitted length takes all of it). */
 static unsigned sw_agreement_bits(const SwKey *k) {
   if (k->kind == SW_X25519) return 256;
+  if (k->kind == SW_X448) return 448;
   const char *curve = scr_pki_key_curve(k->key);
   if (curve && strcmp(curve, "P-384") == 0) return 384;
   if (curve && strcmp(curve, "P-521") == 0) return 528;
@@ -1122,6 +1137,105 @@ static ScrPromise *sw_sign(const ScrDyn *args) { return sw_sign_verify(args, fal
 
 static ScrPromise *sw_verify(const ScrDyn *args) { return sw_sign_verify(args, true); }
 
+/* KeyObject.toCryptoKey for an asymmetric KeyObject: the algorithm
+ * normalizes like importKey's, then the usages convert, the key type and
+ * curve must match, and the usages the key half accepts are checked. */
+static ScrDyn *sw_to_crypto_key(const ScrDyn *key_value, const ScrDyn *const *args, size_t argc) {
+  ScrDyn *algorithm = argc > 0 ? scr_dyn_retain(args[0]) : scr_dyn_undefined();
+  ScrDyn *extractable_value = argc > 1 ? scr_dyn_retain(args[1]) : scr_dyn_undefined();
+  ScrDyn *usages_value = argc > 2 ? scr_dyn_retain(args[2]) : scr_dyn_undefined();
+  ScrPkiKey *material = scr_crypto_key_object_material(key_value);
+  ScrDyn *plain = NULL;
+  ScrDyn *out = NULL;
+  if (!material) {
+    scr_wc_type_error("ERR_INVALID_ARG_TYPE", "value is not a KeyObject.");
+    goto done;
+  }
+  bool private_key = scr_pki_key_is_private(material);
+  bool ed = scr_pki_key_is_ed25519(material);
+  bool x = scr_pki_key_is_x25519(material);
+  bool x448 = scr_pki_key_is_x448(material);
+  bool rsa_key = scr_pki_key_is_rsa(material);
+  bool rsa = rsa_key && !scr_pki_key_is_rsa_pss(material);
+  /* An RSA-PSS key is RSA-shaped but not a plain RSA key; it is never an
+   * EC key, and its curve name is NULL. */
+  bool ec = !ed && !x && !x448 && !rsa_key;
+  const char *name = sw_algorithm_name(algorithm);
+  if (!name) goto done;
+  SwKind kind = sw_kind_of(name);
+  plain = scr_wc_plain(algorithm);
+  if (!plain) goto done;
+  const char *curve = NULL;
+  const char *hash = NULL;
+  if (kind == SW_ED25519 || kind == SW_X25519 || kind == SW_X448) {
+    /* no parameters */
+  } else if (sw_is_ec_kind(kind)) {
+    if (!scr_wc_is_object(plain)) {
+      scr_wc_missing_member("EcKeyImportParams", "namedCurve");
+      goto done;
+    }
+    curve = sw_named_curve(plain, "EcKeyImportParams");
+    if (!curve) goto done;
+  } else {
+    if (!scr_wc_is_object(plain)) {
+      scr_wc_missing_member("RsaHashedImportParams", "hash");
+      goto done;
+    }
+    hash = sw_hash(plain, "RsaHashedImportParams", true, "toCryptoKey");
+    if (!hash) goto done;
+  }
+  long usages = scr_wc_value_usages(usages_value);
+  if (usages < 0) goto done;
+  /* Node validates the usages against the algorithm before it looks at the
+   * key, so a usage the algorithm never takes is that error even when the
+   * key itself has the wrong type. */
+  if ((unsigned)usages & ~sw_pair_usages(kind)) {
+    sw_unsupported_usage(kind);
+    goto done;
+  }
+  bool matches = (kind == SW_ED25519 && ed) || (kind == SW_X25519 && x) ||
+                 (kind == SW_X448 && x448) ||
+                 (sw_is_ec_kind(kind) && ec) || (sw_is_rsa_kind(kind) && rsa);
+  if (!matches) {
+    scr_throw_domex("DataError", "Invalid key type");
+    goto done;
+  }
+  if (sw_is_ec_kind(kind)) {
+    const char *actual = scr_pki_key_curve(material);
+    if (actual == NULL || strcmp(actual, curve) != 0) {
+      scr_throw_domex("DataError", "Named curve mismatch");
+      goto done;
+    }
+  }
+  unsigned allowed = sw_import_allowed(kind, private_key);
+  if ((unsigned)usages & ~allowed) {
+    sw_unsupported_usage(kind);
+    goto done;
+  }
+  if (private_key && usages == 0) {
+    scr_throw_domex("SyntaxError", "Usages cannot be empty when importing a private key.");
+    goto done;
+  }
+  out = sw_key_new(material, kind, hash, (unsigned)usages, scr_dyn_truthy(extractable_value));
+  material = NULL; /* consumed */
+done:
+  if (material) scr_pki_key_release(material);
+  if (plain) scr_dyn_release(plain);
+  scr_dyn_release(algorithm);
+  scr_dyn_release(extractable_value);
+  scr_dyn_release(usages_value);
+  return out;
+}
+
+static ScrDyn *sw_key_object_from(const ScrDyn *crypto_key) {
+  SwKey *k = sw_key_of(crypto_key);
+  if (!k) {
+    scr_dyn_arg_type_fail("key", "an instance of CryptoKey", crypto_key);
+    return NULL;
+  }
+  return scr_crypto_key_object_from_material(k->key);
+}
+
 /* getPublicKey: the public CryptoKey of a private one, with the usages the
  * caller asks for. All of this unit's algorithms verify with their public
  * key, and the public key is always extractable. */
@@ -1160,6 +1274,8 @@ static const ScrWcAsymmetric sw_table = {
     .decrypt = sw_decrypt,
     .derive_bits = sw_derive_bits,
     .get_public_key = sw_get_public_key,
+    .to_crypto_key = sw_to_crypto_key,
+    .key_object_from = sw_key_object_from,
     .is_key = sw_is_key,
     .key_is_private = sw_key_is_private,
 };

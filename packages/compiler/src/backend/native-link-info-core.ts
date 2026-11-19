@@ -27,6 +27,8 @@ export interface NativeLinkFeatures {
    * jsObjectModelFact ORs this fact into. */
   bigintBytes: boolean;
   fileHandle: boolean;
+  /** filehandle.readableWebStream: scr_fs_web_stream.c. */
+  fsWebStream?: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
@@ -296,6 +298,8 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
+  /** fsPromises.watch: scr_watch_async.c (with scr_watch.c). */
+  watchEvents: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -309,6 +313,11 @@ export interface NativeLinkFeatures {
   /** crypto.createDiffieHellman, getDiffieHellman and
    * createDiffieHellmanGroup: scr_dh.c plus the mbedTLS archive. */
   dh: boolean;
+  /** crypto.argon2 and crypto.argon2Sync: scr_argon2.c. */
+  argon2: boolean;
+  /** crypto.encapsulate/decapsulate and the WebCrypto ML-KEM algorithms:
+   * scr_mlkem.c plus the vendored mlkem-native archive. */
+  mlkem: boolean;
   /** Asymmetric KeyObjects, crypto.sign/verify and Sign/Verify: scr_pki.c
    * plus the mbedTLS archive. */
   pki: boolean;
@@ -389,12 +398,15 @@ const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
+  watchEvents: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
   cipher: false,
   ecdh: false,
   dh: false,
+  argon2: false,
+  mlkem: false,
   pki: false,
   ed25519: false,
   x509: false,
@@ -472,6 +484,17 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // scr_perf.c resolves performance.measure's Node timing milestone names
   // ("loopStart", "loopExit") through scr_perf_loop.c's getters.
   { feature: "dynAsync", requires: ["perfLoop"] },
+  // scr_watch_async.c reports its bounded queue's dropped events through
+  // scr_emit_warning (scr_async_dyn.c, Node's process warning report and
+  // listeners), so the iterator unit brings the checked-dynamic async unit
+  // with it.
+  { feature: "watchEvents", requires: ["watch", "dynAsync"] },
+  // scr_fs_web_stream.c reads through the FileHandle unit; the web stream
+  // unit comes with it through executable-features' webStreams OR.
+  { feature: "fsWebStream", requires: ["fileHandle"] },
+  // scr_stream_dyn.c tests values and calls JavaScript stream members through
+  // the dyn-invoke unit (the checked-dynamic stream slots).
+  { feature: "streamDyn", requires: ["dynInvoke"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

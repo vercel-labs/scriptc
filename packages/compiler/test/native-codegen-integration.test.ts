@@ -384,7 +384,7 @@ done:
     const exported = async (object: string) =>
       (await symbols(object, ["-gU"])).map((line) => line.replace(/^[0-9a-f]+\s+/, ""));
     expect(await exported(helperObject)).toEqual(["T _main"]);
-    expect(await symbols(helperObject, ["-u"])).toContain("_scr_runtime_abi_v48");
+    expect(await symbols(helperObject, ["-u"])).toContain("_scr_runtime_abi_v50");
 
     const clangExe = join(dir, "clang-program");
     const linkDriver = join(dir, "clang-driver.c");
@@ -718,7 +718,7 @@ done:
       .split("\n");
     expect(undefinedSymbols).toContain("_sf_scale");
     expect(undefinedSymbols).toContain("_sf_callback_mix");
-    expect(undefinedSymbols).toContain("_scr_runtime_abi_v48");
+    expect(undefinedSymbols).toContain("_scr_runtime_abi_v50");
   });
 
   test("helper and clang object paths retain the same outbound FFI C ABI", async () => {

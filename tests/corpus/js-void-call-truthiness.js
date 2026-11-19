@@ -57,3 +57,20 @@ report("direct override", () => (new RouteTable()["~findRoute"]({ path: "/" }) ?
 report("plain call", () => (plain() ? "yes" : "no"));
 report("plain negated", () => !plain());
 report("effects count", () => ran);
+
+// A callback in a widened object's initializer answers its own result when
+// the truthiness test reads it: the storage follows the values the program
+// writes, so the function object keeps what its body returns.
+let truthyHolder = { f: () => "truthy" };
+truthyHolder = { f: (argv) => argv };
+let falsyHolder = { f: () => 0 };
+falsyHolder = { f: () => undefined };
+let absentHolder = { f: () => [] };
+/** @type {{ f: () => void }} */
+const fromInitializer = { f: function () { return 42; } };
+console.log(
+  Boolean(truthyHolder.f("x")),
+  falsyHolder.f(() => 0) === undefined,
+  Array.isArray(absentHolder.f()),
+  fromInitializer.f() ? "yes" : "no",
+);

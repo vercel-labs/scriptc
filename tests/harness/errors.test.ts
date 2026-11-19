@@ -1213,7 +1213,7 @@ console.log(a.fromA, a.fromB);
     );
   });
 
-  test("split table re-exports keep the exports-object value fence at the consumer", async () => {
+  test("split table re-exports answer the forwarded table's exports object at the consumer", async () => {
     const r = await compileAndRun(
       "split-table-reexport-as-value",
       `const lib = require("./wrap.cjs");
@@ -1230,11 +1230,11 @@ console.log("wrap: done");
 `,
       },
     );
-    expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("wrap: done\nbefore\n");
-    expect(r.stderr).toMatch(
-      /^Uncaught Error: module namespace objects as values.*\[SC1090 at .*split-table-reexport-as-value\.cjs:3\]\n$/,
-    );
+    // Node's require answers lib.cjs's own exports object through the
+    // forwarding module, and console.log prints it as a plain object.
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("wrap: done\nbefore\n{ n: 7 }\n");
+    expect(r.stderr).toBe("");
   });
 
   test("split table re-exports with later live member writes keep the value fence", async () => {
@@ -3583,19 +3583,6 @@ console.log(exports.size());
       8,
       "calling 'exports\\.size' through the module's exports object when the function may read 'this'",
     ],
-    [
-      "require-table-as-value",
-      `function count(o) {
-  return Object.keys(o).length;
-}
-console.log("before");
-console.log(count(require("./lib.cjs")));
-`,
-      { "lib.cjs": "exports.x = 1;\n" },
-      "before\n",
-      5,
-      "the exports object of '\\./lib\\.cjs' as a value",
-    ],
   ] as const)("%s", async (name, source, extra, stdout, line, message) => {
     const r = await compileAndRun(name, source, "cjs", extra);
     expect(r.exitCode).toBe(1);
@@ -3603,6 +3590,25 @@ console.log(count(require("./lib.cjs")));
     expect(r.stderr).toMatch(
       new RegExp(`^Uncaught Error: ${message}.*\\[SC1090 at .*${name}\\.cjs:${line}\\]\\n$`),
     );
+  });
+
+  test("a top-level inline require of a table module as a value is its exports object", async () => {
+    // Node's require answers the module's own exports object, so a function
+    // handed it sees the module's keys.
+    const r = await compileAndRun(
+      "require-table-as-value",
+      `function count(o) {
+  return Object.keys(o).length;
+}
+console.log("before");
+console.log(count(require("./lib.cjs")));
+`,
+      "cjs",
+      { "lib.cjs": "exports.x = 1;\n" },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("before\n1\n");
+    expect(r.stderr).toBe("");
   });
 });
 
@@ -3808,12 +3814,9 @@ async function attempt(label, run) {
 const key = await crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 await attempt("ed448", () => crypto.subtle.sign({ name: "Ed448" }, key, bytes));
 await attempt("ecdsa with an hmac key", () => crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes));
-await attempt("sha3", () => crypto.subtle.digest("SHA3-256", bytes));
-await attempt("sha3 hmac", () =>
-  crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA3-256" }, false, ["sign"]),
-);
+await attempt("cshake", () => crypto.subtle.digest("cSHAKE128", bytes));
 const aes = await crypto.subtle.generateKey({ name: "AES-GCM", length: 128 }, false, ["encrypt"]);
-await attempt("aes-ocb", () => crypto.subtle.encrypt({ name: "AES-OCB", iv: new Uint8Array(12) }, aes, bytes));
+await attempt("x448 bits", () => crypto.subtle.deriveBits({ name: "X448" }, key, 256));
 await attempt("ecdh bits", () => crypto.subtle.deriveBits({ name: "ECDH" }, key, 256));
 await attempt("rsa-oaep wrap", () => crypto.subtle.wrapKey("raw", key, key, { name: "RSA-OAEP" }));
 const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -3833,9 +3836,8 @@ await attempt("unwrap an ecdsa key", () =>
     expect(r.stdout).toBe(
       "ed448 Error SC2020 crypto.subtle.sign with the Ed448 algorithm is not supported yet\n" +
         "ecdsa with an hmac key InvalidAccessError 15 Key algorithm mismatch\n" +
-        "sha3 Error SC2020 crypto.subtle.digest with the SHA3-256 algorithm is not supported yet\n" +
-        "sha3 hmac Error SC2020 crypto.subtle.importKey with the SHA3-256 algorithm is not supported yet\n" +
-        "aes-ocb Error SC2020 crypto.subtle.encrypt with the AES-OCB algorithm is not supported yet\n" +
+        "cshake TypeError ERR_MISSING_OPTION Failed to normalize algorithm: passed algorithm cannot be converted to 'CShakeParams' because 'outputLength' is required in 'CShakeParams'.\n" +
+        "x448 bits Error SC2020 crypto.subtle.deriveBits with the X448 algorithm is not supported yet\n" +
         "ecdh bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +
         "wrap an ecdsa key Error SC2020 crypto.subtle.wrapKey with an ECDSA, Ed25519 or RSA key is not supported yet\n" +

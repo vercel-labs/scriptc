@@ -14,7 +14,7 @@ import { InternalCompilerError } from "../../../errors.js";
 import { resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
-import { type Lowerer } from "../lowerer.js";
+import { newFnCtx, type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { conditionalSpreadOf } from "../expressions/object-literals.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
@@ -24,6 +24,8 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrLocal,
+  type IrParam,
   type IrStmt,
   type IrType,
   SPAWNRES_T,
@@ -32,6 +34,8 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
+  funcOf,
+  typeKey,
 } from "../../../ir/ir.js";
 import { staticForkModulePath } from "../../fork-target.js";
 import { tsgoPath } from "../../dts-paths.js";
@@ -2220,6 +2224,87 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
   );
 }
 
+/** An exec/execFile callback whose parameters a JavaScript source or an
+ * `any` annotation left untyped: the native call takes an
+ * (Error | null, string, string) callback, so wrap it in a closure that
+ * receives those and calls the program's function with each value
+ * converted to the parameter type it declared. */
+function adaptChildCallback(lowerer: Lowerer, callback: IrExpr, loc: SrcLoc): IrExpr {
+  const cbT = callback.type;
+  if (cbT.kind !== "func" || cbT.rest === true || cbT.params.length === 0) return callback;
+  const nativeError: IrType = {
+    kind: "union",
+    unionId: lowerer.unions.intern([{ kind: "object", className: "%Error" }, { kind: "nullT" }]),
+  };
+  const nativeAll: IrType[] = [nativeError, STRING, STRING];
+  const nativeParams = nativeAll.slice(0, cbT.params.length);
+  if (cbT.params.every((p, i) => typeKey(p) === typeKey(nativeParams[i]!))) return callback;
+  const nativeT = funcOf(nativeParams, VOID);
+  const key = `cp.callback:${typeKey(cbT)}`;
+  let name = lowerer.arrHofHelpers.get(key);
+  if (name === undefined) {
+    name = keyedHelperName(lowerer, "%cp.callback", key);
+    lowerer.arrHofHelpers.set(key, name);
+    const impl = `${name}.impl`;
+    const captured: IrLocal = { id: "f.0", name: "f", type: cbT, mutable: false, boxed: true };
+    const params: IrParam[] = nativeParams.map((t, i) => ({
+      localId: `a.${i}`,
+      name: `a${i}`,
+      type: t,
+    }));
+    const ctx = newFnCtx(false, null, null, VOID);
+    lowerer.fnStack.push(ctx);
+    let args: IrExpr[];
+    try {
+      args = nativeParams.map((t, i) =>
+        lowerer.coerceToExpected(varRef(params[i]!.localId, t, loc), cbT.params[i]!),
+      );
+    } finally {
+      lowerer.fnStack.pop();
+    }
+    lowerer.liftedFns.push({
+      name: impl,
+      params,
+      returnType: VOID,
+      captures: [{ localId: captured.id, name: captured.name, type: cbT }],
+      locals: [
+        captured,
+        ...params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+        ...ctx.locals,
+      ],
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "callValue",
+            callee: varRef(captured.id, cbT, loc),
+            args,
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: captured.id, name: captured.name, type: cbT }],
+      returnType: nativeT,
+      locals: [captured],
+      body: [
+        {
+          kind: "return",
+          value: { kind: "closure", fnName: impl, captures: [captured.id], type: nativeT, loc },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [callback], type: nativeT, loc };
+}
+
 /** `execFile(file[, args][, options], callback)` — the asynchronous callback
  * slice. With `shell`, `exec(command[, options], callback)`: the command
  * line runs with /bin/sh -c, as execSync runs it, and failure messages show
@@ -2394,6 +2479,7 @@ export function lowerExecFileCall(
       loc,
     );
   }
+
   const callback = lowerer.lowerExpr(callbackNode);
   if (
     callback.type.kind !== "func" ||
@@ -2417,10 +2503,11 @@ export function lowerExecFileCall(
   if (errorParam !== undefined) {
     const def = errorParam.kind === "union" ? lowerer.unions.get(errorParam.unionId) : undefined;
     const valid =
-      !!def &&
-      def.arms.length === 2 &&
-      def.arms.some((arm) => arm.kind === "nullT") &&
-      def.arms.some((arm) => arm.kind === "object" && arm.className === "%Error");
+      errorParam.kind === "dyn" ||
+      (!!def &&
+        def.arms.length === 2 &&
+        def.arms.some((arm) => arm.kind === "nullT") &&
+        def.arms.some((arm) => arm.kind === "object" && arm.className === "%Error"));
     if (!valid) {
       lowerer.unsupported(
         "SC1090",
@@ -2430,7 +2517,8 @@ export function lowerExecFileCall(
     }
   }
   for (let i = 1; i < callback.type.params.length; i++) {
-    if (callback.type.params[i]!.kind !== "string") {
+    const param = callback.type.params[i]!;
+    if (param.kind !== "string" && param.kind !== "dyn") {
       lowerer.unsupported(
         "SC1090",
         callbackNode,
@@ -2438,6 +2526,7 @@ export function lowerExecFileCall(
       );
     }
   }
+  const nativeCallback = adaptChildCallback(lowerer, callback, locOf(callbackNode));
   // exec's first argument is Node's `command`; execFile's is its `file`,
   // in the shell launch too.
   const form: ChildLaunchForm = shell ? 1 : execShell ? 2 : 0;
@@ -2451,7 +2540,7 @@ export function lowerExecFileCall(
     const args: IrExpr[] = [
       cmd,
       argv,
-      callback,
+      nativeCallback,
       boolLit(shellForm, loc),
       cwd ?? strLit("", loc),
       boolLit(envPairs !== null, loc),
@@ -2478,7 +2567,7 @@ export function lowerExecFileCall(
       {
         kind: "libCall",
         fn: "cp.execFileCwd",
-        args: [cmd, argv, callback, boolLit(shellForm, loc), cwd],
+        args: [cmd, argv, nativeCallback, boolLit(shellForm, loc), cwd],
         type: CHILD_T,
         loc,
       },
@@ -2493,7 +2582,7 @@ export function lowerExecFileCall(
     {
       kind: "libCall",
       fn: "cp.execFile",
-      args: [cmd, argv, callback, boolLit(shellForm, loc)],
+      args: [cmd, argv, nativeCallback, boolLit(shellForm, loc)],
       type: CHILD_T,
       loc,
     },

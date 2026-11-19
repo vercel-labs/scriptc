@@ -5,54 +5,12 @@
  "diags": [
   {
    "code": "SC0001",
-   "message": "Property 'duplexPair' does not exist on type 'typeof import(\"stream\")'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 418,
-    "end": 428
-   },
-   "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'duplexPair' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'wrap' does not exist on type 'Readable'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 628,
-    "end": 632
-   }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'fromWeb' does not exist on type 'typeof Writable'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 756,
-    "end": 763
-   },
-   "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'fromWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
-  },
-  {
-   "code": "SC0001",
    "message": "Object literal may only specify known properties, and 'readable' does not exist in type 'ReadableStream<unknown>'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 862,
-    "end": 870
+    "start": 394,
+    "end": 402
    }
-  },
-  {
-   "code": "SC0001",
-   "message": "Property 'toWeb' does not exist on type 'typeof Duplex'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-stream-absent.ts",
-    "start": 945,
-    "end": 950
-   },
-   "typeWorld": true,
-   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'toWeb' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
   }
  ]
 }

@@ -3332,6 +3332,16 @@ ScrDyn *scr_dyn_native_regex(ScrRegex *value) {
   return scr_dyn_new_handle(value, SCR_DYNH_REGEXP);
 }
 
+/* `RegExp(pattern, flags)` called without `new`: a native RegExp pattern
+ * whose flags argument is undefined is the pattern itself (ECMA-262
+ * 22.2.3.1 step 2), so the caller keeps one object — identity and
+ * lastIndex included; every other pair constructs a copy. */
+ScrRegex *scr_regex_call_checked(const ScrDyn *pattern, const ScrDyn *flags) {
+  if (flags->kind == SCR_DYN_UNDEF && scr_dyn_native_regex_is(pattern))
+    return scr_regex_retain(pattern->v.handle.ptr);
+  return scr_regex_new_checked(pattern, flags);
+}
+
 ScrRegex *scr_regex_new_checked(const ScrDyn *pattern, const ScrDyn *flags) {
   ScrRegex *original = scr_dyn_native_regex_is(pattern) ? pattern->v.handle.ptr : NULL;
   ScrStr *source = original ? scr_regex_source(original)

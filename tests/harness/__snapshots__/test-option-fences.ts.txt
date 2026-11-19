@@ -7,29 +7,20 @@ test-option-fences.ts:13:45 - error SC2020: 'test(...) with a non-literal concur
 
   hint: concurrency takes the literal true/false or a number here
 
-test-option-fences.ts:15:29 - error SC2020: 'describe(...) option 'timeout'' is part of the standard library types but has no scriptc lowering yet
+test-option-fences.ts:15:26 - error SC2020: 'describe(...) option 'plan'' is part of the standard library types but has no scriptc lowering yet
 
   14 | 
-  15 | describe("suite timeout", { timeout: 100 }, () => {});
-     |                             ^~~~~~~~~~~~
-  16 | 
-
-  hint: skip, todo, only, and concurrency are the supported suite options
-
-test-option-fences.ts:17:26 - error SC2020: 'describe(...) option 'plan'' is part of the standard library types but has no scriptc lowering yet
-
-  16 | 
-  17 | describe("suite plan", { plan: 1 }, () => {});
+  15 | describe("suite plan", { plan: 1 }, () => {});
      |                          ^~~~~~~
-  18 | 
+  16 | 
 
-  hint: skip, todo, only, and concurrency are the supported suite options
+  hint: skip, todo, only, concurrency, timeout and signal are the supported suite options
 
-test-option-fences.ts:20:31 - error SC2020: 'test(...) with a non-literal plan value' is part of the standard library types but has no scriptc lowering yet
+test-option-fences.ts:18:31 - error SC2020: 'test(...) with a non-literal plan value' is part of the standard library types but has no scriptc lowering yet
 
-  19 | const count = 2;
-  20 | test("computed plan", { plan: count }, () => {});
+  17 | const count = 2;
+  18 | test("computed plan", { plan: count }, () => {});
      |                               ^~~~~
-  21 | 
+  19 | 
 
   hint: plan takes a non-negative integer literal here

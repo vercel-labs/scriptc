@@ -1177,8 +1177,6 @@ export function lowerObjectLiteral(
   // copyDataProperties of whichever arm runs) may still lower the whole
   // literal, and the fence's message fires where that declines.
   let deferredConditionalSpread: ts.SpreadAssignment | null = null;
-  /** The first `this` a method body reads (see the method fence below). */
-  let deferredThis: ts.Node | null = null;
   for (const prop of expr.properties.nodes) {
     if (ts.isSpreadAssignment(prop)) {
       // Supported shapes: FULL spreads of known record shapes read as
@@ -1240,18 +1238,6 @@ export function lowerObjectLiteral(
       )
     ) {
       lowerer.unsupported("SC1090", prop, "non-identifier property names");
-    }
-    // Shorthand methods are just closure-valued fields — but their `this`
-    // is dynamically bound (typed as the literal by tsc, so noImplicitThis
-    // lets it through) and records don't model it; the generic
-    // lexical-this walk would incorrectly capture an ENCLOSING method's
-    // `this`. The refusal is DEFERRED to the checked-dynamic route below: a
-    // literal a receiver-dependent member made a checked-identity view
-    // builds there with the call's receiver as `this` (JavaScript's own
-    // rule), and only a literal that still builds as a record refuses.
-    if (ts.isMethodDeclaration(prop)) {
-      const receiver = thisInObjectMethod(prop.body ?? prop);
-      if (receiver !== null) deferredThis ??= receiver;
     }
   }
 
@@ -1511,13 +1497,6 @@ export function lowerObjectLiteral(
       jsOpenObjectType(expr, mapped, lowerer.shapes, lowerer.unions).kind === "dyn")
   ) {
     return lowerDynObjectLiteral(lowerer, expr);
-  }
-  // A record's function field has no receiver, so a method that reads its own
-  // `this` cannot build here: the literal would bind the receiver of an
-  // enclosing method, or none. The checked-dynamic route above is the one
-  // representation that gives it one (SPEC 3b).
-  if (deferredThis !== null) {
-    lowerer.unsupported("SC1090", deferredThis, "references to 'this' in object literal methods");
   }
   // A literal whose own type is a union (both arms of the conditional carry
   // keys, so there is one record per arm) goes on to the distributed
@@ -2885,9 +2864,14 @@ export function lowerObjectLiteral(
       } else if (ts.isShorthandPropertyAssignment(prop)) {
         value = lowerer.lowerShorthandValue(prop);
       } else if (ts.isMethodDeclaration(prop)) {
-        value =
-          fenceClosureProbe(lowerer, prop, fieldType, () => lowerer.lowerLambda(prop)) ??
-          lowerer.lowerLambda(prop);
+        // The method is a plain function-valued field. Its `this` is the
+        // receiver of the call that runs it — the object for `o.m()`, the
+        // first argument of `call`/`apply`/`Reflect.apply`, none for a bare
+        // call of the extracted value — so the body reads the call's
+        // receiver like any function with its own `this`
+        // (member-call-receivers.ts passes the holder to a member call).
+        const method = (): IrExpr => lowerer.lowerLambda(prop, true);
+        value = fenceClosureProbe(lowerer, prop, fieldType, method) ?? method();
       } else {
         lowerer.unsupported(
           "SC1090",

@@ -81,6 +81,21 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["memberReceivers"],
   },
   {
+    name: "cjs-exports-object",
+    file: `${SRC}/frontend/lowering/cjs-exports-object-value.ts`,
+    symbol: "cjsExportsObjectModules",
+    source: "symbols",
+    scope: "file",
+    setBy:
+      "a CommonJS module binding or inline require() of a table module used as a value (anything but a static export's member read or call), or a plain write of one of its exports",
+    gates:
+      "that module's exports: its export writes also fill a real exports object, and every static member read, call and write of the module goes through that object",
+    narrower:
+      "the reads that can observe a write made through the object, by escape analysis of the object value; today every static member access of the module pays the checked-dynamic read",
+    tracked: "DESIGN.md (cjs-exports object)",
+    lowererFields: [],
+  },
+  {
     name: "thenables-may-be-defined",
     file: `${SRC}/frontend/lowering/thenables.ts`,
     symbol: "programMayDefineThenables",
@@ -745,11 +760,22 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "computed-environment-write",
   ),
+  decides(
+    "frontend/lowering/cjs-exports-object-value.ts#cjsExportsObjectModules",
+    1,
+    "cjs-exports-object",
+  ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#cjsExportEvaluations",
     1,
     "closed-world",
     "where the program requires or imports one module whose export object is an accessor",
+  ),
+  scan(
+    "frontend/lowering/cjs-inline-require.ts#cjsRuntimeWholeExportValueWritesOf",
+    1,
+    "prefilter",
+    "a module whose whole export is chosen at run time has to spell `module.exports`; every write it finds is decided from its target's symbol and its value's type",
   ),
   scan(
     "frontend/lowering/cjs-inline-require.ts#computeConditionalAlias",
@@ -774,12 +800,6 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "prefilter",
     "a file that never spells `extends` declares no derived class",
-  ),
-  scan(
-    "frontend/lowering/cycle-initialization.ts#earlyHeritageReference",
-    1,
-    "closed-world",
-    "references to one class of an import cycle",
   ),
   scan(
     "frontend/lowering/cycle-initialization.ts#classLocalNames",
@@ -979,6 +999,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "program roots named by createRequire calls",
   ),
   scan(
+    "frontend/lowering/cycle-initialization.ts#earlyHeritageReferences",
+    1,
+    "closed-world",
+    "the `extends` clauses that read a class of an import cycle before its declaration, each of which carries the class's initialization check at its own statement",
+  ),
+  scan(
     "frontend/program.ts#boundedDynamicImportRoots7",
     1,
     "discovery",
@@ -989,6 +1015,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     1,
     "discovery",
     "program roots of the entry package",
+  ),
+  scan(
+    "frontend/program.ts#declarationTwinRoots7",
+    1,
+    "discovery",
+    "program roots for the runtime implementation of each project declaration the program holds (a `.d.ts` beside the JavaScript it describes)",
   ),
   scan(
     "frontend/program.ts#cjsStarReexportSources",

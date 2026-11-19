@@ -106,7 +106,16 @@ export class Ts7RpcClient {
           // A server error is a complete response. Keep this channel usable
           // for panic-fenced checker batches and subsequent valid requests.
           this.requesting = false;
-          throw new Error(responseText(message.payload));
+          const text = responseText(message.payload);
+          // An empty payload is a checker failure that stated no reason. It
+          // takes the panic shape so the lowering's fences catch it and the
+          // crash report anchors it at the source position being checked,
+          // rather than surfacing as an empty build error at the entry.
+          throw new Error(
+            text.trim() === ""
+              ? `panic: the TypeScript checker failed answering '${method}' without a message`
+              : text,
+          );
         }
         return message.payload;
       }

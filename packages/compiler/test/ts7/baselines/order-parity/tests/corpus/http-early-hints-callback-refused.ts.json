@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-early-hints-callback-refused.ts"
+ ],
+ "diags": []
+}

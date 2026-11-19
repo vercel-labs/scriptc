@@ -1,4 +1,5 @@
 import * as ts from "./ts7/adapter.js";
+import { bodyReadsArguments } from "./arguments-usage.js";
 import { isNodeModulesPath } from "./resolve.js";
 
 /** Compiler options adopted from the project during preflight. */
@@ -767,15 +768,74 @@ export function jsFieldDeclaringClass(field: ts.Symbol): ts.ClassLikeDeclaration
   return undefined;
 }
 
+/** The JSDoc-typed JavaScript array field a `push` or `unshift` call appends
+ * to (`this.uniforms.push(value)` over `@type {Array<Uniform>}`): the class
+ * that declares the field and its name. */
+export function jsArrayFieldAppendOwner(
+  checker: ts.TypeChecker,
+  call: ts.CallExpression,
+): { decl: ts.ClassLikeDeclaration; name: string } | undefined {
+  const callee = call.expression;
+  if (
+    !ts.isPropertyAccessExpression(callee) ||
+    !ts.isIdentifier(callee.name) ||
+    (callee.name.text !== "push" && callee.name.text !== "unshift")
+  )
+    return undefined;
+  let target: ts.Expression = callee.expression;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isPropertyAccessExpression(target) || !ts.isIdentifier(target.name)) return undefined;
+  const field = checker.getSymbolAtLocation(target.name);
+  if (field === undefined || !checker.isArrayType(checker.getTypeOfSymbol(field))) return undefined;
+  const decl = jsFieldDeclaringClass(field);
+  return decl === undefined ? undefined : { decl, name: target.name.text };
+}
+
+/** TS2739 on a value a JavaScript program appends to a JSDoc-typed array
+ * field (jsArrayFieldAppendOwner): the array holds what is appended, so the
+ * field takes checked-dynamic storage (analyzeJsWidenedFields). */
+const jsArrayFieldAppend = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  const call = node.parent;
+  return (
+    call !== undefined &&
+    ts.isCallExpression(call) &&
+    call.arguments.nodes.includes(node as ts.Expression) &&
+    jsArrayFieldAppendOwner(program.getTypeChecker(), call) !== undefined
+  );
+};
+
+/** Whether `node` writes a JavaScript accessor property whose setter is
+ * declared in a JavaScript class (`this.depthTexture = texture` over a
+ * `set depthTexture(value)` documented `@type {?DepthTexture}`): the value
+ * reaches the setter as Node passes it, and the pair takes and answers
+ * checked-dynamic values (analyzeJsWidenedFields, jsWidenedAccessors). */
+const jsAccessorWriteTarget = (node: ts.Node, program: ts.Program): boolean => {
+  if (!jsWideningWriteTarget(node) || !ts.isPropertyAccessExpression(node)) return false;
+  if (!ts.isIdentifier(node.name)) return false;
+  const symbol = program.getTypeChecker().getSymbolAtLocation(node.name);
+  return (
+    symbol !== undefined &&
+    symbol.declarations.some(
+      (decl) =>
+        ts.isSetAccessorDeclaration(decl) &&
+        isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName),
+    )
+  );
+};
+
 /** Whether `node` is the target of a write into a JavaScript binding or
  * field whose storage follows the values the program writes: a JSDoc-typed
  * target, or an unannotated `let`/`var`. TS2739 is the elaborated form of
  * the assignability diagnostics for a class or record target; in JavaScript
  * the value is legal and the storage follows what the program writes
- * (analyzeJsWidenedBindings and analyzeJsWidenedFields). A `const` keeps
- * its inferred type, and a write the scans do not reach keeps the code's
- * triage decision, which refuses it instead of failing in the lowering. */
-const jsStorageWriteTarget = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+ * (analyzeJsWidenedBindings and analyzeJsWidenedFields). The same holds
+ * for a write through a JavaScript accessor (jsAccessorWriteTarget) and a
+ * value appended to a JSDoc-typed array field (jsArrayFieldAppend). A
+ * `const` keeps its inferred type, and a write the scans do not reach keeps
+ * the code's triage decision, which refuses it instead of failing in the
+ * lowering. */
+const jsStorageWriteTarget = (node: ts.Node, d: ts.Diagnostic, program: ts.Program): boolean => {
+  if (jsAccessorWriteTarget(node, program) || jsArrayFieldAppend(node, d, program)) return true;
   if (!jsWideningWriteTarget(node)) return false;
   const checker = program.getTypeChecker();
   if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
@@ -796,6 +856,84 @@ const jsStorageWriteTarget = (node: ts.Node, _d: ts.Diagnostic, program: ts.Prog
   // An unannotated `let`/`var` takes the storage the program writes to it;
   // a `const` keeps its inferred type, so its write stays refused.
   return (decl.parent.flags & ts.NodeFlags.Const) === 0;
+};
+
+/** Whether a JavaScript method joins its override family's checked-dynamic
+ * slot: an ordinary method with a body, no type parameters, rest parameter
+ * or `arguments` read, and neither a generator nor async. These are the
+ * members whose slot the class lowering widens to the family's largest
+ * arity with checked-dynamic parameters and results (virtualJsMethodArity
+ * and checkedVirtualJsMethods in lowering/lower-classes.ts), so a call through any member of the family
+ * passes every argument the call supplies, and each body binds the ones it
+ * declares, as Node does. */
+function jsFamilyMethod(decl: ts.Node): decl is ts.MethodDeclaration {
+  return (
+    ts.isMethodDeclaration(decl) &&
+    ts.isIdentifier(decl.name) &&
+    decl.body !== undefined &&
+    isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) &&
+    decl.asteriskToken === undefined &&
+    !decl.typeParameters?.nodes.length &&
+    !decl.modifiers?.nodes.some(
+      (m) => m.kind === ts.SyntaxKind.AsyncKeyword || m.kind === ts.SyntaxKind.StaticKeyword,
+    ) &&
+    decl.parameters.nodes.every((p) => p.dotDotDotToken === undefined) &&
+    !bodyReadsArguments(decl)
+  );
+}
+
+/** TS2416 on a JavaScript method that overrides only JavaScript methods,
+ * every one of them a family member (jsFamilyMethod). JSDoc narrows a
+ * parameter per subclass (`@param {Mesh} source` over `@param {Object3D}
+ * source`), and a base often declares fewer parameters than its overrides
+ * (a `raycast()` that names its parameters only in a comment); the checker
+ * then also rejects every `copy()` that returns `this`, because the subclass
+ * no longer matches its base. Node reads none of it: a call dispatches on the
+ * receiver's class and binds the arguments the call supplies. The class
+ * lowering gives such a family one slot of the largest arity any member
+ * declares, with checked-dynamic parameters and results, so the native call
+ * is Node's. Every ancestor that declares the method must be a family member
+ * too: the lowering walks the whole base chain, so one ancestor it cannot
+ * give a checked-dynamic slot (a rest parameter, an `arguments` read, a
+ * generator) leaves the family on the class lowering's ordinary dispatch and
+ * a call that supplies extra arguments is not Node's. An override of a
+ * TypeScript, built-in or accessor member keeps the refusal. */
+const jsMethodOverridesJsFamily = (
+  node: ts.Node,
+  _d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
+  const member = node.parent;
+  if (member === undefined || !jsFamilyMethod(member) || member.name !== node) return false;
+  if (!ts.isIdentifier(member.name)) return false;
+  const owner = member.parent;
+  if (owner === undefined || !ts.isClassLikeDeclaration(owner)) return false;
+  const checker = program.getTypeChecker();
+  const symbol = owner.name === undefined ? undefined : checker.getSymbolAtLocation(owner.name);
+  if (symbol === undefined) return false;
+  const name = member.name.text;
+  // The class lowering marks the declaration it finds in each ancestor
+  // (collectVirtualJsMethods walks every base), so every ancestor that
+  // declares the method has to be a family member for the family to share
+  // one checked-dynamic slot.
+  let overridden = 0;
+  const seen = new Set<ts.Type>();
+  const overridesFamily = (type: ts.Type): boolean => {
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface() || seen.has(target)) return true;
+    seen.add(target);
+    for (const base of checker.getBaseTypes(target)) {
+      const property = checker.getPropertyOfType(base, name);
+      if (property !== undefined) {
+        const declarations = property.declarations ?? [];
+        if (declarations.length === 0 || !declarations.every(jsFamilyMethod)) return false;
+        overridden++;
+      }
+      if (!overridesFamily(base)) return false;
+    }
+    return true;
+  };
+  return overridesFamily(checker.getDeclaredTypeOfSymbol(symbol)) && overridden > 0;
 };
 
 /** Whether `node` is the binding a `for...in` head writes each key into.
@@ -1228,8 +1366,9 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // 2322's elaborated form when the target is a class or record: the value
   // lacks a required property. In JavaScript the assignment is legal, and
   // the storage follows the values the program writes to it
-  // (analyzeJsWidenedBindings and analyzeJsWidenedFields). Every other 2739
-  // site keeps its triage row.
+  // (analyzeJsWidenedBindings and analyzeJsWidenedFields), including a
+  // JavaScript accessor pair's values and the elements a program appends to
+  // a JSDoc-typed array field. Every other 2739 site keeps its triage row.
   [
     2739,
     at(
@@ -1238,6 +1377,7 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
         WIDEN("the storage follows the values a JavaScript program writes to a typed target", [
           "tests/corpus/jsdoc-field-foreign-instance/main.js",
           "tests/corpus/js-frozen-object-reassignment.js",
+          "tests/corpus/jsdoc-accessor-and-array-field-writes/main.ts",
         ]),
       ),
     ),
@@ -1428,9 +1568,28 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // claim about the constructor object; the member itself is an ordinary
   // static that installs on the constructor, and Node never reads the
   // signature. A checked file keeps the error: the project asked tsc for
-  // it. Its instance-side sibling (2416) stays refused — a differing
-  // instance member's storage is the class lowering's business.
+  // it. Its instance-side sibling (2416) is admitted below only for a method
+  // family the class lowering dispatches through one checked-dynamic slot.
   [2417, inCheckedJs(CHECKER(JSDOC_CLAIM, ["tests/corpus/js-subclass-static-side.js"]))],
+  // A subclass METHOD whose JSDoc signature differs from the one it
+  // overrides (2416): narrowed parameter types, more parameters than the
+  // base declares, a different result, and the `return this` methods that
+  // inherit the mismatch. The family's slot takes the largest arity with
+  // checked-dynamic parameters and results (jsMethodOverridesJsFamily). Every
+  // other 2416 site keeps its triage row, and a checked file keeps the
+  // error: the project asked tsc for it.
+  [
+    2416,
+    at(
+      jsMethodOverridesJsFamily,
+      inCheckedJs(
+        WIDEN(
+          "a JavaScript override family dispatches through one slot of the largest declared arity, with checked-dynamic parameters and results, so every call binds the arguments it supplies as Node does",
+          ["tests/corpus/js-override-family-signatures/main.ts"],
+        ),
+      ),
+    ),
+  ],
   // The async-iterator protocol demand (2504). Whether a value is
   // async-iterable is a runtime fact of untyped JS, exactly like the sync
   // demand: `for await` over a non-iterable value and `yield*` in an async

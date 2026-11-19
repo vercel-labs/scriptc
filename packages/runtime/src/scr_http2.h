@@ -161,6 +161,13 @@ bool scr_http2_stream_destroyed(ScrH2Stream *st);
 bool scr_http2_stream_closed(ScrH2Stream *st);
 bool scr_http2_stream_aborted(ScrH2Stream *st);
 bool scr_http2_stream_pending(ScrH2Stream *st);
+/* END_STREAM rode the initial HEADERS block (no body followed). */
+bool scr_http2_stream_end_after_headers(ScrH2Stream *st);
+/* Bytes buffered for the writable side (flow-control withheld). */
+double scr_http2_stream_buffer_size(ScrH2Stream *st);
+/* Http2ServerRequest.authority/scheme pseudo-headers, +1 (NULL = absent). */
+ScrStr *scr_http2_req_authority(ScrHttpReq *r);
+ScrStr *scr_http2_req_scheme(ScrHttpReq *r);
 bool scr_http2_stream_headers_sent(ScrH2Stream *st);
 bool scr_http2_req_complete(ScrHttpReq *r);
 /* Every value `name` has in a received pairs array, in order (the array a

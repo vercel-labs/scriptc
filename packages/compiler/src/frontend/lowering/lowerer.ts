@@ -118,7 +118,7 @@ import {
   widthCopyDivergences,
   type WidthCopyFact,
 } from "./width-copies.js";
-import { guardedDeferredFences } from "../../ir/deferred-fence.js";
+import { guardedDeferredFences, type GuardedDeferredFence } from "../../ir/deferred-fence.js";
 import {
   absentDefaultStopDiag,
   deferredRefusalDiag,
@@ -135,6 +135,7 @@ import { exprFunctionReference, withoutUnreachedFunctions } from "../../ir/funct
 import { ownEscapingLocals } from "../../ir/local-scopes.js";
 import { FunctionViews } from "./function-views.js";
 import {
+  everyModuleNode,
   everyStmtList,
   observeRecordLiteralRebuilds,
   withStructureSharing,
@@ -1773,6 +1774,53 @@ function releasedLowerResult(): LowerResult {
   };
 }
 
+/** SC6015 warnings for the deferred sites the build can see that no other
+ * warning names: each one throws its refusal when the program reaches it,
+ * and the build names the site (file:line) instead of leaving it to the
+ * program's stderr. A guarded site keeps SC6012, which says why the binary
+ * is silent about it; a TypeScript statement that already recorded a
+ * deferredRefusalWarning is not named twice. */
+function deferredFenceWarnings(
+  mod: IrModule | null,
+  fences: readonly ScrDiagnostic[],
+  already: readonly ScrDiagnostic[],
+  guarded: readonly GuardedDeferredFence[],
+): ScrDiagnostic[] {
+  if (mod === null) return [];
+  // A probe can capture a diagnostic and then compile the statement another
+  // way, leaving an inventory entry with no fence. Keep the sites a fence
+  // actually throws: a tagged fence's message is the diagnostic's message
+  // plus its position tag, and a bare fence's message is the message.
+  const thrown: string[] = [];
+  everyModuleNode(mod, {
+    expr: () => true,
+    stmt: (node) => {
+      if (node.kind === "runtimeFence") thrown.push(node.message);
+      return true;
+    },
+    type: () => true,
+  });
+  const seen = new Set(already.map((d) => `${d.loc.file}:${d.loc.start}`));
+  const guardedKeys = new Set(guarded.map((site) => `${site.code}\u0000${site.refusal}`));
+  const out: ScrDiagnostic[] = [];
+  for (const fence of fences) {
+    const key = `${fence.loc.file}:${fence.loc.start}`;
+    if (seen.has(key)) continue;
+    // The same refusal as a guarded fence: SC6012 names that site.
+    if (guardedKeys.has(`${fence.code}\u0000${fence.message}`)) continue;
+    if (!thrown.some((m) => m === fence.message || m.startsWith(`${fence.message} [`))) continue;
+    seen.add(key);
+    out.push(
+      deferredRefusalDiag(
+        `${fence.code}: ${fence.message}`,
+        fence.loc,
+        "rewrite the statement so that it compiles, or accept that it throws when it runs; 'scriptc coverage' lists every deferred site",
+      ),
+    );
+  }
+  return out;
+}
+
 function lowerToIrWithIslands(
   program: ts.Program,
   entry: ts.SourceFile,
@@ -2314,6 +2362,7 @@ function lowerToIrWithIslands(
       process.stderr.write(line + "\n");
   if (widthCopies.length > 0) result = { ...result, widthCopies };
   const scanned = scanDivergences(resultLowerer, moduleOrder);
+  const guardedSites = result.module === null ? [] : guardedDeferredFences(result.module);
   const divergences = [
     ...widthCopyDivergences(resultLowerer, widthCopies),
     ...scanned,
@@ -2337,11 +2386,18 @@ function lowerToIrWithIslands(
     ),
     // Deferred refusals inside their own try/catch: named here, since the
     // binary does not report them (ir/deferred-fence.ts).
-    ...(result.module === null
-      ? []
-      : guardedDeferredFences(result.module).map((site) =>
-          guardedDeferredFenceDiag(site.code, site.refusal, site.loc),
-        )),
+    ...guardedSites.map((site) => guardedDeferredFenceDiag(site.code, site.refusal, site.loc)),
+    // Every other deferred site, named here so a build log shows the
+    // constructs that throw when they run instead of leaving them to the
+    // program's stderr (ir/deferred-fence.ts). A TypeScript statement that
+    // already recorded its own warning is not named twice, and a guarded
+    // site keeps SC6012.
+    ...deferredFenceWarnings(
+      result.module,
+      result.runtimeFences,
+      resultLowerer.deferredRefusalWarnings,
+      guardedSites,
+    ),
   ];
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };

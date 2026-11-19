@@ -52,6 +52,7 @@
 #define _DARWIN_C_SOURCE 1
 #include "scr_runtime.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -124,15 +125,28 @@ typedef struct {
 static void *scr_watch_batch_retain(void *p);
 static void scr_watch_batch_release(void *p);
 
+/* One directory of a recursive inotify watch: its descriptor and its path
+ * RELATIVE to the watched root ("" for the root itself). The kernel reports
+ * an event per directory, so the entry name a listener sees is this prefix
+ * joined to the event's own name, the relative path Node reports. */
+typedef struct ScrWatchSub {
+  int wd;
+  ScrStr *rel;
+  struct ScrWatchSub *next;
+} ScrWatchSub;
+
 struct ScrWatcher {
   size_t rc;
   int fd;       /* -1 once closed, or after a failed reopen (no further events) */
+  bool recursive; /* watch the whole directory subtree (Linux and Windows) */
 #ifdef SCR_WATCH_DIR_NAMES_REFUSED
   bool is_dir;  /* the opened path is a directory (the F3 gap) */
 #endif
 #ifdef SCR_HAVE_INOTIFY
   int wd;       /* the inotify watch descriptor; -1 once dead (IN_IGNORED
                  * arrived or close() removed it) */
+  ScrWatchSub *subs; /* the recursive tree's directory watches (NULL when
+                      * the root watch is the only one) */
 #endif
 #ifdef SCR_HAVE_RDCW
   HANDLE dh;       /* the watched directory handle; INVALID once closed or
@@ -204,6 +218,116 @@ static SCR_TL int scr_watch_ino = -1; /* created with the first watch */
   (IN_ATTRIB | IN_CREATE | IN_MODIFY | IN_DELETE | IN_DELETE_SELF |              \
    IN_MOVE_SELF | IN_MOVED_FROM | IN_MOVED_TO)
 
+/** Registers one directory of a recursive watch. The kernel refcounts
+ * inotify watches by PATH, so a directory another watcher already watches
+ * shares its descriptor; each watcher keeps its own relative prefix. */
+static void scr_watch_add_sub(ScrWatcher *w, const char *abs, const char *rel) {
+  int wd = scr_watch_ino >= 0 ? inotify_add_watch(scr_watch_ino, abs, SCR_WATCH_IN_MASK) : -1;
+  if (wd < 0) return;
+  for (ScrWatchSub *known = w->subs; known != NULL; known = known->next) {
+    if (strcmp(known->rel->data, rel) == 0) {
+      known->wd = wd;
+      return;
+    }
+  }
+  ScrWatchSub *sub = malloc(sizeof *sub);
+  if (!sub) scr_watch_oom();
+  sub->wd = wd;
+  sub->rel = scr_str_new(rel, strlen(rel));
+  sub->next = w->subs;
+  w->subs = sub;
+}
+
+/** Walks the directory at `abs` (whose prefix is `rel`) and registers every
+ * directory below it. Symbolic links to directories are not followed: a
+ * walk that followed them could cycle, and libuv's does not either. */
+static void scr_watch_walk(ScrWatcher *w, const char *abs, const char *rel) {
+  DIR *dir = opendir(abs);
+  if (dir == NULL) return;
+  struct dirent *ent;
+  while ((ent = readdir(dir)) != NULL) {
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+    size_t alen = strlen(abs), nlen = strlen(ent->d_name);
+    char *child = malloc(alen + 1 + nlen + 1);
+    if (!child) scr_watch_oom();
+    memcpy(child, abs, alen);
+    child[alen] = '/';
+    memcpy(child + alen + 1, ent->d_name, nlen + 1);
+    struct stat st;
+    if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
+      size_t rlen = strlen(rel);
+      size_t clen = rlen + (rlen ? 1 : 0) + nlen;
+      char *crel = malloc(clen + 1);
+      if (!crel) scr_watch_oom();
+      if (rlen) {
+        memcpy(crel, rel, rlen);
+        crel[rlen] = '/';
+        memcpy(crel + rlen + 1, ent->d_name, nlen + 1);
+      } else {
+        memcpy(crel, ent->d_name, nlen + 1);
+      }
+      scr_watch_add_sub(w, child, crel);
+      scr_watch_walk(w, child, crel);
+      free(crel);
+    }
+    free(child);
+  }
+  closedir(dir);
+}
+
+/** The relative name of an event delivered to `sub`: the sub's prefix joined
+ * to the entry name (Node's path relative to the watched root). `owned_out`
+ * receives the allocation when the name did not fit `buf`. */
+static const char *scr_watch_sub_name(const ScrWatchSub *sub, const char *name, char *buf,
+                                      size_t cap, char **owned_out) {
+  *owned_out = NULL;
+  if (sub == NULL || sub->rel->len == 0 || name == NULL) return name;
+  size_t rlen = sub->rel->len, nlen = strlen(name);
+  if (rlen + 1 + nlen + 1 <= cap) {
+    memcpy(buf, sub->rel->data, rlen);
+    buf[rlen] = '/';
+    memcpy(buf + rlen + 1, name, nlen + 1);
+    return buf;
+  }
+  char *heap = malloc(rlen + 1 + nlen + 1);
+  if (!heap) scr_watch_oom();
+  memcpy(heap, sub->rel->data, rlen);
+  heap[rlen] = '/';
+  memcpy(heap + rlen + 1, name, nlen + 1);
+  *owned_out = heap;
+  return heap;
+}
+
+/** Forgets the sub entry for a directory that left the tree. The kernel
+ * drops the descriptor with the inode, so no inotify_rm_watch is needed
+ * here (and a shared peer keeps its own entry). */
+static void scr_watch_drop_sub(ScrWatcher *w, const char *rel) {
+  ScrWatchSub **link = &w->subs;
+  while (*link != NULL) {
+    ScrWatchSub *sub = *link;
+    if (strcmp(sub->rel->data, rel) == 0) {
+      *link = sub->next;
+      scr_str_release(sub->rel);
+      free(sub);
+      return;
+    }
+    link = &sub->next;
+  }
+}
+
+/** Whether an open watcher other than `except` holds `wd`, as its root or
+ * as one of its recursive subdirectories. inotify refcounts by path, so a
+ * descriptor two watchers share must survive the first one's close. */
+static bool scr_watch_wd_shared(int wd, ScrWatcher *except) {
+  for (ScrWatcher *w = scr_watchers; w != NULL; w = w->next) {
+    if (w == except || w->closed) continue;
+    if (w->wd == wd) return true;
+    for (ScrWatchSub *sub = w->subs; sub != NULL; sub = sub->next)
+      if (sub->wd == wd) return true;
+  }
+  return false;
+}
+
 #endif
 
 #ifdef SCR_HAVE_RDCW
@@ -221,7 +345,7 @@ static wchar_t *scr_watch_widen(const char *s) {
  * nothing. */
 static bool scr_watch_issue(ScrWatcher *w) {
   ResetEvent(w->ovl.hEvent);
-  if (!ReadDirectoryChangesW(w->dh, w->buf, (DWORD)sizeof w->buf, FALSE,
+  if (!ReadDirectoryChangesW(w->dh, w->buf, (DWORD)sizeof w->buf, w->recursive ? TRUE : FALSE,
                              FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
                                  FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SIZE |
                                  FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_CREATION |
@@ -271,6 +395,14 @@ void scr_watcher_release(ScrWatcher *w) {
 #ifdef SCR_HAVE_RDCW
     scr_watch_backend_drop(w);
 #endif
+#ifdef SCR_HAVE_INOTIFY
+    while (w->subs != NULL) {
+      ScrWatchSub *sub = w->subs;
+      w->subs = sub->next;
+      scr_str_release(sub->rel);
+      free(sub);
+    }
+#endif
     scr_str_release(w->path);
     free(w);
   }
@@ -285,13 +417,24 @@ void scr_watcher_release_v(void *p) { scr_watcher_release((ScrWatcher *)p); }
 static void scr_watch_set_reffed(ScrWatcher *w, bool reffed);
 
 ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWatchFn fn,
-                         bool wants_name, bool persistent) {
+                         bool wants_name, bool persistent, bool recursive) {
   /* getValidatedPath: a null byte throws ERR_INVALID_ARG_VALUE before the
    * path reaches the platform call. */
   if (!scr_fs_path_ok(path, "path")) {
     if (cb != NULL) scr_closure_release(cb);
     return NULL; /* exception pending */
   }
+#if defined(__APPLE__)
+  /* The kqueue arm watches one inode. A recursive watch needs the FSEvents
+   * backend, which the macOS slice does not carry yet; refuse honestly
+   * instead of delivering a single directory's events. */
+  if (recursive) {
+    const char *m = "recursive fs.watch has no macOS lowering yet [SC2020]";
+    if (cb != NULL) scr_closure_release(cb);
+    scr_throw_error_msg_code(SCR_ERR_ERROR, m, strlen(m), "SC2020");
+    return NULL;
+  }
+#endif
 #ifdef SCR_HAVE_INOTIFY
   /* The wd IS the validation: Node's Linux throw comes straight from
    * inotify_add_watch's errno, the same message shape as the open below. */
@@ -368,6 +511,7 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
   ScrWatcher *w = calloc(1, sizeof *w);
   if (!w) scr_watch_oom();
   w->rc = 1;
+  w->recursive = recursive;
   w->path = scr_str_retain(path);
   if (cb != NULL) {
     w->ls = malloc(sizeof *w->ls);
@@ -406,6 +550,12 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
 #else
   close(fd); /* no backend: open validated the path; no events exist */
   w->fd = -1;
+#endif
+#ifdef SCR_HAVE_INOTIFY
+  if (recursive) {
+    struct stat st;
+    if (stat(path->data, &st) == 0 && S_ISDIR(st.st_mode)) scr_watch_walk(w, path->data, "");
+  }
 #endif
   w->next = scr_watchers;
   scr_watchers = scr_watcher_retain(w);
@@ -459,23 +609,22 @@ void scr_watcher_close(ScrWatcher *w) {
     w->n = kept;
   }
 #ifdef SCR_HAVE_INOTIFY
+  /* inotify is refcounted by PATH: every watcher on one path shares its
+   * descriptor, and a recursive watcher holds one for every directory in
+   * its tree. Only the last open watcher on a descriptor removes it, so
+   * closing one watcher leaves its peers delivering. The queued IN_IGNORED
+   * a real removal produces finds no open watcher and is skipped; wd
+   * numbers are issued cyclically, so it cannot collide with a watch
+   * created afterwards. */
   if (w->wd >= 0) {
-    /* inotify is refcounted by PATH: every watcher on one path shares its
-     * descriptor, and inotify_rm_watch drops it for all of them. Only the
-     * last open watcher on the descriptor removes it, so closing one
-     * watcher leaves its peers delivering. The queued IN_IGNORED a real
-     * removal produces finds no open watcher and is skipped; wd numbers
-     * are issued cyclically, so it cannot collide with a watch created
-     * afterwards. */
-    bool shared_by_peer = false;
-    for (ScrWatcher *peer = scr_watchers; peer != NULL; peer = peer->next) {
-      if (peer != w && !peer->closed && peer->wd == w->wd) {
-        shared_by_peer = true;
-        break;
-      }
-    }
-    if (!shared_by_peer && scr_watch_ino >= 0) (void)inotify_rm_watch(scr_watch_ino, w->wd);
+    if (!scr_watch_wd_shared(w->wd, w) && scr_watch_ino >= 0)
+      (void)inotify_rm_watch(scr_watch_ino, w->wd);
     w->wd = -1;
+  }
+  for (ScrWatchSub *sub = w->subs; sub != NULL; sub = sub->next) {
+    if (sub->wd >= 0 && !scr_watch_wd_shared(sub->wd, w) && scr_watch_ino >= 0)
+      (void)inotify_rm_watch(scr_watch_ino, sub->wd);
+    sub->wd = -1;
   }
 #endif
 #ifdef SCR_HAVE_RDCW
@@ -728,14 +877,58 @@ static void scr_watch_dispatch(void) {
       bool change = (e->mask & (IN_ATTRIB | IN_MODIFY)) != 0;
       bool ignored = (e->mask & IN_IGNORED) != 0;
       for (ScrWatcher *w = scr_watchers; w != NULL; w = w->next) {
-        if (w->closed || w->wd != e->wd) continue;
+        if (w->closed) continue;
+        ScrWatchSub *sub = NULL;
+        if (w->wd != e->wd) {
+          for (sub = w->subs; sub != NULL; sub = sub->next)
+            if (sub->wd == e->wd) break;
+          if (sub == NULL) continue;
+        }
         /* The kernel dropped the watch: no further events (no reopen),
          * like Node. */
-        if (ignored) w->wd = -1;
+        if (ignored) {
+          if (sub == NULL) w->wd = -1;
+            else sub->wd = -1;
+        }
         /* libuv's filename rule: the entry name for a directory event,
-         * the watched path's basename otherwise (uv__basename_r). */
-        const char *name = e->len ? e->name : scr_watch_basename(w->path->data);
+         * the watched path's basename otherwise (uv__basename_r); a
+         * recursive watch prefixes the SUBDIRECTORY that named the entry,
+         * so the listener sees the path relative to the root. */
+        char namebuf[1024];
+        char *owned = NULL;
+        const char *raw = e->len ? e->name : scr_watch_basename(w->path->data);
+        const char *name = scr_watch_sub_name(sub, raw, namebuf, sizeof namebuf, &owned);
+        if (w->recursive && e->len && (e->mask & IN_ISDIR) && !ignored) {
+          /* A directory arriving in the tree gets watches for itself and
+           * everything below it (a moved-in tree included); one leaving
+           * loses them. */
+          size_t alen = w->path->len, nlen = strlen(name);
+          char *abs = malloc(alen + 1 + nlen + 1);
+          if (!abs) scr_watch_oom();
+          memcpy(abs, w->path->data, alen);
+          abs[alen] = '/';
+          memcpy(abs + alen + 1, name, nlen + 1);
+          if (e->mask & (IN_CREATE | IN_MOVED_TO)) {
+            scr_watch_add_sub(w, abs, name);
+            scr_watch_walk(w, abs, name);
+          } else if (e->mask & (IN_DELETE | IN_MOVED_FROM)) {
+            scr_watch_drop_sub(w, name);
+            if (scr_watch_ino >= 0 && !scr_watch_wd_shared(e->wd, w))
+              (void)inotify_rm_watch(scr_watch_ino, e->wd);
+          }
+          free(abs);
+        }
         scr_watch_fire(w, change ? "change" : "rename", name);
+        /* A watched SUBDIRECTORY that itself moved away would otherwise
+         * keep delivering events from its new place in the tree. */
+        if (sub != NULL && (e->mask & (IN_MOVE_SELF | IN_DELETE_SELF))) {
+          ScrStr *rel = scr_str_retain(sub->rel);
+          scr_watch_drop_sub(w, rel->data);
+          if (scr_watch_ino >= 0 && !scr_watch_wd_shared(e->wd, w))
+            (void)inotify_rm_watch(scr_watch_ino, e->wd);
+          scr_str_release(rel);
+        }
+        free(owned);
         if (scr_exc_pending()) return; /* the loop surfaces it */
       }
     }

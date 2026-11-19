@@ -777,9 +777,11 @@ declare module "node:fs" {
   }
   /* The options-record stance (see http.RequestOptions): persistent (a
    * boolean; true is Node's default) is the watcher's initial loop
-   * liveness, recursive: false and encoding: "utf8" state the lowered
-   * behavior and are accepted; recursive: true and signal fence by name at
-   * the call site; undocumented keys drop like Node. */
+   * liveness, recursive watches the whole directory subtree (Linux and
+   * Windows today; a recursive macOS directory watch throws SC2020 until
+   * the FSEvents backend lands), encoding: "utf8" states the lowered
+   * behavior and is accepted; signal fences by name at the call site;
+   * undocumented keys drop like Node. */
   export interface WatchOptions {
     persistent?: boolean;
     recursive?: boolean;

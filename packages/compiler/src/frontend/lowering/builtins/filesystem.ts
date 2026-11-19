@@ -1493,10 +1493,12 @@ function watchListenerArity(lowerer: Lowerer, cb: IrExpr): 0 | 1 | 2 | null {
  * watched file's basename otherwise (Linux inotify names both; a macOS
  * directory watch has no name source until F3). The options record follows the options-record
  * stance: persistent (default true) is the watcher's loop liveness and is
- * passed through, recursive: false and encoding: "utf8" state the lowered
- * behavior and are accepted; recursive: true (kqueue watches one inode),
- * signal, and non-utf8 encodings fence by name; undocumented keys drop
- * like Node. A reffed watcher keeps the loop alive until watcher.close(). */
+ * passed through, recursive is a run-time truthiness read the platform
+ * backends honor (a directory subtree on Linux and Windows, the FSEvents
+ * arm for a recursive macOS directory), encoding: "utf8" states the
+ * lowered behavior and is accepted; signal and non-utf8 encodings fence by
+ * name; undocumented keys drop like Node. A reffed watcher keeps the loop
+ * alive until watcher.close(). */
 export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (
     expr.arguments.nodes.length < 1 ||
@@ -1519,6 +1521,9 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
     );
   }
   let persistent: IrExpr = boolLit(true, loc);
+  // Node reads `recursive` for truthiness; a directory subtree is watched
+  // on Linux and Windows, and a recursive macOS directory uses FSEvents.
+  let recursive: IrExpr = boolLit(false, loc);
   if (hasOptions) {
     for (const prop of (expr.arguments.nodes[1] as ts.ObjectLiteralExpression).properties.nodes) {
       if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
@@ -1548,12 +1553,9 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
         continue;
       }
       if (key === "recursive") {
-        if (init !== null && init.kind === ts.SyntaxKind.FalseKeyword) continue;
-        lowerer.noLowering(
-          "fs.watch with the recursive option",
-          prop,
-          "recursive watching has no lowering yet — kqueue watches the one opened path; watch each path",
-        );
+        if (init === null) lowerer.noLowering("fs.watch with this recursive member", prop);
+        recursive = lowerer.lowerExprExpecting(init, BOOL);
+        continue;
       }
       if (key === "encoding") {
         const enc = init !== null && ts.isStringLiteralLike(init) ? init.text : null;
@@ -1604,6 +1606,7 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
   }
   const hasListener = args.length === 2;
   args.push(persistent); // fs.watch: [path, persistent]; fs.watchCb: [path, cb, persistent]
+  args.push(recursive);
   return {
     kind: "libCall",
     fn: hasListener ? "fs.watchCb" : "fs.watch",

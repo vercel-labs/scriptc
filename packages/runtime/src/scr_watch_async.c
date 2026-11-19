@@ -201,7 +201,7 @@ ScrWatchEvents *scr_watch_events_new(ScrStr *path, bool persistent, double max_q
   ScrClosure *cb = scr_closure_new((void *)scr_watch_events_event, 1);
   cb->caps[0] = scr_box_new_obj(scr_watch_events_retain_v, scr_watch_events_release_v, NULL);
   scr_box_set_ref(cb->caps[0], scr_watch_events_retain(st));
-  ScrWatcher *watcher = scr_fs_watch(path, cb, scr_watch_events_event, true, persistent);
+  ScrWatcher *watcher = scr_fs_watch(path, cb, scr_watch_events_event, true, persistent, false);
   if (watcher == NULL) {
     /* Exception pending: the closure (and its box reference) is gone. */
     scr_watch_events_release(st);

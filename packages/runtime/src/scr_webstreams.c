@@ -5760,10 +5760,14 @@ static ScrDyn *ws_compression_transform(ScrClosure *closure, ScrDyn *const *args
     c = cv->v.handle.ptr;
   ScrDyn *result = NULL;
   ScrBytes *bytes = ws_compression_chunk(ws_arg(args, argc, 0));
-  if (!bytes) goto done;
-  if (bytes->len > 0 && ws_compression_step(t, 0, c, bytes->data, bytes->len)) result = ws_undef();
-  scr_bytes_release(bytes);
-done:
+  if (bytes != NULL) {
+    /* An empty chunk is a completed write that compresses nothing; leaving
+     * the answer unset would stall the write queue. */
+    if (bytes->len == 0 || ws_compression_step(t, 0, c, bytes->data, bytes->len))
+      result = ws_undef();
+    scr_bytes_release(bytes);
+  }
+  ws_release(t); /* the box reference this callback took */
   return result;
 }
 
@@ -5774,9 +5778,13 @@ static ScrDyn *ws_compression_flush(ScrClosure *closure, ScrDyn *const *args, si
                         ? cv->v.handle.ptr
                         : NULL;
   ScrDyn *result = NULL;
-  if (!ws_compression_step(t, 4, c, NULL, 0)) return NULL;
+  if (!ws_compression_step(t, 4, c, NULL, 0)) {
+    ws_release(t);
+    return NULL;
+  }
   if (t->decompress && t->zstream && !scr_ws_zstream_ops->ended(t->zstream)) {
     /* finish() reached no stream end: the compressed input was truncated. */
+    ws_release(t);
     scr_throw_error_msg_code(SCR_ERR_TYPE, "", 0, "Z_BUF_ERROR");
     return NULL;
   }
@@ -5786,6 +5794,7 @@ static ScrDyn *ws_compression_flush(ScrClosure *closure, ScrDyn *const *args, si
   }
   if (c) ws_tcontroller_terminate(c);
   result = ws_undef();
+  ws_release(t); /* the box reference this callback took */
   return result;
 }
 
@@ -5826,13 +5835,25 @@ static ScrDyn *ws_compression_construct(ScrDyn *const *args, size_t argc, bool d
     else if (strcmp(text->data, "deflate-raw") == 0) mode = 2;
   }
   if (mode < 0) {
-    char msg[192];
-    int n = snprintf(msg, sizeof msg,
+    /* The message carries the value's full text, so its buffer is sized from
+     * it: a fixed buffer would cut the message and report a length past its
+     * end. */
+    const char *shown = text != NULL ? text->data : "undefined";
+    size_t needed = strlen(cls) + strlen(shown) + 128;
+    char *msg = malloc(needed);
+    if (msg == NULL) {
+      scr_str_release(text);
+      static const char fallback[] = "Failed to construct a compression stream: invalid format";
+      scr_throw_error_msg(SCR_ERR_TYPE, fallback, sizeof fallback - 1);
+      return NULL;
+    }
+    int n = snprintf(msg, needed,
                      "Failed to construct '%s': 1st argument '%s' is not a valid enum value "
                      "of type CompressionFormat.",
-                     cls, text != NULL ? text->data : "undefined");
+                     cls, shown);
     scr_str_release(text);
     scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+    free(msg);
     return NULL;
   }
   scr_str_release(text);

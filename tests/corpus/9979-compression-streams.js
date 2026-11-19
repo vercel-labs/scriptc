@@ -95,3 +95,24 @@ try {
 } catch (error) {
   console.log("bad", error.name, JSON.stringify(error.message), error.code);
 }
+
+// An empty chunk is a completed write: the stream accepts it and still
+// compresses the chunks that follow.
+const afterEmpty = await run(new CompressionStream("gzip"), [
+  new Uint8Array(0),
+  encoder.encode("after-empty"),
+]);
+console.log(
+  "empty-first",
+  hex(afterEmpty),
+  decoder.decode(await run(new DecompressionStream("gzip"), [afterEmpty])),
+);
+
+// The invalid-format message carries the whole value, however long.
+const longFormat = "x".repeat(400);
+try {
+  new CompressionStream(longFormat);
+  console.log("long accepted");
+} catch (error) {
+  console.log("long", error.name, error.message.length, error.message.includes(longFormat), error.message);
+}

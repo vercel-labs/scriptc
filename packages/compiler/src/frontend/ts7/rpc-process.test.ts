@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -138,3 +138,32 @@ for (const [label, mode, signal] of cases) {
     expect(await waitForDeath(pid)).toBe(true);
   });
 }
+
+test.skipIf(process.platform !== "linux")(
+  "keeps the server's PID under a live supervisor while it runs",
+  () => {
+    const io = new Ts7FifoIo(fakeServer(), []);
+    const pid = io.pid;
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+      // A detached server would be reparented to init, whose reap frees the
+      // PID for reuse while the lifetime watcher still holds it.
+      expect(ppid).not.toBe(1);
+      expect(alive(ppid)).toBe(true);
+    } finally {
+      io.close();
+    }
+  },
+);
+
+test.skipIf(!posix)("closing after the server exited reaps it without a signal", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-reap-short-"));
+  const executable = join(directory, "server");
+  writeFileSync(executable, "#!/bin/sh\nexit 3\n");
+  chmodSync(executable, 0o755);
+  const io = new Ts7FifoIo(executable, []);
+  const pid = io.pid;
+  expect(await waitForDeath(pid)).toBe(true);
+  expect(() => io.close()).not.toThrow();
+});

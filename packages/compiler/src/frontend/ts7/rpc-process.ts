@@ -141,11 +141,21 @@ class Ts7NamedPipeIo implements Ts7WireIo {
  * background subshell would otherwise block opening its input and the failure
  * would only surface as end of file on the first read. */
 const FIFO_LAUNCH =
-  'i=$1 o=$2 l=$3; shift 3; command -v "$1" >/dev/null || exit 127; ' +
-  'mkfifo -m 600 "$i" "$o" "$l" || exit 1; ' +
-  '( exec </dev/null >/dev/null; exec "$@" <"$i" >"$o" ) & s=$!; ' +
-  '( read -r _ <"$l"; kill -9 "$s" 2>/dev/null ) >/dev/null 2>&1 & ' +
-  "echo $s";
+  'i=$1 o=$2 l=$3 p=$4; shift 4; command -v "$1" >/dev/null || exit 127; ' +
+  'mkfifo -m 600 "$i" "$o" "$l" "$p" || exit 1; ' +
+  // The server runs under a SUPERVISOR subshell that starts it, reports its
+  // PID, waits for it, and only then lets the lifetime watcher go. A
+  // detached server's PID is free to reuse once init reaps it; here its
+  // parent has not reaped it while the watcher can still run, so the
+  // watcher's kill cannot reach a different process.
+  "( exec </dev/null >/dev/null 2>&1; " +
+  '"$@" <"$i" >"$o" & s=$!; ' +
+  'echo "$s" >"$p"; ' +
+  '( read -r _ <"$l"; kill -9 "$s" 2>/dev/null ) & k=$!; ' +
+  'wait "$s" 2>/dev/null; ' +
+  'kill -9 "$k" 2>/dev/null; ' +
+  'wait "$k" 2>/dev/null ) & ' +
+  'read -r s <"$p"; echo "$s"';
 
 /** How long a starting server may take to open its input, in milliseconds. */
 const FIFO_OPEN_TIMEOUT = 10_000;
@@ -175,10 +185,11 @@ export class Ts7FifoIo implements Ts7WireIo {
     const input = join(directory, "in");
     const output = join(directory, "out");
     const life = join(directory, "life");
+    const pidPipe = join(directory, "pid");
     try {
       const shell = spawnSync(
         "/bin/sh",
-        ["-c", FIFO_LAUNCH, "sh", input, output, life, executable, ...args],
+        ["-c", FIFO_LAUNCH, "sh", input, output, life, pidPipe, executable, ...args],
         { stdio: ["ignore", "pipe", "inherit"], encoding: "utf8" },
       );
       const pid = Number(shell.stdout?.trim());

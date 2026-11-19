@@ -3438,6 +3438,8 @@ static ScrDyn *scr_builtin_class_prototype_of_tag(ScrDynHandleTag tag) { /* +1 *
   return NULL;
 }
 
+static ScrDyn *scr_builtin_class_make(const char *module, const char *name, double arity);
+
 /* The tag's class prototype, creating the class value (which registers it)
  * when the program has not read the class yet: an instance's `constructor`
  * read before `http.IncomingMessage` must answer the same value. */
@@ -3447,34 +3449,34 @@ static ScrDyn *scr_builtin_class_prototype_for_tag(ScrDynHandleTag tag) { /* +1 
   const char *module = NULL, *name = NULL;
   double arity = 0;
   if (!scr_builtin_class_tag_pair(tag, &module, &name, &arity)) return NULL;
-  /* The class value's function name and the registry entry borrow these
-   * bytes for the program's lifetime (the compiler's own reads pass
-   * literals), so they are kept rather than released: two small strings per
-   * lazily created class, once each. */
-  ScrStr *module_text = scr_str_new(module, strlen(module));
-  ScrStr *name_text = scr_str_new(name, strlen(name));
-  ScrDyn *value = scr_dyn_builtin_class_value(module_text, name_text, arity);
+  /* The tag pair's own literals are program-lifetime, like the compiler's
+   * class reads, so nothing is allocated that outlives the call. */
+  ScrDyn *value = scr_builtin_class_make(module, name, arity);
   scr_dyn_release(value);
   return scr_builtin_class_prototype_of_tag(tag);
 }
 
 
-ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, double arity) {
+/* `module` and `name` are immortal program-lifetime literals: the registry
+ * entries and the function name borrow them, which is why both the
+ * compiler-emitted class reads (its string literals) and the tag pair's own
+ * literals may pass them here. */
+static ScrDyn *scr_builtin_class_make(const char *module, const char *name, double arity) {
   for (size_t i = 0; i < scr_builtin_class_count; i++) {
     const ScrBuiltinClassEntry *entry = &scr_builtin_class_entries[i];
-    if (strcmp(entry->module, module->data) == 0 && strcmp(entry->name, name->data) == 0)
+    if (strcmp(entry->module, module) == 0 && strcmp(entry->name, name) == 0)
       return scr_dyn_retain(entry->value);
   }
-  ScrDyn *value = scr_dyn_new_func(scr_closure_new((void *)name->data, 0),
+  ScrDyn *value = scr_dyn_new_func(scr_closure_new((void *)name, 0),
                                    scr_builtin_class_construct_refusal, (uint32_t)arity,
-                                   "builtin-class", name->data);
+                                   "builtin-class", name);
   /* A function's own prototype object: hidden constructor, writable
    * prototype, as Node's classes carry. */
   ScrDyn *prototype = scr_dyn_new_obj();
   scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain(value));
   for (size_t i = 0; i < (size_t)prototype->v.obj.len; i++)
     scr_dyn_obj_dict_entries(prototype)[i].enumerable = false;
-  ScrDynHandleTag tag = scr_builtin_class_tag(module->data, name->data);
+  ScrDynHandleTag tag = scr_builtin_class_tag(module, name);
   if (tag != SCR_DYNH_CAPACITY) scr_builtin_class_register_tag(tag, prototype);
   scr_dyn_fn_seed_prototype(value, prototype);
   ScrDyn *table = scr_dyn_function_properties(value);
@@ -3500,8 +3502,12 @@ ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, do
   }
   if (scr_builtin_class_count == 0) scr_atexit(scr_builtin_class_cleanup);
   scr_builtin_class_entries[scr_builtin_class_count++] =
-      (ScrBuiltinClassEntry){module->data, name->data, scr_dyn_retain(value)};
+      (ScrBuiltinClassEntry){module, name, scr_dyn_retain(value)};
   return value;
+}
+
+ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, double arity) {
+  return scr_builtin_class_make(module->data, name->data, arity);
 }
 
 /* Error.captureStackTrace called through its function value. The

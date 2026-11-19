@@ -208,6 +208,12 @@ export { lowerInstanceOf } from "./expressions/relational.js";
 export type FieldTarget =
   | { container: "dynamic"; obj: IrExpr; field: string; fieldType: IrType }
   | { container: "errorStackLimit"; obj: IrExpr; field: "stackTraceLimit"; fieldType: IrType }
+  | {
+      container: "errorPrepareStackTrace";
+      obj: IrExpr;
+      field: "prepareStackTrace";
+      fieldType: IrType;
+    }
   | { container: "errorCause"; obj: IrExpr; field: "cause"; fieldType: IrType }
   | { container: "class"; obj: IrExpr; className: string; field: string; fieldType: IrType }
   | { container: "record"; obj: IrExpr; shapeId: string; field: string; fieldType: IrType }

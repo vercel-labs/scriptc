@@ -5501,6 +5501,8 @@ function buildLibFnSignatures() {
     "error.setStack": { argTypes: [null, STRING], result: VOID },
     "error.stackLimitGet": { argTypes: [], result: F64 },
     "error.stackLimitSet": { argTypes: [F64], result: VOID },
+    "error.prepareStackTraceGet": { argTypes: [], result: DYN },
+    "error.prepareStackTraceSet": { argTypes: [DYN], result: VOID },
     // Receiver (any error-hierarchy object) and the program-dependent
     // `string | undefined` result are checked in the libCall case.
     /** NodeJS.ErrnoException's `.code` read: borrowed error-hierarchy

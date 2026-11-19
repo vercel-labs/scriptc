@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9587-node-island-nullable-member-reads/main.ts"
+ ],
+ "diags": []
+}

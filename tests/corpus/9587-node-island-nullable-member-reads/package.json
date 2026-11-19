@@ -1,0 +1,6 @@
+{
+  "name": "node-island-nullable-member-reads",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "nullable-pkg": "node" } }
+}

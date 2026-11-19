@@ -159,12 +159,6 @@
       "signature": "SC8006"
     }
   },
-  "corpus/undeclared-key-optional-chain": {
-    "island:hostilekit": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: expected string at $, got undefined"
-    }
-  },
   "corpus/workspace-shipped-package-js": {
     "island:wsshipped": {
       "category": "build",

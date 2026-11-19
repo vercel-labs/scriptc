@@ -18898,8 +18898,10 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
   bool own_view = false;
   if (!view && !live && value->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(value) &&
       scr_dyn_handle_ops_of(value)->own_view) {
-    view = scr_dyn_handle_own_view(value);
-    if (!view) return false;
+    /* Read lazily: the key list is the class's own (no native reads), and
+     * each property is read when the walk reaches it. An array replacer's
+     * property list therefore never touches limits it excludes, and a
+     * closed database answers its errors only for the keys asked for. */
     own_view = true;
   }
   const ScrDyn *observed = view ? view : value;
@@ -18911,6 +18913,7 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
   bool island = scr_ni_dyn_handle(observed);
   ScrDynKind kind = island
       ? (scr_ni_dyn_ops->is_array((ScrDyn *)observed) ? SCR_DYN_ARR : SCR_DYN_OBJ)
+      : own_view ? SCR_DYN_OBJ
       : !live ? observed->kind : scr_dyn_typed_ref_array_ops(value) ? SCR_DYN_ARR : SCR_DYN_OBJ;
   if (kind != SCR_DYN_OBJ && kind != SCR_DYN_ARR && kind != SCR_DYN_BYTES) {
 

@@ -97,6 +97,12 @@ refusal("descriptor", () => Object.getOwnPropertyDescriptor(limits, "length"));
 // A JavaScript-added property describes itself without the connection.
 console.log("closedAdded:", JSON.stringify(Object.getOwnPropertyDescriptor(limits, "alpha")));
 console.log("closedAbsent:", Object.getOwnPropertyDescriptor(limits, "nope"));
+// An allowlist of added properties serializes them without reading the
+// connection; a limit in the list (or a replacer that walks the object)
+// reads it and reports the closed database.
+console.log("closedAllowlist:", JSON.stringify(limits, ["alpha", "temp"]));
+refusal("allowlistLimit", () => JSON.stringify(limits, ["length"]));
+refusal("replacer", () => JSON.stringify(limits, (key, value) => (key === "length" ? undefined : value)));
 console.log("closedRead:");
 try {
   console.log(limits.length);

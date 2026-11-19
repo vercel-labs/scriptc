@@ -536,7 +536,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     const adapter = emitter.liveDynRefAdapter(type);
     const rc = vAdapters(emitter.shapeHost, type);
     const key = typeKey(type);
-    const name = `sc_error_view_${errorViews.length}`;
+    const name = emitter.contentSymbol("sc_error_view_", key);
     emitter.resolveThunkDefs.push(
       `define internal ptr @${name}(ptr %v) ${FN_ATTRS} {`,
       `entry:`,

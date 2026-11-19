@@ -25,6 +25,7 @@ export type RequestBody = string | Buffer | Uint8Array | null;
 export interface DispatchOptions {
   origin?: string | URL;
   path: string;
+  query?: Record<string, unknown>;
   method: string;
   /** undici-types declare streams and FormData here beside strings and
    * bytes; what is sent is RequestBody, and any other value is refused

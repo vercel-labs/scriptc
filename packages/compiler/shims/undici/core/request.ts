@@ -1,6 +1,8 @@
 // undici's per-dispatch request record (lib/core/request.js): option
 // validation, header processing, and the handler callbacks with their
 // diagnostics_channel publications.
+import { stringify } from "node:querystring";
+import type { ParsedUrlQueryInput } from "node:querystring";
 import { channels } from "./diagnostics.ts";
 import { InvalidArgumentError, NotSupportedError } from "./errors.ts";
 import type { DispatchHandlers, DispatchOptions, Profile } from "./types.ts";
@@ -81,6 +83,13 @@ export class Request {
     this.origin = origin;
     this.method = method;
     this.path = path;
+    if (opts.query) {
+      if (path.includes("?") || path.includes("#")) {
+        throw new Error('Query params cannot be passed when url already contains "?" or "#".');
+      }
+      const encoded = stringify(opts.query as ParsedUrlQueryInput);
+      if (encoded) this.path += "?" + encoded;
+    }
     this.headersTimeout = headersTimeout;
     this.bodyTimeout = bodyTimeout;
     // 7.x dropped throwOnError (the responseError interceptor replaced it).

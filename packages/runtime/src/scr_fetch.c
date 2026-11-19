@@ -7017,6 +7017,17 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
   return sf_response_construct(body, init, NULL, NULL);
 }
 
+/* A package dispatcher supplies the network response to fetch. Record its
+ * final URL (without a fragment) in the same slots as the native transport. */
+void scr_fetch_response_set_url(ScrDyn *value, ScrUrl *url, bool redirected) {
+  if (!value || value->kind != SCR_DYN_HANDLE ||
+      value->v.handle.tag != SCR_DYNH_FETCH_RESPONSE || !url) return;
+  SfResponse *response = value->v.handle.ptr;
+  scr_str_release(response->url);
+  response->url = sf_url_serialize(url);
+  response->redirected = redirected;
+}
+
 ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init) {
   return sf_response_construct(NULL, init, data ? data : scr_dyn_undefined(),
                                &sf_response_json_serialize);

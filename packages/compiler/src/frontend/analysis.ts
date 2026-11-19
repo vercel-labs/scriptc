@@ -15,6 +15,7 @@ import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.j
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
 import { outsideGraphIslands } from "../node-islands/graph-islands.js";
 import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
+import { loadWithShimFallback } from "./package-shims.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
  * Unlike compile(), lowering diagnostics are data here, not failure. */
@@ -50,11 +51,13 @@ export function analyzeWithFrontend(
   // decideNodeIslands), including a package the policy forces into Node.
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
   const forcedNode = new Set(policy.forcedNode.keys());
-  const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
-    nodeIslands: true,
-    forcedNode,
-    ...(opts.define !== undefined ? { define: opts.define } : {}),
-  });
+  const fe = loadWithShimFallback(policy, forcedNode, () =>
+    createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
+      nodeIslands: true,
+      forcedNode,
+      ...(opts.define !== undefined ? { define: opts.define } : {}),
+    }),
+  );
   // The reload lowering may run on, once the island set is known (see
   // lowerFrontend): null when the first load already excludes every island.
   const lowerLoad: { fe: Frontend | null; key: string } = { fe: null, key: "" };
@@ -72,6 +75,9 @@ export function analyzeWithFrontend(
         .filter(
           (entry) =>
             entry.status === "refused" &&
+            // A limited shim whose installed declarations already answered
+            // the type error is an island decision, not a coverage error.
+            !(forcedNode.has(entry.package) && !policy.forcedNode.has(entry.package)) &&
             !Object.keys(opts.externalTypes ?? {}).some(
               (specifier) => packageNameOfSpecifier(specifier) === entry.package,
             ),

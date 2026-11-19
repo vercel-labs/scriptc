@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "undici": "8.12.2"
+    "undici": "8.12.4"
   }
 }

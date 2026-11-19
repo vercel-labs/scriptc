@@ -123,6 +123,7 @@ import {
   SYMBOL_T,
   type SrcLoc,
   UNDEFINED_T,
+  URL_T,
   VOID,
   arrayOf,
   canBoxFuncIntoDyn,
@@ -15052,6 +15053,7 @@ const SHIM_INTRINSICS: ReadonlyMap<string, { fn: IrLibFn; args: IrType[]; ret: I
   ["scriptcUnixDgramSend", { fn: "dgram.unixSend", args: [F64, BYTES_U8], ret: F64 }],
   ["scriptcUnixDgramClose", { fn: "dgram.unixClose", args: [F64], ret: F64 }],
   ["scriptcResponseLight", { fn: "fetch.responseLight", args: [DYN], ret: arrayOf(STRING) }],
+  ["scriptcResponseSetUrl", { fn: "fetch.responseSetUrl", args: [DYN, URL_T, BOOL], ret: VOID }],
 ]);
 
 function lowerShimIntrinsicCall(

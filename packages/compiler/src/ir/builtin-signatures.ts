@@ -71,6 +71,7 @@ function buildLibFnSignatures() {
      * are opaque checked-dynamic handles. */
     "fetch.start": { argTypes: [STRING, DYN], result: { kind: "promise", inner: DYN } },
     "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
+    "fetch.responseSetUrl": { argTypes: [DYN, URL_T, BOOL], result: VOID },
     "fetch.responseJsonStatic": { argTypes: [DYN, DYN], result: DYN },
     "fetch.responseLight": { argTypes: [DYN], result: arrayOf(STRING) },
     "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },

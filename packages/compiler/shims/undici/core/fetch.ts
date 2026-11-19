@@ -6,10 +6,7 @@
 // when the response headers arrive, and the Response body streams from the
 // connection with undici's back-pressure (see dispatchOnce).
 //
-// Known gaps: a Response built here reports `url` as "" and `redirected` as
-// false (the runtime's Response has no settable URL yet), and https requests
-// offer `gzip, deflate` rather than undici's `br, gzip, deflate` (the runtime
-// has no Brotli decoder).
+// HTTPS requests offer gzip and deflate, the runtime's available decoders.
 import type { Transform } from "node:stream";
 // The web stream classes come from their module, not from the global scope:
 // a project's @types/node may predate the globals (20.11 has none).
@@ -385,6 +382,9 @@ declare function scriptcFetchDispatcherHook(
   hook: (input: unknown, init: unknown) => Promise<Response>,
 ): (input: unknown, init: unknown) => Promise<Response>;
 
+declare function scriptcResponseSetUrl(response: Response, url: URL, redirected: boolean): void;
+let nativeResponse = false;
+
 /** Node's global fetch is undici's, so `fetch(url, { dispatcher })` sends
  * the request through the dispatcher. The native global fetch knows none:
  * a call whose init carries one comes here, with the values as the call
@@ -406,6 +406,7 @@ export function installGlobalFetchDispatcher(
   // has nothing to install: the global fetch there is undici's already.
   try {
     scriptcFetchDispatcherHook(through);
+    nativeResponse = true;
   } catch {
     return;
   }
@@ -568,11 +569,13 @@ async function fetchThrough(
       continue;
     }
 
-    return new Response(raw.body, {
+    const response = new Response(raw.body, {
       status: raw.status,
       statusText: raw.statusText,
       headers: responseHeaders,
     });
+    if (nativeResponse) scriptcResponseSetUrl(response, url, redirects > 0);
+    return response;
   }
 }
 

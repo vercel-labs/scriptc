@@ -24,6 +24,7 @@ export class Agent extends CoreAgent {
   constructor(options?: Agent.Options) {
     super(options, profile);
     requireHttp1(options);
+    if (options?.allowH2 === false) this.__options.allowH2 = false;
   }
 
   __createPool(origin: string | URL, options: PoolOptions): CorePool {
@@ -41,6 +42,7 @@ export class Pool extends CorePool {
   constructor(origin: string | URL, options?: Pool.Options) {
     super(origin, options, profile);
     requireHttp1(options);
+    if (options?.allowH2 === false) this.__options.allowH2 = false;
   }
 }
 

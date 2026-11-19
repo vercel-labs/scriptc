@@ -45,7 +45,7 @@ import {
   resolveBareModule,
   resolveWorkspaceSourceModule,
 } from "./resolve.js";
-import { isShimmedImport } from "./package-shims.js";
+import { isShimmedImport, loadedIslandShims } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
@@ -124,6 +124,8 @@ export type ProgramLoader = (
  * Frontend shape. */
 export interface Frontend {
   preflight: ScrDiagnostic[];
+  /** Loaded partial shim entries that can use the installed declarations. */
+  loadedIslandShims?: () => string[];
   /** The entry source file's text for diagnostics and source annotations. */
   entryText: () => string;
   /** Library mode's resolution input: the profile's export names resolved
@@ -1215,6 +1217,8 @@ function loadFrontend(
     preflight: withoutIslandModules(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
     ),
+    loadedIslandShims: () =>
+      loadedIslandShims((file) => finalLoad.program.getSourceFile(file) !== undefined),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
     entryText: () => finalLoad.elidedSources?.get(finalLoad.entry.fileName) ?? finalLoad.entry.text,
     entryExports: (names) => entryExportFacts(finalLoad.program, finalLoad.entry, names),
@@ -1480,6 +1484,7 @@ function loadFrontend(
           // that loads, one that was refused, or one judged and dropped.
           const npm =
             statuses.length > 0 ||
+            (options.forcedNode?.size ?? 0) > 0 ||
             droppedScan.modules.length > 0 ||
             [...files].some((sf) => isInstalledPackagePath(sf.fileName));
           const scanned = scanFiles(finalLoad.program, [...files], {

@@ -52,6 +52,7 @@ import { promisify } from "node:util";
 import { afterAll, describe, expect, test } from "vitest";
 import { analyze, compile } from "@scriptc/compiler";
 import { libnodePack } from "./libnode.js";
+import { programStderr, runBinary } from "./npm-suite.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -157,6 +158,15 @@ async function runAgainstPeer(binary: string, cwd: string): Promise<string> {
 async function withUndiciServer(check: (url: string) => Promise<void>): Promise<void> {
   const server = createServer(async (req, res) => {
     if (req.url === "/missing") res.statusCode = 404;
+    if (req.url === "/redirect") {
+      res.writeHead(302, { location: "/final" });
+      res.end();
+      return;
+    }
+    if (req.url === "/empty") {
+      res.end();
+      return;
+    }
     res.setHeader("x-route", "local");
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -174,17 +184,21 @@ async function withUndiciServer(check: (url: string) => Promise<void>): Promise<
 }
 
 describe("package shims", () => {
-  test("undici8: an explicit Node island uses the installed package exports", () => {
+  test("undici8: automatic and explicit islands expose the installed proxy agents", () => {
     const entry = join(repoRoot, "tests/fixtures/undici8/proxy.ts");
-    const native = analyze(entry);
+    const native = analyze(entry, { nodeIslands: { mode: "off" } });
     expect(native.coverage.preflightFailed).toBe(true);
+    expect(native.coverage.diagnostics.some((d) => d.message.includes("ProxyAgent"))).toBe(true);
+    const automatic = analyze(entry);
+    expect(automatic.coverage.preflightFailed).toBe(false);
+    expect(automatic.coverage.nodeIslands?.islands.map((item) => item.package)).toContain("undici");
     const island = analyze(entry, { nodeIslands: { islands: ["undici"] } });
     expect(island.coverage.preflightFailed).toBe(false);
     expect(island.coverage.nodeIslands?.islands.map((item) => item.package)).toContain("undici");
   }, 120_000);
 
   test.skipIf(libnodePack() === null)(
-    "undici8: both proxy agents forward HTTP through the installed package",
+    "undici8: both proxy agents forward HTTP with just the libnode pack",
     async () => {
       const dir = join(repoRoot, "tests/fixtures/undici8");
       const entry = join(dir, "proxy.ts");
@@ -193,13 +207,16 @@ describe("package shims", () => {
         outPath: join(out, "client"),
         outDir: out,
         sanitize,
-        nodeIslands: { islands: ["undici"] },
       });
       if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
       await withUndiciServer(async (url) => {
-        const expected = await run(process.execPath, [entry, url], dir);
-        expect(expected).toBe("200 GET http://origin.invalid/probe?q=1\n".repeat(2));
-        expect(await run(result.binaryPath, [url], dir)).toBe(expected);
+        const expected = await runBinary(process.execPath, [entry, url], dir);
+        expect(expected.exitCode).toBe(0);
+        expect(expected.stdout.toString()).toBe(
+          "200 GET http://origin.invalid/probe?q=1\n".repeat(2),
+        );
+        const actual = await runBinary(result.binaryPath, [url], dir);
+        expect({ ...actual, stderr: programStderr(actual.stderr) }).toEqual(expected);
       });
     },
     180_000,
@@ -217,11 +234,23 @@ describe("package shims", () => {
     });
     if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
     await withUndiciServer(async (url) => {
-      const expected = await run(process.execPath, [entry, url], dir);
-      expect(expected).toContain("200 POST /write payload");
-      expect(expected).toContain("404 GET /missing");
-      expect(expected).toContain("InvalidArgumentError invalid method");
-      expect(await run(result.binaryPath, [url], dir)).toBe(expected);
+      const expected = await runBinary(process.execPath, [entry, url], dir);
+      expect(expected.exitCode).toBe(0);
+      const output = expected.stdout.toString();
+      expect(output).toContain("200 POST /write payload");
+      expect(output).toContain("404 GET /missing");
+      expect(output).toContain("InvalidArgumentError invalid method");
+      expect(output).toContain("\nfactory false\n");
+      expect(output).toContain("pool factory false");
+      expect(output).toContain("/items?page=2&tag=a%20b&tag=c%2Fd");
+      expect(output).toContain("Query params cannot be passed");
+      expect(output).toContain("true true GET /final");
+      expect(output).toContain("clone true true GET /final");
+      expect(output).toContain("true false 302");
+      expect(output).toContain("/stream true\nTypeError unusable");
+      expect(output).toContain("/empty false\nremaining ");
+      const actual = await runBinary(result.binaryPath, [url], dir);
+      expect({ ...actual, stderr: programStderr(actual.stderr) }).toEqual(expected);
     });
   }, 180_000);
 

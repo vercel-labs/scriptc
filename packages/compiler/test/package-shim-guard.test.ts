@@ -29,7 +29,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { analyze } from "../src/index.js";
 import { packageShimEntries } from "../src/frontend/package-shims.js";
@@ -141,6 +141,51 @@ describe("package shims compile without refusals", () => {
       }, 300_000);
     }
   }
+});
+
+describe("partial package shim selection", () => {
+  const proxy = join(repoRoot, "tests/fixtures/undici8/proxy.ts");
+  test("explicit mode and a forced native package keep the shim's export error", () => {
+    for (const nodeIslands of [{ mode: "explicit" as const }, { native: ["undici"] }]) {
+      const { coverage } = analyze(proxy, { nodeIslands });
+      expect(coverage.preflightFailed).toBe(true);
+      expect(
+        coverage.diagnostics.some((d) => d.message.includes("no exported member 'ProxyAgent'")),
+      ).toBe(true);
+    }
+  }, 120_000);
+
+  test("rechecks a re-export against the installed types and preserves program errors", () => {
+    const main = projectWith(
+      "reexport-proxy",
+      "bundled",
+      'import { Proxy } from "./facade.ts";\nconsole.log(typeof Proxy);\n',
+    );
+    symlinkSync(
+      join(dirname(proxy), "node_modules"),
+      join(dirname(main), "node_modules"),
+      "junction",
+    );
+    writeFileSync(
+      join(dirname(main), "facade.ts"),
+      'export { ProxyAgent as Proxy } from "undici";\n',
+    );
+    const { coverage } = analyze(main);
+    expect(coverage.diagnostics).toEqual([]);
+    expect(
+      coverage.nodeIslands?.islands.map((island) => [island.package, island.decision]),
+    ).toEqual([["undici", "auto"]]);
+
+    writeFileSync(
+      main,
+      'import { Proxy } from "./facade.ts";\nconst bad: number = "text";\nconsole.log(typeof Proxy, bad);\n',
+    );
+    const invalid = analyze(main).coverage;
+    expect(invalid.preflightFailed).toBe(true);
+    expect(invalid.diagnostics.map((d) => d.message)).toEqual([
+      "Type 'string' is not assignable to type 'number'.",
+    ]);
+  }, 120_000);
 });
 
 /* The same difference in a program's own code: under @types/node,

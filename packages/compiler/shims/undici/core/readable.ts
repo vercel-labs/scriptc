@@ -19,6 +19,8 @@ export class BodyReadable extends EventEmitter {
   __abortFn: (err: Error) => void;
   __contentType: string;
   __consuming: boolean;
+  __disturbed: boolean;
+  __error: Error | null;
   __profile: Profile;
   __buffer: Buffer[];
   __length: number;
@@ -40,6 +42,8 @@ export class BodyReadable extends EventEmitter {
     this.__abortFn = abort;
     this.__contentType = contentType;
     this.__consuming = false;
+    this.__disturbed = false;
+    this.__error = null;
     this.__profile = profile;
     this.__buffer = [];
     this.__length = 0;
@@ -83,6 +87,7 @@ export class BodyReadable extends EventEmitter {
       return false;
     }
     if (this.__flowing && this.__length === 0 && this.listenerCount("data") > 0) {
+      this.__disturbed = true;
       this.emit("data", chunk);
       return true;
     }
@@ -112,7 +117,11 @@ export class BodyReadable extends EventEmitter {
     this.__destroyed = true;
     let error: Error | null = err ?? null;
     if (error === null && !this.__endEmitted) error = new RequestAbortedError();
-    if (error !== null) this.__abortFn(error);
+    if (error !== null) {
+      this.__error = error;
+      this.__disturbed = true;
+      this.__abortFn(error);
+    }
     this.__buffer = [];
     this.__length = 0;
     const reported = error;
@@ -136,6 +145,7 @@ export class BodyReadable extends EventEmitter {
     while (this.__flowing && !this.__destroyed && this.__buffer.length > 0) {
       const chunk = this.__buffer.shift()!;
       this.__length -= chunk.length;
+      this.__disturbed = true;
       this.emit("data", chunk);
     }
     if (this.__destroyed) return;
@@ -160,10 +170,8 @@ export class BodyReadable extends EventEmitter {
     });
   }
 
-  /** True once text()/json()/arrayBuffer()/bytes()/blob()/dump() started
-   * consuming the body. */
   get bodyUsed(): boolean {
-    return this.__consuming;
+    return this.__disturbed;
   }
 
   text(): Promise<string> {
@@ -226,8 +234,11 @@ export class BodyReadable extends EventEmitter {
   }
 
   __consume(): Promise<Buffer> {
-    if (this.bodyUsed) return Promise.reject(new TypeError("unusable"));
+    if (this.__error !== null) return Promise.reject(this.__error);
+    if (this.bodyUsed || this.__consuming) return Promise.reject(new TypeError("unusable"));
     this.__consuming = true;
+    // A flowing empty stream can finish without delivering any bytes.
+    if (this.__endEmitted) return Promise.resolve(Buffer.alloc(0));
     return new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = [];
       let done = false;

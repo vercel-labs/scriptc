@@ -12,6 +12,7 @@ export interface TopLevelRequestOptions {
   dispatcher?: Dispatcher;
   method?: string;
   path?: string;
+  query?: RequestOptions["query"];
   body?: RequestBody;
   headers?: UndiciHeaders;
   idempotent?: boolean;
@@ -74,6 +75,7 @@ export function request(
     const dispatchOptions: RequestOptions = {
       origin: target.origin,
       path: target.search ? `${target.pathname}${target.search}` : target.pathname,
+      query: opts.query,
       method,
       body: opts.body,
       headers: opts.headers,

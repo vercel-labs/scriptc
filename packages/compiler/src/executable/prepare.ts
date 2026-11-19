@@ -67,7 +67,11 @@ import {
 } from "../node-islands/growth.js";
 import type { NodeIslandMarker } from "../node-islands/detect.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
-import { builtinPackageAliasFor, packageShimFor } from "../frontend/package-shims.js";
+import {
+  builtinPackageAliasFor,
+  loadWithShimFallback,
+  packageShimFor,
+} from "../frontend/package-shims.js";
 import { withInsertedSpans } from "../frontend/js-void-initializers.js";
 
 export interface PreparedExecutableModule {
@@ -123,7 +127,7 @@ interface RoundState {
   /** The first load's island-decision inputs, captured once per compile;
    * null until the first load has run (or when rounds may not reuse it,
    * see firstLoadReusable). */
-  firstLoad: IslandDecisionInputs | null;
+  firstLoad: (IslandDecisionInputs & { nodePackages: ReadonlySet<string> }) | null;
   /** False only through the internal round options (the island-round tests
    * compare a compile with and without reuse). */
   reuseFirstLoad: boolean;
@@ -242,7 +246,7 @@ interface PrepareInputs {
   /** The command line's `--native` and `--npm-static` marks
    * (node-islands/package-marks.ts), checked once against the first load. */
   packageMarks: readonly PackageMark[];
-  forcedNode: ReadonlySet<string>;
+  loadPolicy: NodeIslandPolicy;
 }
 
 /** The islands, modules and fence rule the next round retries with. */
@@ -318,7 +322,7 @@ function prepareRounds(
     timing,
     islandScan: loadPolicy.mode !== "off" || packageMarks.length > 0,
     packageMarks,
-    forcedNode: new Set(loadPolicy.forcedNode.keys()),
+    loadPolicy,
   };
   // The island rounds run one at a time. A round whose preflight, lowering
   // or fence report grows the island set returns that set instead of
@@ -426,16 +430,21 @@ function prepareRound(
   // loads it as before: none (this round lowers the no-island program) or
   // errors (whose failure reports its source texts).
   let first: Frontend | null = null;
+  let nodePackages: ReadonlySet<string>;
   let islandDecision: ReturnType<typeof decideNodeIslands> =
     state.firstLoad === null
       ? null
       : decideNodeIslands(entryPath, opts, state.firstLoad, lowerIslands, lowerModules);
   if (state.firstLoad === null || islandDecision === null || islandDecision.errors.length > 0) {
-    first = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
-      forcedNode: inputs.forcedNode,
-      islandScan,
-      ...(opts.define !== undefined ? { define: opts.define } : {}),
-    });
+    const selected = new Set(inputs.loadPolicy.forcedNode.keys());
+    first = loadWithShimFallback(inputs.loadPolicy, selected, () =>
+      createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
+        forcedNode: selected,
+        islandScan,
+        ...(opts.define !== undefined ? { define: opts.define } : {}),
+      }),
+    );
+    nodePackages = selected;
     timing("frontend-load");
     // A mark that names nothing the build could act on is refused instead of
     // compiling as if the flag were not there. The program is the same on
@@ -469,7 +478,11 @@ function prepareRound(
       lowerModules,
     );
     captured.seal();
-    if (state.firstLoad === null && firstLoadReusable(state)) state.firstLoad = captured.inputs;
+    if (state.firstLoad === null && firstLoadReusable(state)) {
+      state.firstLoad = { ...captured.inputs, nodePackages };
+    }
+  } else {
+    nodePackages = state.firstLoad.nodePackages;
   }
   // A patched builtin the native build cannot represent (an entry module
   // patch, or a native read of a patched member) fails here.
@@ -484,7 +497,7 @@ function prepareRound(
   if (islandDecision !== null) {
     first?.dispose();
     fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
-      forcedNode: inputs.forcedNode,
+      forcedNode: nodePackages,
       islandPackages: new Set(islandDecision.packages.keys()),
       ...(islandDecision.modules.size > 0
         ? { islandModules: new Set(islandDecision.modules.keys()) }

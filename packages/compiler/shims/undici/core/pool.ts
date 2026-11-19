@@ -200,7 +200,7 @@ function clientUrl(client: Dispatcher): URL {
 export class Pool extends PoolBase {
   __connections: number | null;
   __url: URL;
-  __options: ClientOptions;
+  __options: ClientOptions & { allowH2?: false };
   __factory: ((origin: URL, opts: object) => Dispatcher) | null;
 
   constructor(origin: string | URL, options: PoolOptions | undefined, profile: Profile) {

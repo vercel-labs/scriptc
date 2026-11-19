@@ -18,7 +18,7 @@ interface AgentEntry {
 }
 
 export class Agent extends DispatcherBase {
-  __options: PoolOptions;
+  __options: PoolOptions & { allowH2?: false };
   __factory: ((origin: string | URL, opts: object) => Dispatcher) | null;
   __clients: Map<string, AgentEntry>;
   __onDrain: (origin: URL, targets: Dispatcher[]) => void;

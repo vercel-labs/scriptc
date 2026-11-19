@@ -4,6 +4,7 @@
 #define SCR_GENERATOR_H
 
 #include "scr_events.h"
+#include "scr_url.h"
 
 /* ── sync generators (function*) ──────────────────────────────────────
  * A generator is a refcounted handle (ScrGen) over a fiber created
@@ -205,6 +206,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init);
 ScrDyn *scr_fetch_headers_new(ScrDyn *init);
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init); /* +1 promise<Response handle> */
 ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init); /* borrowed args; +1 Response handle or NULL pending */
+void scr_fetch_response_set_url(ScrDyn *response, ScrUrl *url, bool redirected);
 ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init); /* Response.json; borrowed args; +1 Response handle or NULL pending */
 ScrArr *scr_fetch_response_light(ScrDyn *response); /* @hono/node-server shim: borrowed; +1 string[] */
 ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */

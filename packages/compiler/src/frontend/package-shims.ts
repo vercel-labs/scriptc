@@ -43,6 +43,8 @@ import { dirname, join, resolve } from "node:path";
 import { packageShimRoot, tsgoPath } from "./dts-paths.js";
 import { trackedDirectoryExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { readProjectConfig } from "../project-config.js";
+import type { NodeIslandPolicy } from "../node-islands/policy.js";
+import type { Frontend } from "./pipeline.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
 import {
   BUILTIN_ALIAS_PACKAGES,
@@ -56,8 +58,7 @@ interface ImplementationShim {
   /** Supported major versions and their entry modules, relative to the
    * shim root. */
   versions: ReadonlyMap<number, string>;
-  /** Versions previously served by Node islands. An explicit Node selection
-   * keeps the installed package and its declarations for these versions. */
+  /** Versions with a partial shim and a fallback to the installed package. */
   islandVersions?: readonly number[];
   /** Major versions without an entry module that `--npm-static` compiles
    * from the package's own published JavaScript. An installed version that
@@ -204,6 +205,70 @@ export function packageShimEntries(): string[] {
     for (const entry of shim.variants ?? []) entries.add(join(packageShimRoot(), entry));
   }
   return [...entries].sort();
+}
+
+export function loadedIslandShims(hasFile: (path: string) => boolean): string[] {
+  const packages: string[] = [];
+  for (const shim of IMPLEMENTATION_SHIMS.values()) {
+    for (const major of shim.islandVersions ?? []) {
+      const entry = shim.versions.get(major);
+      if (entry !== undefined && hasFile(tsgoPath(join(packageShimRoot(), entry)))) {
+        packages.push(shim.name);
+        break;
+      }
+    }
+  }
+  return packages;
+}
+
+/** A partial shim may omit an export or overload from the installed types.
+ * Let the checker answer again with those types. Only an error that goes
+ * away justifies bypassing the shim; unrelated application errors survive.
+ * This also covers namespace accesses and re-exports in other modules. */
+export function loadWithShimFallback(
+  policy: NodeIslandPolicy,
+  nodePackages: Set<string>,
+  load: () => Frontend,
+): Frontend {
+  let frontend = load();
+  if (policy.mode !== "auto" || !frontend.preflight.some((d) => d.code === "SC0001")) {
+    return frontend;
+  }
+  for (const name of frontend.loadedIslandShims?.() ?? []) {
+    if (policy.forcedNative.has(name) || nodePackages.has(name)) continue;
+    const errors = frontend.preflight.filter((d) => d.code === "SC0001");
+    if (errors.length === 0) break;
+    frontend.dispose();
+    nodePackages.add(name);
+    frontend = load();
+    const remaining = new Set(
+      frontend.preflight
+        .filter((d) => d.code === "SC0001")
+        .map((d) => `${d.loc.file}\0${d.loc.start}`),
+    );
+    if (errors.every((d) => remaining.has(`${d.loc.file}\0${d.loc.start}`))) {
+      frontend.dispose();
+      nodePackages.delete(name);
+      frontend = load();
+    }
+  }
+  // Type-only imports can need the installed declarations without loading
+  // Node. Record the shim's refusal for the island detector only where the
+  // checked program has a value edge to this installed package.
+  if (nodePackages.size > policy.forcedNode.size) {
+    const edges = frontend.nodeIslandScan?.({ userJs: false }).edges ?? [];
+    for (const name of nodePackages) {
+      if (!policy.forcedNode.has(name) && edges.some((e) => !e.shim && e.to === name)) {
+        frontend.npmStatic.push({
+          package: name,
+          status: "refused",
+          detail:
+            "the program requires the installed declarations beyond the built-in package implementation",
+        });
+      }
+    }
+  }
+  return frontend;
 }
 
 /** Package names the project marks never loaded. */
@@ -415,6 +480,7 @@ export function isShimIntrinsicName(name: string): boolean {
   return (
     name.startsWith("scriptcUnixDgram") ||
     name === "scriptcResponseLight" ||
+    name === "scriptcResponseSetUrl" ||
     name === FETCH_DISPATCHER_HOOK
   );
 }

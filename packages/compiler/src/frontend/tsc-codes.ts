@@ -767,15 +767,74 @@ export function jsFieldDeclaringClass(field: ts.Symbol): ts.ClassLikeDeclaration
   return undefined;
 }
 
+/** The JSDoc-typed JavaScript array field a `push` or `unshift` call appends
+ * to (`this.uniforms.push(value)` over `@type {Array<Uniform>}`): the class
+ * that declares the field and its name. */
+export function jsArrayFieldAppendOwner(
+  checker: ts.TypeChecker,
+  call: ts.CallExpression,
+): { decl: ts.ClassLikeDeclaration; name: string } | undefined {
+  const callee = call.expression;
+  if (
+    !ts.isPropertyAccessExpression(callee) ||
+    !ts.isIdentifier(callee.name) ||
+    (callee.name.text !== "push" && callee.name.text !== "unshift")
+  )
+    return undefined;
+  let target: ts.Expression = callee.expression;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isPropertyAccessExpression(target) || !ts.isIdentifier(target.name)) return undefined;
+  const field = checker.getSymbolAtLocation(target.name);
+  if (field === undefined || !checker.isArrayType(checker.getTypeOfSymbol(field))) return undefined;
+  const decl = jsFieldDeclaringClass(field);
+  return decl === undefined ? undefined : { decl, name: target.name.text };
+}
+
+/** TS2739 on a value a JavaScript program appends to a JSDoc-typed array
+ * field (jsArrayFieldAppendOwner): the array holds what is appended, so the
+ * field takes checked-dynamic storage (analyzeJsWidenedFields). */
+const jsArrayFieldAppend = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  const call = node.parent;
+  return (
+    call !== undefined &&
+    ts.isCallExpression(call) &&
+    call.arguments.nodes.includes(node as ts.Expression) &&
+    jsArrayFieldAppendOwner(program.getTypeChecker(), call) !== undefined
+  );
+};
+
+/** Whether `node` writes a JavaScript accessor property whose setter is
+ * declared in a JavaScript class (`this.depthTexture = texture` over a
+ * `set depthTexture(value)` documented `@type {?DepthTexture}`): the value
+ * reaches the setter as Node passes it, and the pair takes and answers
+ * checked-dynamic values (analyzeJsWidenedFields, jsWidenedAccessors). */
+const jsAccessorWriteTarget = (node: ts.Node, program: ts.Program): boolean => {
+  if (!jsWideningWriteTarget(node) || !ts.isPropertyAccessExpression(node)) return false;
+  if (!ts.isIdentifier(node.name)) return false;
+  const symbol = program.getTypeChecker().getSymbolAtLocation(node.name);
+  return (
+    symbol !== undefined &&
+    symbol.declarations.some(
+      (decl) =>
+        ts.isSetAccessorDeclaration(decl) &&
+        isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName),
+    )
+  );
+};
+
 /** Whether `node` is the target of a write into a JavaScript binding or
  * field whose storage follows the values the program writes: a JSDoc-typed
  * target, or an unannotated `let`/`var`. TS2739 is the elaborated form of
  * the assignability diagnostics for a class or record target; in JavaScript
  * the value is legal and the storage follows what the program writes
- * (analyzeJsWidenedBindings and analyzeJsWidenedFields). A `const` keeps
- * its inferred type, and a write the scans do not reach keeps the code's
- * triage decision, which refuses it instead of failing in the lowering. */
-const jsStorageWriteTarget = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+ * (analyzeJsWidenedBindings and analyzeJsWidenedFields). The same holds
+ * for a write through a JavaScript accessor (jsAccessorWriteTarget) and a
+ * value appended to a JSDoc-typed array field (jsArrayFieldAppend). A
+ * `const` keeps its inferred type, and a write the scans do not reach keeps
+ * the code's triage decision, which refuses it instead of failing in the
+ * lowering. */
+const jsStorageWriteTarget = (node: ts.Node, d: ts.Diagnostic, program: ts.Program): boolean => {
+  if (jsAccessorWriteTarget(node, program) || jsArrayFieldAppend(node, d, program)) return true;
   if (!jsWideningWriteTarget(node)) return false;
   const checker = program.getTypeChecker();
   if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
@@ -1228,8 +1287,9 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // 2322's elaborated form when the target is a class or record: the value
   // lacks a required property. In JavaScript the assignment is legal, and
   // the storage follows the values the program writes to it
-  // (analyzeJsWidenedBindings and analyzeJsWidenedFields). Every other 2739
-  // site keeps its triage row.
+  // (analyzeJsWidenedBindings and analyzeJsWidenedFields), including a
+  // JavaScript accessor pair's values and the elements a program appends to
+  // a JSDoc-typed array field. Every other 2739 site keeps its triage row.
   [
     2739,
     at(
@@ -1238,6 +1298,7 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
         WIDEN("the storage follows the values a JavaScript program writes to a typed target", [
           "tests/corpus/jsdoc-field-foreign-instance/main.js",
           "tests/corpus/js-frozen-object-reassignment.js",
+          "tests/corpus/jsdoc-accessor-and-array-field-writes/main.ts",
         ]),
       ),
     ),

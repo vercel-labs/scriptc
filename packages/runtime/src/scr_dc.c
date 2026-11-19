@@ -362,17 +362,23 @@ static void dc_throw_apply(const ScrDyn *fn) {
 /* ── bindStore / runStores (the AsyncLocalStorage integration) ─────────
  * bindStore is per-store SET semantics (a re-bind replaces the
  * transform); runStores enters every bound store with transform(data)
- * (identity without a transform), publishes INSIDE the entered contexts
- * (subscribers observe getStore(), Node's shape), runs fn with thisArg
- * bound and the arguments forwarded, and restores in reverse — the
- * finally, so a throw still restores. A transform throw skips its store
- * and surfaces as an uncaught exception on the next tick, as in Node. */
+ * (identity only for an undefined transform), publishes INSIDE the entered
+ * contexts (subscribers observe getStore(), Node's shape), runs fn with
+ * thisArg bound and the arguments forwarded, and restores in reverse — the
+ * finally, so a throw still restores. Node wraps the stores in insertion
+ * order, so the LAST-bound store is outermost and its transform runs first;
+ * the walk below enters them in that order. A transform throw skips its
+ * store and surfaces as an uncaught exception on the next tick, as in
+ * Node. */
 
 void scr_dc_chan_bind_store(double handle, double als_id, ScrDyn *transform) {
   ScrDcChannel *ch = dc_of(handle);
-  /* Node keeps the transform value as given (a non-function one throws when
-   * runStores calls it); a falsy one is the identity. */
-  ScrDyn *t = (transform != NULL && scr_dyn_truthy(transform)) ? scr_dyn_retain(transform) : NULL;
+  /* Node keeps the transform value as given, and only an undefined transform
+   * is the identity: null, false, 0 and '' are stored and throw when
+   * runStores calls them. */
+  ScrDyn *t = (transform != NULL && transform->kind != SCR_DYN_UNDEF)
+                  ? scr_dyn_retain(transform)
+                  : NULL;
   for (size_t i = 0; i < ch->nbinds; i++) {
     if (ch->binds[i].als_id == als_id) {
       scr_dyn_release(ch->binds[i].transform);
@@ -408,7 +414,10 @@ bool scr_dc_chan_unbind_store(double handle, double als_id) {
 
 /* Enter every bound store (transform(data) or data itself); the returned
  * malloc'd array of PREVIOUS snapshots (*n_out entries) restores in
- * reverse. A store whose transform throws is not entered. */
+ * reverse. Node wraps the stores in insertion order, so the last-bound
+ * store is outermost: its transform runs first and its context is entered
+ * first, leaving the first-bound store innermost. A store whose transform
+ * throws is not entered. */
 static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out) {
   *n_out = 0;
   if (ch->nbinds == 0) return NULL;
@@ -417,7 +426,8 @@ static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out
     fputs("scriptc: out of memory\n", stderr);
     abort();
   }
-  for (size_t i = 0; i < ch->nbinds; i++) {
+  for (size_t k = ch->nbinds; k > 0; k--) {
+    size_t i = k - 1;
     ScrDyn *value;
     if (ch->binds[i].transform != NULL) {
       ScrDyn *args[1] = {data};

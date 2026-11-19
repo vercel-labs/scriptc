@@ -6135,7 +6135,7 @@ export class Lowerer {
    * appendable tables whose entries a unit's record carries, then the
    * tables whose growth leaves the unit without a record.
    * Lowerer.unjournaled lists the collections that are in neither. */
-  journalTables(): JournalTable[] {
+  journalTables(units?: ReadonlyMap<string, IrFunction>): JournalTable[] {
     const sizes = (name: string, of: () => readonly number[]): JournalTable =>
       checkedTable(name, () => {
         let hash = 0;
@@ -6303,7 +6303,7 @@ export class Lowerer {
         "runtimeOptionalArithmeticTypes",
         () => this.runtimeOptionalArithmeticTypes.size,
       ),
-      checkedTable("runtimeOptionalFields", () => this.runtimeOptionalFields.size),
+      setTable("runtimeOptionalFields", this.runtimeOptionalFields),
       checkedTable("dateJsonBindings", () => this.dateJsonBindings.size),
       checkedTable(
         "runtimeOptionalRecordsKeptDeclared",
@@ -6485,10 +6485,19 @@ export class Lowerer {
       checkedTable("retryDegraded", () => this.retryDegraded.length),
       checkedTable("declOrigins", () => this.declOrigins.length),
       checkedTable("declOriginIds", () => this.declOriginIds.size),
-      sizes("shapes", () => this.shapes.journalSizes()),
+      this.shapes.journalTable(),
+      sizes("shapes.recIds", () => this.shapes.recursiveSizes()),
+      sizes("shapes.derivedDeclaredOrderFinalizers", () => this.shapes.finalizerCount()),
+      sizes("shapes.revision", () => [this.shapes.revision]),
       this.unions.journalTable(),
       sizes("unions.recIds", () => this.unions.journalSizes()),
-      sizes("keyOrder", () => this.keyOrder.journalSizes()),
+      this.keyOrder.journalTable(
+        (name) =>
+          units?.get(name) ??
+          this.liftedFnNamed(name) ??
+          this.implicitFns.find((fn) => fn.name === name),
+      ),
+      sizes("keyOrder.changed", () => this.keyOrder.journalSizes()),
       sizes("deferredModuleInitializers", () =>
         this.deferredModuleInitializers === null
           ? []
@@ -16170,6 +16179,9 @@ export class Lowerer {
           );
     const recorded =
       journalMode() === "serial" || (reuse !== null && reuse.records) ? waveStats() : null;
+    // The shape registry keeps the journal its records carry only in a build
+    // that records units.
+    this.shapes.journaling = recorded !== null;
     const host =
       recorded === null
         ? null
@@ -16566,18 +16578,29 @@ export class Lowerer {
       }
     };
     return {
-      tables: this.journalTables(),
+      tables: this.journalTables(loweredUnits),
       scalars,
       lowerRecorded: (name, events) => {
         this.unitEvents = events;
+        const lifted = this.liftedFns.length;
+        const implicit = this.implicitFns.length;
+        this.keyOrder.beginUnit();
+        let fn: IrFunction | null = null;
         try {
-          const fn = lowerUnitBody(name);
+          fn = lowerUnitBody(name);
           relieveHeapPressure();
           return { fn, poisoned: false };
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
           return { fn: null, poisoned: true };
         } finally {
+          // The unit's notes name the functions it produced: its own, and
+          // the lifted and implicit functions its lowering added.
+          this.keyOrder.noteUnit(name, [
+            ...(fn === null ? [] : [fn]),
+            ...this.liftedFns.slice(lifted),
+            ...this.implicitFns.slice(implicit),
+          ]);
           this.unitEvents = null;
         }
       },

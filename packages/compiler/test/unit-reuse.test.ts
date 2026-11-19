@@ -185,6 +185,52 @@ test("an unchanged rebuild applies every unit's stored record", async () => {
   }
 }, 300_000);
 
+test("a unit that interns a shape keeps a record, and the next build applies it", async () => {
+  // `make` builds a record literal its own lowering interns: the shape table
+  // grows under the unit, which a record carries (type-mapper.ts
+  // journalTable).
+  const workspace = await Workspace.create({
+    "main.ts": [
+      "type Point = { x: number; y: number };",
+      "function make(n: number): Point {",
+      "  return { x: n, y: n * 2 };",
+      "}",
+      "console.log(make(2).x, make(2).y);",
+      "",
+    ].join("\n"),
+  });
+  try {
+    expect(await workspace.build()).toEqual([]);
+    expect(has(workspace.units, "make")).toBe(true);
+    expect(has(await workspace.build(), "make")).toBe(true);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);
+
+test("a unit that adds a key-order note keeps a record, and the next build applies it", async () => {
+  // `twice` builds a literal of a shape the init already interned: only the
+  // key-order notes grow under the unit (key-order-witness.ts journalTable).
+  const workspace = await Workspace.create({
+    "main.ts": [
+      "type Point = { x: number; y: number };",
+      "const start: Point = { x: 1, y: 2 };",
+      "function twice(p: Point): Point {",
+      "  return { x: p.x * 2, y: p.y * 2 };",
+      "}",
+      "console.log(start.x, twice(start).x);",
+      "",
+    ].join("\n"),
+  });
+  try {
+    expect(await workspace.build()).toEqual([]);
+    expect(has(workspace.units, "twice")).toBe(true);
+    expect(has(await workspace.build(), "twice")).toBe(true);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);
+
 test("a body edit lowers the units of its file and the units that spell its name", async () => {
   const workspace = await Workspace.create(MODULES);
   try {

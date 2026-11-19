@@ -7,34 +7,40 @@
  * that pointed at the entry (1:1) into an ordinary diagnostic with a code
  * frame of the construct whose lowering emitted the invalid IR. */
 import type { IrModule, SrcLoc } from "../../ir/ir.js";
-import { everyModuleNode } from "../../ir/traverse.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import { mangleLocal } from "../mangle.js";
 
 /** The source site of the local the LLVM error `message` quotes, when it
  * names an emitted local slot; null for a message that names none. A local's
  * declaration wins over a later write, and a parameter's own site is the
- * function's. */
+ * function's. One local id can appear in several functions ("%destr.0" in
+ * each function's destructuring), and the message names no function: a site
+ * is answered only when exactly one function holds the slot, so a case the
+ * message cannot attribute shows no unrelated file. */
 export function invalidIrSourceLoc(mod: IrModule, message: string): SrcLoc | null {
   const quoted = /%sc_l_[A-Za-z0-9_]+/.exec(message);
   if (quoted === null) return null;
   const name = quoted[0].slice(1);
-  let declaration: SrcLoc | null = null;
-  let write: SrcLoc | null = null;
-  everyModuleNode(mod, {
-    expr: () => true,
-    stmt: (node) => {
-      if (node.kind === "varDecl" && mangleLocal(node.localId) === name) {
-        if (declaration === null) declaration = node.loc;
-      } else if (node.kind === "assign" && mangleLocal(node.localId) === name) {
-        if (write === null) write = node.loc;
-      }
-      return true;
-    },
-    type: () => true,
-  });
-  if (declaration !== null || write !== null) return declaration ?? write;
+  const sites: { fn: SrcLoc; declaration: SrcLoc | null; write: SrcLoc | null }[] = [];
   for (const fn of mod.functions) {
-    for (const local of fn.locals) if (mangleLocal(local.id) === name) return fn.loc;
+    let declaration: SrcLoc | null = null;
+    let write: SrcLoc | null = null;
+    everyStmtList(fn.body, {
+      expr: () => true,
+      stmt: (node) => {
+        if (node.kind === "varDecl" && mangleLocal(node.localId) === name) {
+          if (declaration === null) declaration = node.loc;
+        } else if (node.kind === "assign" && mangleLocal(node.localId) === name) {
+          if (write === null) write = node.loc;
+        }
+        return true;
+      },
+    });
+    const parameter = fn.locals.some((local) => mangleLocal(local.id) === name);
+    if (declaration !== null || write !== null || parameter)
+      sites.push({ fn: fn.loc, declaration, write });
   }
-  return null;
+  if (sites.length !== 1) return null;
+  const site = sites[0]!;
+  return site.declaration ?? site.write ?? site.fn;
 }

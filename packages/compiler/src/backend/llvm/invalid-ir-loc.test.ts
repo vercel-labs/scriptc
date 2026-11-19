@@ -47,3 +47,23 @@ test("a parameter slot names its function", () => {
     ),
   ).toEqual(mod.functions[0]!.loc);
 });
+
+test("a slot id several functions hold names no site", () => {
+  const first = mod.functions[0]!;
+  const second = {
+    ...first,
+    name: "other",
+    loc: { file: "/app/b.js", start: 5, end: 9 },
+    body: [
+      {
+        kind: "varDecl" as const,
+        localId: "%destr.0",
+        init: null,
+        loc: { file: "/app/b.js", start: 10, end: 20 },
+      },
+    ],
+  };
+  expect(
+    invalidIrSourceLoc({ ...mod, functions: [first, second] } as unknown as IrModule, "on '%sc_l__x25_destr_0'"),
+  ).toBeNull();
+});

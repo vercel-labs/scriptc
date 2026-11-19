@@ -33,7 +33,21 @@ class Box {
 }
 
 function probe(label, value) {
-  for (const key of ["#hidden", "#reveal", "#secret", "open", "peek"]) {
+  for (const key of [
+    "#hidden",
+    "#reveal",
+    "#secret",
+    "open",
+    "peek",
+    // The accessor members' internal names: an untyped string key names a
+    // property, not the getter or setter the class compiled.
+    "get:hidden",
+    "set:hidden",
+    "get:#hidden",
+    "set:#hidden",
+    "get:secret",
+    "get:reveal",
+  ]) {
     let read;
     try {
       read = typeof value[key] === "function" ? "function" : String(value[key]);

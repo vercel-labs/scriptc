@@ -59,3 +59,16 @@ check("namedProps", () => {
   b.extra = 1;
   assert.partialDeepStrictEqual(new Array(1), b);
 });
+// Node's partialArrayEquiv: the expected side is searched in the actual
+// side in order, and a hole on either side switches to the sparse walk.
+function arr(vals, holes) {
+  const a = [];
+  a.length = vals.length;
+  for (let i = 0; i < vals.length; i++) if (!holes.includes(i)) a[i] = vals[i];
+  return a;
+}
+check("orderedSubset", () => assert.partialDeepStrictEqual(arr([0, 0, 1], []), arr([0, 1], [0])));
+check("sparseTailRejected", () => assert.partialDeepStrictEqual(arr([1, 2], []), arr([2, 0], [1])));
+check("sparseHoleFirst", () => assert.partialDeepStrictEqual(arr([1, 2], []), arr([0, 2], [0])));
+check("sparseMiddleRejected", () => assert.partialDeepStrictEqual(arr([1, 2, 3], []), arr([2, 0, 3], [1])));
+check("sparseLeadingRejected", () => assert.partialDeepStrictEqual(arr([0, 0, 1], []), arr([1, 0], [1])));

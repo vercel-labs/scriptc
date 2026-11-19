@@ -1372,6 +1372,37 @@ typedef struct {
   size_t len;
 } ScrCfEntry;
 
+/* The growing entry list the container renderers collect into: a render
+ * runs program getters, which can add properties, and a sparse array's
+ * logical length can exceed its storage, so the list grows as entries are
+ * produced instead of being sized from an up-front count. */
+typedef struct {
+  ScrCfEntry *items;
+  size_t len, cap;
+} ScrCfEntries;
+
+static char *scr_assert_cf_entry_copy(const char *text, size_t len) {
+  char *copy = malloc(len ? len : 1);
+  if (!copy) scr_assert_oom();
+  if (len) memcpy(copy, text, len);
+  return copy;
+}
+
+static void scr_assert_cf_entries_push(ScrCfEntries *list, char *text, size_t len) {
+  if (list->len == list->cap) {
+    size_t cap = list->cap ? list->cap * 2 : 8;
+    if (cap < list->cap || cap > SIZE_MAX / sizeof *list->items) scr_assert_oom();
+    ScrCfEntry *items = realloc(list->items, cap * sizeof *items);
+    if (!items) scr_assert_oom();
+    list->items = items;
+    list->cap = cap;
+  }
+  list->items[list->len].text = text;
+  list->items[list->len].len = len;
+  list->len++;
+}
+
+
 static int scr_assert_cf_entry_cmp(const void *pa, const void *pb) {
   const ScrCfEntry *a = pa, *b = pb;
   size_t n = a->len < b->len ? a->len : b->len;
@@ -1831,18 +1862,28 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
        * one `<N empty item>` line, and a named property follows the
        * elements; sorted:true sorts the named entries by their rendered
        * text). */
-      ScrCfEntry *ents = malloc((total + named + 1) * sizeof *ents);
-      if (!ents) scr_assert_oom();
+      /* The entries grow as they are collected: rendering an element runs
+       * getters, which can add named properties, and a sparse array's
+       * logical length can be far larger than the storage it names, so
+       * nothing is sized from an up-front count. */
+      ScrCfEntries ents = {0};
       size_t n = 0;
       size_t i = 0;
+      if (dense == 0 && total != 0) {
+        char hole[40];
+        int hn = total == 1 ? snprintf(hole, sizeof hole, "<1 empty item>")
+                            : snprintf(hole, sizeof hole, "<%zu empty items>", total);
+        scr_assert_cf_entries_push(&ents, scr_assert_cf_entry_copy(hole, (size_t)hn), (size_t)hn);
+        n = 1;
+        i = total;
+      }
       while (i < total) {
         const ScrDyn *item = NULL;
         if (scr_assert_cf_arr_index(d, i, &item)) {
           ScrAssertBuf eb = {0};
           scr_assert_cf_value(&eb, item, indent + 2, depth - 1);
-          ents[n].text = eb.data ? eb.data : malloc(1);
-          if (!ents[n].text) scr_assert_oom();
-          ents[n++].len = eb.len;
+          scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
+          n++;
           i++;
           continue;
         }
@@ -1855,15 +1896,12 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
         char hole[40];
         int hn = run == 1 ? snprintf(hole, sizeof hole, "<1 empty item>")
                           : snprintf(hole, sizeof hole, "<%zu empty items>", run);
-        ents[n].text = malloc((size_t)hn);
-        if (!ents[n].text) scr_assert_oom();
-        memcpy(ents[n].text, hole, (size_t)hn);
-        ents[n++].len = (size_t)hn;
+        scr_assert_cf_entries_push(&ents, scr_assert_cf_entry_copy(hole, (size_t)hn), (size_t)hn);
+        n++;
         i += run;
       }
       if (named != 0) {
-        ScrCfEntry *extra = malloc(named * sizeof *extra);
-        if (!extra) scr_assert_oom();
+        ScrCfEntries extra = {0};
         size_t m = 0;
         for (size_t k = 0; k < scr_dyn_obj_count(props); k++) {
           ScrDynProp ent = scr_dyn_obj_prop_at(props, k);
@@ -1876,23 +1914,23 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
           scr_assert_cf_key(&eb, ent.key, ent.key_len);
           ab_cstr(&eb, ": ");
           scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
-          extra[m].text = eb.data ? eb.data : malloc(1);
-          if (!extra[m].text) scr_assert_oom();
-          extra[m++].len = eb.len;
+          scr_assert_cf_entries_push(&extra, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
+          m++;
         }
-        qsort(extra, m, sizeof *extra, scr_assert_cf_entry_cmp);
-        for (size_t k = 0; k < m; k++) ents[n++] = extra[k];
-        free(extra);
+        qsort(extra.items, m, sizeof *extra.items, scr_assert_cf_entry_cmp);
+        for (size_t k = 0; k < m; k++) scr_assert_cf_entries_push(&ents, extra.items[k].text, extra.items[k].len);
+        n += m;
+        free(extra.items);
       }
       ab_char(b, '[');
       for (size_t k = 0; k < n; k++) {
         ab_char(b, '\n');
         scr_assert_cf_pad(b, indent + 2);
-        ab_bytes(b, ents[k].text, ents[k].len);
+        ab_bytes(b, ents.items[k].text, ents.items[k].len);
         if (k + 1 < n) ab_char(b, ',');
-        free(ents[k].text);
+        free(ents.items[k].text);
       }
-      free(ents);
+      free(ents.items);
       ab_char(b, '\n');
       scr_assert_cf_pad(b, indent);
       ab_char(b, ']');
@@ -2545,8 +2583,32 @@ static bool scr_assert_partial_bytes(const ScrBytes *x, const ScrBytes *y) {
 }
 
 /* partialArrayEquiv over dense arrays: b's elements in order within a's. */
+/* The k-th own index of an array (holes skipped), or SIZE_MAX. */
+static size_t scr_assert_arr_own_index_at(const ScrDyn *a, size_t k) {
+  size_t n = 0;
+  for (size_t i = 0; i < a->v.arr.len; i++) {
+    if (!scr_dyn_arr_has_index(a, i)) continue;
+    if (n == k) return i;
+    n++;
+  }
+  return SIZE_MAX;
+}
+
+static size_t scr_assert_arr_own_index_count(const ScrDyn *a) {
+  size_t n = 0;
+  for (size_t i = 0; i < a->v.arr.len; i++)
+    if (scr_dyn_arr_has_index(a, i)) n++;
+  return n;
+}
+
+static bool scr_assert_partial_sparse_equiv(const ScrDyn *a, const ScrDyn *b, size_t startA,
+                                            size_t startB);
+
+/* partialDeepStrictEqual over arrays, following Node's partialArrayEquiv and
+ * partialSparseArrayEquiv (internal/util/comparisons): the expected side is
+ * searched in order in the actual side, and a hole on either side switches to
+ * the sparse walk over the arrays' own indexes. */
 static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
-  if (a->v.arr.len < b->v.arr.len) return false;
   /* Named properties first: their getters run program code, and Node runs
    * them before the elements, so nothing about the elements is read (or
    * cached) until they finish. */
@@ -2559,56 +2621,52 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
       if (!pa || !scr_assert_own_entries(pa, pb, ent, scr_assert_partial_eq)) return false;
     }
   }
-  /* Every comparison below can run a getter (a nested object's accessor)
-   * that changes either array, so lengths and indexes are read live and
-   * each element index is checked against the current length before use. */
-  bool aHoles = false;
-  for (size_t i = 0; i < a->v.arr.len; i++)
-    if (!scr_dyn_arr_has_index(a, i)) aHoles = true;
-  bool bHoles = false;
-  for (size_t i = 0; i < b->v.arr.len; i++)
-    if (!scr_dyn_arr_has_index(b, i)) bHoles = true;
-  if (bHoles) {
-    /* A sparse expectation is positional: each expected own index reads the
-     * actual's value at that index (a hole reads undefined). */
-    for (size_t k = 0; k < b->v.arr.len; k++) {
-      if (!scr_dyn_arr_has_index(b, k)) continue;
-      const ScrDyn *av =
-          (k < a->v.arr.len && scr_dyn_arr_has_index(a, k)) ? a->v.arr.items[k] : scr_dyn_undefined();
-      if (!scr_assert_partial_eq(av, b->v.arr.items[k])) return false;
-    }
-    /* The sparse comparison is the whole element answer: falling through to
-     * the subsequence search would compare the same nested pairs twice at
-     * every level (exponential work for nested sparse trees). */
-    return true;
-  }
-  if (aHoles) {
-    /* A dense expectation is matched in order against the actual's own
-     * values, a hole being skipped. */
-    size_t p = 0;
-    for (size_t k = 0; k < b->v.arr.len; k++) {
-      for (;;) {
-        if (p >= a->v.arr.len) return false;
-        if (scr_dyn_arr_has_index(a, p) && scr_assert_partial_eq(a->v.arr.items[p], b->v.arr.items[k]))
-          break;
-        p++;
-      }
-      p++;
-    }
-    return true;
-  }
-  /* Dense arrays keep Node's bounded subsequence search. */
-  size_t pos = 0;
+  /* Lengths and indexes are read live: a comparison can run a getter that
+   * changes either array. */
+  if (a->v.arr.len < b->v.arr.len) return false;
+  size_t aPos = 0;
   for (size_t i = 0; i < b->v.arr.len; i++) {
-    if (a->v.arr.len < b->v.arr.len) return false;
-    size_t bound = a->v.arr.len - b->v.arr.len + i;
+    if (!scr_dyn_arr_has_index(b, i)) return scr_assert_partial_sparse_equiv(a, b, aPos, i);
     for (;;) {
-      if (pos >= a->v.arr.len) return false;
-      if (pos > bound) return false;
-      if (scr_assert_partial_eq(a->v.arr.items[pos], b->v.arr.items[i])) break;
-      pos++;
+      if (!scr_dyn_arr_has_index(a, aPos))
+        return scr_assert_partial_sparse_equiv(a, b, aPos, i);
+      if (aPos < a->v.arr.len &&
+          scr_assert_partial_eq(a->v.arr.items[aPos], b->v.arr.items[i]))
+        break;
+      aPos++;
+      if (a->v.arr.len < b->v.arr.len) return false;
+      if (aPos > a->v.arr.len - b->v.arr.len + i) return false;
     }
-    pos++;
+    aPos++;
+  }
+  return true;
+}
+
+/* Node's partialSparseArrayEquiv: startA and startB are positions in the
+ * arrays' own-index lists (Node passes the array indexes it reached, which
+ * this walk reads the same way). */
+static bool scr_assert_partial_sparse_equiv(const ScrDyn *a, const ScrDyn *b, size_t startA,
+                                            size_t startB) {
+  size_t keysA = scr_assert_arr_own_index_count(a);
+  size_t keysB = scr_assert_arr_own_index_count(b);
+  if (startA > keysA) startA = keysA;
+  if (startB > keysB) startB = keysB;
+  size_t lenA = keysA - startA;
+  size_t lenB = keysB - startB;
+  if (lenA < lenB) return false;
+  size_t aPos = startA;
+  for (size_t i = 0; i < lenB; i++) {
+    size_t bIndex = scr_assert_arr_own_index_at(b, startB + i);
+    if (bIndex == SIZE_MAX || bIndex >= b->v.arr.len) return false;
+    const ScrDyn *bv = b->v.arr.items[bIndex];
+    for (;;) {
+      size_t aIndex = scr_assert_arr_own_index_at(a, aPos);
+      if (aIndex == SIZE_MAX || aIndex >= a->v.arr.len) return false;
+      if (scr_assert_partial_eq(a->v.arr.items[aIndex], bv)) break;
+      aPos++;
+      if (aPos > keysA - lenB + i) return false;
+    }
+    aPos++;
   }
   return true;
 }

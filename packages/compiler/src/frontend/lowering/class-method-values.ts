@@ -387,11 +387,18 @@ export function classMethodValue(
       try {
         const union = ret.kind === "union" ? classArmOf(lowerer, ret) : null;
         if (union !== null) {
+          // One call, one result: the tag test and the narrowing that reads the class arm both
+          // read the bound value. Evaluating the call in both places would run the method twice,
+          // and a method whose answer changes between calls (a consuming lookup that answers an
+          // object once, then null) would have its second answer narrowed as if it were the
+          // first, trapping.
+          const result = lowerer.declareHiddenLocal("%crossResult", ret);
+          const resultRef = (): IrExpr => varRef(result.id, ret, loc);
           const narrowed: IrExpr = {
             kind: "unionNarrow",
             unionId: union.unionId,
             tag: union.tag,
-            value: call,
+            value: resultRef(),
             type: union.arm,
             loc,
           };
@@ -417,7 +424,7 @@ export function classMethodValue(
                 unionId: union.unionId,
                 tag: unit.tag,
                 negated: false,
-                value: call,
+                value: resultRef(),
                 type: BOOL,
                 loc,
               },
@@ -427,7 +434,13 @@ export function classMethodValue(
               loc,
             };
           }
-          returnValue = chain;
+          returnValue = {
+            kind: "seqExpr",
+            stmts: [{ kind: "varDecl", localId: result.id, init: call, loc }],
+            result: chain,
+            type: DYN,
+            loc,
+          };
         } else
           returnValue =
             exactClassCrossing(lowerer, call, loc) ?? lowerer.coerceToExpected(call, DYN);

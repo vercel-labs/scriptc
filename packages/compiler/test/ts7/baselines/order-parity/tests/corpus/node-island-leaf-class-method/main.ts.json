@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-leaf-class-method/classes.ts",
+  "<repo>/tests/corpus/node-island-leaf-class-method/main.ts"
+ ],
+ "diags": []
+}

@@ -27,7 +27,6 @@ import { extendsElementOf } from "../heritage-elements.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
-import type { ClassInfo } from "./lower-classes.js";
 import { exactClassCrossing } from "./exact-class.js";
 import { genericOverrideBelow } from "./lower-classes.js";
 import { isOptionalChainTail } from "./expressions/optional-chains.js";
@@ -1934,6 +1933,15 @@ export function islandArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
       withClassMethods(lowerer, lowerer.coerceInto(node, v, DYN), className, node),
     );
     if (exact !== null) return exact;
+    // A class below no other has one class to cross at, its own: the tests have nothing to
+    // tell apart, but its method table still has to be registered beside it (an app class's
+    // table exists nowhere else), or the island's call reads undefined.
+    return withClassMethods(
+      lowerer,
+      lowerer.coerceInto(node, lowered, DYN),
+      lowered.type.className,
+      node,
+    );
   }
   return lowerer.coerceInto(node, lowered, DYN);
 }

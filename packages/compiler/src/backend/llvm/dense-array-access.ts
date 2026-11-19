@@ -119,11 +119,16 @@ function emitDenseGuard(
     wide = nanIndex.wide;
     if (nanIndex.bounded) integral = nanIndex.ordered;
     else {
+      // Both ends: below -2^63 the conversion is poison too, and a frozen
+      // negative could pass the unsigned capacity comparison.
       const magnitude = B.tmp(),
+        lower = B.tmp(),
         inRange = B.tmp();
       B.line(`${magnitude} = fcmp olt double ${index.name}, 0x43E0000000000000`);
+      B.line(`${lower} = fcmp oge double ${index.name}, 0xC3E0000000000000`);
+      B.line(`${inRange} = and i1 ${magnitude}, ${lower}`);
       integral = B.tmp();
-      B.line(`${integral} = and i1 ${nanIndex.ordered}, ${magnitude}`);
+      B.line(`${integral} = and i1 ${nanIndex.ordered}, ${inRange}`);
     }
   } else {
     // freeze keeps NaN/out-of-range conversions from producing poison; the

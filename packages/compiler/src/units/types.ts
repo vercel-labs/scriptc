@@ -278,4 +278,21 @@ export interface UnitStoreMeta {
     summaryMs: number;
     keyMs: number;
   };
+  /** The IR this entry stores for a warm build (units/ir.ts). Absent when the
+   * build wrote none: an observe build, the app unit, or a unit whose
+   * lowering produced no function. */
+  ir?: UnitStoreIr;
+}
+
+/** What a stored `ir.bin` holds, for its reader and the report. */
+export interface UnitStoreIr {
+  schema: "scriptc.unit-ir.v1";
+  /** sha256 of `ir.bin`. */
+  digest: string;
+  bytes: number;
+  functions: number;
+  globals: number;
+  classes: number;
+  records: number;
+  unions: number;
 }

@@ -31,10 +31,12 @@ export function unitEntryDirectory(root: string, key: string): string {
   return join(root, key);
 }
 
-/** The paths one entry writes, for the sweeper's protected set. */
+/** The paths one entry may write, for the sweeper's protected set. `ir.bin`
+ * is absent for an entry that stored no IR; protecting an absent path is
+ * harmless. */
 export function unitEntryPaths(root: string, key: string): string[] {
   const directory = unitEntryDirectory(root, key);
-  return [join(directory, "summary.json"), join(directory, "meta.json")];
+  return [join(directory, "summary.json"), join(directory, "meta.json"), join(directory, "ir.bin")];
 }
 
 /** Add a staged entry to the executing build's protected set. */
@@ -73,19 +75,36 @@ export function writeUnitEntry(
   key: string,
   summary: string,
   meta: UnitStoreMeta,
+  ir?: Buffer,
 ): void {
   const directory = unitEntryDirectory(root, key);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   writeAtomically(join(directory, "summary.json"), summary);
   writeAtomically(join(directory, "meta.json"), JSON.stringify(meta));
+  if (ir !== undefined) writeBytesAtomically(join(directory, "ir.bin"), ir);
+}
+
+/** A stored entry's IR, or null on any failure. The caller checks its
+ * digest against the metadata's: a truncated or foreign file is a miss. */
+export function readUnitIr(root: string, key: string): Buffer | null {
+  try {
+    return readFileSync(join(unitEntryDirectory(root, key), "ir.bin"));
+  } catch {
+    return null;
+  }
 }
 
 /** Write through a private sibling and rename; remove the sibling on
  * failure. */
 function writeAtomically(destination: string, text: string): void {
+  writeBytesAtomically(destination, Buffer.from(text, "utf8"));
+}
+
+/** As writeAtomically, for bytes. */
+function writeBytesAtomically(destination: string, bytes: Buffer): void {
   const temporary = privateSiblingPath(destination, "unit");
   try {
-    writeFileSync(temporary, text, { mode: 0o600 });
+    writeFileSync(temporary, bytes, { mode: 0o600 });
     renameSync(temporary, destination);
   } finally {
     rmSync(temporary, { force: true });

@@ -1,9 +1,12 @@
-/* SCRIPTC_UNITS selects the separate-compilation mode. M0 implements
- * `observe` only: it runs the ordinary whole-program build and, after
- * lowering, computes and stores the unit graph, keys and summaries without
- * changing the program's output. `split` (M1) and later modes change output
- * and are not implemented yet, so they are refused rather than silently
- * falling back to a whole-program build. */
+/* SCRIPTC_UNITS selects the separate-compilation mode.
+ *
+ * `observe` runs the ordinary whole-program build and, after lowering,
+ * reports the unit graph, keys, summaries and pins without changing the
+ * program's output. `split` (M1-3) does the same and also stores each
+ * non-app unit's lowered IR; until the warm path lands it is still a
+ * whole-program build — the design's fallback — so its output is identical to
+ * a plain build's. A mode this compiler does not implement is refused rather
+ * than silently falling back. */
 
 export type UnitsMode = "observe" | "split";
 
@@ -23,6 +26,14 @@ export function unitsMode(env: NodeJS.ProcessEnv = process.env): UnitsMode | nul
 /** Whether this lowering should collect the M0 observation. */
 export function unitsObserveEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return unitsMode(env) === "observe";
+}
+
+/** Whether this build collects the unit observation and stores unit entries,
+ * in either mode: `observe` reports, `split` also stores each non-app unit's
+ * IR for M1-3's warm build. */
+export function unitsCollectingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const mode = unitsMode(env);
+  return mode === "observe" || mode === "split";
 }
 
 /** The raw environment value, for the option check's refusal text. */

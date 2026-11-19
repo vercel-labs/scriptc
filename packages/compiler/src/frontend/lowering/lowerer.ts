@@ -325,7 +325,7 @@ import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
 import { PROGRAM_FACTS } from "../../program-facts.js";
-import { unitsObserveEnabled } from "../../units/mode.js";
+import { unitsCollectingEnabled } from "../../units/mode.js";
 import {
   packageDirectorySources,
   packageOfFile,
@@ -2499,7 +2499,7 @@ function lowerToIrWithIslands(
   // per-file summary data from the pass whose result stands. Report-only —
   // nothing read here reaches the IR, and a failure to collect never fails
   // the build.
-  if (unitsObserveEnabled() && result.module !== null) {
+  if (unitsCollectingEnabled() && result.module !== null) {
     try {
       result = {
         ...result,
@@ -3638,7 +3638,7 @@ export class Lowerer {
     generic: string,
     instance: string,
   ): void {
-    if (!unitsObserveEnabled()) return;
+    if (!unitsCollectingEnabled()) return;
     const owner = this.closureRoot;
     const key = `${kind}\0${generic}\0${instance}\0${owner}`;
     if (this.unitGenericDemandKeys.has(key)) return;
@@ -16581,7 +16581,7 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
-    if (unitsObserveEnabled()) {
+    if (unitsCollectingEnabled()) {
       // The observation resolves each demanded instance's owner (a closure
       // root name) to the file that declares it.
       const sources = new Map<string, ts.Node>();

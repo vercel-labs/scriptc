@@ -103,7 +103,7 @@ import { buildCacheRoot, prepareBuildCacheRoot, pruneBuildCache } from "./backen
 import { frontendEnvironment } from "./frontend/environment.js";
 import { observeUnits } from "./units/observe.js";
 import { ffiProfileDigest } from "./units/key.js";
-import { parseUnitsMode, unitsModeValue } from "./units/mode.js";
+import { parseUnitsMode, unitsMode, unitsModeValue } from "./units/mode.js";
 import {
   CcCompileError,
   compileExternalC,
@@ -583,7 +583,7 @@ function unitsOptionRefusal(entryPath: string, opts: CompileRequestOptions): Com
       diagnostics: [
         nativeCodegenDiag(
           "SC3002",
-          `SCRIPTC_UNITS=${JSON.stringify(raw)} is not a mode (supported: observe)`,
+          `SCRIPTC_UNITS=${JSON.stringify(raw)} is not a mode (supported: observe, split)`,
           entryPath,
           "Unset SCRIPTC_UNITS for a whole-program build.",
         ),
@@ -599,19 +599,6 @@ function unitsOptionRefusal(entryPath: string, opts: CompileRequestOptions): Com
           "SCRIPTC_UNITS is a development-build feature and a release build cannot use it",
           entryPath,
           "Build with --optimization=dev (or speed) to observe compilation units.",
-        ),
-      ],
-      sourceTexts: new Map(),
-    };
-  if (mode === "split")
-    return {
-      ok: false,
-      diagnostics: [
-        nativeCodegenDiag(
-          "SC3002",
-          "SCRIPTC_UNITS=split is not implemented yet; only observe mode exists",
-          entryPath,
-          "Use SCRIPTC_UNITS=observe, or unset SCRIPTC_UNITS.",
         ),
       ],
       sourceTexts: new Map(),
@@ -1257,14 +1244,15 @@ async function nodeUnitStore(
   return directoryUnitStore(directory, key);
 }
 
-/** SCRIPTC_UNITS=observe: report and store the unit graph, keys and
- * summaries of a build that already lowered. Report-only: a failure here
- * never fails the build. */
+/** SCRIPTC_UNITS=observe|split: report and store the unit graph, keys,
+ * summaries and pins of a build that already lowered; split also stores each
+ * non-app unit's IR. A failure here never fails the build. */
 async function finishObservedUnits(
   observation: NonNullable<PreparedExecutableModule["unitObservation"]>,
   opts: CompileRequestOptions,
   ffi: FfiProfile | null,
   buildPlatform: string,
+  mod: IrModule,
 ): Promise<void> {
   const root = await prepareBuildCacheRoot(buildCacheRoot());
   const storeRoot = root === null ? null : join(root, "units-v2");
@@ -1285,6 +1273,8 @@ async function finishObservedUnits(
         ffiDigest: ffi === null ? null : ffiProfileDigest(ffi),
         environment: frontendEnvironment().map(([name, value]) => [name, value ?? ""] as const),
         storeRoot,
+        mode: unitsMode() ?? "observe",
+        module: mod,
       },
       protectedPaths,
     );
@@ -1391,7 +1381,7 @@ async function prepareExecutableInput(
   );
   if (!prepared.ok) return prepared;
   if (prepared.unitObservation !== undefined)
-    await finishObservedUnits(prepared.unitObservation, opts, ffi, buildPlatform);
+    await finishObservedUnits(prepared.unitObservation, opts, ffi, buildPlatform, prepared.mod);
   const { mod, sourceTexts } = prepared;
   // The island steps (executable/islands.ts): the libnode record, the
   // deferral probe and the module tree.

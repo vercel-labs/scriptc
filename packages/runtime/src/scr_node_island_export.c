@@ -435,6 +435,10 @@ bool scr_ni_exportable(const ScrDyn *v) {
   case SCR_DYN_OBJ:
   case SCR_DYN_ARR: /* a Proxy over an Array in V8 (NI-5b) */
   case SCR_DYN_TYPED_REF:
+  /* A Proxy object answers its properties, writes and methods through its
+   * traps, which the bridge's get, set and call route back into: a live view
+   * such as `element.style` is a Proxy over the declaration. */
+  case SCR_DYN_PROXY:
     return true;
   case SCR_DYN_HANDLE: /* Maps and Sets (NI-5b), and twins */
     return v->v.handle.tag == SCR_DYNH_MAP || v->v.handle.tag == SCR_DYNH_SET ||

@@ -822,6 +822,12 @@ function buildLibFnSignatures() {
     "perf.histoMannWhitneyU": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoMannWhitneyZ": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoMannWhitneyP": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoConfidence": { argTypes: [DYN], result: F64 },
+    "perf.histoPercentileArg": { argTypes: [DYN], result: F64 },
+    "perf.histoOther": { argTypes: [DYN], result: VOID },
+    "perf.histoMeanCI": { argTypes: [DYN, F64, F64], result: F64 },
+    "perf.histoWelch": { argTypes: [DYN, DYN, F64, F64], result: F64 },
+    "perf.histoPercentileCI": { argTypes: [DYN, F64, F64, F64], result: F64 },
     /** process.memoryUsage(): memoryUsageTake samples the resident set and
      * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
      * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2

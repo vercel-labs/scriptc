@@ -106,6 +106,37 @@ attempt("limits-redacted", () =>
   ),
 );
 attempt("limits-allowlist", () => JSON.parse(JSON.stringify(db.limits, ["length", "column"])));
+attempt("limits-nested", () => {
+  const drop = (key: string, value: unknown): unknown => (key === "tagged" ? undefined : value);
+  return JSON.parse(JSON.stringify({ limits: { inner: db.limits } }, drop));
+});
+attempt("limits-array", () => {
+  const drop = (key: string, value: unknown): unknown => (key === "tagged" ? undefined : value);
+  return JSON.parse(JSON.stringify([db.limits], drop));
+});
+attempt("limits-returned-by-replacer", () => {
+  const holder = { value: 1 };
+  return JSON.parse(
+    JSON.stringify(holder, (key: string, value: unknown) => (key === "value" ? db.limits : value)),
+  );
+});
+attempt("limits-to-json", () => {
+  const holder = {
+    toJSON() {
+      return db.limits;
+    },
+  };
+  return JSON.parse(JSON.stringify(holder, (key: string, value: unknown) => (key === "tagged" ? undefined : value)));
+});
+attempt("limits-in-added-property", () => {
+  const fields = db as unknown as Record<string, unknown>;
+  fields.held = db.limits;
+  const dropped = JSON.parse(
+    JSON.stringify(db, (key: string, value: unknown) => (key === "tagged" ? undefined : value)),
+  );
+  delete fields.held;
+  return dropped.held;
+});
 attempt("define-limit-value", () => {
   Object.defineProperty(db.limits, "length", { value: 2000000000 });
   return [db.limits.length, Object.getOwnPropertyDescriptor(db.limits, "length")];

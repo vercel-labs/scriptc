@@ -30,103 +30,94 @@ assert-fences.ts:30:1 - error SC2020: 'assert.deepStrictEqual of 'number[]' and 
   29 | 
   30 | assert.deepStrictEqual([1, 2], ["a", "b"]); // different static types
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  31 | assert.deepStrictEqual([new Uint8Array([1])], [new Uint8Array([1])]); // NESTED typed arrays fence (no brand in the element type)
+  31 | class Point {
 
   hint: deep equality lowers when both sides have the SAME static type — annotate or narrow one side
 
-assert-fences.ts:31:1 - error SC2020: 'assert.deepStrictEqual of 'Uint8Array[]' values' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:37:1 - error SC2020: 'assert.deepStrictEqual of 'Point' and '{ x: number }' values' is part of the standard library types but has no scriptc lowering yet
 
-  30 | assert.deepStrictEqual([1, 2], ["a", "b"]); // different static types
-  31 | assert.deepStrictEqual([new Uint8Array([1])], [new Uint8Array([1])]); // NESTED typed arrays fence (no brand in the element type)
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  32 | class Point {
+  36 | }
+  37 | assert.deepStrictEqual(new Point(1), { x: 1 }); // class instance against a record: different static types
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  38 | 
 
-  hint: typed arrays inside composites have no deep comparison (Node compares constructors, which the static element/field type does not carry)
+  hint: deep equality lowers when both sides have the SAME static type — annotate or narrow one side
 
-assert-fences.ts:38:1 - error SC2020: 'assert.deepStrictEqual of 'Point' values' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:39:1 - error SC1013: calling a module namespace object (Node throws TypeError there — use the default import: import assert from "node:assert") is not supported yet
 
-  37 | }
-  38 | assert.deepStrictEqual(new Point(1), new Point(1)); // class instances fence
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  39 | 
-
-  hint: class instances have no deep comparison (Node compares prototypes and own properties)
-
-assert-fences.ts:40:1 - error SC1013: calling a module namespace object (Node throws TypeError there — use the default import: import assert from "node:assert") is not supported yet
-
-  39 | 
-  40 | assertNs(true); // namespace objects are not callable in Node
+  38 | 
+  39 | assertNs(true); // namespace objects are not callable in Node
      | ^~~~~~~~~~~~~~
-  41 | 
+  40 | 
 
-assert-fences.ts:42:50 - error SC2020: 'assert.throws comparing the 'errno' property of the thrown error' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:41:50 - error SC2020: 'assert.throws comparing the 'errno' property of the thrown error' is part of the standard library types but has no scriptc lowering yet
 
-  41 | 
-  42 | assert.throws(() => { throw new Error("x"); }, { errno: -2 }); // properties outside the static error surface
+  40 | 
+  41 | assert.throws(() => { throw new Error("x"); }, { errno: -2 }); // properties outside the static error surface
      |                                                  ^~~~~~~~~
-  43 | assert.throws(() => { throw new Error("x"); }, {}); // Node rejects the empty shape
+  42 | assert.throws(() => { throw new Error("x"); }, {}); // Node rejects the empty shape
 
   hint: the static error surface carries name, message, and code — compare other properties in a catch block
 
-assert-fences.ts:43:48 - error SC2020: 'assert.throws with an empty expected object' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:42:48 - error SC2020: 'assert.throws with an empty expected object' is part of the standard library types but has no scriptc lowering yet
 
-  42 | assert.throws(() => { throw new Error("x"); }, { errno: -2 }); // properties outside the static error surface
-  43 | assert.throws(() => { throw new Error("x"); }, {}); // Node rejects the empty shape
+  41 | assert.throws(() => { throw new Error("x"); }, { errno: -2 }); // properties outside the static error surface
+  42 | assert.throws(() => { throw new Error("x"); }, {}); // Node rejects the empty shape
      |                                                ^~
-  44 | // (a convertible record VARIABLE as the expected shape lowers now — the
+  43 | // (a convertible record VARIABLE as the expected shape lowers now — the
 
   hint: Node rejects this (the error 'may not be an empty object') — name at least one of name/message/code
 
-assert-fences.ts:46:43 - error SC2020: 'assert.doesNotReject with an object-shape expectation' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:45:43 - error SC2020: 'assert.doesNotReject with an object-shape expectation' is part of the standard library types but has no scriptc lowering yet
 
-  45 | // errValue key walk; corpus 2556 pins it)
-  46 | void assert.doesNotReject(async () => {}, { name: "TypeError" }); // Node's own TypeError (function or RegExp only)
+  44 | // errValue key walk; corpus 2556 pins it)
+  45 | void assert.doesNotReject(async () => {}, { name: "TypeError" }); // Node's own TypeError (function or RegExp only)
      |                                           ^~~~~~~~~~~~~~~~~~~~~
-  47 | assert.ifError(new Map<string, number>()); // no honest ifError rendering for this type
+  46 | assert.ifError(new Map<string, number>()); // no honest ifError rendering for this type
 
   hint: Node rejects this form when the callback fails — use a class, a regex, a validation callback, or a bare call
 
-assert-fences.ts:47:16 - error SC2020: 'assert.ifError over 'Map<string, number>' values' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:46:16 - error SC2020: 'assert.ifError over 'Map<string, number>' values' is part of the standard library types but has no scriptc lowering yet
 
-  46 | void assert.doesNotReject(async () => {}, { name: "TypeError" }); // Node's own TypeError (function or RegExp only)
-  47 | assert.ifError(new Map<string, number>()); // no honest ifError rendering for this type
+  45 | void assert.doesNotReject(async () => {}, { name: "TypeError" }); // Node's own TypeError (function or RegExp only)
+  46 | assert.ifError(new Map<string, number>()); // no honest ifError rendering for this type
      |                ^~~~~~~~~~~~~~~~~~~~~~~~~
-  48 | 
+  47 | 
 
   hint: numbers, strings, booleans, Errors, null/undefined, and unions of those are the lowered forms
 
-assert-fences.ts:49:18 - error SC2020: 'assert.throws' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:48:18 - error SC2020: 'assert.throws' is part of the standard library types but has no scriptc lowering yet
 
-  48 | 
-  49 | const throwsFn = assert.throws; // assert.throws as a value: it takes the function to run
+  47 | 
+  48 | const throwsFn = assert.throws; // assert.throws as a value: it takes the function to run
      |                  ^~~~~~~~~~~~~
-  50 | throwsFn(() => {});
+  49 | throwsFn(() => {});
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-assert-fences.ts:54:18 - error SC2020: 'assert.deepEqual of '{ kids: ...[]; label: string }' values' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:53:18 - error SC2020: 'assert.deepEqual of '{ kids: ...[]; label: string }' values' is part of the standard library types but has no scriptc lowering yet
 
-  53 | const tree: Tree = { label: "t", kids: [] };
-  54 | assert.deepEqual(tree, tree); // recursive type: the failure message needs a deep copy
+  52 | const tree: Tree = { label: "t", kids: [] };
+  53 | assert.deepEqual(tree, tree); // recursive type: the failure message needs a deep copy
      |                  ^~~~
-  55 | const handler = { run: () => 1 };
+  54 | const handler = { run: () => 1 };
 
   hint: recursive types have no loose deep comparison — deepStrictEqual compares them
 
-assert-fences.ts:56:18 - error SC2020: 'assert.deepEqual of '{ run: () => number }' values' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:55:18 - error SC2020: 'assert.deepEqual of '{ run: () => number }' values' is part of the standard library types but has no scriptc lowering yet
 
-  55 | const handler = { run: () => 1 };
-  56 | assert.deepEqual(handler, handler); // functions inside a structure: the boxes carry no source names
+  54 | const handler = { run: () => 1 };
+  55 | assert.deepEqual(handler, handler); // functions inside a structure: the boxes carry no source names
      |                  ^~~~~~~
-  57 | assert.partialDeepStrictEqual(tree, { label: "t" }); // recursive type: the failure message needs a deep copy
+  56 | assert.partialDeepStrictEqual(tree, { label: "t" }); // recursive type: the failure message needs a deep copy
 
   hint: structures holding functions have no loose deep comparison — compare the functions with strictEqual
 
-assert-fences.ts:57:31 - error SC2020: 'assert.partialDeepStrictEqual of '{ kids: ...[]; label: string }' values' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:56:31 - error SC2020: 'assert.partialDeepStrictEqual of '{ kids: ...[]; label: string }' values' is part of the standard library types but has no scriptc lowering yet
 
-  56 | assert.deepEqual(handler, handler); // functions inside a structure: the boxes carry no source names
-  57 | assert.partialDeepStrictEqual(tree, { label: "t" }); // recursive type: the failure message needs a deep copy
+  55 | assert.deepEqual(handler, handler); // functions inside a structure: the boxes carry no source names
+  56 | assert.partialDeepStrictEqual(tree, { label: "t" }); // recursive type: the failure message needs a deep copy
      |                               ^~~~
-  58 | 
+  57 | 
 
   hint: recursive types have no partial deep comparison — deepStrictEqual compares them

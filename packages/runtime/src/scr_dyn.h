@@ -1783,6 +1783,11 @@ const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d);
 /* Whether a class instance capsule's class prototype chain defines a
  * method or accessor named key; false for other values. */
 bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key);
+/* Whether two capsules hold instances of the same runtime class: 1 same, 0
+ * different, -1 when either capsule carries no class ops (see scr_json.c).
+ * The class comes from the instance, so a value boxed through a base class's
+ * static type answers the same class as one boxed through its own. */
+int scr_dyn_same_typed_class(const ScrDyn *a, const ScrDyn *b);
 /* The own member `key` of a live capsule, from its native value: +1 value
  * for a present record field, an array's `length` and its present or
  * explicitly-undefined elements; NULL when the capsule has no such member

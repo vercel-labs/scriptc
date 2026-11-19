@@ -6301,6 +6301,18 @@ static const ScrDynTypedClassOps *scr_typed_ref_class_ops(const ScrDyn *d) {
   return ops->exact ? ops->exact(d->v.typed_ref.ptr) : ops;
 }
 
+/* Whether two capsules hold instances of the SAME runtime class — Node's
+ * constructor identity, which survives a value boxed through a base class's
+ * static type (the class ops answer the instance's actual class). 1 same, 0
+ * different, -1 when either capsule does not carry class ops. */
+int scr_dyn_same_typed_class(const ScrDyn *a, const ScrDyn *b) {
+  if (!a || !b || a->kind != SCR_DYN_TYPED_REF || b->kind != SCR_DYN_TYPED_REF) return 0;
+  const ScrDynTypedClassOps *ca = scr_typed_ref_class_ops(a);
+  const ScrDynTypedClassOps *cb = scr_typed_ref_class_ops(b);
+  if (!ca || !cb) return -1;
+  return ca == cb ? 1 : 0;
+}
+
 const ScrStr *scr_dyn_typed_ref_class_name(const ScrDyn *d) {
   if (!d || d->kind != SCR_DYN_TYPED_REF || d->prototype || scr_typed_ref_instance_proto(d))
     return NULL;

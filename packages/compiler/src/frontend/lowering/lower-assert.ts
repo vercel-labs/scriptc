@@ -1491,6 +1491,41 @@ function lowerAssertEqual(
       loc,
     );
   }
+  // The deep forms of types with no static structural comparison — Dates,
+  // RegExps, class instances, index-signature records, Sets of object
+  // members, and any composite holding one: both sides cross into the
+  // checked-dynamic tree, whose strict walk applies Node's own rules (the
+  // constructor gate, the built-in intrinsic arms, dynamic key sets) and
+  // renders the failure message from the same values. Cyclic and
+  // function-holding types keep their fence (the dyn copy has no cycle
+  // and boxes a nested function as a copy of its closure).
+  if (
+    deep &&
+    typeEquals(a.type, b.type) &&
+    a.type.kind !== "bytes" &&
+    a.type.kind !== "func" &&
+    !isUnitType(a.type) &&
+    deepUnsupportedReason(lowerer, a.type, new Set()) !== null &&
+    deepDynComparable(lowerer, a.type, new Set()) &&
+    lowerer.dynConvertible(a.type) &&
+    !typeReachesCycle(lowerer, a.type) &&
+    !typeReachesFunction(lowerer, a.type)
+  ) {
+    return {
+      kind: "libCall",
+      fn: "assert.eqDyn",
+      args: [
+        { kind: "dynFrom", value: a, type: DYN, loc: a.loc },
+        { kind: "dynFrom", value: b, type: DYN, loc: b.loc },
+        boolLit(negated, loc),
+        boolLit(true, loc),
+        msg,
+        hasMsg,
+      ],
+      type: VOID,
+      loc,
+    };
+  }
   // Function values (ANY two static signatures — a tuple-typed
   // listeners() element against a prefix-declared handler): strictEqual
   // is reference identity (functions are objects to Object.is), Node's
@@ -2854,6 +2889,58 @@ function bytesBrandOf(lowerer: Lowerer, node: ts.Expression): string | null {
  * fence names the FIRST unsupported constituent instead of emitting a
  * wrong comparison. Recursive record shapes terminate through `visiting`
  * (a shape being checked is assumed fine; its own walk decides). */
+/** Whether the checked-dynamic strict walk answers Node's deep equality for
+ * every value of `t`: the scalar and reference scalar kinds, class
+ * instances (compared through the constructor gate), dense records and
+ * arrays, Maps and Sets, typed arrays, and unions of those. Opaque runtime
+ * handles (a Stats snapshot, a stream, a URL) do NOT qualify: their
+ * intrinsic arms model only part of Node's key check, so the static fence
+ * stays rather than answering from an incomplete comparison. */
+function deepDynComparable(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
+  switch (t.kind) {
+    case "f64":
+    case "bigint":
+    case "string":
+    case "bool":
+    case "date":
+    case "regex":
+    case "symbol":
+    case "func":
+    case "undefinedT":
+    case "nullT":
+    case "dyn":
+    case "object":
+    case "bytes":
+      return true;
+    case "array":
+      return deepDynComparable(lowerer, t.elem, visiting);
+    case "record": {
+      if (visiting.has(t.shapeId)) return true; // a cycle the caller's fence rejects
+      visiting.add(t.shapeId);
+      const shape = lowerer.shapes.get(t.shapeId);
+      const ok =
+        shape !== undefined &&
+        shape.fields.every((f) => deepDynComparable(lowerer, f.type, visiting));
+      visiting.delete(t.shapeId);
+      return ok;
+    }
+    case "map":
+      return (
+        deepDynComparable(lowerer, t.key, visiting) && deepDynComparable(lowerer, t.value, visiting)
+      );
+    case "set":
+      return deepDynComparable(lowerer, t.elem, visiting);
+    case "union": {
+      const def = lowerer.unions.get(t.unionId);
+      return (
+        def !== undefined && def.arms.every((arm) => deepDynComparable(lowerer, arm, visiting))
+      );
+    }
+    default:
+      return false;
+  }
+}
+
 function deepUnsupportedReason(lowerer: Lowerer, t: IrType, visiting: Set<string>): string | null {
   switch (t.kind) {
     case "f64":

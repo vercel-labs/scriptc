@@ -437,6 +437,10 @@
           "tests/corpus/5519-assert-partial-deep-typed-edges.ts",
           "tests/corpus/5523-assert-class-options.js",
           "tests/corpus/5524-assert-class-skip-prototype.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts",
+          "tests/corpus/assert-error-construction-and-instances.ts",
           "tests/corpus/node24-no-error-assertions-coercion.js",
           "tests/corpus/node24-no-error-assertions.cjs",
           "tests/corpus/node24-no-error-assertions.ts",
@@ -516,7 +520,8 @@
         "tests": [
           "tests/corpus/5510-assert-error-properties.js",
           "tests/corpus/5511-assert-error-class.ts",
-          "tests/corpus/5512-assert-error-options.js"
+          "tests/corpus/5512-assert-error-options.js",
+          "tests/corpus/assert-error-construction-and-instances.ts"
         ]
       },
       "anchorSource": "exact"
@@ -544,7 +549,8 @@
         "tests": [
           "tests/corpus/5523-assert-class-options.js",
           "tests/corpus/5524-assert-class-skip-prototype.ts",
-          "tests/diagnostics/assert-class-fences.ts"
+          "tests/diagnostics/assert-class-fences.ts",
+          "tests/corpus/assert-error-construction-and-instances.ts"
         ]
       },
       "anchorSource": "exact"
@@ -713,7 +719,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -741,7 +750,10 @@
         "tests": [
           "tests/corpus/5513-assert-deep-equal-loose.js",
           "tests/corpus/5514-assert-deep-equal-typed.ts",
-          "tests/corpus/5516-assert-deep-equal-edges.js"
+          "tests/corpus/5516-assert-deep-equal-edges.js",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -795,7 +807,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -849,7 +864,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -940,7 +958,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -971,7 +992,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1002,7 +1026,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1033,7 +1060,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1064,7 +1094,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1092,7 +1125,10 @@
         "tests": [
           "tests/corpus/5513-assert-deep-equal-loose.js",
           "tests/corpus/5514-assert-deep-equal-typed.ts",
-          "tests/corpus/5516-assert-deep-equal-edges.js"
+          "tests/corpus/5516-assert-deep-equal-edges.js",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1123,7 +1159,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1154,7 +1193,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1185,7 +1227,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1216,7 +1261,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1247,7 +1295,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1278,7 +1329,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1309,7 +1363,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -28092,7 +28149,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98285,6 +98345,9 @@
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts",
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
@@ -99030,7 +99093,10 @@
           "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts"
+          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
+          "tests/corpus/assert-deep-dynamic-builtins.ts",
+          "tests/corpus/assert-deep-dynamic-classes-and-arrays.ts",
+          "tests/corpus/assert-deep-static-values-without-helpers.ts"
         ]
       },
       "anchorSource": "exact"

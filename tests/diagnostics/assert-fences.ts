@@ -28,14 +28,13 @@ assert.strictEqual(unk, { n: 1 }); // strict + composite static side: reference 
 assert.deepStrictEqual(unk, new Map<string, number>()); // not dyn-convertible
 
 assert.deepStrictEqual([1, 2], ["a", "b"]); // different static types
-assert.deepStrictEqual([new Uint8Array([1])], [new Uint8Array([1])]); // NESTED typed arrays fence (no brand in the element type)
 class Point {
   x: number;
   constructor(x: number) {
     this.x = x;
   }
 }
-assert.deepStrictEqual(new Point(1), new Point(1)); // class instances fence
+assert.deepStrictEqual(new Point(1), { x: 1 }); // class instance against a record: different static types
 
 assertNs(true); // namespace objects are not callable in Node
 

@@ -142,7 +142,7 @@ export function unitReuseVerify(): boolean {
 
 /** The first line of a program entry and of a file entry. */
 const PROGRAM_MAGIC = "scriptc-units-program-2";
-const FILE_MAGIC = "scriptc-units-file-3";
+const FILE_MAGIC = "scriptc-units-file-4";
 
 /** A unit's record as an entry holds it, with the files other than the
  * unit's own whose source positions the record holds. The function is in

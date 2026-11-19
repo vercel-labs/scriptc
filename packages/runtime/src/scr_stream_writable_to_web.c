@@ -19,6 +19,10 @@ struct Stw3Ctx {
   ScrPromise *backpressure; /* +1 while a backpressured write waits */
   ScrPromise *closed;       /* +1 while the writer's close waits */
   ScrClosure *eos;          /* +1: the finished() registration */
+  /* +1: the close-step watcher that lets go when a stream closes without
+   * emitting 'close' (a clean destroy of an emitClose:false stream, which
+   * the eos watcher above never sees). */
+  ScrClosure *close_step;
   ScrClosure *error_cl;     /* the writable's 'error' listener */
   ScrStr *error_name;       /* +1 */
   Stw3Ctx *live_prev, *live_next;
@@ -60,6 +64,12 @@ static void stw3_retire(Stw3Ctx *c) {
     ((void (*)(ScrClosure *))eos->fn)(eos);
     scr_closure_release(eos);
   }
+  ScrClosure *close_step = c->close_step;
+  c->close_step = NULL;
+  if (close_step) {
+    ((void (*)(ScrClosure *))close_step->fn)(close_step);
+    scr_closure_release(close_step);
+  }
   ScrStream *w = c->writable;
   c->writable = NULL;
   if (w) scr_stream_release(w);
@@ -76,6 +86,7 @@ static void stw3_unref(Stw3Ctx *c) {
     scr_emitter_unadd_quiet((ScrEmitter *)c->writable, c->drain_name, c->drain_cl);
   if (c->drain_name) scr_str_release(c->drain_name);
   if (c->eos) scr_closure_release(c->eos);
+  if (c->close_step) scr_closure_release(c->close_step);
   if (c->error_cl && c->writable)
     scr_emitter_unadd_quiet((ScrEmitter *)c->writable, c->error_name, c->error_cl);
   if (c->error_name) scr_str_release(c->error_name);
@@ -234,6 +245,18 @@ static void stw3_eos(ScrClosure *cl, ScrStream *s, ScrError *err) {
   /* The adapter lets go of the writable and the watcher registrations; the
    * finished() cleanup releases its stream and callback references. */
   stw3_retire(c);
+  stw3_unref(c);
+}
+
+/* The adapted stream closed without emitting 'close' (a clean destroy of an
+ * emitClose:false stream): the eos watcher never sees it, so this watcher
+ * lets the adapter go, as Node's adapter does. The writer's close stays
+ * pending, Node's shape for a stream that never finished. */
+static void stw3_close_step(ScrClosure *cl, ScrStream *s, ScrError *err) {
+  (void)s;
+  (void)err;
+  Stw3Ctx *c = stw3_of(cl);
+  if (c->eos != NULL) stw3_retire(c);
   stw3_unref(c);
 }
 
@@ -429,8 +452,17 @@ ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags) {
     if (stw3_live) stw3_live->live_prev = c;
     stw3_live = c;
     /* One end-of-stream watcher for the adapted stream (after the sink's
-     * start, so a synchronously finished stream still sees the controller). */
-    c->eos = scr_stream_finished_always(c->writable, stw3_closure((void *)&stw3_eos, c), &stw3_eos);
+     * start, so a synchronously finished stream still sees the controller).
+     * Node's adapter calls finished(streamWritable, { readable: false }):
+     * a Duplex's readable side can outlive the writable one (it ends only
+     * through a read), and the writer's close settles on the writable. */
+    c->eos = scr_stream_finished_opts(c->writable, stw3_closure((void *)&stw3_eos, c), &stw3_eos,
+                                      0, -1, true, NULL, NULL);
+    /* A silent close step is the one terminal point the eos watcher cannot
+     * report; this watcher only retires the adapter there (and is unhooked
+     * by stw3_retire when eos settles first). */
+    c->close_step = scr_stream_finished_always(
+        c->writable, stw3_closure((void *)&stw3_close_step, c), &stw3_close_step);
   }
   stw3_unref(c); /* the constructor's reference */
   return out;

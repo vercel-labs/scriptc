@@ -34785,6 +34785,7 @@
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
           "tests/corpus/compat-error-validation-codes.mjs",
+          "tests/corpus/compat-errors-async-resource-ids.mjs",
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
           "tests/corpus/compat-errors-http.mjs",
@@ -38863,10 +38864,10 @@
       "anchor": "err_invalid_async_id",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_ASYNC_ID",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/compat-errors-async-resource-ids.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122210,6 +122211,7 @@
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
           "tests/corpus/web-stream-writable-untyped.mjs",
+          "tests/corpus/web-streams-values.ts",
           "tests/corpus/webstream-byob-partial-elements-js.mjs",
           "tests/corpus/webstream-byob-reader-js.mjs",
           "tests/corpus/webstream-byob-reader.ts",
@@ -122217,6 +122219,7 @@
           "tests/corpus/webstream-byte-stream.ts",
           "tests/corpus/webstream-byte-streams.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
+          "tests/fixtures/fetch/static-stream-values/main.mts",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -122706,10 +122709,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readableStream.values",
         "tests": [
-          "tests/corpus/2862-web-readable-async-iteration.ts"
+          "tests/corpus/2862-web-readable-async-iteration.ts",
+          "tests/corpus/web-streams-values.ts",
+          "tests/fixtures/fetch/static-stream-values/main.mts"
         ]
       },
       "anchorSource": "exact"

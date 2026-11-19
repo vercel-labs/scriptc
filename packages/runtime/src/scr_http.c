@@ -8259,6 +8259,21 @@ static ScrStr *scr_http_pct_decode(const char *p, size_t n) {
   return answer;
 }
 
+/* The module's proxy value for a scheme, when one is configured. */
+static const ScrStr *scr_http_proxy_spec(bool secure) {
+  if (!scr_http_proxy_env.enabled) return NULL;
+  return secure ? scr_http_proxy_env.https_proxy : scr_http_proxy_env.http_proxy;
+}
+
+/* A non-empty value that is not a URL at all: Node throws
+ * ERR_PROXY_INVALID_CONFIG for it instead of going direct. */
+static bool scr_http_proxy_spec_invalid(const ScrStr *spec) {
+  if (spec == NULL || spec->len == 0) return false;
+  for (size_t i = 0; i + 2 < spec->len; i++)
+    if (spec->data[i] == ':' && spec->data[i + 1] == '/' && spec->data[i + 2] == '/') return false;
+  return true;
+}
+
 /* The proxy a plain-http target goes through, parsed from HTTP_PROXY: an
  * `http://` URL with optional credentials. */
 static bool scr_http_proxy_resolve(const ScrStr *host, double port, ScrHttpProxyTarget *out) {
@@ -8351,6 +8366,17 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     if (cb) scr_closure_release(cb);
     if (presock) scr_net_sock_release(presock);
     return NULL;
+  }
+  if (env_proxy) {
+    const ScrStr *spec = scr_http_proxy_spec(wrap != NULL);
+    if (spec != NULL && !scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port) &&
+        scr_http_proxy_spec_invalid(spec)) {
+      /* Node's ERR_PROXY_INVALID_CONFIG: the message is the offending value */
+      if (cb) scr_closure_release(cb);
+      if (presock) scr_net_sock_release(presock);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, spec->data, spec->len, "ERR_PROXY_INVALID_CONFIG");
+      return NULL;
+    }
   }
   if (env_proxy && wrap != NULL && scr_http_proxy_covers(host, port, true)) {
     /* the target is https and the module's proxy covers it: that needs a

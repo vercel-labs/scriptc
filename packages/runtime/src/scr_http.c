@@ -10209,7 +10209,17 @@ static ScrDyn *scr_http_agent_hook_value(ScrHttpAgent *a, bool keep) {
 extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
     __attribute__((weak));
 
-static ScrDyn *scr_http_agent_create_connection(ScrDyn *const *args, size_t argc) {
+static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *args,
+                                                 size_t argc) {
+  /* An https agent's default dialer is tls.connect. This path builds a plain
+   * net socket, so a secure agent's call refuses instead of handing back an
+   * unencrypted connection for traffic the program asked to secure. */
+  if (a != NULL && a->secure) {
+    static const char secure_text[] =
+        "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
+    return NULL;
+  }
   static const char fence_text[] =
       "http.Agent createConnection options here are not supported by the runtime";
   ScrStr *fence = scr_str_new(fence_text, sizeof fence_text - 1);
@@ -10227,8 +10237,9 @@ static ScrDyn *scr_http_agent_create_connection(ScrDyn *const *args, size_t argc
 /* The dialer as a value, held like the other hooks. */
 static ScrDyn *scr_http_agent_connect_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   ScrHttpAgent *a = scr_box_get_ref(clo->caps[0]); /* +1 */
-  scr_http_agent_release(a);                       /* the dialer uses no agent state */
-  return scr_http_agent_create_connection(args, argc);
+  ScrDyn *answer = scr_http_agent_create_connection(a, args, argc);
+  scr_http_agent_release(a);
+  return answer;
 }
 
 static ScrDyn *scr_http_agent_connect_value(ScrHttpAgent *a) {
@@ -10293,7 +10304,7 @@ static ScrDyn *scr_http_dynh_agent_invoke(void *h, ScrDyn *self, const char *met
     return scr_http_agent_keep_socket_alive(a, args, argc);
   if (strcmp(method, "reuseSocket") == 0) return scr_http_agent_reuse_socket(a, args, argc);
   if (strcmp(method, "createConnection") == 0)
-    return scr_http_agent_create_connection(args, argc);
+    return scr_http_agent_create_connection(a, args, argc);
   {
     static const char *const known[] = { "createSocket",
       "addRequest", "removeSocket", "off", "removeListener",

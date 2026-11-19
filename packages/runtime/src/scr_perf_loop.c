@@ -1668,7 +1668,11 @@ double scr_histo_linear_view(ScrDyn *handle, ScrDyn *step_arg) {
     int64_t added = 0;
     for (;;) {
       if (it.value >= next_lowest) {
-        if (!scr_histo_push_view(h, (double)next, added)) return 0;
+        /* The key is the bucket's nominal value, as hdr_iter_next answers
+         * it (update_iterated_values does not replace iter->value). HDR
+         * quantization can make several reporting levels share a key, and
+         * Node's Map keeps the last count for it. */
+        if (!scr_histo_push_view(h, (double)it.value, added)) return 0;
         if (next == INT64_MAX) return (double)h->view_len;
         if (next > INT64_MAX - step) {
           next = INT64_MAX;
@@ -1726,7 +1730,8 @@ double scr_histo_log_view(ScrDyn *handle, ScrDyn *first_arg, ScrDyn *base_arg) {
       int64_t added = 0;
       for (;;) {
         if (it.value >= next_lowest) {
-          if (!scr_histo_push_view(h, (double)next, added)) return 0;
+          /* The bucket's nominal value, as in the linear iterator. */
+          if (!scr_histo_push_view(h, (double)it.value, added)) return 0;
           if (next > INT64_MAX / growth) return (double)h->view_len;
           next *= growth;
           next_lowest = scr_histo_lowest_equivalent(h, next);
@@ -1782,11 +1787,14 @@ double scr_histo_percentiles_at_view(ScrDyn *handle, ScrDyn *list) {
     goto done;
   }
   for (size_t i = 0; i < length; i++) {
-    const ScrDyn *value = scr_dyn_arr_at(array, (double)i);
+    /* scr_dyn_arr_at answers an owned reference; every path releases it,
+     * including the validation failures. */
+    ScrDyn *value = scr_dyn_arr_at(array, (double)i);
     char name[40];
     snprintf(name, sizeof name, "percentiles[%zu]", i);
     if (value->kind != SCR_DYN_NUM) {
       scr_dyn_arg_type_fail(name, "of type number", value);
+      scr_dyn_release(value);
       goto done;
     }
     double percentile = value->v.num;
@@ -1799,9 +1807,11 @@ double scr_histo_percentiles_at_view(ScrDyn *handle, ScrDyn *list) {
           "The value of \"%s\" is out of range. It must be > 0 && <= 100. Received %s", name,
           received);
       scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      scr_dyn_release(value);
       goto done;
     }
     percentiles[i] = percentile;
+    scr_dyn_release(value);
   }
   qsort(percentiles, length, sizeof *percentiles, scr_histo_sort_double);
   if (h == NULL) goto done;

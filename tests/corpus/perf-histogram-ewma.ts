@@ -118,6 +118,23 @@ console.log("empty log", JSON.stringify([...emptyBuckets.logBuckets(1, 2)]));
 const emptyBig = emptyBuckets.percentilesBigInt as unknown as Map<number, bigint>;
 console.log("empty big", JSON.stringify([...emptyBig].map(([k, v]) => [k, String(v)])));
 
+// A layout whose bucket width is larger than the step: the hdr iterator keys
+// the map by each bucket's nominal (quantized) value, and reporting levels
+// that fall in one bucket share that key, so the map is smaller than the
+// number of levels crossed.
+const quantized = createHistogram({ lowest: 1000, highest: 1_000_000, figures: 1 });
+for (const value of [1000, 1500, 2000, 5000, 20000, 100000]) quantized.record(value);
+const quantizedLinear = [...quantized.linearBuckets(3000)];
+console.log("quantized linear", JSON.stringify(quantizedLinear));
+console.log("quantized log", JSON.stringify([...quantized.logBuckets(1500, 3)]));
+const quantizedWide = [...quantized.linearBuckets(100)];
+console.log(
+  "quantized wide",
+  quantizedWide.length,
+  JSON.stringify(quantizedWide.slice(0, 3)),
+  JSON.stringify(quantizedWide.slice(-2)),
+);
+
 // Validation for every bucket form.
 for (const step of [0, -1, 1.5]) {
   try {

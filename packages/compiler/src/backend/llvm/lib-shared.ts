@@ -439,6 +439,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.entryDuration": "scr_perf_entry_duration",
   "perf.entryDetail": "scr_perf_entry_detail",
   "perf.resourceMark": "scr_perf_resource_mark",
+  "perf.timerify": "scr_perf_timerify",
   "perf.resourceClear": "scr_perf_resource_clear",
   "perf.resourceBufferSize": "scr_perf_resource_buffer_size",
   "perf.entryResourceNum": "scr_perf_entry_resource_num",

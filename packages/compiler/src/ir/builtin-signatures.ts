@@ -738,6 +738,7 @@ function buildLibFnSignatures() {
      * entryResourceNum/Str read a view entry's resource fields by the
      * selector order builtins/performance.ts defines. */
     "perf.resourceMark": { argTypes: [DYN], result: F64 },
+    "perf.timerify": { argTypes: [DYN], result: DYN },
     "perf.resourceClear": { argTypes: [DYN], result: VOID },
     "perf.resourceBufferSize": { argTypes: [DYN], result: VOID },
     "perf.entryResourceNum": { argTypes: [F64, F64], result: F64 },

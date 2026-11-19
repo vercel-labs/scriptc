@@ -2492,6 +2492,12 @@ ScrDyn *scr_dyn_call(const ScrDyn *d, ScrDyn *const *args, size_t argc, const ch
  * `f(...args)` after the emitted argument array is built): argv IS the
  * array's items. Borrows both; result owned (+1), or NULL pending. */
 ScrDyn *scr_dyn_apply(const ScrDyn *d, const ScrDyn *args, const char *what);
+/* The timerified wrapper's construct form (scr_perf.c installs it): answers
+ * true when `callee` is such a wrapper and stores the construction in
+ * *result. NULL until a wrapper exists, so a program without timerify never
+ * reaches the perf unit. */
+extern SCR_TL bool (*scr_dyn_timerified_construct_fn)(const ScrDyn *callee,
+                                                      const ScrDyn *args, ScrDyn **result);
 /* Function.bind borrows its target and arguments, returns a fresh callable. */
 ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc);
 

@@ -779,6 +779,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // markResourceTiming's argument reads and clearResourceTimings /
   // setResourceTimingBufferSize validation.
   "perf.resourceMark",
+  "perf.timerify",
   "perf.resourceClear",
   "perf.resourceBufferSize",
   "perf.measure",

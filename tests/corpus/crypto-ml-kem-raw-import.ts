@@ -21,6 +21,17 @@ const fromRaw = createPublicKey({ key: pub512, format: "raw-public", asymmetricK
 log("raw public", fromRaw.type,
   Buffer.from(fromRaw.export({ type: "spki", format: "der" })).subarray(22).equals(pub512));
 
+// FIPS 203's modulus check: a correctly sized encoding whose coefficients
+// are not all below q = 3329 is refused on every import path.
+const badRaw = Buffer.from(pub512);
+badRaw[0] = 0xff;
+badRaw[1] = 0xff;
+attempt("noncanonical raw", () =>
+  createPublicKey({ key: badRaw, format: "raw-public", asymmetricKeyType: "ml-kem-512" } as never));
+const badSpki = Buffer.concat([Buffer.from("30820332300b06096086480165030404010382032100", "hex"), badRaw]);
+attempt("noncanonical spki", () => createPublicKey({ key: badSpki, format: "der", type: "spki" }));
+attempt("noncanonical jwk", () =>
+  createPublicKey({ key: { kty: "AKP", alg: "ML-KEM-512", pub: Buffer.from(badRaw).toString("base64url") }, format: "jwk" } as never));
 attempt("short seed", () => createPrivateKey({ key: Buffer.alloc(63), format: "raw-seed", asymmetricKeyType: "ml-kem-512" } as never));
 attempt("long public", () => createPublicKey({ key: Buffer.alloc(801), format: "raw-public", asymmetricKeyType: "ml-kem-512" } as never));
 attempt("raw private", () => createPrivateKey({ key: Buffer.alloc(1632), format: "raw-private", asymmetricKeyType: "ml-kem-512" } as never));

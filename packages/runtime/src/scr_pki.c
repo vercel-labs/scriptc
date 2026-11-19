@@ -338,6 +338,56 @@ const ScrPkiMlkemCore *scr_pki_mlkem_core = NULL;
 static size_t sp_mlkem_pk_bytes(int level) {
   return level == 512 ? 800 : level == 768 ? 1184 : 1568;
 }
+/* The AlgorithmIdentifier tail of an ML-KEM SubjectPublicKeyInfo (the
+ * OID's last byte names the parameter set). */
+static const unsigned char sp_mlkem_spki_tail[12] = {0x30, 0x0b, 0x06, 0x09, 0x60,
+                                                     0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x04};
+
+/* Whether `der` has the ML-KEM SPKI shape (a recognized parameter set and
+ * its exact length), whatever its key material. */
+static bool sp_mlkem_spki_shape(const unsigned char *der, size_t len) {
+  if (len < 22 || der[0] != 0x30 || der[1] != 0x82) return false;
+  if (memcmp(der + 4, sp_mlkem_spki_tail, sizeof sp_mlkem_spki_tail) != 0) return false;
+  int level = der[16] == 1 ? 512 : der[16] == 2 ? 768 : der[16] == 3 ? 1024 : 0;
+  return level != 0 && len == sp_mlkem_pk_bytes(level) + 22;
+}
+
+static ScrDyn *sp_dyn_str(ScrStr *s);
+
+/* Node's errors for a recognized key whose material it cannot read: a DER
+ * input answers "Failed to read asymmetric key", a PEM input fails in the
+ * provider's decoder. */
+static void sp_unreadable_key(void) {
+  static const char message[] = "Failed to read asymmetric key";
+  scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+}
+
+static void sp_evp_decode_error(void) {
+  static const char message[] = "error:03000072:digital envelope routines::decode error";
+  static const char code[] = "ERR_OSSL_EVP_DECODE_ERROR";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  scr_error_set_prop(e, "library", 7, sp_dyn_str(scr_str_new("digital envelope routines", 26)));
+  scr_error_set_prop(e, "reason", 6, sp_dyn_str(scr_str_new("decode error", 12)));
+  scr_error_set_code(e, code);
+  scr_error_set_prop(e, "code", 4, sp_dyn_str(scr_str_new(code, sizeof code - 1)));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* FIPS 203's public-key modulus check: each 12-bit packed coefficient of
+ * the encoded t̂ is below q = 3329 (the trailing 32-byte seed is not
+ * checked). Node applies it on every import path. */
+static bool sp_mlkem_pk_canonical(int level, const uint8_t *pk) {
+  size_t pairs = 128 * (level == 512 ? 2 : level == 768 ? 3 : 4);
+  for (size_t i = 0; i < pairs; i++) {
+    const uint8_t *b = pk + 3 * i;
+    unsigned c0 = (unsigned)b[0] | ((unsigned)(b[1] & 0x0f) << 8);
+    unsigned c1 = ((unsigned)(b[1] >> 4)) | ((unsigned)b[2] << 4);
+    if (c0 >= 3329 || c1 >= 3329) return false;
+  }
+  return true;
+}
 static size_t sp_mlkem_sk_bytes(int level) {
   return level == 512 ? 1632 : level == 768 ? 2400 : 3168;
 }
@@ -1898,8 +1948,7 @@ static SpKey *sp_mlkem_from_der(const unsigned char *der, size_t len, bool priva
   static const unsigned char pre_pkcs8[17] = {0x30, 0x54, 0x02, 0x01, 0x00, 0x30,
                                               0x0b, 0x06, 0x09, 0x60, 0x86, 0x48,
                                               0x01, 0x65, 0x03, 0x04, 0x04};
-  static const unsigned char pre_spki_tail[12] = {0x30, 0x0b, 0x06, 0x09, 0x60, 0x86,
-                                                  0x48, 0x01, 0x65, 0x03, 0x04, 0x04};
+
   /* A PKCS#8 private encoding answers a public key too (createPublicKey
    * from a private key or its PEM/DER), through the public half derived
    * from the seed. */
@@ -1921,7 +1970,7 @@ static SpKey *sp_mlkem_from_der(const unsigned char *der, size_t len, bool priva
   }
   if (private_key) return NULL;
   if (len < 22 || der[0] != 0x30 || der[1] != 0x82 ||
-      memcmp(der + 4, pre_spki_tail, sizeof pre_spki_tail) != 0)
+      memcmp(der + 4, sp_mlkem_spki_tail, sizeof sp_mlkem_spki_tail) != 0)
     return NULL;
   int level = der[16] == 1 ? 512 : der[16] == 2 ? 768 : der[16] == 3 ? 1024 : 0;
   if (level == 0) return NULL;
@@ -1934,6 +1983,10 @@ static SpKey *sp_mlkem_from_der(const unsigned char *der, size_t len, bool priva
   k->mlkem = true;
   k->mlkem_level = level;
   memcpy(k->mlkem_pk, der + 22, pk_len);
+  if (!sp_mlkem_pk_canonical(level, k->mlkem_pk)) {
+    sp_key_release(k);
+    return NULL;
+  }
   return k;
 }
 
@@ -1957,6 +2010,7 @@ static SpKey *sp_mlkem_from_jwk(const ScrDyn *jwk, bool private_key) {
   k->mlkem = true;
   k->mlkem_level = level;
   bool ok = sp_jwk_b64(jwk, "pub", k->mlkem_pk, pk_len);
+  if (ok && !sp_mlkem_pk_canonical(level, k->mlkem_pk)) ok = false;
   if (ok && private_key) {
     ok = sp_jwk_b64(jwk, "priv", k->mlkem_seed, 64);
     if (ok) {
@@ -2335,11 +2389,21 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
       bool failed;
       SpKey *ed = sp_ed_from_der(der, der_len, private_key, &failed);
       if (!ed && !failed) ed = sp_pss_from_der(der, der_len, private_key, &failed);
+      /* A recognized ML-KEM SPKI whose key material the parse rejected (a
+       * coefficient outside the field, say) answers Node's errors for the
+       * input form. */
+      bool mlkem_unreadable = !ed && !failed && !private_key && sp_mlkem_spki_shape(der, der_len);
+      bool from_pem = decoded != NULL;
       if (decoded) {
         mbedtls_platform_zeroize(decoded, der_len);
         free(decoded);
       }
       if (ed || failed) return ed;
+      if (mlkem_unreadable) {
+        if (from_pem) sp_evp_decode_error();
+        else sp_unreadable_key();
+        return NULL;
+      }
     }
   }
   /* mbedtls reads PEM from a NUL-terminated buffer whose length counts the
@@ -2765,7 +2829,10 @@ static SpKey *sp_key_from_raw(const ScrDyn *input, const ScrDyn *data, const Scr
     if (raw_public) {
       size_t pk_len = sp_mlkem_pk_bytes(mlkem_level);
       ok = len == pk_len;
-      if (ok) memcpy(k->mlkem_pk, p, pk_len);
+      if (ok) {
+        memcpy(k->mlkem_pk, p, pk_len);
+        ok = sp_mlkem_pk_canonical(mlkem_level, k->mlkem_pk);
+      }
     } else if (seed) {
       ok = len == 64;
       if (ok) {

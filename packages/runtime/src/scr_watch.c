@@ -55,6 +55,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -226,7 +227,6 @@ static bool scr_watch_arm(ScrWatcher *w) {
  * and CoreFoundation ship with every macOS install. */
 
 #include <dlfcn.h>
-#include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
 
@@ -771,12 +771,19 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
   w->recursive = recursive;
   w->path = scr_str_retain(path);
   if (recursive) {
+#if defined(_WIN32)
+    /* Windows watches by directory handle and reports the entry name from
+     * it, so it needs no canonical spelling (and the GNU CRT has no
+     * realpath). */
+    w->abs_root = NULL;
+#else
     /* A recursive walk builds child paths long after the watch starts, so
      * it holds the root's canonical spelling: a later chdir must not move
      * where a new subdirectory's path resolves. */
     char resolved[PATH_MAX];
     const char *root = realpath(path->data, resolved) != NULL ? resolved : path->data;
     w->abs_root = scr_str_new(root, strlen(root));
+#endif
   }
   if (cb != NULL) {
     w->ls = malloc(sizeof *w->ls);

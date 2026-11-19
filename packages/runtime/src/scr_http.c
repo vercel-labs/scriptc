@@ -5612,8 +5612,10 @@ static ScrStr *scr_http_proxy_env_value(const ScrDyn *env, const char *upper,
     const ScrDyn *obj = materialized != NULL ? materialized : env;
     ScrStr *out = NULL;
     if (obj->kind == SCR_DYN_OBJ) {
-      /* Node reads the lowercase spelling first: it overrides the uppercase */
+      /* Node reads the lowercase spelling first: a present string overrides
+       * the uppercase one, while an empty or non-string value falls back */
       const ScrDyn *v = scr_dyn_obj_get(obj, lower, strlen(lower));
+      if (v != NULL && (v->kind != SCR_DYN_STR || v->v.str->len == 0)) v = NULL;
       if (v == NULL) v = scr_dyn_obj_get(obj, upper, strlen(upper));
       if (v != NULL && v->kind == SCR_DYN_STR) out = scr_str_retain(v->v.str);
     }
@@ -5621,7 +5623,7 @@ static ScrStr *scr_http_proxy_env_value(const ScrDyn *env, const char *upper,
     return out;
   }
   const char *raw = getenv(lower);
-  if (raw == NULL) raw = getenv(upper);
+  if (raw == NULL || raw[0] == '\0') raw = getenv(upper);
   return raw != NULL ? scr_str_new(raw, strlen(raw)) : NULL;
 }
 

@@ -360,9 +360,21 @@ test("reports a missing platform package as an actionable installation diagnosti
 });
 
 test.skipIf(process.platform === "win32")(
-  "reports unreadable or non-executable helper binaries as installation failures",
+  "repairs a writable helper binary installed without execute bits",
   async () => {
-    for (const mode of [0o111, 0o644]) {
+    const pkg = await fakePackage();
+    await chmod(pkg.bin, 0o644);
+    const output = join(pkg.root, "repaired.o");
+    await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+    expect((await stat(pkg.bin)).mode & 0o111).not.toBe(0);
+    expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "reports an unreadable or read-only helper binary as an installation failure",
+  async () => {
+    for (const mode of [0o111, 0o444]) {
       const pkg = await fakePackage();
       await chmod(pkg.bin, mode);
       await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({

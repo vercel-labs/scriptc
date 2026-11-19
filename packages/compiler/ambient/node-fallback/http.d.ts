@@ -169,6 +169,8 @@ declare module "http" {
     /* Answers whether the buffer is still below its 64 KiB high-water
      * mark; a false answer fires 'drain' once the bytes are out. */
     write(data: string | Uint8Array): boolean;
+    write(data: string | Uint8Array, callback: () => void): boolean;
+    write(data: string | Uint8Array, encoding: string, callback?: () => void): boolean;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;
@@ -250,6 +252,12 @@ declare module "http" {
       socketPath?: string;
       [option: string]: unknown;
     }): string;
+    /* The keep-alive hooks the agent's pool runs: the socket is kept alive
+     * with the agent's keepAliveMsecs and unref'd (answering true), then
+     * referenced again for the next request. The dial hook,
+     * createConnection, is not supported. */
+    keepSocketAlive(socket: Socket): boolean;
+    reuseSocket(socket: Socket, request: ClientRequest): void;
     maxSockets: number;
     maxFreeSockets: number;
     /* Node's cap across every name: requests queue once the agent's live
@@ -302,8 +310,9 @@ declare module "http" {
     readonly writableFinished: boolean;
     readonly finished: boolean;
     readonly reusedSocket: boolean;
-    setHeader(name: string, value: string): void;
-    getHeader(name: string): string | undefined;
+    setHeader(name: string, value: number | string | readonly string[]): void;
+    appendHeader(name: string, value: string | readonly string[]): void;
+    getHeader(name: string): number | string | string[] | undefined;
     hasHeader(name: string): boolean;
     removeHeader(name: string): void;
     getHeaderNames(): string[];

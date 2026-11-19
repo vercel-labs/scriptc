@@ -18,6 +18,7 @@ node_modules/
 !tests/fixtures/npm/node_modules/
 !tests/corpus/*/node_modules/
 !tests/fixtures/npm-static/node_modules/
+!tests/fixtures/source-package/node_modules/
 !tests/coverage-fixtures/wasm/node_modules/
 !tests/coverage-fixtures/node-islands*/node_modules/
 !tests/coverage-fixtures/workspace-declared-rows/node_modules/

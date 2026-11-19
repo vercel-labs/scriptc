@@ -1,3 +1,8 @@
+import {
+  cjsEsModuleStampObjectWrite,
+  cjsExportStatementObjectWrites,
+  lowerCjsExportsObjectWrite,
+} from "./cjs-exports-object-value.js";
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import { requireLiveBytes } from "./buffers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
@@ -2546,6 +2551,28 @@ function functionReadOf(
   );
 }
 
+/** `ret` with a constructor's publishing epilogue run where the return
+ * completes: after the operand evaluates (a constructor returns void, so a
+ * valued operand only runs for its effects) and before the return hands
+ * control to any `finally` block. */
+function withConstructorEpilogue(ret: IrStmt, epilogue: IrStmt[], loc: SrcLoc): IrStmt {
+  const body = ret.kind === "block" ? [...ret.body] : [ret];
+  const last = body.at(-1);
+  if (last?.kind !== "return") return { kind: "block", body: [...body, ...epilogue], loc };
+  const before = body.slice(0, -1);
+  if (last.value === null) return { kind: "block", body: [...before, ...epilogue, last], loc };
+  return {
+    kind: "block",
+    body: [
+      ...before,
+      { kind: "exprStmt", expr: last.value, loc },
+      ...epilogue,
+      { kind: "return", value: null, loc },
+    ],
+    loc,
+  };
+}
+
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
   if (ownPrototypeResetStatement(lowerer, stmt))
     return { kind: "block", body: [], loc: locOf(stmt) };
@@ -2754,7 +2781,15 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
         const constructorReturn = lowerConstructorReturn(lowerer, stmt);
         if (constructorReturn !== null) return constructorReturn;
       }
-      return withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
+      const returned = withClearedPending(lowerer.lowerReturnStmt(stmt.expression, locOf(stmt)));
+      // `return this` or a primitive (`undefined`) from a constructor whose
+      // `this` may have been rebound answers that `this`: it is published
+      // as a bare return publishes it, once the operand has run — the
+      // operand may construct another instance of the class, and the
+      // method the operand calls may publish that construction's result.
+      const epilogue = lowerer.ctx.constructorEpilogue?.("return");
+      if (epilogue !== undefined) return withConstructorEpilogue(returned, epilogue, locOf(stmt));
+      return returned;
     } else if (lowerer.ctx.returnType.kind === "union") {
       value = lowerer.wrappedUndefined(lowerer.ctx.returnType, locOf(stmt));
       if (value === null) {
@@ -2776,6 +2811,14 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // An async generator's bare return has no operand to await.
     if (lowerer.ctx.isAsync === true && lowerer.ctx.generator)
       return withClearedPending({ kind: "return", value, awaited: true, loc: locOf(stmt) });
+    // A constructor whose `this` may have been rebound publishes it first.
+    const epilogue = lowerer.ctx.constructorEpilogue?.("return");
+    if (epilogue !== undefined)
+      return {
+        kind: "block",
+        body: [...epilogue, withClearedPending({ kind: "return", value, loc: locOf(stmt) })],
+        loc: locOf(stmt),
+      };
     return withClearedPending({ kind: "return", value, loc: locOf(stmt) });
   }
   if (ts.isBreakStatement(stmt) || ts.isContinueStatement(stmt)) {
@@ -8063,6 +8106,7 @@ export function lowerVarDecl(
       keepsCheckedDynamicValue(lowerer, decl.initializer, raw.type, g.type)
     )
       g.type = raw.type;
+    if (jsCollectionKeepsLayout(decl, raw.type, g.type)) g.type = raw.type;
     const arithmetic =
       raw.type.kind === "union" ? lowerer.unions.get(raw.type.unionId)?.arms : undefined;
     if (
@@ -8328,6 +8372,7 @@ export function lowerVarDecl(
     anyResidueReplacedBy(lowerer, type, init.type)
   )
     type = init.type;
+  if (jsCollectionKeepsLayout(decl, init.type, type)) type = init.type;
   // A const whose initializer has another record or array layout than the
   // binding's type keeps the initializer's layout: converting would copy the
   // value, so the binding would not be the value its initializer names.
@@ -8841,6 +8886,25 @@ export function lowerVarDecl(
     lowerer.runtimeOptionalStorageLocals.add(runtimeOptionalRoot);
   }
   return { kind: "varDecl", localId: local.id, init, loc: locOf(decl) };
+}
+
+/** Whether a JavaScript binding keeps the Map or Set its initializer built
+ * when the checker's inferred type has another layout: `new Map([["a", xs],
+ * ["b", ys]])` takes V from the FIRST entry, so the later entries differ and,
+ * with checkJs off, are type errors the checker reports nowhere. The
+ * lowering built the map from every entry, so the initializer's layout is
+ * the one the value really has; there is no layout mapping between the two,
+ * and converting would store a map the program did not build. */
+function jsCollectionKeepsLayout(
+  decl: ts.VariableDeclaration,
+  actual: IrType,
+  declared: IrType | null,
+): boolean {
+  if (decl.type !== undefined || hasJsTypeAnnotation(decl)) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
+  if (declared === null || declared.kind !== actual.kind) return false;
+  if (actual.kind !== "map" && actual.kind !== "set") return false;
+  return !typeEquals(declared, actual);
 }
 
 /** Whether an annotated declaration whose initializer names an existing
@@ -10091,7 +10155,18 @@ export function lowerTry(lowerer: Lowerer, stmt: ts.TryStatement): IrStmt {
       }
     }
   }
-  const finallyBody = stmt.finallyBlock ? lowerer.lowerScopedBlock(stmt.finallyBlock) : null;
+  const loweredFinally = stmt.finallyBlock ? lowerer.lowerScopedBlock(stmt.finallyBlock) : null;
+  // A constructor publishes the instance it ends with where a `return`
+  // completes; its `finally` blocks run after that, and a construction in
+  // one publishes its own result. Publish this constructor's instance once
+  // the `finally` finishes, so the read that follows the constructor still
+  // answers it (constructor-returns.ts publishConstructorResult).
+  const finallyPublish =
+    loweredFinally === null ? undefined : lowerer.ctx.constructorEpilogue?.("finally");
+  const finallyBody =
+    loweredFinally === null || finallyPublish === undefined
+      ? loweredFinally
+      : [...loweredFinally, ...finallyPublish];
   return {
     kind: "tryCatch",
     tryBody,
@@ -10486,6 +10561,19 @@ function cjsVoidInitTargetsElidable(
     if (typeEquals(widened, g.type)) return false;
   }
   return true;
+}
+
+/** Whether `expr` is the assignment of a top-level CommonJS export
+ * statement, which lowerCjsExportStatement owns (its object mirror
+ * included). */
+function isTopLevelCjsExportStatement(expr: ts.BinaryExpression): boolean {
+  const stmt = expr.parent;
+  return (
+    stmt !== undefined &&
+    ts.isExpressionStatement(stmt) &&
+    ts.isSourceFile(stmt.parent!) &&
+    cjsExportAssignmentOf(stmt)?.expr === expr
+  );
 }
 
 /** A top-level CommonJS export statement (see cjsExportAssignmentOf):
@@ -11455,7 +11543,13 @@ export function lowerExprStatement(
       );
     }
     const cjs = cjsExportAssignmentOf(stmtNode);
-    if (cjs) return lowerCjsExportStatement(lowerer, cjs);
+    if (cjs) {
+      const lowered = lowerCjsExportStatement(lowerer, cjs);
+      // A module whose exports object some code takes follows the write.
+      const mirror = cjsExportStatementObjectWrites(lowerer, stmtNode);
+      if (mirror.length === 0) return lowered;
+      return { kind: "block", body: [lowered, ...mirror], loc: locOf(expr) };
+    }
     // The tsc CJS interop stamp — `Object.defineProperty(exports,
     // "__esModule", { value: true });` at a module's top — lowers to
     // NOTHING: the compiled module system has no reflective exports
@@ -11463,7 +11557,14 @@ export function lowerExprStatement(
     // already modeled statically by the checker and the CJS lexer link
     // check. Every tsc-emitted dist file opens with it, and the generic
     // defineProperty fence would throw at module load.
-    if (isEsModuleStamp(expr)) return { kind: "block", body: [], loc: locOf(expr) };
+    if (isEsModuleStamp(expr))
+      return (
+        cjsEsModuleStampObjectWrite(lowerer, stmtNode) ?? {
+          kind: "block",
+          body: [],
+          loc: locOf(expr),
+        }
+      );
   }
   // Statement-position `delete` — the two honest receivers: process.env
   // keys (unsetenv(3) — later reads and spawned children observe the
@@ -11513,6 +11614,17 @@ export function lowerExprStatement(
       if (ts.isPropertyAccessExpression(expr.left)) {
         const own = lowerFunctionConstructorWrite(lowerer, expr.left, expr.right);
         if (own) return { kind: "exprStmt", expr: own, loc: locOf(expr) };
+      }
+      // A member of a module whose exports object some code takes is
+      // written through that object (cjs-exports-object-value.ts).
+      if (ts.isPropertyAccessExpression(expr.left) && !isTopLevelCjsExportStatement(expr)) {
+        const viaObject = lowerCjsExportsObjectWrite(
+          lowerer,
+          expr.left,
+          expr.right,
+          cjsExportMemberWriteGlobalOf(lowerer, expr.left),
+        );
+        if (viaObject) return { kind: "exprStmt", expr: viaObject, loc: locOf(expr) };
       }
       const callableWrite = lowerNativeFunctionAssignment(lowerer, expr);
       if (callableWrite) return { kind: "exprStmt", expr: callableWrite, loc: locOf(expr) };

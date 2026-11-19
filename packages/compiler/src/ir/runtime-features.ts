@@ -201,6 +201,15 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+  // The async_hooks hook registry and execution-id core (same unit: its
+  // callbacks cross as checked-dynamic values).
+  "ah.createHook",
+  "ah.createHookParts",
+  "ah.disable",
+  "ah.providers",
+  "ah.enable",
+  "ah.executionId",
+  "ah.triggerId",
   // The RunScope handle withScope answers, and AsyncResource's registry
   // with its bound functions.
   "als.withScope",
@@ -354,6 +363,8 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "webstream.toWebDuplex",
+  "webstream.toWebDuplexDyn",
   "readable.iterator",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
@@ -373,6 +384,9 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexifyReadable",
   "stream.duplexifyWritable",
   "stream.duplexifyPair",
+  "stream.duplexPair",
+  "stream.wrap",
+  "stream.wrapDyn",
   "console.bind",
   "crypto.hashStream",
   "crypto.hashStreamPiped",
@@ -442,6 +456,8 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
   "webstream.writableToWeb",
+  "webstream.toWebDuplex",
+  "webstream.toWebDuplexDyn",
   "readable.iterator",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
@@ -455,6 +471,15 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "stream.unboxDynStage",
+  // The stream/consumers promise settles through the chunk list and
+  // scr_blob.c's Blob constructor (blob()), so each consumer links the
+  // checked-dynamic async unit that carries the blob unit with it.
+  "sc.text",
+  "sc.json",
+  "sc.buffer",
+  "sc.bytes",
+  "sc.arrayBuffer",
+  "sc.blob",
 ]);
 
 /** libCall name prefixes of the Readable entry points that await through the dyn-async unit. */
@@ -1103,6 +1128,8 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.spkacChallenge",
   "crypto.spkacPublicKey",
   "crypto.diffieHellman",
+  "crypto.encapsulate",
+  "crypto.decapsulate",
 ]);
 
 /** The WebCrypto algorithms scr_webcrypto_pki.c implements over the pki
@@ -1126,6 +1153,21 @@ function ed25519NameScan(): RuleScan {
   return {
     expr: (node) => {
       if (!named && node.kind === "strLit" && node.value.toLowerCase() === "ed25519") named = true;
+    },
+    result: () => named,
+  };
+}
+
+/** Whether a string literal names an ML-KEM parameter set (the node:crypto
+ * key types "ml-kem-512/768/1024" and the WebCrypto/JWK algorithm names
+ * "ML-KEM-<n>"): the mlkem unit links then, and with it the pki unit its
+ * hook installs into. */
+function mlkemNameScan(): RuleScan {
+  let named = false;
+  return {
+    expr: (node) => {
+      if (!named && node.kind === "strLit" && node.value.toLowerCase().startsWith("ml-kem"))
+        named = true;
     },
     result: () => named,
   };
@@ -1698,6 +1740,11 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
+  /** node:async_hooks (scr_async_dyn.c's hook registry and scr_async.c's
+   * execution-id core): the program starts tracking at startup —
+   * scr_async_hooks_install is emitted — so timers, immediates and ticks
+   * carry ids and enabled hooks dispatch. */
+  asyncHooks: rule({ prefixes: ["ah."] }),
   /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
    * produce bigint values. */
   bigint: rule({
@@ -1954,6 +2001,8 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
+      "webstream.toWebDuplex",
+      "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
       // resume() through scr_dyn_invoke when the compiler handed it no
       // method value.
@@ -1988,7 +2037,14 @@ const RUNTIME_FEATURE_RULES = {
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
   streamDyn: rule({
-    fns: ["stream.dynNative", "stream.dynNativePipe", "stream.pipeDyn", "stream.unpipeDyn"],
+    fns: [
+      "stream.dynNative",
+      "stream.dynNativePipe",
+      "stream.pipeDyn",
+      "stream.unpipeDyn",
+      "stream.wrapDyn",
+      "webstream.toWebDuplexDyn",
+    ],
   }),
   /** Own properties JavaScript adds to runtime handles (scr_dyn_handle_props.c):
    * a Date, RegExp, Map, Set, weak collection, buffer or child. */
@@ -2118,9 +2174,12 @@ const RUNTIME_FEATURE_RULES = {
   dh: rule({ fns: [...DH_LIB_FNS] }),
   /** Argon2: scr_argon2.c. */
   argon2: rule({ fns: ["crypto.argon2Sync", "crypto.argon2Cb"] }),
-  /** ML-KEM (mlkem-native): selected by the node:crypto encapsulate and
-   * WebCrypto ML-KEM lowerings, and links the vendored archive. */
-  mlkem: rule({ fns: [] }),
+  /** ML-KEM (mlkem-native): links the vendored archive and the scr_mlkem.c
+   * wrapper when a string literal names a parameter set or the program
+   * encapsulates/decapsulates through pki; the wrapper and the pki unit
+   * select each other (LINK_FEATURE_REQUIREMENTS), since pki reaches ML-KEM
+   * by run-time algorithm and key names. */
+  mlkem: rule({ fns: ["crypto.encapsulate", "crypto.decapsulate"], scan: mlkemNameScan }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -2291,6 +2350,8 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
       "webstream.writableToWeb",
+      "webstream.toWebDuplex",
+      "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
       "strdec.encodingValue",
       "webstream.install",
@@ -2420,7 +2481,7 @@ const RUNTIME_FEATURE_RULES = {
   /** A write completion callback that takes the error argument lowers
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
-  streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  streamWriteErrors: rule({ fns: ["writable.writeEcb", "writable.endEcb"] }),
   /** The program can pipe or unpipe a stream: pipe(), unpipe(), pipeline()
    * and compose() in every form, a call of a member named pipe or unpipe
    * (or a computed member) on an untyped value, which can reach a native
@@ -2785,6 +2846,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
   return {
     assert: false,
     asyncContext: false,
+    asyncHooks: false,
     bigint: false,
     bigstats: false,
     childProcess: false,

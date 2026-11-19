@@ -112,10 +112,11 @@ void scr_test_mock_reset(void);
 void scr_test_ctx_mock_track(ScrTestCtx *t, ScrClosure *restore);
 void scr_test_ctx_mock_restore_all(ScrTestCtx *t);
 void scr_test_ctx_mock_reset(ScrTestCtx *t);
-/* Called by node:test programs right after scr_lib_init: a leading
+/* Called by node:test programs right after scr_lib_init with the compiled
+ * entry file's path (the tracing events' `file`): a leading
  * --test-update-snapshots argument, Node's flag, turns on snapshot update
  * mode and moves from process.argv to process.execArgv. */
-void scr_test_init(void);
+void scr_test_init(const char *entry_file);
 /* t.assert.snapshot and t.assert.fileSnapshot. snapshot_value escapes
  * and wraps a serialized value (+1); ctx_snapshot returns the stored value
  * for the test's next snapshot id in `file` and file_snapshot the

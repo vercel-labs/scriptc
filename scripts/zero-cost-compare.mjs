@@ -549,6 +549,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/catalog-tables",
   "bench/regex-tokenizer",
   "bench/untyped-handoff",
+  "bench/request-context",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O

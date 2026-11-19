@@ -3,8 +3,8 @@
 // compatibility ledger cites this program for marking the rows a verified
 // absence instead of an unverified registry gap.
 
-// A Duplex becomes a web pair through Duplex.toWeb: its writable side has no
-// lowering (the readable side alone is Readable.toWeb).
-import { Duplex, PassThrough } from "node:stream";
-const webPair = Duplex.toWeb(new PassThrough());
-console.log(typeof webPair);
+// Readable.toWeb's byte-stream form: the option is typed, and a byte stream
+// has no lowering (the default ReadableStream does).
+import { Readable } from "node:stream";
+const web = Readable.toWeb(Readable.from(["a"]), { type: "bytes" });
+console.log(typeof web);

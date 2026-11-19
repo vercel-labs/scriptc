@@ -3404,6 +3404,289 @@ ScrDyn *scr_crypto_native(void) {
   ScrDyn *result = scr_dyn_new_obj(); scr_dyn_obj_set(result, "subtle", 6, subtle); return result;
 }
 
+/* ── node:async_hooks createHook (AsyncHook) ──────────────────────────
+ * The hook registry the always-linked core dispatches through once this
+ * unit installs its ops table (at startup, when the IR uses async_hooks).
+ * A hook object is a 1-based f64 handle; its five callbacks are dyn
+ * functions, validated with Node's ERR_ASYNC_CALLBACK. Enabled hooks run
+ * in registration order, each call's ids crossing as numbers and a
+ * resource as the dyn object the core allocated for it. */
+typedef struct {
+  ScrDyn *init, *before, *after, *destroy, *promise_resolve; /* owned or NULL */
+  bool enabled;
+} ScrAhHook;
+
+typedef struct {
+  const char *key;
+  size_t len;
+  const char *label;
+  size_t label_len;
+} ScrAhCallbackSlot;
+
+static const ScrAhCallbackSlot scr_ah_slots[5] = {
+    {"init", 4, "init", 4},
+    {"before", 6, "before", 6},
+    {"after", 5, "after", 5},
+    {"destroy", 7, "destroy", 7},
+    {"promiseResolve", 14, "promiseResolve", 14},
+};
+
+static SCR_TL ScrAhHook *scr_ah_hooks = NULL;
+static SCR_TL size_t scr_ah_count = 0, scr_ah_cap = 0;
+
+static void scr_ah_release_hook(ScrAhHook *h) {
+  scr_dyn_release(h->init);
+  scr_dyn_release(h->before);
+  scr_dyn_release(h->after);
+  scr_dyn_release(h->destroy);
+  scr_dyn_release(h->promise_resolve);
+}
+
+static void scr_ah_teardown(void) {
+  for (size_t i = 0; i < scr_ah_count; i++) scr_ah_release_hook(&scr_ah_hooks[i]);
+  free(scr_ah_hooks);
+  scr_ah_hooks = NULL;
+  scr_ah_count = scr_ah_cap = 0;
+}
+
+static ScrAhHook *scr_ah_of(double handle) {
+  size_t i = (size_t)handle;
+  return handle >= 1 && i <= scr_ah_count ? &scr_ah_hooks[i - 1] : NULL;
+}
+
+static void scr_ah_call(ScrDyn *fn, ScrDyn *const *args, size_t argc) {
+  if (fn == NULL) return;
+  ScrDyn *r = scr_dyn_call(fn, args, argc, "async hook callback");
+  if (r != NULL) scr_dyn_release(r);
+}
+
+static ScrDyn *scr_ah_num(double v) { return scr_dyn_new_num(v); }
+
+static void scr_ah_dispatch_init(double id, const char *type, size_t type_len, double trigger,
+                                 ScrDyn *resource) {
+  for (size_t i = 0; i < scr_ah_count; i++) {
+    ScrAhHook *h = &scr_ah_hooks[i];
+    if (!h->enabled || h->init == NULL) continue;
+    ScrStr *name = scr_str_new(type, type_len);
+    ScrDyn *args[4] = {scr_ah_num(id), scr_dyn_new_str(name), scr_ah_num(trigger),
+                       scr_dyn_retain(resource)};
+    scr_str_release(name); /* scr_dyn_new_str retains its own reference */
+    scr_ah_call(h->init, args, 4);
+    for (size_t a = 0; a < 4; a++) scr_dyn_release(args[a]);
+  }
+}
+
+static void scr_ah_dispatch_id(double id, int which) {
+  for (size_t i = 0; i < scr_ah_count; i++) {
+    ScrAhHook *h = &scr_ah_hooks[i];
+    if (!h->enabled) continue;
+    ScrDyn *fn = which == 0   ? h->before
+                 : which == 1 ? h->after
+                 : which == 2 ? h->destroy
+                              : h->promise_resolve;
+    if (fn == NULL) continue;
+    ScrDyn *args[1] = {scr_ah_num(id)};
+    scr_ah_call(fn, args, 1);
+    scr_dyn_release(args[0]);
+  }
+}
+
+static void scr_ah_hook_before(double id) { scr_ah_dispatch_id(id, 0); }
+static void scr_ah_hook_after(double id) { scr_ah_dispatch_id(id, 1); }
+static void scr_ah_hook_destroy(double id) { scr_ah_dispatch_id(id, 2); }
+static void scr_ah_hook_promise_resolve(double id) { scr_ah_dispatch_id(id, 3); }
+
+static const ScrAsyncHookOps scr_ah_ops = {
+    .init = scr_ah_dispatch_init,
+    .before = scr_ah_hook_before,
+    .after = scr_ah_hook_after,
+    .destroy = scr_ah_hook_destroy,
+    .promise_resolve = scr_ah_hook_promise_resolve,
+};
+
+/* Emitted before the entry of a program whose IR uses async_hooks: from
+ * here on the core allocates ids and dispatches hook callbacks. */
+void scr_async_hooks_install(void) {
+  if (scr_async_hook_ops == NULL) scr_async_hook_ops = &scr_ah_ops;
+}
+
+/* createHook(callbacks): the five members are read the way Node's
+ * destructuring reads them — undefined and null raise its property-read
+ * TypeError, any other value reads whatever it has and a missing member is
+ * no callback — and a present member that is not a function raises
+ * ERR_ASYNC_CALLBACK. callbacks borrowed; the handle is 1-based. */
+double scr_ah_create(ScrDyn *options) {
+  if (options == NULL || options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL) {
+    static const char undef_message[] =
+        "Cannot destructure property 'init' of 'undefined' as it is undefined.";
+    static const char null_message[] =
+        "Cannot destructure property 'init' of 'null' as it is null.";
+    if (options != NULL && options->kind == SCR_DYN_NULL)
+      scr_throw_error_msg(SCR_ERR_TYPE, null_message, sizeof null_message - 1);
+    else
+      scr_throw_error_msg(SCR_ERR_TYPE, undef_message, sizeof undef_message - 1);
+    return NAN;
+  }
+  /* scr_dyn_obj_get borrows its answers; scr_ah_parts retains the ones it
+   * keeps. */
+  ScrDyn *values[5] = {NULL, NULL, NULL, NULL, NULL};
+  for (size_t i = 0; i < 5; i++) {
+    ScrDyn *value = scr_dyn_obj_get(options, scr_ah_slots[i].key, scr_ah_slots[i].len);
+    if (value == NULL && scr_exc_pending()) return NAN; /* a getter threw */
+    values[i] = value; /* absent member reads as no callback */
+  }
+  return scr_ah_parts(values[0], values[1], values[2], values[3], values[4]);
+}
+
+/* The five callbacks as Node's createHook takes them: bounded (borrowed)
+ * values, each either absent (undefined) or a function; an explicit null or
+ * any other non-function raises Node's ERR_ASYNC_CALLBACK in slot order.
+ * Answers the 1-based handle. */
+double scr_ah_parts(ScrDyn *init, ScrDyn *before, ScrDyn *after, ScrDyn *destroy,
+                    ScrDyn *promise_resolve) {
+  ScrDyn **given[5] = {&init, &before, &after, &destroy, &promise_resolve};
+  ScrAhHook hook = {NULL, NULL, NULL, NULL, NULL, false};
+  ScrDyn **dest[5] = {&hook.init, &hook.before, &hook.after, &hook.destroy, &hook.promise_resolve};
+  for (size_t i = 0; i < 5; i++) {
+    ScrDyn *value = *given[i];
+    if (value == NULL || value->kind == SCR_DYN_UNDEF) continue;
+    if (value->kind != SCR_DYN_FUNC) {
+      static const char prefix[] = "hook.";
+      static const char suffix[] = " must be a function";
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, prefix);
+      scr_jb_puts(&b, scr_ah_slots[i].label);
+      scr_jb_puts(&b, suffix);
+      ScrStr *message = scr_jb_finish(&b);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_ASYNC_CALLBACK");
+      scr_str_release(message);
+      scr_ah_release_hook(&hook);
+      return NAN;
+    }
+    *dest[i] = scr_dyn_retain(value);
+  }
+  if (scr_ah_count == scr_ah_cap) {
+    size_t cap = scr_ah_cap ? scr_ah_cap * 2 : 4;
+    ScrAhHook *grown = realloc(scr_ah_hooks, cap * sizeof *grown);
+    if (!grown) scr_ad_oom();
+    scr_ah_hooks = grown;
+    scr_ah_cap = cap;
+    if (scr_ah_count == 0) scr_atexit(scr_ah_teardown);
+  }
+  scr_ah_hooks[scr_ah_count++] = hook;
+  return (double)scr_ah_count;
+}
+
+double scr_ah_enable(double handle) {
+  ScrAhHook *hook = scr_ah_of(handle);
+  if (hook != NULL) hook->enabled = true;
+  return handle;
+}
+
+double scr_ah_disable(double handle) {
+  ScrAhHook *hook = scr_ah_of(handle);
+  if (hook != NULL) hook->enabled = false;
+  return handle;
+}
+
+/* ── node:async_hooks asyncWrapProviders ──────────────────────────────
+ * The provider-name → id table Node 24 ships (async_wrap's constants): a
+ * null-prototype object whose own enumerable properties are the names, so
+ * a read answers the same table Node's does. A compiled binary has no
+ * provider ids of its own; the value is Node's published table, not a
+ * report of this runtime's internals. */
+typedef struct {
+  const char *name;
+  double id;
+} ScrAhProvider;
+
+static const ScrAhProvider scr_ah_provider_table[] = {
+  {"NONE", 0},
+  {"DIRHANDLE", 1},
+  {"DNSCHANNEL", 2},
+  {"ELDHISTOGRAM", 3},
+  {"FILEHANDLE", 4},
+  {"FILEHANDLECLOSEREQ", 5},
+  {"BLOBREADER", 6},
+  {"FSEVENTWRAP", 7},
+  {"FSREQCALLBACK", 8},
+  {"FSREQPROMISE", 9},
+  {"GETADDRINFOREQWRAP", 10},
+  {"GETNAMEINFOREQWRAP", 11},
+  {"HEAPSNAPSHOT", 12},
+  {"HTTP2SESSION", 13},
+  {"HTTP2STREAM", 14},
+  {"HTTP2PING", 15},
+  {"HTTP2SETTINGS", 16},
+  {"HTTPINCOMINGMESSAGE", 17},
+  {"HTTPCLIENTREQUEST", 18},
+  {"LOCKS", 19},
+  {"JSSTREAM", 20},
+  {"JSUDPWRAP", 21},
+  {"MESSAGEPORT", 22},
+  {"PIPECONNECTWRAP", 23},
+  {"PIPESERVERWRAP", 24},
+  {"PIPEWRAP", 25},
+  {"PROCESSWRAP", 26},
+  {"PROMISE", 27},
+  {"QUERYWRAP", 28},
+  {"QUIC_ENDPOINT", 29},
+  {"QUIC_LOGSTREAM", 30},
+  {"QUIC_SESSION", 31},
+  {"QUIC_STREAM", 32},
+  {"QUIC_UDP", 33},
+  {"SHUTDOWNWRAP", 34},
+  {"SIGNALWRAP", 35},
+  {"STATWATCHER", 36},
+  {"STREAMPIPE", 37},
+  {"TCPCONNECTWRAP", 38},
+  {"TCPSERVERWRAP", 39},
+  {"TCPWRAP", 40},
+  {"TTYWRAP", 41},
+  {"UDPSENDWRAP", 42},
+  {"UDPWRAP", 43},
+  {"SIGINTWATCHDOG", 44},
+  {"WORKER", 45},
+  {"WORKERCPUPROFILE", 46},
+  {"WORKERCPUUSAGE", 47},
+  {"WORKERHEAPPROFILE", 48},
+  {"WORKERHEAPSNAPSHOT", 49},
+  {"WORKERHEAPSTATISTICS", 50},
+  {"WRITEWRAP", 51},
+  {"ZLIB", 52},
+  {"CHECKPRIMEREQUEST", 53},
+  {"PBKDF2REQUEST", 54},
+  {"KEYPAIRGENREQUEST", 55},
+  {"KEYGENREQUEST", 56},
+  {"KEYEXPORTREQUEST", 57},
+  {"ARGON2REQUEST", 58},
+  {"CIPHERREQUEST", 59},
+  {"DERIVEBITSREQUEST", 60},
+  {"HASHREQUEST", 61},
+  {"RANDOMBYTESREQUEST", 62},
+  {"RANDOMPRIMEREQUEST", 63},
+  {"SCRYPTREQUEST", 64},
+  {"SIGNREQUEST", 65},
+  {"TLSWRAP", 66},
+  {"VERIFYREQUEST", 67},
+};
+
+ScrDyn *scr_ah_providers(void) {
+  ScrDyn *obj = scr_dyn_new_obj();
+  for (size_t i = 0; i < sizeof scr_ah_provider_table / sizeof scr_ah_provider_table[0]; i++) {
+    scr_dyn_obj_set(obj, scr_ah_provider_table[i].name, strlen(scr_ah_provider_table[i].name),
+                    scr_dyn_new_num(scr_ah_provider_table[i].id));
+  }
+  /* A null prototype, as Node's table has: the setter borrows the
+   * prototype and answers the object (+1), both of which the caller owns. */
+  ScrDyn *null_proto = scr_dyn_new_null();
+  ScrDyn *set = scr_dyn_set_prototype(obj, null_proto);
+  scr_dyn_release(null_proto);
+  scr_dyn_release(set);
+  return obj;
+}
+
 /* ── node:trace_events (trace_events.Tracing) ─────────────────────────
  * A compiled binary carries no trace-event agent, which is what Node's
  * tracing objects drive. Without the agent — Node run without the

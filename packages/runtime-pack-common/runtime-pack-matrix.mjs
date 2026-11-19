@@ -99,6 +99,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_idna.c", "regex"],
   // crypto.argon2 and crypto.argon2Sync.
   ["scr_argon2.c", "argon2"],
+  // ML-KEM (node:crypto encapsulate/decapsulate and WebCrypto).
+  ["scr_mlkem.c", "mlkem"],
   // The worker unit's SHARE_ENV symbol reaches the symbol unit
   // (scr_worker_events.c), which assembles symbol equality messages here.
   ["scr_assert.c", any("assert", "regex", "symbol", "workers")],
@@ -247,6 +249,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     ),
   ],
   ["scr_stream.c", "stream"],
+  // stream.duplexPair builds two Duplexes wired to each other.
+  ["scr_stream_pair.c", "stream"],
+  // readable.wrap reads a native source's chunks into the receiver.
+  ["scr_stream_wrap.c", "stream"],
+  ["scr_stream_wrap_dyn.c", "streamDyn"],
   // Node's pipe lifecycle, installed into the stream unit for programs
   // that pipe, unpipe or build a pipeline.
   ["scr_stream_pipe_events.c", all("stream", "streamPipeEvents")],
@@ -365,6 +372,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_stream_from_web_writable.c", all("stream", "webStreams", "dynAsync")],
   // Writable.toWeb wraps a native writable in a web WritableStream.
   ["scr_stream_writable_to_web.c", all("stream", "webStreams", "dynAsync")],
+  // Duplex.toWeb builds the readable and writable adapters over a duplex.
+  ["scr_stream_to_web_pair.c", all("stream", "webStreams", "dynAsync")],
+  ["scr_stream_to_web_pair_dyn.c", all("streamDyn", "webStreams", "dynAsync")],
   // The dynamic global object's answer for the Node globals the native runtime
   // does not implement (host-globals.ts): the compiler hands over its derived
   // name table, and scr_node_builtin.c's SCR_GLOBAL_HOST_ABSENT build throws

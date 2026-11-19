@@ -76,3 +76,30 @@ try {
   const e = error as Error;
   console.log(e.name, e instanceof TypeError);
 }
+
+// A multi-step chain whose guard wraps one of these receivers: an absent
+// value short-circuits the whole tail (`?.inner.label`), as in Node, rather
+// than reading `.label` of undefined.
+type ChainBox = { inner: { label: string } };
+
+function chainThroughConditional(boxes: ChainBox[], flag: boolean): string | undefined {
+  let box = boxes[0];
+  if (!box) return undefined;
+  const read = () => (flag ? box : box)?.inner.label;
+  box = boxes[1];
+  return read();
+}
+
+function chainThroughLogical(boxes: ChainBox[], present: ChainBox): string | undefined {
+  let box = boxes[0];
+  if (!box) return undefined;
+  const read = () => (present && box)?.inner.label;
+  box = boxes[1];
+  return read();
+}
+
+const twoBoxes = [{ inner: { label: "first" } }, { inner: { label: "second" } }];
+console.log(chainThroughConditional(twoBoxes, true));
+console.log(chainThroughConditional([{ inner: { label: "first" } }], true));
+console.log(chainThroughLogical(twoBoxes, { inner: { label: "present" } }));
+console.log(chainThroughLogical([{ inner: { label: "first" } }], { inner: { label: "present" } }));

@@ -6746,6 +6746,42 @@ static void scr_crypto_kem_fail_async(ScrDyn *callback) {
   scr_crypto_defer_bytes(NULL, error, settle, scr_crypto_kem_settle_error);
 }
 
+static ScrDyn *sp_kem_rsa_encapsulate(SpKey *k);
+static ScrBytes *sp_kem_rsa_decapsulate(SpKey *k, const uint8_t *ct, size_t len);
+static ScrDyn *sp_kem_dh_encapsulate(SpKey *k);
+static ScrBytes *sp_kem_dh_decapsulate(SpKey *k, const uint8_t *ct, size_t len);
+
+/* The key argument of encapsulate/decapsulate: a KeyObject, a CryptoKey
+ * (deprecated in node:crypto, DEP0203), or key material that Node passes
+ * through createPublicKey/createPrivateKey. NULL with an error pending. */
+static ScrPkiKey *scr_crypto_kem_material(const ScrDyn *key_arg, bool private_key) {
+  ScrDyn *key = sp_plain(key_arg);
+  if (!key) return NULL;
+  if (scr_crypto_crypto_key_info != NULL && scr_crypto_crypto_key_info(key, NULL, NULL) != 0) {
+    if (scr_crypto_deprecate_crypto_key != NULL) scr_crypto_deprecate_crypto_key();
+    ScrDyn *converted =
+        scr_crypto_key_object_from != NULL ? scr_crypto_key_object_from(key) : NULL;
+    if (converted != NULL) {
+      scr_dyn_release(key);
+      key = converted;
+    }
+  }
+  ScrPkiKey *material = scr_crypto_key_object_material(key);
+  if (material == NULL && key->kind == SCR_DYN_HANDLE && key->v.handle.tag == SCR_DYNH_KEY_OBJECT)
+    sp_invalid_key_object("secret", private_key ? "private" : "private or public");
+  if (material == NULL && !scr_exc_pending()) {
+    ScrDyn *created =
+        sp_create_key(key, private_key ? SP_KEY_CREATE_PRIVATE : SP_KEY_CREATE_PUBLIC, "key");
+    if (created != NULL) {
+      ScrPkiKey *k = sp_key_of(created);
+      if (k != NULL) material = sp_key_retain(k);
+      scr_dyn_release(created);
+    }
+  }
+  scr_dyn_release(key);
+  return material;
+}
+
 /* validateFunction for the optional callback: a function when present. */
 static bool scr_crypto_kem_callback_ok(const ScrDyn *callback) {
   if (callback->kind == SCR_DYN_UNDEF) return true;
@@ -6759,21 +6795,19 @@ static bool scr_crypto_kem_callback_ok(const ScrDyn *callback) {
 ScrDyn *scr_crypto_encapsulate_dyn(ScrDyn *key, ScrDyn *callback) {
   if (!scr_crypto_kem_callback_ok(callback)) return NULL;
   bool async = callback->kind != SCR_DYN_UNDEF;
-  ScrPkiKey *material = scr_crypto_key_object_material(key);
+  ScrPkiKey *material = scr_crypto_kem_material(key, false);
   if (!material) {
-    scr_crypto_kem_decoder_unsupported();
+    if (!scr_exc_pending()) scr_crypto_kem_decoder_unsupported();
     return NULL;
   }
-  if (!scr_pki_key_is_mlkem(material)) {
-    scr_pki_key_release(material);
-    if (async) {
-      scr_crypto_kem_fail_async(callback);
-      return scr_dyn_undefined();
-    }
-    scr_pki_mlkem_key_unsupported();
-    return NULL;
+  ScrDyn *result = NULL;
+  if (scr_pki_key_is_mlkem(material)) {
+    result = scr_pki_mlkem_encapsulate(material);
+  } else if (sp_is_rsa(material) && !material->rsa_pss) {
+    result = sp_kem_rsa_encapsulate(material);
+  } else if (sp_is_ec(material) || sp_is_x(material) || sp_is_x448(material)) {
+    result = sp_kem_dh_encapsulate(material);
   }
-  ScrDyn *result = scr_pki_mlkem_encapsulate(material);
   scr_pki_key_release(material);
   if (!result) {
     if (async) {
@@ -6797,13 +6831,14 @@ ScrDyn *scr_crypto_encapsulate_dyn(ScrDyn *key, ScrDyn *callback) {
 ScrDyn *scr_crypto_decapsulate_dyn(ScrDyn *key, ScrDyn *ciphertext, ScrDyn *callback) {
   if (!scr_crypto_kem_callback_ok(callback)) return NULL;
   bool async = callback->kind != SCR_DYN_UNDEF;
-  ScrPkiKey *material = scr_crypto_key_object_material(key);
+  ScrPkiKey *material = scr_crypto_kem_material(key, true);
   if (!material) {
-    scr_crypto_kem_decoder_unsupported();
+    if (!scr_exc_pending()) scr_crypto_kem_decoder_unsupported();
     return NULL;
   }
-  /* The key-shape checks answer synchronously even in a callback form;
-   * a ciphertext (or key type) the operation cannot use is queued. */
+  /* The key-shape checks answer synchronously even in a callback form; a
+   * ciphertext the operation cannot use is an argument error here, and one
+   * the operation rejects is queued (or thrown) as its failure. */
   if (!scr_pki_key_is_private(material)) {
     scr_pki_mlkem_expected_private();
     scr_pki_key_release(material);
@@ -6820,7 +6855,15 @@ ScrDyn *scr_crypto_decapsulate_dyn(ScrDyn *key, ScrDyn *ciphertext, ScrDyn *call
         "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", ciphertext);
     return NULL;
   }
-  if (!scr_pki_key_is_mlkem(material)) {
+  ScrBytes *shared = NULL;
+  if (scr_pki_key_is_mlkem(material)) {
+    shared = scr_pki_mlkem_decapsulate(material, bytes->data,
+                                       (size_t)scr_bytes_byte_len(bytes));
+  } else if (sp_is_rsa(material) && !material->rsa_pss) {
+    shared = sp_kem_rsa_decapsulate(material, bytes->data, (size_t)scr_bytes_byte_len(bytes));
+  } else if (sp_is_ec(material) || sp_is_x(material) || sp_is_x448(material)) {
+    shared = sp_kem_dh_decapsulate(material, bytes->data, (size_t)scr_bytes_byte_len(bytes));
+  } else {
     scr_pki_key_release(material);
     scr_bytes_release(bytes);
     if (async) {
@@ -6830,8 +6873,6 @@ ScrDyn *scr_crypto_decapsulate_dyn(ScrDyn *key, ScrDyn *ciphertext, ScrDyn *call
     scr_pki_mlkem_decapsulate_failed();
     return NULL;
   }
-  ScrBytes *shared = scr_pki_mlkem_decapsulate(material, bytes->data,
-                                               (size_t)scr_bytes_byte_len(bytes));
   scr_pki_key_release(material);
   scr_bytes_release(bytes);
   if (!shared) {
@@ -6857,6 +6898,336 @@ ScrDyn *scr_crypto_decapsulate_dyn(ScrDyn *key, ScrDyn *ciphertext, ScrDyn *call
 
 bool scr_pki_key_is_mlkem(const ScrPkiKey *key) { return sp_is_mlkem(key); }
 
+/* ── KEM families beyond ML-KEM ────────────────────────────────────────
+ * Node's encapsulate/decapsulate over OpenSSL's KEM interface: raw RSA
+ * (the shared secret is a modulus-sized random value encrypted with raw
+ * RSA) and DHKEM (RFC 9180) for the EC curves, X25519 and X448. */
+
+static size_t sp_kem_hash_len(const char *alg) {
+  return strcmp(alg, "sha256") == 0 ? 32 : strcmp(alg, "sha384") == 0 ? 48 : 64;
+}
+
+static size_t sp_kem_hmac(const char *alg, const uint8_t *key, size_t keylen, const uint8_t *data,
+                          size_t len, uint8_t out[64]) {
+  return scr_crypto_hmac_raw(alg, key, keylen, data, len, out);
+}
+
+/* HKDF-Extract / HKDF-Expand (RFC 5869) over the runtime's HMAC. An empty
+ * salt is HashLen zeros. */
+static void sp_kem_extract(const char *alg, const uint8_t *salt, size_t salt_len,
+                           const uint8_t *ikm, size_t ikm_len, uint8_t prk[64]) {
+  static const uint8_t zeros[64];
+  size_t hl = sp_kem_hash_len(alg);
+  if (salt_len == 0) {
+    salt = zeros;
+    salt_len = hl;
+  }
+  sp_kem_hmac(alg, salt, salt_len, ikm, ikm_len, prk);
+}
+
+static void sp_kem_expand(const char *alg, const uint8_t prk[64], const uint8_t *info,
+                          size_t info_len, uint8_t *out, size_t out_len) {
+  size_t hl = sp_kem_hash_len(alg);
+  uint8_t t[64];
+  size_t t_len = 0, done = 0;
+  for (uint8_t counter = 1; done < out_len; counter++) {
+    /* T(i-1) || info || counter: info is LabeledExpand's buffer — the
+     * length prefix, suite id, label and kem_context (up to 512 bytes of
+     * enc||pk, the largest for P-521). */
+    uint8_t block[1024];
+    size_t block_len = t_len + info_len + 1;
+    if (block_len > sizeof block) scr_trap("scriptc: out of memory\n");
+    if (t_len) memcpy(block, t, t_len);
+    if (info_len) memcpy(block + t_len, info, info_len);
+    block[t_len + info_len] = counter;
+    t_len = sp_kem_hmac(alg, prk, hl, block, block_len, t);
+    size_t n = out_len - done < t_len ? out_len - done : t_len;
+    memcpy(out + done, t, n);
+    done += n;
+  }
+  mbedtls_platform_zeroize(t, sizeof t);
+}
+
+/* RFC 9180's labeled extract/expand for one KEM suite ("KEM" || kem_id). */
+static void sp_kem_labeled_extract(const char *alg, uint16_t kem_id, const char *label,
+                                   const uint8_t *ikm, size_t ikm_len, uint8_t prk[64]) {
+  /* "HPKE-v1" || suite_id ("KEM" || I2OSP(kem_id, 2)) || label || ikm */
+  static const char prefix[] = "HPKE-v1KEM";
+  uint8_t buf[1024];
+  size_t l = strlen(label);
+  if (12 + l + ikm_len > sizeof buf) scr_trap("scriptc: out of memory\n");
+  memcpy(buf, prefix, 10);
+  buf[10] = (uint8_t)(kem_id >> 8);
+  buf[11] = (uint8_t)kem_id;
+  memcpy(buf + 12, label, l);
+  if (ikm_len) memcpy(buf + 12 + l, ikm, ikm_len);
+  sp_kem_extract(alg, NULL, 0, buf, 12 + l + ikm_len, prk);
+  mbedtls_platform_zeroize(buf, sizeof buf);
+}
+
+static void sp_kem_labeled_expand(const char *alg, uint16_t kem_id, const uint8_t prk[64],
+                                  const char *label, const uint8_t *info, size_t info_len,
+                                  uint8_t *out, size_t out_len) {
+  /* I2OSP(L, 2) || "HPKE-v1" || suite_id || label || info */
+  static const char prefix[] = "HPKE-v1KEM";
+  uint8_t buf[2048];
+  size_t l = strlen(label);
+  if (14 + l + info_len > sizeof buf) scr_trap("scriptc: out of memory\n");
+  buf[0] = (uint8_t)(out_len >> 8);
+  buf[1] = (uint8_t)out_len;
+  memcpy(buf + 2, prefix, 10);
+  buf[12] = (uint8_t)(kem_id >> 8);
+  buf[13] = (uint8_t)kem_id;
+  memcpy(buf + 14, label, l);
+  if (info_len) memcpy(buf + 14 + l, info, info_len);
+  sp_kem_expand(alg, prk, buf, 14 + l + info_len, out, out_len);
+  mbedtls_platform_zeroize(buf, sizeof buf);
+}
+
+/* The RPKE KEM's shared secret: ExtractAndExpand(dh, enc || pkR). */
+static bool sp_kem_extract_and_expand(const char *alg, uint16_t kem_id, const uint8_t *dh,
+                                      size_t dh_len, const uint8_t *enc, size_t enc_len,
+                                      const uint8_t *pk, size_t pk_len, uint8_t *out,
+                                      size_t out_len) {
+  uint8_t prk[64];
+  uint8_t context[512];
+  if (enc_len + pk_len > sizeof context) return false;
+  memcpy(context, enc, enc_len);
+  memcpy(context + enc_len, pk, pk_len);
+  sp_kem_labeled_extract(alg, kem_id, "eae_prk", dh, dh_len, prk);
+  sp_kem_labeled_expand(alg, kem_id, prk, "shared_secret", context, enc_len + pk_len, out,
+                        out_len);
+  mbedtls_platform_zeroize(prk, sizeof prk);
+  return true;
+}
+
+
+/* ── raw RSA-KEM ──────────────────────────────────────────────────────
+ * The shared secret is a random modulus-sized value (smaller than the
+ * modulus) and the ciphertext is its raw RSA encryption. */
+static ScrDyn *sp_kem_rsa_encapsulate(SpKey *k) {
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(k->pk);
+  size_t n = (mbedtls_rsa_get_bitlen(rsa) + 7) / 8;
+  if (n == 0 || n > 1024) return NULL;
+  uint8_t *shared = malloc(n), *ct = malloc(n);
+  if (!shared || !ct) scr_trap("scriptc: out of memory\n");
+  mbedtls_mpi M;
+  mbedtls_mpi_init(&M);
+  mbedtls_mpi bound;
+  mbedtls_mpi_init(&bound);
+  mbedtls_mpi_sub_int(&bound, &rsa->MBEDTLS_PRIVATE(N), 1);
+  bool ok = false;
+  for (int attempt = 0; attempt < 64 && !ok; attempt++) {
+    sp_random(NULL, shared, n);
+    if (mbedtls_mpi_read_binary(&M, shared, n) != 0) break;
+    /* OpenSSL's RSA-KEM takes a ciphertext in [2, N-2]: 0, 1 and N-1 are
+     * not group elements, and a value at or above N does not fit. */
+    ok = mbedtls_mpi_cmp_int(&M, 1) > 0 && mbedtls_mpi_cmp_mpi(&M, &bound) < 0;
+  }
+  mbedtls_mpi_free(&bound);
+  mbedtls_mpi_free(&M);
+  if (ok) ok = mbedtls_rsa_public(rsa, shared, ct) == 0;
+  ScrDyn *result = NULL;
+  if (ok) {
+    ScrBytes *shared_bytes = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    memcpy(shared_bytes->data, shared, n);
+    shared_bytes->is_buffer = true;
+    ScrBytes *ct_bytes = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    memcpy(ct_bytes->data, ct, n);
+    ct_bytes->is_buffer = true;
+    result = scr_dyn_new_obj();
+    ScrDyn *shared_dyn = scr_dyn_new_buffer(shared_bytes);
+    ScrDyn *ct_dyn = scr_dyn_new_buffer(ct_bytes);
+    scr_bytes_release(shared_bytes);
+    scr_bytes_release(ct_bytes);
+    scr_dyn_obj_set(result, "sharedKey", 9, shared_dyn);
+    scr_dyn_obj_set(result, "ciphertext", 10, ct_dyn);
+  }
+  mbedtls_platform_zeroize(shared, n);
+  free(shared);
+  free(ct);
+  return result;
+}
+
+static ScrBytes *sp_kem_rsa_decapsulate(SpKey *k, const uint8_t *ct, size_t len) {
+  mbedtls_rsa_context *rsa = mbedtls_pk_rsa(k->pk);
+  size_t n = (mbedtls_rsa_get_bitlen(rsa) + 7) / 8;
+  if (n == 0 || len != n) return NULL;
+  /* OpenSSL's RSA-KEM takes a ciphertext in [2, N-2] (see the
+   * encapsulation's sampling). */
+  mbedtls_mpi c, bound;
+  mbedtls_mpi_init(&c);
+  mbedtls_mpi_init(&bound);
+  bool in_range = false;
+  if (mbedtls_mpi_read_binary(&c, ct, len) == 0) {
+    mbedtls_mpi_sub_int(&bound, &rsa->MBEDTLS_PRIVATE(N), 1);
+    in_range = mbedtls_mpi_cmp_int(&c, 1) > 0 && mbedtls_mpi_cmp_mpi(&c, &bound) < 0;
+  }
+  mbedtls_mpi_free(&bound);
+  mbedtls_mpi_free(&c);
+  if (!in_range) return NULL;
+  uint8_t *out = malloc(n);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  bool ok = mbedtls_rsa_private(rsa, sp_random, NULL, ct, out) == 0;
+  ScrBytes *bytes = NULL;
+  if (ok) {
+    bytes = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    memcpy(bytes->data, out, n);
+  }
+  mbedtls_platform_zeroize(out, n);
+  free(out);
+  return bytes;
+}
+
+/* ── DHKEM (RFC 9180) over the EC curves, X25519 and X448 ────────────── */
+typedef struct {
+  uint16_t kem_id;
+  const char *hash;
+  size_t secret; /* Nsecret */
+  size_t coord;  /* field/coordinate bytes; the ciphertext is 1+2*coord for EC */
+  bool ec;
+} SpKemSuite;
+
+static bool sp_kem_suite(const SpKey *k, SpKemSuite *out) {
+  if (sp_is_x(k)) {
+    *out = (SpKemSuite){0x0020, "sha256", 32, 32, false};
+    return true;
+  }
+  if (sp_is_x448(k)) {
+    *out = (SpKemSuite){0x0021, "sha512", 64, 56, false};
+    return true;
+  }
+  if (!sp_is_ec(k)) return false;
+  const mbedtls_ecp_group *grp = &mbedtls_pk_ec(k->pk)->MBEDTLS_PRIVATE(grp);
+  switch (grp->id) {
+    case MBEDTLS_ECP_DP_SECP256R1: *out = (SpKemSuite){0x0010, "sha256", 32, 32, true}; return true;
+    case MBEDTLS_ECP_DP_SECP384R1: *out = (SpKemSuite){0x0011, "sha384", 48, 48, true}; return true;
+    case MBEDTLS_ECP_DP_SECP521R1: *out = (SpKemSuite){0x0012, "sha512", 64, 66, true}; return true;
+    default: return false;
+  }
+}
+
+/* The recipient's serialized public key and ciphertext length. */
+static size_t sp_kem_enc_len(const SpKemSuite *suite) {
+  return suite->ec ? 1 + 2 * suite->coord : suite->coord;
+}
+
+static bool sp_kem_serialize_public(SpKey *k, const SpKemSuite *suite, uint8_t *out, size_t *len) {
+  if (!suite->ec) {
+    const uint8_t *pub = sp_is_x448(k) ? k->x448_pub : k->ed_pub;
+    memcpy(out, pub, suite->coord);
+    *len = suite->coord;
+    return true;
+  }
+  const mbedtls_ecp_keypair *kp = mbedtls_pk_ec(k->pk);
+  return mbedtls_ecp_point_write_binary(&kp->MBEDTLS_PRIVATE(grp), &kp->MBEDTLS_PRIVATE(Q),
+                                        MBEDTLS_ECP_PF_UNCOMPRESSED, len, out,
+                                        suite->coord * 2 + 1) == 0 &&
+         *len == sp_kem_enc_len(suite);
+}
+
+static ScrDyn *sp_kem_dh_encapsulate(SpKey *k) {
+  SpKemSuite suite;
+  if (!sp_kem_suite(k, &suite)) return NULL;
+  uint8_t enc[256], recipient[256], dh[128], shared[64], ephemeral_seed[56];
+  size_t enc_len = 0, recipient_len = 0;
+  if (!sp_kem_serialize_public(k, &suite, recipient, &recipient_len)) return NULL;
+  bool ok = false;
+  if (suite.ec) {
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_keypair eph;
+    mbedtls_mpi z;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_keypair_init(&eph);
+    mbedtls_mpi_init(&z);
+    const mbedtls_ecp_keypair *recipient_key = mbedtls_pk_ec(k->pk);
+    ok = mbedtls_ecp_group_load(&grp, recipient_key->MBEDTLS_PRIVATE(grp).id) == 0 &&
+         mbedtls_ecp_gen_key(recipient_key->MBEDTLS_PRIVATE(grp).id, &eph, sp_random, NULL) == 0 &&
+         mbedtls_ecp_point_write_binary(&grp, &eph.MBEDTLS_PRIVATE(Q),
+                                        MBEDTLS_ECP_PF_UNCOMPRESSED, &enc_len, enc, sizeof enc) == 0 &&
+         mbedtls_ecdh_compute_shared(&grp, &z, &recipient_key->MBEDTLS_PRIVATE(Q),
+                                     &eph.MBEDTLS_PRIVATE(d), sp_random, NULL) == 0 &&
+         mbedtls_mpi_write_binary(&z, dh, suite.coord) == 0;
+    mbedtls_mpi_free(&z);
+    mbedtls_ecp_keypair_free(&eph);
+    mbedtls_ecp_group_free(&grp);
+    if (ok && enc_len != sp_kem_enc_len(&suite)) ok = false;
+  } else {
+    sp_random(NULL, ephemeral_seed, suite.coord);
+    if (sp_is_x(k)) {
+      ephemeral_seed[0] &= 248;
+      ephemeral_seed[31] &= 127;
+      ephemeral_seed[31] |= 64;
+      ok = sp_x25519(ephemeral_seed, NULL, enc) && sp_x25519(ephemeral_seed, recipient, dh);
+    } else {
+      ephemeral_seed[0] &= 252;
+      ephemeral_seed[55] |= 128;
+      ok = sp_x448(ephemeral_seed, NULL, enc) && sp_x448(ephemeral_seed, recipient, dh);
+    }
+    enc_len = suite.coord;
+  }
+  if (!ok) return NULL;
+  if (!sp_kem_extract_and_expand(suite.hash, suite.kem_id, dh, suite.coord, enc, enc_len,
+                                 recipient, recipient_len, shared, suite.secret))
+    return NULL;
+  ScrDyn *result = scr_dyn_new_obj();
+  ScrBytes *shared_bytes = scr_bytes_new(SCR_BYTES_U8, (double)suite.secret);
+  memcpy(shared_bytes->data, shared, suite.secret);
+  shared_bytes->is_buffer = true;
+  ScrBytes *enc_bytes = scr_bytes_new(SCR_BYTES_U8, (double)enc_len);
+  memcpy(enc_bytes->data, enc, enc_len);
+  enc_bytes->is_buffer = true;
+  ScrDyn *shared_dyn = scr_dyn_new_buffer(shared_bytes);
+  ScrDyn *enc_dyn = scr_dyn_new_buffer(enc_bytes);
+  scr_bytes_release(shared_bytes);
+  scr_bytes_release(enc_bytes);
+  scr_dyn_obj_set(result, "sharedKey", 9, shared_dyn);
+  scr_dyn_obj_set(result, "ciphertext", 10, enc_dyn);
+  mbedtls_platform_zeroize(shared, sizeof shared);
+  mbedtls_platform_zeroize(dh, sizeof dh);
+  return result;
+}
+
+static ScrBytes *sp_kem_dh_decapsulate(SpKey *k, const uint8_t *ct, size_t len) {
+  SpKemSuite suite;
+  if (!sp_kem_suite(k, &suite)) return NULL;
+  if (len != sp_kem_enc_len(&suite)) return NULL;
+  uint8_t recipient[256], dh[128], shared[64];
+  size_t recipient_len = 0;
+  if (!sp_kem_serialize_public(k, &suite, recipient, &recipient_len)) return NULL;
+  bool ok = false;
+  if (suite.ec) {
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point eph;
+    mbedtls_mpi z;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&eph);
+    mbedtls_mpi_init(&z);
+    const mbedtls_ecp_keypair *recipient_key = mbedtls_pk_ec(k->pk);
+    ok = mbedtls_ecp_group_load(&grp, recipient_key->MBEDTLS_PRIVATE(grp).id) == 0 &&
+         mbedtls_ecp_point_read_binary(&grp, &eph, ct, len) == 0 &&
+         mbedtls_ecdh_compute_shared(&grp, &z, &eph, &recipient_key->MBEDTLS_PRIVATE(d),
+                                     sp_random, NULL) == 0 &&
+         mbedtls_mpi_write_binary(&z, dh, suite.coord) == 0;
+    mbedtls_mpi_free(&z);
+    mbedtls_ecp_point_free(&eph);
+    mbedtls_ecp_group_free(&grp);
+  } else if (sp_is_x(k)) {
+    ok = sp_x25519(k->ed_seed, ct, dh);
+  } else {
+    ok = sp_x448(k->x448_seed, ct, dh);
+  }
+  if (!ok) return NULL;
+  if (!sp_kem_extract_and_expand(suite.hash, suite.kem_id, dh, suite.coord, ct, len, recipient,
+                                 recipient_len, shared, suite.secret))
+    return NULL;
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)suite.secret);
+  memcpy(out->data, shared, suite.secret);
+  mbedtls_platform_zeroize(shared, sizeof shared);
+  mbedtls_platform_zeroize(dh, sizeof dh);
+  return out;
+}
+
 /* Node's errors for crypto.encapsulate/decapsulate. */
 void scr_pki_mlkem_encapsulate_failed(void) {
   scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_OPERATION_FAILED", "Failed to perform encapsulation");
@@ -6869,12 +7240,6 @@ void scr_pki_mlkem_decapsulate_failed(void) {
 void scr_pki_mlkem_expected_private(void) {
   scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE",
                     "Invalid key object type public, expected private.");
-}
-
-/* A key type the KEM API refuses entirely (Ed25519, RSA-PSS, DSA, DH):
- * OpenSSL answers the generic encapsulation/decapsulation failure. */
-void scr_pki_mlkem_key_unsupported(void) {
-  scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_OPERATION_FAILED", "Failed to perform encapsulation");
 }
 
 ScrDyn *scr_pki_mlkem_encapsulate(const ScrPkiKey *key) {

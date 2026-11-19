@@ -20285,7 +20285,6 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -20366,8 +20365,17 @@
           "tests/corpus/crypto-fips-namespace.mjs",
           "tests/corpus/crypto-introspection.ts",
           "tests/corpus/crypto-kdf-arguments.cjs",
+          "tests/corpus/crypto-kem-callbacks.ts",
+          "tests/corpus/crypto-kem-crypto-key.ts",
+          "tests/corpus/crypto-kem-dhkem.ts",
+          "tests/corpus/crypto-kem-rsa.ts",
           "tests/corpus/crypto-key-object-properties.ts",
           "tests/corpus/crypto-key-sources.cjs",
+          "tests/corpus/crypto-ml-kem-callback-errors.ts",
+          "tests/corpus/crypto-ml-kem-callbacks.ts",
+          "tests/corpus/crypto-ml-kem-literal.ts",
+          "tests/corpus/crypto-ml-kem-runtime-input.ts",
+          "tests/corpus/crypto-ml-kem.ts",
           "tests/corpus/crypto-module-catalogs.ts",
           "tests/corpus/crypto-random-arguments.cjs",
           "tests/corpus/crypto-rsa-key-types.cjs",
@@ -21313,22 +21321,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.decapsulate",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.decapsulate",
         "tests": [
-          "tests/corpus/crypto-argon2.ts",
-          "tests/corpus/key-object-to-crypto-key.ts",
-          "tests/corpus/key-object-from-crypto-key.ts",
-          "tests/corpus/key-object-from-arguments.mjs",
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-ml-kem.ts",
+          "tests/corpus/crypto-ml-kem-callbacks.ts",
+          "tests/corpus/crypto-ml-kem-callback-errors.ts",
+          "tests/corpus/crypto-ml-kem-runtime-input.ts",
+          "tests/corpus/crypto-ml-kem-literal.ts",
+          "tests/corpus/crypto-kem-rsa.ts",
+          "tests/corpus/crypto-kem-dhkem.ts",
+          "tests/corpus/crypto-kem-callbacks.ts",
+          "tests/corpus/crypto-kem-crypto-key.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21385,22 +21389,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.encapsulate",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.encapsulate",
         "tests": [
-          "tests/corpus/crypto-argon2.ts",
-          "tests/corpus/key-object-to-crypto-key.ts",
-          "tests/corpus/key-object-from-crypto-key.ts",
-          "tests/corpus/key-object-from-arguments.mjs",
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-ml-kem.ts",
+          "tests/corpus/crypto-ml-kem-callbacks.ts",
+          "tests/corpus/crypto-ml-kem-callback-errors.ts",
+          "tests/corpus/crypto-ml-kem-runtime-input.ts",
+          "tests/corpus/crypto-ml-kem-literal.ts",
+          "tests/corpus/crypto-kem-rsa.ts",
+          "tests/corpus/crypto-kem-dhkem.ts",
+          "tests/corpus/crypto-kem-callbacks.ts",
+          "tests/corpus/crypto-kem-crypto-key.ts"
         ]
       },
       "anchorSource": "exact"

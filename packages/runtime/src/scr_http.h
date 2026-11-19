@@ -202,6 +202,14 @@ void scr_http_res_end_bytes(ScrHttpRes *r, ScrBytes *data /*borrowed*/);
 void scr_http_res_add_trailers(ScrHttpRes *r, ScrArr *pairs /*borrowed: [name, value, ...] */);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
 bool scr_http_res_write_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
+/* write(chunk[, encoding][, callback]) / end([data[, encoding]][, callback])
+ * when the call carries the extra arguments: the chunk is a string or a
+ * Buffer (an encoding applies to a string only), and the callback runs when
+ * the chunk has been flushed. */
+bool scr_http_res_write_args(ScrHttpRes *r, const ScrDyn *chunk /*borrowed*/,
+                             const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
+void scr_http_res_end_args(ScrHttpRes *r, const ScrDyn *chunk /*borrowed*/,
+                           const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
 void scr_http_res_end_dynv(ScrHttpRes *r, const ScrDyn *d /*borrowed*/);
 bool scr_http_res_headers_sent(ScrHttpRes *r);
 bool scr_http_res_writable_ended(ScrHttpRes *r);
@@ -393,6 +401,10 @@ void scr_http_client_on_drain(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, boo
 void scr_http_client_cannot_pipe(ScrHttpClientReq *c);
 /* Checked-dynamic chunk forms (the scr_net_sock_write_dynv story). */
 bool scr_http_client_write_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
+bool scr_http_client_write_args(ScrHttpClientReq *c, const ScrDyn *chunk /*borrowed*/,
+                                const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
+void scr_http_client_end_args(ScrHttpClientReq *c, const ScrDyn *chunk /*borrowed*/,
+                              const ScrDyn *encoding /*borrowed*/, const ScrDyn *callback /*borrowed*/);
 void scr_http_client_end_dynv(ScrHttpClientReq *c, const ScrDyn *d /*borrowed*/);
 void scr_http_client_set_timeout(ScrHttpClientReq *c, double ms);
 void scr_http_client_destroy(ScrHttpClientReq *c);
@@ -468,8 +480,12 @@ ScrHttpClientReq *scr_http_request_url(ScrStr *url /*borrowed*/, ScrStr *method 
  * ERR_INVALID_PROTOCOL rather than an implicit scheme switch, and a URL
  * carrying credentials fences (`api` names the caller in the message).
  * false = the exception is pending and no out-parameter was written. */
+/* `Basic <base64 of user:pass>` as an [name, value] pair, for a URL's or an
+ * options record's credentials. */
+void scr_http_pairs_add_basic_auth(ScrArr *pairs, ScrStr *auth /*borrowed*/);
 bool scr_http_url_parts(ScrStr *url /*borrowed*/, bool secure, const char *api,
-                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/);
+                         ScrStr **host_out /*+1*/, double *port_out, ScrStr **path_out /*+1*/,
+                         ScrStr **auth_out /*+1 or NULL*/);
 /* ── the http Agent (new http.Agent(opts) — option surface, getName, and
  * the maxSockets queue over one-dial-per-request connections; keep-alive
  * POOLING is not modeled: keepAlive: true fences at construction).

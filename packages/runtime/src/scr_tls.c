@@ -2431,12 +2431,17 @@ ScrHttpClientReq *scr_https_request_url(ScrStr *url /*borrowed*/, ScrStr *method
                                          ScrHttpRespFn fn) {
   ScrStr *host;
   ScrStr *path;
+  ScrStr *auth = NULL;
   double port;
-  if (!scr_http_url_parts(url, true, "https.request", &host, &port, &path)) {
+  if (!scr_http_url_parts(url, true, "https.request", &host, &port, &path, &auth)) {
     if (cb) scr_closure_release(cb);
-    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL / credentials pending */
+    return NULL; /* Invalid URL / ERR_INVALID_PROTOCOL / a decode threw */
   }
   ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0);
+  if (auth != NULL) {
+    scr_http_pairs_add_basic_auth(pairs, auth);
+    scr_str_release(auth);
+  }
   ScrHttpClientReq *c = scr_https_request(host, port, path, method, 0, pairs, auto_end,
                                            true /* rejectUnauthorized */, NULL, 0, cb, fn);
   scr_arr_release(pairs);

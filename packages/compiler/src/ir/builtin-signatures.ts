@@ -2918,6 +2918,10 @@ function buildLibFnSignatures() {
     "http.resEndBytes": { argTypes: [HTTPRES_T, BYTES_U8], result: VOID },
     /** The checked-dynamic chunk twins (the net.sockWriteDyn story). */
     "http.resWriteDyn": { argTypes: [HTTPRES_T, DYN], result: BOOL },
+    /* write/end with an encoding or a callback: the extra arguments cross as
+     * checked-dynamic values (undefined when the call omits them). */
+    "http.resWriteArgs": { argTypes: [HTTPRES_T, DYN, DYN, DYN], result: BOOL },
+    "http.resEndArgs": { argTypes: [HTTPRES_T, DYN, DYN, DYN], result: VOID },
     "http.resEndDyn": { argTypes: [HTTPRES_T, DYN], result: VOID },
     "http.resHeadersSent": { argTypes: [HTTPRES_T], result: BOOL },
     "http.resWritableEnded": { argTypes: [HTTPRES_T], result: BOOL },
@@ -3726,6 +3730,8 @@ function buildLibFnSignatures() {
     "http.clientEndBytes": { argTypes: [HTTPCLIENTREQ_T, BYTES_U8], result: VOID },
     /** The checked-dynamic chunk twins (the net.sockWriteDyn story). */
     "http.clientWriteDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: BOOL },
+    "http.clientWriteArgs": { argTypes: [HTTPCLIENTREQ_T, DYN, DYN, DYN], result: BOOL },
+    "http.clientEndArgs": { argTypes: [HTTPCLIENTREQ_T, DYN, DYN, DYN], result: VOID },
     "http.clientEndDyn": { argTypes: [HTTPCLIENTREQ_T, DYN], result: VOID },
     "http.clientFlushHeaders": { argTypes: [HTTPCLIENTREQ_T], result: VOID },
     "http.clientAddTrailers": { argTypes: [HTTPCLIENTREQ_T, arrayOf(STRING)], result: VOID },

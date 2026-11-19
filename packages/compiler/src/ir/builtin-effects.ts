@@ -530,6 +530,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "net.sockEndDyn",
   "http.resWriteDyn",
   "http.resEndDyn",
+  // write/end with extra arguments throw Node's chunk TypeError, the
+  // unknown-encoding error, and run the flush callback (user code).
+  "http.resWriteArgs",
+  "http.resEndArgs",
+  "http.clientWriteArgs",
+  "http.clientEndArgs",
   // setHeaders walks the argument (a Map's entries) and throws Node's
   // ERR_INVALID_ARG_TYPE for anything else, ERR_HTTP_HEADERS_SENT once the
   // head is out, and the header name/value checks. pipe() emits

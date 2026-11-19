@@ -8316,6 +8316,10 @@ function runtimeRequestOptions(
         (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
         (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
         (prop.name.text === "socketPath" ||
+          // auth turns into an Authorization header at request construction
+          // (string, Buffer or Uint8Array, over an absent header): the
+          // runtime walk implements it with Node's order and checks
+          prop.name.text === "auth" ||
           // a client certificate: the runtime request walk reads cert and key
           (secureish && (prop.name.text === "cert" || prop.name.text === "key")) ||
           // a scalar option whose value is not the walk's type (an untyped
@@ -9488,6 +9492,16 @@ function lowerHttpClientMethodCall(
     // high-water mark), so it may stand in an expression; end() still only
     // as a statement.
     if (name === "end") requireStatementPosition(lowerer, call, `request.${name}(...)`);
+    const withExtraArgs = lowerWriteEndArgs(
+      lowerer,
+      name,
+      () => lowerer.lowerExpr(access.expression),
+      args,
+      name === "write" ? "http.clientWriteArgs" : "http.clientEndArgs",
+      name === "write" ? BOOL : VOID,
+      loc,
+    );
+    if (withExtraArgs !== null) return withExtraArgs;
     const minArgs = name === "write" ? 1 : 0;
     if (args.length < minArgs || args.length > 1) {
       lowerer.noLowering(
@@ -10149,6 +10163,64 @@ function lowerHttpReqMethodCall(
 
 /** Method calls on ServerResponse receivers: setHeader/writeHead/write/
  * end. Null for other receivers. */
+/** write/end with an encoding and/or a flush callback: the data, the
+ * encoding (undefined when the call omits it) and the callback (undefined
+ * when it omits that) cross as checked-dynamic values, so the runtime applies
+ * Node's rules — an encoding applies to a string chunk only, and a callback
+ * runs once the chunk has been flushed. Null when the arguments are not one
+ * of those forms, which leaves them to the call's other shapes. */
+function lowerWriteEndArgs(
+  lowerer: Lowerer,
+  name: "write" | "end",
+  lowerReceiver: () => IrExpr,
+  args: readonly ts.Expression[],
+  fn: IrLibFn,
+  resultType: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const typeAt = (node: ts.Expression): IrType | null => lowerer.mapTypeOf(lowerer.typeOf(node));
+  const dyn = (node: ts.Expression | undefined): IrExpr => {
+    if (node === undefined) return dynUndefinedExpr(loc);
+    const value = lowerer.lowerExpr(node);
+    return value.type.kind === "dyn"
+      ? value
+      : { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
+  };
+  // end(callback): the callback alone, with no data
+  if (name === "end" && args.length === 1 && typeAt(args[0]!)?.kind === "func") {
+    return {
+      kind: "libCall",
+      fn,
+      args: [lowerReceiver(), dynUndefinedExpr(loc), dynUndefinedExpr(loc), dyn(args[0])],
+      type: resultType,
+      loc,
+    };
+  }
+  if (args.length < 2 || args.length > 3) return null;
+  const second = typeAt(args[1]!);
+  const third = args.length === 3 ? typeAt(args[2]!) : null;
+  const encodingForm = second?.kind === "string";
+  // both calls take a callback second (a request's end(data, cb) included)
+  const callbackForm = second?.kind === "func";
+  if (!encodingForm && !callbackForm) return null;
+  if (third !== null && third.kind !== "func") return null;
+  const receiver = lowerReceiver();
+  const chunk = dyn(args[0]);
+  const encoding = encodingForm ? dyn(args[1]) : dynUndefinedExpr(loc);
+  const callback = callbackForm
+    ? dyn(args[1])
+    : args.length === 3
+      ? dyn(args[2])
+      : dynUndefinedExpr(loc);
+  return {
+    kind: "libCall",
+    fn,
+    args: [receiver, chunk, encoding, callback],
+    type: resultType,
+    loc,
+  };
+}
+
 function lowerHttpResMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -10742,6 +10814,16 @@ function lowerHttpResMethodCall(
     // mark), so it may stand in an expression; end() still only as a
     // statement.
     if (name === "end") requireStatementPosition(lowerer, call, `res.${name}(...)`);
+    const withExtraArgs = lowerWriteEndArgs(
+      lowerer,
+      name,
+      () => coerceToHandle(lowerer, access.expression, HTTPRES_T),
+      args,
+      name === "write" ? "http.resWriteArgs" : "http.resEndArgs",
+      name === "write" ? BOOL : VOID,
+      loc,
+    );
+    if (withExtraArgs !== null) return withExtraArgs;
     const minArgs = name === "write" ? 1 : 0;
     const maxArgs = name === "write" ? 1 : 2;
     if (args.length < minArgs || args.length > maxArgs) {

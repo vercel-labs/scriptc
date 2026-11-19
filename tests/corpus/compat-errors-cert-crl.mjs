@@ -16,13 +16,21 @@ try {
   console.log("malformed", error.name, error.code, JSON.stringify(error.message));
 }
 
-for (const name of [
-  "crl-clean",
-  "crl-revoked",
-  "crl-expired",
-  "crl-future",
-  "crl-badsig",
-  "crl-untrusted",
+// Array forms: Node/OpenSSL keeps the first CRL per issuer, so a clean CRL
+// ahead of a revoking one for the same CA verifies; the reverse revokes.
+const cleanCrl = readFileSync(`${D}/crl-clean.pem`);
+const revokedCrl = readFileSync(`${D}/crl-revoked.pem`);
+for (const [name, crl] of [
+  ["crl-clean", readFileSync(`${D}/crl-clean.pem`)],
+  ["crl-revoked", revokedCrl],
+  ["crl-expired", readFileSync(`${D}/crl-expired.pem`)],
+  ["crl-future", readFileSync(`${D}/crl-future.pem`)],
+  ["crl-badsig", readFileSync(`${D}/crl-badsig.pem`)],
+  ["crl-untrusted", readFileSync(`${D}/crl-untrusted.pem`)],
+  ["crl-array-single", [revokedCrl]],
+  ["crl-array-first", [cleanCrl, revokedCrl]],
+  ["crl-array-last", [revokedCrl, cleanCrl]],
+  ["crl-array-strings", [cleanCrl.toString(), revokedCrl.toString()]],
 ]) {
   const server = tls.createServer({ cert, key }, (socket) => socket.end("ok"));
   server.on("tlsClientError", () => {});
@@ -35,7 +43,7 @@ for (const name of [
       host: "127.0.0.1",
       servername: "localhost",
       ca,
-      crl: readFileSync(`${D}/${name}.pem`),
+      crl,
     });
     client.on("secureConnect", () => {
       console.log(name, "secure", client.authorized);

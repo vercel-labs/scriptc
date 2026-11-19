@@ -198,7 +198,29 @@ static int scr_tls_parse_crl(mbedtls_x509_crl *crl, const char *pem, size_t len)
   buf[len] = 0;
   int r = mbedtls_x509_crl_parse(crl, buf, len + 1);
   free(buf);
-  return r;
+  if (r != 0) return r;
+  /* OpenSSL keeps the FIRST CRL it reads for an issuer and ignores later
+   * ones for that issuer; mbedTLS checks every chained CRL, so drop the
+   * duplicates to match (a clean CRL followed by a revoking one for the
+   * same CA verifies in Node). */
+  for (mbedtls_x509_crl *first = crl; first != NULL; first = first->next) {
+    mbedtls_x509_crl *prev = first;
+    mbedtls_x509_crl *at = first->next;
+    while (at != NULL) {
+      if (at->issuer_raw.len == first->issuer_raw.len &&
+          memcmp(at->issuer_raw.p, first->issuer_raw.p, first->issuer_raw.len) == 0) {
+        prev->next = at->next;
+        at->next = NULL;
+        mbedtls_x509_crl_free(at);
+        free(at);
+        at = prev->next;
+      } else {
+        prev = at;
+        at = at->next;
+      }
+    }
+  }
+  return 0;
 }
 
 static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len) {
@@ -2641,26 +2663,51 @@ static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat)
       { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return NULL;
     }
-    /* concatenate (mbedTLS parses concatenated PEM — the ca-bundle shape) */
+    /* concatenate (mbedTLS parses concatenated PEM — the ca-bundle shape).
+     * A separator goes only BETWEEN entries, and only when the preceding
+     * entry does not already end its line: a trailing newline after the
+     * last block leaves mbedTLS a non-empty buffer it tries to parse as
+     * another PEM, which fails. */
+    const size_t count = v->v.arr.len;
     size_t total = 0;
-    for (size_t i = 0; i < v->v.arr.len; i++) {
+    for (size_t i = 0; i < count; i++) {
       const ScrDyn *e = v->v.arr.items[i];
-      if (e->kind == SCR_DYN_STR) total += e->v.str->len + 1;
-      else if (scr_dyn_bytes_is(e, SCR_BYTES_U8)) total += e->v.bytes->len + 1;
-      else {
+      size_t n;
+      bool ends_line;
+      if (e->kind == SCR_DYN_STR) {
+        n = e->v.str->len;
+        ends_line = n > 0 && e->v.str->data[n - 1] == '\n';
+      } else if (scr_dyn_bytes_is(e, SCR_BYTES_U8)) {
+        n = e->v.bytes->len;
+        unsigned char last = 0;
+        if (n > 0) scr_bytes_read(e->v.bytes, n - 1, &last, 1);
+        ends_line = n > 0 && last == '\n';
+      } else {
         scr_dyn_arg_type_fail(what, "of type string or an instance of Buffer or Uint8Array", e);
         return NULL;
       }
+      total += n;
+      if (i + 1 < count && !ends_line) total++;
     }
     ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)total);
     size_t off = 0;
-    for (size_t i = 0; i < v->v.arr.len; i++) {
+    for (size_t i = 0; i < count; i++) {
       const ScrDyn *e = v->v.arr.items[i];
       size_t n = e->kind == SCR_DYN_STR ? e->v.str->len : e->v.bytes->len;
       if (e->kind == SCR_DYN_STR) memcpy(b->data + off, e->v.str->data, n);
       else scr_bytes_read(e->v.bytes, 0, b->data + off, n);
       off += n;
-      b->data[off++] = '\n'; /* PEM blocks join on line boundaries */
+      if (i + 1 < count) {
+        bool ends_line;
+        if (e->kind == SCR_DYN_STR) {
+          ends_line = n > 0 && e->v.str->data[n - 1] == '\n';
+        } else {
+          unsigned char last = 0;
+          if (n > 0) scr_bytes_read(e->v.bytes, n - 1, &last, 1);
+          ends_line = n > 0 && last == '\n';
+        }
+        if (!ends_line) b->data[off++] = '\n'; /* PEM blocks join on line boundaries */
+      }
     }
     return b;
   }

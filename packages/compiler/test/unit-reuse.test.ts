@@ -224,7 +224,11 @@ test("an implicit instance a record added is not lowered again by a later unit",
     expect(reused.ok, reused.ok ? "" : reused.diagnostics.map((d) => d.code).join(",")).toBe(true);
     for (const name of VARIABLES) delete process.env[name];
     const freshPath = join(root, "fresh.ll");
-    const fresh = await compile(entry, { outDir: join(root, "out"), outPath: freshPath, outputKind: "llvm" });
+    const fresh = await compile(entry, {
+      outDir: join(root, "out"),
+      outPath: freshPath,
+      outputKind: "llvm",
+    });
     expect(fresh.ok, fresh.ok ? "" : fresh.diagnostics.map((d) => d.code).join(",")).toBe(true);
     expect(await readFile(reusedPath, "utf8")).toBe(await readFile(freshPath, "utf8"));
   } finally {

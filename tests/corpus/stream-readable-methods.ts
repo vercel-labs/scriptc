@@ -74,6 +74,23 @@ function log(...args: unknown[]) {
   }
 }
 
+// unshift of a chunk that adds nothing still answers readableAddChunk's
+// formula: true on an empty open stream, false at the high-water mark or
+// after the end.
+{
+  const fresh = new Readable({ read() {} });
+  log("unshift-empty-fresh", fresh.unshift(""));
+  fresh.destroy();
+  const full = new Readable({ read() {}, highWaterMark: 2 });
+  full.push("ab");
+  log("unshift-empty-full", full.unshift(""));
+  full.destroy();
+  const ended = new Readable({ read() {} });
+  ended.push(null);
+  log("unshift-empty-ended", ended.unshift(""));
+  ended.destroy();
+}
+
 // read invalid size
 {
   const r = new Readable({ read() {} });

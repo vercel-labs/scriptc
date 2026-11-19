@@ -7332,12 +7332,19 @@ static bool scr_stream_unshift_after_end(ScrStream *s) {
   return true;
 }
 
+/* readableAddChunk's answer: whether the stream can take more. */
+static bool scr_stream_unshift_answer(const ScrStreamState *st) {
+  return !st->r.ended && (st->r.length < st->r.hwm || st->r.length == 0);
+}
+
 bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
   ScrStreamState *st = s->st;
   /* A byte-mode stream drops a chunk that adds nothing before the 'end'
-   * check, as readableAddChunkUnshiftByteMode returns early for one (Node
-   * answers true). */
-  if (!((st->has_r && st->r.object_entries) || chunk->len > 0)) return true;
+   * check, as readableAddChunkUnshiftByteMode returns early for one — with
+   * the same answer the added chunk would get (false at the high-water
+   * mark or after 'end'). */
+  if (!((st->has_r && st->r.object_entries) || chunk->len > 0))
+    return scr_stream_unshift_answer(st);
   if (scr_stream_unshift_after_end(s)) return false;
   if (st->r.head_off > 0) {
     /* materialize the part-read head so the front slot is whole */
@@ -7374,7 +7381,7 @@ bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
   bool object = st->has_r && st->r.object_entries;
   if (!object && (d->kind == SCR_DYN_UNDEF || (d->kind == SCR_DYN_STR && d->v.str->len == 0) ||
                   (d->kind == SCR_DYN_BYTES && d->v.bytes->len == 0)))
-    return true; /* nothing to add: Node answers true, even after 'end' */
+    return scr_stream_unshift_answer(st); /* nothing to add: Node's own answer formula */
   if (scr_stream_unshift_after_end(s)) return false;
   if (object) {
     void *entry;

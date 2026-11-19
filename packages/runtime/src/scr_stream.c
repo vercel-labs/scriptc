@@ -215,6 +215,10 @@ struct ScrStreamState {
      * they ran — afterWrite's finishMaybe then puts 'finish' on a tick
      * of its own. */
     size_t after_holds;
+    /* A synchronous write failed and its onwriteError tick has not run yet
+     * (Node's pendingcb for that write): the finish must wait for the
+     * error path rather than start _final first. */
+    bool err_pending;
     /* clearBuffer is running its loop: a write completing inside it
      * leaves the next buffered write to the loop (Node's
      * kBufferProcessing), so completions keep their order */
@@ -2741,9 +2745,9 @@ static void scr_stream_clear_buffer(ScrStream *s) {
  * drained after end(). */
 static void scr_stream_finish_maybe(ScrStream *s) {
   ScrStreamState *st = s->st;
-  if (!st->w.ending || st->w.writing || st->w.head < st->w.n || st->w.finished ||
-      st->destroyed || st->w.finish_scheduled || st->w.final_pending || st->flush_pending ||
-      st->constructing) {
+  if (!st->w.ending || st->w.writing || st->w.err_pending || st->w.head < st->w.n ||
+      st->w.finished || st->destroyed || st->w.finish_scheduled || st->w.final_pending ||
+      st->flush_pending || st->constructing) {
     /* a pending _final/_flush callback holds the finish (Node's
      * pendingcb), as does a construction in progress */
     return;
@@ -7328,51 +7332,50 @@ static bool scr_stream_unshift_after_end(ScrStream *s) {
   return true;
 }
 
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
   ScrStreamState *st = s->st;
   /* A byte-mode stream drops a chunk that adds nothing before the 'end'
-   * check, as readableAddChunkUnshiftByteMode returns early for one. */
-  if (!((st->has_r && st->r.object_entries) || chunk->len > 0)) return;
-  if (scr_stream_unshift_after_end(s)) return;
+   * check, as readableAddChunkUnshiftByteMode returns early for one (Node
+   * answers true). */
+  if (!((st->has_r && st->r.object_entries) || chunk->len > 0)) return true;
+  if (scr_stream_unshift_after_end(s)) return false;
   if (st->r.head_off > 0) {
     /* materialize the part-read head so the front slot is whole */
     void *rest = scr_stream_rbuf_take(st, scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off);
     scr_stream_rbuf_push(st, rest, scr_stream_rkind(st), true);
   }
-  scr_stream_add_chunk(s, chunk, true);
+  return scr_stream_add_chunk(s, chunk, true);
 }
 
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
   if (s->st->has_r && s->st->r.object_entries) {
     /* object mode: the string itself goes to the front */
     ScrDyn *v = scr_dyn_new_str(str);
-    scr_stream_unshift_dyn(s, v);
+    bool ret = scr_stream_unshift_dyn(s, v);
     scr_dyn_release(v);
-    return;
+    return ret;
   }
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
   memcpy(b->data, str->data, str->len);
   if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
   scr_stream_buffer(b);
-  scr_stream_unshift(s, b);
+  bool ret = scr_stream_unshift(s, b);
   scr_bytes_release(b);
+  return ret;
 }
 
 /* unshift(value): null is the end of the stream (Node's onEofChunk); an
  * object-mode stream takes any other value as one entry at the front; a
  * byte-mode stream takes Buffers and strings, ignores undefined and
  * reports another value as push does. Borrows d. */
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
   ScrStreamState *st = s->st;
-  if (d->kind == SCR_DYN_NULL) {
-    scr_stream_push_null(s);
-    return;
-  }
+  if (d->kind == SCR_DYN_NULL) return scr_stream_push_null(s);
   bool object = st->has_r && st->r.object_entries;
   if (!object && (d->kind == SCR_DYN_UNDEF || (d->kind == SCR_DYN_STR && d->v.str->len == 0) ||
                   (d->kind == SCR_DYN_BYTES && d->v.bytes->len == 0)))
-    return; /* nothing to add: Node answers without complaint, even after 'end' */
-  if (scr_stream_unshift_after_end(s)) return;
+    return true; /* nothing to add: Node answers true, even after 'end' */
+  if (scr_stream_unshift_after_end(s)) return false;
   if (object) {
     void *entry;
     ScrEntryKind kind;
@@ -7390,17 +7393,16 @@ void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
     scr_stream_rbuf_push(st, entry, kind, true);
     if (st->r.need_readable) scr_stream_emit_readable_nt(s);
     scr_stream_settle_next(s);
-    return;
+    return !st->r.ended && (st->r.length < st->r.hwm || st->r.length == 0);
   }
   if (d->kind == SCR_DYN_BYTES) {
     ScrBytes *b = scr_bytes_raw_view(d->v.bytes);
-    scr_stream_unshift(s, b);
+    bool ret = scr_stream_unshift(s, b);
     scr_bytes_release(b);
-  } else if (d->kind == SCR_DYN_STR) {
-    scr_stream_unshift_str(s, d->v.str);
-  } else {
-    scr_stream_push_dyn(s, d);
+    return ret;
   }
+  if (d->kind == SCR_DYN_STR) return scr_stream_unshift_str(s, d->v.str);
+  return scr_stream_push_dyn(s, d);
 }
 
 static void scr_stream_listener_error(ScrClosure *adapter, ScrError *error) {
@@ -7966,6 +7968,10 @@ void scr_stream_write_done(ScrStream *s, ScrError *err /*moves*/) {
      * then errorOrDestroy) runs on a tick after a synchronous write. */
     if (!st->errored) st->errored = scr_error_retain(err);
     if (st->w.wsync) {
+      /* Node's pendingcb keeps a synchronous failed write counted until
+       * its onwriteError tick, so a following end() cannot start _final
+       * first; the destroy then carries THIS error. */
+      st->w.err_pending = true;
       scr_st_tick(s, SCR_ST_WRITE_ERR, err, ucb);
       return;
     }
@@ -8739,6 +8745,7 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       break;
     }
     case SCR_ST_WRITE_ERR: {
+      st->w.err_pending = false;
       ScrClosure *cb = t->cb;
       t->cb = NULL;
       if (cb) {

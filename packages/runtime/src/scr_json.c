@@ -18825,6 +18825,17 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
    * and members come from the native value, one member at a time. */
   bool live = value->kind == SCR_DYN_TYPED_REF && scr_json_live_container(value, false);
   ScrDyn *view = value->kind == SCR_DYN_TYPED_REF && !live ? scr_json_typed_ref_view(value) : NULL;
+  /* A runtime handle whose class declares own properties (a database's
+   * limits object) is an ordinary object to JSON: its properties go
+   * through the same keys, replacer and property-list walk, so a
+   * replacer's filters and omissions reach them. */
+  bool own_view = false;
+  if (!view && !live && value->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(value) &&
+      scr_dyn_handle_ops_of(value)->own_view) {
+    view = scr_dyn_handle_own_view(value);
+    if (!view) return false;
+    own_view = true;
+  }
   const ScrDyn *observed = view ? view : value;
   if (scr_exc_pending()) { scr_dyn_release(view); return false; }
   if (!view && !live && replacer->kind == SCR_DYN_UNDEF && !properties && scr_json_plain_container(value))
@@ -18846,7 +18857,8 @@ static bool scr_json_replaced_write(ScrJsonBuf *buffer, const ScrDyn *value,
   /* Different capsules may refer to the same native container. Detect
    * cycles by the original payload, while sibling references remain legal
    * after the current frame leaves the traversal stack. */
-  const void *identity = view || live ? value->v.typed_ref.ptr
+  const void *identity = own_view ? (const void *)value->v.handle.ptr
+      : view || live ? value->v.typed_ref.ptr
       : island ? (const void *)observed->v.handle.ptr : (const void *)value;
   if (!scr_jb_enter(buffer, identity, array)) { scr_dyn_release(view); return false; }
   if (live && replacer->kind == SCR_DYN_UNDEF && !properties &&

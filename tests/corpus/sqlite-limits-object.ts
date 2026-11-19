@@ -29,7 +29,7 @@ console.log(inspect(limits));
 
 // JavaScript-added properties list before the limits, as V8 enumerates its
 // real own properties before the interceptor's names.
-const fields = limits as unknown as { extra?: number; alpha?: number; [key: string]: number | undefined };
+const fields = limits as unknown as { extra?: number; alpha?: number; secret?: string; [key: string]: number | string | undefined };
 fields.extra = 7;
 fields.alpha = 2;
 console.log("added:", Object.keys(limits).join(","));
@@ -43,6 +43,17 @@ const temporary: any = db.limits;
 temporary.temp = 5;
 console.log("temporary:", db.limits, (db.limits as any).temp, Object.keys(db.limits).includes("temp"));
 console.log("limitDelete:", Object.getOwnPropertyNames(Object.getOwnPropertyDescriptor(limits, "length") ?? {}).length);
+
+// JSON.stringify's replacer and property-list filters reach the limits
+// object's properties like any object's.
+fields.secret = "hide";
+const redact = (key: string, value: unknown) => (key === "secret" ? undefined : value);
+console.log("redacted:", JSON.stringify(limits, redact));
+console.log("allowlist:", JSON.stringify(limits, ["alpha", "temp"]));
+console.log("nested-redacted:", JSON.stringify({ limits }, redact));
+console.log("pretty:");
+console.log(JSON.stringify(limits, null, 2));
+delete fields.secret;
 
 // The live values reach the connection both ways.
 limits.length = 4242;

@@ -4827,7 +4827,10 @@ export function collectClassShapeInner(
           if (!refuseAccessor(propertyType())) throw e;
           continue;
         }
-        if (lowerer.checkedVirtualJsAccessors.has(member)) {
+        if (
+          lowerer.checkedVirtualJsAccessors.has(member) ||
+          lowerer.jsWidenedAccessors.has(member)
+        ) {
           if (isGet) sig.ret = DYN;
           else for (const parameter of sig.params) parameter.type = DYN;
         }

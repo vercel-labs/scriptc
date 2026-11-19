@@ -81041,6 +81041,7 @@
           "tests/corpus/perf-observer-delivers-at-exit.ts",
           "tests/corpus/perf-observer-family.ts",
           "tests/corpus/perf-performance-tojson.ts",
+          "tests/corpus/perf-sliding-window-histogram.ts",
           "tests/corpus/perf-supported-entry-types.ts",
           "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
@@ -84329,8 +84330,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.SlidingWindowHistogram",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84352,8 +84356,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.record",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84375,8 +84382,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.reset",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84398,8 +84408,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.snapshot",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84450,8 +84463,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.perf_hooks.createSlidingWindowHistogram",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },

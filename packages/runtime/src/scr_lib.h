@@ -304,6 +304,13 @@ double scr_histo_percentiles_count(ScrDyn *handle);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
 void scr_histo_dispose(ScrDyn *handle);
+/* createSlidingWindowHistogram: a window of histogram chunks rotated by
+ * chunkDuration (ns) or recordsPerChunk; snapshot() merges the window. */
+ScrDyn *scr_sliding_new(ScrDyn *options);
+void scr_sliding_record_checked(ScrDyn *handle, double value);
+void scr_sliding_record_big(ScrDyn *handle, ScrBigInt *value);
+void scr_sliding_reset(ScrDyn *handle);
+ScrDyn *scr_sliding_snapshot(ScrDyn *handle);
 /* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
  * family and the clears take the call's dyn argument vector (borrowed)
  * and apply Node's validation and errors. mark and measure answer 1 and

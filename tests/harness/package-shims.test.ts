@@ -163,6 +163,11 @@ async function withUndiciServer(check: (url: string) => Promise<void>): Promise<
       res.end();
       return;
     }
+    if (req.url === "/raw") {
+      res.writeHead(200, ["X-Repeat", "a", "x-repeat", "b"]);
+      res.end();
+      return;
+    }
     if (req.url === "/empty") {
       res.end();
       return;
@@ -201,6 +206,9 @@ describe("package shims", () => {
     { file: "proxy.ts", requests: 2 },
     { file: "proxy.mjs", requests: 1 },
     { file: "proxy.cjs", requests: 1 },
+    { file: "proxy-key.cjs", requests: 1 },
+    { file: "proxy-key.mjs", requests: 1 },
+    { file: "proxy-unchecked.mjs", requests: 1 },
   ])(
     "undici8: $file forwards HTTP with just the libnode pack",
     async ({ file, requests }) => {
@@ -226,6 +234,25 @@ describe("package shims", () => {
     180_000,
   );
 
+  test.each(["default.mjs", "type-only.ts"])(
+    "undici8: %s keeps request native",
+    async (file) => {
+      const dir = join(repoRoot, "tests/fixtures/undici8");
+      const entry = join(dir, file);
+      const out = join(scratch, file);
+      const result = await compile(entry, { outDir: out, outPath: join(out, "client"), sanitize });
+      if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+      expect(analyze(entry).coverage.nodeIslands?.islands ?? []).toEqual([]);
+      await withUndiciServer(async (url) => {
+        const expected = await runBinary(process.execPath, [entry, url], dir);
+        expect(expected.stdout.toString()).toBe("200 GET /read\n");
+        const actual = await runBinary(result.binaryPath, [url], dir);
+        expect({ ...actual, stderr: programStderr(actual.stderr) }).toEqual(expected);
+      });
+    },
+    180_000,
+  );
+
   test("undici8: HTTP/1.1 request and fetch match the installed package without Node islands", async () => {
     const dir = join(repoRoot, "tests/fixtures/undici8");
     const entry = join(dir, "main.ts");
@@ -243,6 +270,9 @@ describe("package shims", () => {
       const output = expected.stdout.toString();
       expect(output).toContain("200 POST /write payload");
       expect(output).toContain("404 GET /missing");
+      expect(output).toContain("raw X-Repeat|a|x-repeat|b");
+      expect(output).toContain('dumped ""');
+      expect(output).toContain("handler custom dispatcher");
       expect(output).toContain("InvalidArgumentError invalid method");
       expect(output).toContain("\nfactory false\n");
       expect(output).toContain("pool factory false");

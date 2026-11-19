@@ -47,12 +47,13 @@ export interface DispatchOptions {
    * (client.ts, expectsPayload). */
   __framedAsNode?: boolean;
   signal?: AbortSignal | null;
-  onInfo?: (info: { statusCode: number; headers: IncomingHttpHeaders }) => void;
+  onInfo?(info: { statusCode: number; headers: IncomingHttpHeaders | string[] }): void;
   highWaterMark?: number;
 }
 
 /** undici's dispatch-controller (7.x handler API). */
 export interface DispatchController {
+  rawHeaders?: Buffer[] | string[] | IncomingHttpHeaders | null;
   readonly aborted: boolean;
   readonly paused: boolean;
   readonly reason: Error | null;

@@ -159,6 +159,18 @@ export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandR
     const s = state(e.to, e.toDir);
     const from = e.fromDir ?? (userIsland(e.fromFile) ? USER + e.fromFile : "");
     if (from === s.key) continue;
+    if (input.scan.shimFallbacks?.includes(e.to) && s.sites.length === 0) {
+      addReason(s, {
+        class: "packaging",
+        rule: null,
+        reason: "packaging",
+        code: "SC2013",
+        message:
+          "the program uses an export or signature outside the built-in package implementation",
+        loc: e.loc,
+        source: "package",
+      });
+    }
     s.importers.add(from);
     s.sites.push({ from, loc: e.loc });
     let out = imports.get(from);

@@ -45,6 +45,7 @@ import {
   resolveBareModule,
   resolveWorkspaceSourceModule,
 } from "./resolve.js";
+import { usesInstalledShimValue } from "./shim-fallback.js";
 import { isShimmedImport, loadedIslandShims } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
@@ -125,6 +126,7 @@ export type ProgramLoader = (
 export interface Frontend {
   preflight: ScrDiagnostic[];
   admittedOpinions?: LoadResult["admittedOpinions"];
+  usesInstalledShimValue?: (name: string) => boolean;
   /** Loaded partial shim entries that can use the installed declarations. */
   loadedIslandShims?: () => string[];
   /** The entry source file's text for diagnostics and source annotations. */
@@ -164,7 +166,6 @@ export interface Frontend {
 /** Hosts own transport lifetimes; shared compiler stages own the frontend. */
 /** How a frontend loads the program, beyond its npm package selection. */
 export interface FrontendOptions {
-  forcedNode?: ReadonlySet<string>;
   /** Packages that run in Node islands (scope-B NI-4): never compiled,
    * typed by their declarations. */
   islandPackages?: ReadonlySet<string>;
@@ -621,7 +622,7 @@ export function runFrontend(
     const load = loadProgram(path, {
       ...loadOptions,
       define: options.define,
-      forcedNode: options.forcedNode,
+      forcedNode: options.islandPackages,
     });
     active.push(load);
     return {
@@ -1219,6 +1220,7 @@ function loadFrontend(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
     ),
     admittedOpinions: load.admittedOpinions,
+    usesInstalledShimValue: (name) => usesInstalledShimValue(load, name),
     loadedIslandShims: () =>
       loadedIslandShims((file) => finalLoad.program.getSourceFile(file) !== undefined),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
@@ -1486,7 +1488,7 @@ function loadFrontend(
           // that loads, one that was refused, or one judged and dropped.
           const npm =
             statuses.length > 0 ||
-            (options.forcedNode?.size ?? 0) > 0 ||
+            (options.islandPackages?.size ?? 0) > 0 ||
             droppedScan.modules.length > 0 ||
             [...files].some((sf) => isInstalledPackagePath(sf.fileName));
           const scanned = scanFiles(finalLoad.program, [...files], {

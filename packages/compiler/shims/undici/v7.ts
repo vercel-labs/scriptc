@@ -16,7 +16,7 @@ import type { TopLevelRequestOptions } from "./core/api.ts";
 import { Client as CoreClient } from "./core/client.ts";
 import { buildConnector as coreBuildConnector } from "./core/connector.ts";
 import { Dispatcher } from "./core/dispatcher.ts";
-import type { ResponseData } from "./core/dispatcher.ts";
+import type { ResponseData, ResponseHeaders } from "./core/dispatcher.ts";
 import { installGlobalFetchDispatcher, undiciFetch } from "./core/fetch.ts";
 import type { UndiciFetchInit } from "./core/fetch.ts";
 import { Pool as CorePool, PoolStats as CorePoolStats } from "./core/pool.ts";
@@ -103,10 +103,11 @@ export function getGlobalDispatcher(): Dispatcher {
   return coreGetGlobalDispatcher(() => new Agent());
 }
 
+export function request(url: string | URL, options?: TopLevelRequestOptions): Promise<ResponseData>;
 export function request(
   url: string | URL,
   options?: TopLevelRequestOptions,
-): Promise<ResponseData> {
+): Promise<ResponseData<ResponseHeaders>> {
   return coreRequest(url, options, () => new Agent(), profile);
 }
 

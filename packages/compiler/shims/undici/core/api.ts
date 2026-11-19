@@ -2,7 +2,7 @@
 // lib/api/api-request.js) and the global dispatcher
 // (lib/global.js: one process-wide slot shared by every undici copy).
 import { requestThrough } from "./dispatcher.ts";
-import type { Dispatcher, RequestOptions, ResponseData } from "./dispatcher.ts";
+import type { Dispatcher, RequestOptions, ResponseData, ResponseHeaders } from "./dispatcher.ts";
 import { parseOrigin, parseURL } from "./util.ts";
 import type { IncomingHttpHeaders, Profile, RequestBody, UndiciHeaders } from "./types.ts";
 
@@ -23,8 +23,9 @@ export interface TopLevelRequestOptions {
   throwOnError?: boolean;
   opaque?: unknown;
   signal?: AbortSignal | null;
-  onInfo?: (info: { statusCode: number; headers: IncomingHttpHeaders }) => void;
+  onInfo?(info: { statusCode: number; headers: IncomingHttpHeaders | string[] }): void;
   highWaterMark?: number;
+  responseHeaders?: "raw" | null;
 }
 
 let globalDispatcher: Dispatcher | null = null;
@@ -56,7 +57,7 @@ export function request(
   options: TopLevelRequestOptions | undefined,
   createGlobal: () => Dispatcher,
   profile: Profile,
-): Promise<ResponseData> {
+): Promise<ResponseData<ResponseHeaders>> {
   // makeDispatcher validates synchronously: an invalid URL throws at the
   // call rather than rejecting.
   {
@@ -89,6 +90,7 @@ export function request(
       signal: opts.signal,
       onInfo: opts.onInfo,
       highWaterMark: opts.highWaterMark,
+      responseHeaders: opts.responseHeaders,
     };
     return requestThrough(dispatcher, dispatchOptions, profile);
   }

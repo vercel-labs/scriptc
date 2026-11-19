@@ -67,6 +67,8 @@ export interface RefusalRecord {
 }
 
 export interface NodeIslandScan {
+  /** Partial shims whose installed runtime is needed by a value import. */
+  shimFallbacks?: readonly string[];
   modules: ScannedModule[];
   edges: PackageEdge[];
   refusals: RefusalRecord[];

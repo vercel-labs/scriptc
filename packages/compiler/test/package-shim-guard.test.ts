@@ -158,6 +158,17 @@ describe("partial package shim selection", () => {
     120_000,
   );
 
+  test("an explicitly marked CommonJS proxy has no unsupported-module diagnostic", () => {
+    const { coverage } = analyze(join(dirname(proxy), "proxy.cjs"), {
+      nodeIslands: { islands: ["undici"] },
+    });
+    expect(coverage.diagnostics).toEqual([]);
+    expect(coverage.runtimeFences ?? []).toEqual([]);
+    expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.decision])).toEqual([
+      ["undici", "cli"],
+    ]);
+  });
+
   test("only falls back for a CommonJS property the installed package adds", () => {
     const dir = join(scratch, "js-package-property");
     mkdirSync(dir);
@@ -185,7 +196,10 @@ describe("partial package shim selection", () => {
       const { coverage } = analyze(proxy, { nodeIslands });
       expect(coverage.preflightFailed).toBe(true);
       expect(
-        coverage.diagnostics.some((d) => d.message.includes("no exported member 'ProxyAgent'")),
+        coverage.diagnostics.some(
+          (d) =>
+            d.code === "SC0001" && d.message.includes("'ProxyAgent' cannot be used as a value"),
+        ),
       ).toBe(true);
     }
   }, 120_000);

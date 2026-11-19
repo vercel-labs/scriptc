@@ -1,4 +1,4 @@
-import { Agent, Pool, fetch, request } from "undici";
+import { Agent, Dispatcher, Pool, fetch, request } from "undici";
 
 const origin = process.argv[2]!;
 const agent = new Agent({
@@ -26,6 +26,26 @@ try {
     body: "payload",
   });
   console.log(post.statusCode, await post.body.text());
+  const rawOptions = { method: "GET" as const, responseHeaders: "raw" as const };
+  const raw = await request(origin + "/raw", rawOptions);
+  console.log("raw", Array.isArray(raw.headers) && raw.headers.slice(0, 4).join("|"));
+  await raw.body.dump();
+  const empty = await request(origin + "/empty");
+  await empty.body.dump();
+  console.log("dumped", JSON.stringify(await empty.body.text()));
+  class FailingDispatcher extends Dispatcher {
+    dispatch(_opts: Parameters<Dispatcher["dispatch"]>[0], handler: Parameters<Dispatcher["dispatch"]>[1]): boolean {
+      handler.onResponseError!(null!, new Error("custom dispatcher"));
+      return false;
+    }
+  }
+  const custom = new Agent({ allowH2: false, factory: () => new FailingDispatcher() });
+  try {
+    await request(origin, { dispatcher: custom });
+  } catch (err) {
+    if (!(err instanceof Error)) throw err;
+    console.log("handler", err.message);
+  }
   const missing = await fetch(origin + "/missing", { dispatcher: pool });
   console.log(missing.status, await missing.text());
   console.log("pool factory", poolFactoryOption);

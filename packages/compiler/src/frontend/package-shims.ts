@@ -43,8 +43,6 @@ import { dirname, join, resolve } from "node:path";
 import { packageShimRoot, tsgoPath } from "./dts-paths.js";
 import { trackedDirectoryExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
 import { readProjectConfig } from "../project-config.js";
-import type { NodeIslandPolicy } from "../node-islands/policy.js";
-import type { Frontend } from "./pipeline.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
 import {
   BUILTIN_ALIAS_PACKAGES,
@@ -59,14 +57,14 @@ interface ImplementationShim {
    * shim root. */
   versions: ReadonlyMap<number, string>;
   /** Versions with a partial shim and a fallback to the installed package. */
-  islandVersions?: readonly number[];
+  partial?: { major: number; types: string };
   /** Major versions without an entry module that `--npm-static` compiles
    * from the package's own published JavaScript. An installed version that
    * is in neither list stays out of the program. */
   sourceVersions?: ReadonlySet<number>;
   /** The entry has a default export (a CommonJS package's whole export
    * object, which a default import reads). */
-  defaultExport?: boolean;
+  defaultExport?: true | string;
   /** The package's main file in every supported version: a bundler's copy
    * of it (a __commonJS chunk whose key names the package, its version
    * and this file) is the package itself. */
@@ -141,7 +139,8 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<
     {
       name: "undici",
       mainFile: "index.js",
-      islandVersions: [8],
+      partial: { major: 8, types: "./types/index" },
+      defaultExport: "undici/v8.ts",
       versions: new Map([
         [5, "undici/v5.ts"],
         [7, "undici/v7.ts"],
@@ -172,6 +171,17 @@ export function packageShimForBundledFile(
  * module resolution answers the shim itself for its path. */
 const bundledForwarders = new Map<string, string>();
 
+function defaultReexport(
+  shim: ImplementationShim | undefined,
+  entry: string,
+  target: string,
+): string {
+  const field = shim?.defaultExport;
+  return field === true || (typeof field === "string" && entry === join(packageShimRoot(), field))
+    ? `export { default } from ${target};\n`
+    : "";
+}
+
 /** The forwarder declaration text for a bundled copy of a shimmed package
  * and records its path; the bundle's call sites require the forwarder's
  * extensionless path. */
@@ -181,7 +191,7 @@ export function bundledShimForwarder(declPath: string, shimPath: string): string
   const shim = [...IMPLEMENTATION_SHIMS.values()].find((entry) =>
     [...entry.versions.values()].some((v) => join(packageShimRoot(), v) === shimPath),
   );
-  const defaultLine = shim?.defaultExport === true ? `export { default } from ${target};\n` : "";
+  const defaultLine = defaultReexport(shim, shimPath, target);
   return `// scriptc: this bundled package compiles from its built-in implementation.\nexport * from ${target};\n${defaultLine}`;
 }
 
@@ -210,85 +220,17 @@ export function packageShimEntries(): string[] {
 export function loadedIslandShims(hasFile: (path: string) => boolean): string[] {
   const packages: string[] = [];
   for (const shim of IMPLEMENTATION_SHIMS.values()) {
-    for (const major of shim.islandVersions ?? []) {
-      const entry = shim.versions.get(major);
-      if (entry !== undefined && hasFile(tsgoPath(join(packageShimRoot(), entry)))) {
-        packages.push(shim.name);
-        break;
-      }
-    }
+    if (shim.partial === undefined) continue;
+    const entry = shim.versions.get(shim.partial.major);
+    if (entry !== undefined && hasFile(tsgoPath(join(packageShimRoot(), entry))))
+      packages.push(shim.name);
   }
   return packages;
 }
 
-// Missing exports and properties, including TypeScript's spelling suggestions.
-// In JavaScript preflight records these checker diagnostics without failing.
-const MISSING_MEMBER_CODES: ReadonlySet<number> = new Set([2305, 2339, 2551, 2614, 2724]);
-
-function shimFallbackSites(frontend: Frontend): Set<string> {
-  const sites = new Set<string>();
-  for (const d of frontend.preflight) {
-    if (d.code === "SC0001") sites.add(`${d.loc.file}\0${d.loc.start}`);
-  }
-  for (const site of frontend.admittedOpinions ?? []) {
-    if (MISSING_MEMBER_CODES.has(site.code)) sites.add(`${site.file}\0${site.pos}`);
-  }
-  return sites;
-}
-
-/** A partial shim may omit an export or overload from the installed types.
- * Let the checker answer again with those types. Only an error that goes
- * away justifies bypassing the shim; unrelated application errors survive.
- * This also covers namespace accesses and re-exports in other modules. */
-export function loadWithShimFallback(
-  policy: NodeIslandPolicy,
-  nodePackages: Set<string>,
-  load: (islandShims?: ReadonlySet<string>) => Frontend,
-): Frontend {
-  let frontend = load();
-  if (
-    policy.mode !== "auto" ||
-    (!frontend.preflight.length && !frontend.admittedOpinions?.length)
-  ) {
-    return frontend;
-  }
-  // Probe newly bypassed shims as island packages too: preflight must
-  // resolve a require() against the same boundary that lowering will use.
-  const reload = (): Frontend =>
-    nodePackages.size === policy.forcedNode.size
-      ? load()
-      : load(new Set([...nodePackages].filter((pkg) => !policy.forcedNode.has(pkg))));
-  for (const name of frontend.loadedIslandShims?.() ?? []) {
-    if (policy.forcedNative.has(name) || nodePackages.has(name)) continue;
-    const sites = shimFallbackSites(frontend);
-    if (sites.size === 0) break;
-    frontend.dispose();
-    nodePackages.add(name);
-    frontend = reload();
-    const remaining = shimFallbackSites(frontend);
-    if ([...sites].every((site) => remaining.has(site))) {
-      frontend.dispose();
-      nodePackages.delete(name);
-      frontend = reload();
-    }
-  }
-  // Type-only imports can need the installed declarations without loading
-  // Node. Record the shim's refusal for the island detector only where the
-  // checked program has a value edge to this installed package.
-  if (nodePackages.size > policy.forcedNode.size) {
-    const edges = frontend.nodeIslandScan?.({ userJs: false }).edges ?? [];
-    for (const name of nodePackages) {
-      if (!policy.forcedNode.has(name) && edges.some((e) => !e.shim && e.to === name)) {
-        frontend.npmStatic.push({
-          package: name,
-          status: "refused",
-          detail:
-            "the program requires the installed declarations beyond the built-in package implementation",
-        });
-      }
-    }
-  }
-  return frontend;
+/** The registry has a partial runtime implementation for this package. */
+export function hasPartialShim(name: string): boolean {
+  return IMPLEMENTATION_SHIMS.get(name)?.partial !== undefined;
 }
 
 /** Package names the project marks never loaded. */
@@ -296,7 +238,7 @@ let unloadedPackages: ReadonlySet<string> = new Set();
 let nodePackages: ReadonlySet<string> | undefined;
 
 function implementationEntry(shim: ImplementationShim, major: number): string | undefined {
-  if (shim.islandVersions?.includes(major) && nodePackages?.has(shim.name)) return undefined;
+  if (shim.partial?.major === major && nodePackages?.has(shim.name)) return undefined;
   return shim.versions.get(major);
 }
 
@@ -383,6 +325,21 @@ function installedPackageVersion(pkgDir: string): { name: string; major: number 
   }
   if (typeof pkg.name !== "string" || typeof pkg.version !== "string") return null;
   return { name: pkg.name, major: Number(/^(\d+)\./.exec(pkg.version)?.[1] ?? NaN) };
+}
+
+/** Native and declaration entries for the partial shim a particular importer resolves. */
+export function partialShimEntries(
+  from: string,
+  name: string,
+): { runtime: string; declarations: string } | null {
+  const shim = IMPLEMENTATION_SHIMS.get(name);
+  if (shim?.partial === undefined) return null;
+  const dir = installedPackageDir(from, name);
+  if (dir === null || installedMajorVersion(dir, name) !== shim.partial.major) return null;
+  const runtime = shimEntryForPackageDir(dir, name);
+  return runtime === null
+    ? null
+    : { runtime, declarations: join(dir, shim.typesFile ?? "index.d.ts") };
 }
 
 /** The major version of the package `name` installed at `pkgDir`, or null. */
@@ -481,8 +438,14 @@ export function packageShimDeclarationText(path: string): string | undefined {
     : shimEntryForPackageDir(pkgDir, name);
   if (entry === null) return undefined;
   const target = JSON.stringify(tsgoPath(entry));
-  const defaultLine = shim.defaultExport === true ? `export { default } from ${target};\n` : "";
-  return `// scriptc: this package compiles from its built-in implementation.\nexport * from ${target};\n${defaultLine}`;
+  const defaultLine = defaultReexport(shim, entry, target);
+  // The installed declarations supply type-only names the runtime omits.
+  const partial = shim.partial;
+  const installedTypes =
+    partial !== undefined && installedMajorVersion(pkgDir, name) === partial.major
+      ? `export type * from ${JSON.stringify(partial.types)};\n`
+      : "";
+  return `// scriptc: this package compiles from its built-in implementation.\nexport * from ${target};\n${defaultLine}${installedTypes}`;
 }
 
 /** True for a file of the shipped package shims. They are compiler-owned

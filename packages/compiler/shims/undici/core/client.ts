@@ -4,7 +4,7 @@
 import type { Socket } from "node:net";
 import { buildConnector } from "./connector.ts";
 import { channels } from "./diagnostics.ts";
-import { DispatcherBase } from "./dispatcher.ts";
+import { DispatcherBase, unwrapHandler } from "./dispatcher.ts";
 import type { Dispatcher } from "./dispatcher.ts";
 import {
   BodyTimeoutError,
@@ -225,7 +225,12 @@ export class Client extends DispatcherBase {
         : typeof originValue === "string"
           ? originValue
           : originValue.origin;
-    const request = new Request(origin, opts, handler, this.__profile);
+    const request = new Request(
+      origin,
+      opts,
+      this.__profile.major >= 8 ? unwrapHandler(handler, this.__profile) : handler,
+      this.__profile,
+    );
     this.__queue.push(request);
     if (this.__resuming === 0) this.__resume(true);
     if (this.__resuming !== 0 && this.__needDrain !== 2 && this.__busy()) this.__needDrain = 2;

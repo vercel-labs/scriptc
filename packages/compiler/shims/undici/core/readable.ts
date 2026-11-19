@@ -214,7 +214,6 @@ export class BodyReadable extends EventEmitter {
         : this.__profile.major >= 7
           ? 131072
           : 262144;
-    this.__consuming = true;
     return new Promise<void>((resolve) => {
       if (this.__endEmitted || this.__destroyed) {
         resolve();

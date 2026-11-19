@@ -15,7 +15,7 @@ import { buildNodeIslandReport, reportIslandSet } from "../node-islands/report.j
 import { hasNodeIslandFindings } from "../node-islands/summary.js";
 import { outsideGraphIslands } from "../node-islands/graph-islands.js";
 import { growIslandSet, type IslandGrowthContext } from "../node-islands/growth.js";
-import { loadWithShimFallback } from "./package-shims.js";
+import { loadWithShimFallback } from "./shim-fallback.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
  * Unlike compile(), lowering diagnostics are data here, not failure. */
@@ -50,12 +50,10 @@ export function analyzeWithFrontend(
   // island report classifies every package from it (executable/prepare.ts's
   // decideNodeIslands), including a package the policy forces into Node.
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands, entryPath);
-  const forcedNode = new Set(policy.forcedNode.keys());
-  const fe = loadWithShimFallback(policy, forcedNode, (islandShims) =>
+  const fe = loadWithShimFallback(policy, (islandShims) =>
     createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
       nodeIslands: true,
-      forcedNode,
-      ...(islandShims === undefined ? {} : { islandPackages: islandShims }),
+      ...(islandShims.size > 0 ? { islandPackages: islandShims } : {}),
       ...(opts.define !== undefined ? { define: opts.define } : {}),
     }),
   );
@@ -76,9 +74,6 @@ export function analyzeWithFrontend(
         .filter(
           (entry) =>
             entry.status === "refused" &&
-            // A limited shim whose installed declarations already answered
-            // the type error is an island decision, not a coverage error.
-            !(forcedNode.has(entry.package) && !policy.forcedNode.has(entry.package)) &&
             !Object.keys(opts.externalTypes ?? {}).some(
               (specifier) => packageNameOfSpecifier(specifier) === entry.package,
             ),
@@ -138,6 +133,7 @@ export function analyzeWithFrontend(
     // One scan of the program decides every island question below: the
     // lowering's set, the graph-proven growth of it, and the final report.
     const scan = fe.nodeIslandScan?.({ userJs: policy.strictUserJs });
+    for (const name of scan?.shimFallbacks ?? []) refused.add(name);
     // A --native or --npm-static mark a build refuses
     // (node-islands/package-marks.ts) is reported here too, instead of a
     // program the build stops on. A --npm-static name the program does not
@@ -202,7 +198,6 @@ export function analyzeWithFrontend(
         lowerLoad.fe?.dispose();
         lowerLoad.fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
           nodeIslands: true,
-          forcedNode,
           islandPackages: new Set(packages),
           // The reload re-reads the program: the define values still decide
           // its branches, so the coverage report sees what the build compiles.

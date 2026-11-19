@@ -564,15 +564,22 @@ export function collectIslandImport(
   if (!binding.esm && named !== undefined && ts.isNamespaceImport(named)) {
     const nsSymbol = lowerer.checker.getSymbolAtLocation(named.name);
     ts.walkPreorder(sf, (node) => {
+      const name =
+        ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)
+          ? node.name.text
+          : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+            ? node.argumentExpression.text
+            : undefined;
       if (
-        ts.isPropertyAccessExpression(node) &&
+        name !== undefined &&
+        (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
         ts.isIdentifier(node.expression) &&
-        ts.isIdentifier(node.name) &&
         node.expression.text === named.name.text &&
         lowerer.checker.getSymbolAtLocation(node.expression) === nsSymbol &&
-        !snapshotNames.includes(node.name.text)
-      )
-        snapshotNames.push(node.name.text);
+        !snapshotNames.includes(name)
+      ) {
+        snapshotNames.push(name);
+      }
       return undefined;
     });
   }
@@ -2686,6 +2693,14 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (ts.isElementAccessExpression(expr)) {
     if (!isForeignExpr(lowerer, expr.expression)) return null;
     lowerer.usesNodeIsland = true;
+    if (ts.isIdentifier(expr.expression) && ts.isStringLiteralLike(expr.argumentExpression)) {
+      const binding = islandBindingOf(lowerer, expr.expression);
+      if (binding?.kind === "namespace" && !binding.module.esm) {
+        const name = expr.argumentExpression.text;
+        const target = islandReceiver(lowerer, expr.expression, name, loc);
+        return fromIsland(lowerer, target.direct ?? islandGet(target.value, name, loc), expr);
+      }
+    }
     // `(p as V)[k]`: an assertion on a handle is a view, never a conversion
     // (the read meets the member's declared type in fromIsland below).
     const target = lowerer.lowerExpr(withoutParenthesesTypeWrappers(expr.expression));

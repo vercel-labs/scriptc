@@ -12,7 +12,7 @@ import type { Transform } from "node:stream";
 // a project's @types/node may predate the globals (20.11 has none).
 import { ReadableStream, type ReadableStreamDefaultController } from "node:stream/web";
 import * as zlib from "node:zlib";
-import { Dispatcher as DispatcherClass } from "./dispatcher.ts";
+import { controllerHandler, Dispatcher as DispatcherClass } from "./dispatcher.ts";
 import type { Dispatcher } from "./dispatcher.ts";
 import { NotSupportedError } from "./errors.ts";
 import { getGlobalDispatcher, hasCustomGlobalDispatcher } from "./api.ts";
@@ -954,7 +954,7 @@ function dispatchOnce(
         body,
         __framedAsNode: nodeGlobal,
       },
-      handler,
+      profile.major >= 8 ? controllerHandler(handler) : handler,
     );
   });
 }

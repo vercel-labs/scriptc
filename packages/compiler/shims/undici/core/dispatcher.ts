@@ -22,13 +22,17 @@ import type {
 
 /** Dispatcher.RequestOptions: the dispatch options (which carry the
  * request members, see DispatchOptions). */
-export type RequestOptions = DispatchOptions;
+export interface RequestOptions extends DispatchOptions {
+  responseHeaders?: "raw" | null;
+}
 
-export interface ResponseData {
+export type ResponseHeaders = IncomingHttpHeaders | string[];
+
+export interface ResponseData<H = IncomingHttpHeaders> {
   statusCode: number;
   /** 7.x only. */
   statusText?: string;
-  headers: IncomingHttpHeaders;
+  headers: H;
   body: BodyReadable;
   trailers: Record<string, string>;
   opaque: unknown;
@@ -58,7 +62,9 @@ export class Dispatcher extends EventEmitter {
 
   /** Dispatcher.prototype.request: dispatches through this dispatcher and
    * resolves with the response once its headers arrive. */
-  request(options: RequestOptions): Promise<ResponseData> {
+  request(options: RequestOptions & { responseHeaders: "raw" }): Promise<ResponseData<string[]>>;
+  request(options: RequestOptions): Promise<ResponseData>;
+  request(options: RequestOptions): Promise<ResponseData<ResponseHeaders>> {
     return requestThrough(this, options, this.__undiciProfile());
   }
 
@@ -185,12 +191,17 @@ export class DispatcherBase extends Dispatcher {
   }
 
   dispatch(options: DispatchOptions, handler: DispatchHandlers): boolean {
-    const target = this.__profile.major >= 7 ? unwrapHandler(handler, this.__profile) : handler;
+    const target = this.__profile.major === 7 ? unwrapHandler(handler, this.__profile) : handler;
     try {
       if (this.__destroyed) throw new ClientDestroyedError();
       if (this.__closed) throw new ClientClosedError();
       return this.__dispatchIntercepted(options, target);
     } catch (err) {
+      if (this.__profile.major >= 8 && target.onResponseError !== undefined) {
+        // undici has no controller before dispatch starts.
+        target.onResponseError(null!, err as Error);
+        return false;
+      }
       if (target.onError === undefined) {
         if (this.__profile.major >= 7) throw err;
         throw new InvalidArgumentError("invalid onError method");
@@ -231,15 +242,15 @@ export function requestThrough(
   dispatcher: Dispatcher,
   options: RequestOptions,
   profile: Profile,
-): Promise<ResponseData> {
-  return new Promise<ResponseData>((resolve, reject) => {
-    const callback = (err: Error | null, data: ResponseData | null): void => {
+): Promise<ResponseData<ResponseHeaders>> {
+  return new Promise<ResponseData<ResponseHeaders>>((resolve, reject) => {
+    const callback = (err: Error | null, data: ResponseData<ResponseHeaders> | null): void => {
       if (err !== null) reject(err);
       else resolve(data!);
     };
     try {
       const handler = createRequestHandler(options, profile, callback);
-      dispatcher.dispatch(options, handler);
+      dispatcher.dispatch(options, profile.major >= 8 ? controllerHandler(handler) : handler);
     } catch (err) {
       queueMicrotask(() => callback(err as Error, null));
     }
@@ -250,7 +261,7 @@ export function requestThrough(
 function createRequestHandler(
   opts: RequestOptions,
   profile: Profile,
-  done: (err: Error | null, data: ResponseData | null) => void,
+  done: (err: Error | null, data: ResponseData<ResponseHeaders> | null) => void,
 ): DispatchHandlers {
   if (opts.method === "CONNECT") throw new InvalidArgumentError("invalid method");
   if (
@@ -264,7 +275,8 @@ function createRequestHandler(
   const onInfo = opts.onInfo ?? null;
   const throwOnError = opts.throwOnError === true;
   const trailers: Record<string, string> = {};
-  let callback: ((err: Error | null, data: ResponseData | null) => void) | null = done;
+  let callback: ((err: Error | null, data: ResponseData<ResponseHeaders> | null) => void) | null =
+    done;
   let res: BodyReadable | null = null;
   let abortFn: ((err?: Error) => void) | null = null;
   let reason: Error | null = null;
@@ -348,9 +360,12 @@ function createRequestHandler(
       resume: () => void,
       statusText: string,
     ): boolean => {
-      const headers = parseHeaders(rawHeaderStrings(rawHeaders, profile), profile);
+      const pairs = rawHeaderStrings(rawHeaders, profile);
+      const headers = parseHeaders(pairs, profile);
+      // The published ResponseData<ResponseHeaders> declares IncomingHttpHeaders in both modes.
+      const responseHeaders = opts.responseHeaders === "raw" ? pairs : headers;
       if (statusCode < 200) {
-        if (onInfo !== null) onInfo({ statusCode, headers });
+        if (onInfo !== null) onInfo({ statusCode, headers: responseHeaders });
         return true;
       }
       const contentTypeValue = headers["content-type"];
@@ -376,9 +391,17 @@ function createRequestHandler(
           resolveErrorBody(cb, body, contentType, statusCode, statusText, headers);
           return true;
         }
-        const data: ResponseData = v7
-          ? { statusCode, statusText, headers, trailers, opaque, body, context: undefined }
-          : { statusCode, headers, trailers, opaque, body, context: undefined };
+        const data: ResponseData<ResponseHeaders> = v7
+          ? {
+              statusCode,
+              statusText,
+              headers: responseHeaders,
+              trailers,
+              opaque,
+              body,
+              context: undefined,
+            }
+          : { statusCode, headers: responseHeaders, trailers, opaque, body, context: undefined };
         cb(null, data);
       }
       return true;
@@ -452,9 +475,50 @@ function resolveErrorBody(
   }
 }
 
+/** Expose the controller protocol to v8 dispatchers. The HTTP/1 parser and
+ * the body decoders use raw bytes, including header spelling and order. */
+export function controllerHandler(handler: DispatchHandlers): DispatchHandlers {
+  return {
+    onRequestStart(controller) {
+      handler.onConnect?.((err) => controller.abort(err ?? new RequestAbortedError()));
+    },
+    onResponseStart(controller, status, headers, text) {
+      const raw = controller.rawHeaders;
+      const pairs: Buffer[] = [];
+      if (Array.isArray(raw)) {
+        for (const item of raw)
+          pairs.push(typeof item === "string" ? Buffer.from(item, "latin1") : item);
+      } else {
+        for (const value of headerPairs(raw ?? headers)) pairs.push(Buffer.from(value, "latin1"));
+      }
+      if (handler.onHeaders?.(status, pairs, () => controller.resume(), text ?? "") === false)
+        controller.pause();
+    },
+    onResponseData(controller, chunk) {
+      if (handler.onData?.(chunk) === false) controller.pause();
+    },
+    onResponseEnd(_controller, trailers) {
+      handler.onComplete?.(headerPairs(trailers));
+    },
+    onResponseError(_controller, err) {
+      handler.onError?.(err);
+    },
+  };
+}
+
+function headerPairs(headers: IncomingHttpHeaders): string[] {
+  const pairs: string[] = [];
+  for (const name of Object.keys(headers)) {
+    const value = headers[name];
+    if (typeof value === "string") pairs.push(name, value);
+    else if (value !== undefined) for (const item of value) pairs.push(name, item);
+  }
+  return pairs;
+}
+
 /** 7.x's UnwrapHandler: a controller-API handler (onRequestStart, ...)
  * driven through the legacy callbacks the clients invoke. */
-function unwrapHandler(handler: DispatchHandlers, profile: Profile): DispatchHandlers {
+export function unwrapHandler(handler: DispatchHandlers, profile: Profile): DispatchHandlers {
   if (handler.onRequestStart === undefined) return handler;
   let controller: UnwrapController | null = null;
   const controllerOf = (): UnwrapController => {
@@ -479,6 +543,7 @@ function unwrapHandler(handler: DispatchHandlers, profile: Profile): DispatchHan
     ): boolean => {
       const c = controllerOf();
       c.__resume = resume;
+      c.rawHeaders = rawHeaders;
       if (handler.onResponseStart !== undefined) {
         handler.onResponseStart!(
           c,
@@ -509,6 +574,7 @@ function unwrapHandler(handler: DispatchHandlers, profile: Profile): DispatchHan
 
 /** 7.x's UnwrapController. */
 class UnwrapController implements DispatchController {
+  rawHeaders: Buffer[] | null = null;
   __paused: boolean;
   __reason: Error | null;
   __aborted: boolean;

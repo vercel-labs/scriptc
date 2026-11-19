@@ -56,6 +56,12 @@ function observation(): UnitObservation {
       },
     ],
     edges: [],
+    pins: {
+      functions: [
+        { module: "a.ts", name: "f" },
+        { module: "main.ts", name: "main" },
+      ],
+    },
     lowering: {
       declarations: [
         { module: "a.ts", name: "f", kind: "function", facts: "{}" },
@@ -94,7 +100,7 @@ test("a unit's summary holds only its modules, with demands attributed to their 
         ? "lib@1.0.0"
         : null,
   );
-  expect(summary.schema).toBe("scriptc.unit-summary.v0");
+  expect(summary.schema).toBe("scriptc.unit-summary.v1");
   expect(summary.unit.id).toBe("lib@1.0.0");
   // The unit's graph dependencies are the meta entry's, not the summary's:
   // a summary is a function of the unit's own content.
@@ -107,6 +113,9 @@ test("a unit's summary holds only its modules, with demands attributed to their 
   ]);
   expect(summary.classes).toEqual([{ module: "a.ts", name: "%m1.A", id: 0, slots: ["go"] }]);
   expect(summary.inits.map((init) => init.module).sort()).toEqual(["a.ts"]);
+  // The pins name the functions this unit defines and its classes' ids.
+  expect(summary.pins.functions).toEqual(["f"]);
+  expect(summary.pins.classes).toEqual([{ name: "%m1.A", id: 0 }]);
   expect(summary.runtimeFeatures.scope).toBe("program-wide");
   expect(Object.keys(summary.facts)).toEqual(["reads-exit-code"]);
 });

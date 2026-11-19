@@ -1,11 +1,18 @@
 /* The unit key: content-addressed identity of one unit's inputs.
  *
- * sha256 over canonical JSON of the schema, the compiler implementation
- * digest, the target triple and optimization, the options that reach
- * lowering, the FFI profile when one is present, the frontend environment,
- * the unit's files (package-relative path, content digest), and each
- * dependency's SUMMARY DIGEST — not its key. A dependency rebuilt with an
- * identical summary therefore leaves its consumers' keys unchanged.
+ * sha256 over canonical JSON of the schema, the unit's own id, name and
+ * version, the compiler implementation digest, the target triple and
+ * optimization, the options that reach lowering, the FFI profile when one is
+ * present, the frontend environment, the unit's files (package-relative
+ * path, content digest), and each dependency's SUMMARY DIGEST — not its key.
+ * A dependency rebuilt with an identical summary therefore leaves its
+ * consumers' keys unchanged.
+ *
+ * The unit's id and name are in the payload because the files alone do not
+ * identify a unit: native-sdk generates the same one-file boot module under
+ * different example packages, so two units can hold byte-identical files and
+ * still be different compilation units. The summary names the unit, so
+ * without the name in the key those two units collide in the store.
  *
  * Nothing absolute enters the key: file entries are package-relative and the
  * dependency entries name units and digests. */
@@ -13,7 +20,7 @@
 import { createHash } from "node:crypto";
 import { canonicalJson, type CanonicalValue } from "./canonical.js";
 
-export const UNIT_KEY_SCHEMA = "scriptc.unit-key.v0";
+export const UNIT_KEY_SCHEMA = "scriptc.unit-key.v1";
 
 /** Arbitrary option data as a canonical JSON value: primitives stay, arrays
  * and plain objects recurse, and anything else (a function, a symbol, a
@@ -90,6 +97,15 @@ export function ffiProfileDigest(profile: {
 
 /** Everything a unit's key is a function of. */
 export interface UnitKeyInput {
+  /** The unit's identity. `id` is the graph's id (`name@version`, with a
+   * suffix for a second copy and `+` for an SCC merge); `name` and `version`
+   * are what its summary records. Two generated modules with the same content
+   * but different names are different units, so both are in the payload. */
+  unit: {
+    id: string;
+    name: string;
+    version: string;
+  };
   compiler: string | null;
   /** The target triple (or the build platform when no triple is known). */
   target: string;
@@ -111,6 +127,11 @@ export interface UnitKeyInput {
 function keyPayload(input: UnitKeyInput): { [key: string]: CanonicalValue } {
   return {
     schema: UNIT_KEY_SCHEMA,
+    unit: {
+      id: input.unit.id,
+      name: input.unit.name,
+      version: input.unit.version,
+    },
     compiler: input.compiler,
     target: input.target,
     optimization: input.optimization,

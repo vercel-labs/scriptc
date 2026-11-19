@@ -20,6 +20,10 @@ interface Provisional {
   files: string[];
   /** Package-relative paths, parallel to `files`. */
   relative: Map<string, string>;
+  /** The package roots this unit's files came from (empty for files that
+   * belong to no package). A unit's file set is its package as installed
+   * when the host listed that root. */
+  roots: string[];
   dependencies: Set<string>;
 }
 
@@ -88,12 +92,15 @@ function provisionalUnits(input: UnitObservationInput): Map<string, Provisional>
         app: id === appUnitId,
         files: [],
         relative: new Map(),
+        roots: [],
         dependencies: new Set(),
       };
       units.set(id, unit);
     }
     unit.files.push(file.file);
     unit.relative.set(file.file, file.relative);
+    if (file.packageRoot !== null && !unit.roots.includes(file.packageRoot))
+      unit.roots.push(file.packageRoot);
   }
   for (const edge of input.edges) {
     const from = unitOfFile.get(edge.from);
@@ -109,6 +116,7 @@ interface Component {
   id: string;
   members: string[];
   files: string[];
+  roots: string[];
   dependencies: Set<string>;
   app: boolean;
   name: string;
@@ -160,6 +168,7 @@ function components(units: Map<string, Provisional>): Component[] {
         id: unit.id,
         members,
         files: [...unit.files],
+        roots: [...unit.roots],
         dependencies: new Set(unit.dependencies),
         app: unit.app,
         name: unit.name,
@@ -167,11 +176,13 @@ function components(units: Map<string, Provisional>): Component[] {
       };
     }
     const files: string[] = [];
+    const roots: string[] = [];
     const dependencies = new Set<string>();
     let app = false;
     for (const member of members) {
       const unit = units.get(member)!;
       files.push(...unit.files);
+      for (const root of unit.roots) if (!roots.includes(root)) roots.push(root);
       app ||= unit.app;
       for (const dep of unit.dependencies) if (!members.includes(dep)) dependencies.add(dep);
     }
@@ -182,6 +193,7 @@ function components(units: Map<string, Provisional>): Component[] {
       id: joined.length <= 160 ? joined : `merged:${suffixOf(joined)}`,
       members,
       files,
+      roots,
       dependencies,
       app,
       name: `merged:${members.length}`,
@@ -248,10 +260,28 @@ export function buildUnitGraph(input: UnitObservationInput): UnitGraph {
   const relative = new Map<string, string>();
   for (const unit of units.values())
     for (const [file, rel] of unit.relative) relative.set(file, rel);
-  const nodes: UnitNode[] = ordered.map((component) => {
-    const files = [...new Set(component.files.map((file) => relative.get(file) ?? file))].sort(
-      (a, b) => a.localeCompare(b),
+  // The package directories the host listed, by root realpath. A unit whose
+  // roots appear here takes its file set from them: the package as
+  // installed, not the files this build reached.
+  const packageFiles = new Map<string, string[]>();
+  for (const directory of input.packages ?? [])
+    packageFiles.set(
+      directory.root,
+      directory.files.map((file) => file.relative),
     );
+  const nodes: UnitNode[] = ordered.map((component) => {
+    // A unit that includes the app takes the files this build reached: the
+    // app's own package is never listed, and a cycle that merges the app into
+    // a dependency must not lose the app's files from a key two apps could
+    // then share.
+    const installed: string[] = [];
+    if (!component.app)
+      for (const root of component.roots) installed.push(...(packageFiles.get(root) ?? []));
+    const files = (
+      installed.length > 0
+        ? [...new Set(installed)]
+        : [...new Set(component.files.map((file) => relative.get(file) ?? file))]
+    ).sort((a, b) => a.localeCompare(b));
     return {
       id: component.id,
       name: component.name,

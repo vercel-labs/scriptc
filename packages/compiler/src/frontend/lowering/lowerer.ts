@@ -326,7 +326,11 @@ import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
 import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
 import { PROGRAM_FACTS } from "../../program-facts.js";
 import { unitsObserveEnabled } from "../../units/mode.js";
-import { packageOfFile, type PackageScopeCache } from "../../units/packages.js";
+import {
+  packageDirectorySources,
+  packageOfFile,
+  type PackageScopeCache,
+} from "../../units/packages.js";
 import { classNumbering } from "../../units/summary.js";
 import type {
   UnitDeclarationFact,
@@ -337,6 +341,8 @@ import type {
   UnitGenericDemand,
   UnitLoweringData,
   UnitObservation,
+  UnitPackageDirectory,
+  UnitPinData,
 } from "../../units/types.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
@@ -6958,15 +6964,6 @@ export class Lowerer {
     // unit reused from a record does not lower, so the hint falls back to
     // the generic install line.
     "nodeIslandUse",
-    // SCRIPTC_UNITS=observe's report state: the generic instances bodies
-    // demanded (with the owner that demanded each) and the source node of
-    // each retained unit body. The observation reads them from the pass that
-    // lowered the whole program, and an observe build never reads the unit
-    // journal (index.ts skips the executable cache in that mode), so a
-    // replayed unit never has to restore them.
-    "unitGenericDemands",
-    "unitGenericDemandKeys",
-    "unitSources",
   ];
 
   /** The fields a unit must leave as they were, and the flags it may set
@@ -16786,6 +16783,46 @@ export class Lowerer {
           .digest("hex"),
       });
     }
+    // Every file of each installed package directory the build loaded from,
+    // not only the files it reached: a unit's key must not change because an
+    // app stopped reaching one of its files. The app's own package is left
+    // out (its key may vary with its directory), and so is a file that names
+    // no package.
+    const packageRoots = new Map<string, { name: string; version: string }>();
+    for (const file of fileInputs) {
+      if (file.packageRoot === null || file.packageName === null) continue;
+      if (file.packageRoot === appRoot) continue;
+      if (!packageRoots.has(file.packageRoot))
+        packageRoots.set(file.packageRoot, {
+          name: file.packageName,
+          version: file.packageVersion ?? "",
+        });
+    }
+    const packages: UnitPackageDirectory[] = [...packageRoots.keys()]
+      .sort((a, b) => a.localeCompare(b))
+      .map((root) => ({
+        name: packageRoots.get(root)!.name,
+        version: packageRoots.get(root)!.version,
+        root,
+        files: packageDirectorySources(root),
+      }));
+    // The functions this lowering produced, by the file whose body they came
+    // from. Synthetic functions with no source file are left out: they
+    // belong to no unit.
+    //
+    // A generic instance's body carries its family's declaration as `loc`,
+    // so an app-demanded instance is attributed to the package that declares
+    // the generic. M1-3's pin rule needs the demanding unit instead (an
+    // instance an app demands is lowered in the app); the demand census
+    // (`unitGenericDemands`) does not see every instance path yet — see
+    // REPORT.md — so the attribution stays by declaration until it does.
+    const pinFunctions: { module: string; name: string }[] = [];
+    for (const fn of module.functions) {
+      const module = relativeOf.get(fn.loc.file);
+      if (module === undefined) continue;
+      pinFunctions.push({ module, name: fn.name });
+    }
+    const pins: UnitPinData = { functions: pinFunctions };
     const inProgram = new Set(files.map((sf) => sf.fileName));
     const moduleEdges: UnitFileEdge[] = [];
     if (edges !== undefined) {
@@ -16891,6 +16928,8 @@ export class Lowerer {
       entry: this.entry.fileName,
       files: fileInputs,
       edges: moduleEdges,
+      packages,
+      pins,
       lowering,
       classes,
       runtimeFeatures: moduleRuntimeFeatures(module),

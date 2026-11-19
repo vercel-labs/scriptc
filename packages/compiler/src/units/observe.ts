@@ -8,11 +8,13 @@
  * another. */
 
 import { performance } from "node:perf_hooks";
+import { canonicalJson, type CanonicalValue } from "./canonical.js";
 import { buildUnitGraph, unitIdByFile } from "./graph.js";
 import { digestOfText, loweringKeyValue, unitKey, unitKeyParts, type UnitKeyInput } from "./key.js";
 import { buildUnitSummary, summaryText } from "./summary.js";
 import { protectUnitEntry, readUnitEntry, unitsStoreRoot, writeUnitEntry } from "./store.js";
 import type {
+  UnitFactValue,
   UnitGraph,
   UnitNode,
   UnitObservation,
@@ -51,6 +53,16 @@ export interface UnitReportEntry {
   /** Whether that stored summary matched this build's (null when none was
    * stored or the mode wrote no store). */
   digestMatched: boolean | null;
+  /** Whether a later build would reuse the stored entry: the key matched
+   * (this entry was read at this build's own key) and every pin matched.
+   * Null when no entry was stored at this key. */
+  wouldHit: boolean | null;
+  /** Whether the entry's pins match this build's (null with `wouldHit`). */
+  pinsEqual: boolean | null;
+  /** The facts this build read whose setting occurrence M1 cannot attribute
+   * to a file. Their values are pinned (they are in the comparison); the
+   * attribution is what M1-3's base-union-app rule needs. */
+  unattributedFacts: readonly string[];
 }
 
 export interface UnitsReport {
@@ -73,24 +85,137 @@ function modulesByUnit(graph: UnitGraph): Map<string, string> {
   return out;
 }
 
-/** The files of each unit with their content digests, from the input records
- * (a merged unit may list two copies of one relative path; both pairs stay,
- * sorted). */
+/** The files of each unit with their content digests. A unit whose package
+ * directory the host listed takes its file set from that directory (the
+ * package as installed, whether or not this build reached each file); the
+ * app unit and any unit the host did not list take the files this build
+ * reached. A merged unit may list two copies of one relative path; both
+ * pairs stay, sorted. */
 function filesOfUnits(
   input: UnitObservationInput,
   graph: UnitGraph,
 ): Map<string, [string, string][]> {
   const fileUnit = unitIdByFile(input, graph);
+  const packages = new Map((input.packages ?? []).map((directory) => [directory.root, directory]));
   const out = new Map<string, [string, string][]>();
+  for (const node of graph.units) {
+    // A unit that includes the app keeps the files this build reached (see
+    // the graph's rule): the app's files are part of its identity.
+    if (node.app) continue;
+    const roots = new Set<string>();
+    for (const file of input.files)
+      if (file.packageRoot !== null && fileUnit.get(file.file) === node.id)
+        roots.add(file.packageRoot);
+    const installed: [string, string][] = [];
+    for (const root of roots)
+      for (const file of packages.get(root)?.files ?? [])
+        installed.push([file.relative, file.digest]);
+    if (installed.length === 0) continue;
+    out.set(
+      node.id,
+      installed.sort(([a], [b]) => a.localeCompare(b)),
+    );
+  }
   for (const file of input.files) {
     const id = fileUnit.get(file.file);
-    if (id === undefined) continue;
+    if (id === undefined || out.has(id)) continue;
     const list = out.get(id) ?? [];
     list.push([file.relative, file.digest]);
     out.set(id, list);
   }
   for (const list of out.values()) list.sort(([a], [b]) => a.localeCompare(b));
   return out;
+}
+
+/** The part of a summary a pin comparison reads. */
+type PinSource = Pick<UnitSummary, "pins" | "facts">;
+
+/** The pin vector a summary carries: the fields a warm build compares before
+ * reusing a stored unit.
+ *
+ * The facts compare by VALUE, not by attribution. A fact's value is the
+ * decision every reader acts on, so equal values mean equal lowered code
+ * whether or not this build can say which unit's files set it. Attribution
+ * (`setByOwnFiles`) is recorded for M1-3's base-union-app comparison, where a
+ * warm build has no whole-program value to compare; until that exists, a
+ * warm build only reuses a unit whose whole-program fact values match, which
+ * is the conservative rule. */
+function pinVector(summary: PinSource): CanonicalValue {
+  return {
+    pins: {
+      functions: [...summary.pins.functions],
+      classes: summary.pins.classes.map((entry) => ({ name: entry.name, id: entry.id })),
+    },
+    facts: Object.keys(summary.facts)
+      .sort()
+      .map((name) => ({ name, value: summary.facts[name]!.value })),
+  };
+}
+
+/** Whether two pin vectors agree, by their canonical text. */
+function pinsMatch(a: PinSource, b: PinSource): boolean {
+  return canonicalJson(pinVector(a)) === canonicalJson(pinVector(b));
+}
+
+/** A stored summary's pins, or null when it is not a v1 summary this build
+ * can compare (an older schema, a truncated write). Any such entry is a
+ * miss rather than a guess. */
+function parseStoredPins(text: string): PinSource | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  if (record["schema"] !== "scriptc.unit-summary.v1") return null;
+  const pins = record["pins"];
+  if (pins === null || typeof pins !== "object" || Array.isArray(pins)) return null;
+  const pinRecord = pins as Record<string, unknown>;
+  const functions = pinRecord["functions"];
+  const classes = pinRecord["classes"];
+  const facts = record["facts"];
+  if (!Array.isArray(functions) || !functions.every((name) => typeof name === "string"))
+    return null;
+  if (
+    !Array.isArray(classes) ||
+    !classes.every((entry) => {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+      const value = entry as Record<string, unknown>;
+      return typeof value["name"] === "string" && typeof value["id"] === "number";
+    })
+  )
+    return null;
+  if (facts === null || typeof facts !== "object" || Array.isArray(facts)) return null;
+  const factValues: Record<string, UnitFactValue> = {};
+  for (const [name, value] of Object.entries(facts as Record<string, unknown>)) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const fact = value as Record<string, unknown>;
+    if (typeof fact["value"] !== "string") return null;
+    const attribution = fact["setByOwnFiles"];
+    if (attribution !== true && attribution !== false && attribution !== "unobserved") return null;
+    factValues[name] = { value: fact["value"], setByOwnFiles: attribution };
+  }
+  return {
+    pins: {
+      functions: functions as string[],
+      classes: classes as { name: string; id: number }[],
+    },
+    facts: factValues,
+  };
+}
+
+/** The facts this build read whose occurrence M1 cannot attribute to a file.
+ * Their values still pin the output; their attribution is what M1-3's
+ * base-union-app rule needs. */
+function unattributedFacts(facts: Record<string, UnitFactValue>): string[] {
+  return Object.keys(facts)
+    .filter((name) => {
+      const fact = facts[name]!;
+      return fact.value !== "unobserved" && fact.setByOwnFiles === "unobserved";
+    })
+    .sort();
 }
 
 /** Compute the graph, summaries and keys, write the store entries, and print
@@ -106,6 +231,7 @@ export function observeUnits(
     entry: observation.entry,
     files: observation.files,
     edges: observation.edges,
+    ...(observation.packages === undefined ? {} : { packages: observation.packages }),
   };
   const graph = buildUnitGraph(input);
   const graphMs = performance.now() - started;
@@ -128,6 +254,7 @@ export function observeUnits(
   const lowering = loweringKeyValue(context.lowering as Record<string, unknown>);
   for (const node of graph.units) {
     const keyInput: UnitKeyInput = {
+      unit: { id: node.id, name: node.name, version: node.version },
       compiler: context.compilerIdentity,
       target: context.target,
       optimization: context.optimization,
@@ -153,6 +280,17 @@ export function observeUnits(
     const stored = storeRoot === null ? null : readUnitEntry(storeRoot, key);
     const existed = stored !== null;
     const digestMatched = stored === null ? null : digestOfText(stored.summary) === summary.digest;
+    // `wouldHit`: a later build finds an entry at this same key (so the key
+    // matched) whose pins match. The stored entry is parsed rather than
+    // trusted: a malformed or older summary is a miss.
+    let wouldHit: boolean | null = null;
+    let pinsEqual: boolean | null = null;
+    if (stored !== null) {
+      const previous = parseStoredPins(stored.summary);
+      pinsEqual = previous === null ? false : pinsMatch(previous, summary.summary);
+      wouldHit = pinsEqual;
+    }
+    const unattributed = unattributedFacts(summary.summary.facts);
     if (storeRoot !== null) {
       const meta: UnitStoreMeta = {
         schema: "scriptc.unit-meta.v0",
@@ -180,6 +318,9 @@ export function observeUnits(
       summaryBytes: summaryBytesOfThis,
       existed,
       digestMatched,
+      wouldHit,
+      pinsEqual,
+      unattributedFacts: unattributed,
     });
   }
   const timings = {
@@ -207,6 +348,13 @@ export function observeUnits(
       app: entry.app,
       existed: entry.existed,
       digestMatched: entry.digestMatched,
+      wouldHit: entry.wouldHit,
+      pinsEqual: entry.pinsEqual,
+      // A hit is usable: the comparison covers every value that decides the
+      // unit's output. `unattributedFacts` says which facts M1-3 will have to
+      // attribute before it can compare a base contribution against an app's.
+      safeToUse: entry.wouldHit === true,
+      unattributedFacts: entry.unattributedFacts,
     })),
   };
   process.stderr.write(`scriptc units ${JSON.stringify(line)}\n`);

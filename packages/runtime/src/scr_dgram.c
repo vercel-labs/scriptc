@@ -380,7 +380,9 @@ static SCR_TL ScrPoller *scr_dgram_poller = NULL;
  * A zero-delay timer on the unit's own poller wakes it for the dispatch in
  * the same turn. */
 static char scr_dgram_wake_key;
-static bool scr_dgram_wake_armed;
+/* Per thread: each worker owns its poller, so one thread's armed timer
+ * must not suppress another's wake. */
+static SCR_TL bool scr_dgram_wake_armed;
 
 static void scr_dgram_wake(void) {
   if (scr_dgram_poller == NULL || scr_dgram_wake_armed) return;
@@ -904,8 +906,19 @@ static void scr_dgram_connect_impl(ScrDgramSocket *s, double port, ScrStr *host,
   if (!scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     char msg[160];
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
-    if (scr_dgram_connect_has_dyn(dyn_cb)) scr_dgram_connect_fail_dyn(dyn_cb, scr_dgram_send_error(msg));
-    else scr_dgram_defer_err(s, msg);
+    /* Node answers the once('connect') completion and removes it; leaving it
+     * in the list would run it again on a later, successful connect. */
+    ScrClosure *failed = (cb != NULL || scr_dgram_connect_has_dyn(dyn_cb))
+                             ? scr_dgram_ls_pop_last(&s->conn_ls)
+                             : NULL;
+    if (scr_dgram_connect_has_dyn(dyn_cb)) {
+      scr_closure_release(failed);
+      scr_dgram_connect_fail_dyn(dyn_cb, scr_dgram_send_error(msg));
+    } else if (failed != NULL) {
+      scr_next_tick(failed);
+    } else {
+      scr_dgram_defer_err(s, msg);
+    }
     return;
   }
   scr_dgram_ensure_fd(s);
@@ -949,8 +962,17 @@ static void scr_dgram_connect_impl(ScrDgramSocket *s, double port, ScrStr *host,
     char ip[64];
     scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
     snprintf(msg, sizeof msg, "connect %s %s:%d", scr_dgram_errname(errno), ip, (int)port);
-    if (scr_dgram_connect_has_dyn(dyn_cb)) scr_dgram_connect_fail_dyn(dyn_cb, scr_dgram_send_error(msg));
-    else scr_dgram_defer_err(s, msg);
+    ScrClosure *failed = (cb != NULL || scr_dgram_connect_has_dyn(dyn_cb))
+                             ? scr_dgram_ls_pop_last(&s->conn_ls)
+                             : NULL;
+    if (scr_dgram_connect_has_dyn(dyn_cb)) {
+      scr_closure_release(failed);
+      scr_dgram_connect_fail_dyn(dyn_cb, scr_dgram_send_error(msg));
+    } else if (failed != NULL) {
+      scr_next_tick(failed);
+    } else {
+      scr_dgram_defer_err(s, msg);
+    }
     return;
   }
   s->connected = true;

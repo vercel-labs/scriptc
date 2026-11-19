@@ -91,3 +91,21 @@ export class Derived extends Base { copy(source) { return [source, arguments.len
 `;
   expect(diagnostics({ ...program(["*.ts"]), "lib.js": overrides }).length).toBeGreaterThan(0);
 });
+
+test("a JavaScript method family admits a distant override only when every ancestor joins it", () => {
+  // Three levels, every member an ordinary method: the family shares one
+  // checked-dynamic slot, so the subclass's differing result is Node's.
+  const family = `export class Base { copy(source) { return 1; } }
+export class Middle extends Base { /** @returns {number} */ copy(source) { return 2; } }
+export class Derived extends Middle { /** @returns {string} */ copy(source) { return "d"; } }
+`;
+  expect(diagnostics({ ...program(["*.ts"]), "lib.js": family })).toEqual([]);
+  // The same chain under a base that reads `arguments`: the lowering cannot
+  // give the family its shared slot, so the subclass's differing result stays
+  // refused even though its immediate base is an ordinary method.
+  const outsideFamily = `export class Base { copy(source) { return arguments.length; } }
+export class Middle extends Base { /** @returns {number} */ copy(source) { return 1; } }
+export class Derived extends Middle { /** @returns {string} */ copy(source) { return "d"; } }
+`;
+  expect(diagnostics({ ...program(["*.ts"]), "lib.js": outsideFamily }).length).toBeGreaterThan(0);
+});

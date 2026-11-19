@@ -833,9 +833,12 @@ function jsFamilyMethod(decl: ts.Node): decl is ts.MethodDeclaration {
  * receiver's class and binds the arguments the call supplies. The class
  * lowering gives such a family one slot of the largest arity any member
  * declares, with checked-dynamic parameters and results, so the native call
- * is Node's. An override of a TypeScript, built-in or accessor member, and a
- * family member with a rest parameter or an `arguments` read, keeps the
- * refusal. */
+ * is Node's. Every ancestor that declares the method must be a family member
+ * too: the lowering walks the whole base chain, so one ancestor it cannot
+ * give a checked-dynamic slot (a rest parameter, an `arguments` read, a
+ * generator) leaves the family on the class lowering's ordinary dispatch and
+ * a call that supplies extra arguments is not Node's. An override of a
+ * TypeScript, built-in or accessor member keeps the refusal. */
 const jsMethodOverridesJsFamily = (
   node: ts.Node,
   _d: ts.Diagnostic,
@@ -850,15 +853,28 @@ const jsMethodOverridesJsFamily = (
   const symbol = owner.name === undefined ? undefined : checker.getSymbolAtLocation(owner.name);
   if (symbol === undefined) return false;
   const name = member.name.text;
+  // The class lowering marks the declaration it finds in each ancestor
+  // (collectVirtualJsMethods walks every base), so every ancestor that
+  // declares the method has to be a family member for the family to share
+  // one checked-dynamic slot.
   let overridden = 0;
-  for (const base of checker.getBaseTypes(checker.getDeclaredTypeOfSymbol(symbol))) {
-    const property = checker.getPropertyOfType(base, name);
-    if (property === undefined) continue;
-    const declarations = property.declarations ?? [];
-    if (declarations.length === 0 || !declarations.every(jsFamilyMethod)) return false;
-    overridden++;
-  }
-  return overridden > 0;
+  const seen = new Set<ts.Type>();
+  const overridesFamily = (type: ts.Type): boolean => {
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface() || seen.has(target)) return true;
+    seen.add(target);
+    for (const base of checker.getBaseTypes(target)) {
+      const property = checker.getPropertyOfType(base, name);
+      if (property !== undefined) {
+        const declarations = property.declarations ?? [];
+        if (declarations.length === 0 || !declarations.every(jsFamilyMethod)) return false;
+        overridden++;
+      }
+      if (!overridesFamily(base)) return false;
+    }
+    return true;
+  };
+  return overridesFamily(checker.getDeclaredTypeOfSymbol(symbol)) && overridden > 0;
 };
 
 /** Whether `node` is the binding a `for...in` head writes each key into.

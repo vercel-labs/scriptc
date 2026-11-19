@@ -29,11 +29,15 @@ export function ensureExecutable(path: string, io: ExecutableModeIo = defaultIo)
     );
   }
   if ((mode & 0o111) !== 0) return;
-  try {
-    io.chmodSync(path, EXECUTABLE_MODE);
-    return;
-  } catch {
-    /* Not writable: report below. */
+  // Repair only a file the owner may write; a read-only payload is left
+  // untouched and reported below.
+  if ((mode & 0o200) !== 0) {
+    try {
+      io.chmodSync(path, EXECUTABLE_MODE);
+      return;
+    } catch {
+      /* Report below. */
+    }
   }
   const printed = (mode & 0o777).toString(8).padStart(3, "0");
   throw new Error(

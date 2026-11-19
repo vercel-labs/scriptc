@@ -60,6 +60,16 @@ posix("names the file and the fix when the mode cannot be repaired", () => {
   );
 });
 
+posix("reports a read-only payload without execute bits", () => {
+  const executable = join(scratch(), "tsc-ts");
+  writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+  chmodSync(executable, 0o444);
+
+  expect(() => ensureExecutable(executable)).toThrow(
+    `mode 444) and could not be repaired; fix it with: chmod +x "${executable}"`,
+  );
+});
+
 test("names a missing payload", () => {
   expect(() => ensureExecutable(join(scratch(), "absent"))).toThrow(
     /is missing; reinstall scriptc/,

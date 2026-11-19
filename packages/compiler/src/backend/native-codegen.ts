@@ -216,7 +216,15 @@ async function resolveHelper(
   // A package manager that installs from a cache, or with lifecycle scripts
   // disabled, can leave the helper at mode 0644 and its postinstall never
   // repairs it: restore the execute bits before judging the file unusable.
-  ensureExecutable(binaryPath);
+  try {
+    ensureExecutable(binaryPath);
+  } catch (error) {
+    throw new NativeCodegenError(
+      "SC3003",
+      `LLVM native helper package ${helper.packageName} cannot be executed: ${(error as Error).message}; reinstall scriptc or fix the file's permissions`,
+      "unusable_binary",
+    );
+  }
   binaryStat = await stat(binaryPath);
   try {
     if (

@@ -67,6 +67,12 @@ void scr_test_ctx_hook(ScrTestCtx *t, double which, ScrClosure *cb, double flags
  * carried the property; a shortfall then waits that many ms for the
  * assertions still running before it fails. */
 void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait);
+/* mock.getter/mock.setter: the accessor's descriptor along the object's
+ * prototype chain (+1; undefined without one), and Node's check that the
+ * descriptor carries the accessor the mock replaces (throws
+ * ERR_INVALID_ARG_VALUE otherwise). */
+ScrDyn *scr_test_accessor_descriptor(ScrDyn *object, ScrDyn *key);
+void scr_test_accessor_require(ScrDyn *descriptor, bool setter);
 /* mock.fn's and mock.method's { times }: Node's non-negative-integer check,
  * which throws ERR_OUT_OF_RANGE; answers the count. */
 double scr_test_mock_times_checked(double times);
@@ -100,10 +106,11 @@ void scr_test_mock_reset(void);
 void scr_test_ctx_mock_track(ScrTestCtx *t, ScrClosure *restore);
 void scr_test_ctx_mock_restore_all(ScrTestCtx *t);
 void scr_test_ctx_mock_reset(ScrTestCtx *t);
-/* Called by node:test programs right after scr_lib_init: a leading
+/* Called by node:test programs right after scr_lib_init with the compiled
+ * entry file's path (the tracing events' `file`): a leading
  * --test-update-snapshots argument, Node's flag, turns on snapshot update
  * mode and moves from process.argv to process.execArgv. */
-void scr_test_init(void);
+void scr_test_init(const char *entry_file);
 /* t.assert.snapshot and t.assert.fileSnapshot. snapshot_value escapes
  * and wraps a serialized value (+1); ctx_snapshot returns the stored value
  * for the test's next snapshot id in `file` and file_snapshot the

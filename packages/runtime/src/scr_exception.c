@@ -176,6 +176,10 @@ ScrExcCell *scr_exc_current_cell(void) { return SCR_EXC_CUR(); }
 void scr_stack_enter(ScrStackFrame *frame, const char *text) {
   frame->previous = SCR_EXC_CUR()->stack;
   frame->text = text;
+  frame->fn = NULL;
+  frame->script = NULL;
+  frame->line = 0;
+  frame->column = 0;
   SCR_EXC_CUR()->stack = frame;
 }
 
@@ -198,6 +202,23 @@ void scr_stack_limit_set(double limit) {
   scr_stack_limit = limit;
 }
 
+/* One frame's line: its positioned call/throw site when it holds one, and
+ * its constant line otherwise. dst may be NULL when only the length is
+ * wanted (cap 0). */
+static size_t scr_stack_line(const ScrStackFrame *frame, char *dst, size_t cap) {
+  if (frame->line == 0) {
+    size_t size = strlen(frame->text);
+    if (dst != NULL && cap >= size) memcpy(dst, frame->text, size);
+    return size;
+  }
+  int n = frame->fn != NULL
+              ? snprintf(dst, cap, "    at %s (%s:%u:%u)", frame->fn, frame->script,
+                         (unsigned)frame->line, (unsigned)frame->column)
+              : snprintf(dst, cap, "    at %s:%u:%u", frame->script, (unsigned)frame->line,
+                         (unsigned)frame->column);
+  return n < 0 ? 0 : (size_t)n;
+}
+
 /* The frames from `first` down, at most Error.stackTraceLimit of them, one
  * "\n    at ..." line each; NULL when there are none. */
 static ScrStr *scr_stack_capture_from(ScrStackFrame *first) {
@@ -207,17 +228,18 @@ static ScrStr *scr_stack_capture_from(ScrStackFrame *first) {
   size_t length = 0;
   size_t count = 0;
   for (ScrStackFrame *frame = first; frame && (double)count++ < limit; frame = frame->previous)
-    length += 1 + strlen(frame->text);
-  char *text = malloc(length);
+    length += 1 + scr_stack_line(frame, NULL, 0);
+  /* One spare byte lets a positioned line's snprintf write its terminator
+   * in the last frame's exact-size room. */
+  char *text = malloc(length + 1);
   if (!text) scr_trap("scriptc: out of memory\n");
   size_t offset = 0;
   count = 0;
   for (ScrStackFrame *frame = first; frame && (double)count++ < limit; frame = frame->previous) {
     text[offset++] = '\n';
-    size_t size = strlen(frame->text);
-    memcpy(text + offset, frame->text, size);
-    offset += size;
+    offset += scr_stack_line(frame, text + offset, length - offset + 1);
   }
+  text[length] = '\0';
   ScrStr *out = scr_str_new(text, length);
   free(text);
   return out;

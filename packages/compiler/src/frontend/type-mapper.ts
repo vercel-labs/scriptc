@@ -4778,6 +4778,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return F64;
   }
+  // async_hooks.AsyncHook: a 1-based f64 handle into the runtime's hook
+  // registry (the AsyncLocalStorage story).
+  if (
+    psym !== undefined &&
+    psymName === "AsyncHook" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return F64;
+  }
   // async_hooks.AsyncResource: a checked-dynamic handle whose payload lives
   // exactly as long as the value does, so a resource the program drops is
   // reclaimed with everything it captured.

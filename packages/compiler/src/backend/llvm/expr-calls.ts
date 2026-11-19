@@ -4,6 +4,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
   DYN,
+  funcHiddenParamCount,
   isDynTypedRefType,
   isFfiCallbackParam,
   isFfiContextParam,
@@ -967,8 +968,9 @@ export function emitCallExpr(
         throw new InternalCompilerError("llvm emitter bug: callValue on non-func");
       const ft = e.callee.type;
       // A checked-dynamic variadic value's lifted signature carries one
-      // trailing dyn array after its declared parameters.
-      const hiddenRest = ft.rest === true && ft.restAbi === undefined;
+      // trailing dyn array after its declared parameters, and an
+      // `argumentsAll` value carries the actual-argument array there.
+      const hiddenRest = funcHiddenParamCount(ft) > 0;
       if (e.args.length !== ft.params.length + (hiddenRest ? 1 : 0))
         throw new LlvmUnsupportedError("callValue:arity", e.loc);
       // A receiver that reads the ambient `this` binds what the callee

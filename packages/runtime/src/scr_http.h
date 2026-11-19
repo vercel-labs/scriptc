@@ -51,6 +51,11 @@ typedef struct ScrHttpH2Ops {
   void (*write)(void *stream, const char *data, size_t n);
   void (*end)(void *stream, const char *data, size_t n); /* DATA + END_STREAM */
   void (*destroy)(void *stream);                          /* res.destroy: RST */
+  /* Send a 1xx informational HEADERS block (res.writeContinue/
+   * writeEarlyHints/writeInformation): :status first, then the set
+   * headers, no END_STREAM. Throws catchably on an invalid status. */
+  void (*write_info)(void *stream, double status, ScrStr *const *names,
+                     ScrStr *const *values, size_t nheaders);
 } ScrHttpH2Ops;
 
 void scr_http_set_h2_ops(const ScrHttpH2Ops *ops);
@@ -73,6 +78,18 @@ void scr_http_h2_req_data(ScrHttpReq *r, const char *data, size_t n);
 void scr_http_h2_req_end(ScrHttpReq *r);
 void scr_http_h2_req_aborted(ScrHttpReq *r);
 void scr_http_h2_req_close(ScrHttpReq *r);
+/* The trailer block an h2 request received: fills trailers/rawTrailers
+ * (lowercased and raw names, joined values — the parser's shape). */
+void scr_http_h2_req_trailers(ScrHttpReq *r, ScrArr *pairs /*borrowed [name, value, ...]*/);
+/* The trailer pairs an h2 compat response accumulated (res.addTrailers),
+ * +1 for the stream to send when 'wantTrailers' fires. */
+ScrArr *scr_http_h2_res_trailer_pairs(ScrHttpRes *r); /* +1 */
+/* res.writeInformation(statusCode[, headers]) on an h2 response: the 1xx
+ * HEADERS block. Node's validation (100..199, never 101) throws
+ * ERR_HTTP2_STATUS_INVALID; a started response answers false without
+ * sending. */
+bool scr_http_h2_res_write_information(ScrHttpRes *r, double status,
+                                        ScrArr *pairs /*borrowed [name, value, ...]*/);
 ScrHttpRes *scr_http_h2_res_new(ScrNetSocket *sock /*borrowed, nullable*/,
                                  void *stream /*borrowed*/); /* +1 */
 void scr_http_h2_res_close(ScrHttpRes *r);
@@ -82,7 +99,9 @@ ScrStr *scr_http_req_http_version(ScrHttpReq *r); /* +1 — "1.0"/"1.1"/"2.0" */
 double scr_http_req_http_version_major(ScrHttpReq *r);
 double scr_http_req_http_version_minor(ScrHttpReq *r);
 bool scr_http_req_aborted_flag(ScrHttpReq *r);
-/* message.signal: the request's AbortSignal (+1), created on first read. */
+/* req.signal: the message's AbortSignal (+1) — an AbortController built on
+ * the first read that aborts when the message is destroyed or closes
+ * unfinished. */
 ScrDyn *scr_http_req_signal(ScrHttpReq *r);
 bool scr_http_req_complete(ScrHttpReq *r);
 
@@ -346,6 +365,11 @@ void scr_http_client_end_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/);
 void scr_http_client_end_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/);
 void scr_http_client_flush_headers(ScrHttpClientReq *c);
 void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/, ScrStr *value /*borrowed*/);
+/* setHeader / appendHeader for a string, number, null or array value. */
+void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
+                                    ScrDyn *raw /*borrowed*/);
+void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
+                                       ScrDyn *raw /*borrowed*/);
 ScrStr *scr_http_client_get_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/); /* +1 or NULL */
 bool scr_http_client_has_header_named(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);
 void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/);

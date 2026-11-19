@@ -59,15 +59,15 @@
   "inventory": {
     "sourceChapters": 63,
     "sourceRows": 4996,
-    "matrixChapters": 57,
-    "matrixRows": 3763,
+    "matrixChapters": 56,
+    "matrixRows": 3689,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 126,
-      "chapters": 6
+      "not-applicable": 199,
+      "chapters": 7
     }
   },
   "chapters": [
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 396,
-      "apiEntries": 396
+      "entries": 388,
+      "apiEntries": 388
     },
     {
       "slug": "events",
@@ -202,12 +202,6 @@
       "title": "Inspector",
       "entries": 35,
       "apiEntries": 35
-    },
-    {
-      "slug": "stream_iter",
-      "title": "Iterable Streams API",
-      "entries": 65,
-      "apiEntries": 65
     },
     {
       "slug": "modules",
@@ -398,8 +392,8 @@
     {
       "slug": "webstreams",
       "title": "Web Streams API",
-      "entries": 89,
-      "apiEntries": 89
+      "entries": 88,
+      "apiEntries": 88
     },
     {
       "slug": "worker_threads",
@@ -1537,9 +1531,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1560,9 +1554,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1583,9 +1577,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1606,9 +1600,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1629,9 +1623,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1653,7 +1647,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -1676,7 +1670,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -1698,9 +1692,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1721,9 +1715,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1744,9 +1738,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1767,9 +1761,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1813,9 +1807,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1836,9 +1830,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1859,9 +1853,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -1905,9 +1899,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -11279,9 +11273,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -11325,9 +11319,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       }
     },
     {
@@ -18022,9 +18016,9 @@
       "anchor": "err_async_callback",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22035,190 +22029,6 @@
       "scope": "api",
       "anchor": "err_proxy_tunnel",
       "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:99ded9f60d07",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_application_error`",
-      "signature": "`ERR_QUIC_APPLICATION_ERROR`",
-      "label": "ERR_QUIC_APPLICATION_ERROR",
-      "apiSymbol": "ERR_QUIC_APPLICATION_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_application_error",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:8dab3930d180",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_connection_failed`",
-      "signature": "`ERR_QUIC_CONNECTION_FAILED`",
-      "label": "ERR_QUIC_CONNECTION_FAILED",
-      "apiSymbol": "ERR_QUIC_CONNECTION_FAILED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_connection_failed",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:a6832d79a601",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_endpoint_closed`",
-      "signature": "`ERR_QUIC_ENDPOINT_CLOSED`",
-      "label": "ERR_QUIC_ENDPOINT_CLOSED",
-      "apiSymbol": "ERR_QUIC_ENDPOINT_CLOSED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_endpoint_closed",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:9b3a144c5163",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_open_stream_failed`",
-      "signature": "`ERR_QUIC_OPEN_STREAM_FAILED`",
-      "label": "ERR_QUIC_OPEN_STREAM_FAILED",
-      "apiSymbol": "ERR_QUIC_OPEN_STREAM_FAILED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_open_stream_failed",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:26e263d339c6",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_stream_aborted`",
-      "signature": "`ERR_QUIC_STREAM_ABORTED`",
-      "label": "ERR_QUIC_STREAM_ABORTED",
-      "apiSymbol": "ERR_QUIC_STREAM_ABORTED",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_stream_aborted",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:a8b44a283f33",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_stream_reset`",
-      "signature": "`ERR_QUIC_STREAM_RESET`",
-      "label": "ERR_QUIC_STREAM_RESET",
-      "apiSymbol": "ERR_QUIC_STREAM_RESET",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_stream_reset",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:266e07dc7ced",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_transport_error`",
-      "signature": "`ERR_QUIC_TRANSPORT_ERROR`",
-      "label": "ERR_QUIC_TRANSPORT_ERROR",
-      "apiSymbol": "ERR_QUIC_TRANSPORT_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_transport_error",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
-      }
-    },
-    {
-      "id": "errors:a7a688eeb772",
-      "chapter": "errors",
-      "kind": "module",
-      "name": "`err_quic_version_negotiation_error`",
-      "signature": "`ERR_QUIC_VERSION_NEGOTIATION_ERROR`",
-      "label": "ERR_QUIC_VERSION_NEGOTIATION_ERROR",
-      "apiSymbol": "ERR_QUIC_VERSION_NEGOTIATION_ERROR",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "err_quic_version_negotiation_error",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
       "static": {
         "status": "not-implemented",
         "detail": "Not implemented in scriptc's static module-loader subset yet.",
@@ -33693,9 +33503,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -33739,9 +33549,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -33762,9 +33572,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -34981,9 +34791,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented node:http server subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35004,9 +34814,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35027,9 +34837,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
+        "verification": "test-backed"
       }
     },
     {
@@ -35418,7 +35228,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35441,7 +35251,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35464,7 +35274,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35487,7 +35297,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35510,7 +35320,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35533,7 +35343,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -36752,8 +36562,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36775,8 +36585,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36798,8 +36608,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -36821,8 +36631,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37005,8 +36815,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37028,8 +36838,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37373,7 +37183,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static HTTP request metadata and message state support the tested lifecycle.",
         "verification": "test-backed"
       }
@@ -37396,7 +37206,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -37419,8 +37229,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37442,8 +37252,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37971,8 +37781,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -37994,8 +37804,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38017,8 +37827,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38086,8 +37896,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38316,8 +38126,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38339,8 +38149,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38454,7 +38264,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static HTTP request metadata and message state support the tested lifecycle.",
         "verification": "test-backed"
       }
@@ -38477,7 +38287,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static ServerResponse state, socket access, timeouts, and strict body length checks support the tested HTTP/1.1 forms.",
         "verification": "test-backed"
       }
@@ -38500,8 +38310,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38523,8 +38333,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38546,8 +38356,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38569,8 +38379,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38592,8 +38402,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -38615,8 +38425,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },
@@ -40018,9 +39828,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -40478,9 +40288,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -40501,9 +40311,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -40547,9 +40357,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -40570,9 +40380,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -40662,9 +40472,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -41881,9 +41691,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -41973,9 +41783,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -42088,9 +41898,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -42364,9 +42174,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -42387,9 +42197,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -42410,9 +42220,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -43977,1501 +43787,6 @@
         "status": "by-design",
         "detail": "Intentionally outside the static native execution model.",
         "verification": "architectural-policy"
-      }
-    },
-    {
-      "id": "stream_iter:94e2aeab4df6",
-      "chapter": "stream_iter",
-      "kind": "module",
-      "name": "iterable_streams",
-      "signature": "Iterable Streams",
-      "label": "Iterable Streams",
-      "apiSymbol": "iterable_streams",
-      "depth": 0,
-      "scope": "api",
-      "anchor": "",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "Derived from the exact API rows in this chapter.",
-        "verification": "derived"
-      }
-    },
-    {
-      "id": "stream_iter:74881c7a8ea5",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "end",
-      "signature": "`writer.end([options])`",
-      "label": "writer.end([options])",
-      "apiSymbol": "writer.end",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writerendoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:25b778a0a19a",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "endSync",
-      "signature": "`writer.endSync()`",
-      "label": "writer.endSync()",
-      "apiSymbol": "writer.endSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writerendsync",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:dd1332b8c7a3",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "fail",
-      "signature": "`writer.fail(reason)`",
-      "label": "writer.fail(reason)",
-      "apiSymbol": "writer.fail",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writerfailreason",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:9fe673a6f9a0",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "[Symbol.asyncDispose]",
-      "signature": "`writer[Symbol.asyncDispose]()`",
-      "label": "writer[Symbol.asyncDispose]()",
-      "apiSymbol": "writer",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writersymbolasyncdispose",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:122792b034fd",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "write",
-      "signature": "`writer.write(chunk[, options])`",
-      "label": "writer.write(chunk[, options])",
-      "apiSymbol": "writer.write",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writerwritechunk-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:70029a8cc441",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "writeSync",
-      "signature": "`writer.writeSync(chunk)`",
-      "label": "writer.writeSync(chunk)",
-      "apiSymbol": "writer.writeSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writerwritesyncchunk",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:75d546da6ee2",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "writev",
-      "signature": "`writer.writev(chunks[, options])`",
-      "label": "writer.writev(chunks[, options])",
-      "apiSymbol": "writer.writev",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writerwritevchunks-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:9b24338e15dd",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "writevSync",
-      "signature": "`writer.writevSync(chunks)`",
-      "label": "writer.writevSync(chunks)",
-      "apiSymbol": "writer.writevSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writerwritevsyncchunks",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:71e88296da2b",
-      "chapter": "stream_iter",
-      "kind": "boolean|null",
-      "name": "canWrite",
-      "signature": "`canWrite` {boolean|null}",
-      "label": "canWrite",
-      "apiSymbol": "canWrite",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "writer-interface",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:f31bb04ebfd3",
-      "chapter": "stream_iter",
-      "kind": "module",
-      "name": "the_`stream/iter`_module",
-      "signature": "The `stream/iter` module",
-      "label": "The stream/iter module",
-      "apiSymbol": "stream/iter",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "the-streamiter-module",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:e81bf2b065dc",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "from",
-      "signature": "`from(input)`",
-      "label": "from(input)",
-      "apiSymbol": "from",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "frominput",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:6f3664ed818c",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "fromSync",
-      "signature": "`fromSync(input)`",
-      "label": "fromSync(input)",
-      "apiSymbol": "fromSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "fromsyncinput",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:c35641af526f",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "pipeTo",
-      "signature": "`pipeTo(source[, ...transforms], writer[, options])`",
-      "label": "pipeTo(source[, ...transforms], writer[, options])",
-      "apiSymbol": "pipeTo",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "pipetosource-transforms-writer-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:2daa0291481c",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "pipeToSync",
-      "signature": "`pipeToSync(source[, ...transforms], writer[, options])`",
-      "label": "pipeToSync(source[, ...transforms], writer[, options])",
-      "apiSymbol": "pipeToSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "pipetosyncsource-transforms-writer-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:00e796148b11",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "pull",
-      "signature": "`pull(source[, ...transforms][, options])`",
-      "label": "pull(source[, ...transforms][, options])",
-      "apiSymbol": "pull",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "pullsource-transforms-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:f89b0e75e302",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "pullSync",
-      "signature": "`pullSync(source[, ...transforms])`",
-      "label": "pullSync(source[, ...transforms])",
-      "apiSymbol": "pullSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "pullsyncsource-transforms",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:ea066cb12f48",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "push",
-      "signature": "`push([...transforms][, options])`",
-      "label": "push([...transforms][, options])",
-      "apiSymbol": "push",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "pushtransforms-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:199f13b2e259",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "duplex",
-      "signature": "`duplex([options])`",
-      "label": "duplex([options])",
-      "apiSymbol": "duplex",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "duplexoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:921683aeccfe",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "array",
-      "signature": "`array(source[, options])`",
-      "label": "array(source[, options])",
-      "apiSymbol": "array",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "arraysource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:fbf10b4b189e",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "arrayBuffer",
-      "signature": "`arrayBuffer(source[, options])`",
-      "label": "arrayBuffer(source[, options])",
-      "apiSymbol": "arrayBuffer",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "arraybuffersource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:e0afcafcc6fb",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "arrayBufferSync",
-      "signature": "`arrayBufferSync(source[, options])`",
-      "label": "arrayBufferSync(source[, options])",
-      "apiSymbol": "arrayBufferSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "arraybuffersyncsource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:b0128d2ee8ff",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "arraySync",
-      "signature": "`arraySync(source[, options])`",
-      "label": "arraySync(source[, options])",
-      "apiSymbol": "arraySync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "arraysyncsource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:463c54160f7b",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "bytes",
-      "signature": "`bytes(source[, options])`",
-      "label": "bytes(source[, options])",
-      "apiSymbol": "bytes",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "bytessource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:ee97f670b7fe",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "bytesSync",
-      "signature": "`bytesSync(source[, options])`",
-      "label": "bytesSync(source[, options])",
-      "apiSymbol": "bytesSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "bytessyncsource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:64923f0bbaa4",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "text",
-      "signature": "`text(source[, options])`",
-      "label": "text(source[, options])",
-      "apiSymbol": "text",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "textsource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:920695b6cf72",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "textSync",
-      "signature": "`textSync(source[, options])`",
-      "label": "textSync(source[, options])",
-      "apiSymbol": "textSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "textsyncsource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:8b98f79752a4",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "ondrain",
-      "signature": "`ondrain(drainable)`",
-      "label": "ondrain(drainable)",
-      "apiSymbol": "ondrain",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "ondraindrainable",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:87224fe2c755",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "merge",
-      "signature": "`merge(...sources[, options])`",
-      "label": "merge(...sources[, options])",
-      "apiSymbol": "merge",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "mergesources-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:5fd18544d6db",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "tap",
-      "signature": "`tap(callback)`",
-      "label": "tap(callback)",
-      "apiSymbol": "tap",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "tapcallback",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:b86a9a538ee6",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "tapSync",
-      "signature": "`tapSync(callback)`",
-      "label": "tapSync(callback)",
-      "apiSymbol": "tapSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "tapsynccallback",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:942c17d001f2",
-      "chapter": "stream_iter",
-      "kind": "module",
-      "name": "interface:_`shareable`",
-      "signature": "Interface: `Shareable`",
-      "label": "Interface: Shareable",
-      "apiSymbol": "Shareable",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "interface-shareable",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:3468fe11b070",
-      "chapter": "stream_iter",
-      "kind": "module",
-      "name": "`sharable[symbol.for('stream.shareprotocol')]`",
-      "signature": "`sharable[Symbol.for('Stream.shareProtocol')]`",
-      "label": "sharable[Symbol.for('Stream.shareProtocol')]",
-      "apiSymbol": "sharable",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "sharablesymbolforstreamshareprotocol",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:4155dfe49484",
-      "chapter": "stream_iter",
-      "kind": "module",
-      "name": "interface:_`syncshareable`",
-      "signature": "Interface: `SyncShareable`",
-      "label": "Interface: SyncShareable",
-      "apiSymbol": "SyncShareable",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "interface-syncshareable",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:242fb4da0e1d",
-      "chapter": "stream_iter",
-      "kind": "module",
-      "name": "`sharable[symbol.for('stream.sharesyncprotocol')]`",
-      "signature": "`sharable[Symbol.for('Stream.shareSyncProtocol')]`",
-      "label": "sharable[Symbol.for('Stream.shareSyncProtocol')]",
-      "apiSymbol": "sharable",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "sharablesymbolforstreamsharesyncprotocol",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:c284e9cc071d",
-      "chapter": "stream_iter",
-      "kind": "class",
-      "name": "Share",
-      "signature": "Class: `Share`",
-      "label": "Share",
-      "apiSymbol": "Share",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-share",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:699ee25e7836",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "cancel",
-      "signature": "`share.cancel([reason])`",
-      "label": "share.cancel([reason])",
-      "apiSymbol": "share.cancel",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "sharecancelreason",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:8fcfa00b2e13",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "pull",
-      "signature": "`share.pull([...transforms][, options])`",
-      "label": "share.pull([...transforms][, options])",
-      "apiSymbol": "share.pull",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "sharepulltransforms-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:72b6caf2da05",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "[Symbol.dispose]",
-      "signature": "`share[Symbol.dispose]()`",
-      "label": "share[Symbol.dispose]()",
-      "apiSymbol": "share",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "sharesymboldispose",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:ff3d33f63dae",
-      "chapter": "stream_iter",
-      "kind": "number",
-      "name": "consumerCount",
-      "signature": "`consumerCount` {number}",
-      "label": "consumerCount",
-      "apiSymbol": "consumerCount",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "class-share",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:56fab04f6670",
-      "chapter": "stream_iter",
-      "kind": "class",
-      "name": "SyncShare",
-      "signature": "Class: `SyncShare`",
-      "label": "SyncShare",
-      "apiSymbol": "SyncShare",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "class-syncshare",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:738b333def1d",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "cancel",
-      "signature": "`share.cancel([reason])`",
-      "label": "share.cancel([reason])",
-      "apiSymbol": "share.cancel",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "sharecancelreason_1",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:54163998d82f",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "pull",
-      "signature": "`share.pull([...transforms][, options])`",
-      "label": "share.pull([...transforms][, options])",
-      "apiSymbol": "share.pull",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "sharepulltransforms-options_1",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:9947ae5ee9f7",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "[Symbol.dispose]",
-      "signature": "`share[Symbol.dispose]()`",
-      "label": "share[Symbol.dispose]()",
-      "apiSymbol": "share",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "sharesymboldispose_1",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:eb993c0d329d",
-      "chapter": "stream_iter",
-      "kind": "number",
-      "name": "bufferSize",
-      "signature": "`bufferSize` {number}",
-      "label": "bufferSize",
-      "apiSymbol": "bufferSize",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "class-syncshare",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:84388db1cec2",
-      "chapter": "stream_iter",
-      "kind": "number",
-      "name": "consumerCount",
-      "signature": "`consumerCount` {number}",
-      "label": "consumerCount",
-      "apiSymbol": "consumerCount",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "class-syncshare",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:fcc12813a840",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "broadcast",
-      "signature": "`broadcast([options])`",
-      "label": "broadcast([options])",
-      "apiSymbol": "broadcast",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "broadcastoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:7909dd2cdb5d",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "cancel",
-      "signature": "`broadcast.cancel([reason])`",
-      "label": "broadcast.cancel([reason])",
-      "apiSymbol": "broadcast.cancel",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "broadcastcancelreason",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:676e8ecc6237",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "push",
-      "signature": "`broadcast.push([...transforms][, options])`",
-      "label": "broadcast.push([...transforms][, options])",
-      "apiSymbol": "broadcast.push",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "broadcastpushtransforms-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:23f1e2d4c639",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "[Symbol.dispose]",
-      "signature": "`broadcast[Symbol.dispose]()`",
-      "label": "broadcast[Symbol.dispose]()",
-      "apiSymbol": "broadcast",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "broadcastsymboldispose",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:75b743029db1",
-      "chapter": "stream_iter",
-      "kind": "number",
-      "name": "consumerCount",
-      "signature": "`consumerCount` {number}",
-      "label": "consumerCount",
-      "apiSymbol": "consumerCount",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "broadcastoptions",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:fd8809959bcf",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "from",
-      "signature": "`Broadcast.from(input[, options])`",
-      "label": "Broadcast.from(input[, options])",
-      "apiSymbol": "Broadcast.from",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "broadcastfrominput-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:e47f09ec7c74",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "share",
-      "signature": "`share(source[, options])`",
-      "label": "share(source[, options])",
-      "apiSymbol": "share",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "sharesource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:8e955476f8e6",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "shareSync",
-      "signature": "`shareSync(source[, options])`",
-      "label": "shareSync(source[, options])",
-      "apiSymbol": "shareSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "sharesyncsource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:335f2485e371",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "fromReadable",
-      "signature": "`fromReadable(readable)`",
-      "label": "fromReadable(readable)",
-      "apiSymbol": "fromReadable",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "fromreadablereadable",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:58f5bcd9e475",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "fromWritable",
-      "signature": "`fromWritable(writable[, options])`",
-      "label": "fromWritable(writable[, options])",
-      "apiSymbol": "fromWritable",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "fromwritablewritable-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:f2dddb7c0fd6",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "toReadable",
-      "signature": "`toReadable(source[, options])`",
-      "label": "toReadable(source[, options])",
-      "apiSymbol": "toReadable",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "toreadablesource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:980c4eedf78c",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "toReadableSync",
-      "signature": "`toReadableSync(source[, options])`",
-      "label": "toReadableSync(source[, options])",
-      "apiSymbol": "toReadableSync",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "toreadablesyncsource-options",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:0eadccfb86e1",
-      "chapter": "stream_iter",
-      "kind": "method",
-      "name": "toWritable",
-      "signature": "`toWritable(writer)`",
-      "label": "toWritable(writer)",
-      "apiSymbol": "toWritable",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "towritablewriter",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental",
-        "inherited": false
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:a3fb72adb9d4",
-      "chapter": "stream_iter",
-      "kind": "section",
-      "name": "Value",
-      "signature": "`broadcastProtocol` Value: `Symbol.for('Stream.broadcastProtocol')`",
-      "label": "broadcastProtocol",
-      "apiSymbol": "broadcastProtocol",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "protocol-symbols",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:80709c59ac66",
-      "chapter": "stream_iter",
-      "kind": "section",
-      "name": "Value",
-      "signature": "`drainableProtocol` Value: `Symbol.for('Stream.drainableProtocol')`",
-      "label": "drainableProtocol",
-      "apiSymbol": "drainableProtocol",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "protocol-symbols",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:d6e40713d854",
-      "chapter": "stream_iter",
-      "kind": "section",
-      "name": "Value",
-      "signature": "`shareProtocol` Value: `Symbol.for('Stream.shareProtocol')`",
-      "label": "shareProtocol",
-      "apiSymbol": "shareProtocol",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "protocol-symbols",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:1df144641604",
-      "chapter": "stream_iter",
-      "kind": "section",
-      "name": "Value",
-      "signature": "`shareSyncProtocol` Value: `Symbol.for('Stream.shareSyncProtocol')`",
-      "label": "shareSyncProtocol",
-      "apiSymbol": "shareSyncProtocol",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "protocol-symbols",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:02b320eb031a",
-      "chapter": "stream_iter",
-      "kind": "section",
-      "name": "Value",
-      "signature": "`toAsyncStreamable` Value: `Symbol.for('Stream.toAsyncStreamable')`",
-      "label": "toAsyncStreamable",
-      "apiSymbol": "toAsyncStreamable",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "protocol-symbols",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "stream_iter:870e05b0278a",
-      "chapter": "stream_iter",
-      "kind": "section",
-      "name": "Value",
-      "signature": "`toStreamable` Value: `Symbol.for('Stream.toStreamable')`",
-      "label": "toStreamable",
-      "apiSymbol": "toStreamable",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "protocol-symbols",
-      "nodeStability": {
-        "index": "1",
-        "level": 1,
-        "text": "Experimental – Enable this API with the [`--experimental-stream-iter`][] CLI flag.",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -59144,9 +57459,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59259,9 +57574,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59650,9 +57965,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -59765,9 +58080,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -60708,9 +59023,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -61605,9 +59920,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -62295,9 +60610,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -62318,9 +60633,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -62341,9 +60656,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -62778,9 +61093,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -62916,9 +61231,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -67332,9 +65647,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -67378,9 +65693,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78239,7 +76554,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
@@ -78262,9 +76577,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "partial",
+        "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78285,7 +76600,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
@@ -78331,7 +76646,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
@@ -78354,7 +76669,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
@@ -78380,29 +76695,6 @@
         "status": "partial",
         "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "webstreams:e1344c6274af",
-      "chapter": "webstreams",
-      "kind": "module",
-      "name": "transferring_with_`postmessage()`",
-      "signature": "Transferring with `postMessage()`",
-      "label": "Transferring with postMessage()",
-      "apiSymbol": "postMessage",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "transferring-with-postmessage",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -78677,7 +76969,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -78699,9 +76991,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78722,9 +77014,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78745,9 +77037,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78768,9 +77060,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78791,9 +77083,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78907,7 +77199,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -78929,9 +77221,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78952,9 +77244,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78975,9 +77267,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -78998,9 +77290,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -79021,9 +77313,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -79044,9 +77336,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -79067,9 +77359,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -79090,9 +77382,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -79113,9 +77405,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -79136,9 +77428,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the documented static async-iteration subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -79413,7 +77705,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },
@@ -79689,7 +77981,7 @@
       },
       "static": {
         "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "detail": "Implemented for the documented static async-iteration subset.",
         "verification": "test-backed"
       }
     },

@@ -657,8 +657,6 @@ const TERMINAL_STREAM_METHODS: ReadonlyMap<string, number> = new Map([
 /** The kinds of environment argument the runtime's color rules refuse: Node
  * reads variables from any object, and only a plain object has a compiled
  * reading. */
-const REFUSED_COLOR_ENVIRONMENTS: ReadonlySet<string> = new Set(["array", "map", "set", "func"]);
-
 /** The `TERM` values that name a member of Object.prototype in Node's table
  * of terminals (the table is a plain object and the lookup lowercases the
  * value): Node answers that member, which is no color depth. */
@@ -678,17 +676,6 @@ function noteTerminalColorRefusal(lowerer: Lowerer, call: ts.CallExpression, nam
   let env = name === "hasColors" && args.length === 2 ? args[1] : args[0];
   if (env === undefined) return;
   while (ts.isParenthesizedExpression(env)) env = env.expression;
-  const hint =
-    'pass a plain object of variables (`{ TERM: "xterm" }`, `process.env`), or no environment at all';
-  const type = lowerer.mapTypeOf(lowerer.typeOf(env));
-  if (type && REFUSED_COLOR_ENVIRONMENTS.has(type.kind)) {
-    lowerer.noteDeferredRefusal(
-      call,
-      `SC2020: Native process stream ${name} with an environment that is not a plain object has no lowering`,
-      hint,
-    );
-    return;
-  }
   if (!ts.isObjectLiteralExpression(env) || env.properties.nodes.length !== 1) return;
   const only = env.properties.nodes[0]!;
   if (!ts.isPropertyAssignment(only) || !ts.isStringLiteralLike(only.initializer)) return;

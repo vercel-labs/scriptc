@@ -2687,6 +2687,7 @@ static ScrDyn *scr_dyn_not_iterable(const ScrDyn *src, const ScrStr *msg) {
     break;
   }
   case SCR_DYN_FUNC: scr_jb_puts(&b, "function"); break;
+  case SCR_DYN_SYMBOL: scr_jb_puts(&b, "symbol"); break;
   default: scr_jb_puts(&b, "object"); break;
   }
   scr_jb_puts(&b, " is not iterable (cannot read property Symbol(Symbol.iterator))");
@@ -6965,15 +6966,43 @@ static bool scr_typed_ref_record_assign(ScrDyn *d, const ScrDyn *src) {
   for (size_t i = 0; i < count; i++) {
     if (scr_dyn_obj_prop_at(src, i).accessor) return false;
   }
+  /* A field's conversion walks the checked value (a structural match reads
+   * its members, so their getters run). That code can replace or delete an
+   * entry of the source before this loop reaches it, so collect what the
+   * copy will store — the field index and a retained value — before the
+   * first store: the store must not read a source table the conversion can
+   * change underneath it. */
+  typedef struct {
+    size_t index;
+    ScrDyn *value;
+  } ScrPendingRecordAssign;
+  ScrPendingRecordAssign *pending = count == 0 ? NULL : malloc(count * sizeof *pending);
+  if (count != 0 && pending == NULL) return false;
+  size_t held = 0;
+  bool ok = true;
   for (size_t i = 0; i < count; i++) {
     ScrDynProp prop = scr_dyn_obj_prop_at(src, i);
     if (!prop.enumerable) continue;
     size_t index;
-    if (!scr_typed_ref_record_field_bytes(ops, prop.key, prop.key_len, &index)) return false;
-    if (!scr_typed_ref_record_store(d, ops, index, prop.value)) return false;
-    if (scr_exc_pending()) return true;
+    if (!scr_typed_ref_record_field_bytes(ops, prop.key, prop.key_len, &index)) {
+      ok = false;
+      break;
+    }
+    pending[held].index = index;
+    pending[held].value = prop.value == NULL ? NULL : scr_dyn_retain(prop.value);
+    held++;
   }
-  return true;
+  for (size_t i = 0; ok && i < held; i++) {
+    if (!scr_typed_ref_record_store(d, ops, pending[i].index, pending[i].value)) {
+      ok = false;
+      break;
+    }
+    if (scr_exc_pending()) break;
+  }
+  for (size_t i = 0; i < held; i++)
+    if (pending[i].value != NULL) scr_dyn_release(pending[i].value);
+  free(pending);
+  return ok;
 }
 
 static bool scr_typed_ref_array_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
@@ -9445,7 +9474,8 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag) {
       tag == SCR_DYNH_WORKER || tag == SCR_DYNH_MESSAGE_PORT || tag == SCR_DYNH_DISPOSABLE_STACK ||
       tag == SCR_DYNH_ASYNC_RESOURCE ||
       tag == SCR_DYNH_CIPHER || tag == SCR_DYNH_DECIPHER || tag == SCR_DYNH_SIGN ||
-      tag == SCR_DYNH_VERIFY ||
+      tag == SCR_DYNH_VERIFY || tag == SCR_DYNH_FETCH_REQUEST ||
+      tag == SCR_DYNH_FETCH_RESPONSE || tag == SCR_DYNH_FETCH_HEADERS ||
       ((tag == SCR_DYNH_SET || tag == SCR_DYNH_MAP) &&
        ((ScrMap *)h)->traced != 0);
   return d;
@@ -11848,9 +11878,15 @@ ScrDyn *scr_dyn_iterator_optional(const ScrDyn *source) {
   ScrDyn *iterator = scr_iterator_call(method, source, "value[Symbol.iterator]");
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *checked = scr_dyn_iterator_result(iterator);
-  scr_dyn_release(iterator);
-  return checked;
+  /* V8 names the method's answer, not an iterator result: a primitive
+   * iterator is "Result of the Symbol.iterator method is not an object". */
+  if (!scr_iterator_object(iterator)) {
+    scr_dyn_release(iterator);
+    static const char message[] = "Result of the Symbol.iterator method is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  return iterator;
 }
 
 ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
@@ -11873,9 +11909,15 @@ ScrDyn *scr_dyn_iterator(const ScrDyn *source, const ScrStr *spell) {
   ScrDyn *iterator = scr_iterator_call(method, source, "value[Symbol.iterator]");
   scr_dyn_release(method);
   if (!iterator) return NULL;
-  ScrDyn *checked = scr_dyn_iterator_result(iterator);
-  scr_dyn_release(iterator);
-  return checked;
+  /* V8 names the method's answer, not an iterator result: a primitive
+   * iterator is "Result of the Symbol.iterator method is not an object". */
+  if (!scr_iterator_object(iterator)) {
+    scr_dyn_release(iterator);
+    static const char message[] = "Result of the Symbol.iterator method is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  return iterator;
 }
 
 static ScrDyn *scr_iterator_read(const ScrDyn *value, const char *key, size_t len) {
@@ -13682,14 +13724,25 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_release(scr_dyn_set_prototype(d, prototype));
     scr_dyn_release(prototype);
   }
-  if (e->message_present) {
+  /* A SystemError lists code, name and message before its info record. */
+  const bool system = e->system_message != NULL;
+  if (e->message_present && !system) {
     scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->message_enumerable;
   }
   if (e->system_message) {
-    /* SystemError: code, the read-only `info` context ({ message, path,
-     * syscall, errno, code }), then errno, syscall, path and dest. */
+    /* SystemError: code, name, message, then the read-only `info` context
+     * ({ message, path, syscall, errno, code }), then errno, syscall, path
+     * and dest — Node's own property order. */
     if (e->code) scr_dyn_obj_set(d, "code", 4, scr_dyn_new_str(e->code));
+    if (e->name_present) {
+      scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
+      scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->name_enumerable;
+    }
+    if (e->message_present) {
+      scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
+      scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->message_enumerable;
+    }
     ScrDyn *info = scr_dyn_new_obj();
     scr_dyn_obj_set(info, "message", 7, scr_dyn_new_str(e->system_message));
     if (e->system_path) scr_dyn_obj_set(info, "path", 4, scr_dyn_new_str(e->system_path));
@@ -13700,7 +13753,11 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "info", 4, info);
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].writable = false;
     scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
-    if (e->system_call) scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
+    scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].writable = false;
+    if (e->system_call) {
+      scr_dyn_obj_set(d, "syscall", 7, scr_dyn_new_str(e->system_call));
+      scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].writable = false;
+    }
   } else if (e->errno_order) {
     /* ErrnoException: errno, code, path, syscall. */
     if (e->system_call) scr_dyn_obj_set(d, "errno", 5, scr_dyn_new_num(e->system_errno));
@@ -13735,6 +13792,8 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "code", 4, scr_dyn_new_num(scr_domex_code(( ScrError *)e)));
     if (scr_domex_has_cause((ScrError *)e)) {
       scr_dyn_obj_set(d, "cause", 5, scr_domex_cause((ScrError *)e));
+      /* Node defines the options form's cause non-enumerable, as Error's. */
+      scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->cause_enumerable;
     }
   }
   /* A disposal SuppressedError's non-enumerable `error` and `suppressed`
@@ -13753,8 +13812,9 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
     scr_dyn_obj_set(d, "errors", 6, scr_aggregate_errors((ScrError *)e));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = false;
   }
-  /* An own `name` is assigned after construction defines the others. */
-  if (e->name_present) {
+  /* An own `name` is assigned after construction defines the others (a
+   * SystemError's already sits before its message). */
+  if (e->name_present && !system) {
     scr_dyn_obj_set(d, "name", 4, scr_dyn_new_str(e->name));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->name_enumerable;
   }
@@ -15553,6 +15613,9 @@ static void scr_dyn_note_assign_failure(void) {
   if (scr_exc_pending()) scr_dyn_assign_failure = scr_exc_current_cell()->payload;
 }
 
+/* The same for a gated unit's write path (scr_dyn.h). */
+void scr_dyn_assign_failure_note(void) { scr_dyn_note_assign_failure(); }
+
 static void scr_dyn_sloppy_settle(void) {
   if (scr_dyn_assign_failure && scr_exc_pending() &&
       scr_exc_current_cell()->payload == scr_dyn_assign_failure)
@@ -15575,14 +15638,17 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
     scr_jb_puts(&buffer, object->v.bytes->is_data_view ? ">" : "]");
   }
 #ifdef SCR_JS_OBJECT_MODEL
-  else if (object->kind == SCR_DYN_HANDLE && scr_dyn_handle_props_hooks &&
-           (object->v.handle.tag == SCR_DYNH_DATE || object->v.handle.tag == SCR_DYNH_REGEXP)) {
+  else if (object->kind == SCR_DYN_HANDLE) {
     /* A property of a handle's own-property table: V8 names a Date or
-     * RegExp by its toString tag (the other handles print by class, the
-     * branch below). */
-    scr_jb_puts(&buffer, "[object ");
-    scr_jb_puts(&buffer, scr_dyn_handle_cls(object));
-    scr_jb_puts(&buffer, "]");
+     * RegExp by its toString tag and every other handle by the class name
+     * of the interface it comes from (`#<Map>`, `#<_Request>`). */
+    const ScrDynHandleOps *ops = scr_dynh_ops[object->v.handle.tag];
+    bool tag_form = object->v.handle.tag == SCR_DYNH_DATE ||
+                    object->v.handle.tag == SCR_DYNH_REGEXP;
+    const char *cls = ops && ops->error_cls ? ops->error_cls : scr_dyn_handle_cls(object);
+    scr_jb_puts(&buffer, tag_form ? "[object " : "#<");
+    scr_jb_puts(&buffer, cls);
+    scr_jb_puts(&buffer, tag_form ? "]" : ">");
   }
 #endif
   else if (object->null_proto) scr_jb_puts(&buffer, "[object Object]");

@@ -210,6 +210,26 @@ struct ScrDyn *scr_stream_to_web_readable_dyn(const struct ScrDyn *value, double
  * WritableStream over the writable, +1. */
 struct ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags);
 
+/* Duplex.toWeb(duplex[, options]) (scr_stream_to_web_pair.c): the
+ * { writable, readable } pair of web streams over the duplex, +1. flags bit
+ * 1 asks for a byte readable side (options.readableType === 'bytes'). */
+struct ScrDyn *scr_stream_to_web_duplex(ScrStream *d, double flags);
+/* The same over a checked-dynamic value: a boxed native Duplex unwraps; any
+ * other value throws ERR_INVALID_ARG_TYPE. */
+struct ScrDyn *scr_stream_to_web_duplex_dyn(const struct ScrDyn *value, double flags);
+
+/* stream.duplexPair([options]) (scr_stream_pair.c): two Duplexes connected to
+ * each other, as a +1 array of the two streams. options is borrowed and
+ * builds both sides; NULL means none. */
+ScrArr *scr_stream_duplexpair(struct ScrDyn *options);
+
+/* readable.wrap(stream) (scr_stream_wrap.c): reads the native readable into
+ * this one (its chunks pushed here, this one ended and destroyed with it),
+ * answering this readable +1. The dyn form throws the not-supported Error
+ * for a value that is not a native readable stream. */
+ScrStream *scr_stream_wrap(ScrStream *self, ScrStream *src);
+ScrStream *scr_stream_wrap_dyn(ScrStream *self, const struct ScrDyn *value);
+
 /* Writable.fromWeb(writableStream[, options]) (scr_stream_from_web_writable.c):
  * a Writable over the web stream's writer, +1, or NULL with
  * ERR_INVALID_ARG_TYPE pending for a value that is not a WritableStream. */
@@ -321,9 +341,9 @@ bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
  * answers +1 (the setEncoding chaining shape). */
 ScrStream *scr_stream_set_push_encoding(ScrStream *s, ScrStr *enc);
 bool scr_stream_push_null(ScrStream *s);
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str);
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str);
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
@@ -401,6 +421,7 @@ ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
 ScrPromise *scr_sc_array_buffer(ScrStream *s);
 ScrPromise *scr_sc_bytes(ScrStream *s); /* sc_buffer's bytes as a plain Uint8Array */
+ScrPromise *scr_sc_blob(ScrStream *s);  /* the chunks as a Blob (type "") */
 /* Readable.from over a typed source: arr holds the string or Buffer
  * elements (one element under SCR_FROM_SINGLE, from.js's string/Buffer
  * case). Elements push lazily, one _read at a time, as whole entries
@@ -684,6 +705,10 @@ typedef struct ScrStreamTypedDesc {
   void (*release)(void *);
   struct ScrDyn *(*box)(void *rec); /* +1 capsule; borrows rec */
 } ScrStreamTypedDesc;
+/* The typed-record descriptor of the write in progress (NULL for an ordinary
+ * or checked-dynamic write): what an implementer hook forwards with
+ * scr_stream_push_typed when it moves the chunk to another stream. */
+const ScrStreamTypedDesc *scr_stream_write_desc(const ScrStream *s);
 /* push(rec): borrows rec. */
 bool scr_stream_push_typed(ScrStream *s, void *rec, const ScrStreamTypedDesc *desc);
 /* write(rec[, cb]): borrows rec; cb moves. */

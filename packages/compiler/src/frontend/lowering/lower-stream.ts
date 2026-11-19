@@ -7540,7 +7540,7 @@ export function lowerStreamMethodCall(
         kind: "libCall",
         fn: "readable.unshiftDyn",
         args: [receiver, chunk],
-        type: VOID,
+        type: BOOL,
         loc,
       };
     }
@@ -7589,7 +7589,7 @@ export function lowerStreamMethodCall(
       kind: "libCall",
       fn,
       args: [receiver, chunk],
-      type: member === "push" ? BOOL : VOID,
+      type: BOOL,
       loc,
     };
   }

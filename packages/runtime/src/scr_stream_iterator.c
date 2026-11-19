@@ -170,11 +170,11 @@ ScrDyn *scr_stream_dyn_iterator(ScrStream *s, ScrDyn *const *args, size_t argc) 
       scr_dyn_arg_type_fail("options", "of type object", options);
       return NULL;
     }
-    ScrDyn *flag = scr_dyn_obj_get(options, "destroyOnReturn", 16);
-    if (flag) {
-      destroy_on_return = scr_dyn_truthy(flag);
-      scr_dyn_release(flag);
-    }
+    /* obj_get answers a BORROWED value: releasing it here would free the
+     * object's own property and leave a dangling entry behind. The key is
+     * the property's fifteen bytes, NUL excluded. */
+    ScrDyn *flag = scr_dyn_obj_get(options, "destroyOnReturn", 15);
+    if (flag) destroy_on_return = scr_dyn_truthy(flag);
   }
   if (scr_exc_pending()) return NULL;
   return scr_stream_iterator(s, destroy_on_return);

@@ -289,9 +289,9 @@ level2(-2);
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("3\n");
+    expect(r.stdout).toBe("4\n");
     expect(r.stderr).toMatch(
-      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts\)\n    at level2 \(.*uncaught-frames\.ts\)\n$/,
+      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts:\d+:\d+\)\n    at level2 \(.*uncaught-frames\.ts:\d+:\d+\)\n    at .*uncaught-frames\.ts:\d+:\d+\n$/,
     );
   });
 
@@ -308,9 +308,9 @@ setTimeout(() => {
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("1\n");
+    expect(r.stdout).toBe("2\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts\)\n/,
+      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts:\d+:\d+\)\n/,
     );
   });
 
@@ -339,7 +339,7 @@ main();
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("2\n");
     expect(r.stderr).toMatch(
-      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts\)\n$/,
+      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts:\d+:\d+\)\n$/,
     );
   });
 
@@ -354,9 +354,9 @@ new Promise((resolve, reject) => reject(make()));
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("2\n");
+    expect(r.stdout).toBe("3\n");
     expect(r.stderr).toMatch(
-      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts\)\n$/,
+      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts:\d+:\d+\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts:\d+:\d+\)\n    at .*unhandled-dyn-rejection-frames\.ts:\d+:\d+\n$/,
     );
   });
 });

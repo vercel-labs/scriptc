@@ -47148,6 +47148,7 @@
           "tests/corpus/fs-filehandle-data-options.ts",
           "tests/corpus/fs-filehandle-lines.ts",
           "tests/corpus/fs-filehandle-web-stream.ts",
+          "tests/corpus/fs-lchmod-typed.ts",
           "tests/corpus/fs-lchmod.cjs",
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-mkdtemp-disposable.ts",
@@ -48338,7 +48339,8 @@
         "status": "supported",
         "evidence": "compiler-feature:fs.fsPromises.lchmod",
         "tests": [
-          "tests/corpus/fs-lchmod.cjs"
+          "tests/corpus/fs-lchmod.cjs",
+          "tests/corpus/fs-lchmod-typed.ts"
         ]
       },
       "anchorSource": "exact"

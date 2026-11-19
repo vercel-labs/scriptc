@@ -1414,6 +1414,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "fs.lchmodChk",
   "fs.lchmodSyncChk",
   "fsp.lchmodChk",
+  "fsp.lchmod",
   "fs.readChk",
   "fs.streamOptsChk",
   "net.connectAttempt",

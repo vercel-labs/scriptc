@@ -1507,6 +1507,15 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: { kind: "promise", inner: VOID },
         valueParams: exactValueParams(STRING, F64, F64),
       },
+      // The promise form exists on every platform and rejects with Node's
+      // ERR_METHOD_NOT_IMPLEMENTED where lchmod(2) does not exist (Linux);
+      // macOS runs the validation ladder and lchmod(2) through the runtime.
+      lchmod: {
+        fn: "fsp.lchmod",
+        params: [DYN, DYN],
+        result: { kind: "promise", inner: VOID },
+        valueParams: exactValueParams(DYN, DYN),
+      },
       // access' omitted mode and truncate's omitted len complete to 0 in
       // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
       // fixed (path plus one optional number), so they box as function values

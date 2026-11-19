@@ -4824,6 +4824,7 @@ function buildLibFnSignatures() {
     "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
     "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+    "fsp.lchmod": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.truncate": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },

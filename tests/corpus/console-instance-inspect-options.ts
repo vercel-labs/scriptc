@@ -85,3 +85,16 @@ const disabled = streamOf();
 new Console({ stdout: disabled.stream, colorMode: "auto" }).log({ a: 1 });
 delete process.env.FORCE_COLOR;
 console.log("disabled output", JSON.stringify(disabled.sink.out));
+
+// The options can be spelled as shorthand properties: the constructor
+// reads them, and the methods format with the instance's options.
+const shorthandOptions = { depth: 0 };
+const shorthand = streamOf();
+const shorthandConsole = new Console({ stdout: shorthand.stream, inspectOptions: shorthandOptions });
+shorthandConsole.log({ a: { b: 1 } });
+console.log("shorthand output", JSON.stringify(shorthand.sink.out));
+const shorthandMode = true;
+const shorthandColor = streamOf();
+const shorthandColored = new Console({ stdout: shorthandColor.stream, colorMode: shorthandMode });
+shorthandColored.log({ a: 1 });
+console.log("shorthand color output", JSON.stringify(shorthandColor.sink.out));

@@ -84,7 +84,8 @@ function programConstructsOptionConsole(lowerer: Lowerer): boolean {
       const first = node.arguments?.nodes[0];
       if (first === undefined || !ts.isObjectLiteralExpression(first)) return undefined;
       for (const prop of first.properties.nodes) {
-        if (!ts.isPropertyAssignment(prop)) continue;
+        // `inspectOptions: value` and the shorthand `inspectOptions`.
+        if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) continue;
         const key = prop.name;
         const text = ts.isIdentifier(key) || ts.isStringLiteral(key) ? key.text : null;
         if (text === "inspectOptions" || text === "colorMode") {

@@ -1931,6 +1931,13 @@ static void scr_net_sock_read(ScrNetSocket *s) {
      * between iterations: the transport must stop here too, or the next
      * read decrypts and discards the plaintext (the entry guard's rule). */
     if (s->user_paused && s->tops != NULL) return;
+    /* A paused socket buffers what it reads, so it stops at the buffer's
+     * high-water mark (resume() drains it and re-arms): reading further
+     * would only discard the bytes it is holding for resume(). */
+    if (s->user_paused && s->rlen - s->rhead >= s->read_ahead) {
+      scr_net_sock_update_read(s);
+      return;
+    }
     /* pause() turns delivery off, not the reads: Node's paused stream keeps
      * reading ahead to its high-water mark, which is how it sees a peer's
      * FIN (and why a paused socket still emits 'end'). */
@@ -1972,9 +1979,10 @@ static void scr_net_sock_read(ScrNetSocket *s) {
       return;
     }
     if (n == 0) {
-      if (read_ahead && s->rlen > s->rhead) {
-        /* bytes nobody has read yet: 'end' waits for a consumer to
-         * drain them (the next read after the drain sees EOF again) */
+      if ((read_ahead || s->user_paused) && s->rlen > s->rhead) {
+        /* bytes nobody has read yet (the paused socket's buffer counts):
+         * 'end' waits for a consumer to drain them — the next read after
+         * the drain sees EOF again */
         s->eof_pending = true;
         scr_net_sock_update_read(s);
         return;
@@ -1993,11 +2001,18 @@ static void scr_net_sock_read(ScrNetSocket *s) {
     } else if (read_ahead) {
       scr_net_sock_append_rbuf(s, buf, (size_t)n);
     } else if (s->readable_ls.n == 0) {
-      /* the drain-to-EOF modes (wr_done, or an established transport
-       * with no consumer): bytes arriving with nobody listening drop —
-       * Node's resumed-but-unconsumed stream for the FIN-sent arm; for
-       * the transport arm the peer would have to send app data at a
-       * handler-less server for the difference to observe */
+      if (s->user_paused) {
+        /* a paused socket keeps the bytes it read — resume() delivers
+         * them (the drain-to-EOF drop below is for a paused-free socket
+         * whose FIN is out and whose bytes nobody asked for) */
+        scr_net_sock_append_rbuf(s, buf, (size_t)n);
+      } else {
+        /* the drain-to-EOF modes (wr_done, or an established transport
+         * with no consumer): bytes arriving with nobody listening drop —
+         * Node's resumed-but-unconsumed stream for the FIN-sent arm; for
+         * the transport arm the peer would have to send app data at a
+         * handler-less server for the difference to observe */
+      }
     } else {
       /* paused mode ('readable' consumers only): buffer and announce —
        * the listener consumes via read()/unshift */

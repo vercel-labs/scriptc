@@ -18,6 +18,25 @@
 #include <stdlib.h>
 
 typedef struct SdfwCtx SdfwCtx;
+typedef struct SdfwWatch SdfwWatch;
+
+/* A parked promise reaction: a side handle's `closed` promise, the in-flight
+ * read, or an awaited write/final/destroy operation (see sdfw_watch). */
+typedef enum {
+  SDFW_WATCH_WRITER_CLOSED,
+  SDFW_WATCH_READER_CLOSED,
+  SDFW_WATCH_READ,
+  SDFW_WATCH_WRITE,
+  SDFW_WATCH_FINAL,
+  SDFW_WATCH_DESTROY_SIDE,
+} SdfwWatchKind;
+
+struct SdfwWatch {
+  SdfwCtx *ctx; /* while attached; NULL once detached or settled */
+  SdfwWatchKind kind;
+  SdfwWatch *prev, *next; /* the ctx's list */
+};
+
 struct SdfwCtx {
   size_t rc;
   ScrStream *duplex; /* +1 until teardown */
@@ -32,6 +51,8 @@ struct SdfwCtx {
   int destroy_waiting;
   ScrError *destroy_err; /* +1 while the destroy runs */
   SdfwCtx *live_prev, *live_next;
+  /* Closed-promise and in-flight operation watchers still parked. */
+  SdfwWatch *watches;
 };
 
 static SCR_TL SdfwCtx *sdfw_live = NULL;
@@ -54,7 +75,10 @@ static void sdfw_unref(SdfwCtx *c) {
 static void *sdfw_retain_v(void *p) { return sdfw_ref(p); }
 static void sdfw_release_v(void *p) { sdfw_unref(p); }
 
-/* Drop the Duplex (the cycle through its callbacks). */
+/* Drop the Duplex (the cycle through its callbacks). Watchers still parked
+ * on a promise that never settles are detached first: that promise cannot
+ * reach this context once the pair is gone, and keeping the watch's
+ * reference would keep the adapter and both stream handles alive. */
 static void sdfw_teardown(SdfwCtx *c) {
   if (c->live_prev) c->live_prev->live_next = c->live_next;
   else if (sdfw_live == c) sdfw_live = c->live_next;
@@ -63,7 +87,17 @@ static void sdfw_teardown(SdfwCtx *c) {
   c->live_prev = c->live_next = NULL;
   ScrStream *d = c->duplex;
   c->duplex = NULL;
+  int watchers = 0;
+  while (c->watches) {
+    SdfwWatch *w = c->watches;
+    c->watches = w->next;
+    w->ctx = NULL;
+    w->prev = NULL;
+    w->next = NULL;
+    watchers++;
+  }
   if (d) scr_stream_release(d);
+  while (watchers-- > 0) sdfw_unref(c);
   sdfw_unref(c); /* the live list's reference */
 }
 
@@ -103,46 +137,141 @@ static void sdfw_forward(ScrClosure *job) {
   sdfw_unref(c);
 }
 
-/* One read request: the reader's read() promise, waited on outside the
- * stream machinery (the web unit answers { value, done }). */
-typedef struct {
-  SdfwCtx *ctx;    /* +1 */
-  ScrDyn *promise; /* +1 */
-} SdfwRead;
 
-static void sdfw_read_entry(ScrFiber *fiber, void *arg) {
-  (void)fiber;
-  SdfwRead r = *(SdfwRead *)arg;
-  free(arg);
-  ScrDyn *result = scr_await_ref(r.promise->v.promise);
-  if (scr_exc_pending()) {
-    ScrCaught *caught = scr_exc_take();
-    ScrDyn *reason = scr_caught_to_dyn(caught);
-    scr_caught_release(caught);
-    r.ctx->reader_closed = true;
-    sdfw_destroy_with(r.ctx, reason);
-    if (reason) scr_dyn_release(reason);
-  } else if (result) {
-    ScrDyn *done = scr_dyn_obj_read(result, "done", 4);
-    bool finished = done != NULL && scr_dyn_truthy(done);
-    if (done) scr_dyn_release(done);
-    if (finished) {
-      r.ctx->reader_closed = true;
-      if (r.ctx->duplex) scr_stream_push_null(r.ctx->duplex);
-      if (scr_exc_pending()) scr_exc_clear();
-    } else {
-      ScrDyn *value = scr_dyn_obj_read(result, "value", 5);
-      if (value && r.ctx->duplex) {
-        if (r.ctx->pending) scr_dyn_release(r.ctx->pending);
-        r.ctx->pending = scr_dyn_retain(value);
-        scr_queue_microtask(sdfw_closure((void *)&sdfw_forward, r.ctx));
-      }
-      if (value) scr_dyn_release(value);
+/* One native promise reaction parked by the adapter: a side handle's
+ * `closed` promise, the in-flight read, or an awaited write/final/destroy
+ * operation. Node's adapter holds these as closures and lets the collector
+ * reclaim them. A parked fiber in their place would keep the context — and
+ * with it both stream handles — alive after a one-sided failure: Node marks
+ * both halves closed and destroys without aborting or cancelling the healthy
+ * half, so that half's promises can stay pending forever. The reaction's
+ * drop releases the watch when its promise goes away, and the pair's
+ * teardown detaches every watch still parked, which breaks the
+ * context → handle → promise → reaction → context cycle. */
+static void sdfw_closed_settle(SdfwCtx *c, ScrDyn *reason);
+static void sdfw_destroy_side_settled(SdfwCtx *c);
+
+/* Detaches a live watch and drops its reference on the context. */
+static void sdfw_watch_unlink(SdfwWatch *w) {
+  SdfwCtx *c = w->ctx;
+  if (!c) return;
+  if (w->prev) w->prev->next = w->next;
+  else c->watches = w->next;
+  if (w->next) w->next->prev = w->prev;
+  w->prev = NULL;
+  w->next = NULL;
+  w->ctx = NULL;
+  sdfw_unref(c);
+}
+
+/* The adapter's steps for one settled promise (Node's reaction body).
+ * `outcome` is the rejection reason or the fulfillment value (+1). */
+static void sdfw_watch_settled(SdfwCtx *c, SdfwWatchKind kind, bool rejected, ScrDyn *outcome) {
+  switch (kind) {
+  case SDFW_WATCH_WRITER_CLOSED:
+    /* A close before end() is Node's premature close; a rejection destroys
+     * the Duplex with its reason (both flags recorded in closed_settle). */
+    sdfw_closed_settle(c, rejected ? outcome : NULL);
+    break;
+  case SDFW_WATCH_READER_CLOSED:
+    /* The readable failed, so the pair is over on both sides: the destroy
+     * completes at once instead of waiting for the writer's abort hook
+     * (Node marks both closed before it destroys). A clean close is left to
+     * read(), which pushes null. */
+    if (rejected) {
+      c->reader_closed = true;
+      c->writer_closed = true;
+      sdfw_destroy_with(c, outcome);
     }
+    break;
+  case SDFW_WATCH_READ:
+    if (rejected) {
+      c->reader_closed = true;
+      sdfw_destroy_with(c, outcome);
+      break;
+    }
+    if (outcome) {
+      ScrDyn *done = scr_dyn_obj_read(outcome, "done", 4);
+      bool finished = done != NULL && scr_dyn_truthy(done);
+      if (done) scr_dyn_release(done);
+      if (finished) {
+        c->reader_closed = true;
+        if (c->duplex) scr_stream_push_null(c->duplex);
+        if (scr_exc_pending()) scr_exc_clear();
+      } else {
+        ScrDyn *value = scr_dyn_obj_read(outcome, "value", 5);
+        if (value && c->duplex) {
+          if (c->pending) scr_dyn_release(c->pending);
+          c->pending = scr_dyn_retain(value);
+          scr_queue_microtask(sdfw_closure((void *)&sdfw_forward, c));
+        }
+        if (value) scr_dyn_release(value);
+      }
+    }
+    break;
+  case SDFW_WATCH_WRITE:
+    if (c->duplex) {
+      ScrError *err = rejected ? scr_error_from_dyn(outcome) : NULL;
+      scr_stream_write_done(c->duplex, err);
+      if (err) scr_error_release(err);
+    }
+    break;
+  case SDFW_WATCH_FINAL:
+    if (c->duplex) {
+      ScrError *err = rejected ? scr_error_from_dyn(outcome) : NULL;
+      scr_stream_final_done(c->duplex, err);
+      if (err) scr_error_release(err);
+    }
+    break;
+  default:
+    sdfw_destroy_side_settled(c);
+    break;
   }
-  if (result) scr_dyn_release(result);
-  scr_dyn_release(r.promise);
-  sdfw_unref(r.ctx);
+}
+
+static void sdfw_watch_react(void *opaque, ScrPromise *settled) {
+  SdfwWatch *w = opaque;
+  SdfwCtx *c = w->ctx;
+  if (!c) return;
+  sdfw_ref(c);
+  SdfwWatchKind kind = w->kind;
+  sdfw_watch_unlink(w);
+  bool rejected = scr_promise_is_rejected(settled);
+  ScrDyn *outcome = scr_promise_reason_dyn(settled); /* +1: reason or value */
+  sdfw_watch_settled(c, kind, rejected, outcome);
+  if (outcome) scr_dyn_release(outcome);
+  sdfw_unref(c);
+}
+
+static void sdfw_watch_drop(void *opaque) {
+  SdfwWatch *w = opaque;
+  sdfw_watch_unlink(w);
+  free(w);
+}
+
+static const ScrPromiseReaction sdfw_watch_reaction = {sdfw_watch_react, sdfw_watch_drop};
+
+/* Parks a watch on `promise` (its reference moves in; the promise itself
+ * belongs to the web side, which settles it). */
+static void sdfw_watch(ScrDyn *promise /* moves */, SdfwCtx *c, SdfwWatchKind kind) {
+  SdfwWatch *w = malloc(sizeof *w);
+  if (!w) abort();
+  w->ctx = sdfw_ref(c);
+  w->kind = kind;
+  w->prev = NULL;
+  w->next = c->watches;
+  if (c->watches) c->watches->prev = w;
+  c->watches = w;
+  scr_promise_react(promise->v.promise, &sdfw_watch_reaction, w);
+  scr_dyn_release(promise);
+}
+
+/* Watch a side handle's `closed` promise, when it has one. */
+static void sdfw_watch_closed(ScrDyn *handle, SdfwCtx *c, SdfwWatchKind kind) {
+  ScrDyn *closed = scr_dyn_obj_read(handle, "closed", 6);
+  if (!closed) return;
+  if (closed->kind == SCR_DYN_PROMISE) sdfw_watch(closed, c, kind); /* the +1 moves */
+  else scr_dyn_release(closed);
 }
 
 /* read(): readableStreamDefaultReaderRead(reader, readRequest) */
@@ -152,59 +281,14 @@ static void sdfw_read_inv(ScrClosure *cb, ScrStream *s, double size) {
   SdfwCtx *c = sdfw_of(cb);
   if (c->reader && !c->reader_closed && !c->pending) {
     ScrDyn *promise = scr_dyn_invoke(c->reader, "read", NULL, 0, "reader.read");
-    if (promise && promise->kind == SCR_DYN_PROMISE) {
-      SdfwRead *r = malloc(sizeof *r);
-      if (!r) abort();
-      r->ctx = sdfw_ref(c);
-      r->promise = promise;
-      scr_promise_release(scr_async_spawn_after(promise->v.promise, &sdfw_read_entry, r));
-    } else if (promise) {
-      scr_dyn_release(promise);
-    }
+    if (promise && promise->kind == SCR_DYN_PROMISE) sdfw_watch(promise, c, SDFW_WATCH_READ);
+    else if (promise) scr_dyn_release(promise);
     if (scr_exc_pending()) scr_exc_clear();
   }
   sdfw_unref(c);
 }
 
-/* One awaited side operation: the ctx and the promise it waits on. */
-typedef struct {
-  SdfwCtx *ctx;     /* +1 */
-  ScrDyn *promise;  /* +1 */
-  int which;        /* 0 write, 1 final, 2 destroy side operation */
-} SdfwAwait;
-
-static void sdfw_destroy_side_settled(SdfwCtx *c);
-
-static void sdfw_await_entry(ScrFiber *fiber, void *arg) {
-  (void)fiber;
-  SdfwAwait a = *(SdfwAwait *)arg;
-  free(arg);
-  ScrDyn *value = scr_await_ref(a.promise->v.promise);
-  ScrError *err = NULL;
-  if (scr_exc_pending()) {
-    ScrCaught *caught = scr_exc_take();
-    ScrDyn *reason = scr_caught_to_dyn(caught);
-    scr_caught_release(caught);
-    err = reason ? scr_error_from_dyn(reason) : NULL;
-    if (reason) scr_dyn_release(reason);
-  }
-  if (value) scr_dyn_release(value);
-  switch (a.which) {
-  case 0:
-    if (a.ctx->duplex) scr_stream_write_done(a.ctx->duplex, err ? scr_error_retain(err) : NULL);
-    break;
-  case 1:
-    if (a.ctx->duplex) scr_stream_final_done(a.ctx->duplex, err ? scr_error_retain(err) : NULL);
-    break;
-  default:
-    sdfw_destroy_side_settled(a.ctx);
-    break;
-  }
-  if (err) scr_error_release(err);
-  scr_dyn_release(a.promise);
-  sdfw_unref(a.ctx);
-}
-
+/* One awaited side operation. */
 static void sdfw_await(SdfwCtx *c, ScrDyn *result, int which) {
   if (!result || result->kind != SCR_DYN_PROMISE) {
     switch (which) {
@@ -220,12 +304,12 @@ static void sdfw_await(SdfwCtx *c, ScrDyn *result, int which) {
     }
     return;
   }
-  SdfwAwait *a = malloc(sizeof *a);
-  if (!a) abort();
-  a->ctx = sdfw_ref(c);
-  a->promise = scr_dyn_retain(result);
-  a->which = which;
-  scr_promise_release(scr_async_spawn_after(result->v.promise, &sdfw_await_entry, a));
+  static const SdfwWatchKind kinds[] = {
+      SDFW_WATCH_WRITE,
+      SDFW_WATCH_FINAL,
+      SDFW_WATCH_DESTROY_SIDE,
+  };
+  sdfw_watch(scr_dyn_retain(result), c, kinds[which < 0 || which > 2 ? 2 : which]);
 }
 
 /* _write: writer.write(chunk) */
@@ -306,36 +390,6 @@ static void sdfw_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   sdfw_unref(c);
 }
 
-/* One web side's `closed` promise: rejecting it fails the Duplex. */
-typedef struct {
-  SdfwCtx *ctx;    /* +1 */
-  ScrDyn *promise; /* +1 */
-} SdfwWatch;
-
-static void sdfw_watch(ScrDyn *closed /*moves*/, SdfwCtx *c,
-                       void (*entry)(ScrFiber *, void *)) {
-  SdfwWatch *w = malloc(sizeof *w);
-  if (!w) abort();
-  w->ctx = sdfw_ref(c);
-  w->promise = closed;
-  scr_promise_release(scr_async_spawn_after(closed->v.promise, entry, w));
-}
-
-static void sdfw_watch_done(SdfwWatch *w) {
-  scr_dyn_release(w->promise);
-  sdfw_unref(w->ctx);
-}
-
-/* Watch a side handle's `closed` promise, when it has one. */
-static void sdfw_watch_closed(ScrDyn *handle, SdfwCtx *c,
-                              void (*entry)(ScrFiber *, void *)) {
-  ScrDyn *closed = scr_dyn_obj_read(handle, "closed", 6);
-  if (closed && closed->kind == SCR_DYN_PROMISE) {
-    sdfw_watch(closed, c, entry); /* the +1 moves to the watch */
-  } else if (closed) {
-    scr_dyn_release(closed);
-  }
-}
 
 /* writer.closed: a close before end() is Node's premature close; a rejection
  * destroys the Duplex with its reason. */
@@ -360,47 +414,6 @@ static void sdfw_closed_settle(SdfwCtx *c, ScrDyn *reason) {
     }
   }
   if (scr_exc_pending()) scr_exc_clear();
-}
-
-static void sdfw_closed_entry(ScrFiber *fiber, void *arg) {
-  (void)fiber;
-  SdfwWatch w = *(SdfwWatch *)arg;
-  free(arg);
-  ScrDyn *value = scr_await_ref(w.promise->v.promise);
-  ScrDyn *reason = NULL;
-  if (scr_exc_pending()) {
-    ScrCaught *caught = scr_exc_take();
-    reason = scr_caught_to_dyn(caught);
-    scr_caught_release(caught);
-  }
-  sdfw_closed_settle(w.ctx, reason);
-  if (reason) scr_dyn_release(reason);
-  if (value) scr_dyn_release(value);
-  sdfw_watch_done(&w);
-}
-
-/* reader.closed: a rejected reader (the web readable errored) fails the
- * Duplex even when nothing has read it yet. A clean close is left to read(),
- * which pushes null. */
-static void sdfw_reader_closed_entry(ScrFiber *fiber, void *arg) {
-  (void)fiber;
-  SdfwWatch w = *(SdfwWatch *)arg;
-  free(arg);
-  ScrDyn *value = scr_await_ref(w.promise->v.promise);
-  if (scr_exc_pending()) {
-    ScrCaught *caught = scr_exc_take();
-    ScrDyn *reason = scr_caught_to_dyn(caught);
-    scr_caught_release(caught);
-    /* The readable failed, so the pair is over on both sides: the destroy
-     * completes at once instead of waiting for the writer's abort hook
-     * (Node marks both closed before it destroys). */
-    w.ctx->reader_closed = true;
-    w.ctx->writer_closed = true;
-    sdfw_destroy_with(w.ctx, reason);
-    if (reason) scr_dyn_release(reason);
-  }
-  if (value) scr_dyn_release(value);
-  sdfw_watch_done(&w);
 }
 
 /* Duplex.fromWeb({ readable, writable }): the Duplex (+1), or NULL with
@@ -467,8 +480,8 @@ ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
   c->live_next = sdfw_live;
   if (sdfw_live) sdfw_live->live_prev = c;
   sdfw_live = c;
-  sdfw_watch_closed(writer, c, &sdfw_closed_entry);
-  sdfw_watch_closed(reader, c, &sdfw_reader_closed_entry);
+  sdfw_watch_closed(writer, c, SDFW_WATCH_WRITER_CLOSED);
+  sdfw_watch_closed(reader, c, SDFW_WATCH_READER_CLOSED);
   sdfw_unref(c);
   return d;
 }

@@ -35228,7 +35228,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35251,7 +35251,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35274,7 +35274,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35297,7 +35297,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35320,7 +35320,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -35343,7 +35343,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Static outgoing header reads and mutations support the tested string-value shapes.",
         "verification": "test-backed"
       }
@@ -37804,8 +37804,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },

@@ -9342,17 +9342,27 @@ function lowerHttpClientMethodCall(
   const name = access.name.text;
   const loc = locOf(call);
   const args = call.arguments.nodes;
-  if (name === "setHeader") {
-    requireStatementPosition(lowerer, call, "request.setHeader(...)");
+  if (name === "setHeader" || name === "appendHeader") {
+    requireStatementPosition(lowerer, call, `request.${name}(...)`);
     if (args.length !== 2)
-      lowerer.noLowering("request.setHeader arguments", call, "pass a name and string value");
+      lowerer.noLowering(
+        `request.${name} arguments`,
+        call,
+        "pass a name and a string, number, null or array value",
+      );
     const receiver = coerceToHandle(lowerer, access.expression, HTTPCLIENTREQ_T);
     const header = lowerer.lowerExprExpecting(args[0]!, STRING);
-    const value = lowerer.lowerExprExpecting(args[1]!, STRING);
+    const raw = lowerer.coerceToExpected(lowerer.lowerExpr(args[1]!), DYN);
+    if (raw.type.kind !== "dyn")
+      lowerer.noLowering(
+        `request.${name} with a '${lowerer.fmt(raw.type)}' value that cannot cross the header boundary`,
+        args[1]!,
+        "the value is a string, number, null or an array of those",
+      );
     return {
       kind: "libCall",
-      fn: "http.clientSetHeader",
-      args: [receiver, header, value],
+      fn: name === "setHeader" ? "http.clientSetHeaderDyn" : "http.clientAppendHeaderDyn",
+      args: [receiver, header, raw],
       type: VOID,
       loc,
     };

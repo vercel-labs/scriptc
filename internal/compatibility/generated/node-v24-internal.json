@@ -58372,6 +58372,7 @@
           "tests/corpus/compat-http-server-tail.ts",
           "tests/corpus/http-agent-keep-alive-hooks.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
+          "tests/corpus/http-client-header-values.mjs",
           "tests/corpus/http-client-lifecycle.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
@@ -59066,10 +59067,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getHeaderNames",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59092,10 +59093,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getHeaders",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59118,10 +59119,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.getRawHeaderNames",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59144,10 +59145,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.hasHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59170,10 +59171,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.removeHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -59196,10 +59197,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.request.setHeader",
         "tests": [
-          "tests/corpus/2954-http-outgoing-headers.ts"
+          "tests/corpus/http-client-header-values.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -62200,9 +62201,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.outgoingMessage.appendHeader",
         "tests": [
+          "tests/corpus/http-client-header-values.mjs",
           "tests/corpus/compat-http-outgoing-headers.ts"
         ]
       },

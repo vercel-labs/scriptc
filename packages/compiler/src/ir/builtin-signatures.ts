@@ -3714,6 +3714,10 @@ function buildLibFnSignatures() {
     },
     "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
     "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
+    /** setHeader / appendHeader with a string, number, null or array value;
+     * the stored value keeps its type for getHeader/getHeaders. MAY THROW. */
+    "http.clientSetHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
+    "http.clientAppendHeaderDyn": { argTypes: [HTTPCLIENTREQ_T, STRING, DYN], result: VOID },
     "http.clientGetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },
     "http.clientHasHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
     "http.clientRemoveHeader": { argTypes: [HTTPCLIENTREQ_T, STRING], result: VOID },

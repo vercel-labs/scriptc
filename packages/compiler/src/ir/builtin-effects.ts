@@ -556,6 +556,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // out (flushHeaders(), a first write, or an Expect header at
   // construction), and setHeader throws Node's name and value checks.
   "http.clientSetHeader",
+  "http.clientSetHeaderDyn",
+  "http.clientAppendHeaderDyn",
   "http.clientRemoveHeader",
   "http.clientFlushHeaders",
   "http.clientUncork",

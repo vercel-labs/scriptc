@@ -2059,6 +2059,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.serverRejectNonStandardBodyWrites": "scr_http_server_reject_non_standard_body_writes",
   "http.clientWrite": "scr_http_client_write_str",
   "http.clientSetHeader": "scr_http_client_set_header",
+  "http.clientSetHeaderDyn": "scr_http_client_set_header_dyn",
+  "http.clientAppendHeaderDyn": "scr_http_client_append_header_dyn",
   "http.clientHasHeader": "scr_http_client_has_header_named",
   "http.clientRemoveHeader": "scr_http_client_remove_header",
   "http.clientGetHeaderNames": "scr_http_client_get_header_names",

@@ -308,8 +308,9 @@ declare module "http" {
     readonly writableFinished: boolean;
     readonly finished: boolean;
     readonly reusedSocket: boolean;
-    setHeader(name: string, value: string): void;
-    getHeader(name: string): string | undefined;
+    setHeader(name: string, value: number | string | readonly string[]): void;
+    appendHeader(name: string, value: string | readonly string[]): void;
+    getHeader(name: string): number | string | string[] | undefined;
     hasHeader(name: string): boolean;
     removeHeader(name: string): void;
     getHeaderNames(): string[];

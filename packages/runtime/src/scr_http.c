@@ -6080,7 +6080,8 @@ struct ScrHttpClientReq {
   int port;
   int default_port; /* the Host header omits it (80 http, 443 https) */
   ScrStr **hnames; /* user headers, verbatim case */
-  ScrStr **hvalues;
+  ScrStr **hvalues; /* the first line's text: framing checks read it */
+  ScrDyn **hraw;    /* the value as set (+1): getHeader/getHeaders answer it */
   size_t nheaders;
   bool removed_host;
   bool removed_connection;
@@ -6191,9 +6192,11 @@ void scr_http_client_release(ScrHttpClientReq *c) {
     for (size_t i = 0; i < c->nheaders; i++) {
       scr_str_release(c->hnames[i]);
       scr_str_release(c->hvalues[i]);
+      if (c->hraw[i] != NULL) scr_dyn_release(c->hraw[i]);
     }
     free(c->hnames);
     free(c->hvalues);
+    free(c->hraw);
     scr_http_trailers_clear(&c->trailers);
     free(c->cork_buf);
     free(c->pre_sizes);
@@ -6467,7 +6470,20 @@ ScrArr *scr_http_client_get_raw_header_names(ScrHttpClientReq *c) {
 }
 
 ScrDyn *scr_http_client_get_headers(ScrHttpClientReq *c) {
-  return scr_http_out_headers(c->hnames, c->hvalues, NULL, c->nheaders);
+  ScrDyn *out = scr_dyn_new_obj();
+  for (size_t i = 0; i < c->nheaders; i++) {
+    size_t len = c->hnames[i]->len;
+    char *lower = malloc(len + 1);
+    if (lower == NULL) scr_http_oom();
+    for (size_t j = 0; j < len; j++)
+      lower[j] = (char)tolower((unsigned char)c->hnames[i]->data[j]);
+    lower[len] = '\0';
+    ScrDyn *v = c->hraw[i] != NULL ? scr_dyn_retain(c->hraw[i])
+                                   : scr_dyn_new_str(c->hvalues[i]);
+    scr_dyn_obj_set(out, lower, len, v);
+    free(lower);
+  }
+  return out;
 }
 
 ScrStr *scr_http_client_method(ScrHttpClientReq *c) { return scr_str_retain(c->method); }
@@ -6494,35 +6510,113 @@ static bool scr_http_client_header_mutable(ScrHttpClientReq *c, const char *op) 
   return scr_http_headers_unsent(c->head_sent, op);
 }
 
-void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name, ScrStr *value) {
+/* Client header values: Node takes a string, a number, null or an array of
+ * those, validating every element; the raw value stays for the readers. */
+static bool scr_http_client_value_valid(ScrStr *name, const ScrDyn *value) {
+  size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *text = scr_http_header_value_text(
+        name, value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value);
+    if (text == NULL) return false;
+    bool valid = scr_http_header_text_valid(text);
+    scr_str_release(text);
+    if (!valid) {
+      scr_http_throw_invalid_header_char(name);
+      return false;
+    }
+  }
+  return true;
+}
+
+static void scr_http_client_store_header(ScrHttpClientReq *c, ScrStr *name, ScrDyn *value,
+                                         size_t pos) {
+  ScrDyn *first = value->kind == SCR_DYN_ARR
+                      ? (value->v.arr.len > 0 ? value->v.arr.items[0] : NULL)
+                      : value;
+  ScrStr *text = NULL;
+  if (first != NULL) {
+    text = scr_http_header_value_text(name, first);
+    if (text == NULL) return;
+  }
+  if (pos == SIZE_MAX) {
+    c->hnames = realloc(c->hnames, (c->nheaders + 1) * sizeof *c->hnames);
+    c->hvalues = realloc(c->hvalues, (c->nheaders + 1) * sizeof *c->hvalues);
+    c->hraw = realloc(c->hraw, (c->nheaders + 1) * sizeof *c->hraw);
+    if (!c->hnames || !c->hvalues || !c->hraw) scr_http_oom();
+    pos = c->nheaders++;
+  } else {
+    scr_str_release(c->hnames[pos]);
+    scr_str_release(c->hvalues[pos]);
+    if (c->hraw[pos] != NULL) scr_dyn_release(c->hraw[pos]);
+  }
+  c->hnames[pos] = scr_str_retain(name);
+  c->hvalues[pos] = text != NULL ? text : scr_str_new("", 0);
+  c->hraw[pos] = scr_dyn_retain(value);
+  if (scr_http_header_name_is(name, "host")) c->removed_host = false;
+  if (scr_http_header_name_is(name, "connection")) c->removed_connection = false;
+  c->user_cl = scr_http_client_has_header(c, "content-length") ||
+               scr_http_client_has_header(c, "transfer-encoding");
+}
+
+void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name, ScrDyn *raw) {
   if (!scr_http_client_header_mutable(c, "set")) return;
   ScrStr *label = scr_str_new("Header name", 11);
   scr_http_validate_header_name(name, label);
   scr_str_release(label);
   if (scr_exc_pending()) return;
-  ScrDyn *wrapped = scr_dyn_new_str(value);
-  scr_http_validate_header_value(name, wrapped);
-  scr_dyn_release(wrapped);
-  if (scr_exc_pending()) return;
-  for (size_t i = 0; i < c->nheaders; i++) {
-    if (!scr_http_name_eq(c->hnames[i], name)) continue;
-    scr_str_release(c->hnames[i]);
-    scr_str_release(c->hvalues[i]);
-    c->hnames[i] = scr_str_retain(name);
-    c->hvalues[i] = scr_str_retain(value);
-    goto updated;
+  ScrDyn *value = scr_http_header_value_plain(raw);
+  if (scr_exc_pending()) { scr_dyn_release(value); return; }
+  if (scr_http_client_value_valid(name, value)) {
+    size_t pos = SIZE_MAX;
+    for (size_t i = 0; i < c->nheaders; i++)
+      if (scr_http_name_eq(c->hnames[i], name)) { pos = i; break; }
+    scr_http_client_store_header(c, name, value, pos);
   }
-  c->hnames = realloc(c->hnames, (c->nheaders + 1) * sizeof *c->hnames);
-  c->hvalues = realloc(c->hvalues, (c->nheaders + 1) * sizeof *c->hvalues);
-  if (!c->hnames || !c->hvalues) scr_http_oom();
-  c->hnames[c->nheaders] = scr_str_retain(name);
-  c->hvalues[c->nheaders] = scr_str_retain(value);
-  c->nheaders++;
-updated:
-  if (scr_http_header_name_is(name, "host")) c->removed_host = false;
-  if (scr_http_header_name_is(name, "connection")) c->removed_connection = false;
-  c->user_cl = scr_http_client_has_header(c, "content-length") ||
-               scr_http_client_has_header(c, "transfer-encoding");
+  scr_dyn_release(value);
+}
+
+void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name, ScrDyn *raw) {
+  if (!scr_http_client_header_mutable(c, "append")) return;
+  ScrStr *label = scr_str_new("Header name", 11);
+  scr_http_validate_header_name(name, label);
+  scr_str_release(label);
+  if (scr_exc_pending()) return;
+  ScrDyn *value = scr_http_header_value_plain(raw);
+  if (scr_exc_pending()) { scr_dyn_release(value); return; }
+  size_t pos = SIZE_MAX;
+  for (size_t i = 0; i < c->nheaders; i++)
+    if (scr_http_name_eq(c->hnames[i], name)) { pos = i; break; }
+  if (!scr_http_client_value_valid(name, value)) { scr_dyn_release(value); return; }
+  if (pos == SIZE_MAX) {
+    scr_http_client_store_header(c, name, value, SIZE_MAX);
+    scr_dyn_release(value);
+    return;
+  }
+  ScrDyn *combined = scr_dyn_new_arr();
+  ScrDyn *old = c->hraw[pos];
+  if (old != NULL && old->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < old->v.arr.len; i++)
+      scr_dyn_arr_push(combined, scr_dyn_retain(old->v.arr.items[i]));
+  } else if (old != NULL) {
+    scr_dyn_arr_push(combined, scr_dyn_retain(old));
+  } else {
+    scr_dyn_arr_push(combined, scr_dyn_new_str(c->hvalues[pos]));
+  }
+  if (value->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < value->v.arr.len; i++)
+      scr_dyn_arr_push(combined, scr_dyn_retain(value->v.arr.items[i]));
+  } else {
+    scr_dyn_arr_push(combined, scr_dyn_retain(value));
+  }
+  scr_http_client_store_header(c, name, combined, pos);
+  scr_dyn_release(combined);
+  scr_dyn_release(value);
+}
+
+void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name, ScrStr *value) {
+  ScrDyn *wrapped = scr_dyn_new_str(value);
+  scr_http_client_set_header_dyn(c, name, wrapped);
+  scr_dyn_release(wrapped);
 }
 
 void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name) {
@@ -6532,9 +6626,11 @@ void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name) {
     if (scr_http_name_eq(c->hnames[i], name)) {
       scr_str_release(c->hnames[i]);
       scr_str_release(c->hvalues[i]);
+      if (c->hraw[i] != NULL) scr_dyn_release(c->hraw[i]);
     } else {
       c->hnames[w] = c->hnames[i];
       c->hvalues[w] = c->hvalues[i];
+      c->hraw[w] = c->hraw[i];
       w++;
     }
   }
@@ -6578,6 +6674,41 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
   scr_http_buf_append(&b, c->path->data, c->path->len);
   scr_http_buf_str(&b, " HTTP/1.1\r\n");
   for (size_t i = 0; i < c->nheaders; i++) {
+    if (c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR) {
+      bool cookie = c->hnames[i]->len == 6;
+      for (size_t j = 0; j < 6 && cookie; j++)
+        if (tolower((unsigned char)c->hnames[i]->data[j]) != "cookie"[j]) cookie = false;
+      if (cookie) {
+        /* Node joins a Cookie array into one line with "; " */
+        scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
+        scr_http_buf_str(&b, ": ");
+        for (size_t k = 0; k < c->hraw[i]->v.arr.len; k++) {
+          ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
+          if (text == NULL) continue;
+          if (k > 0) scr_http_buf_str(&b, "; ");
+          scr_http_buf_append(&b, text->data, text->len);
+          scr_str_release(text);
+        }
+        scr_http_buf_str(&b, "\r\n");
+        continue;
+      }
+      bool te = c->hnames[i]->len == 17;
+      for (size_t j = 0; j < 17 && te; j++)
+        if (tolower((unsigned char)c->hnames[i]->data[j]) != "transfer-encoding"[j]) te = false;
+      bool chunked_item = false;
+      for (size_t k = 0; k < c->hraw[i]->v.arr.len; k++) {
+        ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
+        if (text == NULL) continue;
+        if (te && scr_http_header_has_token(text, "chunked")) chunked_item = true;
+        scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
+        scr_http_buf_str(&b, ": ");
+        scr_http_buf_append(&b, text->data, text->len);
+        scr_http_buf_str(&b, "\r\n");
+        scr_str_release(text);
+      }
+      if (chunked_item) c->chunked = true;
+      continue;
+    }
     scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
     scr_http_buf_str(&b, ": ");
     scr_http_buf_append(&b, c->hvalues[i]->data, c->hvalues[i]->len);
@@ -6586,7 +6717,21 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
     for (size_t j = 0; j < 17 && transfer; j++) {
       if (tolower((unsigned char)c->hnames[i]->data[j]) != "transfer-encoding"[j]) transfer = false;
     }
-    if (transfer && scr_http_header_has_token(c->hvalues[i], "chunked")) c->chunked = true;
+    if (transfer) {
+      /* "chunked" may sit in any element of an array-valued header */
+      bool chunked = c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR
+                         ? false
+                         : scr_http_header_has_token(c->hvalues[i], "chunked");
+      if (c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR) {
+        for (size_t k = 0; k < c->hraw[i]->v.arr.len && !chunked; k++) {
+          ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
+          if (text == NULL) continue;
+          chunked = scr_http_header_has_token(text, "chunked");
+          scr_str_release(text);
+        }
+      }
+      if (chunked) c->chunked = true;
+    }
   }
   if (!c->removed_host && !scr_http_client_has_header(c, "host")) {
     /* Host: name[:port] — the scheme's default port omitted (80 http,
@@ -7876,10 +8021,12 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   if (npairs >= 2) {
     c->hnames = malloc((npairs / 2) * sizeof *c->hnames);
     c->hvalues = malloc((npairs / 2) * sizeof *c->hvalues);
-    if (!c->hnames || !c->hvalues) scr_http_oom();
+    c->hraw = malloc((npairs / 2) * sizeof *c->hraw);
+    if (!c->hnames || !c->hvalues || !c->hraw) scr_http_oom();
     for (size_t i = 0; i + 1 < npairs; i += 2) {
       c->hnames[c->nheaders] = (ScrStr *)scr_arr_get_ref(header_pairs, (double)i);
       c->hvalues[c->nheaders] = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
+      c->hraw[c->nheaders] = NULL;
       c->nheaders++;
     }
   }
@@ -10027,6 +10174,66 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
     if (!c->head_sent && !c->destroyed) scr_http_client_send_head(c, -1);
     return scr_dyn_retain(scr_dyn_undefined());
   }
+  if (strcmp(method, "setHeader") == 0 || strcmp(method, "appendHeader") == 0) {
+    bool set = method[0] == 's';
+    const ScrDyn *name = argc > 0 ? args[0] : scr_dyn_undefined();
+    const ScrDyn *value = argc > 1 ? args[1] : scr_dyn_undefined();
+    if (name->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("name", "of type string", name);
+      return NULL;
+    }
+    if (set) scr_http_client_set_header_dyn(c, name->v.str, (ScrDyn *)value);
+    else scr_http_client_append_header_dyn(c, name->v.str, (ScrDyn *)value);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_retain(self);
+  }
+  if (strcmp(method, "getHeader") == 0) {
+    const ScrDyn *name = argc > 0 ? args[0] : scr_dyn_undefined();
+    if (name->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("name", "of type string", name);
+      return NULL;
+    }
+    ScrStr *value = scr_http_client_get_header(c, name->v.str);
+    if (value == NULL) return scr_dyn_undefined();
+    ScrDyn *boxed = scr_dyn_new_str(value);
+    scr_str_release(value);
+    return boxed;
+  }
+  if (strcmp(method, "hasHeader") == 0) {
+    const ScrDyn *name = argc > 0 ? args[0] : scr_dyn_undefined();
+    if (name->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("name", "of type string", name);
+      return NULL;
+    }
+    return scr_dyn_new_bool(scr_http_client_has_header_named(c, name->v.str));
+  }
+  if (strcmp(method, "removeHeader") == 0) {
+    const ScrDyn *name = argc > 0 ? args[0] : scr_dyn_undefined();
+    if (name->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("name", "of type string", name);
+      return NULL;
+    }
+    scr_http_client_remove_header(c, name->v.str);
+    if (scr_exc_pending()) return NULL;
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (strcmp(method, "getHeaderNames") == 0) {
+    ScrArr *names = scr_http_client_get_header_names(c);
+    ScrDyn *out = scr_dyn_new_arr();
+    for (size_t i = 0; i < scr_arr_len(names); i++)
+      scr_dyn_arr_push(out, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(names, (double)i)));
+    scr_arr_release(names);
+    return out;
+  }
+  if (strcmp(method, "getRawHeaderNames") == 0) {
+    ScrArr *names = scr_http_client_get_raw_header_names(c);
+    ScrDyn *out = scr_dyn_new_arr();
+    for (size_t i = 0; i < scr_arr_len(names); i++)
+      scr_dyn_arr_push(out, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(names, (double)i)));
+    scr_arr_release(names);
+    return out;
+  }
+  if (strcmp(method, "getHeaders") == 0) return scr_http_client_get_headers(c);
   if (strcmp(method, "pipe") == 0) {
     /* OutgoingMessage.prototype.pipe over an untyped value: the same answer
      * as the typed call — a request without an 'error' listener throws
@@ -10042,7 +10249,6 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
   }
   {
     static const char *const known[] = { "abort", "setNoDelay", "setSocketKeepAlive",
-      "getHeader", "setHeader", "removeHeader", "getHeaders", "getHeaderNames", "hasHeader",
       "cork", "uncork", "off", "removeListener", "removeAllListeners", "emit",
       "prependListener", "prependOnceListener", "listenerCount", "listeners", NULL };
     if (scr_http_dynh_in(method, known)) {

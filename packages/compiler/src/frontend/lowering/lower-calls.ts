@@ -11550,6 +11550,30 @@ function lowerObjectStaticCall(
       lowerer.badType(argNode, argType);
   }
   if (argIr?.kind !== "record") return null; // Maps, classes, arrays → the SC2020 fence
+  // A cast can hide the value's real representation
+  // (`meta.files as unknown as Record<string, string>` when files is a
+  // Map). Node enumerates the value the cast did not change, and a Map or
+  // Set has no own enumerable properties, so the walk answers an empty
+  // array of the checker's result type. Any other mis-cast value keeps the
+  // caller's fence rather than reaching the record helper, whose argument
+  // would violate the helper's record slot.
+  if (represented !== null && represented.type.kind !== "record") {
+    const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (
+      (represented.type.kind === "map" || represented.type.kind === "set") &&
+      resultT?.kind === "array"
+    ) {
+      const receiver = lowerer.lowerExpr(argNode);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(call) }],
+        result: { kind: "arrayLit", elems: [], type: resultT, loc: locOf(call) },
+        type: resultT,
+        loc: locOf(call),
+      };
+    }
+    return null;
+  }
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence
   // Accessor-carrying shapes: Node's answer includes the accessor NAMES

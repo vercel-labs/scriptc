@@ -145,7 +145,21 @@ export function emitBytesIndex(
   let ok: string;
   let wide: string;
   const nanIndex = integerOrNaNIndex(host, value, expr);
-  if (nanIndex) {
+  if (nanIndex && !nanIndex.bounded) {
+    // A range no bound holds — an induction local times an input, say. Past
+    // 2^63 the conversion is poison, so the double itself is tested against
+    // [0, length) and the conversion is used only past that test; a NaN or a
+    // huge value fails both compares.
+    const lenD = B.tmp(),
+      nonNegative = B.tmp(),
+      belowD = B.tmp();
+    B.line(`${lenD} = sitofp ${host.sizeType} ${len} to double`);
+    B.line(`${nonNegative} = fcmp oge double ${value.name}, 0.0`);
+    B.line(`${belowD} = fcmp olt double ${value.name}, ${lenD}`);
+    ok = B.tmp();
+    B.line(`${ok} = and i1 ${nonNegative}, ${belowD}`);
+    wide = nanIndex.wide;
+  } else if (nanIndex) {
     // An exact integer or NaN: in range when ordered and below the length.
     const wideLength = host.sizeType === "i64" ? len : B.tmp();
     if (host.sizeType !== "i64") B.line(`${wideLength} = zext ${host.sizeType} ${len} to i64`);
@@ -579,10 +593,13 @@ export function emitToUint32(
     B.line(`${out} = trunc i64 ${integer} to i32`);
     return out;
   }
-  if (expr && integerOrNaNRange(host, expr)) {
-    // An exact integer or NaN (an Int32[] or typed-array element read that
-    // may miss, `charCodeAt`): the integer's low 32 bits, or 0 for NaN. The
-    // conversion of NaN is poison, but the select then picks 0.
+  const range = expr ? integerOrNaNRange(host, expr) : null;
+  if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
+    // An exact integer or NaN within the exact-integer range (an Int32[] or
+    // typed-array element read that may miss, `charCodeAt`): the integer's
+    // low 32 bits, or 0 for NaN. A value whose range is unbounded may lie
+    // past the i64 conversion's domain, so it takes the ranged path below.
+    // The conversion of NaN is poison, but the select then picks 0.
     const integer = B.tmp();
     const low = B.tmp();
     const ordered = B.tmp();

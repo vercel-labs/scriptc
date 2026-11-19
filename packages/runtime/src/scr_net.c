@@ -602,6 +602,7 @@ struct ScrNetSocket {
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
   bool fin_seen;  /* peer FIN seen: 'end' fired (Node's writeAfterFIN state) */
+  bool data_read; /* read()/'data'/pipe consumed bytes: readableDidRead */
   /* setEncoding(enc): the canonical encoding (+1, NULL without one) and the
    * StringDecoder's packed partial sequence (scr_strdec_*). 'data' then
    * delivers the decoded strings. */
@@ -739,6 +740,17 @@ struct ScrNetSocket {
    * unconsumed stream). resume() clears user_paused and sets flowing. */
   bool user_paused;
   bool flowing;
+  /* Reading has begun on this socket — a consumer was attached (or the
+   * server accepted it): from then on it keeps reading ahead to its
+   * high-water mark even while paused, as Node's stream does. A client
+   * socket no consumer ever touched keeps its reads off: Node stops that
+   * read (a paused never-read client neither buffers nor sees a FIN). */
+  bool read_started;
+  /* A 'readable' listener pinned the stream in paused mode: Node's
+   * Readable.on('readable') clears the flow decision and nothing short of
+   * a new stream sets it again (resume() included). readableFlowing
+   * answers false from then on. */
+  bool readable_mode;
   /* new Socket({ allowHalfOpen: true }): the peer's FIN fires 'end' but
    * does not end the write half (Node's default ends it). */
   bool allow_half_open;
@@ -766,7 +778,8 @@ struct ScrNetSocket {
    * (static text, NULL after an accepted write): that write's callback
    * receives it on the next tick. */
   const char *write_err_code, *write_err_msg;
-  bool finish_pending; /* wr_done seen: fire finish_ls at the next sweep */
+  bool finish_pending;  /* wr_done seen: fire finish_ls at the next sweep */
+  bool finish_emitted;  /* the sweep fired it: writableFinished */
   /* The socket closed before it connected (destroy() while connecting,
    * or a connect that failed): its queued write callbacks receive
    * ERR_SOCKET_CLOSED_BEFORE_CONNECTION. */
@@ -795,6 +808,9 @@ struct ScrNetSocket {
   bool timeout_set; /* a timeout was set: socket.timeout answers a value (Node's _idleTimeout) */
   bool timeout_armed;
   ScrNetServer *server; /* +1 backref (accepted sockets), NULL for clients */
+  /* the connection is counted in server->nconns: cleared at 'close', while
+   * the backref stays — Node's socket.server keeps answering after close */
+  bool server_counted;
   /* protocol layer (scr_http.c): a C-level reader — counts as a consumer
    * for read-arming; its context BORROWS this socket and is freed with it */
   ScrNetNativeDataFn native_data;
@@ -1394,24 +1410,38 @@ static void scr_net_sock_update_read(ScrNetSocket *s) {
   /* every consumer and flow change re-arms here: buffered bytes may now
    * have a consumer */
   scr_net_work_add(s);
-  bool want = s->fd >= 0 && !s->connecting && !s->rd_eof && !s->user_paused && !s->hold &&
-              (s->data_ls.n > 0 || s->pipe_dst != NULL || s->native_data != NULL ||
-               (s->tunnel != NULL && !s->tunnel->send_only) /* the proxy's CONNECT answer */ ||
-               s->flowing /* resume(): flow (and discard sans listeners) */ ||
-               s->readable_ls.n > 0 /* paused-mode consumer: bytes buffer */ ||
-               s->tops != NULL /* a transport is ALWAYS a consumer: the TLS
-                                * layer must process protocol frames (the
-                                * handshake, close_notify, 1.3 tickets)
-                                * even when no app consumer exists, and a
-                                * peer's FIN must reach the teardown —
-                                * decrypted app data buffers like the
-                                * paused-mode path's */ ||
-               s->wr_done /* FIN sent: drain to EOF so the peer's close is
-                           * seen even with no consumer — Node resumes a
-                           * finished socket the same way */ ||
-               (!s->eof_pending && s->rlen - s->rhead < s->read_ahead)
-               /* no consumer yet: read ahead into the buffer, as Node's
-                * stream does up to its high-water mark */) &&
+  /* A consumer wants bytes now (pause()/hold() keep delivery off); apart
+   * from that, bytes read ahead into the buffer up to the stream's
+   * high-water mark even while paused — Node's paused stream keeps reading
+   * until its buffer fills, which is how a paused socket still sees a
+   * peer's FIN. */
+  bool consumer =
+      !s->user_paused && !s->hold &&
+      (s->data_ls.n > 0 || s->pipe_dst != NULL || s->native_data != NULL ||
+       (s->tunnel != NULL && !s->tunnel->send_only) /* the proxy's CONNECT answer */ ||
+       s->flowing /* resume(): flow (and discard sans listeners) */ ||
+       s->readable_ls.n > 0 /* paused-mode consumer: bytes buffer */ ||
+       s->tops != NULL /* a transport is ALWAYS a consumer: the TLS
+                        * layer must process protocol frames (the
+                        * handshake, close_notify, 1.3 tickets)
+                        * even when no app consumer exists, and a
+                        * peer's FIN must reach the teardown —
+                        * decrypted app data buffers like the
+                        * paused-mode path's */ ||
+       s->wr_done /* FIN sent: drain to EOF so the peer's close is
+                   * seen even with no consumer — Node resumes a
+                   * finished socket the same way */);
+  /* read ahead unless the program paused the socket before any read began
+   * (Node stops that read: a paused never-read client neither buffers nor
+   * sees a peer's FIN); once reading started, pause() leaves it reading
+   * ahead to the high-water mark. A paused transport keeps its reads OFF:
+   * its engine decrypts on demand, so reading while delivery is off would
+   * discard the plaintext — the ciphertext waits in the kernel until
+   * resume() reads it, as Node's paused TLS stream does. */
+  bool paused_transport = s->user_paused && s->tops != NULL;
+  bool read_ahead = !paused_transport && (!s->user_paused || s->read_started) && !s->hold &&
+                    !s->eof_pending && s->rlen - s->rhead < s->read_ahead;
+  bool want = s->fd >= 0 && !s->connecting && !s->rd_eof && (consumer || read_ahead) &&
               !(s->tunnel != NULL && s->tunnel->send_only);
   if (want && !s->read_armed) {
     scr_net_watch_read(s->fd, s, true);
@@ -1457,10 +1487,10 @@ static void scr_net_sock_maybe_finish_write(ScrNetSocket *s) {
   if (s->tops && s->t_est) s->tops->shutdown_write(s->tctx);
   shutdown(s->fd, SHUT_WR);
   s->wr_done = true;
-  if (s->finish_ls.n > 0) {
-    s->finish_pending = true; /* end(cb): the sweep fires it */
-    scr_net_work_add(s);
-  }
+  /* 'finish' fires from the sweep whether or not anyone listens, as Node's
+   * does — writableFinished turns true with it */
+  s->finish_pending = true;
+  scr_net_work_add(s);
   if (s->destroy_on_finish) {
     /* destroySoon(): the FIN is out — tear down now (Node's 'finish'-then-
      * destroy). The close emits through the ordinary sweep. */
@@ -1837,6 +1867,7 @@ static void scr_net_sock_eof(ScrNetSocket *s) {
  * layer, the pipe destination, the 'data' listeners). Returns false when
  * a callback threw (the caller bails; the loop surfaces it). */
 static bool scr_net_sock_deliver(ScrNetSocket *s, const char *buf, size_t n) {
+  if (n > 0) s->data_read = true; /* readableDidRead: bytes reached a consumer */
   if (s->native_data) {
     s->native_data(s->native_ctx, buf, n);
     if (scr_exc_pending()) return false;
@@ -1889,9 +1920,22 @@ static void scr_net_sock_read(ScrNetSocket *s) {
   size_t reads_left = 32; /* at most 2 MiB with the 64 KiB read buffer */
   if (s->tunnel != NULL) return; /* readiness feeds the tunnel pump instead */
   if (s->tops && !s->t_est) return; /* readiness feeds the handshake pump instead */
+  /* A paused transport reads nothing at all: the engine decrypts on
+   * demand, so a read now would hand the plaintext to a delivery path
+   * that discards it. The ciphertext stays in the kernel until resume()
+   * asks for it, as Node's paused TLS stream leaves it. */
+  if (s->user_paused && s->tops != NULL) return;
   for (;;) {
-    if (s->fd < 0 || s->user_paused || s->hold) return;
-    bool flowing = s->data_ls.n > 0 || s->pipe_dst || s->native_data || s->flowing;
+    if (s->fd < 0 || s->hold) return;
+    /* pause() called from inside a callback (a 'data' handler) lands
+     * between iterations: the transport must stop here too, or the next
+     * read decrypts and discards the plaintext (the entry guard's rule). */
+    if (s->user_paused && s->tops != NULL) return;
+    /* pause() turns delivery off, not the reads: Node's paused stream keeps
+     * reading ahead to its high-water mark, which is how it sees a peer's
+     * FIN (and why a paused socket still emits 'end'). */
+    bool flowing =
+        !s->user_paused && (s->data_ls.n > 0 || s->pipe_dst || s->native_data || s->flowing);
     /* buffered (peeked/unshifted) bytes first — they precede the
      * kernel's in the stream; a TLS engine drains them through its bio */
     if (!s->tops && flowing && s->rlen > s->rhead) {
@@ -1906,13 +1950,15 @@ static void scr_net_sock_read(ScrNetSocket *s) {
      * as Node's stream does, so a peer's close is seen. An ESTABLISHED
      * transport keeps processing protocol frames (close alerts, 1.3
      * tickets) and drops app data, as a finished socket does. */
-    bool read_ahead = !flowing && s->readable_ls.n == 0 && !s->wr_done &&
+    bool read_ahead = !flowing && (!s->user_paused || s->read_started) &&
+                      s->readable_ls.n == 0 && !s->wr_done &&
                       !(s->tops != NULL && s->t_est);
     if (read_ahead && (s->tops != NULL || s->eof_pending ||
                        s->rlen - s->rhead >= s->read_ahead)) {
       scr_net_sock_update_read(s);
       return;
     }
+    s->read_started = true; /* a read is in flight: pause() leaves it going */
     char buf[65536];
     ssize_t n = s->tops ? s->tops->xread(s->tctx, buf, sizeof buf) : read(s->fd, buf, sizeof buf);
     if (n < 0) {
@@ -3088,6 +3134,10 @@ static void scr_net_server_accept(ScrNetServer *srv) {
     }
     sock->fd = fd;
     sock->server = scr_net_server_retain(srv);
+    sock->server_counted = true;
+    /* an accepted socket is reading before any consumer attaches: Node
+     * buffers what arrives, and a peer's FIN reaches a paused one too */
+    sock->read_started = true;
     srv->nconns++;
     scr_net_sock_register(sock);
     if (srv->http_timeout_surface && srv->http_timeouts[0] > 0)
@@ -6178,6 +6228,7 @@ void scr_net_sock_hold(ScrNetSocket *s, bool hold) {
 ScrNetSocket *scr_net_sock_resume(ScrNetSocket *s) {
   s->user_paused = false;
   s->flowing = true;
+  s->read_started = true; /* resume() is Node's explicit read request */
   scr_net_sock_update_read(s);
   return scr_net_sock_retain(s);
 }
@@ -6564,6 +6615,76 @@ bool scr_net_sock_readable(ScrNetSocket *s) {
   /* A fresh socket with no handle yet is readable (Node's stream state). */
   if (s->destroyed_flag || s->close_emitted || s->rd_eof) return false;
   return true;
+}
+
+/* socket.readableAborted: destroyed before the read half ended, Node's
+ * getter (destroyed && !ended). */
+bool scr_net_sock_readable_aborted(ScrNetSocket *s) {
+  if (s->adopted_by != NULL) return scr_net_sock_readable_aborted(s->adopted_by);
+  return scr_net_sock_destroyed(s) && !s->fin_seen;
+}
+
+/* socket.readableDidRead: a consumer has taken bytes — 'data' emitted,
+ * read() answered, pipe fed, or the protocol layer's parser consumed. */
+bool scr_net_sock_readable_did_read(ScrNetSocket *s) {
+  if (s->adopted_by != NULL) return scr_net_sock_readable_did_read(s->adopted_by);
+  return s->data_read;
+}
+
+/* socket.readableEnded: the peer's FIN reached the stream and 'end'
+ * fired. */
+bool scr_net_sock_readable_ended(ScrNetSocket *s) {
+  if (s->adopted_by != NULL) return scr_net_sock_readable_ended(s->adopted_by);
+  return s->fin_seen;
+}
+
+/* socket.readableFlowing: null before any flow decision, true in flowing
+ * mode (resume(), or a 'data'/pipe consumer), false after pause() or once
+ * a 'readable' listener puts the stream in paused mode — Node's
+ * Readable.on('readable') clears the flow even when 'data' listeners are
+ * registered, and a later 'data' listener does not resume it. */
+ScrDyn *scr_net_sock_readable_flowing(ScrNetSocket *s) {
+  if (s->adopted_by != NULL) return scr_net_sock_readable_flowing(s->adopted_by);
+  if (s->readable_mode) return scr_dyn_new_bool(false);
+  if (s->user_paused) return scr_dyn_new_bool(false);
+  if (s->flowing) return scr_dyn_new_bool(true);
+  if (s->data_ls.n > 0 || s->pipe_dst != NULL || s->native_data != NULL)
+    return scr_dyn_new_bool(true);
+  return scr_dyn_new_null();
+}
+
+/* socket.readableLength: the bytes arrived but not yet consumed (Node's
+ * readable state's buffer length). */
+double scr_net_sock_readable_length(ScrNetSocket *s) {
+  if (s->adopted_by != NULL) return scr_net_sock_readable_length(s->adopted_by);
+  return (double)(s->rlen - s->rhead);
+}
+
+/* socket.writableEnded: end() was called. */
+bool scr_net_sock_writable_ended(ScrNetSocket *s) {
+  if (s->adopted_by != NULL) return scr_net_sock_writable_ended(s->adopted_by);
+  return s->wr_ending;
+}
+
+/* socket.writableFinished: all buffered data flushed and 'finish' fired. */
+bool scr_net_sock_writable_finished(ScrNetSocket *s) {
+  if (s->adopted_by != NULL) return scr_net_sock_writable_finished(s->adopted_by);
+  return s->finish_emitted;
+}
+
+/* socket.allowHalfOpen: the option the socket took — false by default,
+ * the server's setting on an accepted socket. */
+bool scr_net_sock_allow_half_open(ScrNetSocket *s) { return s->allow_half_open; }
+
+/* socket.readableHighWaterMark / writableHighWaterMark: the stream
+ * default captured at construction (stream.getDefaultHighWaterMark). */
+double scr_net_sock_high_water_mark(ScrNetSocket *s) { return s->hwm; }
+
+/* socket.server: the listening server of a server-side socket (+1 dyn
+ * handle), null elsewhere — Node's Socket constructor sets null. */
+ScrDyn *scr_net_sock_server_dyn(ScrNetSocket *s) {
+  if (s->server != NULL) return scr_dyn_new_handle(s->server, SCR_DYNH_NET_SERVER);
+  return scr_dyn_new_null();
 }
 
 /* socket.setTimeout(ms): ms > 0 arms the idle timer NOW (Node starts the
@@ -8771,6 +8892,8 @@ void scr_net_sock_on_readable(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool on
     scr_closure_release(cb);
     return;
   }
+  s->read_started = true; /* paused mode: the stream reads ahead too */
+  s->readable_mode = true; /* Node: a 'readable' listener clears flowing */
   scr_net_ls_add(&s->readable_ls, cb, NULL, once);
   scr_net_sock_update_read(s);
 }
@@ -8784,6 +8907,7 @@ ScrBytes *scr_net_sock_read_bytes(ScrNetSocket *s, double n) {
   if (avail == 0 || want == 0 || want > avail) return NULL;
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)want);
   out->is_buffer = true; /* socket.read() answers a Buffer */
+  s->data_read = true;   /* readableDidRead: read() handed the app bytes */
   size_t took = scr_net_sock_take_buffered(s, (char *)out->data, want);
   (void)took;
   return out;
@@ -8854,6 +8978,13 @@ void scr_net_server_emit_connection(ScrNetServer *srv, ScrNetSocket *sock) {
  * firing server-level events ('request': Node's this === server). */
 ScrNetServer *scr_net_sock_server(ScrNetSocket *s) { return s->server; }
 
+/* socket.readableEncoding: the canonical name setEncoding installed (+1
+ * dyn string), null while 'data' delivers Buffers. */
+ScrDyn *scr_net_sock_readable_encoding(ScrNetSocket *s) {
+  if (s->encoding == NULL) return scr_dyn_new_null();
+  return scr_dyn_new_str(s->encoding);
+}
+
 /* socket.setEncoding(enc): Node's Readable.setEncoding with a new
  * StringDecoder — any Buffer encoding name in any ASCII case; an unknown
  * name throws ERR_UNKNOWN_ENCODING. 'data' then delivers the decoded
@@ -8875,11 +9006,11 @@ void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/) {
   s->dec_pending = 0;
 }
 
-/* setEncoding([encoding]) for an untyped argument: a missing or undefined
- * encoding means utf8 (StringDecoder's default), a string goes through the
- * decoder's table, and any other value is Node's argument TypeError. */
+/* setEncoding([encoding]) for an untyped argument: a missing, undefined or
+ * null encoding means utf8 (StringDecoder's default), a string goes through
+ * the decoder's table, and any other value is Node's argument TypeError. */
 void scr_net_sock_set_encoding_dyn(ScrNetSocket *s, const ScrDyn *enc /*borrowed*/) {
-  if (enc == NULL || enc->kind == SCR_DYN_UNDEF) {
+  if (enc == NULL || enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL) {
     ScrStr *utf8 = scr_str_new("utf8", 4);
     scr_net_sock_set_encoding(s, utf8);
     scr_str_release(utf8);
@@ -8897,6 +9028,7 @@ void scr_net_sock_set_encoding_dyn(ScrNetSocket *s, const ScrDyn *enc /*borrowed
 void scr_net_sock_pipe(ScrNetSocket *src, ScrNetSocket *dst) {
   if (src->pipe_dst) scr_net_sock_release(src->pipe_dst);
   src->pipe_dst = scr_net_sock_retain(dst);
+  src->read_started = true; /* a pipe consumes like a 'data' listener */
   scr_net_sock_update_read(src);
 }
 
@@ -8906,6 +9038,7 @@ void scr_net_sock_on_data(ScrNetSocket *s, ScrClosure *cb /*moves*/, ScrNetDataF
     scr_closure_release(cb);
     return;
   }
+  s->read_started = true; /* a consumer: Node's stream starts reading */
   scr_net_ls_add(&s->data_ls, cb, (void *)fn, once);
   scr_net_sock_update_read(s);
 }
@@ -9015,6 +9148,7 @@ void *scr_net_server_get_http_ctx(ScrNetServer *s) { return s->http_ctx; }
 void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
                                      ScrNetNativeEventFn eof, ScrNetNativeEventFn closed,
                                      void *ctx, void (*ctx_free)(void *)) {
+  s->read_started = true; /* the parser is a reader from the start */
   s->native_data = data;
   s->native_eof = eof;
   s->native_closed = closed;
@@ -9111,6 +9245,7 @@ void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, 
   s->tops = ops;
   s->tctx = tctx;
   s->t_est = false;
+  s->read_started = true; /* a transport always reads its protocol frames */
   scr_net_sock_update_read(s); /* the handshake is a consumer */
   scr_net_sock_update_write(s);
 }
@@ -9347,7 +9482,7 @@ static bool scr_net_sock_has_work(ScrNetSocket *s, bool due) {
   if (s->reconnect_ready) return true;
   /* recorded 'lookup'/'connectionAttempt' events wait for the sweep */
   if (s->lookup_evs != NULL || s->attempt_evs != NULL) return true;
-  if (s->finish_pending && (!due || s->finish_ls.n > 0)) return true;
+  if (s->finish_pending && (s->finish_ls.n > 0 || !s->finish_emitted)) return true;
   if (s->wcb_ls.n > 0 && (s->wlen == s->whead || s->fd < 0)) return true;
   /* bytes already out of the kernel with a consumer waiting — decrypted
    * plaintext inside a transport, or unshifted bytes in the receive
@@ -9453,14 +9588,15 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
   /* The owning server's count drains FIRST, and a now-drained closing
    * server settles before this socket's own 'close' fires — Node's
    * observed order (differential: the net-echo fixture). */
-  if (sock->server) {
+  if (sock->server && sock->server_counted) {
     ScrNetServer *srv = sock->server;
-    sock->server = NULL;
+    sock->server_counted = false;
     srv->nconns--;
     if (srv->closing && srv->nconns == 0 && !srv->close_emitted) {
       scr_net_server_settle(srv);
     }
-    scr_net_server_release(srv);
+    /* the backref stays: Node's socket.server answers the server after
+     * 'close' too (the socket keeps it alive until it is freed) */
     if (scr_exc_pending()) return false;
   }
   if (sock->native_closed) {
@@ -9541,6 +9677,7 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
   }
   if (sock->finish_pending) {
     sock->finish_pending = false;
+    sock->finish_emitted = true; /* writableFinished turns true with 'finish' */
     ScrAlsCtx *prev = scr_als_dispatch_enter(sock->end_ctx);
     scr_net_fire0_this(&sock->finish_ls, sock, SCR_DYNH_NET_SOCKET);
     scr_als_dispatch_leave(prev);
@@ -9962,7 +10099,10 @@ static void scr_net_cleanup_atexit(void) {
       s->conn_pending = NULL;
     }
     if (s->server) {
-      s->server->nconns--;
+      if (s->server_counted) {
+        s->server->nconns--;
+        s->server_counted = false;
+      }
       scr_net_server_release(s->server);
       s->server = NULL;
     }
@@ -10376,16 +10516,28 @@ static ScrDyn *scr_net_dynh_sock_get(void *h, const char *key, size_t key_len) {
     }
   }
   if (strcmp(key, "readable") == 0) return scr_dyn_new_bool(scr_net_sock_readable(s));
+  if (strcmp(key, "readableEncoding") == 0) return scr_net_sock_readable_encoding(s);
+  if (strcmp(key, "readableObjectMode") == 0 || strcmp(key, "writableObjectMode") == 0)
+    return scr_dyn_new_bool(false); /* a socket's streams are byte streams */
+  if (strcmp(key, "readableAborted") == 0)
+    return scr_dyn_new_bool(scr_net_sock_readable_aborted(s));
+  if (strcmp(key, "readableDidRead") == 0)
+    return scr_dyn_new_bool(scr_net_sock_readable_did_read(s));
+  if (strcmp(key, "readableEnded") == 0)
+    return scr_dyn_new_bool(scr_net_sock_readable_ended(s));
+  if (strcmp(key, "readableFlowing") == 0) return scr_net_sock_readable_flowing(s);
+  if (strcmp(key, "readableLength") == 0)
+    return scr_dyn_new_num(scr_net_sock_readable_length(s));
+  if (strcmp(key, "writableEnded") == 0) return scr_dyn_new_bool(scr_net_sock_writable_ended(s));
+  if (strcmp(key, "writableFinished") == 0)
+    return scr_dyn_new_bool(scr_net_sock_writable_finished(s));
+  if (strcmp(key, "allowHalfOpen") == 0)
+    return scr_dyn_new_bool(scr_net_sock_allow_half_open(s));
   if (strcmp(key, "writableLength") == 0) return scr_dyn_new_num(scr_net_sock_writable_length(s));
   if (strcmp(key, "bufferSize") == 0) return scr_net_sock_buffer_size(s);
   if (strcmp(key, "autoSelectFamilyAttemptedAddresses") == 0)
     return scr_net_sock_attempted_addresses(s);
-  if (strcmp(key, "server") == 0) {
-    /* Node's Socket constructor sets `this.server = null`; an accepted
-     * socket carries the listening server instead. */
-    if (s->server != NULL) return scr_dyn_new_handle(s->server, SCR_DYNH_NET_SERVER);
-    return scr_dyn_new_null();
-  }
+  if (strcmp(key, "server") == 0) return scr_net_sock_server_dyn(s);
   if (strcmp(key, "writableNeedDrain") == 0)
     return scr_dyn_new_bool(scr_net_sock_writable_need_drain(s));
   if (strcmp(key, "writableHighWaterMark") == 0 || strcmp(key, "readableHighWaterMark") == 0) {

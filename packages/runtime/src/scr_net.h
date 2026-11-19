@@ -372,6 +372,19 @@ void scr_net_sock_connect_opts(ScrNetSocket *s, const ScrDyn *options /*borrowed
 /* socket.timeout: undefined until the first setTimeout (Node's
  * _idleTimeout), then the idle timeout in milliseconds. +1. */
 ScrDyn *scr_net_sock_timeout(ScrNetSocket *s);
+ScrDyn *scr_net_sock_readable_encoding(ScrNetSocket *s); /* +1 dyn */
+/* Node's stream state on a socket (the Readable/Writable getters every
+ * Duplex carries). */
+bool scr_net_sock_readable_aborted(ScrNetSocket *s);
+bool scr_net_sock_readable_did_read(ScrNetSocket *s);
+bool scr_net_sock_readable_ended(ScrNetSocket *s);
+ScrDyn *scr_net_sock_readable_flowing(ScrNetSocket *s); /* +1 dyn: null/true/false */
+double scr_net_sock_readable_length(ScrNetSocket *s);
+bool scr_net_sock_writable_ended(ScrNetSocket *s);
+bool scr_net_sock_writable_finished(ScrNetSocket *s);
+bool scr_net_sock_allow_half_open(ScrNetSocket *s);
+double scr_net_sock_high_water_mark(ScrNetSocket *s);
+ScrDyn *scr_net_sock_server_dyn(ScrNetSocket *s); /* +1 dyn: the Server or null */
 /* destroy(error): the 'error' event carries this Error, then 'close' with
  * hadError. Borrows the caller's error and retains the one it queues. */
 void scr_net_sock_destroy_error(ScrNetSocket *s, ScrError *err /*borrowed*/);

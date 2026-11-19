@@ -5334,6 +5334,89 @@ export function lowerServerProperty(
         ? value
         : lowerer.coerceInto(expr, value, declared);
     }
+    if (name === "readableEncoding") {
+      // Readable.setEncoding's canonical name, or null while 'data' delivers
+      // Buffers.
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: "net.sockReadableEncoding",
+        args: [receiver],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(expr, value, declared);
+    }
+    if (name === "readableObjectMode" || name === "writableObjectMode") {
+      // A socket's streams are byte streams: both read false, and the
+      // receiver still runs.
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+        result: { kind: "boolLit", value: false, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      };
+    }
+    if (name === "writableAborted") {
+      // Node 24's net.Socket does not carry Writable's writableAborted
+      // getter (its Duplex prototype chain skips it), so Node answers
+      // undefined even though the declarations inherit the member: the
+      // static lane's false→undefined mapping (as with `encrypted`), the
+      // untyped lane's undefined. Still false in every case where Node's
+      // would be true.
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+        result: { kind: "boolLit", value: false, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      };
+    }
+    const streamState: { fn: IrLibFn; type: IrType } | null =
+      name === "readableAborted"
+        ? { fn: "net.sockReadableAborted", type: BOOL }
+        : name === "readableDidRead"
+          ? { fn: "net.sockReadableDidRead", type: BOOL }
+          : name === "readableEnded"
+            ? { fn: "net.sockReadableEnded", type: BOOL }
+            : name === "writableEnded"
+              ? { fn: "net.sockWritableEnded", type: BOOL }
+              : name === "writableFinished"
+                ? { fn: "net.sockWritableFinished", type: BOOL }
+                : name === "allowHalfOpen"
+                  ? { fn: "net.sockAllowHalfOpen", type: BOOL }
+                  : name === "readableLength"
+                    ? { fn: "net.sockReadableLength", type: F64 }
+                    : name === "readableHighWaterMark" || name === "writableHighWaterMark"
+                      ? { fn: "net.sockHighWaterMark", type: F64 }
+                      : null;
+    if (streamState !== null) {
+      // The Duplex stream-state getters every socket carries.
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      return { kind: "libCall", fn: streamState.fn, args: [receiver], type: streamState.type, loc };
+    }
+    if (name === "readableFlowing" || name === "server") {
+      // `boolean | null` and `Server | null`: a dyn value the use site's
+      // declared type narrows.
+      const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
+      const value: IrExpr = {
+        kind: "libCall",
+        fn: name === "readableFlowing" ? "net.sockReadableFlowing" : "net.sockServer",
+        args: [receiver],
+        type: DYN,
+        loc,
+      };
+      const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      return declared === null || declared.kind === "dyn"
+        ? value
+        : lowerer.coerceInto(expr, value, declared);
+    }
     const scalar: { fn: IrLibFn; type: IrType } | null =
       name === "bytesRead"
         ? { fn: "net.sockBytesRead", type: F64 }

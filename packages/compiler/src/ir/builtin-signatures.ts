@@ -2468,6 +2468,21 @@ function buildLibFnSignatures() {
     },
     /** socket.timeout: undefined until setTimeout arms one. */
     "net.sockTimeout": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.readableEncoding: the setEncoding name, or null. */
+    "net.sockReadableEncoding": { argTypes: [NETSOCKET_T], result: DYN },
+    /** The socket's Readable/Writable stream state (the Duplex getters):
+     * readableAborted/DidRead/Ended/Flowing/Length, writableEnded/Finished,
+     * allowHalfOpen, and the high-water marks. */
+    "net.sockReadableAborted": { argTypes: [NETSOCKET_T], result: BOOL },
+    "net.sockReadableDidRead": { argTypes: [NETSOCKET_T], result: BOOL },
+    "net.sockReadableEnded": { argTypes: [NETSOCKET_T], result: BOOL },
+    "net.sockReadableFlowing": { argTypes: [NETSOCKET_T], result: DYN },
+    "net.sockReadableLength": { argTypes: [NETSOCKET_T], result: F64 },
+    "net.sockWritableEnded": { argTypes: [NETSOCKET_T], result: BOOL },
+    "net.sockWritableFinished": { argTypes: [NETSOCKET_T], result: BOOL },
+    "net.sockAllowHalfOpen": { argTypes: [NETSOCKET_T], result: BOOL },
+    "net.sockHighWaterMark": { argTypes: [NETSOCKET_T], result: F64 },
+    "net.sockServer": { argTypes: [NETSOCKET_T], result: DYN },
     /** write(str, encoding) / end(str, encoding): the string's bytes in
      * that encoding. */
     "net.sockWriteEnc": { argTypes: [NETSOCKET_T, STRING, STRING], result: BOOL },

@@ -1701,8 +1701,29 @@ static ScrDyn *scr_perf_timerified_defer(const ScrStr *name, double start, ScrDy
   if (result->kind == SCR_DYN_PROMISE) {
     /* The gated async unit installs Promise.prototype's members. */
     method = scr_dyn_promise_key_get(result, key);
-  } else if (scr_dyn_in(result, key)) {
-    method = scr_dyn_obj_read(result, "finally", 7);
+  } else {
+    /* An ordinary dyn read answers a missing key with undefined. A typed
+     * reference boxes the program's value, whose materialized view is where
+     * a member of that value answers, so a miss reads the view too. */
+    method = result->kind == SCR_DYN_TYPED_REF
+                 ? scr_dyn_typed_ref_bag_method(result, "finally", 7)
+                 : NULL;
+    if (method == NULL && !scr_exc_pending()) method = scr_dyn_obj_read(result, "finally", 7);
+    if (method == NULL || method->kind == SCR_DYN_UNDEF ||
+        !scr_dyn_is_callable(method)) {
+      scr_dyn_release(method);
+      method = NULL;
+      ScrDyn *view = result->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(result) : NULL;
+      if (view != NULL) {
+        ScrDyn *from_view = scr_dyn_obj_read(view, "finally", 7);
+        scr_dyn_release(view);
+        if (from_view != NULL && from_view->kind != SCR_DYN_UNDEF &&
+            scr_dyn_is_callable(from_view))
+          method = from_view;
+        else
+          scr_dyn_release(from_view);
+      }
+    }
   }
   scr_str_release(key);
   if (scr_exc_pending()) {
@@ -1815,6 +1836,25 @@ static bool scr_perf_timerified_construct(const ScrDyn *callee, const ScrDyn *ar
   return true;
 }
 
+/* A member read of an argument the program passed: an ordinary dyn read,
+ * with a typed reference's materialized view answering when that read misses
+ * (the view is where the boxed value's own members are). */
+static ScrDyn *scr_perf_argument_member(ScrDyn *value, const char *key, size_t length) {
+  ScrDyn *member = scr_dyn_obj_read(value, key, length);
+  if (member != NULL && member->kind != SCR_DYN_UNDEF) return member;
+  scr_dyn_release(member);
+  if (value->kind != SCR_DYN_TYPED_REF) return NULL;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+  if (view == NULL) return NULL;
+  member = scr_dyn_obj_read(view, key, length);
+  scr_dyn_release(view);
+  if (member != NULL && member->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(member);
+    return NULL;
+  }
+  return member;
+}
+
 /* `performance.timerify(fn)` / `perf_hooks.timerify(fn, options?)` (+1):
  * Node validates the callable and the options object, then wraps the call.
  * The arguments arrive as one dyn array. */
@@ -1846,8 +1886,8 @@ ScrDyn *scr_perf_timerify(ScrDyn *args) {
    * call's duration into it (nanoseconds). */
   ScrDyn *histogram = NULL; /* +1 when the options name one */
   if (options->kind != SCR_DYN_UNDEF) {
-    ScrDyn *value = scr_dyn_obj_read(options, "histogram", 9);
-    if (value != NULL && value->kind != SCR_DYN_UNDEF) {
+    ScrDyn *value = scr_perf_argument_member(options, "histogram", 9);
+    if (value != NULL) {
       bool recordable = value->kind == SCR_DYN_HANDLE &&
                         value->v.handle.tag == SCR_DYNH_HISTOGRAM &&
                         value->v.handle.ptr != NULL;

@@ -123,15 +123,21 @@ observer.disconnect();
 console.log("seen", seen.join(" | "));
 console.log("timeline", performance.getEntriesByType("function").length);
 
+// The invalid forms are checked at run time; the declarations type the
+// arguments, so each call passes the offending value through an untyped
+// cast while the call itself stays the lowered performance.timerify.
 for (const [label, run] of [
-  ["fn", () => performance.timerify(5)],
-  ["fn-missing", () => performance.timerify()],
-  ["options-null", () => performance.timerify(original, null)],
-  ["options-array", () => performance.timerify(original, [])],
-  ["options-number", () => performance.timerify(original, 5)],
-  ["histogram-number", () => performance.timerify(original, { histogram: 5 })],
-  ["histogram-object", () => performance.timerify(original, { histogram: {} })],
-  ["histogram-interval", () => performance.timerify(original, { histogram: monitorEventLoopDelay() })],
+  ["fn", () => performance.timerify(/** @type {any} */ (5))],
+  ["fn-undefined", () => performance.timerify(/** @type {any} */ (undefined))],
+  ["options-null", () => performance.timerify(original, /** @type {any} */ (null))],
+  ["options-array", () => performance.timerify(original, /** @type {any} */ ([]))],
+  ["options-number", () => performance.timerify(original, /** @type {any} */ (5))],
+  ["histogram-number", () => performance.timerify(original, /** @type {any} */ ({ histogram: 5 }))],
+  ["histogram-object", () => performance.timerify(original, /** @type {any} */ ({ histogram: {} }))],
+  [
+    "histogram-interval",
+    () => performance.timerify(original, /** @type {any} */ ({ histogram: monitorEventLoopDelay() })),
+  ],
 ]) {
   try {
     run();

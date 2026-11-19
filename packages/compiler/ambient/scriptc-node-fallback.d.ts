@@ -2043,6 +2043,7 @@ declare module "node:perf_hooks" {
     /* performance.toJSON(): nodeTiming, timeOrigin and the event-loop
      * utilization, in that key order. */
     toJSON(): any;
+    timerify<T extends (...args: any[]) => any>(fn: T, options?: TimerifyOptions): T;
     eventLoopUtilization(
       utilization1?: EventLoopUtilization,
       utilization2?: EventLoopUtilization,
@@ -2113,6 +2114,10 @@ declare module "node:perf_hooks" {
     subtract(other: RecordableHistogram): void;
   }
   export function createHistogram(options?: CreateHistogramOptions): RecordableHistogram;
+  export interface TimerifyOptions {
+    histogram?: RecordableHistogram | undefined;
+  }
+  export function timerify<T extends (...args: any[]) => any>(fn: T, options?: TimerifyOptions): T;
 }
 declare module "perf_hooks" {
   export * from "node:perf_hooks";

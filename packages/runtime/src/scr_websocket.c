@@ -116,13 +116,19 @@ static void scr_ws_destroy_socket(ScrWs *ws) {
   ws->sock = NULL;
 }
 
-static void scr_ws_release_v(void *p) {
+/* A handler that captures its own socket makes a cycle: the socket holds
+ * the listeners (through its EventTarget state) and a listener's closure
+ * holds the socket's handle. The socket carries a cycle header, so the
+ * collector can see the listener edges and free a socket whose handlers
+ * closed over it. */
+static void scr_ws_trace(void *p, ScrTraceVisit visit, void *ctx) {
   ScrWs *ws = p;
-  if (ws == NULL || --ws->rc > 0) return;
-  if (ws->et != NULL) {
-    scr_et_broadcast_install();
-    scr_et_broadcast_ops->core_free(ws->et);
-  }
+  if (ws->et != NULL) scr_event_target_state_trace(ws->et, visit, ctx);
+}
+
+/* Everything the trace does not visit: the strings, the receive buffers,
+ * the handshake client and socket. */
+static void scr_ws_complement_free(ScrWs *ws) {
   scr_ws_drop_client(ws);
   scr_ws_destroy_socket(ws);
   scr_str_release(ws->url);
@@ -131,7 +137,45 @@ static void scr_ws_release_v(void *p) {
   scr_str_release(ws->key_b64);
   free(ws->frag);
   free(ws->buf);
-  free(ws);
+  scr_obj_free_note();
+  scr_cyc_free(ws);
+}
+
+/* The collector's teardown: the traced listeners are the collector's to
+ * account, so the EventTarget state leaves them unreleased. */
+static void scr_ws_gcfree(void *p) {
+  ScrWs *ws = p;
+  if (ws->et != NULL) {
+    scr_event_target_state_gcfree(ws->et);
+    ws->et = NULL;
+  }
+  scr_ws_complement_free(ws);
+}
+
+static void scr_ws_destroy(void *p) {
+  ScrWs *ws = p;
+  /* A captured handle keeps the socket alive, so none is live when the
+   * count reaches zero; the guard makes re-entrant releases from a
+   * listener being torn down here no-ops. */
+  ws->rc = SIZE_MAX;
+  if (ws->et != NULL) {
+    scr_et_broadcast_install();
+    scr_et_broadcast_ops->core_free(ws->et);
+    ws->et = NULL;
+  }
+  ws->rc = 0;
+  scr_ws_complement_free(ws);
+}
+
+static void scr_ws_release_v(void *p) {
+  ScrWs *ws = p;
+  if (ws == NULL || ws->rc == SIZE_MAX) return;
+  if (--ws->rc > 0) {
+    scr_cyc_released(ws);
+    return;
+  }
+  scr_cyc_dead(ws);
+  scr_rc_destroy(ws, scr_ws_destroy);
 }
 
 /* ── events ─────────────────────────────────────────────────────────── */
@@ -207,6 +251,61 @@ static void scr_ws_fail_protocol_impl(ScrWs *ws) {
   scr_str_release(empty);
 }
 
+/* RFC 3629: no overlong forms, surrogates or values above U+10FFFF, and no
+ * truncated sequence — the check a text message and a close reason take
+ * before their bytes become a string. */
+static bool scr_ws_utf8_valid(const unsigned char *p, size_t n) {
+  for (size_t i = 0; i < n;) {
+    unsigned char c = p[i];
+    uint32_t cp;
+    size_t extra;
+    if (c < 0x80) {
+      i++;
+      continue;
+    }
+    if (c >= 0xC2 && c <= 0xDF) {
+      extra = 1;
+      cp = c & 0x1Fu;
+    } else if (c >= 0xE0 && c <= 0xEF) {
+      extra = 2;
+      cp = c & 0x0Fu;
+    } else if (c >= 0xF0 && c <= 0xF4) {
+      extra = 3;
+      cp = c & 0x07u;
+    } else {
+      return false; /* a continuation byte, C0/C1, or F5..FF */
+    }
+    if (extra > n - 1 - i) return false;
+    for (size_t k = 1; k <= extra; k++) {
+      unsigned char cc = p[i + k];
+      if ((cc & 0xC0) != 0x80) return false;
+      cp = (cp << 6) | (cc & 0x3Fu);
+    }
+    if (extra == 2 && (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF))) return false;
+    if (extra == 3 && (cp < 0x10000 || cp > 0x10FFFF)) return false;
+    i += extra + 1;
+  }
+  return true;
+}
+
+/* Invalid UTF-8 in a text message or a close reason: a 1007 close goes out
+ * when the socket still writes, and the application sees the same
+ * failed-connection pair as a protocol failure (error, then close 1006). */
+static void scr_ws_fail_utf8_impl(ScrWs *ws) {
+  if (ws->discard) return;
+  if (ws->sock != NULL && !ws->close_sent) {
+    static const unsigned char frame[4] = {0x88, 0x02, 0x03, 0xEF}; /* close 1007 */
+    scr_net_sock_write_native(ws->sock, (const char *)frame, sizeof frame);
+    ws->close_sent = true;
+  }
+  ws->discard = true;
+  scr_ws_destroy_socket(ws);
+  scr_ws_emit_type(ws, "error");
+  ScrStr *empty = scr_str_new("", 0);
+  scr_ws_emit_close(ws, 1006, empty, false);
+  scr_str_release(empty);
+}
+
 static void scr_ws_read_close_impl(ScrWs *ws, const unsigned char *payload, size_t length);
 
 /* These paths emit events and then keep using the state; a listener that
@@ -222,6 +321,13 @@ static void scr_ws_fail_protocol(ScrWs *ws) {
   if (ws == NULL) return;
   scr_ws_retain_v(ws);
   scr_ws_fail_protocol_impl(ws);
+  scr_ws_release_v(ws);
+}
+
+static void scr_ws_fail_utf8(ScrWs *ws) {
+  if (ws == NULL) return;
+  scr_ws_retain_v(ws);
+  scr_ws_fail_utf8_impl(ws);
   scr_ws_release_v(ws);
 }
 
@@ -301,6 +407,12 @@ static void scr_ws_read_close_impl(ScrWs *ws, const unsigned char *payload, size
     return;
   }
   if (length >= 2) code = ((int64_t)payload[0] << 8) | (int64_t)payload[1];
+  if (length > 2 && !scr_ws_utf8_valid(payload + 2, length - 2)) {
+    /* The reason is not UTF-8: fail the connection with 1007 instead of
+     * echoing a close whose reason cannot be a string. */
+    scr_ws_fail_utf8(ws);
+    return;
+  }
   ScrStr *reason = scr_str_new(length >= 2 ? (const char *)payload + 2 : "",
                                length >= 2 ? length - 2 : 0);
   if (!ws->close_sent && ws->sock != NULL) {
@@ -314,6 +426,13 @@ static void scr_ws_read_close_impl(ScrWs *ws, const unsigned char *payload, size
 
 static void scr_ws_deliver(ScrWs *ws, int opcode, const unsigned char *payload, size_t length) {
   if (opcode == SCR_WS_OP_TEXT) {
+    if (!scr_ws_utf8_valid(payload, length)) {
+      /* RFC 6455 8.1: a text message that fails UTF-8 fails the connection
+       * with 1007. The message is the reassembled one, so a sequence split
+       * across fragments passes when the whole is valid. */
+      scr_ws_fail_utf8(ws);
+      return;
+    }
     ScrStr *text = scr_str_new((const char *)(length ? payload : (const unsigned char *)""), length);
     ScrDyn *data = scr_dyn_new_str(text);
     scr_str_release(text);
@@ -965,10 +1084,14 @@ static bool scr_ws_protocols(ScrDyn *protocols, ScrStr **offered) {
     if (!scr_ws_is_token(protocols->v.str->data, protocols->v.str->len)) return false;
     joined = scr_str_retain(protocols->v.str);
   } else if (protocols->kind == SCR_DYN_ARR) {
-    ScrDyn **items = protocols->v.arr.items;
+    /* ToString on an element runs JavaScript that can grow or replace the
+     * array, freeing the backing the elements were read through: snapshot
+     * the elements (each retained) before the first coercion. */
     size_t count = (size_t)protocols->v.arr.len;
+    ScrDyn **items = calloc(count ? count : 1, sizeof *items);
     ScrStr **tokens = calloc(count ? count : 1, sizeof *tokens);
-    if (tokens == NULL) scr_trap("scriptc: out of memory\n");
+    if (items == NULL || tokens == NULL) scr_trap("scriptc: out of memory\n");
+    for (size_t i = 0; i < count; i++) items[i] = scr_dyn_retain(protocols->v.arr.items[i]);
     bool ok = true;
     for (size_t i = 0; i < count && ok; i++) {
       tokens[i] = scr_dyn_string_coerce_js(items[i]);
@@ -1000,6 +1123,8 @@ static bool scr_ws_protocols(ScrDyn *protocols, ScrStr **offered) {
       free(text);
     }
     for (size_t i = 0; i < count; i++) scr_str_release(tokens[i]);
+    for (size_t i = 0; i < count; i++) scr_dyn_release(items[i]);
+    free(items);
     free(tokens);
     if (!ok) {
       if (joined != NULL) scr_str_release(joined);
@@ -1097,9 +1222,12 @@ ScrDyn *scr_websocket_new(ScrDyn *url, ScrDyn *protocols) {
   scr_url_release(parsed);
 
   scr_et_broadcast_install();
-  ScrWs *ws = calloc(1, sizeof *ws);
+  static ScrCycType cyc_type = {&scr_ws_trace, &scr_ws_gcfree, SCR_CYC_KIND_NONE, 0};
+  ScrWs *ws = scr_cyc_alloc(sizeof *ws, &cyc_type);
   if (ws == NULL) scr_trap("scriptc: out of memory\n");
+  memset(ws, 0, sizeof *ws);
   ws->rc = 1;
+  scr_obj_alloc_note();
   ws->ready_state = SCR_WS_CONNECTING;
   ws->url = ws_url;
   ws->offered = offered;

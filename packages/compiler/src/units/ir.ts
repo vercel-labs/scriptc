@@ -26,6 +26,18 @@ import type {
   IrUnionDef,
 } from "../ir/ir.js";
 
+/** Functions the build makes for the whole program rather than for a unit:
+ * the class-dispatch helpers, the class tables and per-method-value helpers,
+ * spread helpers and the generator dispatch. Their bodies and names come from
+ * every unit's classes and from the program's sites, every build regenerates
+ * them, and a stored unit neither defines them nor may reuse them. Pins and
+ * stored IR slices both leave them out. */
+const PROGRAM_WIDE_HELPER_PREFIXES = ["%dyn.", "%class.", "%method.", "%prototype.", "%spread."];
+
+export function isProgramWideHelperName(name: string): boolean {
+  return PROGRAM_WIDE_HELPER_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
 /** The schema tag a stored slice's metadata carries. */
 export const UNIT_IR_SCHEMA = "scriptc.unit-ir.v1";
 
@@ -124,11 +136,9 @@ export function unitModuleSlice(
 ): UnitIrSlice | null {
   const functions: IrFunction[] = [];
   for (const fn of module.functions) {
-    // The class-dispatch helpers are the build's, not the unit's: a warm
-    // build regenerates them from every unit's classes and site requests, so
-    // a stored copy would duplicate them under the app's numbering. The pins
-    // leave them out for the same reason (lowerer.unitObservation).
-    if (fn.name.startsWith("%dyn.class.") || fn.name.startsWith("%class.")) continue;
+    // Program-wide helpers are the build's, not the unit's (see
+    // isProgramWideHelperName); the pins leave them out for the same reason.
+    if (isProgramWideHelperName(fn.name)) continue;
     const at = relativeOf(fn.loc.file);
     if (at !== undefined && modules.has(at)) functions.push(fn);
   }

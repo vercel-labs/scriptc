@@ -47,6 +47,12 @@
  * backpressure. */
 #include "scr_runtime.h"
 
+/* Stream/consumers blob(): its Blob constructor lives in the blob unit.
+ * The reference is weak so a stream program that never calls blob() links
+ * no blob unit — the sanitized runtime has no section collection to drop
+ * an unused strong reference. */
+ScrDyn *scr_sc_blob_value(ScrBytes *all) __attribute__((weak));
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -5903,16 +5909,9 @@ static void scr_sc_settle_ok(ScrClosure *cb, int kind) {
     return;
   }
   if (kind == SCR_SC_BLOB) {
-    /* Node's blob() collects the chunks into `new Blob(parts)`: no type,
-     * so `blob.type` is "", and the size counts the concatenated bytes. */
-    /* new Blob(parts): the constructor's first argument is the list of
-     * parts, so the bytes ride in a one-element array inside the args. */
-    ScrDyn *list = scr_dyn_new_arr();
-    scr_dyn_arr_push(list, scr_dyn_new_bytes(all));
-    ScrDyn *args = scr_dyn_new_arr();
-    scr_dyn_arr_push(args, list);
-    ScrDyn *blob = scr_blob_new(args);
-    scr_dyn_release(args);
+    /* Node's blob() collects the chunks into `new Blob(parts)` with no
+     * type (its blob unit builds the Blob; see the weak reference above). */
+    ScrDyn *blob = scr_sc_blob_value != NULL ? scr_sc_blob_value(all) : NULL;
     if (blob == NULL) {
       /* Blob construction threw (an exception is pending). */
       scr_bytes_release(all);

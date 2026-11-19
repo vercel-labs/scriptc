@@ -16,6 +16,11 @@
  * dyn value) that settle on Node's microtask turn for the Blob's part
  * count. scr_blob_is answers `v instanceof Blob` (kind 0) or `File` (1). */
 ScrDyn *scr_blob_new(ScrDyn *args);
+/* stream/consumers blob(): the collected bytes as a Blob with an empty
+ * type (+1, or NULL with the construction's exception pending). Borrows
+ * the bytes. In the blob unit so the consumers' settlement carries only a
+ * weak reference to it. */
+ScrDyn *scr_sc_blob_value(ScrBytes *all);
 ScrDyn *scr_file_new(ScrDyn *args);
 ScrDyn *scr_blob_slice(ScrDyn *self, ScrDyn *args);
 /* buffer.resolveObjectURL(id): ToString(id), then the Blob registered under

@@ -5761,6 +5761,56 @@ void scr_queue_microtask_dyn_als(const ScrDyn *cb) {
   if (c) scr_queue_microtask_als(c);
 }
 
+/* The public queueMicrotask entries wrap the callback in Node's 'Microtask'
+ * resource when the dyn-async unit installed its wrapper; a wrapper that
+ * throws while building the resource answers NULL with the exception
+ * pending and schedules nothing, as Node's queueMicrotask propagates the
+ * constructor's error. */
+SCR_TL ScrAsyncMicrotaskResource scr_async_microtask_resource = NULL;
+
+/* The public queueMicrotask wrapper's execution scope (scr_async.h). */
+double scr_async_new_id(void) { return scr_async_next_id(); }
+
+void scr_async_exec_push(double id, double trigger, double previous[2]) {
+  previous[0] = scr_async_exec_id_value;
+  previous[1] = scr_async_exec_trigger_value;
+  scr_async_exec_id_value = id;
+  scr_async_exec_trigger_value = trigger;
+}
+
+void scr_async_exec_pop(const double previous[2]) {
+  scr_async_exec_id_value = previous[0];
+  scr_async_exec_trigger_value = previous[1];
+}
+
+void scr_queue_microtask_user(ScrClosure *cb) {
+  if (scr_async_microtask_resource != NULL) {
+    cb = scr_async_microtask_resource(cb);
+    if (cb == NULL) return;
+  }
+  scr_queue_microtask(cb);
+}
+
+void scr_queue_microtask_user_als(ScrClosure *cb) {
+  if (scr_async_microtask_resource != NULL) {
+    cb = scr_async_microtask_resource(cb);
+    if (cb == NULL) return;
+  } else {
+    cb = scr_als_bind(cb);
+  }
+  scr_queue_microtask(cb);
+}
+
+void scr_queue_microtask_dyn_user(const ScrDyn *cb) {
+  ScrClosure *c = scr_micro_dyn_closure(cb);
+  if (c) scr_queue_microtask_user(c);
+}
+
+void scr_queue_microtask_dyn_user_als(const ScrDyn *cb) {
+  ScrClosure *c = scr_micro_dyn_closure(cb);
+  if (c) scr_queue_microtask_user_als(c);
+}
+
 /* ── the event hooks (scr_events.c) ──────────────────────────────────
  * Process signal/exit events and the piped-stdin surface live in
  * scr_events.c, which links ONLY into binaries whose IR uses those

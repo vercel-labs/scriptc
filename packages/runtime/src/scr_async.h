@@ -750,6 +750,26 @@ double scr_set_immediate(ScrClosure *cb); /* cb ownership moves in */
 void scr_queue_microtask(ScrClosure *cb);
 void scr_queue_microtask_dyn(const ScrDyn *cb);
 void scr_queue_microtask_dyn_als(const ScrDyn *cb);
+/* The PUBLIC queueMicrotask entries (the global the compiler lowers a
+ * program's queueMicrotask to), as opposed to the runtime's own microtask
+ * scheduling: with async hooks installed, the dyn-async unit wraps the
+ * callback in the 'Microtask' resource Node's AsyncResource('Microtask')
+ * gives it (installed through the pointer below), so init/before/after/
+ * destroy fire and the callback runs with the resource's ids. cb ownership
+ * moves in. */
+void scr_queue_microtask_user(ScrClosure *cb);
+void scr_queue_microtask_user_als(ScrClosure *cb);
+void scr_queue_microtask_dyn_user(const ScrDyn *cb);
+void scr_queue_microtask_dyn_user_als(const ScrDyn *cb);
+typedef ScrClosure *(*ScrAsyncMicrotaskResource)(ScrClosure *cb /* moves in */);
+extern SCR_TL ScrAsyncMicrotaskResource scr_async_microtask_resource; /* NULL: no hooks */
+/* The execution scope the public queueMicrotask wrapper (scr_async_dyn.c)
+ * runs its callback under: a fresh id from the core's counter, and the
+ * execution-id pair pushed and popped around the callback. `previous` holds
+ * the id and trigger to restore. */
+double scr_async_new_id(void);
+void scr_async_exec_push(double id, double trigger, double previous[2]);
+void scr_async_exec_pop(const double previous[2]);
 /* Node's timer callback gate, raised where the callback is not statically
  * a function: a non-function throws ERR_INVALID_ARG_TYPE synchronously,
  * with the "Received ..." rendering, before anything schedules and before

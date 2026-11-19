@@ -22,8 +22,11 @@ export function exactClassCrossing(
   const seen = new Set<string>([info.def.name]);
   const walk = (current: ClassInfo, depth: number): void => {
     for (const sub of current.subclasses) {
-      if (!seen.has(sub.def.name) && !sub.generic && !sub.localClass && !sub.def.runtime)
-        below.push({ name: sub.def.name, depth });
+      // A class nothing constructs has no instances to test for, and its abstract members have
+      // no values a table could hold: no branch. Its own descendants are still walked.
+      if (!seen.has(sub.def.name) && !sub.generic && !sub.localClass && !sub.def.runtime) {
+        if (!sub.def.abstract) below.push({ name: sub.def.name, depth });
+      }
       seen.add(sub.def.name);
       walk(sub, depth + 1);
     }

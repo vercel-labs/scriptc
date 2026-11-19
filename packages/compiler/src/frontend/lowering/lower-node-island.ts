@@ -28,7 +28,7 @@ import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import { exactClassCrossing } from "./exact-class.js";
-import { genericOverrideBelow } from "./lower-classes.js";
+import { findMethodOn, genericOverrideBelow } from "./lower-classes.js";
 import { isOptionalChainTail } from "./expressions/optional-chains.js";
 import {
   BOOL,
@@ -2139,6 +2139,10 @@ function classMethodsBuilderOf(
       // class decides — and the lowering refuses the value: the table leaves
       // the member out instead of failing the build that shares the class.
       if (genericOverrideBelow(info, m)) continue;
+      // An abstract member has no body to answer with. A class with instances overrides it, and
+      // the class that declares it has none, so the table leaves it out rather than refusing the
+      // build (a value typed as the abstract class still crosses, with its concrete methods).
+      if (findMethodOn(lowerer, info, m)?.sig.abstract === true) continue;
       // A method an island calls returns its class-typed result with the class it has at run
       // time, so a canvas obtained as HTMLElement answers getContext and its fields.
       const method = classMethodValue(lowerer, blame, info, m, loc, { exactReturn: true });

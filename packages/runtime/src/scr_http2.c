@@ -53,11 +53,18 @@
 #include "scr_platform.h"
 #include "scr_runtime.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include <io.h>
+#endif
 
 static void scr_h2_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
@@ -677,6 +684,7 @@ struct ScrH2Stream {
   bool end_emitted;
   bool close_queued, close_emitted;
   bool err_code_queued; /* a nonzero-code 'error' rides the close sweep */
+  bool suppress_rst_error; /* the stream's error was already reported */
   bool flowing;         /* a 'data' listener or resume(); pause() clears */
   bool user_paused;     /* the program called pause() */
   bool had_data;        /* a nonempty DATA frame arrived (the empty-body
@@ -1322,8 +1330,14 @@ static void scr_h2_session_cancel_pings(ScrH2Session *s) {
 /* A stream that closed with a nonzero code errors before anything hears
  * of the close — except NO_ERROR and CANCEL (Node's rule on both the
  * closing and the receiving side). */
+static SCR_TL ScrError *scr_h2_err_override = NULL;
+
 static void scr_h2_stream_fire_error(ScrH2Stream *st) {
   uint32_t code = st->rst_code;
+  if (st->suppress_rst_error) {
+    st->suppress_rst_error = false;
+    return;
+  }
   if (code == 0 || code == 8 || scr_exc_pending()) return;
   const char *name = scr_h2_code_name(code);
   char msg[80];
@@ -2502,6 +2516,156 @@ void scr_http2_stream_end_bytes(ScrH2Stream *st, ScrBytes *data /*borrowed*/) {
   scr_h2_buf_put(&st->wbuf, (const char *)data->data, (size_t)(data->len * scr_bytes_elem_size(data->elem)));
   st->want_end = true;
   scr_h2_stream_flush(st);
+}
+
+#ifdef _WIN32
+#define SCR_H2_LSEEK _lseeki64
+#define SCR_H2_READ _read
+typedef __int64 scr_h2_file_off;
+#else
+#define SCR_H2_LSEEK lseek
+#define SCR_H2_READ read
+typedef off_t scr_h2_file_off;
+#endif
+
+static const char *scr_h2_errno_name(int e) {
+  switch (e) {
+  case ENOENT: return "ENOENT";
+  case EACCES: return "EACCES";
+  case EISDIR: return "EISDIR";
+  case EBADF: return "EBADF";
+  case EMFILE: return "EMFILE";
+  case ENFILE: return "ENFILE";
+  case ENOMEM: return "ENOMEM";
+  case ELOOP: return "ELOOP";
+  case ENAMETOOLONG: return "ENAMETOOLONG";
+  default: return "EIO";
+  }
+}
+
+/* Node reports a failed respondWithFile/respondWithFD open/read as the raw
+ * fs error on the stream, then resets it with NGHTTP2_INTERNAL_ERROR. */
+static void scr_h2_stream_fail_file(ScrH2Stream *st, int err, const char *action,
+                                    const char *path, size_t pathlen) {
+  const char *name = scr_h2_errno_name(err);
+  const char *text = strerror(err);
+  char lower[160];
+  size_t i = 0;
+  for (; text != NULL && text[i] != '\0' && i + 1 < sizeof lower; i++)
+    lower[i] = i == 0 ? (char)(text[0] >= 'A' && text[0] <= 'Z' ? text[0] + 32 : text[0]) : text[i];
+  lower[i] = '\0';
+  ScrH2Buf msg = {0};
+  scr_h2_buf_put(&msg, name, strlen(name));
+  scr_h2_buf_put(&msg, ": ", 2);
+  scr_h2_buf_put(&msg, lower, i);
+  scr_h2_buf_put(&msg, ", ", 2);
+  scr_h2_buf_put(&msg, action, strlen(action));
+  if (path != NULL) {
+    scr_h2_buf_put(&msg, " '", 2);
+    scr_h2_buf_put(&msg, path, pathlen);
+    scr_h2_buf_put(&msg, "'", 1);
+  }
+  ScrStr *m = scr_str_new(msg.data, msg.len);
+  ScrError *e = scr_error_from_event_message(m);
+  scr_error_set_code(e, name);
+  free(msg.data);
+  scr_h2_err_override = e;
+  scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+  scr_h2_err_override = NULL;
+  scr_error_release(e);
+  scr_str_release(m);
+  st->suppress_rst_error = true;
+  scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
+}
+
+static void scr_h2_respond_with_content(ScrH2Stream *st, ScrArr *pairs, const char *data,
+                                         size_t len, bool wait_trailers) {
+  if (wait_trailers) {
+    scr_http2_stream_respond_wait(st, pairs, false, true);
+    if (len > 0) scr_h2_stream_send(st, data, len);
+    scr_http2_stream_end(st);
+    return;
+  }
+  if (len == 0) {
+    scr_http2_stream_respond_wait(st, pairs, true, false);
+    return;
+  }
+  scr_http2_stream_respond_wait(st, pairs, false, false);
+  scr_h2_stream_send(st, data, len);
+  scr_http2_stream_end(st);
+}
+
+void scr_http2_stream_respond_with_file(ScrH2Stream *st, ScrStr *path /*borrowed*/,
+                                       ScrArr *pairs /*borrowed, nullable*/, double offset,
+                                       double length, bool wait_trailers) {
+  if (st->destroyed || st->respond_sent) return;
+  char *owned = NULL;
+  const char *cpath = scr_str_utf8(path, &owned);
+  FILE *file = fopen(cpath, "rb");
+  if (file == NULL) {
+    int err = errno;
+    scr_h2_stream_fail_file(st, err, "open", cpath, strlen(cpath));
+    scr_str_utf8_end(owned);
+    return;
+  }
+  long size = 0;
+  if (fseek(file, 0, SEEK_END) == 0) size = ftell(file);
+  if (size < 0) size = 0;
+  long start = offset > 0 ? (long)offset : 0;
+  long want = length >= 0 ? (long)length : size - start;
+  if (start > size) { start = size; want = 0; }
+  if (want < 0) want = 0;
+  if (start + want > size) want = size - start;
+  char *buf = want > 0 ? malloc((size_t)want) : NULL;
+  size_t got = 0;
+  if (buf != NULL) {
+    if (fseek(file, start, SEEK_SET) == 0) got = fread(buf, 1, (size_t)want, file);
+    else {
+      int err = errno;
+      fclose(file);
+      scr_h2_stream_fail_file(st, err, "read", cpath, strlen(cpath));
+      free(buf);
+      scr_str_utf8_end(owned);
+      return;
+    }
+  }
+  fclose(file);
+  scr_str_utf8_end(owned);
+  scr_h2_respond_with_content(st, pairs, buf, got, wait_trailers);
+  free(buf);
+}
+
+void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs /*borrowed, nullable*/,
+                                      double offset, double length, bool wait_trailers) {
+  if (st->destroyed || st->respond_sent) return;
+  int ifd = (int)fd;
+  scr_h2_file_off size = SCR_H2_LSEEK(ifd, 0, SEEK_END);
+  if (size < 0) {
+    scr_h2_stream_fail_file(st, errno, "read", NULL, 0);
+    return;
+  }
+  scr_h2_file_off start = offset > 0 ? (scr_h2_file_off)offset : 0;
+  scr_h2_file_off want = length >= 0 ? (scr_h2_file_off)length : size - start;
+  if (start > size) { start = size; want = 0; }
+  if (want < 0) want = 0;
+  if (start + want > size) want = size - start;
+  char *buf = want > 0 ? malloc((size_t)want) : NULL;
+  size_t got = 0;
+  if (buf != NULL) {
+    if (SCR_H2_LSEEK(ifd, start, SEEK_SET) >= 0) {
+      while (got < (size_t)want) {
+        int n = SCR_H2_READ(ifd, buf + got, (unsigned)((size_t)want - got));
+        if (n <= 0) break;
+        got += (size_t)n;
+      }
+    } else {
+      scr_h2_stream_fail_file(st, errno, "read", NULL, 0);
+      free(buf);
+      return;
+    }
+  }
+  scr_h2_respond_with_content(st, pairs, buf, got, wait_trailers);
+  free(buf);
 }
 
 void scr_http2_stream_close(ScrH2Stream *st, double code, ScrClosure *cb /*moves, nullable*/) {
@@ -4118,8 +4282,13 @@ void scr_http2_resp_thunk(ScrClosure *cb, ScrArr *pairs, double status, double f
  * code is ERR_HTTP2_STREAM_ERROR and whose message carries the code name
  * ("Stream closed with error code NGHTTP2_PROTOCOL_ERROR"). */
 void scr_http2_stream_err_thunk(ScrClosure *cb, ScrStr *msg) {
-  ScrError *error = scr_error_new(0 /* Error */, msg);
-  scr_error_set_code(error, "ERR_HTTP2_STREAM_ERROR");
+  ScrError *error;
+  if (scr_h2_err_override != NULL) {
+    error = scr_error_retain(scr_h2_err_override);
+  } else {
+    error = scr_error_new(0 /* Error */, msg);
+    scr_error_set_code(error, "ERR_HTTP2_STREAM_ERROR");
+  }
   ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, error);
 }
 
@@ -4225,8 +4394,13 @@ static void scr_h2_dyn_fire_stream(ScrClosure *cb, ScrH2Stream *st, ScrArr *pair
 /* A stream error for a dyn listener: Node's ERR_HTTP2_STREAM_ERROR. */
 static void scr_h2_dyn_fire_stream_err(ScrClosure *cb, ScrStr *msg) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
-  ScrError *e = scr_error_new(0 /* Error */, msg);
-  scr_error_set_code(e, "ERR_HTTP2_STREAM_ERROR");
+  ScrError *e;
+  if (scr_h2_err_override != NULL) {
+    e = scr_error_retain(scr_h2_err_override);
+  } else {
+    e = scr_error_new(0 /* Error */, msg);
+    scr_error_set_code(e, "ERR_HTTP2_STREAM_ERROR");
+  }
   ScrDyn *arg = scr_dyn_from_error(e);
   ScrDyn *args[1] = { arg };
   ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");

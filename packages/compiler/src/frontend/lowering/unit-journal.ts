@@ -215,7 +215,11 @@ export function quotedStrings(texts: readonly string[]): Set<string> {
         if (start < 0) start = index + 1;
         else {
           const name = text.slice(start, index);
-          if (name.charCodeAt(0) === 37 /* % */ || isInternedId(name, 117) || isInternedId(name, 114))
+          if (
+            name.charCodeAt(0) === 37 /* % */ ||
+            isInternedId(name, 117) ||
+            isInternedId(name, 114)
+          )
             out.add(name);
           start = -1;
         }

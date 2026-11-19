@@ -63670,6 +63670,7 @@
           "tests/corpus/compat-http2-state.mjs",
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
+          "tests/corpus/http2-respond-with-file/main.ts",
           "tests/corpus/http2-trailers.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
         ]
@@ -65909,10 +65910,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.http2stream.pushStream",
-        "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
-        ]
+        "evidence": "compiler-feature:http2.http2stream.pushStream"
       },
       "anchorSource": "exact"
     },
@@ -65961,10 +65959,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.respondWithFD",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-respond-with-file/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65987,10 +65985,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.respondWithFile",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-respond-with-file/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66041,10 +66039,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.pushAllowed",
-        "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
-        ]
+        "evidence": "compiler-feature:http2.pushAllowed"
       },
       "anchorSource": "ancestor"
     },

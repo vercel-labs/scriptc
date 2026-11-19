@@ -124,6 +124,15 @@ ScrNetSocket *scr_http2_session_socket(ScrH2Session *s); /* +1, NULL after teard
 
 /* stream */
 void scr_http2_stream_respond(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/, bool end_stream);
+/* respondWithFile/respondWithFD: send headers, the file's bytes (offset,
+ * length; -1 = from the start / to EOF), and END_STREAM (deferred for
+ * waitForTrailers). A failed open/read reports the fs error on the stream
+ * and resets it with NGHTTP2_INTERNAL_ERROR, as Node does. */
+void scr_http2_stream_respond_with_file(ScrH2Stream *st, ScrStr *path /*borrowed*/,
+                                       ScrArr *pairs /*borrowed, nullable*/, double offset,
+                                       double length, bool wait_trailers);
+void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs /*borrowed, nullable*/,
+                                      double offset, double length, bool wait_trailers);
 /* respond(headers, { endStream, waitForTrailers }): a waiting response's
  * HEADERS carries no END_STREAM; the trailer block ends the stream after
  * 'wantTrailers'. */

@@ -439,7 +439,7 @@ static ScrDyn *stw3_size(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
     } else if (chunk->kind == SCR_DYN_STR && chunk->v.str != NULL) {
       size = stw3_utf16_len(chunk->v.str);
     } else if (chunk->kind == SCR_DYN_ARR) {
-      size = (double)scr_dyn_arr_length(chunk);
+      size = scr_dyn_arr_len(chunk);
     }
   }
   stw3_unref(c);

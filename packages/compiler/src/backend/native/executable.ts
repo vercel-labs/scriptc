@@ -376,7 +376,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // Console built with inspectOptions or colorMode, whose 'auto' mode reads
   // the same tables.
   unit(
-    (u) => (u.opts.events && u.opts.ttyColors === true) || u.opts.consoleOptions === true,
+    (u) =>
+      (u.opts.events && u.opts.ttyColors === true) ||
+      u.opts.consoleOptions === true ||
+      u.opts.inspect === true,
     "scr_tty_colors.c",
   ),
   // readline's terminal mode: rl.terminal sets the regex unit it

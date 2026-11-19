@@ -1,4 +1,4 @@
-/* scriptc runtime — sync and async generators (scr_async.c). Included by
+/* scriptc runtime — generators (scr_async.c) and fetch (scr_fetch.c). Included by
  * scr_runtime.h, which says where new declarations go. */
 #ifndef SCR_GENERATOR_H
 #define SCR_GENERATOR_H

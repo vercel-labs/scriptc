@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { ProxyAgent, request } from "undici";
+import { ProxyAgent, request } from "und\u0069ci";
 
 const dispatcher = new ProxyAgent(process.argv[2]);
 try {

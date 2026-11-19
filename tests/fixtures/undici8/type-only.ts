@@ -1,7 +1,9 @@
-import { type ProxyAgent, request } from "undici";
+import undici, { type ProxyAgent } from "undici";
 
-function get(url: string, options?: ProxyAgent.Options) {
-  return request(url, { method: options ? "POST" : "GET" });
+type ProxyConstructor = typeof undici.ProxyAgent;
+
+function get(url: string, options?: ProxyAgent.Options, _ctor?: ProxyConstructor) {
+  return undici.request(url, { method: options ? "POST" : "GET" });
 }
 
 const res = await get(process.argv[2]! + "/read");

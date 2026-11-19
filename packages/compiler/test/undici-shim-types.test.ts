@@ -148,6 +148,7 @@ export async function run(url: string, lookup: import("node:net").LookupFunction
   const transport = new Transport({ connections: 2 });
   const response: Dispatcher.ResponseData${major === 7 ? "<unknown>" : ""} = await request(url, {
     dispatcher: transport,
+    onInfo({ headers }) { void headers["content-type"]; },
     opaque: { label: "x" },
     body: "payload",
     bodyTimeout: 1000,

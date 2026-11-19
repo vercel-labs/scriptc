@@ -20,6 +20,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { resolveFrom } from "../../node-islands/host.js";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as ts from "../ts7/adapter.js";
+import { staticString } from "../static-string.js";
 import { fileWritesBinding } from "../binding-writes.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../program.js";
@@ -564,21 +565,16 @@ export function collectIslandImport(
   if (!binding.esm && named !== undefined && ts.isNamespaceImport(named)) {
     const nsSymbol = lowerer.checker.getSymbolAtLocation(named.name);
     ts.walkPreorder(sf, (node) => {
-      const name =
-        ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)
-          ? node.name.text
-          : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
-            ? node.argumentExpression.text
-            : undefined;
       if (
-        name !== undefined &&
         (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
         ts.isIdentifier(node.expression) &&
         node.expression.text === named.name.text &&
-        lowerer.checker.getSymbolAtLocation(node.expression) === nsSymbol &&
-        !snapshotNames.includes(name)
+        lowerer.checker.getSymbolAtLocation(node.expression) === nsSymbol
       ) {
-        snapshotNames.push(name);
+        const name = ts.isPropertyAccessExpression(node)
+          ? node.name.text
+          : staticString(lowerer, node.argumentExpression);
+        if (name !== null && !snapshotNames.includes(name)) snapshotNames.push(name);
       }
       return undefined;
     });
@@ -2693,12 +2689,27 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (ts.isElementAccessExpression(expr)) {
     if (!isForeignExpr(lowerer, expr.expression)) return null;
     lowerer.usesNodeIsland = true;
-    if (ts.isIdentifier(expr.expression) && ts.isStringLiteralLike(expr.argumentExpression)) {
+    if (ts.isIdentifier(expr.expression)) {
       const binding = islandBindingOf(lowerer, expr.expression);
-      if (binding?.kind === "namespace" && !binding.module.esm) {
-        const name = expr.argumentExpression.text;
+      const name =
+        binding?.kind === "namespace" && !binding.module.esm
+          ? staticString(lowerer, expr.argumentExpression)
+          : null;
+      if (name !== null) {
         const target = islandReceiver(lowerer, expr.expression, name, loc);
-        return fromIsland(lowerer, target.direct ?? islandGet(target.value, name, loc), expr);
+        const result = fromIsland(
+          lowerer,
+          target.direct ?? islandGet(target.value, name, loc),
+          expr,
+        );
+        if (ts.isStringLiteralLike(expr.argumentExpression)) return result;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: lowerer.lowerExpr(expr.argumentExpression), loc }],
+          result,
+          type: result.type,
+          loc,
+        };
       }
     }
     // `(p as V)[k]`: an assertion on a handle is a view, never a conversion

@@ -8,7 +8,7 @@ import type { IncomingHttpHeaders, Profile, RequestBody, UndiciHeaders } from ".
 
 /** request(url, options)'s options: Dispatcher.RequestOptions without
  * origin/path, an optional method, and the dispatcher to use. */
-export interface TopLevelRequestOptions {
+export interface TopLevelRequestOptions<H = IncomingHttpHeaders> {
   dispatcher?: Dispatcher;
   method?: string;
   path?: string;
@@ -23,7 +23,7 @@ export interface TopLevelRequestOptions {
   throwOnError?: boolean;
   opaque?: unknown;
   signal?: AbortSignal | null;
-  onInfo?(info: { statusCode: number; headers: IncomingHttpHeaders | string[] }): void;
+  onInfo?(info: { statusCode: number; headers: H }): void;
   highWaterMark?: number;
   responseHeaders?: "raw" | null;
 }
@@ -54,14 +54,14 @@ export function hasCustomGlobalDispatcher(): boolean {
 
 export function request(
   url: string | URL,
-  options: TopLevelRequestOptions | undefined,
+  options: TopLevelRequestOptions<ResponseHeaders> | undefined,
   createGlobal: () => Dispatcher,
   profile: Profile,
 ): Promise<ResponseData<ResponseHeaders>> {
   // makeDispatcher validates synchronously: an invalid URL throws at the
   // call rather than rejecting.
   {
-    const opts: TopLevelRequestOptions = options ?? {};
+    const opts: TopLevelRequestOptions<ResponseHeaders> = options ?? {};
     let target: URL;
     const path = opts.path;
     if (path !== undefined) {
@@ -73,7 +73,7 @@ export function request(
     const dispatcher = opts.dispatcher ?? getGlobalDispatcher(createGlobal);
     const method =
       opts.method !== undefined && opts.method !== "" ? opts.method : opts.body ? "PUT" : "GET";
-    const dispatchOptions: RequestOptions = {
+    const dispatchOptions: RequestOptions<ResponseHeaders> = {
       origin: target.origin,
       path: target.search ? `${target.pathname}${target.search}` : target.pathname,
       query: opts.query,

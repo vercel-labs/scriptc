@@ -106,7 +106,7 @@ export function getGlobalDispatcher(): Dispatcher {
 export function request(url: string | URL, options?: TopLevelRequestOptions): Promise<ResponseData>;
 export function request(
   url: string | URL,
-  options?: TopLevelRequestOptions,
+  options?: TopLevelRequestOptions<ResponseHeaders>,
 ): Promise<ResponseData<ResponseHeaders>> {
   return coreRequest(url, options, () => new Agent(), profile);
 }

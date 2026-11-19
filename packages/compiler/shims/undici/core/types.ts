@@ -22,7 +22,7 @@ export type RequestBody = string | Buffer | Uint8Array | null;
  * is handed to slots typed by this package's dispatch(): for that, every
  * member here takes at least what undici-types declare for it, and a
  * value this implementation does not send is refused where it is read. */
-export interface DispatchOptions {
+export interface DispatchOptions<H = IncomingHttpHeaders> {
   origin?: string | URL;
   path: string;
   query?: Record<string, unknown>;
@@ -47,7 +47,7 @@ export interface DispatchOptions {
    * (client.ts, expectsPayload). */
   __framedAsNode?: boolean;
   signal?: AbortSignal | null;
-  onInfo?(info: { statusCode: number; headers: IncomingHttpHeaders | string[] }): void;
+  onInfo?(info: { statusCode: number; headers: H }): void;
   highWaterMark?: number;
 }
 

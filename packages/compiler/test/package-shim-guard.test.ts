@@ -158,6 +158,42 @@ describe("partial package shim selection", () => {
     120_000,
   );
 
+  test("unchecked TypeScript keeps a named proxy used at runtime", () => {
+    const entry = projectWith(
+      "unchecked-ts-proxy",
+      "bundled",
+      '// @ts-nocheck\nimport { ProxyAgent } from "undici";\nconst agent = new ProxyAgent(process.argv[2]);\nawait agent.close();\n',
+    );
+    symlinkSync(
+      join(dirname(proxy), "node_modules"),
+      join(dirname(entry), "node_modules"),
+      "junction",
+    );
+    const { coverage } = analyze(entry);
+    expect(coverage.diagnostics).toEqual([]);
+    expect(coverage.runtimeFences ?? []).toEqual([]);
+    expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.decision])).toEqual([
+      ["undici", "auto"],
+    ]);
+  });
+
+  test("keeps type errors discovered through an erased package type query", () => {
+    const entry = projectWith(
+      "package-type-query",
+      "bundled",
+      'import u from "undici";\ntype Proxy = InstanceType<typeof u.ProxyAgent>;\nconst wrong: Proxy = 1;\nconsole.log(typeof u.request, wrong);\n',
+    );
+    symlinkSync(
+      join(dirname(proxy), "node_modules"),
+      join(dirname(entry), "node_modules"),
+      "junction",
+    );
+    const { coverage } = analyze(entry);
+    expect(coverage.preflightFailed).toBe(true);
+    expect(coverage.diagnostics.some((d) => d.message.includes("not assignable"))).toBe(true);
+    expect(coverage.nodeIslands?.islands ?? []).toEqual([]);
+  });
+
   test("an explicitly marked CommonJS proxy has no unsupported-module diagnostic", () => {
     const { coverage } = analyze(join(dirname(proxy), "proxy.cjs"), {
       nodeIslands: { islands: ["undici"] },

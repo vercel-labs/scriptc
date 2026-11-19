@@ -1,9 +1,10 @@
 /** Select the first frontend shared by build and coverage. Installed package
  * declarations may resolve a use outside a partial shim's native surface. */
+import type { SrcLoc } from "../ir/ir.js";
 import type { NodeIslandPolicy } from "../node-islands/policy.js";
 import * as ts from "./ts7/adapter.js";
 import type { LoadResult } from "./program.js";
-import { isJsSourceFileName } from "./tsc-codes.js";
+import { staticString } from "./static-string.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { hasPartialShim, isPackageShimFile, partialShimEntries } from "./package-shims.js";
 import type { Frontend } from "./pipeline.js";
@@ -20,6 +21,14 @@ function fallbackSites(fe: Frontend): Set<string> {
     if (MEMBER_DIAGNOSTICS.has(site.code)) sites.add(`${site.file}\0${site.pos}`);
   }
   return sites;
+}
+
+export function isErasedTypeQuery(load: LoadResult, loc: SrcLoc): boolean {
+  const sf = load.program.getSourceFile(loc.file);
+  for (let node = sf && ts.nodeAtSpan(sf, loc.start, loc.end); node; node = node.parent) {
+    if (ts.isTypeQueryNode(node)) return true;
+  }
+  return false;
 }
 
 const SHIM_READ_KINDS = new Set([
@@ -40,7 +49,6 @@ export function usesInstalledShimValue(load: LoadResult, name: string): boolean 
   for (const sf of new Set([load.entry, ...load.moduleOrder])) {
     if (
       isPackageShimFile(sf.fileName) ||
-      !ts.sourceTextIncludes(sf, name) ||
       !moduleSourceCandidates(program, sf).specifiers.includes(name)
     )
       continue;
@@ -84,12 +92,13 @@ export function usesInstalledShimValue(load: LoadResult, name: string): boolean 
           ts.isStringLiteral(node.moduleSpecifier) &&
           node.moduleSpecifier.text === name &&
           node.importClause &&
-          !node.importClause.isTypeOnly &&
-          isJsSourceFileName(sf.fileName)
+          !node.importClause.isTypeOnly
         ) {
           const bindings = node.importClause.namedBindings;
           if (bindings && ts.isNamedImports(bindings))
-            found = bindings.elements.nodes.some((e) => extra.has((e.propertyName ?? e.name).text));
+            found = bindings.elements.nodes.some(
+              (e) => !e.isTypeOnly && extra.has((e.propertyName ?? e.name).text),
+            );
         } else if (
           ts.isExportDeclaration(node) &&
           node.moduleSpecifier &&
@@ -97,10 +106,10 @@ export function usesInstalledShimValue(load: LoadResult, name: string): boolean 
           node.moduleSpecifier.text === name &&
           node.exportClause &&
           ts.isNamedExports(node.exportClause) &&
-          isJsSourceFileName(sf.fileName)
+          !node.isTypeOnly
         ) {
-          found = node.exportClause.elements.nodes.some((e) =>
-            extra.has((e.propertyName ?? e.name).text),
+          found = node.exportClause.elements.nodes.some(
+            (e) => !e.isTypeOnly && extra.has((e.propertyName ?? e.name).text),
           );
         } else if (
           ts.isVariableDeclaration(node) &&
@@ -117,26 +126,22 @@ export function usesInstalledShimValue(load: LoadResult, name: string): boolean 
               );
             }) && isPackageObject(node.initializer);
         } else {
-          let key: string;
+          let key: string | null;
           let receiver: ts.Expression;
           if (ts.isPropertyAccessExpression(node)) {
             key = node.name.text;
             receiver = node.expression;
-          } else if (
-            ts.isElementAccessExpression(node) &&
-            ts.isStringLiteralLike(node.argumentExpression)
-          ) {
-            key = node.argumentExpression.text;
+          } else if (ts.isElementAccessExpression(node)) {
+            key = staticString({ checker }, node.argumentExpression);
             receiver = node.expression;
           } else if (
             ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
-            ts.isStringLiteralLike(node.left)
+            node.operatorToken.kind === ts.SyntaxKind.InKeyword
           ) {
-            key = node.left.text;
+            key = staticString({ checker }, node.left);
             receiver = node.right;
           } else return undefined;
-          found = extra.has(key) && isPackageObject(receiver);
+          found = key !== null && extra.has(key) && isPackageObject(receiver);
         }
         return found ? "stop" : undefined;
       },
@@ -153,23 +158,35 @@ export function loadWithShimFallback(
 ): Frontend {
   let selected = new Set([...policy.forcedNode.keys()].filter(hasPartialShim));
   let fe = load(selected);
-  if (policy.mode !== "auto") return fe;
 
   for (const name of fe.loadedIslandShims?.() ?? []) {
-    if (policy.forcedNative.has(name) || selected.has(name)) continue;
-    const linked = fe.usesInstalledShimValue?.(name) === true;
+    if (selected.has(name)) continue;
+    const auto = policy.mode === "auto" && !policy.forcedNative.has(name);
+    const linked = auto && fe.usesInstalledShimValue?.(name) === true;
     const sites = fallbackSites(fe);
-    if (!linked && sites.size === 0) continue;
+    const erased = new Set(
+      fe.preflight
+        .filter((d) => d.code === "SC0001" && fe.isErasedTypeQuery?.(d.loc))
+        .map((d) => `${d.loc.file}\0${d.loc.start}`),
+    );
+    if (!linked && (auto ? sites : erased).size === 0) continue;
     fe.dispose();
     const trial = new Set([...selected, name]);
     fe = load(trial);
     const remaining = fallbackSites(fe);
-    if (linked || [...sites].some((site) => !remaining.has(site))) {
+    const resolved = [...sites].filter((site) => !remaining.has(site));
+    if (linked || (auto && resolved.some((site) => !erased.has(site)))) {
       selected = trial;
-    } else {
-      fe.dispose();
-      fe = load(selected);
+      continue;
     }
+    // A typeof query can name an installed export without loading it. Keep the
+    // installed checker's diagnostics for the authored types and lower the native graph.
+    const typeOnly = resolved.length > 0 && resolved.every((site) => erased.has(site));
+    const authored = fe.preflight.filter((d) => d.code === "SC0001");
+    fe.dispose();
+    fe = load(selected);
+    if (typeOnly)
+      fe = { ...fe, preflight: [...fe.preflight.filter((d) => d.code !== "SC0001"), ...authored] };
   }
   const scan = fe.nodeIslandScan;
   const automatic = [...selected].filter((name) => !policy.forcedNode.has(name));

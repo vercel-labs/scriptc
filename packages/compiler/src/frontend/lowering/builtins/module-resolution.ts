@@ -1,3 +1,5 @@
+import { staticString } from "../../static-string.js";
+export { staticString } from "../../static-string.js";
 import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as posix from "node:path/posix";
@@ -851,42 +853,6 @@ export function lowerCreateRequireCall(
     lowerer.pushDiag(unsupportedPackageImportDiag(pkgName, loc));
     throw new PoisonError();
   }
-}
-
-/** The statically-known text of a module specifier expression. Module
- * resolution is a build-time artifact, so only a value the compiler already
- * knows can name a module: a string literal (or substitution-free
- * template), a parenthesized or cast form of one, a `+` concatenation of
- * those, or a `const` binding whose initializer folds to one
- * (`const FS = "node:" + "fs"; import(FS)`). Null when the text is only
- * known at run time. */
-export function staticString(
-  lowerer: Lowerer,
-  node: ts.Expression | undefined,
-  depth = 0,
-): string | null {
-  if (node === undefined || depth > 8) return null;
-  const value = withoutParenthesesTypeWrappers(node);
-  if (ts.isStringLiteralLike(value)) return value.text;
-  if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = staticString(lowerer, value.left, depth + 1);
-    if (left === null) return null;
-    const right = staticString(lowerer, value.right, depth + 1);
-    return right === null ? null : left + right;
-  }
-  if (ts.isIdentifier(value)) {
-    const decl = lowerer.checker.getSymbolAtLocation(value)?.valueDeclaration;
-    if (
-      decl !== undefined &&
-      ts.isVariableDeclaration(decl) &&
-      decl.initializer !== undefined &&
-      decl.initializer !== value &&
-      ts.isVariableDeclarationList(decl.parent) &&
-      (decl.parent.flags & ts.NodeFlags.Const) !== 0
-    )
-      return staticString(lowerer, decl.initializer, depth + 1);
-  }
-  return null;
 }
 
 function runtimeResolveThrow(error: RuntimeResolveError, type: IrType, loc: SrcLoc): IrExpr {

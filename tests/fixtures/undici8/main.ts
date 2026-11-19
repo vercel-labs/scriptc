@@ -46,6 +46,34 @@ try {
     if (!(err instanceof Error)) throw err;
     console.log("handler", err.message);
   }
+  const failure = new FailingDispatcher();
+  try {
+    await failure.request({ path: "/", method: "GET" });
+  } catch (err) {
+    if (!(err instanceof Error)) throw err;
+    console.log("instance", err.message);
+  }
+  class LocalDispatcher extends Dispatcher {
+    dispatch(_opts: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler): boolean {
+      const controller = { rawHeaders: null, paused: false, aborted: false, reason: null,
+        pause() {}, resume() {}, abort(_reason: Error) {} };
+      handler.onRequestStart!(controller, { route: "chosen" });
+      handler.onResponseStart!(controller, 103, { "x-source": "hint" }, "Early Hints");
+      handler.onResponseStart!(controller, 200, { "x-source": "parsed" }, "OK");
+      handler.onResponseEnd!(controller, {});
+      return true;
+    }
+  }
+  const local = new LocalDispatcher();
+  const parsed = await request(origin, { dispatcher: local, onInfo({ headers }) {
+    console.log("hint", headers["x-source"]);
+  } });
+  console.log("custom", parsed.headers["x-source"], JSON.stringify(parsed.context));
+  await parsed.body.dump();
+  const localRaw = await local.request({ path: "/", method: "GET", responseHeaders: "raw",
+    onInfo({ headers }) { console.log("raw hint", JSON.stringify(headers)); } });
+  console.log("custom raw", JSON.stringify(localRaw.headers), agent instanceof Dispatcher);
+  await localRaw.body.dump();
   const missing = await fetch(origin + "/missing", { dispatcher: pool });
   console.log(missing.status, await missing.text());
   console.log("pool factory", poolFactoryOption);

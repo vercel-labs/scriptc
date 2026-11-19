@@ -22,7 +22,7 @@ import type {
 
 /** Dispatcher.RequestOptions: the dispatch options (which carry the
  * request members, see DispatchOptions). */
-export interface RequestOptions extends DispatchOptions {
+export interface RequestOptions<H = IncomingHttpHeaders> extends DispatchOptions<H> {
   responseHeaders?: "raw" | null;
 }
 
@@ -62,9 +62,11 @@ export class Dispatcher extends EventEmitter {
 
   /** Dispatcher.prototype.request: dispatches through this dispatcher and
    * resolves with the response once its headers arrive. */
-  request(options: RequestOptions & { responseHeaders: "raw" }): Promise<ResponseData<string[]>>;
+  request(
+    options: RequestOptions<string[]> & { responseHeaders: "raw" },
+  ): Promise<ResponseData<string[]>>;
   request(options: RequestOptions): Promise<ResponseData>;
-  request(options: RequestOptions): Promise<ResponseData<ResponseHeaders>> {
+  request(options: RequestOptions<ResponseHeaders>): Promise<ResponseData<ResponseHeaders>> {
     return requestThrough(this, options, this.__undiciProfile());
   }
 
@@ -107,7 +109,26 @@ export class Dispatcher extends EventEmitter {
   }
 }
 
-export class DispatcherBase extends Dispatcher {
+/** A user-defined subclass inherits the handler protocol of its package entry. */
+export class DispatcherV8 extends Dispatcher {
+  __undiciProfile(): Profile {
+    return { major: 8 };
+  }
+}
+
+export declare namespace DispatcherV8 {
+  export import DispatchOptions = Dispatcher.DispatchOptions;
+  export import DispatchHandler = Dispatcher.DispatchHandler;
+  export import DispatchController = Dispatcher.DispatchController;
+  export import DispatchInterceptor = Dispatcher.DispatchInterceptor;
+  export import Dispatch = Dispatcher.Dispatch;
+  export import HttpMethod = Dispatcher.HttpMethod;
+  export import UndiciHeaders = Dispatcher.UndiciHeaders;
+  export import RequestOptions = Dispatcher.RequestOptions;
+  export import ResponseData = Dispatcher.ResponseData;
+}
+
+export class DispatcherBase extends DispatcherV8 {
   __profile: Profile;
   __destroyed: boolean;
   __closed: boolean;
@@ -240,7 +261,7 @@ export class DispatcherBase extends Dispatcher {
  * promise callback). */
 export function requestThrough(
   dispatcher: Dispatcher,
-  options: RequestOptions,
+  options: RequestOptions<ResponseHeaders>,
   profile: Profile,
 ): Promise<ResponseData<ResponseHeaders>> {
   return new Promise<ResponseData<ResponseHeaders>>((resolve, reject) => {
@@ -250,7 +271,7 @@ export function requestThrough(
     };
     try {
       const handler = createRequestHandler(options, profile, callback);
-      dispatcher.dispatch(options, profile.major >= 8 ? controllerHandler(handler) : handler);
+      dispatcher.dispatch(options, handler);
     } catch (err) {
       queueMicrotask(() => callback(err as Error, null));
     }
@@ -259,7 +280,7 @@ export function requestThrough(
 
 /** api-request.js's RequestHandler, as a handler record over closure state. */
 function createRequestHandler(
-  opts: RequestOptions,
+  opts: RequestOptions<ResponseHeaders>,
   profile: Profile,
   done: (err: Error | null, data: ResponseData<ResponseHeaders> | null) => void,
 ): DispatchHandlers {
@@ -342,86 +363,113 @@ function createRequestHandler(
     }
   }
 
-  return {
-    onConnect: (abort: (err?: Error) => void): void => {
-      if (v7) {
-        if (reason !== null) {
-          abort(reason);
-          return;
+  let context: object | undefined;
+  const onStart = (abort: (err?: Error) => void): void => {
+    if (v7) {
+      if (reason !== null) {
+        abort(reason);
+        return;
+      }
+    } else if (callback === null) {
+      throw new RequestAbortedError();
+    }
+    abortFn = abort;
+  };
+  const onHeaders = (
+    statusCode: number,
+    headers: IncomingHttpHeaders,
+    responseHeaders: ResponseHeaders,
+    resume: () => void,
+    statusText: string,
+  ): void => {
+    if (statusCode < 200) {
+      if (onInfo !== null) onInfo({ statusCode, headers: responseHeaders });
+      return;
+    }
+    const contentTypeValue = headers["content-type"];
+    const contentType = typeof contentTypeValue === "string" ? contentTypeValue : "";
+    const abort = abortFn;
+    const body = new BodyReadable(
+      resume,
+      (err: Error) => {
+        if (abort !== null) {
+          if (v7) abort(err);
+          else abort();
         }
-      } else if (callback === null) {
-        throw new RequestAbortedError();
+      },
+      contentType,
+      profile,
+    );
+    if (v7 && removeAbortListener !== null) body.on("close", () => removeSignal());
+    const cb = callback;
+    callback = null;
+    res = body;
+    if (cb !== null) {
+      if (!v7 && throwOnError && statusCode >= 400) {
+        resolveErrorBody(cb, body, contentType, statusCode, statusText, headers);
+        return;
       }
-      abortFn = abort;
-    },
-    onHeaders: (
-      statusCode: number,
-      rawHeaders: Buffer[],
-      resume: () => void,
-      statusText: string,
-    ): boolean => {
-      const pairs = rawHeaderStrings(rawHeaders, profile);
-      const headers = parseHeaders(pairs, profile);
-      // The published ResponseData<ResponseHeaders> declares IncomingHttpHeaders in both modes.
-      const responseHeaders = opts.responseHeaders === "raw" ? pairs : headers;
-      if (statusCode < 200) {
-        if (onInfo !== null) onInfo({ statusCode, headers: responseHeaders });
-        return true;
-      }
-      const contentTypeValue = headers["content-type"];
-      const contentType = typeof contentTypeValue === "string" ? contentTypeValue : "";
-      const abort = abortFn;
-      const body = new BodyReadable(
-        resume,
-        (err: Error) => {
-          if (abort !== null) {
-            if (v7) abort(err);
-            else abort();
+      const data: ResponseData<ResponseHeaders> = v7
+        ? {
+            statusCode,
+            statusText,
+            headers: responseHeaders,
+            trailers,
+            opaque,
+            body,
+            context,
           }
-        },
-        contentType,
-        profile,
-      );
-      if (v7 && removeAbortListener !== null) body.on("close", () => removeSignal());
-      const cb = callback;
-      callback = null;
-      res = body;
-      if (cb !== null) {
-        if (!v7 && throwOnError && statusCode >= 400) {
-          resolveErrorBody(cb, body, contentType, statusCode, statusText, headers);
-          return true;
-        }
-        const data: ResponseData<ResponseHeaders> = v7
-          ? {
-              statusCode,
-              statusText,
-              headers: responseHeaders,
-              trailers,
-              opaque,
-              body,
-              context: undefined,
-            }
-          : { statusCode, headers: responseHeaders, trailers, opaque, body, context: undefined };
-        cb(null, data);
-      }
+        : { statusCode, headers: responseHeaders, trailers, opaque, body, context };
+      cb(null, data);
+    }
+  };
+  const onData = (chunk: Buffer): boolean => {
+    const body = res;
+    return body !== null ? body.push(chunk) : true;
+  };
+  const onEnd = (parsed: IncomingHttpHeaders): void => {
+    if (!v7) removeSignal();
+    for (const key of Object.keys(parsed)) {
+      const value = parsed[key];
+      if (typeof value === "string") trailers[key] = value;
+      else if (value !== undefined) trailers[key] = value.join(", ");
+    }
+    if (res !== null) res.push(null);
+  };
+
+  if (profile.major >= 8) {
+    return {
+      onRequestStart(controller, requestContext) {
+        context = requestContext as object | undefined;
+        onStart((err) => controller.abort(err ?? new RequestAbortedError()));
+      },
+      onResponseStart(controller, status, headers, text) {
+        const selected =
+          opts.responseHeaders === "raw" ? controllerHeaderStrings(controller.rawHeaders) : headers;
+        onHeaders(status, headers, selected, () => controller.resume(), text ?? "");
+      },
+      onResponseData(controller, chunk) {
+        if (!onData(chunk)) controller.pause();
+      },
+      onResponseEnd(_controller, headers) {
+        onEnd(headers);
+      },
+      onResponseError(_controller, err) {
+        onError(err);
+      },
+    };
+  }
+  return {
+    onConnect: onStart,
+    onHeaders(status, raw, resume, text) {
+      const pairs = rawHeaderStrings(raw, profile);
+      const headers = parseHeaders(pairs, profile);
+      onHeaders(status, headers, opts.responseHeaders === "raw" ? pairs : headers, resume, text);
       return true;
     },
-    onData: (chunk: Buffer): boolean => {
-      const body = res;
-      return body !== null ? body.push(chunk) : true;
-    },
-    onComplete: (rawTrailers: string[] | null): void => {
-      if (!v7) removeSignal();
-      if (rawTrailers !== null) {
-        const parsed = parseHeaders(rawTrailers, profile);
-        for (const key of Object.keys(parsed)) {
-          const value = parsed[key];
-          if (typeof value === "string") trailers[key] = value;
-          else if (value !== undefined) trailers[key] = value.join(", ");
-        }
-      }
-      const body = res;
-      if (body !== null) body.push(null);
+    onData,
+    onComplete(raw) {
+      onEnd(parseHeaders(raw ?? [], profile));
     },
     onError,
   };
@@ -504,6 +552,14 @@ export function controllerHandler(handler: DispatchHandlers): DispatchHandlers {
       handler.onError?.(err);
     },
   };
+}
+
+function controllerHeaderStrings(raw: DispatchController["rawHeaders"]): string[] {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) return headerPairs(raw);
+  const pairs: string[] = [];
+  for (const item of raw) pairs.push(typeof item === "string" ? item : item.toString("latin1"));
+  return pairs;
 }
 
 function headerPairs(headers: IncomingHttpHeaders): string[] {

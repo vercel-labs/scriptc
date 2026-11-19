@@ -11,7 +11,7 @@ import type { AgentOptions, PoolOptions, Profile } from "./types.ts";
 
 const profile: Profile = { major: 8 };
 
-export { Dispatcher } from "./dispatcher.ts";
+export { DispatcherV8 as Dispatcher } from "./dispatcher.ts";
 export import Headers = globalThis.Headers;
 
 function requireHttp1(options: { allowH2?: boolean } | undefined): void {
@@ -54,12 +54,12 @@ export declare namespace Pool {
 
 export function request(
   url: string | URL,
-  options: TopLevelRequestOptions & { responseHeaders: "raw" },
+  options: TopLevelRequestOptions<string[]> & { responseHeaders: "raw" },
 ): Promise<ResponseData<string[]>>;
 export function request(url: string | URL, options?: TopLevelRequestOptions): Promise<ResponseData>;
 export function request(
   url: string | URL,
-  options?: TopLevelRequestOptions,
+  options?: TopLevelRequestOptions<ResponseHeaders>,
 ): Promise<ResponseData<ResponseHeaders>> {
   return coreRequest(url, options, () => new Agent(), profile);
 }

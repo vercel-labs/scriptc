@@ -45,7 +45,7 @@ import {
   resolveBareModule,
   resolveWorkspaceSourceModule,
 } from "./resolve.js";
-import { usesInstalledShimValue } from "./shim-fallback.js";
+import { isErasedTypeQuery, usesInstalledShimValue } from "./shim-fallback.js";
 import { isShimmedImport, loadedIslandShims } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
@@ -126,6 +126,7 @@ export type ProgramLoader = (
 export interface Frontend {
   preflight: ScrDiagnostic[];
   admittedOpinions?: LoadResult["admittedOpinions"];
+  isErasedTypeQuery?: (loc: SrcLoc) => boolean;
   usesInstalledShimValue?: (name: string) => boolean;
   /** Loaded partial shim entries that can use the installed declarations. */
   loadedIslandShims?: () => string[];
@@ -1220,6 +1221,7 @@ function loadFrontend(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
     ),
     admittedOpinions: load.admittedOpinions,
+    isErasedTypeQuery: (loc) => isErasedTypeQuery(load, loc),
     usesInstalledShimValue: (name) => usesInstalledShimValue(load, name),
     loadedIslandShims: () =>
       loadedIslandShims((file) => finalLoad.program.getSourceFile(file) !== undefined),

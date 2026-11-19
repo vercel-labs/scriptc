@@ -66,6 +66,19 @@ const SRC = "packages/compiler/src";
 
 export const PROGRAM_FACTS: readonly ProgramFact[] = [
   {
+    name: "partial-shim-package-selection",
+    file: `${SRC}/frontend/shim-fallback.ts`,
+    symbol: "loadWithShimFallback",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "a value use outside a partial shim's exports or a preflight site resolved by the installed declarations",
+    gates: "build and coverage select the installed package in automatic Node island mode",
+    narrower: "all runtime imports of the package must see the same module instance",
+    tracked: null,
+    lowererFields: [],
+  },
+  {
     name: "member-call-receivers",
     file: `${SRC}/frontend/lowering/member-call-receivers.ts`,
     symbol: "memberCallReceivers",

@@ -151,6 +151,7 @@ import {
 } from "../lower-exprs.js";
 import {
   cjsInFileExportGlobalOf,
+  cjsPartialExportRead,
   isCjsExportsIdentifier,
   lowerCjsExportsObjectValue,
 } from "../cjs-exports-object.js";
@@ -1275,6 +1276,21 @@ export function lowerPropertyAccessExpr(
       (ts.isIdentifier(expr.name) &&
         lowerer.cjsWholeExportMemberOf(expr.expression, expr.name.text)))
   ) {
+    // A module of a require() cycle whose exports are still being
+    // assigned: the read is the live exports object's member, so a
+    // member not yet assigned reads undefined while the cycle
+    // initializes (and reports Node's warning), exactly as Node's
+    // partial exports answer.
+    if (ts.isIdentifier(expr.name)) {
+      const partialDep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      const partial =
+        partialDep === null
+          ? null
+          : cjsPartialExportRead(lowerer, partialDep, expr.name.text, expr);
+      if (partial !== null) return partial;
+    }
     // A binding whose dep is a class-expression WHOLE export
     // (`module.exports = class {…}`): the member surface is the
     // CLASS's — `C.name` folds to NamedEvaluation's answer and own

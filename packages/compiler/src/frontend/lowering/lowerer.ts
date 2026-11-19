@@ -5725,6 +5725,21 @@ export class Lowerer {
    * none — %main calls it exactly once (a dependency edge back to the
    * entry would be a fenced cycle). */
   readonly moduleGuardOf = new Map<ts.SourceFile, string>();
+  /** Modules whose evaluation is in progress: true from the start of the
+   * module body (before its dependencies run) until it returns. The
+   * require site of an ES module tests it (Node's
+   * ERR_REQUIRE_CYCLE_MODULE), and a read of a still-missing CommonJS
+   * export tests it for Node's circular-dependency warning. */
+  readonly moduleEvaluatingOf = new Map<ts.SourceFile, string>();
+  /** A top-level `const m = require("./x")` binding of a partial require()
+   * cycle module: the exports object its require answered (Node hands each
+   * requirer the object as it stood, and a later `module.exports =` in the
+   * target does not change what the binding holds), plus the target's live
+   * exports object the read starts from. */
+  readonly cjsPartialRequireObjects = new Map<
+    ts.Symbol,
+    { object: IrGlobal; dep: ts.SourceFile }
+  >();
   /** Files whose module evaluation is asynchronous: direct top-level
    * await/for-await modules plus their static ESM importers. Their %init
    * bodies run on fibers and every async dependency edge awaits the
@@ -6491,6 +6506,8 @@ export class Lowerer {
       // records an entry changes what a later link lowering emits.
       checkedTable("cjsLinkedDataModules", () => this.cjsLinkedDataModules.size),
       checkedTable("moduleGuardOf", () => this.moduleGuardOf.size),
+      checkedTable("moduleEvaluatingOf", () => this.moduleEvaluatingOf.size),
+      checkedTable("cjsPartialRequireObjects", () => this.cjsPartialRequireObjects.size),
       checkedTable("asyncInitFiles", () => this.asyncInitFiles.size),
       checkedTable("modulePromiseOf", () => this.modulePromiseOf.size),
       checkedTable("asyncCycleRepresentativeOf", () => this.asyncCycleRepresentativeOf.size),
@@ -10112,7 +10129,21 @@ export class Lowerer {
       const id = `%g.${tag}%loaded`;
       this.moduleGuardOf.set(fp.sf, id);
       this.globalsList.push({ id, name: "%loaded", type: BOOL, mutable: true });
-      if (usesCjsTopLevelThis(this, fp.sf) || usesCjsExportsIdentity(this, fp.sf)) {
+      // require(esm)'s cycle test, and the warning a partial CommonJS
+      // export read emits while its module still evaluates.
+      if (
+        this.program.analysis.requireEsmTargets.has(fp.sf) ||
+        this.program.analysis.partialCjsCycleMembers.has(fp.sf)
+      ) {
+        const evalId = `%g.${tag}%evaluating`;
+        this.moduleEvaluatingOf.set(fp.sf, evalId);
+        this.globalsList.push({ id: evalId, name: "%evaluating", type: BOOL, mutable: true });
+      }
+      if (
+        usesCjsTopLevelThis(this, fp.sf) ||
+        usesCjsExportsIdentity(this, fp.sf) ||
+        this.program.analysis.partialCjsCycleMembers.has(fp.sf)
+      ) {
         const exportsThis: IrGlobal = {
           id: `%g.${tag}%exportsThis`,
           name: "%exportsThis",
@@ -10343,13 +10374,6 @@ export class Lowerer {
    * their external dependencies by name). Null for everything else
    * (builtins load nothing; the rest kept its preflight fence). */
   requireInitStmt(spec: string, node: ts.Node): IrStmt | null {
-    if (this.inlineRequireCycleCalls.has(node)) {
-      this.unsupported(
-        "SC1090",
-        node,
-        `require() of '${spec}' while it is still evaluating (a require cycle: Node answers its partial exports, which the static export table does not model)`,
-      );
-    }
     if (canonicalBuiltinModule(spec) === "punycode") return this.punycodeRequireWarning(node);
     // Project requires resolve within the program; another bare require can
     // be a program-module edge when it names an opted-in --npm-static package
@@ -10377,16 +10401,52 @@ export class Lowerer {
       expr: { kind: "call", callee: initName, args: [], type: VOID, loc },
       loc,
     };
+    // require() of an ES module is Node 24's synchronous require(esm) —
+    // exact unless the target is still evaluating. A cycle that reaches a
+    // module that has not finished evaluating is Node's
+    // ERR_REQUIRE_CYCLE_MODULE, thrown at this call (the same message
+    // Node's loader builds). A CommonJS target is a cache hit whose
+    // partial exports the caller reads below, not an error.
+    const evaluatingId = isNodeEsmFile(dep, this.program)
+      ? this.moduleEvaluatingOf.get(dep)
+      : undefined;
+    const cycleGuard: IrStmt[] =
+      evaluatingId === undefined
+        ? []
+        : [
+            {
+              kind: "if",
+              cond: { kind: "varRef", localId: evaluatingId, type: BOOL, loc },
+              then: [
+                {
+                  kind: "exprStmt",
+                  expr: nodeThrowExpr(
+                    0,
+                    "ERR_REQUIRE_CYCLE_MODULE",
+                    `Cannot require() ES Module ${dep.fileName} in a cycle. (from ${ts.getSourceFileOfNode(node).fileName}) A cycle involving require(esm) is not allowed to maintain invariants mandated by the ECMAScript specification. Try making at least part of the dependency in the graph lazily loaded.`,
+                    VOID,
+                    loc,
+                  ),
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            },
+          ];
     // A module whose export object is an accessor answers this `require()`
     // a value of its own, taken after the module has loaded.
     const own = accessorRequirerAssign(this, ts.getSourceFileOfNode(node), dep, loc);
     const parentModule = this.cjsModuleIdOf.get(ts.getSourceFileOfNode(node));
     const childModule = this.cjsModuleIdOf.get(dep);
     if (parentModule === undefined || childModule === undefined)
-      return own.length === 0 ? init : { kind: "block", body: [init, ...own], loc };
+      return cycleGuard.length === 0 && own.length === 0
+        ? init
+        : { kind: "block", body: [...cycleGuard, init, ...own], loc };
     return {
       kind: "block",
       body: [
+        ...cycleGuard,
         {
           kind: "exprStmt",
           expr: {

@@ -1183,14 +1183,12 @@ console.log(await number(Promise.resolve("served")));
     expect(r.stderr).toBe("");
   });
 
-  test("a split require closing a CommonJS cycle keeps the const form's SC1016", async () => {
+  test("a split require closing a CommonJS cycle reads the partial exports", async () => {
     // Node answers the closing require with the dependency's partial exports
-    // ({ fromA: 1 } at this point), which the static export model cannot
-    // represent. Preflight treats the split assignment like `const a =
-    // require("./a.cjs")`, so the cycle keeps that form's SC1016 instead of
-    // reading uninitialized export storage. A cycle whose reads are all deferred
-    // compiles (tests/corpus/split-cjs-require-cycle).
-    const r = compileAndRun(
+    // ({ fromA: 1 } at this point): fromA is there, fromB is not, and the
+    // miss reports Node's circular-dependency warning. The split assignment
+    // reads through the live exports object like the const form does.
+    const r = await compileAndRun(
       "split-require-cycle",
       `require("./a.cjs");
 `,
@@ -1207,8 +1205,10 @@ console.log(a.fromA, a.fromB);
 `,
       },
     );
-    await expect(r).rejects.toThrow(
-      /SC1016: circular imports \(.*a\.cjs → .*b\.cjs → .*a\.cjs; the cycle closes through a require\(\) edge/,
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("1 undefined\n");
+    expect(r.stderr).toMatch(
+      /Warning: Accessing non-existent property 'fromB' of module exports inside circular dependency/,
     );
   });
 

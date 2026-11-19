@@ -44,7 +44,7 @@ for (const x of range(10)) sum += x;
 console.log(sum);
 `);
   expect(definition(llvm, "sc_f_range")).toMatch(
-    /^define internal void @sc_f_range(?:\.i32)?\(double [^)]*\) #1 /,
+    /^define internal void @sc_f_range(?:\.i32)?\(double [^)]*\) align 64 #1 /,
   );
   expect(definition(llvm, "sc_f_range")).toContain("@llvm.coro.suspend(");
   // Number yields store into the generator's OUT slot inline, and the
@@ -137,7 +137,7 @@ async function main(): Promise<void> {
 void main();
 `);
   const body = definition(llvm, "sc_f_ticks");
-  expect(body).toMatch(/^define internal void @sc_f_ticks(?:\.i32)?\(double [^)]*\) #1 /);
+  expect(body).toMatch(/^define internal void @sc_f_ticks(?:\.i32)?\(double [^)]*\) align 64 #1 /);
   // The await suspends the coroutine (one turn for a non-promise operand),
   // and the yield stores OUT before its own suspension.
   expect(body).toContain("call zeroext i1 @scr_coro_hop_prepare(ptr");

@@ -1,11 +1,11 @@
 {
-  "order": [
-    "<repo>/tests/corpus/js-namespace-missing-member/lib.ts",
-    "<repo>/tests/corpus/js-namespace-missing-member/live.ts",
-    "<repo>/tests/corpus/js-namespace-missing-member/shape.ts",
-    "<repo>/tests/corpus/js-namespace-missing-member/reexport.ts",
-    "<repo>/tests/corpus/js-namespace-missing-member/local.ts",
-    "<repo>/tests/corpus/js-namespace-missing-member/main.ts"
-  ],
-  "diags": []
+ "order": [
+  "<repo>/tests/corpus/js-namespace-missing-member/lib.ts",
+  "<repo>/tests/corpus/js-namespace-missing-member/live.ts",
+  "<repo>/tests/corpus/js-namespace-missing-member/shape.ts",
+  "<repo>/tests/corpus/js-namespace-missing-member/reexport.ts",
+  "<repo>/tests/corpus/js-namespace-missing-member/local.ts",
+  "<repo>/tests/corpus/js-namespace-missing-member/main.ts"
+ ],
+ "diags": []
 }

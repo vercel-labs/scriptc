@@ -40,7 +40,7 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/webassembly.js";
-import { lowerSocketInstanceOf } from "../lower-server.js";
+import { lowerSocketInstanceOf, lowerTlsServerInstanceOf } from "../lower-server.js";
 import { lowerDgramSocketInstanceOf } from "../lower-dgram.js";
 import { lowerDnsResolverInstanceOf } from "../lower-dgram.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
@@ -497,6 +497,9 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // resolver's own handle tag (scr_dns_resolve.c).
   const resolverTest = lowerDnsResolverInstanceOf(lowerer, expr, loc);
   if (resolverTest !== null) return resolverTest;
+  // `x instanceof tls.Server`: the server handle's TLS marker.
+  const tlsServerTest = lowerTlsServerInstanceOf(lowerer, expr, loc);
+  if (tlsServerTest !== null) return tlsServerTest;
   const rightClass = builtinClassRefOf(lowerer, expr.right);
   if (rightClass?.kind === "zlib") return lowerZlibInstanceOf(lowerer, expr, rightClass.mode, loc);
 
@@ -652,9 +655,13 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     return { kind: "libCall", fn: "dyn.dataViewIs", args: [value], type: BOOL, loc };
   }
   {
-    const eventKind = ["Event", "CustomEvent", "EventTarget"].findIndex((name) =>
-      lowerer.isStdlibGlobal(expr.right, name),
-    );
+    const eventKind = [
+      "Event",
+      "CustomEvent",
+      "EventTarget",
+      "MessageEvent",
+      "CloseEvent",
+    ].findIndex((name) => lowerer.isStdlibGlobal(expr.right, name));
     if (eventKind >= 0) {
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       const kind: IrExpr = { kind: "numLit", value: eventKind, type: F64, loc };

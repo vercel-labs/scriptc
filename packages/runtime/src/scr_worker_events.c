@@ -125,13 +125,17 @@ static bool scr_worker_batch_next(void) {
 static const char *const scr_worker_method_names[] = {
   "ref", "unref", "hasRef", "terminate", "postMessage", "on", "once", "addListener",
   "prependListener", "prependOnceListener", "off", "removeListener", "removeAllListeners",
-  "listenerCount", "close", "start", "cpuUsage",
+  "listenerCount", "close", "start", "cpuUsage", "addEventListener", "removeEventListener",
+  "dispatchEvent",
 };
 static SCR_TL ScrDyn *scr_worker_methods[sizeof scr_worker_method_names / sizeof scr_worker_method_names[0]];
 static const char *const scr_broadcast_method_names[] = {
   "postMessage", "close", "ref", "unref", "addEventListener", "removeEventListener", "dispatchEvent",
 };
 static SCR_TL ScrDyn *scr_broadcast_methods[sizeof scr_broadcast_method_names / sizeof scr_broadcast_method_names[0]];
+
+/* a port's EventTarget core, created on first use (defined below) */
+static ScrEventTargetCore *scr_port_core(ScrWorkerView *view);
 
 
 /* The stream unit's half of worker.stdout, worker.stderr and
@@ -271,13 +275,29 @@ static void scr_worker_view_release(void *ptr) {
  * listener refs that port and leaves the thread handle's own ref alone, so
  * a Worker that was never unref()ed keeps the loop alive without listeners
  * and one that was unref()ed stays unreferenced when a listener leaves. */
+/* Node's setupPortReferencing for a port: it is referenced while any
+ * 'message' listener exists (Node's port keeps the emitter surface and the
+ * EventTarget surface in one registry) and the first listener starts it.
+ * The emitter's own on/off and the EventTarget attribute/listeners both
+ * end here, so removing one kind while the other remains keeps the port
+ * referenced, as Node's does. */
+static void scr_port_message_refs(ScrWorkerView *view) {
+  double listeners = view->et && scr_et_broadcast_ops->listener_count
+                         ? scr_et_broadcast_ops->listener_count(view->et, "message")
+                         : 0;
+  ScrStr *name = scr_str_new("message", 7);
+  listeners += scr_emitter_listener_count(view->events, name);
+  scr_str_release(name);
+  bool present = listeners > 0;
+  view->started = present || view->started;
+  view->referenced = present;
+}
+
 static void scr_worker_message_listeners(void *ptr, const ScrStr *name, bool present) {
   ScrWorkerView *view = ptr;
   if (name->len != 7 || memcmp(name->data, "message", 7)) return;
-  if (view->port) {
-    view->started = present || view->started;
-    view->referenced = present;
-  } else view->message_port_ref = present;
+  if (!view->port) view->message_port_ref = present;
+  else scr_port_message_refs(view);
 }
 
 /** The internal 'newListener'/'removeListener' listeners Node registers at
@@ -891,6 +911,20 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     view->started = true;
     return scr_dyn_retain(scr_dyn_undefined());
   }
+  /* A MessagePort's EventTarget surface: addEventListener, removeEventListener
+   * and dispatchEvent run on its listener core. A 'message' listener starts
+   * the port, as Node does. */
+  if (view->port && (method_is(method, "addEventListener") ||
+                     method_is(method, "removeEventListener") || method_is(method, "dispatchEvent"))) {
+    ScrDyn *out = NULL;
+    ScrEventTargetCore *core = scr_port_core(view);
+    if (core && scr_et_broadcast_ops->method(core, self, method, args, argc, &out)) {
+      if (argc > 0 && args[0]->kind == SCR_DYN_STR && args[0]->v.str->len == 7 &&
+          !memcmp(args[0]->v.str->data, "message", 7))
+        scr_port_message_refs(view);
+      return out;
+    }
+  }
   return scr_worker_refusal("This Worker or MessagePort method is not supported yet");
 }
 
@@ -955,6 +989,16 @@ static ScrDyn *scr_worker_symbol_get(void *ptr, const ScrDyn *key) {
   return scr_dyn_new_func(closure, &scr_worker_async_dispose_call, 0, "()", "[Symbol.asyncDispose]");
 }
 
+/* A port's EventTarget core, created on first use (Node's MessagePort is an
+ * EventTarget beside its EventEmitter surface). */
+static ScrEventTargetCore *scr_port_core(ScrWorkerView *view) {
+  /* A program that never names BroadcastChannel or MessageChannel does not
+   * link the EventTarget unit; its ports keep the emitter surface only. */
+  if (!scr_et_broadcast_ops) return NULL;
+  if (!view->et) view->et = scr_et_broadcast_ops->core_new("MessagePort");
+  return view->et;
+}
+
 static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
   ScrWorkerView *view = ptr;
   if (!view->port && length == 8 && !memcmp(key, "threadId", 8))
@@ -995,11 +1039,22 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
     /* Node's getter: the limits the constructor asked for, or {} once the
      * worker stopped. */
     return view->closed ? scr_dyn_new_obj() : scr_worker_limits_object(view->limits);
+  if (view->port &&
+      ((length == 9 && !memcmp(key, "onmessage", 9)) ||
+       (length == 14 && !memcmp(key, "onmessageerror", 14)))) {
+    char type[16];
+    memcpy(type, key + 2, length - 2);
+    type[length - 2] = '\0';
+    ScrEventTargetCore *core = scr_port_core(view);
+    return core ? scr_et_broadcast_ops->handler_get(core, type) : NULL;
+  }
   for (size_t i = 0; i < sizeof scr_worker_methods / sizeof scr_worker_methods[0]; i++) {
     const char *name = scr_worker_method_names[i];
     if (strlen(name) != length || memcmp(name, key, length)) continue;
     if ((view->port && (!strcmp(name, "terminate") || !strcmp(name, "cpuUsage"))) ||
-        (!view->port && (!strcmp(name, "start") || !strcmp(name, "close") || !strcmp(name, "hasRef")))) return NULL;
+        (!view->port && (!strcmp(name, "start") || !strcmp(name, "close") || !strcmp(name, "hasRef") ||
+                         !strcmp(name, "addEventListener") || !strcmp(name, "removeEventListener") ||
+                         !strcmp(name, "dispatchEvent")))) return NULL;
     if (!scr_worker_methods[i]) {
       ScrClosure *closure = scr_closure_new(NULL, 1);
       closure->caps[0] = scr_box_new(SCR_BOX_F64);
@@ -1011,9 +1066,27 @@ static ScrDyn *scr_worker_view_get(void *ptr, const char *key, size_t length) {
   return NULL;
 }
 
+/* port.onmessage = fn / port.onmessageerror = fn: the EventTarget handler,
+ * and Node starts the port when a 'message' handler is set. */
+static bool scr_worker_view_set(void *ptr, const char *key, size_t length, const ScrDyn *value) {
+  ScrWorkerView *view = ptr;
+  if (!view->port) return false;
+  if ((length == 9 && !memcmp(key, "onmessage", 9)) ||
+      (length == 14 && !memcmp(key, "onmessageerror", 14))) {
+    char type[16];
+    memcpy(type, key + 2, length - 2);
+    type[length - 2] = '\0';
+    ScrEventTargetCore *core = scr_port_core(view);
+    if (!core) return false;
+    scr_et_broadcast_ops->handler_set(core, type, value);
+    if (!strcmp(type, "message")) scr_port_message_refs(view);
+    return true;
+  }
+  return false;
+}
+
 static bool scr_workers_pending(void) {
-  /* a worker's process.stdin waiting for worker.stdin chunks */
-  if (scr_stdin_fed && scr_stdin_fed_waiting && scr_stdin_fed_waiting()) return true;
+  /* a worker's process.stdin waiting for worker.stdin chunks */  if (scr_stdin_fed && scr_stdin_fed_waiting && scr_stdin_fed_waiting()) return true;
   for (ScrWorkerView *view = scr_worker_views; view; view = view->next)
     if (view->referenced || view->message_port_ref) return true;
   for (ScrWorkerView *view = scr_channel_ports; view; view = view->next)
@@ -1049,12 +1122,31 @@ static void scr_worker_events_wait(double milliseconds) {
   if (!scr_worker_events_ready()) scr_mailbox_wait(scr_worker_events, milliseconds);
 }
 
+/* The EventTarget form of one delivered value (a 'message' MessageEvent). */
+static void scr_port_dispatch_message(ScrWorkerView *view, ScrDyn *argument) {
+  if (!view->et) return;
+  ScrDyn *self = scr_dyn_new_handle(view, SCR_DYNH_MESSAGE_PORT);
+  scr_et_broadcast_ops->dispatch_message(view->et, self, argument);
+  scr_dyn_release(self);
+}
+
 static void scr_worker_port_emit(ScrWorkerView *view, const char *event, ScrDyn *argument) {
   ScrStr *name = scr_str_new(event, strlen(event));
   scr_dyn_this_push(view, SCR_DYNH_MESSAGE_PORT);
   scr_emitter_emit_flex(view->events, name, argument ? &argument : NULL, argument ? 1 : 0);
   scr_dyn_this_pop();
   scr_str_release(name);
+  /* A MessagePort is an EventTarget as well: its onmessage/addEventListener
+   * listeners receive the event form (a MessageEvent for 'message', an
+   * Event for 'close'). */
+  if (!view->et) return;
+  if (!strcmp(event, "message") || !strcmp(event, "messageerror"))
+    scr_port_dispatch_message(view, argument ? argument : scr_dyn_undefined());
+  else {
+    ScrDyn *self = scr_dyn_new_handle(view, SCR_DYNH_MESSAGE_PORT);
+    scr_et_broadcast_ops->dispatch_type(view->et, self, event);
+    scr_dyn_release(self);
+  }
 }
 
 /* The channel ports' turn, one event per call, in Node's phase order:
@@ -1114,12 +1206,22 @@ static bool scr_channel_dispatch(void) {
     }
     scr_worker_view_retain(view);
     if (event->message && !view->broadcast && scr_message_readable(event->message)) {
-      /* Compiled listeners with a typed message entry read the message. */
+      /* Compiled listeners with a typed message entry read the message; the
+       * EventTarget listeners receive the same decoded value as the emitter
+       * listeners, as Node's dispatch does. */
       ScrStr *name = scr_str_new("message", 7);
       scr_dyn_this_push(view, SCR_DYNH_MESSAGE_PORT);
-      scr_emitter_emit_message(view->events, name, event->message, scr_message_decode);
+      ScrDyn *argument = NULL;
+      scr_emitter_emit_message_out(view->events, name, event->message, scr_message_decode, &argument);
       scr_dyn_this_pop();
       scr_str_release(name);
+      if (view->port && !argument && !scr_exc_pending()) argument = scr_message_decode(event->message);
+      if (argument && !scr_exc_pending()) {
+        scr_port_dispatch_message(view, argument);
+        scr_dyn_release(argument);
+      } else if (argument) {
+        scr_dyn_release(argument);
+      }
       scr_mail_event_free(event);
       scr_worker_view_release(view);
       return true;
@@ -1324,13 +1426,26 @@ static void scr_worker_dispatch(void) {
   }
   scr_worker_view_retain(view);
   if (event->kind == SCR_WORKER_MESSAGE && event->message && scr_message_readable(event->message)) {
-    /* Compiled listeners with a typed message entry read the message. */
+    /* Compiled listeners with a typed message entry read the message; a
+     * port's EventTarget listeners receive the same decoded value. */
     if (!scr_exc_pending()) {
       ScrStr *name = scr_str_new("message", 7);
       scr_dyn_this_push(view, view->port ? SCR_DYNH_MESSAGE_PORT : SCR_DYNH_WORKER);
-      scr_emitter_emit_message(view->events, name, event->message, scr_message_decode);
+      ScrDyn *argument = NULL;
+      scr_emitter_emit_message_out(view->events, name, event->message, scr_message_decode, &argument);
       scr_dyn_this_pop();
       scr_str_release(name);
+      if (view->port) {
+        if (!argument && !scr_exc_pending()) argument = scr_message_decode(event->message);
+        if (argument && !scr_exc_pending()) {
+          scr_port_dispatch_message(view, argument);
+          scr_dyn_release(argument);
+        } else if (argument) {
+          scr_dyn_release(argument);
+        }
+      } else {
+        scr_dyn_release(argument);
+      }
     }
     scr_worker_view_release(view);
     scr_mail_event_free(event);
@@ -1387,6 +1502,11 @@ static void scr_worker_dispatch(void) {
     else scr_emitter_emit_flex(view->events, name, argument ? &argument : NULL, argument ? 1 : 0);
     scr_dyn_this_pop();
     scr_str_release(name);
+    /* A message the typed entry cannot read (cyclic, aliased, transferred
+     * ports) still reaches the port's EventTarget listeners, with the same
+     * decoded value the emitter listeners got. */
+    if (event->kind == SCR_WORKER_MESSAGE && view->port && argument)
+      scr_port_dispatch_message(view, argument);
   }
   /* Node ends worker.stdout and worker.stderr as the worker exits: their
    * 'end' events follow 'exit'. */
@@ -1512,7 +1632,7 @@ static bool scr_worker_events_install(void) {
   };
   static const ScrDynHandleOps port_ops = {
     .cls = "MessagePort", .retain = scr_worker_view_retain, .release = scr_worker_view_release,
-    .invoke = scr_worker_view_invoke, .get = scr_worker_view_get,
+    .invoke = scr_worker_view_invoke, .get = scr_worker_view_get, .set = scr_worker_view_set,
   };
   scr_dyn_handle_install(SCR_DYNH_WORKER, &worker_ops);
   scr_dyn_handle_install(SCR_DYNH_MESSAGE_PORT, &port_ops);
@@ -1593,6 +1713,15 @@ ScrDyn *scr_worker_message_channel(void) {
   scr_dyn_obj_set(object, "port1", 5, scr_dyn_new_handle(a, SCR_DYNH_MESSAGE_PORT));
   scr_dyn_obj_set(object, "port2", 5, scr_dyn_new_handle(b, SCR_DYNH_MESSAGE_PORT));
   return object;
+}
+
+/* new MessagePort(...args): Node's constructor exists but refuses every
+ * call this way, after its arguments evaluate (the compiler passes them). */
+ScrDyn *scr_worker_port_construct(ScrDyn *args) {
+  (void)args;
+  static const char message[] = "Constructor cannot be called";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_CONSTRUCT_CALL_INVALID");
+  return NULL;
 }
 
 /* ── BroadcastChannel ───────────────────────────────────────────────── */

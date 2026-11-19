@@ -1,4 +1,6 @@
 {
-  "order": ["<repo>/tests/corpus/sqlite-registration-errors.ts"],
-  "diags": []
+ "order": [
+  "<repo>/tests/corpus/sqlite-registration-errors.ts"
+ ],
+ "diags": []
 }

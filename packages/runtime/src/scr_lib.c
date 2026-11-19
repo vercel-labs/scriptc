@@ -7143,6 +7143,133 @@ static ScrStr *scr_fs_mkdtemp_op(ScrStr *prefix, bool sync) {
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, true); }
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix) { return scr_fs_mkdtemp_op(prefix, false); }
 
+/* ── fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync ─────────
+ * The created directory plus its removal and disposal hooks. Node keeps the
+ * created path resolved against the cwd at creation, so a later
+ * process.chdir cannot change what remove() deletes; the answer's `path`
+ * stays the spelling mkdtemp produced. */
+typedef struct ScrMkdtempResult {
+  size_t rc;
+  ScrStr *path; /* +1: the created path, as mkdtemp answered it */
+  ScrStr *full; /* +1: that path resolved against the cwd at creation */
+} ScrMkdtempResult;
+
+static ScrMkdtempResult *scr_mkdtemp_result_new(ScrStr *created /* +1 moves in */) {
+  ScrMkdtempResult *r = malloc(sizeof *r);
+  if (!r) scr_trap("scriptc: out of memory\n");
+  r->rc = 1;
+  r->path = created;
+  /* Node resolves the created path against the cwd at creation, and
+   * path.resolve already supplies the cwd as its final argument: one part is
+   * the whole answer. The variant has to be the host platform's — win32
+   * absolutises a drive-qualified or UNC path and the POSIX rules do not —
+   * so the removal never points at a working directory joined to a path
+   * that was already absolute. */
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 1);
+  scr_arr_push_ref(parts, scr_str_retain(created));
+#ifdef _WIN32
+  r->full = scr_path_win32_resolve(parts);
+#else
+  r->full = scr_path_resolve(parts);
+#endif
+  scr_arr_release(parts);
+  return r;
+}
+
+ScrMkdtempResult *scr_mkdtemp_result_retain(ScrMkdtempResult *r) {
+  if (r->rc != SIZE_MAX) r->rc++;
+  return r;
+}
+
+void *scr_mkdtemp_result_retain_v(void *p) {
+  return scr_mkdtemp_result_retain((ScrMkdtempResult *)p);
+}
+
+void scr_mkdtemp_result_release(ScrMkdtempResult *r) {
+  if (!r || r->rc == SIZE_MAX) return;
+  if (--r->rc == 0) {
+    scr_str_release(r->path);
+    scr_str_release(r->full);
+    free(r);
+  }
+}
+
+void scr_mkdtemp_result_release_v(void *p) {
+  scr_mkdtemp_result_release((ScrMkdtempResult *)p);
+}
+
+/* The promise entries the fs.mkdtempDisposable helpers need. The promise
+ * unit (scr_async.c) defines them strongly; these weak definitions answer a
+ * program that links scr_lib.c without it (a runtime unit test, or a hello
+ * build) without pulling the promise machinery into its binary — a
+ * constructor that named the unit did — and they leave no undefined runtime
+ * symbol behind, which a localized library archive would otherwise carry to
+ * the embedder's link. Only a program that linked the unit can reach the
+ * helpers (they answer promises), so the fallback traps; the weak
+ * definition loses to the unit's strong one. */
+__attribute__((weak)) ScrPromise *scr_promise_new(void) {
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
+__attribute__((weak)) void scr_promise_reject_pending(ScrPromise *p) {
+  (void)p;
+  scr_trap("scriptc: the promise unit is not linked\n");
+}
+__attribute__((weak)) ScrPromise *scr_promise_settled_ref(
+    void *v, void *(*retain)(void *), void (*release)(void *), ScrTraceFn trace) {
+  (void)v;
+  (void)retain;
+  (void)release;
+  (void)trace;
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
+__attribute__((weak)) ScrPromise *scr_promise_settled_void(void) {
+  scr_trap("scriptc: the promise unit is not linked\n");
+  return NULL;
+}
+
+/* A promise already rejected by the pending exception, through the promise
+ * unit's entries. */
+static ScrPromise *scr_mkdtemp_rejected_promise(void) {
+  if (!scr_promise_new || !scr_promise_reject_pending)
+    scr_trap("scriptc: the promise unit is not linked\n");
+  ScrPromise *p = scr_promise_new();
+  scr_promise_reject_pending(p);
+  return p;
+}
+
+ScrMkdtempResult *scr_fs_mkdtemp_disposable_sync(ScrStr *prefix) {
+  ScrStr *created = scr_fs_mkdtemp(prefix); /* +1; throws */
+  if (created == NULL) return NULL;
+  return scr_mkdtemp_result_new(created);
+}
+
+ScrPromise *scr_fsp_mkdtemp_disposable(ScrStr *prefix) {
+  ScrStr *created = scr_fs_mkdtemp(prefix); /* +1; throws */
+  if (created == NULL) return scr_mkdtemp_rejected_promise();
+  ScrMkdtempResult *r = scr_mkdtemp_result_new(created);
+  if (!scr_promise_settled_ref) scr_trap("scriptc: the promise unit is not linked\n");
+  return scr_promise_settled_ref(r, scr_mkdtemp_result_retain_v,
+                                 scr_mkdtemp_result_release_v, NULL);
+}
+
+ScrStr *scr_mkdtemp_result_path(ScrMkdtempResult *r) { return scr_str_retain(r->path); }
+
+/* remove(): Node's rimraf over the resolved path — recursive, and a missing
+ * tree is not a failure (rimraf's own option set), with no retries. Any
+ * other failure rejects the promise the async hook answers. */
+ScrPromise *scr_mkdtemp_result_remove(ScrMkdtempResult *r) {
+  scr_fs_rm_opts(r->full, true, true);
+  if (scr_exc_pending()) return scr_mkdtemp_rejected_promise();
+  if (!scr_promise_settled_void) scr_trap("scriptc: the promise unit is not linked\n");
+  return scr_promise_settled_void();
+}
+
+void scr_mkdtemp_result_remove_sync(ScrMkdtempResult *r) {
+  scr_fs_rm_opts(r->full, true, true);
+}
+
 /* Node's GetValidFileMode for access(): a finite number whose int32 value
  * lies in F_OK .. R_OK | W_OK | X_OK. False with the RangeError thrown. */
 bool scr_fs_access_mode_valid(double mode) {
@@ -8583,7 +8710,7 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
  * callback boundary as dynamic objects: an enumerable name and parentPath,
  * and a non-enumerable %dtype the prototype's is*() probes read (the same
  * libuv UV_DIRENT encoding the scandir snapshot uses). */
-static ScrDyn *scr_dirent_proto = NULL;
+static SCR_TL ScrDyn *scr_dirent_proto = NULL;
 
 static ScrDyn *scr_dirent_method(ScrDynThunk thunk, uint32_t arity, const char *name, double kind) {
   ScrClosure *closure = scr_closure_new(NULL, 1);

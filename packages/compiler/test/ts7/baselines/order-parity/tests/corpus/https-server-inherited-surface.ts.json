@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/https-server-inherited-surface.ts"
+ ],
+ "diags": []
+}

@@ -233,6 +233,28 @@ declare module "crypto" {
     options: X25519KeyPairOptions<"der", "der">,
   ): KeyPairSyncResult<Buffer, Buffer>;
   export function generateKeyPairSync(type: "x25519", options?: {}): KeyPairKeyObjectResult;
+  export interface X448KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
+    publicKeyEncoding: { type: "spki"; format: PubF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
+  }
+  export function generateKeyPairSync(
+    type: "x448",
+    options: X448KeyPairOptions<"pem", "pem">,
+  ): KeyPairSyncResult<string, string>;
+  export function generateKeyPairSync(
+    type: "x448",
+    options: X448KeyPairOptions<"der", "der">,
+  ): KeyPairSyncResult<Buffer, Buffer>;
+  export function generateKeyPairSync(type: "x448", options?: {}): KeyPairKeyObjectResult;
+  export function generateKeyPairSync(
+    type: "ml-kem-512" | "ml-kem-768" | "ml-kem-1024",
+    options?: {},
+  ): KeyPairKeyObjectResult;
   export function generateKeyPair(
     type: "x25519",
     options: {} | undefined,
@@ -242,6 +264,29 @@ declare module "crypto" {
     type: "ed25519",
     options: {} | undefined,
     callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  export function generateKeyPair(
+    type: "x448",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  export function generateKeyPair(
+    type: "ml-kem-512" | "ml-kem-768" | "ml-kem-1024",
+    options: {} | undefined,
+    callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
+  ): void;
+  /* crypto.encapsulate/decapsulate: the KEM wrappers. Packet installments
+   * implement ML-KEM first; the other KEM-capable key types follow. */
+  export function encapsulate(key: KeyObject): { sharedKey: Buffer; ciphertext: Buffer };
+  export function encapsulate(
+    key: KeyObject,
+    callback: (error: Error | null, result: { sharedKey: Buffer; ciphertext: Buffer }) => void,
+  ): void;
+  export function decapsulate(key: KeyObject, ciphertext: ArrayBuffer | ScriptcBufferView): Buffer;
+  export function decapsulate(
+    key: KeyObject,
+    ciphertext: ArrayBuffer | ScriptcBufferView,
+    callback: (error: Error | null, sharedKey: Buffer) => void,
   ): void;
   export function generateKeyPair(
     type: "rsa",

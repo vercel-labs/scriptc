@@ -1,5 +1,7 @@
 import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
+import * as posix from "node:path/posix";
+import * as win32 from "node:path/win32";
 import * as ts from "../../ts7/adapter.js";
 import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
@@ -13,6 +15,7 @@ import {
   requireResolvePathsRuntime,
   resolveImportMetaRuntime,
   resolveRequireRuntime,
+  runtimePathForTarget,
   type RuntimeResolveError,
   type RuntimeResolveResult,
 } from "../../runtime-resolve.js";
@@ -1048,7 +1051,34 @@ function requireResolverBaseFile(lowerer: Lowerer, receiver: ts.Expression): ts.
     : null;
 }
 
+/** One entry of `{ paths: [...] }`: a string literal, or `__dirname` in a
+ * CommonJS file (the containing file's own directory, the same build-time
+ * value the binding answers). */
+function staticResolveOptionPathEntry(lowerer: Lowerer, node: ts.Expression): string | null {
+  if (ts.isStringLiteralLike(node)) return node.text;
+  const value = withoutParenthesesTypeWrappers(node);
+  if (
+    ts.isIdentifier(value) &&
+    value.text === "__dirname" &&
+    lowerer.isStdlibGlobal(value, "__dirname") &&
+    !isNodeEsmFile(ts.getSourceFileOfNode(value), lowerer.program)
+  ) {
+    const source = ts.getSourceFileOfNode(value).fileName;
+    // Build-time resolution reads HOST paths (the base file is one). A WASI
+    // guest path would send the resolver to a directory that does not exist
+    // on the build host; the guest form belongs to the emitted value, not to
+    // this lookup.
+    const file =
+      lowerer.targetPlatform === "wasi"
+        ? source
+        : runtimePathForTarget(source, lowerer.targetPlatform);
+    return lowerer.targetPlatform === "win32" ? win32.dirname(file) : posix.dirname(file);
+  }
+  return null;
+}
+
 function staticResolveOptionPaths(
+  lowerer: Lowerer,
   node: ts.Expression | undefined,
 ): readonly string[] | undefined | null {
   if (node === undefined) return undefined;
@@ -1065,8 +1095,9 @@ function staticResolveOptionPaths(
     if (!ts.isArrayLiteralExpression(init)) return null;
     const entries: string[] = [];
     for (const item of init.elements.nodes) {
-      if (!ts.isStringLiteralLike(item)) return null;
-      entries.push(item.text);
+      const entry = staticResolveOptionPathEntry(lowerer, item);
+      if (entry === null) return null;
+      entries.push(entry);
     }
     paths = entries;
   }
@@ -1180,7 +1211,7 @@ export function lowerRequireResolveCall(
   // A computed request (or options) through a createRequire loader in
   // JavaScript source resolves at run time.
   if (
-    (specifier === null || staticResolveOptionPaths(call.arguments.nodes[1]) === null) &&
+    (specifier === null || staticResolveOptionPaths(lowerer, call.arguments.nodes[1]) === null) &&
     !pathsCall &&
     createRequireCalleeFileOf(lowerer, receiver) !== null &&
     isJsSourceFile(ts.getSourceFileOfNode(call))
@@ -1233,7 +1264,7 @@ export function lowerRequireResolveCall(
           };
     return lowerer.coerceInto(call, raw, lowerer.irTypeOf(call));
   }
-  const paths = staticResolveOptionPaths(call.arguments.nodes[1]);
+  const paths = staticResolveOptionPaths(lowerer, call.arguments.nodes[1]);
   if (paths === null) {
     const fenced = deferred(
       "with runtime-computed options",

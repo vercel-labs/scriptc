@@ -1,4 +1,6 @@
 {
-  "order": ["<repo>/tests/corpus/sqlite-window-aggregates.ts"],
-  "diags": []
+ "order": [
+  "<repo>/tests/corpus/sqlite-window-aggregates.ts"
+ ],
+ "diags": []
 }

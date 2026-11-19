@@ -13,9 +13,31 @@
 
 #include "scr_runtime.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The data a PerformanceResourceTiming carries beyond PerformanceEntry
+ * (internal/perf/resource_timing.js's getters). Marks and measures keep a
+ * NULL pointer; the field accessors answer their defaults. */
+typedef struct {
+  size_t rc;
+  double start, end;
+  double redirect_start, redirect_end, post_redirect_start;
+  double service_worker_start;
+  double network_request_start, network_response_start, interim_response_start;
+  bool has_connection;
+  double dns_start, dns_end, connection_start, connection_end, secure_connection_start;
+  ScrStr *alpn; /* owned */
+  double encoded_body_size, decoded_body_size;
+  bool render_blocking;
+  ScrStr *content_type, *content_encoding; /* owned */
+  bool cache_local, cache_validated;
+  double response_status;
+  ScrStr *delivery_type; /* owned */
+  ScrStr *initiator_type; /* owned */
+} ScrPerfResource;
 
 typedef struct {
   ScrStr *name;   /* owned */
@@ -23,11 +45,21 @@ typedef struct {
   ScrDyn *ref;    /* owned: the program's entry object, once kept */
   double start;
   double duration;
-  bool measure;
+  /* 0 mark, 1 measure, 2 function (timerify): the entry type the timeline
+   * selectors and the observers answer. */
+  int kind;
   /* The producing call's serial: buffers and observer copies of the same
    * mark or measure share it, so the compiler's entryKeep finds them. */
   size_t id;
+  ScrPerfResource *resource; /* owned (refcounted); NULL for mark/measure */
 } ScrPerfEntry;
+
+/* The entry type name for `kind`. */
+static ScrStr *scr_perf_kind_name(int kind) {
+  if (kind == 1) return scr_str_new("measure", 7);
+  if (kind == 2) return scr_str_new("function", 8);
+  return scr_str_new("mark", 4);
+}
 
 typedef struct {
   ScrPerfEntry *items; /* owned */
@@ -44,6 +76,10 @@ typedef struct {
 
 static SCR_TL ScrPerfBuffer scr_perf_marks;
 static SCR_TL ScrPerfBuffer scr_perf_measures;
+/* Resource timing entries (observe.js's resourceTimingBuffer): Node's
+ * default limit is 250, raised or lowered by setResourceTimingBufferSize. */
+static SCR_TL ScrPerfBuffer scr_perf_resources;
+static SCR_TL size_t scr_perf_resource_limit = 250;
 /* The buffer the last mark or measure went into (its entry is last). */
 static SCR_TL ScrPerfBuffer *scr_perf_last;
 /* The serial the next produced entry takes (see ScrPerfEntry.id). */
@@ -61,19 +97,57 @@ static SCR_TL bool scr_perf_cleanup_armed;
 /* new PerformanceMark's entry: owned here, borrowed by the view. */
 static SCR_TL ScrPerfEntry scr_perf_scratch;
 static SCR_TL bool scr_perf_scratch_set;
+/* A resource entry the buffer limit kept out: owned here, borrowed by the
+ * view until the next timeline call, so the record markResourceTiming
+ * returns still reads a live entry. */
+static SCR_TL ScrPerfEntry scr_perf_resource_orphan;
+static SCR_TL bool scr_perf_resource_orphan_set;
+/* The dropped entry as `scr_perf_last`, so the caller's entryKeep reaches it
+ * and the observers' copies answer the same object (Node's observers see
+ * entries the timeline dropped). */
+static SCR_TL ScrPerfBuffer scr_perf_resource_orphan_view;
 /* takeRecords' entries: owned here, borrowed by the view until the next
  * timeline call, like the scratch entry. */
 static SCR_TL ScrPerfEntries scr_perf_taken;
 /* Node warns once per entry type past this many buffered entries. */
 #define SCR_PERF_WARN_SIZE 1000000
 
+static void scr_perf_resource_release(ScrPerfResource *r) {
+  if (r == NULL || --r->rc > 0) return;
+  scr_str_release(r->alpn);
+  scr_str_release(r->content_type);
+  scr_str_release(r->content_encoding);
+  scr_str_release(r->delivery_type);
+  scr_str_release(r->initiator_type);
+  free(r);
+}
+
+static ScrPerfResource *scr_perf_resource_retain(ScrPerfResource *r) {
+  if (r != NULL) r->rc++;
+  return r;
+}
+
+static void scr_perf_entry_release(ScrPerfEntry *e) {
+  scr_str_release(e->name);
+  scr_dyn_release(e->detail);
+  scr_dyn_release(e->ref);
+  scr_perf_resource_release(e->resource);
+}
+
 static void scr_perf_buffer_clear(ScrPerfBuffer *b) {
-  for (size_t i = 0; i < b->len; i++) {
-    scr_str_release(b->items[i].name);
-    scr_dyn_release(b->items[i].detail);
-    scr_dyn_release(b->items[i].ref);
-  }
+  for (size_t i = 0; i < b->len; i++) scr_perf_entry_release(&b->items[i]);
   b->len = 0;
+}
+
+static void scr_perf_entry_release(ScrPerfEntry *e);
+
+static void scr_perf_resource_orphan_clear(void) {
+  if (!scr_perf_resource_orphan_set) return;
+  if (scr_perf_last == &scr_perf_resource_orphan_view) scr_perf_last = NULL;
+  scr_perf_entry_release(&scr_perf_resource_orphan);
+  scr_perf_resource_orphan = (ScrPerfEntry){0};
+  scr_perf_resource_orphan_view = (ScrPerfBuffer){0};
+  scr_perf_resource_orphan_set = false;
 }
 
 static void scr_perf_scratch_clear(void) {
@@ -91,17 +165,22 @@ static void scr_perf_observers_adopt_kept(size_t id, ScrDyn *ref);
 static void scr_perf_cleanup(void) {
   scr_perf_observers_cleanup();
   scr_perf_scratch_clear();
+  scr_perf_resource_orphan_clear();
   scr_perf_entries_clear(&scr_perf_taken);
   free(scr_perf_taken.items);
   scr_perf_taken = (ScrPerfEntries){0};
   scr_perf_buffer_clear(&scr_perf_marks);
   scr_perf_buffer_clear(&scr_perf_measures);
+  scr_perf_buffer_clear(&scr_perf_resources);
   free(scr_perf_marks.items);
   free(scr_perf_measures.items);
+  free(scr_perf_resources.items);
   free(scr_perf_view);
   scr_map_release(scr_perf_timings);
   scr_perf_marks = (ScrPerfBuffer){0};
   scr_perf_measures = (ScrPerfBuffer){0};
+  scr_perf_resources = (ScrPerfBuffer){0};
+  scr_perf_resource_limit = 250;
   scr_perf_view = NULL;
   scr_perf_view_len = scr_perf_view_cap = 0;
   scr_perf_timings = NULL;
@@ -133,6 +212,7 @@ static void scr_perf_view_reserve(size_t n) {
 static void scr_perf_observers_enqueue(const ScrPerfEntry *entry);
 
 static void scr_perf_push(ScrPerfBuffer *b, ScrPerfEntry entry) {
+  scr_perf_resource_orphan_clear();
   /* The serial exists before any observer copy is made. */
   entry.id = ++scr_perf_next_id;
   if (b->len == b->cap) {
@@ -149,12 +229,12 @@ static void scr_perf_push(ScrPerfBuffer *b, ScrPerfEntry entry) {
   scr_perf_view_len = 1;
   if (b->len > SCR_PERF_WARN_SIZE && !b->warned) {
     b->warned = true;
-    const char *type = entry.measure ? "measure" : "mark";
+    const char *type = entry.kind == 1 ? "measure" : "mark";
     char msg[256];
     int n = snprintf(msg, sizeof msg,
                      "Possible perf_hooks memory leak detected. %zu %s entries added to the global "
                      "performance entry buffer. Use performance.%s to clear the buffer.",
-                     b->len, type, entry.measure ? "clearMeasures" : "clearMarks");
+                     b->len, type, entry.kind == 1 ? "clearMeasures" : "clearMarks");
     ScrStr *text = scr_str_new(msg, (size_t)n);
     scr_emit_warning("MaxPerformanceEntryBufferExceededWarning", NULL, text);
     scr_str_release(text);
@@ -439,7 +519,7 @@ double scr_perf_measure(ScrDyn *args) {
   if (!cloned) return 0;
   scr_perf_arm();
   ScrStr *name = scr_str_retain(name_arg->v.str);
-  scr_perf_push(&scr_perf_measures, (ScrPerfEntry){name, cloned, NULL, start, duration, true, 0});
+  scr_perf_push(&scr_perf_measures, (ScrPerfEntry){name, cloned, NULL, start, duration, 1, 0});
   return 1;
 }
 
@@ -501,14 +581,17 @@ double scr_perf_entries(ScrDyn *args, double which) {
     }
     if (!(type = scr_perf_string(scr_perf_arg(args, 0)))) return 0;
   }
+  scr_perf_resource_orphan_clear();
   scr_perf_view_len = 0;
-  bool marks = true, measures = true;
+  bool marks = true, measures = true, resources = true;
   if (type) {
     marks = type->len == 4 && memcmp(type->data, "mark", 4) == 0;
     measures = type->len == 7 && memcmp(type->data, "measure", 7) == 0;
+    resources = type->len == 8 && memcmp(type->data, "resource", 8) == 0;
   }
   if (marks) scr_perf_view_add(&scr_perf_marks, name);
   if (measures) scr_perf_view_add(&scr_perf_measures, name);
+  if (resources) scr_perf_view_add(&scr_perf_resources, name);
   scr_perf_sort(scr_perf_view, scr_perf_view_len);
   scr_str_release(name);
   scr_str_release(type);
@@ -524,9 +607,7 @@ static void scr_perf_buffer_drop(ScrPerfBuffer *b, const ScrStr *name) {
   for (size_t i = 0; i < b->len; i++) {
     ScrPerfEntry e = b->items[i];
     if (scr_str_eq(e.name, (ScrStr *)name)) {
-      scr_str_release(e.name);
-      scr_dyn_release(e.detail);
-      scr_dyn_release(e.ref);
+      scr_perf_entry_release(&e);
     } else {
       b->items[kept++] = e;
     }
@@ -569,17 +650,263 @@ static const ScrPerfEntry *scr_perf_at(double i) {
   return &scr_perf_view[k];
 }
 
+/* ── resource timing (markResourceTiming / clearResourceTimings) ─────── */
+
+/* A member of an options object as a number: absent or non-numeric values
+ * take `fallback` (the timing info fields are already validated upstream,
+ * like the class Node's markResourceTiming feeds). */
+static double scr_perf_num_member(ScrDyn *object, const char *key, double fallback) {
+  if (object == NULL || scr_perf_nullish(object)) return fallback;
+  ScrDyn *v = scr_perf_member(object, key);
+  if (v == NULL) return fallback;
+  double out = fallback;
+  if (v->kind == SCR_DYN_NUM) out = v->v.num;
+  scr_dyn_release(v);
+  return out;
+}
+
+static bool scr_perf_bool_member(ScrDyn *object, const char *key) {
+  if (object == NULL || scr_perf_nullish(object)) return false;
+  ScrDyn *v = scr_perf_member(object, key);
+  if (v == NULL) return false;
+  bool out = scr_dyn_truthy(v);
+  scr_dyn_release(v);
+  return out;
+}
+
+/* A string member; absent answers "" (the class getters' `?? ''`). */
+static ScrStr *scr_perf_str_member(ScrDyn *object, const char *key) {
+  if (object == NULL || scr_perf_nullish(object)) return scr_str_new("", 0);
+  ScrDyn *v = scr_perf_member(object, key);
+  if (v == NULL) return scr_str_new("", 0);
+  if (scr_perf_nullish(v)) {
+    scr_dyn_release(v);
+    return scr_str_new("", 0);
+  }
+  ScrStr *out = scr_perf_string(v);
+  scr_dyn_release(v);
+  return out;
+}
+
+/* The appearance of the resource entries in the timeline: the buffer fills
+ * to setResourceTimingBufferSize's limit and later entries are dropped
+ * (observe.js routes them through a secondary buffer that, with no
+ * resourcetimingbufferfull listener draining it, discards them). Observers
+ * still receive every entry. */
+static void scr_perf_push_resource(ScrPerfEntry entry) {
+  scr_perf_resource_orphan_clear();
+  entry.id = ++scr_perf_next_id;
+  scr_perf_view_reserve(1);
+  scr_perf_view[0] = entry;
+  scr_perf_view_len = 1;
+  scr_perf_last = NULL;
+  scr_perf_observers_enqueue(&entry);
+  if (scr_perf_resources.len >= scr_perf_resource_limit) {
+    /* Dropped from the timeline, but the call still returns this entry and
+     * the observers still receive it: keep the dropped entry as the entry
+     * the producing call hands to entryKeep. */
+    scr_perf_resource_orphan = entry;
+    scr_perf_resource_orphan_set = true;
+    scr_perf_resource_orphan_view = (ScrPerfBuffer){&scr_perf_resource_orphan, 1, 1};
+    scr_perf_last = &scr_perf_resource_orphan_view;
+    return;
+  }
+  if (scr_perf_resources.len == scr_perf_resources.cap) {
+    size_t cap = scr_perf_resources.cap ? scr_perf_resources.cap * 2 : 16;
+    ScrPerfEntry *items = realloc(scr_perf_resources.items, cap * sizeof *items);
+    if (!items) scr_trap("scriptc: out of memory\n");
+    scr_perf_resources.items = items;
+    scr_perf_resources.cap = cap;
+  }
+  scr_perf_resources.items[scr_perf_resources.len++] = entry;
+  scr_perf_last = &scr_perf_resources;
+}
+
+/* performance.markResourceTiming(timingInfo, requestedUrl, initiatorType,
+ * global, cacheMode, bodyInfo, responseStatus[, deliveryType]): the entry
+ * internal/perf/resource_timing.js builds from fetch's timing info. It is
+ * buffered and observed like mark/measure, and also handed back to the
+ * caller (the view's index 0). */
+double scr_perf_resource_mark(ScrDyn *args) {
+  if (!scr_perf_args_ok(args, "markResourceTiming")) return 0;
+  ScrDyn *timing = scr_perf_arg(args, 0);
+  ScrDyn *url = scr_perf_arg(args, 1);
+  ScrDyn *initiator = scr_perf_arg(args, 2);
+  ScrDyn *cache = scr_perf_arg(args, 4);
+  ScrDyn *body = scr_perf_arg(args, 5);
+  ScrDyn *status = scr_perf_arg(args, 6);
+  ScrDyn *delivery = scr_perf_arg(args, 7);
+  ScrStr *name = scr_perf_string(url);
+  if (!name) return 0;
+  ScrStr *initiator_type = scr_perf_string(initiator);
+  if (!initiator_type) {
+    scr_str_release(name);
+    return 0;
+  }
+  ScrStr *cache_mode = scr_perf_string(cache);
+  if (!cache_mode) {
+    scr_str_release(name);
+    scr_str_release(initiator_type);
+    return 0;
+  }
+  /* `cacheMode === '' || cacheMode === 'local'` is asserted upstream;
+   * 'validated' is accepted for the transfer-size rule the docs list. */
+  ScrPerfResource *r = calloc(1, sizeof *r);
+  if (r == NULL) scr_trap("scriptc: out of memory\n");
+  r->rc = 1;
+  r->initiator_type = initiator_type;
+  r->start = scr_perf_num_member(timing, "startTime", 0);
+  r->end = scr_perf_num_member(timing, "endTime", 0);
+  r->redirect_start = scr_perf_num_member(timing, "redirectStartTime", 0);
+  r->redirect_end = scr_perf_num_member(timing, "redirectEndTime", 0);
+  r->post_redirect_start = scr_perf_num_member(timing, "postRedirectStartTime", 0);
+  r->service_worker_start = scr_perf_num_member(timing, "finalServiceWorkerStartTime", 0);
+  r->network_request_start = scr_perf_num_member(timing, "finalNetworkRequestStartTime", 0);
+  r->network_response_start = scr_perf_num_member(timing, "finalNetworkResponseStartTime", 0);
+  r->interim_response_start = scr_perf_num_member(timing, "firstInterimNetworkResponseStartTime", 0);
+  r->encoded_body_size = scr_perf_num_member(timing, "encodedBodySize", 0);
+  r->decoded_body_size = scr_perf_num_member(timing, "decodedBodySize", 0);
+  r->render_blocking = scr_perf_bool_member(timing, "renderBlocking");
+  ScrDyn *conn = scr_perf_nullish(timing) ? NULL : scr_perf_member(timing, "finalConnectionTimingInfo");
+  if (conn != NULL && !scr_perf_nullish(conn)) {
+    r->has_connection = true;
+    r->dns_start = scr_perf_num_member(conn, "domainLookupStartTime", 0);
+    r->dns_end = scr_perf_num_member(conn, "domainLookupEndTime", 0);
+    r->connection_start = scr_perf_num_member(conn, "connectionStartTime", 0);
+    r->connection_end = scr_perf_num_member(conn, "connectionEndTime", 0);
+    r->secure_connection_start = scr_perf_num_member(conn, "secureConnectionStartTime", 0);
+    r->alpn = scr_perf_str_member(conn, "ALPNNegotiatedProtocol");
+  } else {
+    r->alpn = scr_str_new("", 0);
+  }
+  scr_dyn_release(conn);
+  r->cache_local = cache_mode->len == 5 && memcmp(cache_mode->data, "local", 5) == 0;
+  r->cache_validated = cache_mode->len == 9 && memcmp(cache_mode->data, "validated", 9) == 0;
+  r->response_status = status->kind == SCR_DYN_NUM ? status->v.num : 0;
+  r->content_type = scr_perf_str_member(body, "contentType");
+  r->content_encoding = scr_perf_str_member(body, "contentEncoding");
+  /* deliveryType defaults to '' (the 8th argument is optional); a value
+   * that cannot convert takes that default too, like the metadata fields
+   * below, so the call still buffers its entry instead of returning with no
+   * entry and letting the entry build read an empty timeline (which
+   * aborted the process). */
+  r->delivery_type = scr_perf_nullish(delivery) ? scr_str_new("", 0) : scr_perf_string(delivery);
+  scr_str_release(cache_mode);
+  if (!r->delivery_type) r->delivery_type = scr_str_new("", 0);
+  /* A timing, connection or body value that cannot convert (a Symbol, a
+   * getter that throws) recorded its field's default: the entry is buffered
+   * intact rather than left half-built, which used to poison the timeline
+   * and make later reads abort the process. Node buffers the call too. */
+  if (scr_exc_pending()) scr_exc_clear();
+  scr_perf_arm();
+  ScrPerfEntry entry = {name, NULL, NULL, r->start, r->end - r->start, false, 0, r};
+  scr_perf_push_resource(entry);
+  return 1;
+}
+
+/* performance.clearResourceTimings([name]). */
+void scr_perf_resource_clear(ScrDyn *args) {
+  if (!scr_perf_args_ok(args, "clearResourceTimings")) return;
+  ScrStr *name = NULL;
+  ScrDyn *value = scr_perf_arg(args, 0);
+  if (value->kind != SCR_DYN_UNDEF) {
+    if (!(name = scr_perf_string(value))) return;
+  }
+  scr_perf_buffer_drop(&scr_perf_resources, name);
+  scr_str_release(name);
+}
+
+/* performance.setResourceTimingBufferSize(maxSize): the webidl unsigned
+ * long conversion (ToNumber modulo 2^32; a BigInt is refused). */
+void scr_perf_resource_buffer_size(ScrDyn *args) {
+  if (!scr_perf_args_ok(args, "setResourceTimingBufferSize")) return;
+  if (args->v.arr.len == 0) {
+    scr_perf_missing("maxSize");
+    return;
+  }
+  ScrDyn *v = scr_perf_arg(args, 0);
+  if (v->kind == SCR_DYN_BIGINT) {
+    static const char msg[] = "maxSize is a BigInt and cannot be converted to a number.";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+    return;
+  }
+  double num = scr_dyn_number_coerce(v);
+  if (scr_exc_pending()) return;
+  if (!isfinite(num)) num = 0;
+  double truncated = num < 0 ? ceil(num) : floor(num);
+  double mod = fmod(truncated, 4294967296.0);
+  if (mod < 0) mod += 4294967296.0;
+  scr_perf_resource_limit = (size_t)mod;
+}
+
+/* A resource entry field: `which` follows the compiler's selector order. */
+double scr_perf_entry_resource_num(double i, double which) {
+  const ScrPerfEntry *e = scr_perf_at(i);
+  const ScrPerfResource *r = e->resource;
+  if (r == NULL) return 0;
+  switch ((int)which) {
+    case 0: return r->service_worker_start;
+    case 1: return r->redirect_start;
+    case 2: return r->redirect_end;
+    case 3: return r->post_redirect_start;
+    case 4: return r->dns_start;
+    case 5: return r->dns_end;
+    case 6: return r->connection_start;
+    case 7: return r->connection_end;
+    case 8: return r->secure_connection_start;
+    case 9: return r->network_request_start;
+    case 10: return r->network_response_start;
+    case 11: return r->interim_response_start;
+    case 12:
+      return r->interim_response_start != 0 ? r->interim_response_start
+                                            : r->network_response_start;
+    case 13: return r->end;
+    case 14:
+      if (r->cache_local) return 0;
+      if (r->cache_validated) return 300;
+      return r->encoded_body_size + 300;
+    case 15: return r->encoded_body_size;
+    case 16: return r->decoded_body_size;
+    default: return r->response_status;
+  }
+}
+
+/* A resource field as a string (+1): "" when the entry has none. */
+static ScrStr *scr_perf_resource_str_field(const ScrStr *s) {
+  return s ? scr_str_retain((ScrStr *)s) : scr_str_new("", 0);
+}
+
+ScrStr *scr_perf_entry_resource_str(double i, double which) {
+  const ScrPerfEntry *e = scr_perf_at(i);
+  const ScrPerfResource *r = e->resource;
+  if (r == NULL) return scr_str_new("", 0);
+  switch ((int)which) {
+    case 0: return scr_perf_resource_str_field(r->initiator_type);
+    case 1: return scr_perf_resource_str_field(r->alpn);
+    case 2: return scr_perf_resource_str_field(r->delivery_type);
+    case 3: return scr_str_new(r->render_blocking ? "blocking" : "non-blocking",
+                              r->render_blocking ? 8 : 12);
+    case 4: return scr_perf_resource_str_field(r->content_type);
+    default: return scr_perf_resource_str_field(r->content_encoding);
+  }
+}
+
 ScrStr *scr_perf_entry_name(double i) { return scr_str_retain(scr_perf_at(i)->name); }
 
 ScrStr *scr_perf_entry_type(double i) {
-  return scr_perf_at(i)->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+  const ScrPerfEntry *e = scr_perf_at(i);
+  if (e->resource != NULL) return scr_str_new("resource", 8);
+  return scr_perf_kind_name(e->kind);
 }
 
 double scr_perf_entry_start(double i) { return scr_perf_at(i)->start; }
 
 double scr_perf_entry_duration(double i) { return scr_perf_at(i)->duration; }
 
-ScrDyn *scr_perf_entry_detail(double i) { return scr_dyn_retain(scr_perf_at(i)->detail); }
+ScrDyn *scr_perf_entry_detail(double i) {
+  ScrDyn *detail = scr_perf_at(i)->detail;
+  return detail ? scr_dyn_retain(detail) : scr_dyn_new_null();
+}
 
 /* The program keeps the object it built for the last mark or measure in
  * that entry (borrowed, retained here), so the getters answer the same
@@ -611,11 +938,7 @@ ScrDyn *scr_perf_entry_ref(double i) {
  * object as the constructed one, and instanceof asks the tag. */
 
 static void scr_perf_entries_clear(ScrPerfEntries *l) {
-  for (size_t i = 0; i < l->len; i++) {
-    scr_str_release(l->items[i].name);
-    scr_dyn_release(l->items[i].detail);
-    scr_dyn_release(l->items[i].ref);
-  }
+  for (size_t i = 0; i < l->len; i++) scr_perf_entry_release(&l->items[i]);
   l->len = 0;
 }
 
@@ -632,12 +955,13 @@ static void scr_perf_entries_push(ScrPerfEntries *l, ScrPerfEntry entry) {
 
 static ScrPerfEntry scr_perf_entry_copy(const ScrPerfEntry *e) {
   return (ScrPerfEntry){scr_str_retain(e->name),
-                        scr_dyn_retain(e->detail),
+                        e->detail ? scr_dyn_retain(e->detail) : NULL,
                         e->ref ? scr_dyn_retain(e->ref) : NULL,
                         e->start,
                         e->duration,
-                        e->measure,
-                        e->id};
+                        e->kind,
+                        e->id,
+                        scr_perf_resource_retain(e->resource)};
 }
 
 typedef struct ScrPerfObserver {
@@ -804,7 +1128,8 @@ static void scr_perf_observers_cleanup(void) {
 /* observe.js's enqueue, over the buffered entry the timeline just took. */
 static void scr_perf_observers_enqueue(const ScrPerfEntry *entry) {
   if (scr_perf_nobservers == 0) return;
-  ScrStr *name = entry->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+  ScrStr *name = entry->resource != NULL ? scr_str_new("resource", 8)
+                                         : scr_perf_kind_name(entry->kind);
   for (size_t i = 0; i < scr_perf_nobservers; i++) {
     ScrPerfObserver *o = scr_perf_observers[i];
     if (!scr_perf_observer_has_type(o, name)) continue;
@@ -926,13 +1251,13 @@ static double scr_perf_list_select(const ScrPerfEntries *l, ScrDyn *args, double
     const ScrPerfEntry *e = &l->items[i];
     if (name && !scr_str_eq(e->name, name)) continue;
     if (which == 1 && have_type) {
-      ScrStr *own = e->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+      ScrStr *own = scr_perf_kind_name(e->kind);
       bool equal = type_value->kind == SCR_DYN_STR && scr_str_eq(own, type_value->v.str);
       scr_str_release(own);
       if (!equal) continue;
     }
     if (which == 2) {
-      ScrStr *own = e->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+      ScrStr *own = scr_perf_kind_name(e->kind);
       bool equal = scr_str_eq(own, type);
       scr_str_release(own);
       if (!equal) continue;
@@ -954,7 +1279,7 @@ static ScrDyn *scr_perf_entry_object(const ScrPerfEntry *e) {
   if (e->ref) return scr_dyn_retain(e->ref);
   ScrDyn *object = scr_dyn_new_obj();
   scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(e->name));
-  ScrStr *type = e->measure ? scr_str_new("measure", 7) : scr_str_new("mark", 4);
+  ScrStr *type = scr_perf_kind_name(e->kind);
   scr_dyn_obj_set(object, "entryType", 9, scr_dyn_new_str(type));
   scr_str_release(type);
   scr_dyn_obj_set(object, "startTime", 9, scr_dyn_new_num(e->start));
@@ -1180,6 +1505,8 @@ void scr_perf_observer_observe(ScrDyn *observer, ScrDyn *args) {
         source = &scr_perf_marks;
       else if (type->v.str->len == 7 && memcmp(type->v.str->data, "measure", 7) == 0)
         source = &scr_perf_measures;
+      else if (type->v.str->len == 8 && memcmp(type->v.str->data, "resource", 8) == 0)
+        source = &scr_perf_resources;
       if (source) {
         size_t first = o->buffer.len;
         for (size_t i = 0; i < source->len; i++)
@@ -1248,4 +1575,397 @@ double scr_perf_list_entries(ScrDyn *list, ScrDyn *args, double which) {
     return 0;
   }
   return scr_perf_list_select(&((ScrPerfList *)list->v.handle.ptr)->entries, args, which);
+}
+
+/* ── performance.timerify (perf_hooks.timerify) ───────────────────────────
+ * The wrapper times each call and hands the observers a 'function' entry
+ * whose detail is the argument list; Node records these for observers only
+ * (the global timeline does not hold them). */
+
+/* One timerified call's entry, delivered to the observers watching
+ * 'function'. The call's program object is built from the copy the list
+ * answers (a function entry keeps no producing record). */
+static void scr_perf_observe_function(const ScrStr *name, double start, double duration,
+                                      ScrDyn *detail) {
+  /* The entry the list answers: a plain object with the argument list as
+   * its detail, kept so a typed read of the list answers this object. */
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(scr_str_retain((ScrStr *)name)));
+  ScrStr *type = scr_str_new("function", 8);
+  scr_dyn_obj_set(object, "entryType", 9, scr_dyn_new_str(type));
+  scr_str_release(type);
+  scr_dyn_obj_set(object, "startTime", 9, scr_dyn_new_num(start));
+  scr_dyn_obj_set(object, "duration", 8, scr_dyn_new_num(duration));
+  scr_dyn_obj_set(object, "detail", 6, scr_dyn_retain(detail));
+  /* The entry record carries a resource timing's fields too (the entry
+   * classes share one checked shape); a function entry answers their zero
+   * values, as a mark or measure's record does. */
+  static const char *const zero_numbers[] = {
+      "workerStart",     "redirectStart", "redirectEnd",     "fetchStart",
+      "domainLookupStart", "domainLookupEnd", "connectStart", "connectEnd",
+      "secureConnectionStart", "requestStart", "finalResponseHeadersStart",
+      "firstInterimResponseStart", "responseStart", "responseEnd", "transferSize",
+      "encodedBodySize", "decodedBodySize", "responseStatus",
+  };
+  static const char *const empty_strings[] = {
+      "initiatorType", "nextHopProtocol", "deliveryType",
+      "renderBlockingStatus", "contentType", "contentEncoding",
+  };
+  for (size_t i = 0; i < sizeof zero_numbers / sizeof zero_numbers[0]; i++)
+    scr_dyn_obj_set(object, zero_numbers[i], strlen(zero_numbers[i]), scr_dyn_new_num(0));
+  for (size_t i = 0; i < sizeof empty_strings / sizeof empty_strings[0]; i++) {
+    ScrStr *empty = scr_str_new("", 0);
+    scr_dyn_obj_set(object, empty_strings[i], strlen(empty_strings[i]), scr_dyn_new_str(empty));
+    scr_str_release(empty); /* the dyn string holds its own reference */
+  }
+  ScrPerfEntry entry;
+  memset(&entry, 0, sizeof entry);
+  entry.name = scr_str_retain((ScrStr *)name);
+  entry.detail = scr_dyn_retain(detail);
+  entry.ref = object; /* moves */
+  entry.start = start;
+  entry.duration = duration;
+  entry.kind = 2;
+  entry.id = ++scr_perf_next_id;
+  scr_perf_arm();
+  scr_perf_observers_enqueue(&entry);
+  scr_perf_entry_release(&entry);
+}
+
+/* One completed call's readings: Node's processComplete records the
+ * duration into the options histogram (nanoseconds, rounded up) and then
+ * hands the observers the 'function' entry. A record that throws (a zero
+ * duration is below the histogram's range) leaves no entry. */
+static bool scr_perf_timerified_record(ScrDyn *histogram, const ScrStr *name, double start,
+                                       double duration, ScrDyn *detail) {
+  if (histogram != NULL) {
+    scr_histo_record_checked(histogram, ceil(duration * 1e6));
+    if (scr_exc_pending()) return false;
+  }
+  scr_perf_observe_function(name, start, duration, detail);
+  return true;
+}
+
+/* The call's argument list as the entry's detail array. */
+static ScrDyn *scr_perf_argument_detail(ScrDyn *const *args, size_t argc) {
+  ScrDyn *detail = scr_dyn_new_arr();
+  for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(detail, scr_dyn_retain(args[i]));
+  return detail;
+}
+
+/* The promise continuation's caps: [0] the original's name, [1] the call's
+ * start time, [2] the argument list, [3] the options histogram (absent when
+ * the options named none). */
+static ScrDyn *scr_perf_timerified_settled(ScrClosure *closure, ScrDyn *const *args,
+                                           size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrStr *name = scr_box_get_ref(closure->caps[0]);
+  double start = scr_box_get_f64(closure->caps[1]);
+  ScrDyn *detail = scr_box_get_ref(closure->caps[2]);
+  ScrDyn *histogram = closure->caps[3] != NULL ? scr_box_get_ref(closure->caps[3]) : NULL;
+  scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
+  scr_dyn_release(histogram);
+  scr_dyn_release(detail);
+  scr_str_release(name);
+  return scr_dyn_undefined();
+}
+
+/* Node's wrapper reads `result.finally` on every non-nullish result and
+ * defers when it is callable — any promise-like, not only a native promise.
+ * These are the result kinds that carry members. */
+static bool scr_perf_result_carries_members(const ScrDyn *value) {
+  switch (value->kind) {
+    case SCR_DYN_OBJ:
+    case SCR_DYN_ARR:
+    case SCR_DYN_BYTES:
+    case SCR_DYN_FUNC:
+    case SCR_DYN_HANDLE:
+    case SCR_DYN_TYPED_REF:
+    case SCR_DYN_PROXY:
+    case SCR_DYN_PROMISE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/* Node's wrapper answers a promise-like call with the reading attached
+ * through `finally`, so the entry lands once the call settles (a rejection
+ * records too, and the rejection still propagates); finally's own answer
+ * replaces the call's. Answers NULL when the result is not promise-like
+ * (or the read threw), so the caller records the call itself. */
+static ScrDyn *scr_perf_timerified_defer(const ScrStr *name, double start, ScrDyn *detail,
+                                         ScrDyn *histogram, ScrDyn *result) {
+  ScrDyn *method = NULL;
+  ScrStr *key = scr_str_new("finally", 7);
+  if (result->kind == SCR_DYN_PROMISE) {
+    /* The gated async unit installs Promise.prototype's members. */
+    method = scr_dyn_promise_key_get(result, key);
+  } else {
+    /* An ordinary dyn read answers a missing key with undefined. A typed
+     * reference boxes the program's value, whose materialized view is where
+     * a member of that value answers, so a miss reads the view too. */
+    method = result->kind == SCR_DYN_TYPED_REF
+                 ? scr_dyn_typed_ref_bag_method(result, "finally", 7)
+                 : NULL;
+    if (method == NULL && !scr_exc_pending()) method = scr_dyn_obj_read(result, "finally", 7);
+    if (method == NULL || method->kind == SCR_DYN_UNDEF ||
+        !scr_dyn_is_callable(method)) {
+      scr_dyn_release(method);
+      method = NULL;
+      ScrDyn *view = result->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(result) : NULL;
+      if (view != NULL) {
+        ScrDyn *from_view = scr_dyn_obj_read(view, "finally", 7);
+        scr_dyn_release(view);
+        if (from_view != NULL && from_view->kind != SCR_DYN_UNDEF &&
+            scr_dyn_is_callable(from_view))
+          method = from_view;
+        else
+          scr_dyn_release(from_view);
+      }
+    }
+  }
+  scr_str_release(key);
+  if (scr_exc_pending()) {
+    /* A throwing `finally` read propagates, as it does in Node. */
+    scr_dyn_release(method);
+    return NULL;
+  }
+  if (method == NULL || !scr_dyn_is_callable(method)) {
+    scr_dyn_release(method);
+    return NULL;
+  }
+  ScrClosure *closure = scr_closure_new(NULL, 4);
+  closure->caps[0] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(closure->caps[0], scr_str_retain((ScrStr *)name));
+  closure->caps[1] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[1], start);
+  closure->caps[2] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[2], scr_dyn_retain(detail));
+  if (histogram != NULL) {
+    closure->caps[3] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_box_set_ref(closure->caps[3], scr_dyn_retain(histogram));
+  }
+  ScrDyn *callback = scr_dyn_new_func(closure, scr_perf_timerified_settled, 0, "", "");
+  ScrDyn *arguments[1] = {callback};
+  scr_dyn_this_push_dyn(result);
+  ScrDyn *settled = scr_dyn_call(method, arguments, 1, "timerified function");
+  scr_dyn_this_pop();
+  scr_dyn_release(method);
+  scr_dyn_release(callback);
+  return settled;
+}
+
+/* The wrapper: caps[0] the original function (+1), caps[1] the wrapper's
+ * display name (the function box borrows its bytes), caps[2] the original's
+ * name (the entry's), caps[3] the options histogram (a RecordableHistogram
+ * handle, or absent). */
+static ScrDyn *scr_perf_timerified_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  ScrDyn *fn = scr_box_get_ref(closure->caps[0]);
+  ScrStr *name = scr_box_get_ref(closure->caps[2]);
+  ScrDyn *histogram = closure->caps[3] != NULL ? scr_box_get_ref(closure->caps[3]) : NULL;
+  ScrDyn *self = scr_dyn_this_get();
+  double start = scr_perf_now();
+  scr_dyn_this_push_dyn(self);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, "timerified function");
+  scr_dyn_this_pop();
+  scr_dyn_release(self);
+  scr_dyn_release(fn);
+  if (scr_exc_pending()) {
+    /* A call that threw records nothing (Node's wrapper only records a call
+     * that returned). */
+    scr_dyn_release(histogram);
+    scr_str_release(name);
+    return result;
+  }
+  ScrDyn *detail = scr_perf_argument_detail(args, argc);
+  /* A promise-like call's entry lands when its finally completes, timed
+   * over the whole call. */
+  if (result != NULL && scr_perf_result_carries_members(result)) {
+    ScrDyn *settled = scr_perf_timerified_defer(name, start, detail, histogram, result);
+    if (settled != NULL || scr_exc_pending()) {
+      scr_dyn_release(detail);
+      scr_dyn_release(histogram);
+      scr_str_release(name);
+      scr_dyn_release(result);
+      return settled;
+    }
+  }
+  bool recorded = scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
+  scr_dyn_release(detail);
+  scr_dyn_release(histogram);
+  scr_str_release(name);
+  if (!recorded) {
+    scr_dyn_release(result);
+    return NULL;
+  }
+  return result;
+}
+
+/* `new wrapper(...)`: Node's wrapper constructs its original with the
+ * wrapper's arguments (new.target is the original) and records the entry,
+ * answering the instance. */
+static bool scr_perf_timerified_construct(const ScrDyn *callee, const ScrDyn *args,
+                                          ScrDyn **out) {
+  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != scr_perf_timerified_call) return false;
+  ScrClosure *closure = callee->v.fn.clo;
+  ScrDyn *fn = scr_box_get_ref(closure->caps[0]);
+  ScrStr *name = scr_box_get_ref(closure->caps[2]);
+  ScrDyn *histogram = closure->caps[3] != NULL ? scr_box_get_ref(closure->caps[3]) : NULL;
+  double start = scr_perf_now();
+  ScrDyn *constructed = scr_dyn_construct(fn, args, name);
+  scr_dyn_release(fn);
+  if (constructed == NULL) {
+    /* The original refused construction; its exception is the answer. */
+    scr_dyn_release(histogram);
+    scr_str_release(name);
+    return true;
+  }
+  ScrDyn *detail = scr_dyn_new_arr();
+  for (size_t i = 0; i < (size_t)args->v.arr.len; i++)
+    scr_dyn_arr_push(detail, scr_dyn_retain(args->v.arr.items[i]));
+  bool recorded = scr_perf_timerified_record(histogram, name, start, scr_perf_now() - start, detail);
+  scr_dyn_release(detail);
+  scr_dyn_release(histogram);
+  scr_str_release(name);
+  if (!recorded) {
+    scr_dyn_release(constructed);
+    return true;
+  }
+  *out = constructed;
+  return true;
+}
+
+/* A member read of an argument the program passed: an ordinary dyn read,
+ * with a typed reference's materialized view answering when that read misses
+ * (the view is where the boxed value's own members are). */
+static ScrDyn *scr_perf_argument_member(ScrDyn *value, const char *key, size_t length) {
+  ScrDyn *member = scr_dyn_obj_read(value, key, length);
+  if (member != NULL && member->kind != SCR_DYN_UNDEF) return member;
+  scr_dyn_release(member);
+  if (value->kind != SCR_DYN_TYPED_REF) return NULL;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(value);
+  if (view == NULL) return NULL;
+  member = scr_dyn_obj_read(view, key, length);
+  scr_dyn_release(view);
+  if (member != NULL && member->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(member);
+    return NULL;
+  }
+  return member;
+}
+
+/* `performance.timerify(fn)` / `perf_hooks.timerify(fn, options?)` (+1):
+ * Node validates the callable and the options object, then wraps the call.
+ * The arguments arrive as one dyn array. */
+ScrDyn *scr_perf_timerify(ScrDyn *args) {
+  if (!scr_perf_args_ok(args, "timerify")) return NULL;
+  ScrDyn *fn = scr_perf_arg(args, 0);
+  if (!scr_dyn_is_callable(fn)) {
+    char detail[128];
+    char msg[224];
+    int n = snprintf(msg, sizeof msg, "The \"fn\" argument must be of type function. Received %s",
+                     scr_dyn_specific_type(fn, detail, sizeof detail));
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  ScrDyn *options = scr_perf_arg(args, 1);
+  if (options->kind != SCR_DYN_UNDEF) {
+    bool object = options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_TYPED_REF;
+    if (!object) {
+      char detail[128];
+      char msg[224];
+      int n = snprintf(msg, sizeof msg,
+                       "The \"options\" argument must be of type object. Received %s",
+                       scr_dyn_specific_type(options, detail, sizeof detail));
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+      return NULL;
+    }
+  }
+  /* options.histogram: Node takes a RecordableHistogram and records each
+   * call's duration into it (nanoseconds). */
+  ScrDyn *histogram = NULL; /* +1 when the options name one */
+  if (options->kind != SCR_DYN_UNDEF) {
+    ScrDyn *value = scr_perf_argument_member(options, "histogram", 9);
+    if (value != NULL) {
+      bool recordable = value->kind == SCR_DYN_HANDLE &&
+                        value->v.handle.tag == SCR_DYNH_HISTOGRAM &&
+                        value->v.handle.ptr != NULL;
+      if (!recordable) {
+        char detail[128];
+        const char *received = scr_dyn_specific_type(value, detail, sizeof detail);
+        /* Node names its internal event-loop class in this message. */
+        if (value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_ELD_HISTOGRAM)
+          received = "an instance of ELDHistogram";
+        char msg[256];
+        int n = snprintf(msg, sizeof msg,
+                         "The \"options.histogram\" property must be an instance of "
+                         "RecordableHistogram. Received %s",
+                         received);
+        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+        scr_dyn_release(value);
+        return NULL;
+      }
+      histogram = scr_dyn_retain(value);
+    }
+    scr_dyn_release(value);
+  }
+  ScrStr *raw_name = scr_str_new("", 0);
+  ScrDyn *name_value = scr_dyn_obj_read(fn, "name", 4);
+  if (name_value && name_value->kind == SCR_DYN_STR && name_value->v.str->len > 0) {
+    scr_str_release(raw_name);
+    raw_name = scr_str_retain(name_value->v.str);
+  }
+  scr_dyn_release(name_value);
+  double arity = 0;
+  ScrDyn *length_value = scr_dyn_obj_read(fn, "length", 6);
+  if (length_value && length_value->kind == SCR_DYN_NUM) arity = length_value->v.num;
+  scr_dyn_release(length_value);
+  scr_perf_arm();
+  ScrClosure *closure = scr_closure_new(NULL, 4);
+  closure->caps[3] = NULL;
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_dyn_retain(fn));
+  ScrStr *display = scr_str_new("timerified ", 11);
+  ScrStr *joined = scr_str_concat(display, raw_name);
+  scr_str_release(display);
+  closure->caps[1] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(closure->caps[1], scr_str_retain(joined));
+  closure->caps[2] = scr_box_new(SCR_BOX_STR);
+  scr_box_set_ref(closure->caps[2], raw_name); /* moves */
+  if (histogram != NULL) {
+    closure->caps[3] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_box_set_ref(closure->caps[3], histogram); /* moves */
+  }
+  /* A wrapper constructs its original (Node's ReflectConstruct path); the
+   * construct dispatcher asks this hook before refusing a plain function. */
+  scr_dyn_timerified_construct_fn = scr_perf_timerified_construct;
+  ScrDyn *wrapper =
+      scr_dyn_new_func(closure, scr_perf_timerified_call, (uint32_t)arity, "", joined->data);
+  scr_str_release(joined);
+  /* An ordinary function's own prototype object, with the wrapper as its
+   * constructor, as Node's wrapper carries (the construction itself goes
+   * through the hook above, which constructs the ORIGINAL). */
+  ScrDyn *prototype = scr_dyn_new_obj();
+  scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain(wrapper));
+  /* The prototype's constructor property is hidden (writable and
+   * configurable, not enumerable), as on any function's prototype. */
+  for (size_t i = 0; i < (size_t)prototype->v.obj.len; i++)
+    scr_dyn_obj_dict_entries(prototype)[i].enumerable = false;
+  scr_dyn_fn_seed_prototype(wrapper, prototype);
+  /* The seed's builtin recipe makes a constructor's prototype read-only;
+   * an ordinary function's is writable in Node, and only its sameness and
+   * attributes' enumerable/configurable bits are fixed. */
+  ScrDyn *table = scr_dyn_function_properties(wrapper); /* +1 */
+  if (table != NULL) {
+    ScrDynEntry *entries = scr_dyn_obj_dict_entries(table);
+    for (size_t i = 0; i < (size_t)table->v.obj.len; i++) {
+      if (entries[i].key != NULL && entries[i].key_len == 9 &&
+          memcmp(entries[i].key, "prototype", 9) == 0)
+        entries[i].writable = true;
+    }
+    scr_dyn_release(table);
+  }
+  return wrapper;
 }

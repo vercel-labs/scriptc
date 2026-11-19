@@ -438,16 +438,25 @@ declare module "util" {
     tokens?: ParseArgsToken[];
   }
   export function parseArgs(config?: ParseArgsConfig): ParseArgsResult;
-  /* util.getCallSites (Node ≥22.9): the captured-frame slice harness
-   * code reads. No stack bookkeeping exists in a compiled binary — every
-   * reached call fences per site. */
-  export interface CallSite {
-    readonly functionName: string;
-    readonly scriptName: string;
-    readonly lineNumber: number;
-    readonly column: number;
+  /* util.getCallSites (Node ≥22.9): the running source frames a program
+   * that observes stacks records (frame-positions.ts). scriptId is "0"
+   * where @types/node's is a V8 script id. */
+  export interface GetCallSitesOptions {
+    sourceMap?: boolean | undefined;
   }
-  export function getCallSites(frameCount?: number): CallSite[];
+  export interface CallSiteObject {
+    functionName: string;
+    scriptName: string;
+    scriptId: string;
+    lineNumber: number;
+    columnNumber?: number | undefined;
+    column: number;
+  }
+  export function getCallSites(
+    frameCount?: number,
+    options?: GetCallSitesOptions,
+  ): CallSiteObject[];
+  export function getCallSites(options: GetCallSitesOptions): CallSiteObject[];
 }
 
 declare module "node:util" {

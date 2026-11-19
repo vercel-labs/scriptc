@@ -59,7 +59,9 @@ import {
 } from "../diagnostics/diagnostic.js";
 import {
   isInstalledPackagePath,
+  isInstalledSourcePackage,
   isNodeModulesPath,
+  isSourcePackagePath,
   isPathSpecifier,
   nearestInvalidPackageJsonPath,
   nearestPackageType,
@@ -219,7 +221,11 @@ import {
   jsxEmitName,
   jsxEmitPlan,
   jsxPragmas,
+  isIntrinsicJsxName,
+  jsxSlotNeedsContext,
   lowerJsx,
+  type JsxContextTypes,
+  type JsxTypeHelpers,
   type LoweredJsx,
 } from "./jsx-source.js";
 
@@ -1356,12 +1362,15 @@ function entryPackageProgramRoots7(
    * already holds, or an edge that names no compiled JavaScript. */
   const rootOf = (from: string, spec: string, kind: "import" | "require"): string | null => {
     // The project edge, from any program file: a relative import, or a
-    // tsconfig path, that lands on the entry package's JavaScript or on an
-    // opted-in package's.
+    // tsconfig path, that lands on the entry package's JavaScript, on an
+    // opted-in package's, or on a source package's (tsgo's own walk loads
+    // no JavaScript under node_modules).
     const target = resolveProjectModule(from, spec);
     if (
       target !== null &&
-      (belongsToEntry(target) || npmStaticPackageOfPath(target) !== null) &&
+      (belongsToEntry(target) ||
+        npmStaticPackageOfPath(target) !== null ||
+        isSourcePackagePath(target)) &&
       isJsSourceFileName(target)
     )
       return program.getSourceFile(target) === undefined ? target : null;
@@ -1456,6 +1465,7 @@ function lowerProgramJsx7(
   const sources = new Map<string, LoweredJsx>();
   const mode = jsxEmitName(options.jsx as string | number | undefined);
   if (mode === undefined) return { sources, refusal: null };
+  const contextTypes = jsxContextTypes7(program);
   for (const sf of program.getImplementationSourceFiles()) {
     if (sf.isDeclarationFile || /\.[mc]?ts$/.test(sf.fileName) || !containsJsx(sf)) continue;
     const at = firstJsx(sf)!;
@@ -1481,9 +1491,316 @@ function lowerProgramJsx7(
       },
       jsxPragmas(sf.text),
     );
-    sources.set(sf.fileName, lowerJsx(sf, plan));
+    sources.set(sf.fileName, lowerJsx(sf, plan, contextTypes));
   }
   return { sources, refusal: null };
+}
+
+/** The constraint the rewrite places on a JSX slot expression that needs
+ * one, or undefined. A TypeScript file's implicit-any report stops the
+ * build; a JavaScript file admits it (the JS_OPINIONS rows), so it keeps the
+ * lowering it had. A component's slot is read through the component's own
+ * props type, which names a module-private prop type the site cannot spell;
+ * elsewhere the slot's contextual type is printed with fully qualified names
+ * (`import("react").MouseEventHandler<HTMLButtonElement>`) so the text reads
+ * the same from the rewritten file. A spread is constrained to the partial
+ * props type, since the element's other attributes supply the rest. The
+ * checker is asked only for the sites whose functions need it, and is built
+ * on the first such site. */
+function jsxContextTypes7(program: ts.Program): JsxContextTypes {
+  let checker: ReturnType<ts.Program["getTypeChecker"]> | null = null;
+  const cached = new Map<ts.Expression, string | undefined>();
+  return (expression, helpers) => {
+    if (!/\.[mc]?tsx$/i.test(expression.getSourceFile().fileName)) return undefined;
+    if (cached.has(expression)) return cached.get(expression);
+    let text: string | undefined;
+    if (jsxSlotNeedsContext(expression)) {
+      try {
+        checker ??= program.getTypeChecker();
+        const slot = jsxSlot7(expression);
+        text = slot === null ? undefined : jsxElementSlotText7(checker, slot, helpers);
+        if (text === undefined) {
+          const contextual = jsxContextTypeText7(checker, expression);
+          // A spread supplies only the props its object has: the element's
+          // other attributes supply the rest.
+          text =
+            contextual === undefined
+              ? undefined
+              : slot !== null && slot.name === null
+                ? `${helpers.partial()}<${contextual}>`
+                : contextual;
+        }
+      } catch {
+        text = undefined;
+      }
+    }
+    cached.set(expression, text);
+    return text;
+  };
+}
+
+type JsxChecker = ReturnType<ts.Program["getTypeChecker"]>;
+
+/** The slot's constraint read from the element: the props member the
+ * expression fills, or the partial props type for a spread. Reading it
+ * through the tag keeps a type whose name the site cannot see (a component's
+ * module-private prop type) usable, because the indexed access resolves where
+ * the component is declared. A union props type is narrowed to the arm the
+ * element's discriminant selects, since indexing the union itself would lose
+ * it. Undefined for an intrinsic tag, a tag that is not an entity name, a
+ * `key` or `ref` (which JSX types itself), a union no single discriminant
+ * selects, and a generic component (whose instantiated props the printed
+ * contextual type names). */
+function jsxElementSlotText7(
+  checker: JsxChecker,
+  slot: JsxSlot7,
+  helpers: JsxTypeHelpers,
+): string | undefined {
+  const element = jsxElementPropsTag7(checker, slot.opening);
+  if (element === undefined) return undefined;
+  const props = `${helpers.known()}<${helpers.props()}<typeof ${element.tagText}>>`;
+  // A spread provides only some props; the element's other attributes supply
+  // the rest, and which union arm they select is the printed contextual type.
+  if (slot.name === null)
+    return element.arm === undefined
+      ? `${helpers.partial()}<${props} & { ref?: any; key?: any }>`
+      : undefined;
+  const target =
+    element.arm === undefined ? props : `${helpers.arm()}<${props}, ${element.arm.text}>`;
+  if (slot.name === "children" && slot.index !== undefined) {
+    // One child of several is typed by one member of the children prop, and
+    // the element passes them as an array or a tuple in source order.
+    const children = jsxPropertyType7(
+      checker,
+      element.arm?.type ?? element.props,
+      "children",
+      slot.opening,
+    );
+    if (children === undefined || !(checker.isArrayType(children) || checker.isTupleType(children)))
+      return undefined;
+    return `${target}["children"][${slot.index}]`;
+  }
+  return `${target}[${JSON.stringify(slot.name)}]`;
+}
+
+/** A named property's type on `type`, or undefined. */
+function jsxPropertyType7(
+  checker: JsxChecker,
+  type: ts.Type,
+  name: string,
+  location: ts.Node,
+): ts.Type | undefined {
+  const symbol = checker.getPropertyOfType(type, name);
+  return symbol === undefined ? undefined : checker.getTypeOfSymbolAtLocation(symbol, location);
+}
+
+/** The tag of a value-based element whose props type the tag names exactly:
+ * a function component checked against one non-generic call signature, or a
+ * class component. A union props type carries the discriminant the element
+ * provides, so the selected arm names the callback the site checked. */
+function jsxElementPropsTag7(
+  checker: JsxChecker,
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+): { tagText: string; props: ts.Type; arm?: { type: ts.Type; text: string } } | undefined {
+  const tagText = jsxValueTagText(opening.tagName);
+  if (tagText === undefined) return undefined;
+  const tagType = checker.getTypeAtLocation(opening.tagName);
+  const construct = checker.getConstructSignatures(tagType);
+  const call = checker.getCallSignatures(tagType);
+  const classLike = construct.length > 0;
+  const signatures = classLike ? construct : call;
+  // JSX checks a function component against one call signature; an overload
+  // set would name a different one.
+  if (!classLike && call.length !== 1) return undefined;
+  // A generic component instantiates its props at the JSX site; naming the
+  // component's own type would name another instantiation.
+  if (signatures.some((signature) => signature.getTypeParameters().length > 0)) return undefined;
+  const signature = signatures[0];
+  if (signature === undefined) return undefined;
+  const props = jsxSignaturePropsType7(checker, signature, opening, classLike);
+  if (props === undefined) return undefined;
+  if (!props.isUnionType()) return { tagText, props };
+  // Indexing the union would lose the arm the element's discriminant selects.
+  const arm = jsxDiscriminant7(checker, props, opening);
+  return arm === undefined ? undefined : { tagText, props, arm };
+}
+
+/** The type literal an element's literal attribute uses to select one arm of
+ * a union props type, or undefined when no single arm is selected. */
+function jsxDiscriminant7(
+  checker: JsxChecker,
+  props: ts.Type,
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement,
+): { type: ts.Type; text: string } | undefined {
+  for (const property of opening.attributes.properties.nodes) {
+    if (!ts.isJsxAttribute(property) || !ts.isIdentifier(property.name)) continue;
+    const attribute = property.name.text;
+    if (attribute === undefined) continue;
+    const literal = jsxAttributeLiteral7(property.initializer);
+    if (literal === undefined) continue;
+    const name = /^[A-Za-z_$][\w$]*$/.test(attribute) ? attribute : JSON.stringify(attribute);
+    const matches = props.getTypes().filter((arm) => {
+      const member = checker.getPropertyOfType(arm, attribute);
+      if (member === undefined) return false;
+      const type = checker.getTypeOfSymbolAtLocation(member, opening);
+      return checker
+        .typeToString(type)
+        .split(" | ")
+        .some((part) => part === literal);
+    });
+    if (matches.length === 1) return { type: matches[0]!, text: `{ ${name}: ${literal} }` };
+  }
+  return undefined;
+}
+
+/** A JSX attribute value that is a literal type, as type text. */
+function jsxAttributeLiteral7(value: ts.JsxAttributeValue | undefined): string | undefined {
+  if (value === undefined) return "true";
+  if (ts.isStringLiteral(value)) return JSON.stringify(value.text);
+  if (!ts.isJsxExpression(value) || value.expression === undefined) return undefined;
+  const expression = value.expression;
+  if (ts.isStringLiteral(expression)) return JSON.stringify(expression.text);
+  if (ts.isNumericLiteral(expression)) return expression.text;
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return "true";
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return "false";
+  return undefined;
+}
+
+/** The props type a component signature declares: a class instance's `props`
+ * member, or a function component's first parameter. */
+function jsxSignaturePropsType7(
+  checker: JsxChecker,
+  signature: ReturnType<JsxChecker["getSignaturesOfType"]>[number],
+  location: ts.Node,
+  classLike: boolean,
+): ts.Type | undefined {
+  if (classLike) {
+    const instance = checker.getReturnTypeOfSignature(signature);
+    const props = checker.getPropertyOfType(instance, "props");
+    return props === undefined ? undefined : checker.getTypeOfSymbolAtLocation(props, location);
+  }
+  const parameter = signature.getParameters()[0];
+  return parameter === undefined
+    ? undefined
+    : checker.getTypeOfSymbolAtLocation(parameter, location);
+}
+
+/** The contextual type the as-written program gives the expression. */
+function jsxContextTypeText7(checker: JsxChecker, expression: ts.Expression): string | undefined {
+  const type = checker.getContextualType(expression);
+  if (type === undefined) return undefined;
+  const text = checker.typeToString(
+    type,
+    expression,
+    ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.UseFullyQualifiedType,
+  );
+  // A type without a call signature gives the functions no parameter type,
+  // and printer comments (`/*unresolved*/`) do not parse.
+  if (
+    text === "" ||
+    text === "any" ||
+    text === "unknown" ||
+    text === "never" ||
+    text === "error" ||
+    text.includes("/*")
+  )
+    return undefined;
+  return text;
+}
+
+/** The JSX slot an expression fills, and the element whose attributes type
+ * gives it its type, or null when the expression is not in a slot a
+ * component's props type answers (an intrinsic tag's attribute is answered
+ * by JSX.IntrinsicElements; a fragment has no tag; a ref, a key and one of
+ * several children keep the contextual type the checker reported). */
+interface JsxSlot7 {
+  opening: ts.JsxOpeningElement | ts.JsxSelfClosingElement;
+  /** The props member the expression fills; null for a spread of props. */
+  name: string | null;
+  /** For one child of several: its position among the element's children. */
+  index?: number;
+}
+
+function jsxSlot7(expression: ts.Expression): JsxSlot7 | null {
+  const holder = expression.parent;
+  if (holder === undefined) return null;
+  if (ts.isJsxSpreadAttribute(holder)) return jsxSlotOfAttributes(holder.parent, null);
+  if (!ts.isJsxExpression(holder) || holder.parent === undefined) return null;
+  const parent = holder.parent;
+  if (ts.isJsxAttribute(parent)) {
+    const name = jsxAttributeNameText(parent.name);
+    // JSX types a key and a ref through its own attributes as well as props.
+    if (name === undefined || name === "key" || name === "ref") return null;
+    return jsxSlotOfAttributes(parent.parent, name);
+  }
+  if (ts.isJsxElement(parent)) {
+    // A spread child shifts the positions the rest fill, and an element with
+    // one child passes that child itself rather than an array or a tuple.
+    const position = jsxChildPosition7(parent, holder);
+    if (position === undefined) return null;
+    return {
+      opening: parent.openingElement,
+      name: "children",
+      ...(position.count > 1 ? { index: position.index } : {}),
+    };
+  }
+  return null;
+}
+
+/** The child's zero-based position among the element's value-emitting
+ * children, and how many there are; undefined when a spread child makes the
+ * positions the type does not fix. */
+function jsxChildPosition7(
+  node: ts.JsxElement,
+  child: ts.JsxChild,
+): { index: number; count: number } | undefined {
+  let count = 0;
+  let position: number | undefined;
+  for (const candidate of node.children.nodes) {
+    if (ts.isJsxExpression(candidate) && candidate.dotDotDotToken !== undefined) return undefined;
+    if (!jsxChildEmits7(candidate)) continue;
+    if (candidate === child) position = count;
+    count++;
+  }
+  return position === undefined ? undefined : { index: position, count };
+}
+
+function jsxChildEmits7(child: ts.JsxChild): boolean {
+  if (ts.isJsxText(child)) return !child.containsOnlyTriviaWhiteSpaces;
+  if (ts.isJsxExpression(child)) return child.expression !== undefined;
+  return true;
+}
+
+function jsxSlotOfAttributes(node: ts.Node | undefined, name: string | null): JsxSlot7 | null {
+  const parent = node?.parent;
+  if (parent === undefined) return null;
+  if (ts.isJsxOpeningElement(parent) || ts.isJsxSelfClosingElement(parent))
+    return { opening: parent, name };
+  return null;
+}
+
+function jsxAttributeNameText(name: ts.JsxAttributeName): string | undefined {
+  if (ts.isIdentifier(name)) return name.text;
+  if (ts.isJsxNamespacedName(name)) return `${name.namespace.text}:${name.name.text}`;
+  return undefined;
+}
+
+/** The tag's text when it names a value a type query can read
+ * (`Tag`, `UI.Tag`), or undefined for an intrinsic tag, a namespaced one, and
+ * an expression such as `this.Tag`. */
+function jsxValueTagText(tag: ts.JsxTagNameExpression): string | undefined {
+  if (ts.isIdentifier(tag)) return isIntrinsicJsxName(tag.text) ? undefined : tag.text;
+  if (ts.isPropertyAccessExpression(tag)) return jsxEntityText(tag);
+  return undefined;
+}
+
+function jsxEntityText(node: ts.Expression): string | undefined {
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isPropertyAccessExpression(node)) {
+    const left = jsxEntityText(node.expression);
+    return left === undefined ? undefined : `${left}.${node.name.text}`;
+  }
+  return undefined;
 }
 
 function loadProgram7(
@@ -2079,8 +2396,10 @@ export function loadProgram(
   // The project's type patches (type-patches/layer.ts), read by every host
   // this load creates; nothing at all without `scriptc.typePatches`.
   configureTypePatches(entryPath, (path, text, kind) => services.parse(path, text, kind));
+  // A source package compiles from its TypeScript (isSourcePackagePath), never
+  // from published JavaScript, even when named.
   const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])].filter(
-    (name) => !npmStaticOmitsPackage(entryPath, name),
+    (name) => !npmStaticOmitsPackage(entryPath, name) && !isInstalledSourcePackage(entryPath, name),
   );
   // Resolve authored declaration entries before enabling the JS-only
   // package resolver. Safe overload metadata binds through the runtime
@@ -3570,8 +3889,15 @@ function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
     }
     const parent = outer.parent;
     if (parent !== undefined && ts.isExpressionStatement(parent)) return;
-    if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === outer)
-      return;
+    // A TOP-LEVEL declaration initializing from require() has its own
+    // statement edge (requiresOf7 above). A nested one evaluates the
+    // module where the declaration sits — lazy when it is in a deferred
+    // position — so it is an inline edge here.
+    if (parent !== undefined && ts.isVariableDeclaration(parent) && parent.initializer === outer) {
+      const list = parent.parent;
+      const stmt = list?.parent;
+      if (stmt !== undefined && ts.isSourceFile(stmt.parent)) return;
+    }
     out.push(n);
   });
   return out;
@@ -9174,11 +9500,14 @@ function analyzeEsmNamedImportLinks(
     return npmStaticDepSf7(program, from, spec);
   };
 
+  /** One identity per CommonJS module a star re-export spreads, so a name
+   * the same module contributes through two paths stays unambiguous. */
+  const cjsStarExports = new Map<ts.SourceFile, object>();
   const runtimeExport = (
     dep: ts.SourceFile,
     name: string,
     seenModules: ReadonlySet<ts.SourceFile> = new Set(),
-  ): ts.Symbol | undefined => {
+  ): unknown => {
     if (seenModules.has(dep)) return undefined;
     const nextSeen = new Set(seenModules);
     nextSeen.add(dep);
@@ -9221,14 +9550,56 @@ function analyzeEsmNamedImportLinks(
     // resolved symbol may arrive through multiple stars, while distinct
     // symbols make the name unavailable. `default` never star-reexports.
     if (name === "default") return undefined;
-    let starExport: ts.Symbol | undefined;
+    let starExport: unknown;
     for (const stmt of dep.statements.nodes) {
       if (!ts.isExportDeclaration(stmt) || stmt.isTypeOnly || stmt.exportClause !== undefined)
         continue;
       if (stmt.moduleSpecifier === undefined || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
       const target = resolveEdge(dep, stmt.moduleSpecifier.text);
-      if (target === null || target.fileName.endsWith(".json") || !isNodeEsmFile7(target, program))
+      if (target === null || target.fileName.endsWith(".json")) continue;
+      if (!isNodeEsmFile7(target, program)) {
+        // `export *` over a CommonJS module: Node re-exports the names its
+        // lexer detects through the module's ESM facade (a member a branch
+        // attaches counts — the lexer reads bytes, not control flow), its
+        // CommonJS re-exports included, and never `default`. Each CommonJS
+        // module contributes bindings of its own, so one name arriving from
+        // two of them is ambiguous exactly as two ES modules' would be.
+        if (!isCjsJsFile7(target, program)) continue;
+        if (!cjsNamespaceExportNames(program, target).has(name)) continue;
+        // The member's own symbol when the checker declares it: a named
+        // re-export of the same member (`export { name } from './x.cjs'`,
+        // reached directly or through another star) resolves to that symbol,
+        // so both paths agree and the name is not called ambiguous. Node
+        // spreads bindings, not paths.
+        const member = checker
+          .getSymbolAtLocation(target)
+          ?.getExports()
+          .get(ts.escapedSymbolName(name));
+        if (member !== undefined) {
+          let resolved = member;
+          const seenSymbols = new Set<ts.Symbol>();
+          while ((resolved.flags & ts.SymbolFlags.Alias) !== 0 && !seenSymbols.has(resolved)) {
+            seenSymbols.add(resolved);
+            resolved = checker.getAliasedSymbol(resolved);
+          }
+          if (resolved.flags & ts.SymbolFlags.Value) {
+            if (starExport !== undefined && starExport !== resolved) return undefined;
+            starExport = resolved;
+            continue;
+          }
+        }
+        // A name only the lexer detects (the checker declares no member):
+        // one identity per contributing module, so the same module reached
+        // through two stars stays unambiguous.
+        let sentinel = cjsStarExports.get(target);
+        if (sentinel === undefined) {
+          sentinel = { commonJsStar: target.fileName };
+          cjsStarExports.set(target, sentinel);
+        }
+        if (starExport !== undefined && starExport !== sentinel) return undefined;
+        starExport = sentinel;
         continue;
+      }
       const candidate = runtimeExport(target, name, nextSeen);
       if (candidate === undefined) continue;
       if (starExport !== undefined && starExport !== candidate) return undefined;

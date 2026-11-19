@@ -1,4 +1,5 @@
 import * as ts from "./ts7/adapter.js";
+import { bodyReadsArguments } from "./arguments-usage.js";
 import { isNodeModulesPath } from "./resolve.js";
 
 /** Compiler options adopted from the project during preflight. */
@@ -423,6 +424,35 @@ const symbolStringOperator = (_node: ts.Node, d: ts.Diagnostic): boolean => {
 const stringWrapperReceiver = (_node: ts.Node, d: ts.Diagnostic): boolean =>
   ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'");
 
+/** TS2632, an assignment tsgo reports because it models the target as an
+ * import: a JavaScript `var`/`let` a CommonJS file initialized from a
+ * `require()` call is an ordinary mutable binding, and the assignment
+ * replaces the module's value (rebindable-requires.ts gives it
+ * checked-dynamic storage). A real ES import binding and a `const` require
+ * binding are immutable in Node too, and keep the diagnostic. */
+const reboundRequireBinding = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  let target: ts.Node = node;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    target = target.left;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isIdentifier(target)) return false;
+  // tsgo gives a `var` holding require()'s result the ALIAS symbol of an
+  // import: its declaration is the variable, but it carries no
+  // valueDeclaration.
+  const symbol = program.getTypeChecker().getSymbolAtLocation(target);
+  const declaration = symbol?.declarations.find((d) => ts.isVariableDeclaration(d));
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration)) return false;
+  const list = declaration.parent;
+  if (list === undefined || !ts.isVariableDeclarationList(list)) return false;
+  if ((list.flags & ts.NodeFlags.Const) !== 0) return false;
+  if (!ts.isIdentifier(declaration.name) || declaration.initializer === undefined) return false;
+  const init = declaration.initializer;
+  if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) return false;
+  if (init.expression.text !== "require" || init.arguments.nodes.length !== 1) return false;
+  return ts.isStringLiteralLike(init.arguments.nodes[0]!);
+};
+
 /** TS2630 in a JavaScript source whose target is a function DECLARATION the
  * program reassigns: the declaration lowers to a mutable binding holding the
  * function as a checked-dynamic value (rebindable-functions.ts), which the
@@ -462,19 +492,50 @@ const deprecatedBufferCall = (_node: ts.Node, d: ts.Diagnostic): boolean => {
 };
 
 /** TS2684 names a call whose supplied receiver the checker's `this` type
- * rejects, and marks the receiver expression (`base.get` in
- * `base.get.call(el)`). JavaScript makes the call anyway: `.call` and
- * `.apply` hand the callee whatever receiver the expression produced, and a
- * function that never reads its receiver ignores it. Admitting the call is
- * Node-exact when the callee's type declares no `this` parameter at all: a
- * function that declares no receiver never reads one, and a value whose
- * runtime form is checked-dynamic — a property descriptor's `get`/`set`, an
- * extracted method value — takes the receiver from the ambient slot the
- * dynamic call binds. A callee whose type does declare `this` keeps the
- * refusal: its static call checks the receiver against that type, while Node
- * reads whatever fields the object happens to have. */
-const untypedReceiverCall = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
-  // The marked expression is the callee the `.call`/`.apply` access names.
+ * rejects. Checker builds anchor the diagnostic on different nodes of the
+ * same call — the callee (`base.get` in `base.get.call(el)`), the `.call`
+ * access, or the whole call — so the site is asked for whichever of those
+ * the marked node is. JavaScript makes the call anyway: `.call` and `.apply`
+ * hand the callee whatever receiver the expression produced, and a function
+ * that never reads its receiver ignores it. Admitting the call is Node-exact
+ * when the callee's type declares no `this` parameter at all, or a receiver
+ * it leaves as `any`/`unknown`: such a callee never reads its receiver, and
+ * a value whose runtime form is checked-dynamic — a property descriptor's
+ * `get`/`set`, an extracted method value — takes the receiver from the
+ * ambient slot the dynamic call binds. A callee whose type declares a real
+ * `this` keeps the refusal: its static call checks the receiver against that
+ * type, while Node reads whatever fields the object happens to have. */
+export const untypedReceiverCall = (
+  node: ts.Node,
+  _d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
+  const callee = receiverCallCallee(node);
+  if (callee === null) return false;
+  const checker = program.getTypeChecker();
+  const target = checker.getNonNullableType(checker.getTypeAtLocation(callee));
+  const signatures = checker.getCallSignatures(target);
+  return (
+    signatures.length > 0 &&
+    signatures.every((signature) => {
+      const receiver = signature.getThisParameter();
+      if (receiver === undefined) return true;
+      // A `this: any`/`this: unknown` parameter constrains no receiver.
+      const flags = checker.getTypeOfSymbolAtLocation(receiver, callee).flags;
+      return (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+    })
+  );
+};
+
+/** The callee expression of the `.call`/`.apply` call that `node` marks, or
+ * null when the marked node is not part of one. */
+function receiverCallCallee(node: ts.Node): ts.Expression | null {
+  const isCallOrApply = (access: ts.PropertyAccessExpression): boolean =>
+    access.name.text === "call" || access.name.text === "apply";
+  const callsThrough = (access: ts.PropertyAccessExpression): boolean => {
+    const call = access.parent;
+    return call !== undefined && ts.isCallExpression(call) && call.expression === access;
+  };
   let context: ts.Node = node;
   while (
     context.parent !== undefined &&
@@ -485,25 +546,29 @@ const untypedReceiverCall = (node: ts.Node, _d: ts.Diagnostic, program: ts.Progr
       ts.isSatisfiesExpression(context.parent))
   )
     context = context.parent;
+  // The whole call.
+  if (
+    ts.isCallExpression(context) &&
+    ts.isPropertyAccessExpression(context.expression) &&
+    isCallOrApply(context.expression) &&
+    callsThrough(context.expression)
+  )
+    return context.expression.expression;
+  // The `.call`/`.apply` access itself.
+  if (ts.isPropertyAccessExpression(context) && isCallOrApply(context) && callsThrough(context))
+    return context.expression;
+  // The callee the access names.
   const access = context.parent;
   if (
-    access === undefined ||
-    !ts.isPropertyAccessExpression(access) ||
-    access.expression !== context
+    access !== undefined &&
+    ts.isPropertyAccessExpression(access) &&
+    access.expression === context &&
+    isCallOrApply(access) &&
+    callsThrough(access)
   )
-    return false;
-  const member = access.name.text;
-  if (member !== "call" && member !== "apply") return false;
-  const call = access.parent;
-  if (call === undefined || !ts.isCallExpression(call) || call.expression !== access) return false;
-  const checker = program.getTypeChecker();
-  const target = checker.getNonNullableType(checker.getTypeAtLocation(node));
-  const signatures = checker.getCallSignatures(target);
-  return (
-    signatures.length > 0 &&
-    signatures.every((signature) => signature.getThisParameter() === undefined)
-  );
-};
+    return context as ts.Expression;
+  return null;
+}
 
 /** TS17013 inside a method or accessor body (including an arrow nested in
  * one): `new.target` is legal there and always undefined, because a method is
@@ -703,31 +768,195 @@ export function jsFieldDeclaringClass(field: ts.Symbol): ts.ClassLikeDeclaration
   return undefined;
 }
 
-/** Whether `node` is the target of a write to a JavaScript binding or field
- * that declares its type with JSDoc, at a site the widening scans handle.
- * TS2739 is the elaborated form of the assignability diagnostics for a class
- * target; on such a target the value is legal JavaScript and the storage
- * follows the values the program writes (analyzeJsWidenedBindings and
- * analyzeJsWidenedFields). A write the scans do not reach keeps the code's
- * triage decision, which refuses it instead of failing in the lowering. */
-const jsdocTypedStorageWrite = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+/** The JSDoc-typed JavaScript array field a `push` or `unshift` call appends
+ * to (`this.uniforms.push(value)` over `@type {Array<Uniform>}`): the class
+ * that declares the field and its name. */
+export function jsArrayFieldAppendOwner(
+  checker: ts.TypeChecker,
+  call: ts.CallExpression,
+): { decl: ts.ClassLikeDeclaration; name: string } | undefined {
+  const callee = call.expression;
+  if (
+    !ts.isPropertyAccessExpression(callee) ||
+    !ts.isIdentifier(callee.name) ||
+    (callee.name.text !== "push" && callee.name.text !== "unshift")
+  )
+    return undefined;
+  let target: ts.Expression = callee.expression;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isPropertyAccessExpression(target) || !ts.isIdentifier(target.name)) return undefined;
+  const field = checker.getSymbolAtLocation(target.name);
+  if (field === undefined || !checker.isArrayType(checker.getTypeOfSymbol(field))) return undefined;
+  const decl = jsFieldDeclaringClass(field);
+  return decl === undefined ? undefined : { decl, name: target.name.text };
+}
+
+/** TS2739 on a value a JavaScript program appends to a JSDoc-typed array
+ * field (jsArrayFieldAppendOwner): the array holds what is appended, so the
+ * field takes checked-dynamic storage (analyzeJsWidenedFields). */
+const jsArrayFieldAppend = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  const call = node.parent;
+  return (
+    call !== undefined &&
+    ts.isCallExpression(call) &&
+    call.arguments.nodes.includes(node as ts.Expression) &&
+    jsArrayFieldAppendOwner(program.getTypeChecker(), call) !== undefined
+  );
+};
+
+/** Whether `node` writes a JavaScript accessor property whose setter is
+ * declared in a JavaScript class (`this.depthTexture = texture` over a
+ * `set depthTexture(value)` documented `@type {?DepthTexture}`): the value
+ * reaches the setter as Node passes it, and the pair takes and answers
+ * checked-dynamic values (analyzeJsWidenedFields, jsWidenedAccessors). */
+const jsAccessorWriteTarget = (node: ts.Node, program: ts.Program): boolean => {
+  if (!jsWideningWriteTarget(node) || !ts.isPropertyAccessExpression(node)) return false;
+  if (!ts.isIdentifier(node.name)) return false;
+  const symbol = program.getTypeChecker().getSymbolAtLocation(node.name);
+  return (
+    symbol !== undefined &&
+    symbol.declarations.some(
+      (decl) =>
+        ts.isSetAccessorDeclaration(decl) &&
+        isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName),
+    )
+  );
+};
+
+/** Whether `node` is the target of a write into a JavaScript binding or
+ * field whose storage follows the values the program writes: a JSDoc-typed
+ * target, or an unannotated `let`/`var`. TS2739 is the elaborated form of
+ * the assignability diagnostics for a class or record target; in JavaScript
+ * the value is legal and the storage follows what the program writes
+ * (analyzeJsWidenedBindings and analyzeJsWidenedFields). The same holds
+ * for a write through a JavaScript accessor (jsAccessorWriteTarget) and a
+ * value appended to a JSDoc-typed array field (jsArrayFieldAppend). A
+ * `const` keeps its inferred type, and a write the scans do not reach keeps
+ * the code's triage decision, which refuses it instead of failing in the
+ * lowering. */
+const jsStorageWriteTarget = (node: ts.Node, d: ts.Diagnostic, program: ts.Program): boolean => {
+  if (jsAccessorWriteTarget(node, program) || jsArrayFieldAppend(node, d, program)) return true;
   if (!jsWideningWriteTarget(node)) return false;
   const checker = program.getTypeChecker();
   if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
     const symbol = checker.getSymbolAtLocation(node.name);
     return symbol !== undefined && jsFieldDeclaringClass(symbol) !== undefined;
   }
-  if (ts.isIdentifier(node)) {
-    const decl = checker.getSymbolAtLocation(node)?.valueDeclaration;
-    return (
-      decl !== undefined &&
-      ts.isVariableDeclaration(decl) &&
-      isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) &&
-      decl.parent?.parent !== undefined &&
-      jsTypeTagIn(decl, decl.parent.parent.pos)
-    );
-  }
-  return false;
+  if (!ts.isIdentifier(node)) return false;
+  const decl = checker.getSymbolAtLocation(node)?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    !ts.isIdentifier(decl.name) ||
+    !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) ||
+    decl.parent === undefined
+  )
+    return false;
+  if (decl.parent.parent !== undefined && jsTypeTagIn(decl, decl.parent.parent.pos)) return true;
+  // An unannotated `let`/`var` takes the storage the program writes to it;
+  // a `const` keeps its inferred type, so its write stays refused.
+  return (decl.parent.flags & ts.NodeFlags.Const) === 0;
+};
+
+/** Whether a JavaScript method joins its override family's checked-dynamic
+ * slot: an ordinary method with a body, no type parameters, rest parameter
+ * or `arguments` read, and neither a generator nor async. These are the
+ * members whose slot the class lowering widens to the family's largest
+ * arity with checked-dynamic parameters and results (virtualJsMethodArity
+ * and checkedVirtualJsMethods in lowering/lower-classes.ts), so a call through any member of the family
+ * passes every argument the call supplies, and each body binds the ones it
+ * declares, as Node does. */
+function jsFamilyMethod(decl: ts.Node): decl is ts.MethodDeclaration {
+  return (
+    ts.isMethodDeclaration(decl) &&
+    ts.isIdentifier(decl.name) &&
+    decl.body !== undefined &&
+    isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) &&
+    decl.asteriskToken === undefined &&
+    !decl.typeParameters?.nodes.length &&
+    !decl.modifiers?.nodes.some(
+      (m) => m.kind === ts.SyntaxKind.AsyncKeyword || m.kind === ts.SyntaxKind.StaticKeyword,
+    ) &&
+    decl.parameters.nodes.every((p) => p.dotDotDotToken === undefined) &&
+    !bodyReadsArguments(decl)
+  );
+}
+
+/** TS2416 on a JavaScript method that overrides only JavaScript methods,
+ * every one of them a family member (jsFamilyMethod). JSDoc narrows a
+ * parameter per subclass (`@param {Mesh} source` over `@param {Object3D}
+ * source`), and a base often declares fewer parameters than its overrides
+ * (a `raycast()` that names its parameters only in a comment); the checker
+ * then also rejects every `copy()` that returns `this`, because the subclass
+ * no longer matches its base. Node reads none of it: a call dispatches on the
+ * receiver's class and binds the arguments the call supplies. The class
+ * lowering gives such a family one slot of the largest arity any member
+ * declares, with checked-dynamic parameters and results, so the native call
+ * is Node's. Every ancestor that declares the method must be a family member
+ * too: the lowering walks the whole base chain, so one ancestor it cannot
+ * give a checked-dynamic slot (a rest parameter, an `arguments` read, a
+ * generator) leaves the family on the class lowering's ordinary dispatch and
+ * a call that supplies extra arguments is not Node's. An override of a
+ * TypeScript, built-in or accessor member keeps the refusal. */
+const jsMethodOverridesJsFamily = (
+  node: ts.Node,
+  _d: ts.Diagnostic,
+  program: ts.Program,
+): boolean => {
+  const member = node.parent;
+  if (member === undefined || !jsFamilyMethod(member) || member.name !== node) return false;
+  if (!ts.isIdentifier(member.name)) return false;
+  const owner = member.parent;
+  if (owner === undefined || !ts.isClassLikeDeclaration(owner)) return false;
+  const checker = program.getTypeChecker();
+  const symbol = owner.name === undefined ? undefined : checker.getSymbolAtLocation(owner.name);
+  if (symbol === undefined) return false;
+  const name = member.name.text;
+  // The class lowering marks the declaration it finds in each ancestor
+  // (collectVirtualJsMethods walks every base), so every ancestor that
+  // declares the method has to be a family member for the family to share
+  // one checked-dynamic slot.
+  let overridden = 0;
+  const seen = new Set<ts.Type>();
+  const overridesFamily = (type: ts.Type): boolean => {
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface() || seen.has(target)) return true;
+    seen.add(target);
+    for (const base of checker.getBaseTypes(target)) {
+      const property = checker.getPropertyOfType(base, name);
+      if (property !== undefined) {
+        const declarations = property.declarations ?? [];
+        if (declarations.length === 0 || !declarations.every(jsFamilyMethod)) return false;
+        overridden++;
+      }
+      if (!overridesFamily(base)) return false;
+    }
+    return true;
+  };
+  return overridesFamily(checker.getDeclaredTypeOfSymbol(symbol)) && overridden > 0;
+};
+
+/** Whether `node` is the binding a `for...in` head writes each key into.
+ * The key is always a string, whatever the binding was declared to hold
+ * (TS2405), and analyzeJsWidenedBindings gives such a binding
+ * checked-dynamic storage. A member target is not admitted here: the
+ * lowering writes the key through the binding it resolves, which a member
+ * access is not. */
+const jsForInKeyBinding = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  if (!ts.isIdentifier(node)) return false;
+  const decl = program.getTypeChecker().getSymbolAtLocation(node)?.valueDeclaration;
+  if (decl === undefined || !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName))
+    return false;
+  if (ts.isParameter(decl)) return true;
+  return (
+    ts.isVariableDeclaration(decl) &&
+    ts.isIdentifier(decl.name) &&
+    decl.parent !== undefined &&
+    // A catch binding's snapshot is read-only in the lowering, which
+    // refuses the write with its own diagnostic.
+    !ts.isCatchClause(decl.parent) &&
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  );
 };
 
 /** Whether `node`, a member access, is written: an assignment or compound
@@ -901,16 +1130,39 @@ export function voidTruthinessNeedsRuntimeValue(node: ts.Node, program: ts.Progr
   return !undefinedAtRunTime(node, program);
 }
 
+/** The call a void-typed truthiness operand held in a VARIABLE was
+ * initialized from (`var v = Internals.d.f(); if (v)`, `return v || w`):
+ * the same member call voidTruthinessNeedsRuntimeValue admits when it is
+ * tested directly. Node's binding holds the value the call answered, so the
+ * lowering stores that value checked-dynamically and the test reads it; a
+ * later write to the binding writes the new value, as Node's assignment
+ * does. Null for every other operand and every call the analysis can prove
+ * answers undefined. */
+export function voidTruthinessHeldCall(
+  node: ts.Node,
+  program: ts.Program,
+): ts.CallExpression | null {
+  if (!ts.isIdentifier(node)) return null;
+  const decl = program.getTypeChecker().getSymbolAtLocation(node)?.valueDeclaration;
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return null;
+  let call: ts.Expression = decl.initializer;
+  while (ts.isParenthesizedExpression(call)) call = call.expression;
+  return ts.isCallExpression(call) && voidTruthinessNeedsRuntimeValue(call, program) ? call : null;
+}
+
 /** TS1345 where Node's ToBoolean of the operand is known: the boolean of a
  * discarded negation is never read, an operand that is always `undefined`
- * tests false, and a call through a plain object's member reads the value
- * its callee answers (voidTruthinessNeedsRuntimeValue). Any other void-typed
- * operand keeps the triage
+ * tests false, a call through a plain object's member reads the value
+ * its callee answers (voidTruthinessNeedsRuntimeValue), and a variable that
+ * held such a call reads the value it stored (voidTruthinessHeldCall). Any
+ * other void-typed operand keeps the triage
  * row, because the lowering has no runtime value for it. */
 const voidTruthinessKnown = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean =>
   discardedVoidNegation(node) ||
   undefinedAtRunTime(node, program) ||
-  voidTruthinessNeedsRuntimeValue(node, program);
+  voidTruthinessNeedsRuntimeValue(node, program) ||
+  voidTruthinessHeldCall(node, program) !== null;
 
 /* ---- family reasons ---- */
 
@@ -1111,20 +1363,49 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ]),
     ),
   ],
-  // 2322's elaborated form when the target is a class: the value lacks a
-  // required property. On a JavaScript binding or field whose type comes
-  // from a JSDoc tag, the assignment is legal JavaScript, and the storage
-  // follows the values the program writes to it (analyzeJsWidenedBindings
-  // and analyzeJsWidenedFields). Every other 2739 site keeps its triage row.
+  // 2322's elaborated form when the target is a class or record: the value
+  // lacks a required property. In JavaScript the assignment is legal, and
+  // the storage follows the values the program writes to it
+  // (analyzeJsWidenedBindings and analyzeJsWidenedFields), including a
+  // JavaScript accessor pair's values and the elements a program appends to
+  // a JSDoc-typed array field. Every other 2739 site keeps its triage row.
   [
     2739,
     at(
-      jsdocTypedStorageWrite,
+      jsStorageWriteTarget,
       inCheckedJs(
-        WIDEN(
-          "the storage follows the values a JavaScript program writes to a JSDoc-typed target",
-          ["tests/corpus/jsdoc-field-foreign-instance/main.js"],
-        ),
+        WIDEN("the storage follows the values a JavaScript program writes to a typed target", [
+          "tests/corpus/jsdoc-field-foreign-instance/main.js",
+          "tests/corpus/js-frozen-object-reassignment.js",
+          "tests/corpus/jsdoc-accessor-and-array-field-writes/main.ts",
+        ]),
+      ),
+    ),
+  ],
+  // for-in's head, both sides. Node assigns the key string to the head's
+  // binding whatever its declared type, and enumerates the right side's
+  // value whatever the checker inferred there; a JavaScript program
+  // retypes a head binding and reassigns a walked value all the time. A
+  // binding written this way takes checked-dynamic storage
+  // (analyzeJsWidenedBindings), and the lowering enumerates an admitted
+  // right side dynamically.
+  [
+    2405,
+    at(
+      jsForInKeyBinding,
+      inCheckedJs(
+        WIDEN("the key a for-in walks is a string, so the binding it writes holds one", [
+          "tests/corpus/js-retyped-for-in.js",
+        ]),
+      ),
+    ),
+  ],
+  [
+    2407,
+    inCheckedJs(
+      CHECKER(
+        "for-in enumerates whatever value the right side holds; the checker's primitive type is not what the program stored",
+        ["tests/corpus/js-retyped-for-in.js"],
       ),
     ),
   ],
@@ -1287,9 +1568,28 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
   // claim about the constructor object; the member itself is an ordinary
   // static that installs on the constructor, and Node never reads the
   // signature. A checked file keeps the error: the project asked tsc for
-  // it. Its instance-side sibling (2416) stays refused — a differing
-  // instance member's storage is the class lowering's business.
+  // it. Its instance-side sibling (2416) is admitted below only for a method
+  // family the class lowering dispatches through one checked-dynamic slot.
   [2417, inCheckedJs(CHECKER(JSDOC_CLAIM, ["tests/corpus/js-subclass-static-side.js"]))],
+  // A subclass METHOD whose JSDoc signature differs from the one it
+  // overrides (2416): narrowed parameter types, more parameters than the
+  // base declares, a different result, and the `return this` methods that
+  // inherit the mismatch. The family's slot takes the largest arity with
+  // checked-dynamic parameters and results (jsMethodOverridesJsFamily). Every
+  // other 2416 site keeps its triage row, and a checked file keeps the
+  // error: the project asked tsc for it.
+  [
+    2416,
+    at(
+      jsMethodOverridesJsFamily,
+      inCheckedJs(
+        WIDEN(
+          "a JavaScript override family dispatches through one slot of the largest declared arity, with checked-dynamic parameters and results, so every call binds the arguments it supplies as Node does",
+          ["tests/corpus/js-override-family-signatures/main.ts"],
+        ),
+      ),
+    ),
+  ],
   // The async-iterator protocol demand (2504). Whether a value is
   // async-iterable is a runtime fact of untyped JS, exactly like the sync
   // demand: `for await` over a non-iterable value and `yield*` in an async
@@ -1751,6 +2051,16 @@ const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
       ),
     ),
   ],
+  [
+    2632,
+    at(
+      reboundRequireBinding,
+      WIDEN(
+        "a CommonJS 'var' holding require()'s result is an ordinary mutable binding; it takes checked-dynamic storage the write replaces",
+        ["tests/corpus/cjs-reassigned-require-binding/main.cjs"],
+      ),
+    ),
+  ],
   // `new Iterator()` (TS2511): Iterator is the one abstract class the lib
   // exposes, and Node throws its TypeError at the construction, which the
   // lowering reproduces (iterator-prototype.ts).
@@ -2173,15 +2483,7 @@ const TRIAGE_ROWS: readonly (readonly [number, JsTscCodeTriage])[] = [
       "the lowering pins the first declaration's storage type; a redeclaration must widen it (sloppy Annex B semantics)",
     ),
   ],
-  [2405, KEEP(KEEP_GRAMMAR)],
   [2406, KEEP(KEEP_GRAMMAR)],
-  [
-    2407,
-    REFUSE(
-      "'for...in' over a value the checker types 'never'",
-      "the construct is legal JavaScript: admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then",
-    ),
-  ],
   [
     2409,
     REWRITE(

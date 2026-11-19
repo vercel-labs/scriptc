@@ -5,6 +5,7 @@ import { CRYPTO_CONSTANTS } from "./lowering/crypto-tables.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
+import { isFallbackDtsPath } from "./dts-paths.js";
 import type { EnumObjectEntry } from "./enum-object-layout.js";
 import type {
   IrRecordField,
@@ -59,6 +60,7 @@ import {
 import {
   BIGINT_T,
   KEY_ORDER_FIELD,
+  PERF_ENTRY_JSON_FIELDS,
   PERF_ENTRY_MARKER,
   PERF_NODE_TIMING_JSON_FIELDS,
   PERF_NODE_TIMING_MARKER,
@@ -252,6 +254,7 @@ export const FETCH_AMBIENT_TYPES = [
   "Event",
   "CustomEvent",
   "MessageEvent",
+  "CloseEvent",
   "EventTarget",
   "AddEventListenerOptions",
   "EventListenerOptions",
@@ -308,6 +311,8 @@ export const CIPHER_TYPE_NAMES: ReadonlySet<string> = new Set([
  * accessor) and the DebugLoggerFunction its callback receives. Values
  * behind this surface use the checked-dynamic tree; see mapTypeInner. */
 const PARSE_ARGS_DYN_TYPES = new Set([
+  "CallSiteObject",
+  "GetCallSitesOptions",
   "DebugLogger",
   "DebugLoggerFunction",
   "ParseArgsConfig",
@@ -1201,6 +1206,8 @@ export function formatIrType(
         return append("FileHandle");
       case "dir":
         return append("Dir");
+      case "mkdtempResult":
+        return append("DisposableTempDir");
       case "spawnRes":
         return append("SpawnSyncReturns");
       case "child":
@@ -1288,7 +1295,72 @@ function esOwnKeyOrder(names: string[]): string[] {
 export { PERF_ENTRY_MARKER };
 
 /** PerformanceEntry's toJSON fields, in toJSON's order. */
-export const PERF_ENTRY_FIELDS = ["name", "entryType", "startTime", "duration", "detail"];
+export const PERF_ENTRY_FIELDS: string[] = [...PERF_ENTRY_JSON_FIELDS];
+
+/** PerformanceResourceTiming's toJSON fields, in toJSON's order (Node's
+ * internal/perf/resource_timing.js). The class extends PerformanceEntry but
+ * its toJSON carries the resource fields instead of `detail`. */
+export const PERF_RESOURCE_TIMING_FIELDS = [
+  "name",
+  "entryType",
+  "startTime",
+  "duration",
+  "initiatorType",
+  "nextHopProtocol",
+  "workerStart",
+  "redirectStart",
+  "redirectEnd",
+  "fetchStart",
+  "domainLookupStart",
+  "domainLookupEnd",
+  "connectStart",
+  "connectEnd",
+  "secureConnectionStart",
+  "requestStart",
+  "finalResponseHeadersStart",
+  "firstInterimResponseStart",
+  "responseStart",
+  "responseEnd",
+  "transferSize",
+  "encodedBodySize",
+  "decodedBodySize",
+  "deliveryType",
+  "responseStatus",
+  "renderBlockingStatus",
+  "contentType",
+  "contentEncoding",
+] as const;
+
+/** The PerformanceResourceTiming members the entry record also carries:
+ * every resource field except the four base entry fields and the resource
+ * toJSON. Node's resource timings extend PerformanceEntry, so the fields
+ * live on the same record shape the entry classes share. */
+export const PERF_RESOURCE_FIELDS: readonly { name: string; type: "number" | "string" }[] = [
+  { name: "initiatorType", type: "string" },
+  { name: "nextHopProtocol", type: "string" },
+  { name: "workerStart", type: "number" },
+  { name: "redirectStart", type: "number" },
+  { name: "redirectEnd", type: "number" },
+  { name: "fetchStart", type: "number" },
+  { name: "domainLookupStart", type: "number" },
+  { name: "domainLookupEnd", type: "number" },
+  { name: "connectStart", type: "number" },
+  { name: "connectEnd", type: "number" },
+  { name: "secureConnectionStart", type: "number" },
+  { name: "requestStart", type: "number" },
+  { name: "finalResponseHeadersStart", type: "number" },
+  { name: "firstInterimResponseStart", type: "number" },
+  { name: "responseStart", type: "number" },
+  { name: "responseEnd", type: "number" },
+  { name: "transferSize", type: "number" },
+  { name: "encodedBodySize", type: "number" },
+  { name: "decodedBodySize", type: "number" },
+  { name: "deliveryType", type: "string" },
+  { name: "responseStatus", type: "number" },
+  { name: "renderBlockingStatus", type: "string" },
+  { name: "contentType", type: "string" },
+  { name: "contentEncoding", type: "string" },
+];
 
 /** The record shape behind PerformanceEntry, PerformanceMark and
  * PerformanceMeasure values (see mapType). The marker is an always-absent
@@ -1302,7 +1374,11 @@ export function perfEntryShape(shapes: ShapeRegistry, unions: UnionRegistry): st
       { name: "entryType", type: STRING },
       { name: "name", type: STRING },
       { name: "startTime", type: F64 },
-    ],
+      ...PERF_RESOURCE_FIELDS.map((field) => ({
+        name: field.name,
+        type: field.type === "number" ? F64 : STRING,
+      })),
+    ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     false,
     undefined,
     PERF_ENTRY_FIELDS,
@@ -2739,7 +2815,11 @@ function isWorkerHandleSymbol(
       (d) =>
         (ts.isClassDeclaration(d) || ts.isInterfaceDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
-        isDeclaredInAmbientModule(d, "worker_threads"),
+        (isDeclaredInAmbientModule(d, "worker_threads") ||
+          ((ts.symbolName(symbol) === "MessagePort" ||
+            ts.symbolName(symbol) === "MessageChannel" ||
+            ts.symbolName(symbol) === "BroadcastChannel") &&
+            isFallbackDtsPath(ts.getSourceFileOfNode(d).fileName))),
     )
   );
 }
@@ -4700,6 +4780,35 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return F64;
   }
+  // async_hooks.AsyncHook: a 1-based f64 handle into the runtime's hook
+  // registry (the AsyncLocalStorage story).
+  if (
+    psym !== undefined &&
+    psymName === "AsyncHook" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return F64;
+  }
+  // async_hooks.AsyncResource: a checked-dynamic handle whose payload lives
+  // exactly as long as the value does, so a resource the program drops is
+  // reclaimed with everything it captured.
+  if (
+    psym !== undefined &&
+    psymName === "AsyncResource" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
+    )
+  ) {
+    return DYN;
+  }
   // trace_events.Tracing: a native handle the runtime builds for
   // createTracing, so the value is checked-dynamic and its member reads and
   // enable()/disable() calls ride the dyn tree.
@@ -4711,6 +4820,20 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
         isDeclaredInAmbientModule(d, "trace_events"),
+    )
+  ) {
+    return DYN;
+  }
+  // async_hooks.RunScope (AsyncLocalStorage.withScope): a checked-dynamic
+  // object carrying dispose and [Symbol.dispose] — the runtime builds it.
+  if (
+    psym !== undefined &&
+    psymName === "RunScope" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "async_hooks"),
     )
   ) {
     return DYN;
@@ -5530,6 +5653,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "secureCtx" };
   }
+  // The object mkdtempDisposable answers: @types/node declares
+  // `interface DisposableTempDir` in both node:fs and node:fs/promises, and
+  // the shipped fallback mirrors it. It is the created path plus the removal
+  // and disposal hooks, so it maps to one handle.
+  if (
+    psym !== undefined &&
+    psymName === "DisposableTempDir" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        (isDeclaredInAmbientModule(d, "fs") || isDeclaredInAmbientModule(d, "fs/promises")),
+    )
+  ) {
+    return { kind: "mkdtempResult" };
+  }
   // Scrypt's runtime options retain property accessors and aliases. Use
   // checked values so presence probes and repeated getter reads match Node.
   if (
@@ -6051,8 +6190,14 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     if (!inner) return null;
     return { kind: "promise", inner };
   }
-  // Native collection iterators use checked runtime iterator objects.
-  if (isStdlibInterface("MapIterator") || isStdlibInterface("SetIterator")) return DYN;
+  // Native collection iterators use checked runtime iterator objects, and a
+  // web stream's async iterator is the runtime's iterator object too.
+  if (
+    isStdlibInterface("MapIterator") ||
+    isStdlibInterface("SetIterator") ||
+    isStdlibInterface("ReadableStreamAsyncIterator")
+  )
+    return DYN;
   // AsyncIterable<T>, AsyncIterableIterator<T> and AsyncIterator<T> as VALUE
   // types name a protocol any object can implement. A protocol type the
   // program moves such an object into (TypeMapperCtx.
@@ -6820,7 +6965,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     ((psym !== undefined && psymName === "PerformanceEntry") ||
       (psym !== undefined && psymName === "PerformanceMark") ||
-      (psym !== undefined && psymName === "PerformanceMeasure")) &&
+      (psym !== undefined && psymName === "PerformanceMeasure") ||
+      (psym !== undefined && psymName === "PerformanceResourceTiming")) &&
     psym.declarations.some(
       (d) =>
         (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
@@ -6853,7 +6999,18 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // monitorEventLoopDelay's IntervalHistogram: a numeric handle into the
   // runtime's histogram table, like a timer handle. Its members lower over
   // the handle (builtins/performance.ts).
-  if (isStdlibInterface("IntervalHistogram")) return F64;
+  // Histogram values are refcounted runtime handle objects: an
+  // IntervalHistogram (monitorEventLoopDelay) and a RecordableHistogram
+  // (createHistogram) are both checked-dynamic handles whose release frees
+  // the buckets when the value dies, so a short-lived histogram does not
+  // stay in a thread table until exit. The members lower over the handle,
+  // which carries the class its fields come from.
+  if (
+    isStdlibInterface("IntervalHistogram") ||
+    isStdlibInterface("Histogram") ||
+    isStdlibInterface("RecordableHistogram")
+  )
+    return DYN;
   if (isStdlibInterface("CursorPos")) {
     return {
       kind: "record",

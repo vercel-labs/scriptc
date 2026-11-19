@@ -59,6 +59,11 @@ declare module "fs/promises" {
     createReadStream(options?: CreateReadStreamOptions): import("node:fs").ReadStream;
     createWriteStream(options?: CreateWriteStreamOptions): import("node:fs").WriteStream;
     readLines(options?: CreateReadStreamOptions): import("node:readline").Interface;
+    /** The handle's content as Node's type: "bytes" web stream. */
+    readableWebStream(options?: {
+      type?: "bytes";
+      autoClose?: boolean;
+    }): ReadableStream<Uint8Array>;
     sync(): Promise<void>;
     datasync(): Promise<void>;
     truncate(len?: number): Promise<void>;
@@ -250,6 +255,16 @@ declare module "fs/promises" {
   export function appendFile(path: string | URL, data: string | ScriptcBufferView): Promise<void>;
   export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
   export function mkdtemp(prefix: string | URL): Promise<string>;
+  /** The object fsPromises.mkdtempDisposable answers: the created path, its
+   * removal, and the Symbol.asyncDispose hook. */
+  export interface DisposableTempDir extends AsyncDisposable {
+    path: string;
+    remove(): Promise<void>;
+  }
+  export function mkdtempDisposable(
+    prefix: string | URL,
+    options?: string | { encoding?: string },
+  ): Promise<DisposableTempDir>;
   export function rmdir(path: string | URL): Promise<void>;
   export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(

@@ -27,6 +27,8 @@ export interface NativeLinkFeatures {
    * jsObjectModelFact ORs this fact into. */
   bigintBytes: boolean;
   fileHandle: boolean;
+  /** filehandle.readableWebStream: scr_fs_web_stream.c. */
+  fsWebStream?: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
@@ -313,6 +315,9 @@ export interface NativeLinkFeatures {
   dh: boolean;
   /** crypto.argon2 and crypto.argon2Sync: scr_argon2.c. */
   argon2: boolean;
+  /** crypto.encapsulate/decapsulate and the WebCrypto ML-KEM algorithms:
+   * scr_mlkem.c plus the vendored mlkem-native archive. */
+  mlkem: boolean;
   /** Asymmetric KeyObjects, crypto.sign/verify and Sign/Verify: scr_pki.c
    * plus the mbedTLS archive. */
   pki: boolean;
@@ -401,6 +406,7 @@ const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
   ecdh: false,
   dh: false,
   argon2: false,
+  mlkem: false,
   pki: false,
   ed25519: false,
   x509: false,
@@ -487,6 +493,20 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // listeners), so the iterator unit brings the checked-dynamic async unit
   // with it.
   { feature: "watchEvents", requires: ["watch", "dynAsync"] },
+  // scr_mlkem.c installs the vendored core's hook table that the pki unit
+  // reads for ML-KEM keys, and the table's storage lives in the pki unit:
+  // the two units select each other. The pki unit takes the algorithm and
+  // the encoded key at run time (generateKeyPairSync's type,
+  // createPrivateKey's DER), so a program that never spells a parameter set
+  // still needs the hook when it can reach one.
+  { feature: "pki", requires: ["mlkem"] },
+  { feature: "mlkem", requires: ["pki"] },
+  // scr_fs_web_stream.c reads through the FileHandle unit; the web stream
+  // unit comes with it through executable-features' webStreams OR.
+  { feature: "fsWebStream", requires: ["fileHandle"] },
+  // scr_stream_dyn.c tests values and calls JavaScript stream members through
+  // the dyn-invoke unit (the checked-dynamic stream slots).
+  { feature: "streamDyn", requires: ["dynInvoke"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

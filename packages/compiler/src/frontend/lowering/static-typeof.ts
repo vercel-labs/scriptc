@@ -6,7 +6,11 @@ import { hostGlobalNameOfIdentifier } from "./host-globals.js";
 import { undeclaredGlobalTypeof } from "./global-object-names.js";
 import { erasedGlobalBindingOf, programMayWriteGlobalName } from "./global-object-writes.js";
 import { isUnresolvedCjsExports } from "./cjs-exports-object.js";
-import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower-namespaces.js";
+import {
+  ambientTypesOnlyGlobalSymbolOf,
+  ambientUndefinedFnSymbolOf,
+  ambientUndefinedVarSymbolOf,
+} from "./lower-namespaces.js";
 
 /** The answer `typeof <operand>` gives without evaluating anything, for
  * the global-detection idioms (`typeof window < "u"`, `typeof global !==
@@ -49,7 +53,13 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
     return null;
   // A name the program declares ambiently but nothing defines (`declare
   // const Bun`): undeclared at run time.
-  if (ambientUndefinedVarSymbolOf(lowerer, e) || ambientUndefinedFnSymbolOf(lowerer, e))
+  if (
+    ambientUndefinedVarSymbolOf(lowerer, e) ||
+    ambientUndefinedFnSymbolOf(lowerer, e) ||
+    // A name the program installs on the global object answers at run time
+    // (typeof.ts reads it), so no static answer folds.
+    (ambientTypesOnlyGlobalSymbolOf(lowerer, e) && !programMayWriteGlobalName(lowerer, e.text, e))
+  )
     return "undefined";
   return null;
 }

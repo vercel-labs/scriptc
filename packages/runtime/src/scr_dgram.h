@@ -57,6 +57,9 @@ void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, S
 void scr_dgram_bind_sync(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, bool has_host);
 void scr_dgram_connect_sync(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, bool has_host);
 void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+/* connect with an untyped JavaScript completion callback: it receives the
+ * refusal as Node's nextTick(callback, ex) does. */
+void scr_dgram_connect_dyn(ScrDgramSocket *s, double port, ScrStr *host, const struct ScrDyn *cb);
 void scr_dgram_send_str(ScrDgramSocket *s, ScrStr *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
 void scr_dgram_send_bytes(ScrDgramSocket *s, ScrBytes *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
 /* The send argument-validation ladder over dyn arguments (Node's

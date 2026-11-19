@@ -947,6 +947,11 @@ typedef struct {
   size_t key_len;
   ScrDyn *table; /* +1 dyn object */
   ScrDyn *ctor;  /* +1 dyn function constructing an instance (NI-6), or NULL */
+  /* The class's preorder range in the compiled hierarchy, once its class
+   * value registered it (a shared module's exported class); ranged is false
+   * before that. `instanceof` reads it for instances of subclasses. */
+  bool ranged;
+  size_t pre, post;
 } NiMethods;
 static NiMethods *ni_methods = NULL;
 static size_t ni_nmethods = 0, ni_methods_cap = 0;
@@ -985,6 +990,7 @@ ScrDyn *scr_node_island_class_methods(ScrDyn *value, ScrDyn *builder) {
     ni_methods[ni_nmethods].key_len = value->v.typed_ref.type_key_len;
     ni_methods[ni_nmethods].table = table;
     ni_methods[ni_nmethods].ctor = NULL;
+    ni_methods[ni_nmethods].ranged = false;
     ni_nmethods++;
   }
   return scr_dyn_retain(value);
@@ -1019,6 +1025,20 @@ ScrDyn *scr_node_island_class_methods_of(ScrDyn *cls, ScrDyn *builder, ScrDyn *c
   NiMethods *known = ni_methods_of_class(cls);
   if (known != NULL) {
     if (known->ctor == NULL && ctor->kind == SCR_DYN_FUNC) known->ctor = scr_dyn_retain(ctor);
+    if (!known->ranged) {
+      /* An instance crossed first and registered the table its crossing
+       * site's static class builds; the class's own builder answers every
+       * member of the instance's exact class, accessors of subclasses too. */
+      if (builder->kind == SCR_DYN_FUNC) {
+        ScrDyn *own = scr_dyn_call(builder, NULL, 0, "class methods");
+        if (own == NULL) return NULL;
+        scr_dyn_release(known->table);
+        known->table = own;
+      }
+      known->ranged = true;
+      known->pre = cls->v.fn.class_obj->pre;
+      known->post = cls->v.fn.class_obj->post;
+    }
     return scr_dyn_retain(cls);
   }
   ScrDyn *table = builder->kind == SCR_DYN_FUNC ? scr_dyn_call(builder, NULL, 0, "class methods")
@@ -1039,6 +1059,9 @@ ScrDyn *scr_node_island_class_methods_of(ScrDyn *cls, ScrDyn *builder, ScrDyn *c
   ni_methods[ni_nmethods].key_len = 7 + rest;
   ni_methods[ni_nmethods].table = table;
   ni_methods[ni_nmethods].ctor = ctor->kind == SCR_DYN_FUNC ? scr_dyn_retain(ctor) : NULL;
+  ni_methods[ni_nmethods].ranged = true;
+  ni_methods[ni_nmethods].pre = cls->v.fn.class_obj->pre;
+  ni_methods[ni_nmethods].post = cls->v.fn.class_obj->post;
   ni_nmethods++;
   return scr_dyn_retain(cls);
 }
@@ -1052,8 +1075,52 @@ static ScrDyn *ni_class_ctor(const ScrDyn *cls) {
 /* A prototype method of a class capsule (+1), or NULL. An own property the
  * island wrote under the method's name (kept in the capsule's materialized
  * view) hides the method, as an own property hides a prototype's in Node. */
+/* Whether `name` spells an accessor half's table key ("get:x", "set:x"),
+ * which is no property an island can read as a method. */
+static bool ni_accessor_key(const ScrStr *name) {
+  return name->len > 4 && (memcmp(name->data, "get:", 4) == 0 || memcmp(name->data, "set:", 4) == 0);
+}
+
+/* The getter (`half` 'g') or setter ('s') a class capsule's table holds for
+ * the property `key` (+1), or NULL. An own property the island wrote under
+ * the name (kept in the capsule's materialized view) hides it, as an own
+ * property hides a prototype's accessor in Node. */
+static ScrDyn *ni_class_accessor(const ScrDyn *target, const ScrDyn *key, char half) {
+  if (key->kind != SCR_DYN_STR || key->v.str->len > 256) return NULL;
+  ScrDyn *table = ni_methods_of(target);
+  if (table == NULL) return NULL;
+  const ScrDyn *view = target->v.typed_ref.materialized;
+  if (view != NULL && view->kind == SCR_DYN_OBJ &&
+      scr_dyn_obj_get(view, key->v.str->data, key->v.str->len) != NULL)
+    return NULL;
+  char name[4 + 256];
+  memcpy(name, half == 'g' ? "get:" : "set:", 4);
+  memcpy(name + 4, key->v.str->data, key->v.str->len);
+  ScrDyn *m = scr_dyn_obj_get(table, name, 4 + key->v.str->len);
+  return m != NULL ? scr_dyn_retain(m) : NULL;
+}
+
+/* Whether a class capsule's table holds accessor half `half` for `key`. */
+static bool ni_class_has_accessor(const ScrDyn *target, const ScrDyn *key, char half) {
+  ScrDyn *fn = ni_class_accessor(target, key, half);
+  scr_dyn_release(fn);
+  return fn != NULL;
+}
+
+/* Runs accessor half `fn` with the capsule as `this` (+1 result, NULL with
+ * the exception pending), and refreshes the shared bindings: an accessor can
+ * write a shared module's state, and island code reads the new value as soon
+ * as the call returns. */
+static ScrDyn *ni_run_accessor(ScrDyn *fn, ScrDyn *target, ScrDyn *const *args, size_t argc) {
+  scr_dyn_this_push_dyn(target);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, "accessor");
+  scr_dyn_this_pop();
+  scr_ni_shared_refresh();
+  return result;
+}
+
 static ScrDyn *ni_class_method(const ScrDyn *target, const ScrDyn *key) {
-  if (key->kind != SCR_DYN_STR) return NULL;
+  if (key->kind != SCR_DYN_STR || ni_accessor_key(key->v.str)) return NULL;
   ScrDyn *table = ni_methods_of(target);
   if (table == NULL) return NULL;
   const ScrDyn *view = target->v.typed_ref.materialized;
@@ -1183,12 +1250,56 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
   int present = 0;
   if (pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
   if (!present && !scr_exc_pending()) {
+    /* A prototype getter of a class instance (its table) runs on the
+     * instance, as Node runs a prototype accessor on the receiver. */
+    ScrDyn *getter = ni_class_accessor(target, pk, 'g');
+    if (getter != NULL) {
+      ScrDyn *value = ni_run_accessor(getter, target, NULL, 0);
+      scr_dyn_release(getter);
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      if (value == NULL || scr_exc_pending()) {
+        scr_dyn_release(value);
+        return ni_threw(out);
+      }
+      return ni_returned(value, out);
+    }
+    if (ni_class_has_accessor(target, pk, 's')) {
+      /* A setter without a getter reads undefined. */
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      return ni_returned(scr_dyn_retain(scr_dyn_undefined()), out);
+    }
     /* A prototype method of a class instance (its table). */
     ScrDyn *method = ni_class_method(target, pk);
     scr_dyn_release(pk);
     scr_dyn_release(k);
     if (method != NULL) return ni_returned(method, out);
     return 2;
+  }
+  if (present && pk->kind == SCR_DYN_STR && !scr_exc_pending() && ni_inherited_name(target, pk)) {
+    /* A compiled accessor named after an Object.prototype property
+     * (`__proto__`, `toString`, `constructor`) is the class's own: the name
+     * is "in" the instance through the prototype chain, which is why the
+     * branch above did not run, but the table's accessor answers it. */
+    ScrDyn *getter = ni_class_accessor(target, pk, 'g');
+    if (getter != NULL) {
+      ScrDyn *value = ni_run_accessor(getter, target, NULL, 0);
+      scr_dyn_release(getter);
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      if (value == NULL || scr_exc_pending()) {
+        scr_dyn_release(value);
+        return ni_threw(out);
+      }
+      return ni_returned(value, out);
+    }
+    if (ni_class_has_accessor(target, pk, 's')) {
+      /* A setter without a getter reads undefined. */
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      return ni_returned(scr_dyn_retain(scr_dyn_undefined()), out);
+    }
   }
   ScrDyn *result = scr_exc_pending() ? NULL : scr_dyn_reflect_get(target, pk, target);
   if (result != NULL && result->kind == SCR_DYN_UNDEF) {
@@ -1231,6 +1342,22 @@ int scr_ni_host_export_set(uint32_t id, const ScrNodeValue *key, const ScrNodeVa
     /* A native error: the dynamic write, which also stores name, message,
      * stack, cause and code in the slots typed code reads. */
     scr_dyn_key_set(target, k->v.str, v);
+  } else if (k->kind == SCR_DYN_STR && !scr_dyn_has_own(target, k->v.str) &&
+             ni_methods_of(target) != NULL &&
+             (ni_class_has_accessor(target, k, 's') || ni_class_has_accessor(target, k, 'g'))) {
+    /* A prototype accessor of a class instance: its setter runs on the
+     * instance; a getter alone leaves the instance as it was, as Node's
+     * assignment to a getter-only accessor does (island code in strict
+     * mode sees no TypeError: the bridge's set interceptor answers
+     * without one, as for any refused write). */
+    ScrDyn *setter = ni_class_accessor(target, k, 's');
+    if (setter != NULL) {
+      ScrDyn *result = ni_run_accessor(setter, target, &v, 1);
+      scr_dyn_release(result);
+      scr_dyn_release(setter);
+    } else {
+      ok = false;
+    }
   } else {
     ok = scr_dyn_reflect_set(target, k, v, target);
   }
@@ -1276,7 +1403,8 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
   if (scr_exc_pending()) scr_exc_clear();
   if (!present && pk != NULL) {
     ScrDyn *method = ni_class_method(target, pk);
-    present = method != NULL;
+    present = method != NULL || ni_class_has_accessor(target, pk, 'g') ||
+              ni_class_has_accessor(target, pk, 's');
     scr_dyn_release(method);
   } else if (present && !ni_is_array(target) && ni_inherited_name(target, pk)) {
     /* Not an own property: V8 answers `in` from the prototype chain. A
@@ -1483,8 +1611,9 @@ void scr_ni_host_export_release(uint32_t id) {
 }
 
 /* `value instanceof C` for the representative of native class C: the
- * value is an instance of C's own type key (NI-6 shortcut: instances of
- * native subclasses of C answer false; NOTES.md). A native error answers
+ * value is an instance of C's own type key, or of a subclass of C whose
+ * class value registered its place in the hierarchy (a class a shared
+ * module exports, once the island reads it). A native error answers
  * by its class's place in the compiled hierarchy, as a catch clause does,
  * so an instance of a subclass of C is an instance of C. */
 int scr_ni_host_export_instance_of(uint32_t id, const ScrNodeValue *value) {
@@ -1493,6 +1622,19 @@ int scr_ni_host_export_instance_of(uint32_t id, const ScrNodeValue *value) {
   ScrDyn *v = scr_ni_value_in(value);
   int is = v->kind == SCR_DYN_TYPED_REF &&
            ni_instance_key_is(ctor->v.fn.sig, v->v.typed_ref.type_key, v->v.typed_ref.type_key_len);
+  if (!is && v->kind == SCR_DYN_TYPED_REF && v->v.typed_ref.type_key != NULL) {
+    /* An instance of a subclass of C: its exact class's place in the
+     * compiled hierarchy, once that class's value registered it. */
+    for (size_t i = 0; i < ni_nmethods; i++) {
+      const NiMethods *m = &ni_methods[i];
+      if (m->ranged && m->key_len == v->v.typed_ref.type_key_len &&
+          memcmp(m->key, v->v.typed_ref.type_key, m->key_len) == 0) {
+        const ScrClassObj *cls = ctor->v.fn.class_obj;
+        is = cls->pre <= m->pre && m->pre <= cls->post;
+        break;
+      }
+    }
+  }
   if (!is && v->kind == SCR_DYN_TYPED_REF) {
     ScrError *e = scr_errdyn_err_of(v);
     if (e != NULL) {

@@ -160,6 +160,12 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure_connect", a);
     case "tls.sockDynMember":
       return finishRuntimeCall(host, e, "scr_tls_sock_dyn_member", a);
+    case "tls.sockExportKeyingMaterial":
+      return finishRuntimeCall(host, e, "scr_tls_sock_export_keying_material", a);
+    case "tls.serverIs":
+      return finishRuntimeCall(host, e, "scr_net_server_is_tls", a);
+    case "tls.serverIsDyn":
+      return finishRuntimeCall(host, e, "scr_tls_server_is_dyn", a);
     case "tls.sockDisableRenegotiation":
       return finishRuntimeCall(host, e, "scr_tls_sock_disable_renegotiation", a);
     case "tls.sockOnSecure":

@@ -48,6 +48,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_async_dyn.c",
+  "function": "scr_process_emit_error",
+  "message": "emit('error') through an untyped value with this non-Error payload and no 'error' listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_blob.c",
   "function": "scr_blob_source_list",
   "message": "new Blob(sources) over this iterable has no lowering; pass an array",
@@ -775,6 +781,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_req_signal",
+  "message": "IncomingMessage.signal is not supported by this runtime build",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_res_informational_h1",
   "message": "Http2ServerResponse.%s is not supported by the static runtime yet",
   "code": "SC2020"
@@ -801,6 +813,18 @@
   "file": "scr_http.c",
   "function": "scr_http_dynh_res_invoke",
   "message": "this argument shape is not modeled",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection",
+  "message": "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection",
+  "message": "http.Agent createConnection options here are not supported by the runtime",
   "code": "SC2020"
  },
  {
@@ -896,7 +920,7 @@
  {
   "file": "scr_inspect.c",
   "function": "scr_insp_format_read_options",
-  "message": "with this compact option has no lowering (compact must be false or a number)",
+  "message": "with this compact option has no lowering (compact must be true, false or a number)",
   "code": "SC2020"
  },
  {
@@ -1772,6 +1796,12 @@
  {
   "file": "scr_stream.c",
   "function": "scr_stream_dyn_call",
+  "message": "'readable.iterator' has no native lowering in this program",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
+  "function": "scr_stream_dyn_call",
   "message": "Native stream method values with write encodings or callbacks have no lowering",
   "code": "SC2020"
  },
@@ -1809,6 +1839,18 @@
   "file": "scr_stream_ops.c",
   "function": "op_unsupported",
   "message": "%s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream_to_web.c",
+  "function": "scr_stream_to_web_readable_dyn",
+  "message": "Readable.toWeb over a checked-dynamic value that is not a native readable stream is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream_wrap_dyn.c",
+  "function": "scr_stream_wrap_dyn",
+  "message": "readable.wrap over a checked-dynamic value that is not a native readable stream is not supported yet",
   "code": "SC2020"
  },
  {
@@ -2385,6 +2427,12 @@
   "file": "scr_string.c",
   "function": "scr_qs_escape_value",
   "message": "querystring.escape of a function converts its source text, which a compiled binary does not keep",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_srv_opts_walk_ex",
+  "message": "the https.createServer options record changed while its members were read",
   "code": "SC2020"
  },
  {

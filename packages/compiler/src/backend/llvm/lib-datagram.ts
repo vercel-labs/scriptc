@@ -213,6 +213,9 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
         e.fn.startsWith("dgram.bind") ? "scr_dgram_bind" : "scr_dgram_connect",
         [...a.slice(0, 3), a[3] ?? ptr()],
       );
+    case "dgram.connectDyn":
+      if (args[3] !== undefined) host.toHeap(args[3]);
+      return finishRuntimeCall(host, e, "scr_dgram_connect_dyn", a);
     case "dgram.close":
     case "dgram.closeCb":
       if (args[1] !== undefined) host.toHeap(args[1]);

@@ -40,8 +40,14 @@ typedef struct ScrEvent {
   ScrStr *type;
   ScrDyn *target;  /* +1, NULL until dispatched */
   ScrDyn *detail;  /* CustomEvent's detail, MessageEvent's data (+1); NULL for Event */
+  ScrStr *origin;       /* MessageEvent: owned */
+  ScrStr *last_event_id; /* MessageEvent: owned */
+  ScrDyn *ports;        /* MessageEvent: owned array, or NULL */
+  ScrDyn *source;       /* MessageEvent: the init dictionary's MessagePort, owned */
+  ScrStr *reason;       /* CloseEvent: owned */
+  int64_t code;         /* CloseEvent */
   double time_stamp;
-  bool custom, message, bubbles, cancelable, composed, trusted;
+  bool custom, message, close, was_clean, bubbles, cancelable, composed, trusted;
   bool default_prevented, propagation_stopped, stop, dispatching, in_passive;
   bool tracked;
   struct ScrEvent *tracked_prev, *tracked_next;
@@ -75,7 +81,10 @@ ScrDyn *scr_event_new_trusted(const char *type);
 ScrDyn *scr_event_target_new(void);
 ScrDyn *scr_event_new(ScrDyn *args);
 ScrDyn *scr_custom_event_new(ScrDyn *args);
-/* `v instanceof Event` (kind 0), `CustomEvent` (1), `EventTarget` (2). */
+ScrDyn *scr_message_event_new(ScrDyn *args);
+ScrDyn *scr_close_event_new(ScrDyn *args);
+/* `v instanceof Event` (kind 0), `CustomEvent` (1), `EventTarget` (2),
+ * `MessageEvent` (3), `CloseEvent` (4). */
 bool scr_event_is(const ScrDyn *v, double kind);
 /* The node:events helpers over EventTarget receivers: Node's
  * getEventListeners(target, type) answers +1, an array of the type's
@@ -110,16 +119,22 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool
  * which reaches the class's compiled methods. Without it a capsule's own
  * view answers. */
 void scr_event_handle_event_reader(ScrDyn *reader);
-/* BroadcastChannel's EventTarget side, which the worker events unit
- * reaches through this table (that unit links without this one): a core
- * of its own, dispatching a 'message' MessageEvent with the data, the
- * EventTarget methods (false: not one of them), and the on<type>
- * attributes. scr_et_broadcast_install sets the table (defined in
- * scr_json.c, which every program links). */
+/* BroadcastChannel's and MessagePort's EventTarget side, which the worker
+ * events unit reaches through this table (that unit links without this
+ * one): a core of its own, dispatching a 'message' MessageEvent with the
+ * data or another event value, the EventTarget methods (false: not one of
+ * them), and the on<type> attributes. scr_et_broadcast_install sets the
+ * table (defined in scr_json.c, which every program links). */
 typedef struct {
   ScrEventTargetCore *(*core_new)(const char *cls);
   void (*core_free)(ScrEventTargetCore *core);
   void (*dispatch_message)(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *data);
+  /* a plain (untrusted) Event of the given type, as Node's MessagePort
+   * sends for 'close' */
+  void (*dispatch_type)(ScrEventTargetCore *core, ScrDyn *self, const char *type);
+  /* the type's listener count on the core (the on<type> attribute counts
+   * as one, as Node's port bookkeeping expects) */
+  double (*listener_count)(ScrEventTargetCore *core, const char *type);
   bool (*method)(ScrEventTargetCore *core, ScrDyn *self, const char *method, ScrDyn *const *args,
                  size_t argc, ScrDyn **out);
   ScrDyn *(*method_value)(const char *name, size_t length);

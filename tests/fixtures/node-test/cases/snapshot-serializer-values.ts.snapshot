@@ -1,0 +1,11 @@
+exports[`defaults from a variable 1`] = `
+{'b':2}
+`;
+
+exports[`variable serializers 1`] = `
+{'a':1}
+`;
+
+exports[`variable serializers 2`] = `
+[1,2]
+`;

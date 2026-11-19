@@ -36,6 +36,9 @@ static int scr_dgram_test_drain(ScrPoller *p, ScrPollerEvent *out, int max);
 /* The dgram unit's block-list checks call into scr_net.c's matcher; this
  * white-box binary links neither the net unit nor its dependencies, and the
  * cases below install no block list, so the two entry points are stubs. */
+/* The dgram unit's block-list checks call scr_net.c's matcher; this
+ * white-box binary links neither the net unit nor its dependencies, and the
+ * cases here install no block list. */
 bool scr_net_is_block_list(const ScrDyn *value) {
   (void)value;
   return false;
@@ -64,6 +67,19 @@ static void scr_dgram_test_on_listening(ScrClosure *cb) {
   (void)cb;
   scr_dgram_test_listened = 1;
 }
+/* The resolver's hooks, stubbed: an in-flight query reports pending without
+ * any deliverable work. */
+static bool scr_dgram_test_dnsq_in_flight;
+static bool scr_dgram_test_dnsq_pending(void) { return scr_dgram_test_dnsq_in_flight; }
+static bool scr_dgram_test_dnsq_owns(void *udata) {
+  (void)udata;
+  return false;
+}
+static void scr_dgram_test_dnsq_event(void *udata, unsigned events) {
+  (void)udata;
+  (void)events;
+}
+static void scr_dgram_test_dnsq_cleanup(void) {}
 
 /* One page that faults on any read: what a freed poll key leaves behind. */
 static void *faulting_page(void) {
@@ -152,6 +168,26 @@ int main(void) {
     scr_dgram_release(refused);
   }
 #endif
+  /* The wake predicate covers deliverable work only: a query still in
+   * flight waits on the poller's own keys and must not arm the wake timer,
+   * while a deferred emit must. */
+  {
+    static const ScrDnsqHooks hooks = {scr_dgram_test_dnsq_pending, scr_dgram_test_dnsq_owns,
+                                       scr_dgram_test_dnsq_event, scr_dgram_test_dnsq_cleanup};
+    scr_dgram_test_dnsq_in_flight = true;
+    scr_dnsq_hooks = &hooks;
+    assert(!scr_dgram_wake_due());
+    ScrDgramSocket *quiet = scr_dgram_create(false, false, false, false, 0, 0);
+    quiet->emit_connect = true;
+    scr_dgram_register(quiet);
+    assert(scr_dgram_wake_due());
+    scr_dgram_unregister(quiet);
+    scr_dgram_release(quiet);
+    scr_dnsq_hooks = NULL;
+    scr_dgram_test_dnsq_in_flight = false;
+    printf("the wake predicate covers deliverable work only\n");
+  }
+
   scr_dgram_unregister(live); /* the registry reference was the last one */
   printf("a key no socket owns is not read as a socket\n");
   printf("bind({ fd }) adopts the descriptor with the poller up\n");

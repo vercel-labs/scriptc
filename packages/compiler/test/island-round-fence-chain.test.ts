@@ -7,10 +7,11 @@
 // `9933-node-island-var-require-rewritten-later` is that shape: `pantry`
 // loads a module by a computed specifier, and `shelf-late` binds what
 // `require("pantry")` returns with `var`, reads it at module init and writes
-// it again inside a function. The first round's fence retry islands `pantry`
-// and its reload fences `shelf-late`; a driver that took the reload's build
-// as final compiled the unresolved binding into a program that throws when it
-// runs.
+// it again inside a function. The fence retry that islands `pantry` decides
+// its own fences from the retrying round's push-down pass, so `shelf-late`
+// joins it there and one reload carries both; a driver that took a reload's
+// build as final without that pass compiled the unresolved binding into a
+// program that throws when it runs.
 import { cpSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,7 +56,8 @@ test("a fence retry's reload meets its own fence, and the build islands both pac
   expect(result.ok).toBe(true);
   if (!result.ok) return;
   expect(result.islands).toEqual({ packages: ["pantry", "shelf-late"], modules: [] });
-  // The retry that islands `pantry`, then the one its reload's fence asks
-  // for. The build that ends is the one carrying both.
-  expect(reloads).toEqual([["pantry"], ["pantry", "shelf-late"]]);
+  // One retry, whose push-down pass already meets the fence its new island
+  // asks for: the reload carries both packages and the build that ends is
+  // the one carrying both.
+  expect(reloads).toEqual([["pantry", "shelf-late"]]);
 }, 300_000);

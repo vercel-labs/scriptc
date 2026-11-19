@@ -553,6 +553,62 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "fileHandle.readableWebStream") {
+    // A checked-dynamic web stream over the handle's reads. May throw (a
+    // closed or locked handle is Node's ERR_INVALID_STATE) — the standard
+    // pending check.
+    const handle = host.emitExpr(e.args[0]!);
+    const options = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_file_handle_readable_web_stream(ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_file_handle_readable_web_stream(ptr ${handle.name}, ptr ${options.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "fsp.mkdtempDisposable") {
+    // The temp directory plus its hooks. A failed mkdtemp settles the
+    // promise as a rejection, so there is no pending check here; the
+    // options were validated at the call.
+    const prefix = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fsp_mkdtemp_disposable(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_fsp_mkdtemp_disposable(ptr ${prefix.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "fs.mkdtempDisposableSync") {
+    // May throw (mkdtemp's own error) — the standard pending check.
+    const prefix = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fs_mkdtemp_disposable_sync(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_fs_mkdtemp_disposable_sync(ptr ${prefix.name})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "mkdtempResult.path") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_mkdtemp_result_path(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_mkdtemp_result_path(ptr ${handle.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "mkdtempResult.remove" || e.fn === "mkdtempResult.asyncDispose") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_mkdtemp_result_remove(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_mkdtemp_result_remove(ptr ${handle.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "mkdtempResult.removeSync" || e.fn === "mkdtempResult.dispose") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare void @scr_mkdtemp_result_remove_sync(ptr)`);
+    B.line(`call void @scr_mkdtemp_result_remove_sync(ptr ${handle.name})`);
+    host.emitPendingCheck();
+    return host.own({ name: "null", type: e.type });
+  }
   if (e.fn === "fsp.watch") {
     // fsPromises.watch(path, persistent, maxQueue, overflowIsError): the
     // iterator state (+1). The watch opens NOW, so a bad or unopenable path

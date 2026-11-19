@@ -6,24 +6,37 @@ import { Worker, isMainThread, parentPort, resourceLimits } from "node:worker_th
 // field that is not a number. A heap limit is not requested here: a compiled
 // program has one heap for every thread, so requesting one is refused (the
 // build's diagnostic and the runtime's error name that refusal).
+//
+// Only the stack is read from a running worker: Node fills the unset heap
+// fields from the worker's own isolate once that isolate exists, so reading
+// them immediately after the constructor races the worker's start and
+// answers either the requested -1 or the machine's V8 heap configuration.
+// The stack is the requested one (or the 4 MB default) before and after the
+// start, and the whole object answers after the exit below. It is read
+// through the object's checked-dynamic view: the static lowering answers the
+// whole ResourceLimits object, not a typed member of it.
 if (isMainThread) {
+  const stackOf = (worker: Worker): number => {
+    const limits: any = worker.resourceLimits;
+    return limits.stackSizeMb;
+  };
   const plain = new Worker(new URL(import.meta.url));
-  console.log("plain", JSON.stringify(plain.resourceLimits), Object.keys(plain.resourceLimits!).join(","));
+  console.log("plain", stackOf(plain), Object.keys(plain.resourceLimits!).join(","));
   plain.on("message", (message: string) => console.log("inner", message));
 
   const limits = new Worker(new URL(import.meta.url), { resourceLimits: { stackSizeMb: 2 } });
-  console.log("limits", JSON.stringify(limits.resourceLimits));
+  console.log("limits stack", stackOf(limits));
 
   const zero = new Worker(new URL(import.meta.url), { resourceLimits: { stackSizeMb: 0 } });
-  console.log("zero stack", JSON.stringify(zero.resourceLimits));
+  console.log("zero stack", stackOf(zero));
 
   const fractional = new Worker(new URL(import.meta.url), { resourceLimits: { stackSizeMb: 1.5 } });
-  console.log("fractional", JSON.stringify(fractional.resourceLimits));
+  console.log("fractional stack", stackOf(fractional));
 
   const ignored = new Worker(new URL(import.meta.url), {
     resourceLimits: { stackSizeMb: "2" } as any,
   });
-  console.log("non-number", JSON.stringify(ignored.resourceLimits));
+  console.log("non-number stack", stackOf(ignored));
 
   plain.on("exit", () => {
     console.log("after exit", JSON.stringify(plain.resourceLimits));

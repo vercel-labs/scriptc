@@ -1728,9 +1728,10 @@ test("a refusal in a function called where it is written makes its package a Nod
     'import plural from "umd-wrapped";\nconsole.log(plural("item", 2), plural("item", 1), typeof plural);\n',
   );
   if (wrapped.ok) {
-    expect(islandNotes(wrapped)).toEqual([
-      expect.stringContaining("'umd-wrapped@1.0.0' runs in a Node island"),
-    ]);
+    // A classic single-value UMD wrapper compiles natively: its export is
+    // chosen at run time through the checked-dynamic export slot, so the
+    // package needs no island.
+    expect(islandNotes(wrapped)).toEqual([]);
     if (!skip)
       expect(await run(wrapped.binaryPath, [])).toEqual({
         stdout: "items item function\n",

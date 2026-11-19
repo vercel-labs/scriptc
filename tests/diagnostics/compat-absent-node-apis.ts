@@ -2,16 +2,9 @@
 // below is refused by name. The compatibility ledger cites this program
 // for marking the rows a verified absence instead of an unverified
 // registry gap.
-import { AsyncResource } from "node:async_hooks";
 import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
 import { findPackageJSON, register } from "node:module";
-import { Readable, Writable } from "node:stream";
-
-// stream: the web-stream adapters going out.
-const webReadable = Readable.toWeb(Readable.from(["a"]));
-const webWritable = Writable.toWeb(new Writable({ write(_chunk, _encoding, callback) { callback(); } }));
-console.log(typeof webReadable, typeof webWritable);
 
 // timers: closing a Timeout.
 const timer = setTimeout(() => {}, 1);
@@ -22,9 +15,7 @@ timer.close();
 register("./hooks.mjs", import.meta.url);
 console.log(findPackageJSON("..", import.meta.url));
 
-// async_hooks and events: async resources.
-const resource = new AsyncResource("Probe");
-console.log(resource.runInAsyncScope(() => 1), resource.asyncId());
+// events: the EventEmitter that carries an AsyncResource.
 const emitter = new EventEmitterAsyncResource({ name: "Probe" });
 emitter.emit("x");
 

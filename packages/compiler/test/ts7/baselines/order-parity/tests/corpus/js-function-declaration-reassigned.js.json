@@ -1,1 +1,6 @@
-{"order":["<repo>/tests/corpus/js-function-declaration-reassigned.js"],"diags":[]}
+{
+ "order": [
+  "<repo>/tests/corpus/js-function-declaration-reassigned.js"
+ ],
+ "diags": []
+}

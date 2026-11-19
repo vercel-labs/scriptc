@@ -51,7 +51,7 @@ console.log(total, spaces("plain ascii text"), spaces(""));
     const body = (name: string): string =>
       ll.match(
         new RegExp(
-          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{[\\s\\S]*?\\n\\}`,
+          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{[\\s\\S]*?\\n\\}`,
         ),
       )![0];
 
@@ -138,7 +138,7 @@ console.log(words(text), words(text.replace(/a/g, "ä")), words("plain ascii"));
       throw new Error(lowered.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
     const words = ll.match(
-      /define internal [^\n]+ @sc_bf_words(?:\.i32)?\([^\n]*\) #0 \{[\s\S]*?\n\}/,
+      /define internal [^\n]+ @sc_bf_words(?:\.i32)?\([^\n]*\) align 64 #0 \{[\s\S]*?\n\}/,
     )![0];
     // Each inner loop's entry compares the scan receiver with `s` and calls
     // the runtime to publish `s` only when they differ.
@@ -212,7 +212,7 @@ console.log(kept, breaks);
     const body = (name: string): string =>
       ll.match(
         new RegExp(
-          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{[\\s\\S]*?\\n\\}`,
+          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{[\\s\\S]*?\\n\\}`,
         ),
       )![0];
     // The publish block passes the loop's range with the receiver: the
@@ -313,7 +313,7 @@ console.log(sum("ab"), sum("é"), from("ab", 1), from("éé", 1), dashes("a b", 
       throw new Error(lowered.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
     const body = (name: string): string => {
-      const head = `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{`;
+      const head = `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{`;
       return ll.match(new RegExp(`${head}[\\s\\S]*?\\n\\}`))![0];
     };
     // A switch over a number compares numbers: the loop has a units copy.

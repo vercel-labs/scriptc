@@ -95,6 +95,41 @@ export function lowerDiagnosticsSubscriber(lowerer: Lowerer, node: ts.Expression
   );
 }
 
+/** A call argument an API runs program code from, where Node itself checks
+ * the callable at run time (AsyncResource's runInAsyncScope/bind members and
+ * static bind): box the function like a subscriber, and any other value as a
+ * plain dyn value so the runtime answers Node's own TypeError. A declared
+ * program passing a number where the types require a function still fails
+ * its own check; a JavaScript one reaches Node's error instead of a fence. */
+function lowerAsyncResourceCallable(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "dyn") return value;
+  if (
+    value.type.kind === "func" &&
+    canBoxFuncIntoDyn(
+      value.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
+  }
+  if (
+    canConvertToDyn(
+      value.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynFrom", value, type: DYN, loc: locOf(node) };
+  }
+  lowerer.unsupported(
+    "SC1090",
+    node,
+    `AsyncResource call arguments of type '${lowerer.fmt(value.type)}' (the function crosses as a dyn value — a callable, or a value Node's own check rejects)`,
+  );
+}
+
 /** A published message as a dyn value: dyn passes through, everything
  * in the dynFrom domain (JSON-safe data, bytes, %Error, boxable
  * functions, handle kinds) boxes; the rest fences with the domain named. */
@@ -243,6 +278,152 @@ function isAsyncLocalStorageClass(lowerer: Lowerer, node: ts.Expression): boolea
   );
 }
 
+/** Whether `node` names the AsyncResource class itself. */
+function isAsyncResourceClass(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isIdentifier(node)) return false;
+  const symbol = lowerer.resolveValueSymbol(node);
+  return (
+    symbol !== null && lowerer.isStdlibSymbol(symbol) && ts.symbolName(symbol) === "AsyncResource"
+  );
+}
+
+/** new AsyncResource(type[, opts]): the ar.new libCall over the f64
+ * resource handle. Both arguments cross as dyn values so the runtime
+ * applies Node's own checks — the type string (including `new String(…)`
+ * refused as an instance), triggerAsyncId's safe-integer ladder and
+ * requireManualDestroy's truthiness — in Node's order. */
+export function lowerAsyncResourceConstruction(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments?.nodes ?? [];
+  if (args.some(ts.isSpreadElement))
+    lowerer.noLowering("AsyncResource construction with spread arguments", expr);
+  return {
+    kind: "libCall",
+    fn: "ar.new",
+    args: [
+      // An omitted type is the undefined value: Node's own validateString
+      // then answers ERR_INVALID_ARG_TYPE at run time (a program that never
+      // builds the resource runs exactly as before).
+      args[0] !== undefined ? lowerDiagnosticsMessage(lowerer, args[0]) : dynUndefinedExpr(loc),
+      args[1] !== undefined ? lowerDiagnosticsMessage(lowerer, args[1]) : dynUndefinedExpr(loc),
+    ],
+    type: DYN,
+    loc,
+  };
+}
+
+/** The static AsyncResource.bind(fn[, type[, thisArg]]) member: Node's
+ * `type ||= fn.name` (a falsy name still falsy takes
+ * 'bound-anonymous-fn') and the fn check all run in the runtime, so the
+ * three arguments cross as dyn values. */
+function lowerAsyncResourceStaticCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr {
+  const name = access.name.text;
+  const loc = locOf(call);
+  if (name === "bind" && call.arguments.nodes.length >= 1 && call.arguments.nodes.length <= 3) {
+    const fn = lowerAsyncResourceCallable(lowerer, call.arguments.nodes[0]!);
+    const type: IrExpr =
+      call.arguments.nodes[1] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[1]!)
+        : dynUndefinedExpr(loc);
+    const thisArg: IrExpr =
+      call.arguments.nodes[2] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[2]!)
+        : dynUndefinedExpr(loc);
+    return asyncLocalStorageResult(lowerer, call, {
+      kind: "libCall",
+      fn: "ar.bindStatic",
+      args: [fn, type, thisArg],
+      type: DYN,
+      loc,
+    });
+  }
+  lowerer.noLowering(
+    `AsyncResource.${name}`,
+    call,
+    "AsyncResource.bind(fn[, type[, thisArg]]) is the supported static member",
+    lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** Method calls on AsyncResource receivers: runInAsyncScope(fn[, thisArg[,
+ * ...args]]), bind(fn), emitDestroy(), asyncId() and triggerAsyncId() over
+ * the f64 resource handle (ar.* libCalls). Null for other receivers. */
+export function lowerAsyncResourceMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  if (isAsyncResourceClass(lowerer, access.expression)) {
+    if (!lowerer.isStdlibMember(access)) return null;
+    return lowerAsyncResourceStaticCall(lowerer, call, access);
+  }
+  if (!isBuiltinClassInstance(lowerer, access.expression, "AsyncResource")) return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  const name = access.name.text;
+  const loc = locOf(call);
+  if (name === "runInAsyncScope" && call.arguments.nodes.length >= 1) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+    const fn = lowerAsyncResourceCallable(lowerer, call.arguments.nodes[0]!);
+    const thisArg: IrExpr =
+      call.arguments.nodes[1] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[1]!)
+        : dynUndefinedExpr(loc);
+    const rest = lowerTracingArguments(lowerer, call.arguments.nodes.slice(2), loc);
+    return asyncLocalStorageResult(lowerer, call, {
+      kind: "libCall",
+      fn: "ar.runInScope",
+      args: [receiver, fn, thisArg, rest],
+      type: DYN,
+      loc,
+    });
+  }
+  if (name === "bind" && call.arguments.nodes.length >= 1 && call.arguments.nodes.length <= 2) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+    const fn = lowerAsyncResourceCallable(lowerer, call.arguments.nodes[0]!);
+    // The instance form takes the same optional receiver Node's does (it
+    // binds runInAsyncScope with it when given).
+    const thisArg: IrExpr =
+      call.arguments.nodes[1] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[1]!)
+        : dynUndefinedExpr(loc);
+    return asyncLocalStorageResult(lowerer, call, {
+      kind: "libCall",
+      fn: "ar.bind",
+      args: [receiver, fn, thisArg],
+      type: DYN,
+      loc,
+    });
+  }
+  if (name === "emitDestroy" && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+    return { kind: "libCall", fn: "ar.emitDestroy", args: [receiver], type: DYN, loc };
+  }
+  if ((name === "asyncId" || name === "triggerAsyncId") && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, DYN);
+    return {
+      kind: "libCall",
+      fn: name === "asyncId" ? "ar.asyncId" : "ar.triggerAsyncId",
+      args: [receiver],
+      type: F64,
+      loc,
+    };
+  }
+  lowerer.noLowering(
+    `AsyncResource.${name}`,
+    call,
+    "runInAsyncScope(fn, ...), bind(fn), emitDestroy(), asyncId() and triggerAsyncId() are the supported AsyncResource members",
+    lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
 /** The static AsyncLocalStorage members: bind(fn) answers fn bound to the
  * active context (its own type for a typed function; a dyn function in
  * JavaScript files, where the bound function's name and receiver are
@@ -363,10 +544,15 @@ export function lowerAsyncLocalStorageMethodCall(
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
     return { kind: "libCall", fn: "als.disable", args: [receiver], type: VOID, loc };
   }
+  if (name === "withScope" && call.arguments.nodes.length === 1) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+    const value = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
+    return { kind: "libCall", fn: "als.withScope", args: [receiver, value], type: DYN, loc };
+  }
   lowerer.noLowering(
     `AsyncLocalStorage.${name}`,
     call,
-    "run(store, fn, ...args), exit(fn, ...args), getStore(), enterWith(store), and disable() are the supported AsyncLocalStorage members",
+    "run(store, fn, ...args), exit(fn, ...args), getStore(), enterWith(store), disable() and withScope(store) are the supported AsyncLocalStorage members",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }

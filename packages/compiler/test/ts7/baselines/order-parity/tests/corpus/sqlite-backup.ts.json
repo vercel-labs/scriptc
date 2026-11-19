@@ -1,4 +1,6 @@
 {
-  "order": ["<repo>/tests/corpus/sqlite-backup.ts"],
-  "diags": []
+ "order": [
+  "<repo>/tests/corpus/sqlite-backup.ts"
+ ],
+ "diags": []
 }

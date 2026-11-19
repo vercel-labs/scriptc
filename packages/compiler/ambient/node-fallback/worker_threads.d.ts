@@ -109,6 +109,9 @@ declare module "worker_threads" {
     ref(): void;
     unref(): void;
     hasRef(): boolean;
+    /* The EventTarget form of the events: a MessageEvent for 'message'. */
+    onmessage: ((event: MessageEvent) => void) | null;
+    onmessageerror: ((event: MessageEvent) => void) | null;
     removeAllListeners(event?: string): this;
     listenerCount(event: string, listener?: (...args: any[]) => void): number;
   }

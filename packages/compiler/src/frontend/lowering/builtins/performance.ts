@@ -2,8 +2,9 @@ import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { boolLit, numLit, varRef } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import {
+  BIGINT_T,
   BOOL,
   DYN,
   F64,
@@ -15,9 +16,16 @@ import {
   type SrcLoc,
   VOID,
   funcOf,
+  mapOf,
   typeKey,
 } from "../../../ir/ir.js";
-import { PERF_ENTRY_FIELDS, PERF_ENTRY_MARKER, perfEntryJsonShape } from "../../type-mapper.js";
+import {
+  PERF_ENTRY_FIELDS,
+  PERF_ENTRY_MARKER,
+  PERF_RESOURCE_FIELDS,
+  PERF_RESOURCE_TIMING_FIELDS,
+  perfEntryJsonShape,
+} from "../../type-mapper.js";
 import {
   PERF_NODE_TIMING_JSON_FIELDS,
   PERF_NODE_TIMING_MARKER,
@@ -90,6 +98,30 @@ export function lowerPerfHooksTypeof(lowerer: Lowerer, expression: ts.Expression
  * toJSON() answers its plain object. Other members on the performance
  * object fence by name; null for non-perf_hooks callees (the call chain
  * keeps trying). */
+/** performance.timerify(fn[, options]) and perf_hooks.timerify: the runtime
+ * validates the callable and the options object, then wraps the call and
+ * hands observers a 'function' entry whose detail is the argument list. */
+export function lowerTimerifyCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = expr.arguments.nodes;
+  if (args.length > 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering("timerify with this argument shape", expr, "use timerify(fn[, options])");
+  }
+  return {
+    kind: "libCall",
+    fn: "perf.timerify",
+    args: [
+      {
+        kind: "dynArrLit",
+        elems: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      },
+    ],
+    type: DYN,
+    loc,
+  };
+}
+
 export function lowerPerfHooksCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -97,6 +129,9 @@ export function lowerPerfHooksCall(
 ): IrExpr | null {
   if (access.questionDotToken) return null;
   const loc = locOf(expr);
+  if (access.name.text === "timerify" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
+    return lowerTimerifyCall(lowerer, expr, loc);
+  }
   if (access.name.text === "now" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
     // performance.now takes no arguments and ignores what it is given, but
     // a call's arguments still evaluate, in source order, before the clock
@@ -152,9 +187,56 @@ export function lowerPerfHooksCall(
     const entry = lowerer.lowerExpr(access.expression);
     if (entry.type.kind !== "record")
       lowerer.badType(access.expression, lowerer.typeOf(access.expression));
+    const entryT = entry.type;
+    if (perfValueIsResourceTiming(lowerer, access.expression)) {
+      return {
+        kind: "dynFrom",
+        value: perfResourceJson(lowerer, entry, entryT, loc),
+        type: DYN,
+        loc,
+      };
+    }
+    // A PerformanceEntry-typed value may be any entry class: answer the
+    // resource toJSON for a resource entry and the base one otherwise,
+    // exactly as the class's own toJSON would. The receiver is bound once,
+    // so a call expression runs once.
+    const local = lowerer.declareHiddenLocal("%perfEntryToJson", entryT);
+    const ref = (): IrExpr => varRef(local.id, entryT, loc);
     return {
-      kind: "dynFrom",
-      value: perfEntryJson(lowerer, entry, entry.type, loc),
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: entry, loc }],
+      result: {
+        kind: "ternary",
+        cond: {
+          kind: "strEq",
+          negated: false,
+          left: {
+            kind: "recordGet",
+            obj: ref(),
+            shapeId: entryT.shapeId,
+            field: "entryType",
+            type: STRING,
+            loc,
+          },
+          right: { kind: "strLit", value: "resource", type: STRING, loc },
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "dynFrom",
+          value: perfResourceJson(lowerer, ref(), entryT, loc),
+          type: DYN,
+          loc,
+        },
+        else_: {
+          kind: "dynFrom",
+          value: perfEntryJson(lowerer, ref(), entryT, loc),
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      },
       type: DYN,
       loc,
     };
@@ -194,11 +276,51 @@ export function lowerPerfHooksCall(
   if (timeline && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
     return lowerPerfTimelineCall(lowerer, expr, access.name.text, timeline, loc);
   }
+  if (
+    access.name.text === "markResourceTiming" &&
+    isPerfHooksPerformanceExpr(lowerer, access.expression)
+  ) {
+    const args = lowerPerfArguments(lowerer, expr, loc);
+    const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (result?.kind !== "record" || !isPerfEntryType(lowerer, result)) {
+      lowerer.noLowering(
+        "markResourceTiming where the result is not a PerformanceResourceTiming",
+        expr,
+      );
+    }
+    // The runtime builds the entry and buffers it; the record is built from
+    // the view and handed back so the timeline answers this same object.
+    return perfEntryProduceCall(
+      lowerer,
+      "perf.resourceMark",
+      "%perf.markResourceTiming",
+      args,
+      result,
+      true,
+      loc,
+    );
+  }
+  if (
+    (access.name.text === "clearResourceTimings" ||
+      access.name.text === "setResourceTimingBufferSize") &&
+    isPerfHooksPerformanceExpr(lowerer, access.expression)
+  ) {
+    return {
+      kind: "libCall",
+      fn:
+        access.name.text === "clearResourceTimings"
+          ? "perf.resourceClear"
+          : "perf.resourceBufferSize",
+      args: [lowerPerfArguments(lowerer, expr, loc)],
+      type: VOID,
+      loc,
+    };
+  }
   if (isPerfHooksPerformanceExpr(lowerer, access.expression)) {
     lowerer.noLowering(
       `perf_hooks performance.${access.name.text}`,
       expr,
-      "performance.now() (and its .bind(performance) function value), nodeTiming, timeOrigin, toJSON, mark, measure, the getEntries family, clearMarks, clearMeasures and eventLoopUtilization are the lowered surface",
+      "performance.now() (and its .bind(performance) function value), nodeTiming, timeOrigin, toJSON, mark, measure, the getEntries family, clearMarks, clearMeasures, eventLoopUtilization and markResourceTiming are the lowered surface",
     );
   }
   return null;
@@ -426,6 +548,29 @@ function perfEntryRecord(
     name: read("perf.entryName", STRING),
     startTime: read("perf.entryStart", F64),
   };
+  // PerformanceResourceTiming's fields: one runtime selector each (a mark
+  // or measure answers 0/""), in the selector order scr_perf.c reads.
+  for (const field of PERF_RESOURCE_FIELDS) {
+    const selectorById = PERF_RESOURCE_NUM_SELECTORS.get(field.name);
+    if (selectorById !== undefined) {
+      values[field.name] = {
+        kind: "libCall",
+        fn: "perf.entryResourceNum",
+        args: [index, numLit(selectorById, loc)],
+        type: F64,
+        loc,
+      };
+      continue;
+    }
+    const selector = PERF_RESOURCE_STR_SELECTORS.get(field.name)!;
+    values[field.name] = {
+      kind: "libCall",
+      fn: "perf.entryResourceStr",
+      args: [index, numLit(selector, loc)],
+      type: STRING,
+      loc,
+    };
+  }
   return {
     kind: "recordLit",
     fields: Object.keys(values)
@@ -434,6 +579,91 @@ function perfEntryRecord(
     type: t,
     loc,
   };
+}
+
+/** The numeric PerformanceResourceTiming fields, as scr_perf.c's selectors. */
+const PERF_RESOURCE_NUM_SELECTORS: ReadonlyMap<string, number> = new Map([
+  ["workerStart", 0],
+  ["redirectStart", 1],
+  ["redirectEnd", 2],
+  ["fetchStart", 3],
+  ["domainLookupStart", 4],
+  ["domainLookupEnd", 5],
+  ["connectStart", 6],
+  ["connectEnd", 7],
+  ["secureConnectionStart", 8],
+  ["requestStart", 9],
+  ["finalResponseHeadersStart", 10],
+  ["firstInterimResponseStart", 11],
+  ["responseStart", 12],
+  ["responseEnd", 13],
+  ["transferSize", 14],
+  ["encodedBodySize", 15],
+  ["decodedBodySize", 16],
+  ["responseStatus", 17],
+]);
+
+/** The string PerformanceResourceTiming fields, as scr_perf.c's selectors. */
+const PERF_RESOURCE_STR_SELECTORS: ReadonlyMap<string, number> = new Map([
+  ["initiatorType", 0],
+  ["nextHopProtocol", 1],
+  ["deliveryType", 2],
+  ["renderBlockingStatus", 3],
+  ["contentType", 4],
+  ["contentEncoding", 5],
+]);
+
+/** True when the checker type is a stdlib PerformanceResourceTiming. */
+export function perfValueIsResourceTiming(lowerer: Lowerer, node: ts.Expression): boolean {
+  const symbol = lowerer.typeOf(node).getAliasSymbol() ?? lowerer.typeOf(node).getSymbol();
+  return (
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "PerformanceResourceTiming" &&
+    lowerer.isStdlibSymbol(symbol)
+  );
+}
+
+/** A PerformanceResourceTiming entry's toJSON(): every resource field, in
+ * Node's key order, as one plain object (the checker declares any, so the
+ * record crosses as a checked-dynamic value). */
+export function perfResourceJson(
+  lowerer: Lowerer,
+  entry: IrExpr,
+  entryT: IrType & { kind: "record" },
+  loc: SrcLoc,
+): IrExpr {
+  const shape = lowerer.shapes.get(entryT.shapeId)!;
+  const bound = bindRecordReceiver(lowerer, entry, "%perfResourceJson", loc);
+  const result: IrExpr = {
+    kind: "recordLit",
+    fields: PERF_RESOURCE_TIMING_FIELDS.map((name) => ({
+      name,
+      value: {
+        kind: "recordGet",
+        obj: bound.receiver,
+        shapeId: entryT.shapeId,
+        field: name,
+        type: shape.fields.find((f) => f.name === name)!.type,
+        loc,
+      },
+    })),
+    type: {
+      kind: "record",
+      shapeId: lowerer.shapes.intern(
+        PERF_RESOURCE_TIMING_FIELDS.map((name) => ({
+          name,
+          type: shape.fields.find((f) => f.name === name)!.type,
+        })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+        false,
+        undefined,
+        [...PERF_RESOURCE_TIMING_FIELDS],
+      ),
+    },
+    loc,
+  };
+  return bound.stmts.length === 0
+    ? result
+    : { kind: "seqExpr", stmts: bound.stmts, result, type: result.type, loc };
 }
 
 /** The call's arguments as one dyn array, in source order. Spread
@@ -701,6 +931,7 @@ type PerfClass =
   | "PerformanceEntry"
   | "PerformanceMark"
   | "PerformanceMeasure"
+  | "PerformanceResourceTiming"
   | "PerformanceObserver"
   | "PerformanceObserverEntryList";
 
@@ -708,6 +939,7 @@ const PERF_CLASSES: ReadonlySet<string> = new Set<PerfClass>([
   "PerformanceEntry",
   "PerformanceMark",
   "PerformanceMeasure",
+  "PerformanceResourceTiming",
   "PerformanceObserver",
   "PerformanceObserverEntryList",
 ]);
@@ -953,7 +1185,12 @@ export function lowerPerfInstanceof(lowerer: Lowerer, expr: ts.BinaryExpression)
       },
       right: {
         kind: "strLit",
-        value: cls === "PerformanceMark" ? "mark" : "measure",
+        value:
+          cls === "PerformanceMark"
+            ? "mark"
+            : cls === "PerformanceMeasure"
+              ? "measure"
+              : "resource",
         type: STRING,
         loc,
       },
@@ -968,7 +1205,19 @@ export function lowerPerfInstanceof(lowerer: Lowerer, expr: ts.BinaryExpression)
   return {
     kind: "libCall",
     fn: "perf.entryIs",
-    args: [value, numLit(cls === "PerformanceEntry" ? 0 : cls === "PerformanceMark" ? 1 : 2, loc)],
+    args: [
+      value,
+      numLit(
+        cls === "PerformanceEntry"
+          ? 0
+          : cls === "PerformanceMark"
+            ? 1
+            : cls === "PerformanceMeasure"
+              ? 2
+              : 4,
+        loc,
+      ),
+    ],
     type: BOOL,
     loc,
   };
@@ -1015,7 +1264,33 @@ export function perfEntryTag(
               loc,
             },
             then: { kind: "strLit", value: "[object PerformanceMark]", type: STRING, loc },
-            else_: { kind: "strLit", value: "[object PerformanceMeasure]", type: STRING, loc },
+            else_: {
+              kind: "ternary",
+              cond: {
+                kind: "strEq",
+                negated: false,
+                left: {
+                  kind: "recordGet",
+                  obj: e,
+                  shapeId: entryT.shapeId,
+                  field: "entryType",
+                  type: STRING,
+                  loc,
+                },
+                right: { kind: "strLit", value: "measure", type: STRING, loc },
+                type: BOOL,
+                loc,
+              },
+              then: { kind: "strLit", value: "[object PerformanceMeasure]", type: STRING, loc },
+              else_: {
+                kind: "strLit",
+                value: "[object PerformanceResourceTiming]",
+                type: STRING,
+                loc,
+              },
+              type: STRING,
+              loc,
+            },
             type: STRING,
             loc,
           },
@@ -1213,6 +1488,8 @@ const HISTOGRAM_STATS: ReadonlyMap<string, number> = new Map([
   ["stddev", 3],
   ["count", 4],
   ["exceeds", 5],
+  ["skewness", 6],
+  ["kurtosis", 7],
 ]);
 
 /** `h.min`, `h.max`, … on an IntervalHistogram: the runtime's current
@@ -1233,7 +1510,7 @@ export function lowerHistogramProperty(
   return {
     kind: "libCall",
     fn: "perf.eldStat",
-    args: [lowerer.lowerExprExpecting(expr.expression, F64), numLit(which, loc)],
+    args: [lowerer.lowerExprExpecting(expr.expression, DYN), numLit(which, loc)],
     type: F64,
     loc,
   };
@@ -1249,7 +1526,7 @@ export function lowerHistogramMethodCall(
   if (access.questionDotToken || !isIntervalHistogram(lowerer, access.expression)) return null;
   const loc = locOf(expr);
   const name = access.name.text;
-  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, F64);
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, DYN);
   const args = expr.arguments.nodes;
   if ((name === "enable" || name === "disable" || name === "reset") && args.length === 0) {
     const fn =
@@ -1262,7 +1539,7 @@ export function lowerHistogramMethodCall(
   }
   if (name === "percentile" && args.length === 1 && !ts.isSpreadElement(args[0]!)) {
     // Node validates first: NaN, p <= 0 and p > 100 throw ERR_OUT_OF_RANGE.
-    const h = lowerer.declareHiddenLocal("%histogram", F64);
+    const h = lowerer.declareHiddenLocal("%histogram", DYN);
     const p = lowerer.declareHiddenLocal("%percentile", F64);
     const pRef = (): IrExpr => varRef(p.id, F64, loc);
     const cmp = (op: "!==" | "<=" | ">", left: IrExpr, right: IrExpr): IrExpr => ({
@@ -1321,7 +1598,7 @@ export function lowerHistogramMethodCall(
         else_: {
           kind: "libCall",
           fn: "perf.eldPercentile",
-          args: [varRef(h.id, F64, loc), pRef()],
+          args: [varRef(h.id, DYN, loc), pRef()],
           type: F64,
           loc,
         },
@@ -1332,10 +1609,14 @@ export function lowerHistogramMethodCall(
       loc,
     };
   }
+  {
+    const comparison = lowerHistogramComparison(lowerer, expr, access, name, loc);
+    if (comparison !== null) return comparison;
+  }
   lowerer.noLowering(
     `IntervalHistogram.${name}`,
     expr,
-    "enable(), disable(), reset(), percentile(p) and the min, max, mean, stddev, count and exceeds readings are the lowered surface",
+    "enable(), disable(), reset(), percentile(p), ksTest, cohensD, cliffsD, mannWhitneyTest and the min, max, mean, stddev, count and exceeds readings are the lowered surface",
   );
 }
 
@@ -1376,16 +1657,18 @@ export function lowerMonitorEventLoopDelayCall(lowerer: Lowerer, expr: ts.CallEx
           "resolution is the one option",
         );
       }
-      // An undefined resolution takes the default, as Node's destructuring.
+      // An undefined resolution takes the default, as Node's destructuring;
+      // a supplied one is validated, so a null does not convert to 0.
       resolution = lowerOptionalArgument(
         lowerer,
         shorthand ? property.name : property.initializer,
         F64,
         numLit(10, loc),
+        { nullArm: "reject" },
       );
     }
   }
-  return { kind: "libCall", fn: "perf.eldNew", args: [resolution], type: F64, loc };
+  return { kind: "libCall", fn: "perf.eldNew", args: [resolution], type: DYN, loc };
 }
 
 /** performance.eventLoopUtilization(u1?, u2?) — Node's
@@ -1496,4 +1779,474 @@ function eluHelperOf(lowerer: Lowerer, arity: number, recT: IrType & { kind: "re
   }
   lowerer.liftedFns.push({ name, params, returnType: recT, locals, body, loc });
   return name;
+}
+
+/* ── createHistogram's RecordableHistogram ────────────────────────────
+ * A negative numeric handle into the runtime's histogram table (the
+ * positive handles belong to monitorEventLoopDelay). The readings,
+ * recording, add/subtract, percentile, countAt and cdf lower over the
+ * handle; the percentiles getter builds Node's Map from the runtime's
+ * percentile tick view. */
+
+type HistoValue = "Histogram" | "RecordableHistogram";
+
+/** The createHistogram classes a stdlib-typed value belongs to. */
+function recordableHistogramClassOf(lowerer: Lowerer, node: ts.Expression): HistoValue | null {
+  const type = lowerer.typeOf(node);
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  if (symbol === undefined) return null;
+  const name = ts.symbolName(symbol);
+  if (name !== "Histogram" && name !== "RecordableHistogram") return null;
+  return lowerer.isStdlibSymbol(symbol) ? name : null;
+}
+
+/** createHistogram(options?): options are one dyn value (the dyn undefined
+ * when absent) so the runtime applies Node's validation and defaults. */
+export function lowerCreateHistogramCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  const loc = locOf(expr);
+  const args = expr.arguments.nodes;
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering("this createHistogram call form", expr, "pass at most one options object");
+  }
+  const options =
+    args.length === 0 ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(args[0]!, DYN);
+  return { kind: "libCall", fn: "perf.histoNew", args: [options], type: DYN, loc };
+}
+
+/** The numeric readings, as perf.histoStat selectors. */
+const HISTO_STATS: ReadonlyMap<string, number> = new Map([
+  ["count", 0],
+  ["min", 1],
+  ["max", 2],
+  ["mean", 3],
+  ["stddev", 4],
+  ["exceeds", 5],
+  ["skewness", 6],
+  ["kurtosis", 7],
+]);
+
+/** The BigInt readings, as perf.histoStatBig selectors. */
+const HISTO_BIG_STATS: ReadonlyMap<string, number> = new Map([
+  ["countBigInt", 0],
+  ["minBigInt", 1],
+  ["maxBigInt", 2],
+  ["exceedsBigInt", 5],
+]);
+
+/** Node's validateInteger for percentile (0 < p <= 100) as a catchable
+ * ERR_OUT_OF_RANGE, shared by the numeric and BigInt forms. */
+function histoPercentileValue(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  fn: "perf.histoPercentile" | "perf.histoPercentileBig",
+  resultType: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+    lowerer.noLowering(`Histogram.${access.name.text} with this argument shape`, call);
+  }
+  const h = lowerer.declareHiddenLocal("%histogram", DYN);
+  const p = lowerer.declareHiddenLocal("%percentile", F64);
+  const pRef = (): IrExpr => varRef(p.id, F64, loc);
+  const cmp = (op: "!==" | "<=" | ">", left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "bin",
+    op,
+    left,
+    right,
+    type: BOOL,
+    loc,
+  });
+  const or = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "logical",
+    op: "||",
+    left,
+    right,
+    type: BOOL,
+    loc,
+  });
+  const outOfRange = or(
+    or(cmp("!==", pRef(), pRef()), cmp("<=", pRef(), numLit(0, loc))),
+    cmp(">", pRef(), numLit(100, loc)),
+  );
+  const message: IrExpr = {
+    kind: "strConcat",
+    left: {
+      kind: "strLit",
+      value: 'The value of "percentile" is out of range. It must be > 0 && <= 100. Received ',
+      type: STRING,
+      loc,
+    },
+    right: { kind: "toString", operand: pRef(), type: STRING, loc },
+    type: STRING,
+    loc,
+  };
+  const thrown: IrExpr = {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [
+      numLit(2, loc),
+      { kind: "strLit", value: "ERR_OUT_OF_RANGE", type: STRING, loc },
+      message,
+    ],
+    type: resultType,
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: h.id,
+        init: lowerer.lowerExprExpecting(access.expression, DYN),
+        loc,
+      },
+      {
+        kind: "varDecl",
+        localId: p.id,
+        init: lowerer.lowerExprExpecting(args[0]!, F64),
+        loc,
+      },
+    ],
+    result: {
+      kind: "ternary",
+      cond: outOfRange,
+      then: thrown,
+      else_: {
+        kind: "libCall",
+        fn,
+        args: [varRef(h.id, DYN, loc), pRef()],
+        type: resultType,
+        loc,
+      },
+      type: resultType,
+      loc,
+    },
+    type: resultType,
+    loc,
+  };
+}
+
+/** The percentiles getter's Map: a lifted helper that runs the runtime's
+ * percentile tick view and stores each (percentile, value) pair in a Map,
+ * in Node's order. */
+function histoPercentilesMap(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  handle: IrExpr,
+  result: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  if (result.kind !== "map") lowerer.noLowering("Histogram.percentiles", node);
+  const key = `perf.histoPercentiles:${typeKey(result)}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%perf.histoPercentiles", key);
+    lowerer.valueHelpers.set(key, helper);
+    const h = varRef("h.0", DYN, loc);
+    const n = varRef("n.0", F64, loc);
+    const i = varRef("i.0", F64, loc);
+    const out = varRef("out.0", result, loc);
+    const call = (fn: IrLibFn, type: IrType, ...args: IrExpr[]): IrExpr => ({
+      kind: "libCall",
+      fn,
+      args,
+      type,
+      loc,
+    });
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [{ localId: "h.0", name: "h", type: DYN }],
+      returnType: result,
+      locals: [
+        { id: "h.0", name: "h", type: DYN, mutable: false },
+        { id: "n.0", name: "n", type: F64, mutable: false },
+        { id: "out.0", name: "out", type: result, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "n.0",
+          init: call("perf.histoPercentilesCount", F64, h),
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: "out.0",
+          init: { kind: "mapNew", type: result, loc },
+          loc,
+        },
+        {
+          kind: "for",
+          init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+          cond: { kind: "bin", op: "<", left: i, right: n, type: BOOL, loc },
+          update: {
+            kind: "assign",
+            localId: "i.0",
+            value: { kind: "bin", op: "+", left: i, right: numLit(1, loc), type: F64, loc },
+            loc,
+          },
+          body: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "mapIntrinsic",
+                method: "set",
+                receiver: out,
+                args: [
+                  call("perf.histoPercentilesKey", F64, h, i),
+                  call("perf.histoPercentilesValue", F64, h, i),
+                ],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        { kind: "return", value: out, loc },
+      ],
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [handle], type: result, loc };
+}
+
+/** The property reads on a RecordableHistogram: the numeric and BigInt
+ * readings and the percentiles Map. */
+export function lowerRecordableHistogramProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken || recordableHistogramClassOf(lowerer, expr.expression) === null)
+    return null;
+  const loc = locOf(expr);
+  const name = expr.name.text;
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(expr.expression, DYN);
+  const stat = HISTO_STATS.get(name);
+  if (stat !== undefined) {
+    return {
+      kind: "libCall",
+      fn: "perf.histoStat",
+      args: [handle(), numLit(stat, loc)],
+      type: F64,
+      loc,
+    };
+  }
+  const big = HISTO_BIG_STATS.get(name);
+  if (big !== undefined) {
+    return {
+      kind: "libCall",
+      fn: "perf.histoStatBig",
+      args: [handle(), numLit(big, loc)],
+      type: BIGINT_T,
+      loc,
+    };
+  }
+  if (name === "percentiles") {
+    const result = lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? mapOf(F64, F64);
+    return histoPercentilesMap(lowerer, expr, handle(), result, loc);
+  }
+  return null;
+}
+
+/** The distribution comparisons on a Histogram (the base interface the
+ * IntervalHistogram and RecordableHistogram both carry): ksTest, cohensD and
+ * cliffsD answer a number, mannWhitneyTest a null-prototype-shaped record of
+ * its three readings. The runtime validates `other` and answers Node's
+ * values. */
+function lowerHistogramComparison(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  const args = call.arguments.nodes;
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, DYN);
+  if (
+    (name === "ksTest" || name === "cohensD" || name === "cliffsD") &&
+    args.length === 1 &&
+    !ts.isSpreadElement(args[0]!)
+  ) {
+    const fn =
+      name === "ksTest"
+        ? "perf.histoKsTest"
+        : name === "cohensD"
+          ? "perf.histoCohensD"
+          : "perf.histoCliffsD";
+    return {
+      kind: "libCall",
+      fn,
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
+      type: F64,
+      loc,
+    };
+  }
+  if (name === "mannWhitneyTest" && args.length === 1 && !ts.isSpreadElement(args[0]!)) {
+    const resultType = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (resultType?.kind !== "record")
+      lowerer.noLowering("Histogram.mannWhitneyTest with this result type", call);
+    /* Node builds the result from one pass over both histograms; the runtime
+     * answers the three readings, and the receiver and the argument are
+     * evaluated once into hidden locals. */
+    const h = lowerer.declareHiddenLocal("%histogram", DYN);
+    const o = lowerer.declareHiddenLocal("%other", DYN);
+    const both = (): IrExpr[] => [varRef(h.id, DYN, loc), varRef(o.id, DYN, loc)];
+    const reading = (fn: IrLibFn): IrExpr => ({
+      kind: "libCall",
+      fn,
+      args: both(),
+      type: F64,
+      loc,
+    });
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "varDecl",
+          localId: h.id,
+          init: handle(),
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: o.id,
+          init: lowerer.lowerExprExpecting(args[0]!, DYN),
+          loc,
+        },
+      ],
+      result: {
+        kind: "recordLit",
+        fields: [
+          { name: "uStatistic", value: reading("perf.histoMannWhitneyU") },
+          { name: "zScore", value: reading("perf.histoMannWhitneyZ") },
+          { name: "pValue", value: reading("perf.histoMannWhitneyP") },
+        ],
+        type: resultType,
+        loc,
+      },
+      type: resultType,
+      loc,
+    };
+  }
+  return null;
+}
+
+/** The method calls on a RecordableHistogram. Node validates record's
+ * number form (an integer >= 1), recordCorrected's two integers, and
+ * percentile's range; add/subtract need the other histogram's handle. */
+export function lowerRecordableHistogramMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || recordableHistogramClassOf(lowerer, access.expression) === null)
+    return null;
+  const loc = locOf(call);
+  const name = access.name.text;
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, DYN);
+  const args = call.arguments.nodes;
+  const noArgs = (): boolean => args.length === 0;
+  if (name === "recordDelta" && noArgs()) {
+    return { kind: "libCall", fn: "perf.histoRecordDelta", args: [handle()], type: VOID, loc };
+  }
+  if (name === "reset" && noArgs()) {
+    return { kind: "libCall", fn: "perf.histoReset", args: [handle()], type: VOID, loc };
+  }
+  if (name === "record" && args.length === 1 && !ts.isSpreadElement(args[0]!)) {
+    const argType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    if (argType?.kind === "bigint") {
+      return {
+        kind: "libCall",
+        fn: "perf.histoRecordBig",
+        args: [handle(), lowerer.lowerExprExpecting(args[0]!, BIGINT_T)],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "perf.histoRecord",
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "recordCorrected" && args.length === 2 && !args.some(ts.isSpreadElement)) {
+    return {
+      kind: "libCall",
+      fn: "perf.histoRecordCorrected",
+      args: [
+        handle(),
+        lowerer.lowerExprExpecting(args[0]!, F64),
+        lowerer.lowerExprExpecting(args[1]!, F64),
+      ],
+      type: VOID,
+      loc,
+    };
+  }
+  if (
+    (name === "add" || name === "subtract") &&
+    args.length === 1 &&
+    !ts.isSpreadElement(args[0]!)
+  ) {
+    // Both answer undefined (Node's JS wrappers ignore the runtime's dropped
+    // count), so the call is a void libCall.
+    return {
+      kind: "libCall",
+      fn: name === "add" ? "perf.histoAdd" : "perf.histoSubtract",
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, DYN)],
+      type: VOID,
+      loc,
+    };
+  }
+  if ((name === "percentile" || name === "percentileBigInt") && args.length === 1) {
+    const big = name === "percentileBigInt";
+    return histoPercentileValue(
+      lowerer,
+      call,
+      access,
+      big ? "perf.histoPercentileBig" : "perf.histoPercentile",
+      big ? BIGINT_T : F64,
+      loc,
+    );
+  }
+  if (name === "countAt" && args.length === 1 && !ts.isSpreadElement(args[0]!)) {
+    return {
+      kind: "libCall",
+      fn: "perf.histoCountAt",
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
+      type: F64,
+      loc,
+    };
+  }
+  if ((name === "cdf" || name === "ccdf") && args.length === 1 && !ts.isSpreadElement(args[0]!)) {
+    return {
+      kind: "libCall",
+      fn: name === "cdf" ? "perf.histoCdf" : "perf.histoCcdf",
+      args: [handle(), lowerer.lowerExprExpecting(args[0]!, F64)],
+      type: F64,
+      loc,
+    };
+  }
+  {
+    const comparison = lowerHistogramComparison(lowerer, call, access, name, loc);
+    if (comparison !== null) return comparison;
+  }
+  if (name === "percentilesBigInt") {
+    lowerer.noLowering(
+      "Histogram.percentilesBigInt",
+      call,
+      "the numeric percentiles getter is the lowered form",
+    );
+  }
+  lowerer.noLowering(
+    `Histogram.${name}`,
+    call,
+    "record, recordDelta, recordCorrected, reset, add, subtract, percentile, percentileBigInt, countAt, cdf, ccdf, ksTest, cohensD, cliffsD and mannWhitneyTest are the lowered surface",
+  );
 }

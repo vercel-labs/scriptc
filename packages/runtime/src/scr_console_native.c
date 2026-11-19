@@ -13,8 +13,10 @@
  * The other keys answer a function too, so `typeof`, a truthiness probe,
  * a copy into another object and a save-and-restore all see what Node
  * shows; calling one through the value is the named boundary, since only
- * its direct call (or `new console.Console`) has a lowering. Mutation and
- * console's internal slots stay explicit boundaries. */
+ * its direct call (or `new console.Console`) has a lowering. createTask is
+ * the exception: Node's task object (a plain object whose `run` calls the
+ * callback) is built here, so both its direct call and a stored member
+ * work. Mutation and console's internal slots stay explicit boundaries. */
 typedef struct {
   const char *name;
   const char *surface;
@@ -48,7 +50,7 @@ static const ScrConsoleMember scr_console_members[] = {
   {"profileEnd", "console.profileEnd", -1, 0},
   {"timeStamp", "console.timeStamp", -1, 0},
   {"context", "console.context", -1, 1},
-  {"createTask", "console.createTask", -1, 0},
+  {"createTask", "console.createTask", 2, 0},
 };
 enum { SCR_CONSOLE_MEMBERS = sizeof scr_console_members / sizeof scr_console_members[0] };
 
@@ -62,8 +64,46 @@ static void scr_console_methods_cleanup(void) {
   }
 }
 
+/* Node's console.createTask task object: one plain object whose `run`
+ * member calls the function it is given and answers that function's
+ * result. */
+static ScrDyn *scr_console_task_run(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  if (argc < 1 || !scr_dyn_is_callable(args[0])) {
+    static const char message[] = "First argument must be a function.";
+    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    return NULL;
+  }
+  /* Node calls the callback as a plain call: `this` is undefined, not the
+   * task the method was read from. */
+  scr_dyn_this_push_dyn(scr_dyn_undefined());
+  ScrDyn *result = scr_dyn_call(args[0], NULL, 0, "the console task's callback");
+  scr_dyn_this_pop();
+  return result;
+}
+
+static ScrDyn *scr_console_create_task(ScrDyn *const *args, size_t argc) {
+  if (argc < 1 || args[0]->kind != SCR_DYN_STR || args[0]->v.str->len == 0) {
+    static const char message[] = "First argument must be a non-empty string.";
+    scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrDyn *task = scr_dyn_new_obj();
+  if (!task) return NULL;
+  ScrClosure *closure = scr_closure_new(NULL, 0);
+  ScrDyn *run = scr_dyn_new_func(closure, scr_console_task_run, 0, "native:console task run", "run");
+  if (!run) {
+    scr_dyn_release(task);
+    return NULL;
+  }
+  /* The set takes ownership of `run`. */
+  scr_dyn_obj_set(task, "run", 3, run);
+  return task;
+}
+
 static ScrDyn *scr_console_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const ScrConsoleMember *member = &scr_console_members[(size_t)scr_box_get_f64(closure->caps[0])];
+  if (member->target == 2) return scr_console_create_task(args, argc);
   if (member->target < 0) {
     char message[96];
     int len = snprintf(message, sizeof message,
@@ -247,6 +287,10 @@ static ScrDyn *scr_console_inst_get(void *ptr, const char *key, size_t len) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
+  /* Node's Console instances carry no createTask: the global console
+   * alone does, so a read here is undefined, not a boundary. */
+  if (len == 10 && memcmp(key, "createTask", 10) == 0)
+    return scr_dyn_retain(scr_dyn_undefined());
   static const char message[] = "This Console instance member has no lowering";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return NULL;

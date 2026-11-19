@@ -376,6 +376,24 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.async_hooks.createHook",
+      "kind": "node-builtin",
+      "name": "async_hooks.createHook",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.async_hooks.executionAsyncId",
+      "kind": "node-builtin",
+      "name": "async_hooks.executionAsyncId",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.async_hooks.triggerAsyncId",
+      "kind": "node-builtin",
+      "name": "async_hooks.triggerAsyncId",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.buffer",
       "kind": "node-builtin",
       "name": "buffer",
@@ -612,9 +630,21 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.decapsulate",
+      "kind": "node-builtin",
+      "name": "crypto.decapsulate",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.diffieHellman",
       "kind": "node-builtin",
       "name": "crypto.diffieHellman",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.encapsulate",
+      "kind": "node-builtin",
+      "name": "crypto.encapsulate",
       "status": "static"
     },
     {
@@ -1391,6 +1421,13 @@
       "kind": "node-builtin",
       "name": "fs.mkdirSync",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.mkdtempDisposable",
+      "kind": "node-builtin",
+      "name": "fs.mkdtempDisposableSync / fsPromises.mkdtempDisposable",
+      "status": "static",
+      "note": "the created temp directory plus its path, remove() and disposal hooks; the path is a string, so only the utf8 encoding is accepted"
     },
     {
       "id": "node-builtin.fs.mkdtempSync",
@@ -2353,6 +2390,13 @@
       "note": "the observer construct, observe, disconnect and takeRecords, the entry-list getEntries family, and instanceof for the observer and entry classes"
     },
     {
+      "id": "node-builtin.perf_hooks.createHistogram",
+      "kind": "node-builtin",
+      "name": "perf_hooks.createHistogram",
+      "status": "static",
+      "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
+    },
+    {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
@@ -2393,6 +2437,13 @@
       "note": "records a mark in the thread's performance timeline at the live clock or the given startTime"
     },
     {
+      "id": "node-builtin.perf_hooks.performance.markResourceTiming",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.markResourceTiming",
+      "status": "static",
+      "note": "the PerformanceResourceTiming entries markResourceTiming builds from fetch timing info, clearResourceTimings and setResourceTimingBufferSize; the resource fields and toJSON"
+    },
+    {
       "id": "node-builtin.perf_hooks.performance.measure",
       "kind": "node-builtin",
       "name": "perf_hooks.performance.measure",
@@ -2405,6 +2456,13 @@
       "name": "perf_hooks.performance.now",
       "status": "static",
       "note": "the global performance object and the performance.now.bind(performance) function value reach the same clock"
+    },
+    {
+      "id": "node-builtin.perf_hooks.timerify",
+      "kind": "node-builtin",
+      "name": "perf_hooks.timerify",
+      "status": "static",
+      "note": "performance.timerify and perf_hooks.timerify are the same wrapper: a timed call records a 'function' entry, delivered to the observers watching that type"
     },
     {
       "id": "node-builtin.process",
@@ -2927,14 +2985,6 @@
       "name": "stream/consumers",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
-    },
-    {
-      "id": "node-builtin.stream.consumers.blob",
-      "kind": "node-builtin",
-      "name": "stream/consumers.blob",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "collecting a stream into a Blob is not supported yet — buffer(stream) collects the same bytes as a Buffer (new Blob([buffer]) wraps them), text(stream) the decoded text"
     },
     {
       "id": "node-builtin.stream.promises",
@@ -5818,9 +5868,8 @@
       "id": "stdlib.readable-stream.values",
       "kind": "stdlib",
       "name": "ReadableStream.values",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; direct for-await consumption compiles statically; storing or driving the first-class iterator handle is unsupported"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-stream-values"
     },
     {
       "id": "stdlib.request.arrayBuffer",

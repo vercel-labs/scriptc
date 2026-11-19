@@ -163,6 +163,10 @@ ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
 /* new BroadcastChannel(...args) (scr_worker_events.c): args is the argument
  * vector as one array (borrowed); may throw. */
 ScrDyn *scr_worker_broadcast_channel(ScrDyn *args);
+/* new MessagePort(...args) (scr_worker_events.c): Node's constructor always
+ * throws ERR_CONSTRUCT_CALL_INVALID; args is the argument vector as one
+ * array (borrowed). */
+ScrDyn *scr_worker_port_construct(ScrDyn *args);
 /* setEnvironmentData(key, value) and getEnvironmentData(key) (+1); both
  * borrow their arguments. */
 void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
@@ -680,6 +684,9 @@ extern struct ScrDyn *(*scr_bytes_buffer_member_fn)(const struct ScrDyn *value, 
  * Buffer.prototype methods by name (RuntimeFeatures dynBufferMembers). */
 void scr_bytes_buffer_members_install(void);
 ScrBytes *scr_buffer_concat_len_dyn(const struct ScrDyn *list, double total);
+/* Buffer.concat(list, totalLength?) with a total that may be undefined:
+ * undefined is the sum of the parts — Node's default. */
+ScrBytes *scr_buffer_concat_len_dyn_opt(const struct ScrDyn *list, const struct ScrDyn *total);
 /* Drops the pool's slab reference and restores Buffer.poolSize (process
  * exit audits and library session resets). */
 void scr_buffer_pool_reset(void);

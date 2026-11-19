@@ -262,15 +262,20 @@ typedef enum {
  * objects are pinned above at the values they had (100 to 102), so the two
  * Intl formatters could join without renumbering them. */
 #define SCR_DYNH_NEW_TAGS(Y) \
+  Y(ASYNC_RESOURCE) /* async_hooks AsyncResource (scr_async_dyn.c) */ \
   Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
+  Y(CLOSE_EVENT) /* CloseEvent (scr_event_target.c) */ \
   Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
   Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
+  Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
+  Y(HISTOGRAM) /* createHistogram RecordableHistogram (scr_perf_loop.c) */ \
   Y(INTL_DATE_TIME_FORMAT) /* Intl.DateTimeFormat (scr_intl.c) */ \
   Y(INTL_NUMBER_FORMAT) /* Intl.NumberFormat (scr_intl.c) */ \
   Y(MAC) /* crypto.createMac's Mac (scr_lib.c) */ \
   Y(NET_BOUND_SOCKET) /* net.BoundSocket (scr_net.c) */ \
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
+  Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
@@ -2058,6 +2063,10 @@ void scr_dyn_key_define_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* The same in sloppy-mode code: an assignment strict mode refuses with a
  * TypeError is ignored. */
 void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value);
+/* A gated unit's write path that raises the strict-mode refusal notes it,
+ * right after the throw, so a sloppy-mode write drops exactly that
+ * exception (scr_dyn_key_set_sloppy) and propagates any other. */
+void scr_dyn_assign_failure_note(void);
 void scr_dyn_key_set_computed_sloppy(ScrDyn *recv, ScrDyn *key, ScrDyn *value);
 /* A named (non-index) property of an extensible, unfrozen ARR, stored as
  * scr_dyn_key_set stores it. Takes ownership of value. */
@@ -2313,6 +2322,17 @@ void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */
 void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+/* The next error view built on this thread takes this own property before
+ * its class name. AssertionError's constructor assigns generatedMessage
+ * before name, and the view's shape is still being laid out when the first
+ * extra property is attached. Moves value; a pending seed is dropped when
+ * replaced. */
+void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value);
+/* The seed if no view consumed it (+1), else NULL. */
+ScrDyn *scr_error_take_seed(void);
+/* Exit-cleanup registrations the seed made on this thread: one, however
+ * many assertions seed (the runtime tests pin it). */
+size_t scr_error_seed_registration_count(void);
 /* scr_throw_node_coded with an own `url` property (error.nodeThrow's
  * fourth argument). Borrows the strings; always throws. */
 SCR_COLD void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg,
@@ -2483,6 +2503,12 @@ ScrDyn *scr_dyn_call(const ScrDyn *d, ScrDyn *const *args, size_t argc, const ch
  * `f(...args)` after the emitted argument array is built): argv IS the
  * array's items. Borrows both; result owned (+1), or NULL pending. */
 ScrDyn *scr_dyn_apply(const ScrDyn *d, const ScrDyn *args, const char *what);
+/* The timerified wrapper's construct form (scr_perf.c installs it): answers
+ * true when `callee` is such a wrapper and stores the construction in
+ * *result. NULL until a wrapper exists, so a program without timerify never
+ * reaches the perf unit. */
+extern SCR_TL bool (*scr_dyn_timerified_construct_fn)(const ScrDyn *callee,
+                                                      const ScrDyn *args, ScrDyn **result);
 /* Function.bind borrows its target and arguments, returns a fresh callable. */
 ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc);
 
@@ -2595,6 +2621,16 @@ typedef struct ScrDynHandleMethod {
   const char *same_as;      /* NULL = this entry's own function */
 } ScrDynHandleMethod;
 
+/* A member name with the length it has, so a lookup compares by length and
+ * memcmp without a strlen walk. The runtime asks these tables on every
+ * property write of a handle; SCR_DYN_HANDLE_NAME folds the length of a
+ * string literal at compile time. */
+typedef struct ScrDynHandleName {
+  const char *name;
+  size_t len;
+} ScrDynHandleName;
+#define SCR_DYN_HANDLE_NAME(s) { s, sizeof s - 1 }
+
 typedef struct ScrDynHandleOps {
   const char *cls; /* Node's constructor name — error texts and dynCheck's "got ..." */
   void *(*retain)(void *h);
@@ -2687,6 +2723,15 @@ typedef struct ScrDynHandleOps {
    * property read answers no methods (member calls still reach invoke).
    * See ScrDynHandleMethod. */
   const ScrDynHandleMethod *methods;
+  /* The class's prototype accessors, terminated by a NULL name. A write of
+   * one adds no own property: strict code throws V8's getter-only TypeError
+   * (a definition still shadows it), and it is the set the fetch classes
+   * answer from their interfaces. NULL = the class declares no accessors. */
+  const ScrDynHandleName *attributes;
+  /* The class name V8's property TypeErrors print when it differs from
+   * cls: undici's constructors are `_Request` and `_Response`, which V8
+   * shows as `#<_Request>`. NULL = cls. */
+  const char *error_cls;
   /* The TypeError (code ERR_INVALID_THIS) a method value called on another
    * receiver raises; NULL = WebIDL's "Illegal invocation". */
   const char *invalid_this;
@@ -2701,6 +2746,12 @@ typedef struct ScrDynHandleOps {
    * answer). The web stream classes answer Node's symbol getters here;
    * only they set it. */
   ScrDyn *(*stream_predicate)(void *h, ScrDynHandleTag tag, double which);
+  /* The owning unit takes the own-property table (+1) of a handle whose
+   * properties its native object holds and traces, so the cycle collector
+   * sees the table's references like any other edge of the object (the
+   * fetch classes). NULL = scr_dyn_handle_props.c's slot table owns the
+   * table. See ScrDynHandlePropsHooks.table. */
+  void (*adopt_props)(void *h, ScrDyn *props);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),
@@ -2710,7 +2761,9 @@ typedef struct ScrDynHandleOps {
  * the handle to the ordinary path. NULL until the program's first
  * handle.propsInstall. */
 typedef struct ScrDynHandlePropsHooks {
-  /* The handle's table (borrowed), or NULL when it has none. */
+  /* The handle's table (borrowed), or NULL when it has none. A table the
+   * owning unit adopted (ScrDynHandleOps.adopt_props) is owned and traced
+   * by that native object; the slot only maps the handle to it. */
   ScrDyn *(*table)(const ScrDyn *handle);
   /* scr_dyn_handle_install: the ops to install for `tag` in place of
    * `ops` (the wrapped ops when the tag has tables). */
@@ -2728,6 +2781,12 @@ typedef struct ScrDynHandlePropsHooks {
   /* The ScrObjWalk modes private to scr_json.c: keys 0, values 1, entries 2. */
   bool (*objwalk)(const ScrDyn *handle, int mode, ScrDyn **out);
   bool (*for_in_keys)(const ScrDyn *handle, ScrDyn **out);
+  /* A handle of a tag whose table does not retain it is being freed: drop
+   * the slot now. The owning unit calls it from the release that frees the
+   * object (a fetch Request, Response or Headers list), so the slot never
+   * names a freed object. A table the unit adopted is released by the
+   * unit itself (the slot does not own it). */
+  void (*released)(const void *handle);
   /* op: 0 preventExtensions, 1 seal, 2 freeze (out_value = the handle +1);
    * 3 isExtensible, 4 isSealed, 5 isFrozen (out_bool). */
   bool (*integrity)(ScrDyn *handle, int op, ScrDyn **out_value, bool *out_bool);
@@ -3026,6 +3085,9 @@ void scr_dyn_check_listener(const ScrDyn *cb, const char *argname);
  * generic ERR_INVALID_ARG_TYPE thrower over it (`expected` is the whole
  * "of type ..." clause). The handle dispatchers' per-arg gates. */
 const char *scr_dyn_specific_type(const ScrDyn *v, char *buf, size_t cap);
+/* The same tail with its true length in *len: a string value keeps the NUL
+ * bytes %s would stop at, so the message builders append it by length. */
+const char *scr_dyn_specific_type_len(const ScrDyn *v, char *buf, size_t cap, size_t *len);
 /* Registers a namespace object built by scr_module_namespace_dyn.c, whose
  * objects are ordinary dyn objects; util.types.isModuleNamespaceObject
  * tests the registry (V8's private-slot brand). The registry borrows the

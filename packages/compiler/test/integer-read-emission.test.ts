@@ -52,7 +52,7 @@ console.log(text.skip(), text.sum(3), text.sum(9));
     const body = (name: string): string =>
       ll.match(
         new RegExp(
-          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{([\\s\\S]*?)\\n\\}`,
         ),
       )![1]!;
     const skip = body("_x25_Text_skip");

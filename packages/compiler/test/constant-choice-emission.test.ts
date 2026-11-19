@@ -43,7 +43,9 @@ console.log(sequence.join(","), wide(true), wide(false));
     const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
     const body = (name: string): string =>
       ll.match(
-        new RegExp(`define internal [^\\n]+ @sc_[bf]+_${name}\\([^\\n]*\\) #0 \\{[\\s\\S]*?\\n\\}`),
+        new RegExp(
+          `define internal [^\\n]+ @sc_[bf]+_${name}\\([^\\n]*\\) align 64 #0 \\{[\\s\\S]*?\\n\\}`,
+        ),
       )![0];
 
     // The cases' span, 97 to 116, with the final else's 3 between the cases.

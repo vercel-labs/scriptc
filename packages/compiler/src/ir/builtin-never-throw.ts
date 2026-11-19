@@ -12,11 +12,31 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // perf_hooks histogram readings and state: the handle indexes the
+  // thread's table, every selector is arithmetic over it, and none runs
+  // program code. (Creating and recording validate their arguments, so
+  // those are MAY_THROW.)
+  "perf.histoStat",
+  "perf.histoStatBig",
+  "perf.histoPercentile",
+  "perf.histoPercentileBig",
+  "perf.histoCountAt",
+  "perf.histoCdf",
+  "perf.histoCcdf",
+  "perf.histoRecordDelta",
+  "perf.histoReset",
+  "perf.histoPercentilesCount",
+  "perf.histoPercentilesKey",
+  "perf.histoPercentilesValue",
+  "perf.histoDispose",
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",
   // scr_test_ctx_log writes the ℹ line at once; printing cannot raise.
   "test.ctxLog",
+  // scr_test_ctx_tags answers the cached frozen tag array; building it on the
+  // first read copies the tag strings and allocates, running no program code.
+  "test.ctxTags",
   // Console instance state that answers text: the timer labels are already
   // strings, the stores are the instance's own tables, and no program code
   // runs. (The counters and the table can throw, so they are not here.)
@@ -38,6 +58,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http.clientWritableNeedDrain",
   "http.resOnDrain",
   "http.clientOnDrain",
+  // scr_test_snapshot_set_resolve_path stores the resolver closure.
+  "test.snapshotSetResolvePath",
   "process.finalization",
   // scr_watcher_ref / scr_watcher_unref move one open watcher's loop-liveness
   // flag; a closed watcher ignores them, and nothing user-visible runs.
@@ -50,6 +72,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // ERR_FS_WATCH_QUEUE_OVERFLOW, and opening the path throws Node's fs
   // error.
   "watchEvents.wait",
+  // DisposableTempDir.path hands the created path's reference on; nothing
+  // runs.
+  "mkdtempResult.path",
   "watchEvents.close",
   // scr_stat_watcher_ref / scr_stat_watcher_unref move one registration's
   // liveness flag; a registration fs.unwatchFile already removed is a no-op.
@@ -82,6 +107,25 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // runs no program code).
   "perf.observerIs",
   "perf.entryIs",
+  // The AsyncHook flips and the execution-id reads touch the core's own
+  // thread-local state; no program code runs and nothing raises.
+  "ah.disable",
+  "ah.enable",
+  "ah.providers",
+  "ah.executionId",
+  "ah.triggerId",
+  // scr_als_with_scope reads the effective store, enters the new one and
+  // boxes the RunScope; no program code runs and nothing raises.
+  "als.withScope",
+  // The AsyncResource reads answer the registry's ids, and emitDestroy
+  // marks the entry; none runs program code or raises.
+  "ar.asyncId",
+  "ar.emitDestroy",
+  "ar.triggerAsyncId",
+  // The resource-timing field accessors read a view entry's own numbers and
+  // strings; no program code runs.
+  "perf.entryResourceNum",
+  "perf.entryResourceStr",
   // publish runs every subscriber and catches its throw: like Node's
   // process.nextTick(triggerUncaughtException), the exception is delivered
   // on a later tick instead of leaving the call, so publish itself raises
@@ -135,6 +179,12 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http.clientOnConnect",
   "http.clientOnInformation",
   "http2.sessionOnPing",
+  // A header-record listener registration: no listener runs inside the
+  // call, and a registered callback cannot raise.
+  "http2.streamOnTrailers",
+  "http2.streamOnHeaders",
+  "http2.streamOnWantTrailers",
+  "http2.streamOnContinue",
   // Reads of the session's, the stream's or the request's state bits.
   "http2.sessionConnecting",
   "http2.streamHeadersSent",
@@ -143,6 +193,17 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http2.getPackedSettings0",
   // Copies the values a name has in a string pairs array.
   "http2.pairsValues",
+  // Readable.toWeb builds the web stream over the readable's chunks; the
+  // read it starts runs later, on the promise's reaction.
+  "webstream.toWebReadable",
+  // Writable.toWeb builds the sink object and the web WritableStream over it;
+  // the sink's functions run later, on the web stream's calls.
+  "webstream.writableToWeb",
+  // Duplex.fromWeb's pair constructs the Duplexify and stores the flag.
+  "stream.duplexifyPairHalf",
+  // Duplex.toWeb builds both adapters over the duplex; their functions run
+  // later, on the web streams' calls.
+  "webstream.toWebDuplex",
   // stream.getDefaultHighWaterMark reads the runtime's default for the mode:
   // no allocation, no coercion and no program code.
   "stream.getDefaultHwm",
@@ -179,7 +240,13 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Reads the fork channel registry and answers undefined, null or the
   // retained Control object; a plain process has no channel.
   "process.channel",
+  // The stream object a descriptor the program already holds names: a cache
+  // lookup and a retain, with no allocation, coercion or program code. The
+  // cursor methods use it to reach the same object process.stdio answers.
+  "process.stdioOf",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
+  // readable.iterator builds the async iterator object; its members run later.
+  "readable.iterator",
   "readable.encodingName",
   // scr_fs_exists_bytes turns the path bytes into a string and probes it; a
   // path that is not there is the answer false, and the probe reports no
@@ -188,6 +255,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_insp_numeric_separator stores one flag and answers its previous
   // value.
   "insp.numericSeparator",
+  // scr_insp_prop_child stores one flag; scr_insp_property builds a string.
+  "insp.propChild",
+  "insp.property",
   // scr_worker_share_env answers the thread's SHARE_ENV symbol and makes it
   // on first use; it takes no argument, and running out of memory ends the
   // process.
@@ -290,6 +360,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // scr_tls_sock_disable_renegotiation does nothing: the provider keeps
   // renegotiation off, which is what the call asks for.
   "tls.sockDisableRenegotiation",
+  // scr_net_server_is_tls and scr_tls_server_is_dyn read a handle's tag
+  // for `instanceof tls.Server`; no program code runs.
+  "tls.serverIs",
+  "tls.serverIsDyn",
   // scr_dgram_async_dispose allocates the promise and registers the close
   // listener; the only failure is allocation, which aborts.
   "dgram.asyncDispose",

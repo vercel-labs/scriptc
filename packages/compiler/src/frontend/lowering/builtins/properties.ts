@@ -12,6 +12,7 @@ import {
   CHILD_T,
   DATE_T,
   DIR_T,
+  MKDTEMPRESULT_T,
   DYN,
   F64,
   FILEHANDLE_T,
@@ -200,6 +201,7 @@ export function lowerBuiltinExtraProperty(
     kind !== "bigintStats" &&
     kind !== "fileHandle" &&
     kind !== "dir" &&
+    kind !== "mkdtempResult" &&
     kind !== "spawnRes" &&
     kind !== "child" &&
     kind !== "childWriter"
@@ -236,6 +238,25 @@ export function lowerBuiltinExtraProperty(
       `FileHandle.${name}`,
       expr,
       "fd, close(), read(), write(), readFile(), writeFile(), appendFile(), and stat() are the supported FileHandle members",
+      lowerer.checker.getSymbolAtLocation(expr.name),
+    );
+  }
+  if (kind === "mkdtempResult") {
+    if (name === "path") {
+      const receiver = lowerer.lowerExprExpecting(expr.expression, MKDTEMPRESULT_T);
+      return { kind: "libCall", fn: "mkdtempResult.path", args: [receiver], type: STRING, loc };
+    }
+    if (name === "remove") {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "DisposableTempDir methods as values (call 'remove' directly)",
+      );
+    }
+    lowerer.noLowering(
+      `DisposableTempDir.${name}`,
+      expr,
+      "path and remove() are the supported members",
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }

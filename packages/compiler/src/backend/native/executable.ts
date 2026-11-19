@@ -84,6 +84,9 @@ import {
   currentVendorCacheBuildIdentity,
   vendorBuildCacheRoot,
   tlsArchivePath,
+  vendorMlkemDir,
+  mlkemArchivePath,
+  ensureMlkemArchive,
   brotliArchivePath,
   vendorSqliteDir,
   sqliteArchivePath,
@@ -135,6 +138,7 @@ interface RuntimeUnitContext {
   zlibObjects: readonly string[];
   zstdObjects: readonly string[];
   tlsArchive: string | null;
+  mlkemArchive: string | null;
   brotliArchive: string | null;
   sqliteArchive: string | null;
   icuArchive: string | null;
@@ -376,6 +380,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
+  // filehandle.readableWebStream's byte stream over the handle's reads,
+  // its own gate (it links the FileHandle and web stream units with it).
+  unit((u) => u.opts.fsWebStream === true, "scr_fs_web_stream.c"),
   // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
   // dns/promises' Resolver need (scr_dns_resolve.c's own class row).
   unit((u) => u.opts.webStreams === true || u.opts.dnsResolve === true, "scr_dyn_handle_class.c"),
@@ -432,12 +439,21 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_dyn_builtin_stream.c",
   ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
+  // stream.duplexPair builds its two Duplexes on the stream constructor and
+  // its implementer hooks (scr_stream_pair.c).
+  unit((u) => u.opts.stream, "scr_stream_pair.c"),
+  // readable.wrap reads a native source's chunks into the receiver.
+  unit((u) => u.opts.stream, "scr_stream_wrap.c"),
+  // Its checked-dynamic entry point unwraps a boxed readable (scr_stream_dyn.c).
+  unit((u) => u.opts.streamDyn === true, "scr_stream_wrap_dyn.c"),
   // The stream defaults (setDefaultHighWaterMark) are process state the net
   // and http units read for the streams they build.
   unit((u) => u.opts.stream || u.net || u.http, "scr_stream_defaults.c"),
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),
+  // readable.iterator builds the async iterator over the readable's chunks.
+  unit((u) => u.opts.stream && u.opts.dynAsync && u.opts.symbol === true, "scr_stream_iterator.c"),
   unit((u) => u.opts.stream && u.opts.dynAsync, "scr_stream_ops.c"),
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.
@@ -509,6 +525,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.x509 === true, "scr_x509.c"),
   // Argon2 (crypto.argon2 and crypto.argon2Sync) is self-contained.
   unit((u) => u.opts.argon2 === true, "scr_argon2.c"),
+  // ML-KEM (node:crypto's encapsulate/decapsulate and WebCrypto): the
+  // wrapper unit over the vendored mlkem-native archive.
+  unit((u) => u.opts.mlkem === true, "scr_mlkem.c"),
   // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
   unit((u) => u.tls && u.opts.x509 === true, "scr_tls_x509.c"),
   // The crypto global's object extends scr_async_dyn.c's.
@@ -565,10 +584,36 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.islandChild === true, "scr_node_island_child.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
+  // Readable.toWeb pulls a Node readable's chunks into a web stream.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web.c",
+  ),
+  // Duplex.fromWeb reads and writes the web pair directly.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_duplex_from_web.c",
+  ),
   // Writable.fromWeb wraps a web WritableStream's writer.
   unit(
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
     "scr_stream_from_web_writable.c",
+  ),
+  // Writable.toWeb wraps the writable in a web WritableStream.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_writable_to_web.c",
+  ),
+  // Duplex.toWeb builds both adapters over the duplex.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web_pair.c",
+  ),
+  // Its checked-dynamic entry point unwraps a boxed duplex (scr_stream_dyn.c)
+  // and builds the typed adapters, so it needs both units' features.
+  unit(
+    (u) => u.opts.streamDyn === true && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web_pair_dyn.c",
   ),
   // The dynamic global object's answer for the Node globals the native
   // runtime does not implement (host-globals.ts).
@@ -685,6 +730,7 @@ export async function compileCInternal(
   const ecdh = opts.ecdh ?? false;
   const dh = opts.dh ?? false;
   const argon2 = opts.argon2 ?? false;
+  const mlkem = opts.mlkem ?? false;
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
   const brotli = (opts.zlib ?? false) && opts.brotli === true;
@@ -931,6 +977,9 @@ export async function compileCInternal(
   let tlsArchive = mbedtls
     ? tlsArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
+  let mlkemArchive = mlkem
+    ? mlkemArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : null;
   let brotliArchive = brotli
     ? brotliArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
@@ -996,6 +1045,23 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "tls"));
       tlsArchive = paths[0]!;
+    }
+    if (mlkem) {
+      const cachedArchive = mlkemArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      );
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureMlkemArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "mlkem"));
+      mlkemArchive = paths[0]!;
     }
     if (brotli) {
       const cachedArchive = brotliArchivePath(
@@ -1125,6 +1191,7 @@ export async function compileCInternal(
     "-Wno-deprecated-declarations", // ucontext fibers (scr_async.c)
     "-I",
     rtDir,
+    ...(mlkem ? ["-I", vendorMlkemDir(), "-I", join(vendorMlkemDir(), "src")] : []),
     ...runtimeSources.map((f) => rt(join(rtDir, f))),
     ...runtimeUnitArgs({
       opts,
@@ -1146,11 +1213,14 @@ export async function compileCInternal(
       zlibObjects,
       zstdObjects,
       tlsArchive,
+      mlkemArchive,
       brotliArchive,
       sqliteArchive,
       icuArchive,
       icuIncludeDirs,
     }),
+    // The ML-KEM cores follow the wrapper that references them.
+    ...(mlkemArchive !== null ? [mlkemArchive] : []),
     // A .ll program TU (the LLVM backend) deliberately carries no target
     // triple (byte-stable output; clang supplies the host/SCRIPTC_TARGET
     // triple exactly as it does for .c) — silence the -Woverride-module
@@ -1198,6 +1268,7 @@ export async function compileCInternal(
     ...(regex ? ["-I", vendorEngineDir()] : []),
     ...(zlibObjects.length > 0 ? ["-I", vendorZlibDir()] : []),
     ...(tlsArchive !== null ? ["-I", join(vendorTlsDir(), "include")] : []),
+    ...(mlkem ? ["-I", vendorMlkemDir(), "-I", join(vendorMlkemDir(), "src")] : []),
     ...(sqliteArchive !== null ? ["-I", vendorSqliteDir()] : []),
     ...icuIncludeDirs.flatMap((dir) => ["-I", dir]),
   ];

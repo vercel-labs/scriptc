@@ -40,7 +40,7 @@ console.log(sum(xs), xorAll(xs), plainSum(floats), plainSum([1, 2]), first(xs));
 const body = (ll: string, name: string): string =>
   ll.match(
     new RegExp(
-      `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{ ;([\\s\\S]*?)\\n\\}`,
+      `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{ ;([\\s\\S]*?)\\n\\}`,
     ),
   )![1]!;
 

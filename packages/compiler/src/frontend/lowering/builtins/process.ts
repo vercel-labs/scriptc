@@ -1,8 +1,16 @@
 import { keyedHelperName } from "../stable-names.js";
 import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
-import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  boolLit,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import { withIgnoredArguments } from "./call-arguments.js";
+import { dynArgumentPack } from "../call-arguments.js";
 import { checkedTimerStyleCallback } from "../lower-timers.js";
 import { isTimerHandleTyped } from "./timers.js";
 import * as ts from "../../ts7/adapter.js";
@@ -48,6 +56,56 @@ import {
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
 import { isCheckerPanic } from "../../../diagnostics/diagnostic.js";
 import { refuseCallbackThis } from "../callback-arg.js";
+
+/** The process events whose listeners register as checked-dynamic callbacks
+ * and whose emit has no default handling of its own, so `process.emit` can
+ * dispatch them in the runtime (scr_process_emit_named). Keep this set and
+ * that function in step. */
+const DISPATCHED_PROCESS_EVENTS: ReadonlySet<string> = new Set([
+  "uncaughtException",
+  "uncaughtExceptionMonitor",
+]);
+
+/** The process events whose emit a checked-dynamic dispatch cannot reproduce
+ * yet: the typed listener closures (exit, beforeExit, signals, IPC), the
+ * warning family (Node's emit prints the default report as well), and the
+ * rejection families (their listeners take a promise). */
+const UNSUPPORTED_PROCESS_EVENTS: ReadonlySet<string> = new Set([
+  "warning",
+  "unhandledRejection",
+  "rejectionHandled",
+  "multipleResolves",
+  "exit",
+  "beforeExit",
+  "message",
+  "disconnect",
+]);
+
+/** A `process.emit('error', ...)` in value position: `stmts` build the
+ * argument vector, then `call` throws (it never returns), so the expression
+ * ends in an unreachable read behind a fence. */
+function emitThrows(lowerer: Lowerer, stmts: IrStmt[], call: IrExpr, loc: SrcLoc): IrExpr {
+  const slot = lowerer.declareHiddenLocal("%emitError", BOOL);
+  slot.mutable = true;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      ...stmts,
+      { kind: "exprStmt", expr: call, loc },
+      { kind: "varDecl", localId: slot.id, init: null, loc },
+      {
+        kind: "runtimeFence",
+        code: "SC9002",
+        message: "unreachable: process.emit('error') returned — please report this",
+        loc,
+      },
+    ],
+    result: varRef(slot.id, BOOL, loc),
+    diverges: true,
+    type: BOOL,
+    loc,
+  };
+}
 
 /** Whether the process has an IPC channel, Node's test for defining
  * process.send and process.disconnect: a channel this fork child opened
@@ -247,6 +305,222 @@ export const NODE_COMPAT_VERSION = "24.22.1";
  * the original stdout/stderr descriptor. Other declared stream members
  * retain member-qualified diagnostics.
  * Null for non-procStream receivers. */
+/** The tty.WriteStream cursor methods a process stream has only while its
+ * descriptor is a terminal, by the rl.seq kind that builds their escape
+ * sequence: cursorTo(x[, y]), moveCursor(dx, dy), clearLine(dir) and
+ * clearScreenDown(). */
+const CURSOR_STREAM_METHODS: ReadonlyMap<string, number> = new Map([
+  ["cursorTo", 0],
+  ["moveCursor", 1],
+  ["clearLine", 2],
+  ["clearScreenDown", 3],
+]);
+
+function isNullishNode(node: ts.Expression): boolean {
+  const value = withoutParenthesesTypeWrappers(node);
+  return (
+    value.kind === ts.SyntaxKind.NullKeyword ||
+    (ts.isIdentifier(value) && value.text === "undefined")
+  );
+}
+
+/** `out.cursorTo(x[, y][, callback])`, `out.moveCursor(dx, dy[, callback])`,
+ * `out.clearLine(dir[, callback])` and `out.clearScreenDown([callback])`:
+ * the escape sequence rl.seq builds, written through the stream. A stream
+ * whose descriptor is no terminal has none of these methods in Node, so the
+ * call throws Node's TypeError there instead of writing. */
+function lowerProcStreamCursorCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  kind: number,
+  loc: SrcLoc,
+): IrExpr {
+  const name = access.name.text;
+  const args = [...call.arguments.nodes];
+  const optional = call.questionDotToken !== undefined;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`WritableStream.${name} with a spread argument`, call);
+  }
+  const isFuncNode = (node: ts.Expression): boolean =>
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
+  const numberCount = kind === 0 || kind === 1 ? 2 : kind === 2 ? 1 : 0;
+  const minimum = kind === 1 ? 2 : kind === 2 ? 1 : 0;
+  let numberNodes: ts.Expression[];
+  let callbackNode: ts.Expression | undefined;
+  if (kind === 0 && args.length === 2 && isFuncNode(args[1]!)) {
+    // cursorTo(x, callback): the second slot is the completion callback.
+    numberNodes = [args[0]!];
+    callbackNode = args[1];
+  } else if (kind === 0 && args.length === 3 && args[2] !== undefined && isFuncNode(args[2])) {
+    // cursorTo(x, y, callback), and cursorTo(x, undefined, callback).
+    numberNodes = isNullishNode(args[1]!) ? [args[0]!] : [args[0]!, args[1]!];
+    callbackNode = args[2];
+  } else {
+    numberNodes = args.slice(0, numberCount);
+    callbackNode = args[numberCount];
+  }
+  const numeric = numberNodes.filter((node) => !isNullishNode(node));
+  if (args.length > numberCount + 1 || numeric.length < minimum) {
+    lowerer.noLowering(`WritableStream.${name} with ${args.length} arguments`, call);
+  }
+  const prelude: IrStmt[] = [];
+  const stream = (() => {
+    const slot = lowerer.declareHiddenLocal("%cursorStream", lowerer.irTypeOf(access.expression));
+    const value = lowerer.lowerExpr(access.expression);
+    prelude.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    return { kind: "varRef" as const, localId: slot.id, type: value.type, loc };
+  })();
+  const isTTY = processStreamValueMember(lowerer, "isTTY", stream, loc);
+  const terminal = isTTY === null ? null : lowerer.ensureBool(isTTY, access.expression);
+  // Everything below runs only when the stream really is a terminal: Node
+  // skips an optional call (and its arguments) on a pipe, and a plain one
+  // throws.
+  /* A plain call evaluates its arguments before the call is attempted;
+   * only an optional call skips them when the method is absent. */
+  const callStmts: IrStmt[] = [];
+  const argStmts = optional ? callStmts : prelude;
+  const hold = (label: string, value: IrExpr): IrExpr => {
+    const slot = lowerer.declareHiddenLocal(label, value.type);
+    argStmts.push({ kind: "varDecl", localId: slot.id, init: value, loc });
+    return { kind: "varRef", localId: slot.id, type: value.type, loc };
+  };
+  let noX = false;
+  const values: IrExpr[] = [];
+  let hasB = false;
+  for (let i = 0; i < numberNodes.length; i++) {
+    const node = numberNodes[i]!;
+    if (kind === 0 && isNullishNode(node)) {
+      if (i === 0) {
+        noX = true;
+        values.push(numLit(0, loc));
+      }
+      continue;
+    }
+    if (!(lowerer.typeOf(node).flags & ts.TypeFlags.NumberLike)) {
+      lowerer.noLowering(`WritableStream.${name} with an argument that is not a number`, node);
+    }
+    values.push(hold("%cursorArg", lowerer.lowerExprExpecting(node, F64)));
+    if (i === 1) hasB = true;
+  }
+  let callback: IrExpr | null = null;
+  if (callbackNode !== undefined && !isNullishNode(callbackNode)) {
+    const c = lowerer.lowerExpr(callbackNode);
+    if (c.type.kind !== "func" || c.type.params.length > 0 || c.type.ret.kind !== "void") {
+      lowerer.noLowering(
+        `WritableStream.${name} callbacks with parameters or a return value`,
+        callbackNode,
+        "() => void callbacks are supported",
+      );
+    }
+    callback = hold("%cursorCallback", voidizedCallback(lowerer, c, loc));
+  }
+  const seqKind = noX && hasB && kind === 0 ? 4 : kind;
+  /* The escape sequence is built only where the method exists: rl.seq
+   * applies Node's NaN checks and throws ERR_INVALID_ARG_VALUE, and a
+   * stream without the method never reaches them — its call answers the
+   * TypeError first, after the arguments above have been evaluated. */
+  const seqSlot = lowerer.declareHiddenLocal("%cursorSeq", STRING);
+  callStmts.push({
+    kind: "varDecl",
+    localId: seqSlot.id,
+    init: {
+      kind: "libCall",
+      fn: "rl.seq",
+      args: [
+        numLit(seqKind, loc),
+        values[0] ?? numLit(0, loc),
+        values[1] ?? numLit(0, loc),
+        boolLit(hasB, loc),
+      ],
+      type: STRING,
+      loc,
+    },
+    loc,
+  });
+  const seq: IrExpr = { kind: "varRef", localId: seqSlot.id, type: STRING, loc };
+  /* Node's tty methods write through the stream (`stream.write(data,
+   * callback)`, readline's cursorTo/moveCursor/...), so a replaced write
+   * decides when — or whether — the completion callback runs. With a
+   * callback the write goes through the stream object's own write method;
+   * without one the direct descriptor write keeps its path. */
+  const write: IrExpr = callback
+    ? lowerer.coerceInto(
+        call,
+        {
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(
+            { kind: "libCall", fn: "process.stdioOf", args: [stream], type: DYN, loc },
+            DYN,
+          ),
+          method: "write",
+          calleeName: name,
+          args: [lowerer.coerceToExpected(seq, DYN), lowerer.coerceToExpected(callback, DYN)],
+          type: DYN,
+          loc,
+        },
+        BOOL,
+      )
+    : { kind: "libCall", fn: "procStream.write", args: [stream, seq], type: BOOL, loc };
+  /* The branch that writes nothing (a zero-delta moveCursor, a cursorTo
+   * without a column) still runs Node's next-tick callback. */
+  const skip: IrExpr = callback
+    ? {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "process.nextTick", args: [callback], type: VOID, loc },
+            loc,
+          },
+        ],
+        result: boolLit(true, loc),
+        type: BOOL,
+        loc,
+      }
+    : boolLit(true, loc);
+  let callBody: IrExpr;
+  if (noX && !hasB) {
+    callBody = skip;
+  } else if (kind === 1) {
+    callBody = {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "rl.moves", args: [values[0]!, values[1]!], type: BOOL, loc },
+      then: write,
+      else_: skip,
+      type: BOOL,
+      loc,
+    };
+  } else {
+    callBody = write;
+  }
+  const body: IrExpr = { kind: "seqExpr", stmts: callStmts, result: callBody, type: BOOL, loc };
+  if (terminal === null) {
+    return { kind: "seqExpr", stmts: prelude, result: body, type: BOOL, loc };
+  }
+  const absent: IrExpr = optional
+    ? lowerer.coerceToExpected(
+        { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        lowerer.withUndefinedArmOf(BOOL) ?? BOOL,
+      )
+    : nodeThrowExpr(1, "", `${ts.getTextOfNode(call.expression)} is not a function`, BOOL, loc);
+  const resultType = optional ? (lowerer.withUndefinedArmOf(BOOL) ?? BOOL) : BOOL;
+  return {
+    kind: "seqExpr",
+    stmts: prelude,
+    result: {
+      kind: "ternary",
+      cond: terminal,
+      then: lowerer.coerceToExpected(body, resultType),
+      else_: absent,
+      type: resultType,
+      loc,
+    },
+    type: resultType,
+    loc,
+  };
+}
+
 export function lowerProcStreamMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -278,6 +552,10 @@ export function lowerProcStreamMethodCall(
         loc,
       };
     }
+  }
+  const cursorKind = CURSOR_STREAM_METHODS.get(name);
+  if (cursorKind !== undefined) {
+    return lowerProcStreamCursorCall(lowerer, call, access, cursorKind, loc);
   }
   const terminalArity = TERMINAL_STREAM_METHODS.get(name);
   if (
@@ -379,8 +657,6 @@ const TERMINAL_STREAM_METHODS: ReadonlyMap<string, number> = new Map([
 /** The kinds of environment argument the runtime's color rules refuse: Node
  * reads variables from any object, and only a plain object has a compiled
  * reading. */
-const REFUSED_COLOR_ENVIRONMENTS: ReadonlySet<string> = new Set(["array", "map", "set", "func"]);
-
 /** The `TERM` values that name a member of Object.prototype in Node's table
  * of terminals (the table is a plain object and the lookup lowercases the
  * value): Node answers that member, which is no color depth. */
@@ -400,17 +676,6 @@ function noteTerminalColorRefusal(lowerer: Lowerer, call: ts.CallExpression, nam
   let env = name === "hasColors" && args.length === 2 ? args[1] : args[0];
   if (env === undefined) return;
   while (ts.isParenthesizedExpression(env)) env = env.expression;
-  const hint =
-    'pass a plain object of variables (`{ TERM: "xterm" }`, `process.env`), or no environment at all';
-  const type = lowerer.mapTypeOf(lowerer.typeOf(env));
-  if (type && REFUSED_COLOR_ENVIRONMENTS.has(type.kind)) {
-    lowerer.noteDeferredRefusal(
-      call,
-      `SC2020: Native process stream ${name} with an environment that is not a plain object has no lowering`,
-      hint,
-    );
-    return;
-  }
   if (!ts.isObjectLiteralExpression(env) || env.properties.nodes.length !== 1) return;
   const only = env.properties.nodes[0]!;
   if (!ts.isPropertyAssignment(only) || !ts.isStringLiteralLike(only.initializer)) return;
@@ -2555,6 +2820,81 @@ export function lowerProcessMethodCall(
       argsArr = lowerTracingArguments(lowerer, call.arguments.nodes, loc);
     }
     return { kind: "libCall", fn: "process.emitWarning", args: [argsArr], type: VOID, loc };
+  }
+  // process.emit(event, ...args): Node's EventEmitter emit on process. The
+  // runtime dispatches the exception families (whose listeners it registers
+  // as checked-dynamic callbacks) and answers whether any listener existed.
+  // 'error' throws instead: no 'error' listener can be registered here,
+  // so Node's unhandled-error contract applies (an Error payload throws
+  // itself, anything else ERR_UNHANDLED_ERROR). A custom event never has a
+  // listener either (`process.on` refuses every name outside the modelled
+  // families), so that emit is a plain false with its argument expressions
+  // still evaluated. Every other modelled family is refused by name: the
+  // typed listener closures (exit, beforeExit, signals, IPC), the warning
+  // family (Node's emit prints the default report as well), and the
+  // rejection families (their listeners take a promise).
+  if (member === "emit") {
+    // Island code's listeners live in Node's own `process`; the native
+    // registries are not the ones an emit would have to reach.
+    if (lowerer.nodeIslands !== null) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "process.emit in a program with Node islands (the listeners belong to Node's process)",
+      );
+    }
+    const eventArg = call.arguments.nodes[0];
+    // Node answers false for a missing event (`process.emit()`).
+    if (eventArg === undefined) return boolLit(false, loc);
+    const rest = call.arguments.nodes.slice(1);
+    if (!ts.isStringLiteralLike(eventArg)) {
+      lowerer.unsupported(
+        "SC1090",
+        eventArg,
+        "process.emit with a computed event name (write the event name as a string literal, so the lowering can dispatch it)",
+      );
+    }
+    const name = eventArg.text;
+    if (name === "error") {
+      // Node's EventEmitter throws when 'error' is emitted and no 'error'
+      // listener is registered, and `process.on("error", ...)` has no
+      // lowering here, so no listener can exist. The argument vector is
+      // built (its expressions still evaluate), then the runtime throws: an
+      // Error payload throws itself, anything else Node's
+      // ERR_UNHANDLED_ERROR.
+      const { stmts, pack } = dynArgumentPack(lowerer, rest, loc, { blame: call });
+      return emitThrows(
+        lowerer,
+        stmts,
+        { kind: "libCall", fn: "process.emitError", args: [pack()], type: VOID, loc },
+        loc,
+      );
+    }
+    if (DISPATCHED_PROCESS_EVENTS.has(name)) {
+      const eventValue = lowerer.coerceToExpected(lowerer.lowerExpr(eventArg), DYN);
+      // The argument vector is built into a fresh array in source order
+      // (dynArgumentPack): a spread contributes the values its iteration
+      // yields, and the listeners never see the caller's own array.
+      const { stmts, pack } = dynArgumentPack(lowerer, rest, loc, { blame: call });
+      const dispatch: IrExpr = {
+        kind: "libCall",
+        fn: "process.emit",
+        args: [eventValue, pack()],
+        type: BOOL,
+        loc,
+      };
+      return stmts.length === 0
+        ? dispatch
+        : { kind: "seqExpr", stmts, result: dispatch, type: BOOL, loc };
+    }
+    if (UNSUPPORTED_PROCESS_EVENTS.has(name) || name.startsWith("SIG")) {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        `process.emit('${name}') (not supported yet: this event's listeners or its default handling have no checked-dynamic dispatch)`,
+      );
+    }
+    return withIgnoredArguments(lowerer, [], rest, () => boolLit(false, loc));
   }
   if (member === "cwd") {
     // cwd ignores arguments, but a JS caller's extras still evaluate.

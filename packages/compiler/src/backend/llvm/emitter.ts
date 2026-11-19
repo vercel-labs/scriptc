@@ -266,6 +266,7 @@ import {
   type LendingFacts,
   type StringSliceSnapshot,
 } from "./string-slices.js";
+import type { StringCursor, StringCursorLoop } from "./string-cursor-loops.js";
 import { LazyCaptures } from "./lazy-captures.js";
 import { type EnvironmentLayout, ValueCaptures } from "./value-captures.js";
 import { StackCaptures } from "./stack-captures.js";
@@ -440,6 +441,7 @@ import {
   recordViewTest,
 } from "./record-views.js";
 import { LlvmUnsupportedError, anchorRefusal } from "./unsupported.js";
+import { singleOwnerErrors } from "./single-owner.js";
 import { LlWalkers } from "./walkers.js";
 import {
   isObjectArm,
@@ -1045,6 +1047,32 @@ function verifyInt32Selection(
  * shows: a body that tests the flag without raising, or a raising
  * function's address in text the emitter generates. Each emission that
  * ends this way marks `llvm-emit-unwind-retry`. */
+/** The alignment of every emitted function's entry. Each definition pads to
+ * it, so a change in one function's size cannot move another function's code
+ * relative to a cache-line boundary: the hot loops inside that function keep
+ * the alignment, and the timing, they had before the change. */
+const FUNCTION_ENTRY_ALIGNMENT = 64;
+
+/** Adds the entry alignment to every function definition in `parts`, after
+ * its parameter list (where LLVM's grammar puts it, ahead of the attribute
+ * group and the personality). */
+function alignFunctionEntries(parts: string[]): string[] {
+  const align = (line: string): string => {
+    const open = line.indexOf("(", line.indexOf("@"));
+    if (open < 0) return line;
+    let depth = 0;
+    for (let i = open; i < line.length; i++) {
+      if (line[i] === "(") depth++;
+      else if (line[i] === ")" && --depth === 0)
+        return `${line.slice(0, i + 1)} align ${FUNCTION_ENTRY_ALIGNMENT}${line.slice(i + 1)}`;
+    }
+    return line;
+  };
+  return parts.map((part) =>
+    part.includes("define ") ? part.replace(/^define .*$/gm, (line) => align(line)) : part,
+  );
+}
+
 function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
   const prepared = prepareModule(input, options);
   const given = options.unwindExcluded ?? new Set<string>();
@@ -1327,6 +1355,14 @@ export class LlEmitter {
   localArrayReads = new Map<string, LocalArrayRead>();
   loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
+  /** The loops whose string local is read and stepped at an offset
+   * (string-cursor-loops.ts), keyed by loop statement. */
+  stringCursorLoops = new Map<IrStmt, StringCursorLoop>();
+  /** The cursor state of each such local, while its loop is emitted. */
+  readonly stringCursors = new Map<string, StringCursor>();
+  /** The cursor loops being emitted: their own emission is the ordinary
+   * one, so it must not version them a second time. */
+  readonly stringCursorEmitting = new Set<IrStmt>();
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
   /** Slices written into stack buffers (findScratchStringSlices). */
   scratchStringSlices: ReadonlySet<IrExpr> = new Set();
@@ -2550,13 +2586,11 @@ export class LlEmitter {
     // A release build whose program observes stacks records the position of
     // each call and throw site in the frame, instead of the per-statement
     // text a dev build stores. A sanitized build keeps the release frames:
-    // ASan instruments every store, and dev builds already skip positions
-    // there for the same reason.
-    this.stackPositions =
-      !this.positionedFrames &&
-      this.stackTraces &&
-      options.sanitizeAttributes === false &&
-      options.positionSources !== undefined;
+    // Every build that observes stacks records its call and throw sites:
+    // a dev build keeps its per-statement text for uncaught reports as
+    // well, and a sanitized build accepts the instrumented stores so that
+    // calls such as util.getCallSites answer real positions there too.
+    this.stackPositions = this.stackTraces && options.positionSources !== undefined;
     const positionSources = options.positionSources;
     this.positionSourcesValue = positionSources;
     this.positionOf =
@@ -3286,6 +3320,15 @@ export class LlEmitter {
       });
       for (const name of plan.classes) this.classMeta.get(name)!.tree = true;
       this.treeMoves = plan.classes.size > 0 ? new Set(plan.moves) : null;
+      this.treeBorrows = plan.classes.size > 0 ? new Map(plan.borrows) : null;
+      // A class the program marked `implements SingleOwner` asked for this
+      // layout, so a rejection is an error here rather than the silent
+      // counted fallback an unmarked class gets (SC7010).
+      const marked = (mod.contracts?.singleOwner ?? []).filter((name) => plan.rejected.has(name));
+      if (marked.length > 0) {
+        const broken = singleOwnerErrors(mod, marked, plan.rejected);
+        if (broken[0] !== undefined) throw broken[0];
+      }
     }
     // Group arenas: off with lifetime regions, which own their classes'
     // allocation, and in libraries, whose exports any host code calls.
@@ -3455,7 +3498,8 @@ export class LlEmitter {
             this.cpuCopies,
             this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
           );
-    return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    const all = this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    return alignFunctionEntries(all);
   }
 
   /** The entry point and JavaScript name of each named function the
@@ -4918,6 +4962,13 @@ export class LlEmitter {
     return (
       arm !== null && arm.kind === "object" && this.classMeta.get(arm.className)?.tree === true
     );
+  }
+
+  /** Whether a tree local holds a borrow rather than an owner
+   * (backend/tree-classes.ts): reads of it copy no count, and its scope
+   * releases nothing — a release would destroy the owner's subtree. */
+  isTreeBorrow(localId: string): boolean {
+    return this.treeBorrows?.get(this.currentFunctionName)?.has(localId) === true;
   }
 
   /** The retained (+1) read of a refcounted value — type-directed through
@@ -9684,6 +9735,10 @@ export class LlEmitter {
    * the source slot is nulled and the value taken without a retain, since
    * a tree instance has no count to raise. */
   private treeMoves: Set<IrExpr> | null = null;
+  /** The tree locals that hold a borrow (backend/tree-classes.ts): their
+   * reads copy no count, and their scopes release nothing. Local ids are
+   * unique within a function, so the set is kept per function name. */
+  private treeBorrows: Map<string, ReadonlySet<string>> | null = null;
   private arenaSlots = new Map<Node, string>();
   /** The frames emitStmtBody opens for whole statements (arenas only). */
   readonly statementFrames = new Set<LlValue[]>();

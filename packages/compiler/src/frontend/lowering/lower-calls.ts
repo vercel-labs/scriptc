@@ -307,12 +307,12 @@ import {
   findGenericMethodOn,
   findImplementationOn,
   lowerClassGenericMethodCall,
+  lowerRegExpConstruction,
   lowerStaticMethodCall,
   lowerStaticSuperCall,
   lowerStaticFieldRead,
   returnsOnlyThis,
   storedClassValueType,
-  lowerRegExpConstruction,
   type ClassInfo,
 } from "./lower-classes.js";
 import { checkRefusedMemberUse } from "./class-member-refusals.js";
@@ -2249,6 +2249,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // AsyncLocalStorage receivers — run/getStore/exit/enterWith over
       // the f64 store handle.
       lowerer.lowerAsyncLocalStorageMethodCall(expr, expr.expression) ??
+      // AsyncHook receivers — enable/disable over the f64 hook handle.
+      lowerer.lowerAsyncHooksMethodCall(expr, expr.expression) ??
       // AsyncResource receivers — runInAsyncScope/bind/emitDestroy over
       // the f64 resource handle.
       lowerer.lowerAsyncResourceMethodCall(expr, expr.expression) ??
@@ -10495,10 +10497,17 @@ function lowerObjectStaticCall(
       // is checked-dynamic: that is the `C & { extra }` intersection
       // (mapClassExpandoIntersection), whose value IS the instance, so
       // the same dyn copy writes the expando members onto its view and
-      // answers the instance — identity and prototype intact.
+      // answers the instance — identity and prototype intact. A RECORD
+      // target joins on the same rule: `T & any` is the checker's
+      // checked-dynamic result (`Object.assign(opt, options)` with an
+      // untyped `options`), and the record's dyn conversion is a live
+      // capsule whose field writes reach the record — a key the shape
+      // does not name stays on the view, as the copy keeps it in Node.
       if (
         tProbe?.type.kind === "dyn" ||
-        (tProbe?.type.kind === "object" && lowerer.mapTypeOf(lowerer.typeOf(call))?.kind === "dyn")
+        ((tProbe?.type.kind === "object" || tProbe?.type.kind === "record") &&
+          lowerer.mapTypeOf(lowerer.typeOf(call))?.kind === "dyn") ||
+        (tProbe?.type.kind === "record" && sProbe?.type.kind === "dyn")
       ) {
         const loc = locOf(call);
         const target = lowerer.lowerExpr(call.arguments.nodes[0]!);
@@ -11543,6 +11552,30 @@ function lowerObjectStaticCall(
       lowerer.badType(argNode, argType);
   }
   if (argIr?.kind !== "record") return null; // Maps, classes, arrays → the SC2020 fence
+  // A cast can hide the value's real representation
+  // (`meta.files as unknown as Record<string, string>` when files is a
+  // Map). Node enumerates the value the cast did not change, and a Map or
+  // Set has no own enumerable properties, so the walk answers an empty
+  // array of the checker's result type. Any other mis-cast value keeps the
+  // caller's fence rather than reaching the record helper, whose argument
+  // would violate the helper's record slot.
+  if (represented !== null && represented.type.kind !== "record") {
+    const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (
+      (represented.type.kind === "map" || represented.type.kind === "set") &&
+      resultT?.kind === "array"
+    ) {
+      const receiver = lowerer.lowerExpr(argNode);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(call) }],
+        result: { kind: "arrayLit", elems: [], type: resultT, loc: locOf(call) },
+        type: resultT,
+        loc: locOf(call),
+      };
+    }
+    return null;
+  }
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence
   // Accessor-carrying shapes: Node's answer includes the accessor NAMES
@@ -14001,23 +14034,27 @@ function lowerObjectMethodCallOn(
   // The slot function stays reachable; it lifts the body.
   const adapted = target.declarer.returnAdapters?.get(method);
   // A TypeScript override's own entry answers its declared result. A
-  // JavaScript body's result is inferred, so its callers keep the slot.
+  // JavaScript body's result is inferred, so its callers keep the slot,
+  // EXCEPT when the override declares parameters past the inherited
+  // arity: the slot cannot carry them, and a call on the declaring class
+  // reaches that body in Node. Such a call converts the inferred result
+  // into the inherited type at the call site, which is the conversion the
+  // slot would have performed.
   const declarerDecl = target.declarer.decl;
-  if (
-    adapted &&
-    !(declarerDecl && isJsSourceFile(ts.getSourceFileOfNode(declarerDecl))) &&
-    !lowerer.overrideBelow(info, method)
-  ) {
+  const jsDeclarer = declarerDecl !== null && isJsSourceFile(ts.getSourceFileOfNode(declarerDecl));
+  const pastArity = adapted !== undefined && adapted.params.length > target.sig.params.length;
+  if (adapted && (!jsDeclarer || pastArity) && !lowerer.overrideBelow(info, method)) {
     lowerer.noteEdge(`%${target.declarer.def.name}.${method}`);
     const receiver = lowerReceiver();
     const args = lowerer.completeArgs(call.arguments.nodes, adapted.params, locOf(call), call);
-    return {
+    const own: IrExpr = {
       kind: "call",
       callee: `%${target.declarer.def.name}.${method}$own`,
       args: [lowerer.upcastTo(receiver, target.declarer.def.name), ...args],
       type: adapted.ret,
       loc: locOf(call),
     };
+    return jsDeclarer ? lowerer.coerceInto(call, own, target.sig.ret) : own;
   }
   if (lowerer.overrideBelow(info, method)) lowerer.noteVirtualEdge(info, method);
   else lowerer.noteEdge(`%${target.declarer.def.name}.${method}`);

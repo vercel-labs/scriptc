@@ -4447,8 +4447,9 @@ export function collectClassShapeInner(
               overrideReturnAbi(lowerer, ft.ret, overridden.sig.ret, className, base),
             ))
         ) {
+          const jsMember = isJsSourceFile(ts.getSourceFileOfNode(member));
           const fencedJsOverride =
-            isJsSourceFile(ts.getSourceFileOfNode(member)) &&
+            jsMember &&
             overridden.declarer.decl !== null &&
             isJsSourceFile(ts.getSourceFileOfNode(overridden.declarer.decl)) &&
             overridden.sig.gen === undefined;
@@ -4483,7 +4484,13 @@ export function collectClassShapeInner(
             // `arguments` would miss them, so it keeps the fence.
             (shapes.length >= overridden.sig.params.length || confinesMemberRefusals) &&
             (shapes.length === overridden.sig.params.length || !bodyReadsArguments(member)) &&
-            shapes.slice(overridden.sig.params.length).every((p) => p.mode === "omittable") &&
+            // A JavaScript method needs no `?` on a parameter the inherited
+            // ABI does not carry: a caller that stops at the inherited
+            // arity passes nothing and JavaScript binds undefined, which is
+            // what the slot supplies (`toString(compact)` over Error's).
+            shapes
+              .slice(overridden.sig.params.length)
+              .every((p) => p.mode === "omittable" || jsMember) &&
             overridden.sig.params.every(
               (p, i) =>
                 (p.mode === "required" || p.mode === "omittable") &&
@@ -13878,6 +13885,35 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         if (ctx && ctxMap !== null) {
           tsType = ctx;
           mapped = ctxMap;
+        }
+      }
+      // A JavaScript source's pair-literal seed whose entries do not all
+      // match the slot tsc inferred: `new Map([["a", xs], ["b", ys]])`
+      // takes V from the FIRST entry, and with checkJs off the later
+      // entries are type errors the checker reports nowhere. Node stores
+      // each entry's own value, so the map's slot really holds whatever
+      // the entries hold: type that slot checked-dynamic (`unknown`)
+      // instead of refusing the first entry whose conversion has no
+      // layout mapping. A typed seed (type arguments, a contextual map
+      // layout) keeps its declared layout.
+      if (
+        entriesLit !== null &&
+        mapped?.kind === "map" &&
+        (expr.typeArguments?.nodes.length ?? 0) === 0 &&
+        isJsSourceFile(ts.getSourceFileOfNode(expr))
+      ) {
+        const contextual = lowerer.checker.getContextualType(expr);
+        if (contextual === undefined || contextualMapLayout(lowerer, contextual) === null) {
+          const slotTypeOf = (node: ts.Expression): IrType | null =>
+            lowerer.mapTypeOf(lowerer.typeOf(node));
+          const disagrees = (index: 0 | 1, slot: IrType): boolean =>
+            entriesLit.some((pair) => {
+              const type = slotTypeOf(pair.elements.nodes[index]!);
+              return type === null || !typeEquals(type, slot);
+            });
+          const key = disagrees(0, mapped.key) ? DYN : mapped.key;
+          const value = disagrees(1, mapped.value) ? DYN : mapped.value;
+          if (key.kind === "dyn" || value.kind === "dyn") mapped = { kind: "map", key, value };
         }
       }
       // `new Map(source)` the checker types `Map<any, any>` because the

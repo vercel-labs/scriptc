@@ -19,6 +19,10 @@ struct SfwwCtx {
   /* The writer has closed (its closed promise settled): destroy completes
    * without closing or aborting it again, Node's `closed` flag. */
   bool closed;
+  /* A web pair's writable half (Duplex.fromWeb): destroying it aborts the
+   * writer even without an error, Node's web-pair adapter, so the sink's
+   * abort hook runs rather than its close hook. */
+  bool pair_member;
   /* The error the destroy settles with: Node reports the ORIGINAL error
    * even when abort() rejects with its own. +1 while the destroy runs. */
   ScrError *destroy_error;
@@ -256,9 +260,12 @@ static void sfww_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
     sfww_destroy_finish(c);
     return;
   }
-  ScrDyn *reason = err ? scr_dyn_from_error(err) : scr_dyn_retain(scr_dyn_undefined());
+  bool abort_writer = err != NULL || c->pair_member;
+  ScrDyn *reason = err              ? scr_dyn_from_error(err)
+                   : c->pair_member ? scr_dyn_new_null()
+                                    : scr_dyn_retain(scr_dyn_undefined());
   ScrDyn *args[1] = {reason};
-  ScrDyn *result = err
+  ScrDyn *result = abort_writer
       ? scr_dyn_invoke(c->writer, "abort", args, 1, "writer.abort")
       : scr_dyn_invoke(c->writer, "close", NULL, 0, "writer.close");
   scr_dyn_release(reason);
@@ -287,6 +294,7 @@ ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) {
   if (!c) abort();
   c->rc = 1;
   c->writer = writer;
+  c->pair_member = ((int)flags & 1) != 0;
   ScrStream *w = scr_stream_new_writable(-1, true, true, sfww_closure((void *)&sfww_write_inv, c),
                                          &sfww_write_inv,
                                          sfww_closure((void *)&sfww_final_inv, c), &sfww_final_inv,

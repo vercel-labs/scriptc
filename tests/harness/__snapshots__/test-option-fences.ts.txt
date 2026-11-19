@@ -1,26 +1,26 @@
-test-option-fences.ts:13:45 - error SC2020: 'test(...) with a non-literal concurrency value' is part of the standard library types but has no scriptc lowering yet
+test-option-fences.ts:12:45 - error SC2020: 'test(...) with a non-literal concurrency value' is part of the standard library types but has no scriptc lowering yet
 
-  12 | const parallel = process.argv.length > 2;
-  13 | test("computed concurrency", { concurrency: parallel }, () => {});
+  11 | const parallel = process.argv.length > 2;
+  12 | test("computed concurrency", { concurrency: parallel }, () => {});
      |                                             ^~~~~~~~
-  14 | 
+  13 | 
 
   hint: concurrency takes the literal true/false or a number here
 
-test-option-fences.ts:15:26 - error SC2020: 'describe(...) option 'plan'' is part of the standard library types but has no scriptc lowering yet
+test-option-fences.ts:14:26 - error SC2020: 'describe(...) option 'plan'' is part of the standard library types but has no scriptc lowering yet
 
-  14 | 
-  15 | describe("suite plan", { plan: 1 }, () => {});
+  13 | 
+  14 | describe("suite plan", { plan: 1 }, () => {});
      |                          ^~~~~~~
-  16 | 
+  15 | 
 
-  hint: skip, todo, only, concurrency, timeout and signal are the supported suite options
+  hint: skip, todo, only, concurrency, timeout, signal and tags are the supported suite options
 
-test-option-fences.ts:18:31 - error SC2020: 'test(...) with a non-literal plan value' is part of the standard library types but has no scriptc lowering yet
+test-option-fences.ts:17:31 - error SC2020: 'test(...) with this plan value' is part of the standard library types but has no scriptc lowering yet
 
-  17 | const count = 2;
-  18 | test("computed plan", { plan: count }, () => {});
+  16 | const count = 2;
+  17 | test("computed plan", { plan: count }, () => {});
      |                               ^~~~~
-  19 | 
+  18 | 
 
-  hint: plan takes a non-negative integer literal here
+  hint: plan takes a literal integer in 0..4294967295 here (Node validates the same range at registration)

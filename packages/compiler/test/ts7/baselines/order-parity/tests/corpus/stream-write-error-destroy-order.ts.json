@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-write-error-destroy-order.ts"
+ ],
+ "diags": []
+}

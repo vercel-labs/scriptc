@@ -38,7 +38,7 @@ import {
 import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
-import { isPathSpecifier, resolveNodeRuntimeModule } from "../resolve.js";
+import { isPathSpecifier, isSourcePackagePath, resolveNodeRuntimeModule } from "../resolve.js";
 import {
   assignmentChainValueOf,
   canonicalBuiltinModule,
@@ -817,10 +817,14 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // shape: `import "../node_modules/vercel/dist/index.js"`) is
       // package code too. Attribute it to the package so unselected source
       // receives a diagnostic instead of dropping the import.
-      const relPkg =
+      // A source package's files are program modules (isSourcePackagePath),
+      // so a relative import into one is a program edge.
+      const relTarget =
         npm === null && isRelativeSpecifier(spec)
-          ? packageNameOfPath(resolvePath(dirnamePath(fp.sf.fileName), spec))
+          ? resolvePath(dirnamePath(fp.sf.fileName), spec)
           : null;
+      const relPkg =
+        relTarget !== null && !isSourcePackagePath(relTarget) ? packageNameOfPath(relTarget) : null;
       const relIsJs = relPkg !== null && !/\.(ts|tsx|mts|cts)$/.test(spec);
       // A relative import INTO an opted-in --npm-static package is the
       // program-module path too (preflight resolved the file edge).
@@ -4562,6 +4566,20 @@ export function lowerFileInit(
         kind: "assign",
         localId: exportsThis.id,
         value: { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
+        loc: loc0,
+      });
+    }
+    // A module whose `module.exports` object some code takes as a value
+    // starts it as Node does: the original exports object (top-level `this`
+    // when the module has one), empty until the module's writes fill it.
+    const exportsObject = lowerer.cjsExportsObjects.get(sf);
+    if (exportsObject) {
+      header.push({
+        kind: "assign",
+        localId: exportsObject.id,
+        value: exportsThis
+          ? { kind: "varRef", localId: exportsThis.id, type: DYN, loc: loc0 }
+          : { kind: "dynObjLit", fields: [], type: DYN, loc: loc0 },
         loc: loc0,
       });
     }

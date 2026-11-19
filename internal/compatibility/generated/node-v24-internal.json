@@ -102949,6 +102949,7 @@
           "tests/corpus/8176-tls-empty-context-ca.ts",
           "tests/corpus/8177-tls-empty-client-ca.ts",
           "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/tls-export-keying-material-context-types.ts",
           "tests/corpus/tls-export-keying-material-context.ts",
           "tests/corpus/tls-export-keying-material.ts",
           "tests/corpus/tls-handshake-events.ts",
@@ -103969,7 +103970,8 @@
         "evidence": "compiler-feature:tls.tlsSocket.exportKeyingMaterial",
         "tests": [
           "tests/corpus/tls-export-keying-material.ts",
-          "tests/corpus/tls-export-keying-material-context.ts"
+          "tests/corpus/tls-export-keying-material-context.ts",
+          "tests/corpus/tls-export-keying-material-context-types.ts"
         ]
       },
       "anchorSource": "exact"

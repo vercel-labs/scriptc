@@ -4360,11 +4360,14 @@ ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const ScrDyn *len
     return NULL;
   }
   size_t key_len = (size_t)len;
+  /* A typed-array context counts bytes, not elements: a Uint16Array view's
+   * suffix reaches the provider, so distinct contexts stay distinct. */
+  size_t context_len = ctx != NULL ? (size_t)scr_bytes_byte_len(ctx) : 0;
   ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)key_len);
   out->is_buffer = true;
   int rc = mbedtls_ssl_export_keying_material(
     &t->ssl, out->data, key_len, (const char *)label->v.str->data, label->v.str->len,
-    ctx != NULL ? ctx->data : NULL, ctx != NULL ? ctx->len : 0, ctx != NULL ? 1 : 0);
+    ctx != NULL ? ctx->data : NULL, context_len, ctx != NULL ? 1 : 0);
   if (rc != 0) {
     scr_bytes_release(out);
     static const char msg[] =

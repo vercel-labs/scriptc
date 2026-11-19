@@ -40,3 +40,11 @@ console.log(typeof __scrLocalClass, typeof __scrLocalEnum, typeof __scrLocalNs);
 if (typeof __scrTypedNs === "undefined") console.log("namespace absent");
 const absent = typeof __scrTypedClass !== "undefined";
 console.log(absent, typeof __scrTypedClass === "function");
+
+// A program that installs one of these names on the global object answers
+// that property, because an unbound identifier read consults the global
+// object.
+(globalThis as Record<string, unknown>).__scrTypedClass = 7;
+(globalThis as Record<string, unknown>).__scrTypedNs = "installed";
+(globalThis as Record<string, unknown>).__scrLocalEnum = "local";
+console.log(typeof __scrTypedClass, typeof __scrTypedNs, typeof __scrLocalEnum);

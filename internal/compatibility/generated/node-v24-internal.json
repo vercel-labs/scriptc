@@ -91654,6 +91654,7 @@
         "tests": [
           "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-backup.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
           "tests/corpus/sqlite-constants.ts",
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
@@ -91717,7 +91718,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91771,7 +91773,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91851,7 +91854,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91879,7 +91883,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91907,7 +91912,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91987,7 +91993,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92067,7 +92074,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92093,7 +92101,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:database.createTagStore",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92173,7 +92182,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92201,7 +92211,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92229,7 +92240,8 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92416,7 +92428,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92469,7 +92482,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92499,7 +92513,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92529,7 +92544,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92559,7 +92575,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92589,7 +92606,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92619,7 +92637,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92649,7 +92668,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92679,7 +92699,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92709,7 +92730,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92739,7 +92761,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92769,7 +92792,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92799,7 +92823,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92829,7 +92854,8 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -92855,7 +92881,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:SQLTagStore",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92881,7 +92908,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.all",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92907,7 +92935,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.get",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92933,7 +92962,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.iterate",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92959,7 +92989,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.run",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92985,7 +93016,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.clear",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93011,7 +93043,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:size",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93037,7 +93070,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:capacity",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93063,7 +93097,8 @@
         "status": "supported",
         "evidence": "compiler-dedicated:db",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts"
         ]
       },
       "anchorSource": "ancestor"

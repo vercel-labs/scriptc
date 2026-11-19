@@ -34785,6 +34785,7 @@
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
           "tests/corpus/compat-error-validation-codes.mjs",
+          "tests/corpus/compat-errors-async-resource-ids.mjs",
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
           "tests/corpus/compat-errors-http.mjs",
@@ -38863,10 +38864,10 @@
       "anchor": "err_invalid_async_id",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:errors.ERR_INVALID_ASYNC_ID",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/compat-errors-async-resource-ids.mjs"
         ]
       },
       "anchorSource": "exact"

@@ -19702,6 +19702,7 @@
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/console-instance-inspect-options.ts",
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
           "tests/corpus/console-instance-state.ts",
@@ -19842,7 +19843,8 @@
           "tests/corpus/4901-console-instance-errors.ts",
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
-          "tests/corpus/console-instance-state.ts"
+          "tests/corpus/console-instance-state.ts",
+          "tests/corpus/console-instance-inspect-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -110553,6 +110555,7 @@
           "tests/corpus/util-inspect-compact-true.ts",
           "tests/corpus/util-inspect-error-hidden.ts",
           "tests/corpus/util-inspect-function-hidden.ts",
+          "tests/corpus/util-inspect-options-calls.mjs",
           "tests/corpus/util-inspect-options.ts",
           "tests/corpus/util-inspect-promise-state.ts",
           "tests/corpus/util-inspect-regexp-hidden.ts",
@@ -112056,7 +112059,8 @@
           "tests/corpus/util-inspect-colors-builtins.ts",
           "tests/corpus/util-inspect-colors-errors.ts",
           "tests/corpus/util-inspect-colors-escaped-cwd.ts",
-          "tests/corpus/util-inspect-compact-true.ts"
+          "tests/corpus/util-inspect-compact-true.ts",
+          "tests/corpus/util-inspect-options-calls.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -112095,7 +112099,8 @@
           "tests/corpus/util-inspect-colors-builtins.ts",
           "tests/corpus/util-inspect-colors-errors.ts",
           "tests/corpus/util-inspect-colors-escaped-cwd.ts",
-          "tests/corpus/util-inspect-compact-true.ts"
+          "tests/corpus/util-inspect-compact-true.ts",
+          "tests/corpus/util-inspect-options-calls.mjs"
         ]
       },
       "anchorSource": "exact"

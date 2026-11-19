@@ -1772,10 +1772,17 @@ static ScrInstanceProto *scr_instance_proto_find(const void *instance) {
   return NULL;
 }
 
-/* The entry of the instance a class-instance capsule wraps, or NULL. */
+/* The entry of the instance a class-instance capsule wraps, or of the
+ * record a record capsule views, or NULL. A record's checked view is rebuilt
+ * from the record each time the record is boxed again, exactly like a class
+ * instance's, so a prototype Object.setPrototypeOf gave either one lives in
+ * this table rather than in the view. */
 static inline ScrInstanceProto *scr_typed_ref_instance_proto(const ScrDyn *d) {
-  if (!scr_instance_proto_count || d->kind != SCR_DYN_TYPED_REF ||
-      d->v.typed_ref.type_key_len < 7 || memcmp(d->v.typed_ref.type_key, "object:", 7) != 0)
+  if (!scr_instance_proto_count || d->kind != SCR_DYN_TYPED_REF || d->v.typed_ref.type_key_len < 6)
+    return NULL;
+  const char *key = d->v.typed_ref.type_key;
+  if (memcmp(key, "object:", 7) != 0 && memcmp(key, "record:", 7) != 0 &&
+      memcmp(key, "array<", 6) != 0)
     return NULL;
   return scr_instance_proto_find(d->v.typed_ref.ptr);
 }
@@ -1865,7 +1872,9 @@ static const char *scr_instance_proto_key(ScrInstanceProto *entry, const char *t
 /* Gives a class instance's view the prototype the table holds for it. */
 static void scr_instance_proto_apply(const ScrDyn *capsule, ScrDyn *view) {
   ScrInstanceProto *entry = scr_typed_ref_instance_proto(capsule);
-  if (!entry || view->kind != SCR_DYN_OBJ || view->prototype == entry->prototype) return;
+  if (!entry || (view->kind != SCR_DYN_OBJ && view->kind != SCR_DYN_ARR) ||
+      view->prototype == entry->prototype)
+    return;
   ScrDyn *old = view->prototype;
   view->prototype = entry->prototype ? scr_dyn_retain(entry->prototype) : NULL;
   view->null_proto = entry->prototype == NULL;
@@ -3803,12 +3812,31 @@ ScrDyn *scr_dyn_get_prototype_for_identity(ScrDyn *object) {
  * compiled record, which Node sees as the object literal the program built. */
 bool scr_dyn_is_plain_object(ScrDyn *value) {
   if (value == NULL) return false;
+  if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) {
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
   if (value->kind == SCR_DYN_OBJ)
     return !value->null_proto && !scr_dyn_error_view_on_error_prototype(value) &&
            (value->prototype == NULL || value->prototype == scr_builtin_object_prototype);
-  if (value->kind == SCR_DYN_TYPED_REF)
+  // An array inherits Object.prototype only when that prototype was put on it
+  // (or it IS Array.prototype, whose own prototype is Object.prototype).
+  if (value->kind == SCR_DYN_ARR) {
+    if (value->prototype) return value->prototype == scr_builtin_object_prototype;
+    return !value->null_proto && value == scr_builtin_array_prototype;
+  }
+  // A compiled value whose prototype Object.setPrototypeOf replaced keeps it
+  // in the instance-prototype table (a checked view is rebuilt from the
+  // source each time it is boxed), so the table's answer is the edge's; a
+  // record nothing replaced is an ordinary object.
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrInstanceProto *replaced = scr_typed_ref_instance_proto(value);
+    if (replaced)
+      return replaced->prototype != NULL && replaced->prototype == scr_builtin_object_prototype;
     return value->v.typed_ref.type_key_len >= 7 &&
            memcmp(value->v.typed_ref.type_key, "record:", 7) == 0;
+  }
   return false;
 }
 
@@ -3820,7 +3848,9 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
       object->kind == SCR_DYN_BIGINT || object->kind == SCR_DYN_SYMBOL) {
     return scr_dyn_prototype_valid(prototype) ? scr_dyn_retain(object) : NULL;
   }
-  if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object) || scr_dyn_class_reflection_fence(prototype)) return NULL;
+  if (scr_dyn_class_reflection_fence(object) || scr_dyn_error_prototype_fence(object) ||
+      (prototype != scr_builtin_object_prototype && scr_dyn_class_reflection_fence(prototype)))
+    return NULL;
   if (object->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
@@ -3828,16 +3858,22 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     scr_dyn_release(view);
     if (!result) return NULL;
     scr_dyn_release(result);
-    /* A program class instance keeps the prototype past this boxing: the
-     * next view of the instance is built from the instance again. */
-    if (object->v.typed_ref.type_key_len >= 7 &&
-        memcmp(object->v.typed_ref.type_key, "object:", 7) == 0)
+    /* A program class instance, and a native record behind a checked view,
+     * keep the prototype past this boxing: the next view is built from the
+     * instance or record again. */
+    if ((object->v.typed_ref.type_key_len >= 7 &&
+         (memcmp(object->v.typed_ref.type_key, "object:", 7) == 0 ||
+          memcmp(object->v.typed_ref.type_key, "record:", 7) == 0)) ||
+        (object->v.typed_ref.type_key_len >= 6 &&
+         memcmp(object->v.typed_ref.type_key, "array<", 6) == 0))
     {
       scr_instance_proto_set(object->v.typed_ref.ptr, prototype);
-      ScrInstanceProto *entry = scr_instance_proto_find(object->v.typed_ref.ptr);
-      if (entry)
-        object->v.typed_ref.type_key = scr_instance_proto_key(entry, object->v.typed_ref.type_key,
-                                                              object->v.typed_ref.type_key_len);
+      if (memcmp(object->v.typed_ref.type_key, "object:", 7) == 0) {
+        ScrInstanceProto *entry = scr_instance_proto_find(object->v.typed_ref.ptr);
+        if (entry)
+          object->v.typed_ref.type_key = scr_instance_proto_key(entry, object->v.typed_ref.type_key,
+                                                                object->v.typed_ref.type_key_len);
+      }
     }
     return scr_dyn_retain(object);
   }
@@ -26155,6 +26191,10 @@ bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key) {
  * function alone calls: every table is already placed when it is compiled,
  * and the layout of the unit is what it was without the two. */
 static bool scr_record_reflects_static_probe(const void *rec, bool may_link) {
+  /* A prototype Object.setPrototypeOf gave the record outlives the checked
+   * view that carried it (the registry keeps it), so the shape's static
+   * table no longer answers for the record's reflection. */
+  if (scr_instance_proto_count && scr_instance_proto_find(rec) != NULL) return false;
   if (scr_record_source_count && scr_record_source_slot(rec) != NULL) return false;
   if (may_link && scr_record_link_count && scr_record_link_find(rec) != NULL) return false;
   if (!scr_typed_ref_count) return true;

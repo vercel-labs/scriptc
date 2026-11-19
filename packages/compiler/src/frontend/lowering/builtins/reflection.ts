@@ -551,6 +551,10 @@ export function plainObjectPrototypeComparison(
   )
     object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
   if (object.type.kind !== "dyn") return null;
+  // A record's checked view is rebuilt from the native record every time it
+  // is boxed, so a boxing that copies the record would miss a prototype
+  // Object.setPrototypeOf gave it: the question views the live record.
+  if (object.kind === "dynFrom" && object.value.type.kind === "record") object.liveRef = true;
   const test: IrExpr = { kind: "libCall", fn: "dyn.isPlainObject", args: [object], type: BOOL, loc };
   return equals ? test : { kind: "unary", op: "!", operand: test, type: BOOL, loc };
 }
@@ -632,6 +636,10 @@ export function lowerPrototypeReflectionCall(
   )
     object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
   if (object.type.kind !== "dyn") return null;
+  // The prototype a record carries lives on the live record, not on a copy
+  // of it (Object.setPrototypeOf's table answers the next boxing), so both
+  // reads box the record itself.
+  if (object.kind === "dynFrom" && object.value.type.kind === "record") object.liveRef = true;
   if (member === "getPrototypeOf") {
     let parent: ts.Node | undefined = call.parent;
     while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;

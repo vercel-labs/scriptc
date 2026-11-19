@@ -1,5 +1,6 @@
 import type { TargetCpu } from "../target-cpu.js";
 import { loopEntryInlines } from "./loop-entry-versions.js";
+import { alignFunctionEntries } from "./function-alignment.js";
 import type { FunctionLayout } from "./function-layout.js";
 import type { CompilationTiming } from "../../timing.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
@@ -1048,32 +1049,6 @@ function verifyInt32Selection(
  * shows: a body that tests the flag without raising, or a raising
  * function's address in text the emitter generates. Each emission that
  * ends this way marks `llvm-emit-unwind-retry`. */
-/** The alignment of every emitted function's entry. Each definition pads to
- * it, so a change in one function's size cannot move another function's code
- * relative to a cache-line boundary: the hot loops inside that function keep
- * the alignment, and the timing, they had before the change. */
-const FUNCTION_ENTRY_ALIGNMENT = 64;
-
-/** Adds the entry alignment to every function definition in `parts`, after
- * its parameter list (where LLVM's grammar puts it, ahead of the attribute
- * group and the personality). */
-function alignFunctionEntries(parts: string[]): string[] {
-  const align = (line: string): string => {
-    const open = line.indexOf("(", line.indexOf("@"));
-    if (open < 0) return line;
-    let depth = 0;
-    for (let i = open; i < line.length; i++) {
-      if (line[i] === "(") depth++;
-      else if (line[i] === ")" && --depth === 0)
-        return `${line.slice(0, i + 1)} align ${FUNCTION_ENTRY_ALIGNMENT}${line.slice(i + 1)}`;
-    }
-    return line;
-  };
-  return parts.map((part) =>
-    part.includes("define ") ? part.replace(/^define .*$/gm, (line) => align(line)) : part,
-  );
-}
-
 function emitModuleText(input: IrModule, options: LlvmTargetOptions): string[] {
   const prepared = prepareModule(input, options);
   const given = options.unwindExcluded ?? new Set<string>();

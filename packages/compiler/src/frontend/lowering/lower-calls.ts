@@ -11601,7 +11601,16 @@ function lowerObjectStaticCall(
         loc: locOf(call),
       };
     }
-    return null;
+    // A union of this record and a unit is the indexed read's lowering under
+    // noUncheckedIndexedAccess (the checker's own type drops the undefined
+    // the storage holds). objectEnumerationReceiver throws for the unit arm
+    // and enumerates the record arm, so keep the lowering this call had.
+    const arms =
+      represented.type.kind === "union"
+        ? lowerer.unions.get(represented.type.unionId)?.arms
+        : undefined;
+    if (arms === undefined || !arms.every((arm) => isUnitType(arm) || typeEquals(arm, argIr)))
+      return null;
   }
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence

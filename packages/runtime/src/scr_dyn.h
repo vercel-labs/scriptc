@@ -2326,6 +2326,9 @@ void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *va
 void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value);
 /* The seed if no view consumed it (+1), else NULL. */
 ScrDyn *scr_error_take_seed(void);
+/* Exit-cleanup registrations the seed made on this thread: one, however
+ * many assertions seed (the runtime tests pin it). */
+size_t scr_error_seed_registration_count(void);
 /* scr_throw_node_coded with an own `url` property (error.nodeThrow's
  * fourth argument). Borrows the strings; always throws. */
 SCR_COLD void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg,

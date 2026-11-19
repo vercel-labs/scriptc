@@ -13621,12 +13621,21 @@ static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
 static SCR_TL const char *scr_error_seed_key;
 static SCR_TL size_t scr_error_seed_key_len;
 static SCR_TL ScrDyn *scr_error_seed_value;
+/* One cleanup registration per thread, not one per assertion: a caught
+ * assertion seeds and consumes its property repeatedly, and worker
+ * executables allocate an exit-list entry per registration. */
+static SCR_TL bool scr_error_seed_exit_registered;
+static SCR_TL size_t scr_error_seed_exit_registrations;
+size_t scr_error_seed_registration_count(void) { return scr_error_seed_exit_registrations; }
 static void scr_error_seed_cleanup(void) {
   scr_dyn_release(scr_error_seed_value);
   scr_error_seed_value = NULL;
 }
 void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value) {
-  if (scr_error_seed_value == NULL && value != NULL) scr_atexit(scr_error_seed_cleanup);
+  if (!scr_error_seed_exit_registered && scr_atexit(scr_error_seed_cleanup) == 0) {
+    scr_error_seed_exit_registered = true;
+    scr_error_seed_exit_registrations++;
+  }
   scr_dyn_release(scr_error_seed_value);
   scr_error_seed_key = key;
   scr_error_seed_key_len = key_len;

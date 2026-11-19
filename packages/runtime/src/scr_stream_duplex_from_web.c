@@ -212,14 +212,14 @@ static void sdfw_watch_settled(SdfwCtx *c, SdfwWatchKind kind, bool rejected, Sc
   case SDFW_WATCH_WRITE:
     if (c->duplex) {
       ScrError *err = rejected ? scr_error_from_dyn(outcome) : NULL;
-      scr_stream_write_done(c->duplex, err);
+      scr_stream_write_done(c->duplex, err ? scr_error_retain(err) : NULL); /* moves */
       if (err) scr_error_release(err);
     }
     break;
   case SDFW_WATCH_FINAL:
     if (c->duplex) {
       ScrError *err = rejected ? scr_error_from_dyn(outcome) : NULL;
-      scr_stream_final_done(c->duplex, err);
+      scr_stream_final_done(c->duplex, err ? scr_error_retain(err) : NULL); /* moves */
       if (err) scr_error_release(err);
     }
     break;

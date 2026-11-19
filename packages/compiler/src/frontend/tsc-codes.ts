@@ -767,6 +767,52 @@ export function jsFieldDeclaringClass(field: ts.Symbol): ts.ClassLikeDeclaration
   return undefined;
 }
 
+/** The class member a diagnostic's node stands in: the method, accessor or
+ * property declaration whose signature the checker's message is about. */
+const enclosingClassMember = (node: ts.Node): ts.ClassElement | null => {
+  for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent) {
+    if (
+      ts.isMethodDeclaration(current) ||
+      ts.isPropertyDeclaration(current) ||
+      ts.isGetAccessorDeclaration(current) ||
+      ts.isSetAccessorDeclaration(current)
+    )
+      return current;
+    if (ts.isClassDeclaration(current) || ts.isClassExpression(current) || ts.isSourceFile(current))
+      return null;
+  }
+  return null;
+};
+
+/** Whether the diagnostic is a JavaScript method overriding a JavaScript base
+ * method with a different signature. Node ignores the relation between the
+ * two signatures: the lowering keeps the inherited slot arity, gives the
+ * family checked-dynamic parameters and storage, and the body reads whatever
+ * a call passes, so no argument is converted or refused (lower-classes.ts).
+ * A JavaScript override of a TypeScript base keeps the refusal: its base
+ * method's ABI is the typed contract the slot must hold. */
+const jsOverrideOfJsBase = (node: ts.Node, _d: ts.Diagnostic, program: ts.Program): boolean => {
+  const member = enclosingClassMember(node);
+  if (member === null || !ts.isMethodDeclaration(member) || !ts.isIdentifier(member.name))
+    return false;
+  if (!isJsSourceFileName(ts.getSourceFileOfNode(member).fileName)) return false;
+  const owner = member.parent;
+  if (!(ts.isClassDeclaration(owner) || ts.isClassExpression(owner))) return false;
+  const checker = program.getTypeChecker();
+  const classType = checker.getTypeAtLocation(owner);
+  for (const base of checker.getBaseTypes(classType as ts.InterfaceType)) {
+    const inherited = checker.getPropertyOfType(base, member.name.text);
+    if (inherited === undefined) continue;
+    return (
+      inherited.declarations?.some(
+        (decl) =>
+          ts.isMethodDeclaration(decl) && isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName),
+      ) === true
+    );
+  }
+  return false;
+};
+
 /** Whether `node` is the target of a write into a JavaScript binding or
  * field whose storage follows the values the program writes: a JSDoc-typed
  * target, or an unannotated `let`/`var`. TS2739 is the elaborated form of
@@ -780,7 +826,24 @@ const jsStorageWriteTarget = (node: ts.Node, _d: ts.Diagnostic, program: ts.Prog
   const checker = program.getTypeChecker();
   if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
     const symbol = checker.getSymbolAtLocation(node.name);
-    return symbol !== undefined && jsFieldDeclaringClass(symbol) !== undefined;
+    if (symbol === undefined) return false;
+    if (jsFieldDeclaringClass(symbol) !== undefined) return true;
+    // A set accessor whose parameter the widening scan gives checked-dynamic
+    // storage (analyzeJsWidenedBindings): the write is legal JavaScript, and
+    // nothing checks the value against the getter's inferred type.
+    const setter = symbol.declarations?.find((decl): decl is ts.SetAccessorDeclaration =>
+      ts.isSetAccessorDeclaration(decl),
+    );
+    const parameter = setter?.parameters.nodes[0];
+    return (
+      setter !== undefined &&
+      parameter !== undefined &&
+      isJsSourceFileName(ts.getSourceFileOfNode(setter).fileName) &&
+      parameter.type === undefined &&
+      !/@param\b/.test(
+        ts.getSourceFileOfNode(setter).text.slice(setter.pos, ts.tokenStartOfNode(parameter)),
+      )
+    );
   }
   if (!ts.isIdentifier(node)) return false;
   const decl = checker.getSymbolAtLocation(node)?.valueDeclaration;
@@ -1057,6 +1120,18 @@ const UNDECLARED_NAME_READ = THROW(
 );
 
 const OPINION_ROWS: readonly (readonly [number, Opinion])[] = [
+  [
+    2416,
+    at(
+      jsOverrideOfJsBase,
+      inCheckedJs(
+        CHECKER(
+          "a JavaScript override of a JavaScript base method is plain JavaScript: the slot dispatches on the receiver and passes the arguments through unchecked",
+          ["tests/corpus/js-override-extra-arguments.js"],
+        ),
+      ),
+    ),
+  ],
   // legacy decimal escapes in non-Unicode regex literals
   [1533, LEGACY_REGEX_ESCAPE],
   [1534, LEGACY_REGEX_ESCAPE],

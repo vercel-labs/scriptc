@@ -500,6 +500,23 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
         ? { type: DYN, mode: "omittable", bodyType: DYN }
         : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
   }
+
+  // A member of a mismatched JavaScript override family (a JavaScript
+  // method whose signature differs from its base's): the slot and every
+  // value read of the method pass arguments unchecked, so its parameters are
+  // checked-dynamic wherever the declaration is lowered, including the
+  // reflected method value a prototype read builds from it.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !param.dotDotDotToken &&
+    param.parent !== undefined &&
+    ts.isMethodDeclaration(param.parent) &&
+    lowerer.checkedVirtualJsMethods.has(param.parent)
+  ) {
+    return param.initializer
+      ? { type: DYN, mode: "omittable", bodyType: DYN }
+      : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
+  }
   if (
     isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     ts.isConstructorDeclaration(param.parent) &&

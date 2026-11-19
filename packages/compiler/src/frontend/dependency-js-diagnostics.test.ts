@@ -82,11 +82,19 @@ test("a dependency's parse errors and unlowered constructs still report", () => 
   expect(
     diagnostics({ ...program(["*.ts"]), "lib.js": "export function broken( {\n" }).length,
   ).toBeGreaterThan(0);
-  // TS2416: a subclass member whose type differs from its base's. The triage
-  // table refuses the shape until the lowering proves it, so it survives the
-  // dependency stance.
-  const overrides = `export class Base { /** @returns {number} */ copy(source) { return 1; } }
-export class Derived extends Base { copy(source) { return [source]; } }
+  // TS2416: a subclass member whose type differs from its base's. A
+  // JavaScript override of a JavaScript base is admitted and lowered through
+  // the checked-dynamic slot (tests/corpus/js-override-*); a JavaScript
+  // override of a TypeScript base keeps the triage refusal, because the
+  // inherited ABI is the typed contract its slot holds.
+  const overridesTypeScriptBase = `import { TypedBase } from "./base.ts";
+export class Derived extends TypedBase { copy(source) { return [source]; } }
 `;
-  expect(diagnostics({ ...program(["*.ts"]), "lib.js": overrides }).length).toBeGreaterThan(0);
+  expect(
+    diagnostics({
+      ...program(["*.ts"]),
+      "base.ts": "export class TypedBase { copy(source: string): number { return source.length; } }\n",
+      "lib.js": overridesTypeScriptBase,
+    }).length,
+  ).toBeGreaterThan(0);
 });

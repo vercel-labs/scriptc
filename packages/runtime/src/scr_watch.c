@@ -148,6 +148,10 @@ struct ScrWatcher {
   ScrWatchSub *subs; /* the recursive tree's directory watches (NULL when
                       * the root watch is the only one) */
 #endif
+#if defined(__APPLE__)
+  void *fse;      /* the FSEvents stream of a recursive directory watch */
+  char *fse_root; /* its canonical path: FSEvents reports real paths */
+#endif
 #ifdef SCR_HAVE_RDCW
   HANDLE dh;       /* the watched directory handle; INVALID once closed or
                     * after a failed reissue (no further events) */
@@ -208,6 +212,267 @@ static bool scr_watch_arm(ScrWatcher *w) {
   return kevent(scr_watch_kq, &ev, 1, NULL, 0, &zero) == 0;
 }
 #endif
+
+#if defined(__APPLE__)
+/* ── the FSEvents arm for a recursive directory watch ──────────────────
+ * kqueue watches one inode, so it can neither name an entry nor follow a
+ * tree; Node-on-macOS implements a recursive watch with an FSEvents stream.
+ * CoreServices is loaded with dlopen so the runtime archive carries no
+ * framework link flag, which the compiler's link line does not have.
+ * Events arrive on a private serial queue; the callback only copies the
+ * paths and flags into a mutex-protected list and writes one byte to a
+ * pipe registered on the unit's kqueue, so every watcher is touched on the
+ * loop's own thread (the watcher registry is thread-local). CoreServices
+ * and CoreFoundation ship with every macOS install. */
+
+#include <dlfcn.h>
+#include <limits.h>
+#include <pthread.h>
+#include <stdint.h>
+
+extern void *dispatch_queue_create(const char *label, void *attr);
+
+static void scr_watch_fire(ScrWatcher *w, const char *event, const char *filename);
+
+#define SCR_FSE_ITEM_CREATED 0x00000100u
+#define SCR_FSE_ITEM_REMOVED 0x00000200u
+#define SCR_FSE_ITEM_INODE_META_MOD 0x00000400u
+#define SCR_FSE_ITEM_RENAMED 0x00000800u
+#define SCR_FSE_ITEM_MODIFIED 0x00001000u
+#define SCR_FSE_ITEM_FINDER_INFO_MOD 0x00002000u
+#define SCR_FSE_ITEM_CHANGE_OWNER 0x00004000u
+#define SCR_FSE_ITEM_XATTR_MOD 0x00008000u
+#define SCR_FSE_ROOT_CHANGED 0x00000020u
+#define SCR_FSE_MUST_SCAN_SUBDIRS 0x00000001u
+#define SCR_FSE_USER_DROPPED 0x00000002u
+#define SCR_FSE_KERNEL_DROPPED 0x00000004u
+#define SCR_FSE_EVENT_IDS_WRAPPED 0x00000008u
+#define SCR_FSE_CREATE_FILE_EVENTS 0x00000010u
+#define SCR_FSE_CREATE_NO_DEFER 0x00000002u
+#define SCR_FSE_CREATE_WATCH_ROOT 0x00000004u
+#define SCR_FSE_UTF8 0x08000100u
+#define SCR_FSE_SINCE_NOW UINT64_MAX
+
+typedef void (*ScrFseCallback)(void *stream, void *info, size_t count, void *paths,
+                               const uint32_t *flags, const uint64_t *ids);
+
+typedef struct {
+  bool ok;
+  void *(*cf_string_create)(void *alloc, const uint8_t *bytes, long length, uint32_t encoding,
+                            int external);
+  void *(*cf_array_create)(void *alloc, const void *const *values, long count,
+                           const void *callbacks);
+  void (*cf_release)(void *value);
+  const void *array_callbacks;
+  void *(*stream_create)(void *alloc, ScrFseCallback cb, void *context, void *paths,
+                         uint64_t since, double latency, uint32_t flags);
+  void (*set_queue)(void *stream, void *queue);
+  int (*start)(void *stream);
+  void (*stop)(void *stream);
+  void (*invalidate)(void *stream);
+  void (*release)(void *stream);
+} ScrFseApi;
+
+static ScrFseApi scr_fse_api_state;
+static bool scr_fse_loaded;
+static void *scr_fse_queue;
+
+typedef struct ScrFsePending {
+  char *path;
+  uint32_t flags;
+  struct ScrFsePending *next;
+} ScrFsePending;
+
+static pthread_mutex_t scr_fse_mu = PTHREAD_MUTEX_INITIALIZER;
+static ScrFsePending *scr_fse_pending;
+static ScrFsePending *scr_fse_pending_tail;
+static int scr_fse_pipe[2] = {-1, -1};
+static char scr_fse_token; /* the kqueue udata that marks the wake pipe */
+
+static void *scr_fse_sym(void *handle, const char *name) {
+  return handle != NULL ? dlsym(handle, name) : NULL;
+}
+
+static bool scr_fse_load(void) {
+  if (scr_fse_loaded) return scr_fse_api_state.ok;
+  scr_fse_loaded = true;
+  void *cs = dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices",
+                    RTLD_LAZY | RTLD_LOCAL);
+  if (cs == NULL)
+    cs = dlopen(
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/FSEvents.framework/FSEvents",
+        RTLD_LAZY | RTLD_LOCAL);
+  void *cf =
+      dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY | RTLD_LOCAL);
+  ScrFseApi *a = &scr_fse_api_state;
+  a->cf_string_create =
+      (void *(*)(void *, const uint8_t *, long, uint32_t, int))scr_fse_sym(cf, "CFStringCreateWithBytes");
+  a->cf_array_create =
+      (void *(*)(void *, const void *const *, long, const void *))scr_fse_sym(cf, "CFArrayCreate");
+  a->cf_release = (void (*)(void *))scr_fse_sym(cf, "CFRelease");
+  a->array_callbacks = scr_fse_sym(cf, "kCFTypeArrayCallBacks");
+  a->stream_create = (void *(*)(void *, ScrFseCallback, void *, void *, uint64_t, double, uint32_t))
+      scr_fse_sym(cs, "FSEventStreamCreate");
+  a->set_queue =
+      (void (*)(void *, void *))scr_fse_sym(cs, "FSEventStreamSetDispatchQueue");
+  a->start = (int (*)(void *))scr_fse_sym(cs, "FSEventStreamStart");
+  a->stop = (void (*)(void *))scr_fse_sym(cs, "FSEventStreamStop");
+  a->invalidate = (void (*)(void *))scr_fse_sym(cs, "FSEventStreamInvalidate");
+  a->release = (void (*)(void *))scr_fse_sym(cs, "FSEventStreamRelease");
+  a->ok = cs != NULL && cf != NULL && a->array_callbacks != NULL && a->cf_string_create != NULL &&
+          a->cf_array_create != NULL && a->cf_release != NULL && a->stream_create != NULL &&
+          a->set_queue != NULL && a->start != NULL && a->stop != NULL && a->invalidate != NULL &&
+          a->release != NULL;
+  if (a->ok && scr_fse_queue == NULL)
+    scr_fse_queue = dispatch_queue_create("scriptc.watch.fsevents", NULL);
+  if (scr_fse_queue == NULL) a->ok = false;
+  return a->ok;
+}
+
+/** Queues one delivery batch and wakes the loop. Runs on the stream's
+ * serial queue; touches no watcher. */
+static void scr_fse_callback(void *stream, void *info, size_t count, void *paths,
+                             const uint32_t *flags, const uint64_t *ids) {
+  (void)stream;
+  (void)info;
+  (void)ids;
+  if (count == 0 || paths == NULL) return;
+  char **names = (char **)paths;
+  pthread_mutex_lock(&scr_fse_mu);
+  for (size_t i = 0; i < count; i++) {
+    if (names[i] == NULL) continue;
+    size_t len = strlen(names[i]);
+    ScrFsePending *p = malloc(sizeof *p);
+    if (p == NULL) break;
+    p->path = malloc(len + 1);
+    if (p->path == NULL) {
+      free(p);
+      break;
+    }
+    memcpy(p->path, names[i], len + 1);
+    p->flags = flags[i];
+    p->next = NULL;
+    if (scr_fse_pending_tail != NULL) scr_fse_pending_tail->next = p;
+    else scr_fse_pending = p;
+    scr_fse_pending_tail = p;
+  }
+  pthread_mutex_unlock(&scr_fse_mu);
+  if (scr_fse_pipe[1] >= 0) {
+    ssize_t ignored = write(scr_fse_pipe[1], "x", 1);
+    (void)ignored;
+  }
+}
+
+/** Opens the wake pipe (once) and registers its read end on the unit's
+ * kqueue, so the loop's single poll descriptor serves both arms. */
+static bool scr_fse_wake_pipe(void) {
+  if (scr_fse_pipe[0] >= 0) return true;
+  if (pipe(scr_fse_pipe) != 0) {
+    scr_fse_pipe[0] = scr_fse_pipe[1] = -1;
+    return false;
+  }
+  for (int i = 0; i < 2; i++) {
+    fcntl(scr_fse_pipe[i], F_SETFL, O_NONBLOCK);
+    fcntl(scr_fse_pipe[i], F_SETFD, FD_CLOEXEC);
+  }
+  if (scr_watch_kq < 0) scr_watch_kq = kqueue();
+  if (scr_watch_kq < 0) return false;
+  struct kevent ev;
+  EV_SET(&ev, (uintptr_t)scr_fse_pipe[0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, &scr_fse_token);
+  struct timespec zero = {0, 0};
+  return kevent(scr_watch_kq, &ev, 1, NULL, 0, &zero) == 0;
+}
+
+/** Starts the stream for a recursive directory watch. False leaves the
+ * watcher open, holding the loop, emitting nothing (the kqueue exhaustion
+ * stance). */
+static bool scr_fse_start(ScrWatcher *w) {
+  ScrFseApi *a = &scr_fse_api_state;
+  if (!scr_fse_load() || !scr_fse_wake_pipe()) return false;
+  void *path = a->cf_string_create(NULL, (const uint8_t *)w->path->data, (long)w->path->len,
+                                   SCR_FSE_UTF8, 0);
+  if (path == NULL) return false;
+  const void *values[1] = {path};
+  void *paths = a->cf_array_create(NULL, values, 1, a->array_callbacks);
+  a->cf_release(path);
+  if (paths == NULL) return false;
+  uint32_t flags = SCR_FSE_CREATE_FILE_EVENTS | SCR_FSE_CREATE_NO_DEFER | SCR_FSE_CREATE_WATCH_ROOT;
+  void *stream = a->stream_create(NULL, scr_fse_callback, NULL, paths, SCR_FSE_SINCE_NOW, 0.01, flags);
+  a->cf_release(paths);
+  if (stream == NULL) return false;
+  a->set_queue(stream, scr_fse_queue);
+  if (!a->start(stream)) {
+    a->invalidate(stream);
+    a->release(stream);
+    return false;
+  }
+  w->fse = stream;
+  char resolved[PATH_MAX];
+  const char *root = realpath(w->path->data, resolved) != NULL ? resolved : w->path->data;
+  size_t root_len = strlen(root);
+  w->fse_root = malloc(root_len + 1);
+  if (w->fse_root != NULL) memcpy(w->fse_root, root, root_len + 1);
+  return true;
+}
+
+static void scr_fse_stop(ScrWatcher *w) {
+  if (w->fse == NULL) return;
+  ScrFseApi *a = &scr_fse_api_state;
+  a->stop(w->fse);
+  a->invalidate(w->fse);
+  a->release(w->fse);
+  w->fse = NULL;
+}
+
+/** Delivers the queued batches to every recursive watcher whose root names
+ * the event's path, on the loop's thread. The name is the path relative to
+ * the root, which is what Node reports. */
+static void scr_fse_drain(void) {
+  if (scr_fse_pipe[0] >= 0) {
+    char buf[256];
+    while (read(scr_fse_pipe[0], buf, sizeof buf) > 0) {
+    }
+  }
+  pthread_mutex_lock(&scr_fse_mu);
+  ScrFsePending *list = scr_fse_pending;
+  scr_fse_pending = NULL;
+  scr_fse_pending_tail = NULL;
+  pthread_mutex_unlock(&scr_fse_mu);
+  while (list != NULL) {
+    ScrFsePending *next = list->next;
+    size_t plen = strlen(list->path);
+    while (plen > 1 && list->path[plen - 1] == '/') list->path[--plen] = '\0';
+    bool rename = (list->flags &
+                   (SCR_FSE_ITEM_CREATED | SCR_FSE_ITEM_REMOVED | SCR_FSE_ITEM_RENAMED |
+                    SCR_FSE_ROOT_CHANGED | SCR_FSE_MUST_SCAN_SUBDIRS | SCR_FSE_USER_DROPPED |
+                    SCR_FSE_KERNEL_DROPPED | SCR_FSE_EVENT_IDS_WRAPPED)) != 0;
+    bool change = (list->flags &
+                   (SCR_FSE_ITEM_MODIFIED | SCR_FSE_ITEM_INODE_META_MOD |
+                    SCR_FSE_ITEM_FINDER_INFO_MOD | SCR_FSE_ITEM_CHANGE_OWNER |
+                    SCR_FSE_ITEM_XATTR_MOD)) != 0;
+    if (rename || change) {
+      for (ScrWatcher *w = scr_watchers; w != NULL; w = w->next) {
+        if (w->closed || !w->recursive) continue;
+        const char *roots[2] = {w->path->data, w->fse_root};
+        for (int r = 0; r < 2; r++) {
+          if (roots[r] == NULL) continue;
+          size_t rlen = strlen(roots[r]);
+          while (rlen > 1 && roots[r][rlen - 1] == '/') rlen--;
+          if (plen <= rlen + 1) continue;
+          if (memcmp(list->path, roots[r], rlen) != 0) continue;
+          if (list->path[rlen] != '/') continue;
+          scr_watch_fire(w, rename ? "rename" : "change", list->path + rlen + 1);
+          if (scr_exc_pending()) return;
+          break; /* one delivery per watcher per event, whichever spelling matched */
+        }
+      }
+    }
+    free(list->path);
+    free(list);
+    list = next;
+  }
+}
+#endif /* __APPLE__ */
 
 #ifdef SCR_HAVE_INOTIFY
 static SCR_TL int scr_watch_ino = -1; /* created with the first watch */
@@ -392,6 +657,9 @@ void scr_watcher_release(ScrWatcher *w) {
   if (--w->rc == 0) {
     scr_watcher_drop_listeners(w); /* only reachable pre-close via leaks */
     if (w->fd >= 0) close(w->fd);
+#if defined(__APPLE__)
+    scr_fse_stop(w);
+#endif
 #ifdef SCR_HAVE_RDCW
     scr_watch_backend_drop(w);
 #endif
@@ -402,6 +670,10 @@ void scr_watcher_release(ScrWatcher *w) {
       scr_str_release(sub->rel);
       free(sub);
     }
+#endif
+#if defined(__APPLE__)
+    free(w->fse_root);
+    w->fse_root = NULL;
 #endif
     scr_str_release(w->path);
     free(w);
@@ -424,17 +696,7 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
     if (cb != NULL) scr_closure_release(cb);
     return NULL; /* exception pending */
   }
-#if defined(__APPLE__)
-  /* The kqueue arm watches one inode. A recursive watch needs the FSEvents
-   * backend, which the macOS slice does not carry yet; refuse honestly
-   * instead of delivering a single directory's events. */
-  if (recursive) {
-    const char *m = "recursive fs.watch has no macOS lowering yet [SC2020]";
-    if (cb != NULL) scr_closure_release(cb);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, m, strlen(m), "SC2020");
-    return NULL;
-  }
-#endif
+
 #ifdef SCR_HAVE_INOTIFY
   /* The wd IS the validation: Node's Linux throw comes straight from
    * inotify_add_watch's errno, the same message shape as the open below. */
@@ -501,7 +763,7 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
     struct stat st;
     if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode)) is_dir = true;
   }
-  if (wants_name && is_dir) {
+  if (wants_name && is_dir && !recursive) {
     close(fd);
     if (cb != NULL) scr_closure_release(cb);
     scr_watch_refuse_dir_names();
@@ -530,6 +792,20 @@ ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb /*moves, nullable*/, ScrWa
   w->wd = wd;
 #elif defined(SCR_HAVE_KQUEUE)
   w->fd = fd;
+#if defined(__APPLE__)
+  bool watched_subtree = false;
+  if (recursive) {
+    struct stat st;
+    watched_subtree = fstat(fd, &st) == 0 && S_ISDIR(st.st_mode);
+  }
+  if (watched_subtree) {
+    /* FSEvents owns the subtree; the opened descriptor only validated the
+     * path, because kqueue would watch the one inode. */
+    close(fd);
+    w->fd = -1;
+    (void)scr_fse_start(w);
+  } else
+#endif
   if (!scr_watch_arm(w)) {
     /* Filter refused (kqueue exhaustion): the watcher exists but never
      * fires — Node's kqueue backend surfaces this as a throw; the honest
@@ -627,6 +903,9 @@ void scr_watcher_close(ScrWatcher *w) {
     sub->wd = -1;
   }
 #endif
+#if defined(__APPLE__)
+  scr_fse_stop(w);
+#endif
 #ifdef SCR_HAVE_RDCW
   scr_watch_backend_drop(w);
 #endif
@@ -695,7 +974,7 @@ void scr_watcher_on(ScrWatcher *w, double event, ScrClosure *cb, void *fn, bool 
     return;
   }
 #ifdef SCR_WATCH_DIR_NAMES_REFUSED
-  if (event == SCR_WATCH_EV_CHANGE && wants_name && w->is_dir) {
+  if (event == SCR_WATCH_EV_CHANGE && wants_name && w->is_dir && !w->recursive) {
     scr_closure_release(cb);
     scr_watch_refuse_dir_names();
     return;
@@ -819,6 +1098,13 @@ static void scr_watch_dispatch(void) {
     int n = kevent(scr_watch_kq, NULL, 0, evs, 64, &zero);
     if (n <= 0) return;
     for (int i = 0; i < n; i++) {
+#if defined(__APPLE__)
+      if (evs[i].udata == (void *)&scr_fse_token) {
+        scr_fse_drain();
+        if (scr_exc_pending()) return;
+        continue;
+      }
+#endif
       ScrWatcher *w = (ScrWatcher *)evs[i].udata;
       if (w == NULL || w->closed || w->fd < 0) continue;
       uint32_t ff = evs[i].fflags;
@@ -1012,6 +1298,9 @@ static void scr_watch_cleanup_atexit(void) {
       scr_watchers_open--;
       scr_watch_set_reffed(w, false);
     }
+#if defined(__APPLE__)
+    scr_fse_stop(w);
+#endif
 #ifdef SCR_HAVE_RDCW
     scr_watch_backend_drop(w);
 #endif

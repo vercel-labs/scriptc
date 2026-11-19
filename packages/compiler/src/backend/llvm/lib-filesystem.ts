@@ -520,10 +520,11 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.usesTimers = true;
     const path = host.emitExpr(e.args[0]!);
     const persistent = host.emitExpr(e.args[1]!);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext)`);
+    const recursive = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext, i1 zeroext)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false, i1 ${persistent.name})`,
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false, i1 ${persistent.name}, i1 ${recursive.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
@@ -542,12 +543,13 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const path = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const persistent = host.emitExpr(e.args[2]!);
+    const recursive = host.emitExpr(e.args[3]!);
     host.toHeap(cb);
     const adapter = watchChangeAdapter(host, cbT);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext)`);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext, i1 zeroext)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"}, i1 ${persistent.name})`,
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"}, i1 ${persistent.name}, i1 ${recursive.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();

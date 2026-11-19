@@ -3417,6 +3417,22 @@ function lowerNetSocketMethodCall(
     }
     return receiverReturningCall(lowerer, "net.sockSetRef", callArgs, NETSOCKET_T, loc);
   }
+  if (name === "exportKeyingMaterial" && (args.length === 2 || args.length === 3)) {
+    // The provider's TLS exporter; the runtime runs Node's validation
+    // ladder and answers a Buffer.
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const length = lowerer.lowerExprExpecting(args[0]!, DYN);
+    const label = lowerer.lowerExprExpecting(args[1]!, DYN);
+    const context =
+      args.length === 3 ? lowerer.lowerExprExpecting(args[2]!, DYN) : dynUndefinedExpr(loc);
+    return {
+      kind: "libCall",
+      fn: "tls.sockExportKeyingMaterial",
+      args: [receiver, length, label, context, boolLit(args.length === 3, loc)],
+      type: BYTES_U8,
+      loc,
+    };
+  }
   if (name === "getSession" && args.length === 0) {
     // The session a resumption would use: a Buffer, or null while the
     // handshake has none yet.

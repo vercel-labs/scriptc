@@ -7765,6 +7765,12 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   return scr_bytes_instanceof_at(value, callee, NULL);
 }
 SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
+/* The timerified wrapper's construct form (scr_perf.c installs it when the
+ * program first wraps a function): a wrapper constructs its original with
+ * Node's `new` semantics and records the entry, then this dispatcher's own
+ * "not a constructor" refusal never sees it. */
+SCR_TL bool (*scr_dyn_timerified_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
+                                               ScrDyn **result) = NULL;
 SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
                                             bool descriptor) = NULL;
 SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
@@ -7789,6 +7795,9 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     return result;
   }
   ScrDyn *constructed = NULL;
+  if (callee->kind == SCR_DYN_FUNC && scr_dyn_timerified_construct_fn &&
+      scr_dyn_timerified_construct_fn(callee, args, &constructed))
+    return constructed;
   if (scr_dyn_global_construct_fn && scr_dyn_global_construct_fn(callee, args, &constructed))
     return constructed;
   /* The Buffer function value (scr_builtin_values.c): Node's construction
@@ -7828,6 +7837,7 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
   return NULL;
 }
+
 
 static bool scr_dyn_bytes_named(const char *method, const char *name) {
   return strcmp(method, name) == 0;

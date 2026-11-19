@@ -80956,6 +80956,7 @@
           "tests/corpus/5214-perf-entry-inspect.ts",
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
+          "tests/corpus/9976-timerify.js",
           "tests/corpus/9990-histogram-comparison.ts",
           "tests/corpus/9993-resource-timing-buffered.ts",
           "tests/corpus/9994-histogram-short-lived.ts",
@@ -81601,8 +81602,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:perf_hooks.PerformanceNodeEntry",
+        "tests": [
+          "tests/corpus/9976-timerify.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84497,8 +84501,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.perf_hooks.timerify",
+        "tests": [
+          "tests/corpus/9976-timerify.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84896,8 +84903,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.performance.timerify",
+        "tests": [
+          "tests/corpus/9976-timerify.js"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98446,6 +98456,7 @@
           "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/fixtures/node-test/cases/ctx-signal.ts",
           "tests/fixtures/node-test/cases/ctx-surface.ts",
+          "tests/fixtures/node-test/cases/ctx-test-options.ts",
           "tests/fixtures/node-test/cases/ctx-wait-for.ts",
           "tests/fixtures/node-test/cases/done-callback.ts",
           "tests/fixtures/node-test/cases/get-test-context-cancelled.ts",
@@ -98463,12 +98474,14 @@
           "tests/fixtures/node-test/cases/only-false.ts",
           "tests/fixtures/node-test/cases/only-filter.ts",
           "tests/fixtures/node-test/cases/only-nested.ts",
+          "tests/fixtures/node-test/cases/plan-wait-timeout.ts",
           "tests/fixtures/node-test/cases/plan-wait.ts",
           "tests/fixtures/node-test/cases/root-hooks.ts",
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
           "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/fixtures/node-test/cases/snapshot-serializer-values.ts",
           "tests/fixtures/node-test/cases/snapshot.ts",
+          "tests/fixtures/node-test/cases/subtests.ts",
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/tags.ts",
@@ -99228,10 +99241,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.snapshot",
         "tests": [
+          "tests/fixtures/node-test/cases/snapshot.ts",
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
+          "tests/fixtures/node-test/cases/snapshot-serializer-values.ts",
+          "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99460,11 +99476,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.MockFunctionContext",
         "tests": [
+          "tests/fixtures/node-test/cases/mock-context.ts",
           "tests/fixtures/node-test/cases/mock-fn.ts",
           "tests/fixtures/node-test/cases/mock-method.ts",
+          "tests/fixtures/node-test/cases/mock-times.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -100833,14 +100851,15 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.TestContext",
         "tests": [
           "tests/fixtures/node-test/cases/ctx-members.ts",
           "tests/fixtures/node-test/cases/ctx-surface.ts",
-          "tests/fixtures/node-test/cases/ctx-hooks.ts",
-          "tests/fixtures/node-test/cases/ctx-plan.ts",
-          "tests/fixtures/node-test/cases/ctx-log.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
+          "tests/fixtures/node-test/cases/ctx-signal.ts",
+          "tests/fixtures/node-test/cases/ctx-wait-for.ts",
+          "tests/fixtures/node-test/cases/plan-wait-timeout.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -101160,9 +101179,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:context.test",
         "tests": [
+          "tests/fixtures/node-test/cases/ctx-test-options.ts",
+          "tests/fixtures/node-test/cases/subtests.ts",
+          "tests/fixtures/node-test/cases/ctx-run-only.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -103346,6 +103368,9 @@
           "tests/corpus/8176-tls-empty-context-ca.ts",
           "tests/corpus/8177-tls-empty-client-ca.ts",
           "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/tls-export-keying-material-context-types.ts",
+          "tests/corpus/tls-export-keying-material-context.ts",
+          "tests/corpus/tls-export-keying-material.ts",
           "tests/corpus/tls-handshake-events.ts",
           "tests/corpus/tls-server-class.ts",
           "tests/corpus/tls-server-members.ts",
@@ -104360,8 +104385,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.exportKeyingMaterial",
+        "tests": [
+          "tests/corpus/tls-export-keying-material.ts",
+          "tests/corpus/tls-export-keying-material-context.ts",
+          "tests/corpus/tls-export-keying-material-context-types.ts"
+        ]
       },
       "anchorSource": "exact"
     },

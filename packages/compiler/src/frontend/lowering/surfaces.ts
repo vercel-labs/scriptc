@@ -3298,6 +3298,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       ],
       note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
     },
+    {
+      id: "node-builtin.perf_hooks.timerify",
+      kind: "node-builtin",
+      name: "perf_hooks.timerify",
+      fns: ["perf.timerify"],
+      note: "performance.timerify and perf_hooks.timerify are the same wrapper: a timed call records a 'function' entry, delivered to the observers watching that type",
+    },
     // ── the process global's ambient reads and authority calls
     // (lowerProcessProperty/lowerProcessMethodCall — process is a
     // provenance-checked global here, not an importable module).

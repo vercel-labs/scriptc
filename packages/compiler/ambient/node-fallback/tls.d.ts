@@ -58,6 +58,10 @@ declare module "tls" {
     getCipher(): CipherNameAndProtocol;
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
+    /* derive keying material with the TLS exporter; the result is a Buffer */
+    /** The context is any ArrayBufferView (Buffer, TypedArray, DataView), as
+     * Node's exporter takes it. */
+    exportKeyingMaterial(length: number, label: string, context?: ArrayBufferView): Buffer;
     /* the peer's certificate: {} before the handshake or without one,
      * null once the socket is destroyed; detailed adds issuerCertificate */
     getPeerCertificate(detailed: true): DetailedPeerCertificate;

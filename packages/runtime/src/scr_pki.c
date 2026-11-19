@@ -470,6 +470,11 @@ typedef struct {
 } SpCurve;
 
 static const SpCurve sp_curves[] = {
+    /* The curves with no JWK name report Node's unsupported-curve error
+     * when a JWK exports them, and import from a JWK by name or NIST
+     * alias like the others. */
+    {"prime192v1", "P-192", NULL, MBEDTLS_ECP_DP_SECP192R1},
+    {"secp224r1", "P-224", NULL, MBEDTLS_ECP_DP_SECP224R1},
     {"prime256v1", "P-256", "P-256", MBEDTLS_ECP_DP_SECP256R1},
     {"secp384r1", "P-384", "P-384", MBEDTLS_ECP_DP_SECP384R1},
     {"secp521r1", "P-521", "P-521", MBEDTLS_ECP_DP_SECP521R1},

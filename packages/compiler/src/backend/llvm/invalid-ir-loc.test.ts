@@ -64,6 +64,9 @@ test("a slot id several functions hold names no site", () => {
     ],
   };
   expect(
-    invalidIrSourceLoc({ ...mod, functions: [first, second] } as unknown as IrModule, "on '%sc_l__x25_destr_0'"),
+    invalidIrSourceLoc(
+      { ...mod, functions: [first, second] } as unknown as IrModule,
+      "on '%sc_l__x25_destr_0'",
+    ),
   ).toBeNull();
 });

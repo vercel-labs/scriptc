@@ -338,6 +338,22 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "tls.sockDisableRenegotiation",
   // socket.timeout: a field read, never throws.
   "net.sockTimeout",
+  // The Duplex stream-state getters read the socket's own flags and
+  // buffers (readableEncoding copies the decoder's name): no accessor,
+  // program code, or error.
+  "net.sockReadableEncoding",
+  "net.sockReadableAborted",
+  "net.sockReadableDidRead",
+  "net.sockReadableEnded",
+  "net.sockReadableFlowing",
+  "net.sockReadableLength",
+  "net.sockWritableEnded",
+  "net.sockWritableFinished",
+  "net.sockAllowHalfOpen",
+  "net.sockHighWaterMark",
+  // scr_net_sock_server_dyn wraps the accepted socket's server handle (or
+  // null) in a value; retaining a handle runs no program code.
+  "net.sockServer",
   // scr_net_server_is_tls and scr_tls_server_is_dyn read a handle's tag
   // for `instanceof tls.Server`; no program code runs.
   "tls.serverIs",

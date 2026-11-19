@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/net-socket-paused-end.cjs"
+ ],
+ "diags": []
+}

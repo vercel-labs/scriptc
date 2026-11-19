@@ -58,6 +58,28 @@ declare module "net" {
     readonly writable: boolean;
     /* true until the read half is done (peer FIN / destroy). */
     readonly readable: boolean;
+    /* Readable.setEncoding's canonical name, or null while 'data' delivers
+     * Buffers; a socket's streams are byte streams. */
+    readonly readableEncoding: BufferEncoding | null;
+    readonly readableObjectMode: false;
+    readonly writableObjectMode: false;
+    /* The Duplex stream state Node exposes on a socket: the read half
+     * ending (peer FIN), the flow decision (null before any), the arrived
+     * bytes not yet consumed, and the write half's end/flush flags. */
+    readonly readableAborted: boolean;
+    readonly readableDidRead: boolean;
+    readonly readableEnded: boolean;
+    readonly readableFlowing: boolean | null;
+    readonly readableLength: number;
+    readonly readableHighWaterMark: number;
+    readonly writableEnded: boolean;
+    readonly writableFinished: boolean;
+    readonly writableAborted: boolean;
+    readonly writableHighWaterMark: number;
+    /* allowHalfOpen: the option the socket took (false unless set);
+     * server: the net.Server a server-side socket belongs to, else null. */
+    readonly allowHalfOpen: boolean;
+    readonly server: Server | null;
     /* every byte the write paths accepted (buffered included — Node
      * counts those too; plaintext on TLS sockets). */
     readonly bytesWritten: number;

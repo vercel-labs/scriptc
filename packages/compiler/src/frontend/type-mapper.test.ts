@@ -7,6 +7,7 @@ import {
   VOID,
   mapOf,
   setOf,
+  type IrRecordField,
   type IrType,
   type IrUnionDef,
 } from "../ir/ir.js";
@@ -396,5 +397,84 @@ describe("canonical optional unions", () => {
       expect(registry.get(optional.unionId)!.discriminant).toBeUndefined();
       expect(registry.transform(registry.get(optional.unionId)!, arms)).toBe(plain.id);
     }
+  });
+});
+
+describe("the shape journal", () => {
+  /** The fields of a shape with one field per name. */
+  const fields = (...names: string[]): IrRecordField[] =>
+    names.sort().map((name) => ({ name, type: F64 }));
+
+  test("a unit's shape interning is an entry a fresh registry applies", () => {
+    const writing = new ShapeRegistry();
+    writing.journaling = true;
+    writing.intern(fields("b", "a"), false, undefined, ["b", "a"]);
+    const table = writing.journalTable();
+    const entries = table.entries!(0)!;
+    expect(entries.length).toBe(1);
+    const shape = writing.shapes[0]!;
+
+    const reading = new ShapeRegistry();
+    reading.journaling = true;
+    const reader = reading.journalTable();
+    expect(reader.agrees!(entries)).toBe(true);
+    reader.apply!(entries);
+    // The shape id is a hash of the interned key, so both registries hold
+    // one shape under the same id, fields and declared order.
+    expect(reading.shapes).toEqual(writing.shapes);
+    expect(reading.get(shape.id)!.declaredOrder).toEqual(["b", "a"]);
+
+    // A unit after it reads the shape: both registries hold its content.
+    expect(reader.digest!(shape.id, reader.size())).toBe(
+      table.digest!(shape.id, table.size()),
+    );
+    expect(reader.size()).toBe(1);
+
+    // Truncating the entry takes the shape out again, as a recorded wave
+    // does before it applies a record's entries.
+    reader.truncate!(0);
+    expect(reading.shapes).toEqual([]);
+    expect(reading.get(shape.id)).toBeUndefined();
+    expect(reader.size()).toBe(0);
+  });
+
+  test("a declared order a unit offers an earlier shape is an entry of its own", () => {
+    const writing = new ShapeRegistry();
+    writing.journaling = true;
+    const earlier = writing.journalTable();
+    const first = writing.intern(fields("a"), false, undefined, ["a"]);
+    const held = earlier.size();
+    // A later unit offers the same shape another order under its own rank.
+    writing.withDeclaredOrderPriority([1, 0], () =>
+      writing.intern(fields("a"), false, undefined, ["a"]),
+    );
+    const entries = earlier.entries!(held)!;
+    expect(entries.length).toBe(1);
+
+    const reading = new ShapeRegistry();
+    reading.journaling = true;
+    const reader = reading.journalTable();
+    reader.apply!(earlier.entries!(0)!);
+    expect(reader.agrees!(entries)).toBe(true);
+    reader.apply!(entries);
+    expect(reading.get(first)!.declaredOrder).toEqual(["a"]);
+    // Both registries settle the same declared order from the same
+    // candidates.
+    writing.settleDeclaredOrderPriorities();
+    reading.settleDeclaredOrderPriorities();
+    expect(reading.shapes).toEqual(writing.shapes);
+  });
+
+  test("a shape a unit changes itself is carried by its entries, not by a read", () => {
+    const registry = new ShapeRegistry();
+    registry.journaling = true;
+    const table = registry.journalTable();
+    const id = registry.intern(fields("a"), false, undefined, ["a"]);
+    const before = table.size();
+    registry.intern(fields("a"), false, undefined, ["a"]);
+    // The unit's own change means a later unit's read of the shape is not
+    // what this one recorded; its entry carries the change.
+    expect(table.digest!(id, before)).toBeNull();
+    expect(table.entries!(before)!.length).toBe(1);
   });
 });

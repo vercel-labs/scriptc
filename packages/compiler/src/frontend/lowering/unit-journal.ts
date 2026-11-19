@@ -146,6 +146,14 @@ export interface JournalTable {
   /** The content of the entries the table holds now, for tables whose
    * values are objects a unit could change in place. */
   readonly contents?: () => HeldContents;
+  /** Why the entries from position `from` on cannot be applied, when the
+   * entries cannot be applied at all (a note on a node of no function the
+   * record names), or null when they can. */
+  readonly blocked?: (from: number) => string | null;
+  /** Attaches the entries apply added to the functions this build keeps, for
+   * a table whose entries name nodes of them. Called once the unit's
+   * function is kept. */
+  readonly attach?: () => void;
 }
 
 /** The content of a table's entries at one point (JournalTable.contents). */
@@ -172,15 +180,25 @@ export function contentDigest(text: string): string {
   return `${text.length}:${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
 }
 
+/** The id spelling of an interned union (`u`) or record shape (`r`): the
+ * prefix and 12 hex digits (stable-names.ts keyHash). */
+function isInternedId(text: string, prefix: number): boolean {
+  if (text.charCodeAt(0) !== prefix || text.length !== 13) return false;
+  for (let at = 1; at < text.length; at++) {
+    const char = text.charCodeAt(at);
+    if (!((char >= 48 && char <= 57) || (char >= 97 && char <= 102))) return false;
+  }
+  return true;
+}
+
 /** Adds to `out` the names among `strings`: the strings that start with `%`
- * (helper, lifted and IR data names) and union ids (`u` and 12 hex digits),
- * which the tables a unit reads and changes are keyed by. */
+ * (helper, lifted and IR data names) and union and shape ids (`u`/`r` and 12
+ * hex digits), which the tables a unit reads and changes are keyed by. */
 export function namedStrings(strings: Iterable<string>, out: Set<string>): void {
   for (const text of strings) {
     const first = text.charCodeAt(0);
     if (first === 37 /* % */) out.add(text);
-    else if (first === 117 /* u */ && text.length === 13 && /^u[0-9a-f]{12}$/.test(text))
-      out.add(text);
+    else if (isInternedId(text, 117 /* u */) || isInternedId(text, 114 /* r */)) out.add(text);
   }
 }
 
@@ -188,7 +206,6 @@ export function namedStrings(strings: Iterable<string>, out: Set<string>): void 
  * as their delimiting quotes. */
 export function quotedStrings(texts: readonly string[]): Set<string> {
   const out = new Set<string>();
-  const hex = (char: number): boolean => (char >= 48 && char <= 57) || (char >= 97 && char <= 102);
   for (const text of texts) {
     let start = -1;
     for (let index = 0; index < text.length; index++) {
@@ -197,13 +214,9 @@ export function quotedStrings(texts: readonly string[]): Set<string> {
       else if (char === 34 /* " */) {
         if (start < 0) start = index + 1;
         else {
-          const first = text.charCodeAt(start);
-          let name = first === 37; /* % */
-          if (!name && first === 117 /* u */ && index - start === 13) {
-            name = true;
-            for (let at = start + 1; at < index && name; at++) name = hex(text.charCodeAt(at));
-          }
-          if (name) out.add(text.slice(start, index));
+          const name = text.slice(start, index);
+          if (name.charCodeAt(0) === 37 /* % */ || isInternedId(name, 117) || isInternedId(name, 114))
+            out.add(name);
           start = -1;
         }
       }
@@ -442,7 +455,9 @@ export function recordUnit(
   const grown: number[] = [];
   tables.forEach((table, index) => {
     if (table.size() === before[index]) return;
-    if (table.entries === undefined) reasons.push(table.name);
+    const blocked = table.blocked?.(before[index]!) ?? null;
+    if (blocked !== null) reasons.push(`${table.name}:${blocked}`);
+    else if (table.entries === undefined) reasons.push(table.name);
     else grown.push(index);
   });
   const events = [...recorder.events];
@@ -609,6 +624,9 @@ export function lowerWaveRecorded(
       stats.replaceMs += performance.now() - replacing;
     }
     host.store(name, fn);
+    // The record's function replaced what lowering made; a table whose
+    // entries name its nodes attaches them to it (JournalTable.attach).
+    for (const table of tables) table.attach?.();
     if (stored !== null && reuse!.verify) reuse!.check(name, stored, pending, unit);
     reuse?.note(name, record, false, unit.files);
   }
@@ -692,6 +710,9 @@ export function applyRecord(
         ? null
         : decodeRecordFunction(record.fn);
   host.keep(record.name, fn, record.events);
+  // A table whose entries name nodes of the functions this build keeps
+  // attaches them once they are kept (JournalTable.attach).
+  for (const table of host.tables) table.attach?.();
   return [];
 }
 

@@ -1192,14 +1192,80 @@ static ScrStr *ws_strip_one(ScrStr *value, char marker, bool leading) {
  * relative value resolves against the base URL when there is one. */
 /* The pathname's dot segments, removed by the URL parser over path text
  * (never as a URL: a component value may not contribute an authority). */
+/* "." and "%2e" (case-insensitive). */
+static bool ws_single_dot(const char *s, size_t n) {
+  if (n == 1 && s[0] == '.') return true;
+  return n == 3 && s[0] == '%' && s[1] == '2' && (s[2] == 'e' || s[2] == 'E');
+}
+
+/* ".." in any of its four percent-encoded spellings. */
+static bool ws_double_dot(const char *s, size_t n) {
+  if (n == 2 && s[0] == '.' && s[1] == '.') return true;
+  if (n == 4 && s[0] == '.' && s[1] == '%' && s[2] == '2' && (s[3] == 'e' || s[3] == 'E'))
+    return true;
+  if (n == 4 && s[0] == '%' && s[1] == '2' && (s[2] == 'e' || s[2] == 'E') && s[3] == '.')
+    return true;
+  if (n == 6 && s[0] == '%' && s[1] == '2' && (s[2] == 'e' || s[2] == 'E') && s[3] == '%' &&
+      s[4] == '2' && (s[5] == 'e' || s[5] == 'E'))
+    return true;
+  return false;
+}
+
+/* The URL parser's path state over path text that starts with "/": "." and
+ * ".." segments (in their percent-encoded spellings too) resolve, and every
+ * other byte — a backslash included — stays literal. An empty result is the
+ * root path "/", as the serializer answers for a special URL. */
 static ScrStr *ws_dot_segments(const ScrStr *path) {
-  ScrStr *candidate = ws_str_join("http://x", path, NULL);
-  ScrUrl *url = ws_parse_or_null(candidate);
-  scr_str_release(candidate);
-  if (url == NULL) return NULL;
-  ScrStr *out = scr_url_pathname(url);
-  scr_url_release(url);
-  return out;
+  if (path->len == 0) return scr_str_new("", 0);
+  size_t cap = 8;
+  size_t len = 0;
+  struct {
+    const char *data;
+    size_t len;
+  } *segments = malloc(cap * sizeof *segments);
+  if (segments == NULL) scr_trap("scriptc: out of memory\n");
+  size_t at = path->data[0] == '/' ? 1 : 0;
+  size_t start = at;
+  for (;;) {
+    bool end = at >= path->len;
+    if (!end && path->data[at] != '/') {
+      at++;
+      continue;
+    }
+    const char *segment = path->data + start;
+    size_t n = at - start;
+    bool append = true;
+    bool empty = false;
+    if (ws_double_dot(segment, n)) {
+      append = false;
+      if (len > 0) len--;
+    } else if (ws_single_dot(segment, n)) {
+      /* only a "." that ends the path adds its empty segment */
+      append = end;
+      empty = end;
+    }
+    if (append) {
+      if (len == cap) {
+        cap *= 2;
+        segments = realloc(segments, cap * sizeof *segments);
+        if (segments == NULL) scr_trap("scriptc: out of memory\n");
+      }
+      segments[len].data = empty ? "" : segment;
+      segments[len].len = empty ? 0 : n;
+      len++;
+    }
+    if (end) break;
+    at++;
+    start = at;
+  }
+  WsBuf b = {0};
+  for (size_t i = 0; i < len; i++) {
+    ws_buf_add(&b, "/", 1);
+    ws_buf_add(&b, segments[i].data, segments[i].len);
+  }
+  free(segments);
+  if (len == 0) ws_buf_add(&b, "/", 1);
+  return ws_buf_finish(&b);
 }
 
 /* The standard's canonicalize a pathname: the value percent-encoded for a
@@ -1234,15 +1300,17 @@ static ScrStr *ws_path_canonicalize(ScrStr *value, ScrUrl *base) {
     }
     scr_str_release(base_path);
   }
-  /* A relative value with no usable base: parsed in the path-start state on
-   * a dummy URL, with a "/-" prefix so the parser keeps its text. */
-  ScrStr *candidate = ws_str_join("http://x/-", encoded, NULL);
+  /* A relative value with no usable base: path text with a "/-" prefix, so
+   * the dot segments resolve without reaching the root, then the prefix
+   * comes off. */
+  WsBuf b = {0};
+  ws_buf_str(&b, "/-");
+  ws_buf_scr(&b, encoded);
+  ScrStr *combined = ws_buf_finish(&b);
   scr_str_release(encoded);
-  ScrUrl *url = ws_parse_or_null(candidate);
-  scr_str_release(candidate);
-  if (url == NULL) return NULL;
-  ScrStr *path = scr_url_pathname(url);
-  scr_url_release(url);
+  ScrStr *path = ws_dot_segments(combined);
+  scr_str_release(combined);
+  if (path == NULL) return NULL;
   ScrStr *out = path->len >= 2 ? scr_str_new(path->data + 2, path->len - 2)
                                : scr_str_new("", 0);
   scr_str_release(path);

@@ -92,6 +92,14 @@ console.log(
 const anyPath = new URLPattern({ pathname: "*" });
 console.log("path dot segments", anyPath.exec({ pathname: "/a/./x" }).pathname.input);
 console.log("path relative dots", JSON.stringify(anyPath.exec({ pathname: "a/../x" }).pathname.input));
+console.log("path backslash", anyPath.exec({ pathname: "/a\\b" }).pathname.input);
+console.log("path backslash dots", anyPath.exec({ pathname: "/a\\..\\b" }).pathname.input);
+console.log("path encoded dots", anyPath.exec({ pathname: "/a/%2e%2e/b" }).pathname.input);
+console.log(
+  "path trailing dot",
+  JSON.stringify(anyPath.exec({ pathname: "/a/." }).pathname.input)
+);
+console.log("path root dot", JSON.stringify(anyPath.exec({ pathname: "/.." }).pathname.input));
 console.log(
   "record canonicalized",
   JSON.stringify(

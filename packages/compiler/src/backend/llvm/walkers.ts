@@ -1023,15 +1023,20 @@ export class LlWalkers {
    * checked-dynamic copy would flatten a record view into its empty slot
    * words, so an array that holds one is written by the type-directed
    * writer instead of being boxed. */
-  private recordElements(t: IrType): boolean {
+  private recordElements(t: IrType, seen = new Set<string>()): boolean {
+    const key = typeKey(t);
+    // A union can reach itself through an array (a recursive JSON type); the
+    // walk answers for the type it is already inside.
+    if (seen.has(key)) return false;
+    seen.add(key);
     switch (t.kind) {
       case "record":
         return true;
       case "array":
-        return this.recordElements(t.elem);
+        return this.recordElements(t.elem, seen);
       case "union":
         return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
-          this.recordElements(arm),
+          this.recordElements(arm, seen),
         );
       default:
         return false;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-pause-in-data-handler.ts"
+ ],
+ "diags": []
+}

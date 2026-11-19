@@ -1927,6 +1927,10 @@ static void scr_net_sock_read(ScrNetSocket *s) {
   if (s->user_paused && s->tops != NULL) return;
   for (;;) {
     if (s->fd < 0 || s->hold) return;
+    /* pause() called from inside a callback (a 'data' handler) lands
+     * between iterations: the transport must stop here too, or the next
+     * read decrypts and discards the plaintext (the entry guard's rule). */
+    if (s->user_paused && s->tops != NULL) return;
     /* pause() turns delivery off, not the reads: Node's paused stream keeps
      * reading ahead to its high-water mark, which is how it sees a peer's
      * FIN (and why a paused socket still emits 'end'). */

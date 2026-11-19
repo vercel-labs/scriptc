@@ -3623,11 +3623,13 @@ static void scr_http_proto_sweep(void) {
   scr_http_emits_head = scr_http_emits_len = 0;
 }
 
+static void scr_http_proxy_env_clear(void);
 static void scr_http_clients_cleanup(void);
 static void scr_http_agents_cleanup(void);
 
 static void scr_http_cleanup_atexit(void) {
   scr_http_exiting = true;
+  scr_http_proxy_env_clear();
   while (scr_http_emits_head < scr_http_emits_len) {
     ScrHttpEmit e = scr_http_emits[scr_http_emits_head++];
     scr_http_emit_release(&e);
@@ -5578,6 +5580,58 @@ void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/) {
   scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
 }
 
+/* ── the module's environment proxy (Node 24) ─────────────────────────────
+ * The function only configures the module; the default agent's requests
+ * resolve the proxy per target when they are made. */
+typedef struct {
+  bool enabled;
+  ScrStr *http_proxy;  /* HTTP_PROXY / http_proxy */
+  ScrStr *https_proxy; /* HTTPS_PROXY / https_proxy */
+  ScrStr *no_proxy;    /* NO_PROXY / no_proxy */
+} ScrHttpProxyEnv;
+
+static SCR_TL ScrHttpProxyEnv scr_http_proxy_env;
+
+static void scr_http_proxy_env_clear(void) {
+  scr_str_release(scr_http_proxy_env.http_proxy);
+  scr_str_release(scr_http_proxy_env.https_proxy);
+  scr_str_release(scr_http_proxy_env.no_proxy);
+  scr_http_proxy_env.http_proxy = NULL;
+  scr_http_proxy_env.https_proxy = NULL;
+  scr_http_proxy_env.no_proxy = NULL;
+}
+
+/* One proxy variable: the caller's object first (Node reads both the
+ * uppercase and the lowercase spelling), then the process environment when
+ * no object was given. Only string values count. */
+static ScrStr *scr_http_proxy_env_value(const ScrDyn *env, const char *upper,
+                                        const char *lower) {
+  if (env != NULL && env->kind != SCR_DYN_UNDEF && env->kind != SCR_DYN_NULL) {
+    ScrDyn *materialized =
+        env->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(env) : NULL;
+    const ScrDyn *obj = materialized != NULL ? materialized : env;
+    ScrStr *out = NULL;
+    if (obj->kind == SCR_DYN_OBJ) {
+      const ScrDyn *v = scr_dyn_obj_get(obj, upper, strlen(upper));
+      if (v == NULL) v = scr_dyn_obj_get(obj, lower, strlen(lower));
+      if (v != NULL && v->kind == SCR_DYN_STR) out = scr_str_retain(v->v.str);
+    }
+    scr_dyn_release(materialized);
+    return out;
+  }
+  const char *raw = getenv(upper);
+  if (raw == NULL) raw = getenv(lower);
+  return raw != NULL ? scr_str_new(raw, strlen(raw)) : NULL;
+}
+
+void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/) {
+  scr_http_proxy_env_clear();
+  scr_http_proxy_env.http_proxy = scr_http_proxy_env_value(env, "HTTP_PROXY", "http_proxy");
+  scr_http_proxy_env.https_proxy = scr_http_proxy_env_value(env, "HTTPS_PROXY", "https_proxy");
+  scr_http_proxy_env.no_proxy = scr_http_proxy_env_value(env, "NO_PROXY", "no_proxy");
+  scr_http_proxy_env.enabled = true;
+}
+
 /* The createServer option checks Node's constructor runs as it reads each
  * option, ahead of reading the next one; they leave Node's error pending
  * without needing a server to apply the value to. */
@@ -6143,6 +6197,8 @@ struct ScrHttpClientReq {
    * stream.getDefaultHighWaterMark(false) when the request was created. */
   double hwm;
   ScrStr *host, *path, *method;
+  ScrStr *proxy_forward; /* proxied: the absolute URI for the request line (+1) */
+  ScrStr *proxy_auth;    /* proxied: the proxy-authorization value (+1) or NULL */
   int port;
   int default_port; /* the Host header omits it (80 http, 443 https) */
   ScrStr **hnames; /* user headers, verbatim case */
@@ -6254,6 +6310,8 @@ void scr_http_client_release(ScrHttpClientReq *c) {
     scr_net_ls_drop(&c->drain_ls);
     scr_str_release(c->host);
     scr_str_release(c->path);
+    scr_str_release(c->proxy_forward);
+    scr_str_release(c->proxy_auth);
     scr_str_release(c->method);
     for (size_t i = 0; i < c->nheaders; i++) {
       scr_str_release(c->hnames[i]);
@@ -6737,7 +6795,10 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
   ScrHttpBuf b = {NULL, 0, 0};
   scr_http_buf_append(&b, c->method->data, c->method->len);
   scr_http_buf_str(&b, " ");
-  scr_http_buf_append(&b, c->path->data, c->path->len);
+  if (c->proxy_forward != NULL)
+    scr_http_buf_append(&b, c->proxy_forward->data, c->proxy_forward->len);
+  else
+    scr_http_buf_append(&b, c->path->data, c->path->len);
   scr_http_buf_str(&b, " HTTP/1.1\r\n");
   for (size_t i = 0; i < c->nheaders; i++) {
     if (c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR) {
@@ -6813,6 +6874,16 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
       scr_http_buf_str(&b, pbuf);
     }
     scr_http_buf_str(&b, "\r\n");
+  }
+  if (c->proxy_forward != NULL) {
+    /* Node's proxy form: the proxy-authorization line (when the proxy URL
+     * carries credentials) and the proxy connection line follow Host */
+    if (c->proxy_auth != NULL) {
+      scr_http_buf_str(&b, "proxy-authorization: ");
+      scr_http_buf_append(&b, c->proxy_auth->data, c->proxy_auth->len);
+      scr_http_buf_str(&b, "\r\n");
+    }
+    scr_http_buf_str(&b, "proxy-connection: keep-alive\r\n");
   }
   if (!c->removed_connection && !scr_http_client_has_header(c, "connection")) {
     /* Node asks the server to close only for an agent without keepAlive
@@ -8054,12 +8125,190 @@ static bool scr_http_request_checks(const ScrStr *host /*borrowed, nullable*/,
   return true;
 }
 
+/* ── the environment proxy's client side (Node 24) ───────────────────────
+ * A plain-http request the module's proxy covers is dialed to the proxy and
+ * carries the absolute URI, as Node sends it. https targets tunnel with
+ * CONNECT, which this runtime does not model yet; they keep going through
+ * their own connector until that lands. */
+
+typedef struct {
+  ScrStr *host; /* +1 */
+  double port;
+  ScrStr *auth; /* +1 or NULL: the proxy-authorization value */
+} ScrHttpProxyTarget;
+
+static ScrStr *scr_http_proxy_b64(const unsigned char *data, size_t len) {
+  static const char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  char *out = malloc(len && len < SIZE_MAX ? ((len + 2) / 3) * 4 + 1 : 1);
+  if (out == NULL) scr_http_oom();
+  size_t at = 0;
+  for (size_t i = 0; i < len; i += 3) {
+    unsigned v = (unsigned)data[i] << 16;
+    if (i + 1 < len) v |= (unsigned)data[i + 1] << 8;
+    if (i + 2 < len) v |= data[i + 2];
+    out[at++] = alphabet[(v >> 18) & 63];
+    out[at++] = alphabet[(v >> 12) & 63];
+    out[at++] = i + 1 < len ? alphabet[(v >> 6) & 63] : '=';
+    out[at++] = i + 2 < len ? alphabet[v & 63] : '=';
+  }
+  ScrStr *answer = scr_str_new(out, at);
+  free(out);
+  return answer;
+}
+
+static bool scr_http_ci_at(const char *a, const char *b, size_t len) {
+  for (size_t i = 0; i < len; i++)
+    if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
+  return true;
+}
+
+/* Node's noProxy matching for the forms this runtime models: `*`, a host, a
+ * `.suffix`, a bare suffix, and `host:port`. */
+static bool scr_http_no_proxy_matches(const ScrStr *list, const ScrStr *host, double port) {
+  if (list == NULL) return false;
+  size_t at = 0;
+  while (at <= list->len) {
+    size_t end = at;
+    while (end < list->len && list->data[end] != ',') end++;
+    size_t s = at, e = end;
+    while (s < e && (list->data[s] == ' ' || list->data[s] == '\t')) s++;
+    while (e > s && (list->data[e - 1] == ' ' || list->data[e - 1] == '\t')) e--;
+    if (e > s) {
+      const char *pat = list->data + s;
+      size_t plen = e - s;
+      if (plen == 1 && pat[0] == '*') return true;
+      size_t hlen = plen;
+      bool port_ok = true;
+      size_t colon = SIZE_MAX;
+      for (size_t i = 0; i < plen; i++)
+        if (pat[i] == ':') colon = i;
+      if (colon != SIZE_MAX && colon + 1 < plen) {
+        bool digits = true;
+        double want = 0;
+        for (size_t i = colon + 1; i < plen; i++) {
+          if (pat[i] < '0' || pat[i] > '9') {
+            digits = false;
+            break;
+          }
+          want = want * 10 + (pat[i] - '0');
+        }
+        if (digits) {
+          hlen = colon;
+          port_ok = want == port;
+        }
+      }
+      if (port_ok) {
+        if (plen > 0 && pat[0] == '.') {
+          if (host->len > hlen && host->data[host->len - hlen] == '.' &&
+              scr_http_ci_at(host->data + host->len - hlen + 1, pat + 1, hlen - 1))
+            return true;
+        } else if (scr_http_ci_at(host->data, pat, host->len < hlen ? host->len : hlen) &&
+                   host->len == hlen) {
+          return true;
+        } else if (host->len > hlen && host->data[host->len - hlen - 1] == '.' &&
+                   scr_http_ci_at(host->data + host->len - hlen, pat, hlen)) {
+          return true;
+        }
+      }
+    }
+    if (end >= list->len) break;
+    at = end + 1;
+  }
+  return false;
+}
+
+/* Whether the module's proxy covers a target for the given scheme: the
+ * matching variable is set and NO_PROXY does not bypass it. */
+static bool scr_http_proxy_covers(const ScrStr *host, double port, bool secure) {
+  if (!scr_http_proxy_env.enabled) return false;
+  const ScrStr *spec = secure ? scr_http_proxy_env.https_proxy : scr_http_proxy_env.http_proxy;
+  if (spec == NULL || spec->len == 0) return false;
+  return !scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port);
+}
+
+/* The proxy a plain-http target goes through, parsed from HTTP_PROXY: an
+ * `http://` URL with optional credentials. */
+static bool scr_http_proxy_resolve(const ScrStr *host, double port, ScrHttpProxyTarget *out) {
+  memset(out, 0, sizeof *out);
+  if (!scr_http_proxy_env.enabled) return false;
+  const ScrStr *spec = scr_http_proxy_env.http_proxy;
+  if (spec == NULL || spec->len < 8 || memcmp(spec->data, "http://", 7) != 0) return false;
+  if (scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port)) return false;
+  const char *p = spec->data + 7;
+  size_t n = spec->len - 7;
+  for (size_t i = 0; i < n; i++) {
+    if (p[i] == '/') {
+      n = i;
+      break;
+    }
+  }
+  size_t at_sign = SIZE_MAX;
+  for (size_t i = 0; i < n; i++)
+    if (p[i] == '@') at_sign = i;
+  if (at_sign != SIZE_MAX) {
+    ScrHttpBuf cred = {NULL, 0, 0};
+    scr_http_buf_str(&cred, "Basic ");
+    ScrStr *basic = scr_http_proxy_b64((const unsigned char *)p, at_sign);
+    scr_http_buf_append(&cred, basic->data, basic->len);
+    scr_str_release(basic);
+    out->auth = scr_str_new(cred.data, cred.len);
+    free(cred.data);
+    p += at_sign + 1;
+    n -= at_sign + 1;
+  }
+  const char *hp = p;
+  size_t hn = n;
+  double proxy_port = 80;
+  if (n > 0 && p[0] == '[') {
+    size_t close = SIZE_MAX;
+    for (size_t i = 1; i < n; i++)
+      if (p[i] == ']') {
+        close = i;
+        break;
+      }
+    if (close == SIZE_MAX) goto fail;
+    hp = p + 1;
+    hn = close - 1;
+    if (close + 1 < n && p[close + 1] == ':') {
+      double want = 0;
+      for (size_t i = close + 2; i < n; i++) {
+        if (p[i] < '0' || p[i] > '9') goto fail;
+        want = want * 10 + (p[i] - '0');
+      }
+      proxy_port = want;
+    }
+  } else {
+    size_t colon = SIZE_MAX;
+    for (size_t i = 0; i < n; i++)
+      if (p[i] == ':') colon = i;
+    if (colon != SIZE_MAX) {
+      double want = 0;
+      for (size_t i = colon + 1; i < n; i++) {
+        if (p[i] < '0' || p[i] > '9') goto fail;
+        want = want * 10 + (p[i] - '0');
+      }
+      proxy_port = want;
+      hn = colon;
+    }
+  }
+  if (hn == 0) goto fail;
+  out->host = scr_str_new(hp, hn);
+  out->port = proxy_port;
+  return true;
+fail:
+  scr_str_release(out->auth);
+  out->auth = NULL;
+  return false;
+}
+
 static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double port,
                                                 ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                                 double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                                 ScrClosure *cb /*moves, nullable*/,
                                                 ScrHttpRespFn fn, int default_port,
                                                 void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx,
+                                                bool env_proxy,
                                                 ScrNetSocket *presock /*moves, nullable*/) {
   /* Node's ClientRequest constructor checks; moved-in arguments release
    * when they fail — the request never exists. The entry points that take
@@ -8067,6 +8316,17 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   if (!scr_http_request_checks(NULL, path, method, NULL)) {
     if (cb) scr_closure_release(cb);
     if (presock) scr_net_sock_release(presock);
+    return NULL;
+  }
+  if (env_proxy && wrap != NULL && scr_http_proxy_covers(host, port, true)) {
+    /* the target is https and the module's proxy covers it: that needs a
+     * CONNECT tunnel, which this runtime does not model yet — refuse rather
+     * than send the request around the proxy the program asked for */
+    if (cb) scr_closure_release(cb);
+    if (presock) scr_net_sock_release(presock);
+    static const char msg[] =
+        "https requests through the environment proxy (CONNECT tunnelling) are not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
     return NULL;
   }
   scr_http_install();
@@ -8124,9 +8384,36 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     c->sock = presock;
     scr_net_sock_set_context(c->sock, c->als);
   } else {
-    ScrStr *dial = scr_net_blocking_lookup(host);
-    c->sock = scr_net_connect(port, dial, NULL);
-    scr_str_release(dial);
+    ScrHttpProxyTarget proxy;
+    bool proxied =
+        env_proxy && wrap == NULL && scr_http_proxy_resolve(c->host, (double)c->port, &proxy);
+    if (proxied) {
+      /* the request line carries the absolute URI, as Node's proxy form does */
+      ScrHttpBuf forward = {NULL, 0, 0};
+      bool v6 = memchr(c->host->data, ':', c->host->len) != NULL;
+      scr_http_buf_str(&forward, "http://");
+      if (v6) scr_http_buf_str(&forward, "[");
+      scr_http_buf_append(&forward, c->host->data, c->host->len);
+      if (v6) scr_http_buf_str(&forward, "]");
+      if (c->port != 80) {
+        char pbuf[16];
+        snprintf(pbuf, sizeof pbuf, ":%d", c->port);
+        scr_http_buf_str(&forward, pbuf);
+      }
+      scr_http_buf_append(&forward, c->path->data, c->path->len);
+      c->proxy_forward = scr_str_new(forward.data, forward.len);
+      free(forward.data);
+      c->proxy_auth = proxy.auth;
+      proxy.auth = NULL;
+      ScrStr *dial = scr_net_blocking_lookup(proxy.host);
+      c->sock = scr_net_connect(proxy.port, dial, NULL);
+      scr_str_release(dial);
+      scr_str_release(proxy.host);
+    } else {
+      ScrStr *dial = scr_net_blocking_lookup(host);
+      c->sock = scr_net_connect(port, dial, NULL);
+      scr_str_release(dial);
+    }
   }
   ScrHttpConn *conn = calloc(1, sizeof *conn);
   if (!conn) scr_http_oom();
@@ -8172,7 +8459,7 @@ ScrHttpClientReq *scr_http_request_ex(ScrStr *host /*borrowed*/, double port,
                                        void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx) {
   return scr_http_client_constructed(
       scr_http_request_impl(host, port, path, method, timeout_ms, header_pairs, cb, fn,
-                            default_port, wrap, wrap_ctx, NULL),
+                            default_port, wrap, wrap_ctx, true, NULL),
       auto_end);
 }
 
@@ -8204,7 +8491,7 @@ ScrHttpClientReq *scr_http_request_conn(ScrClosure *conn_cb /*moves*/, ScrStr *p
   }
   ScrStr *host = scr_str_new("localhost", 9);
   ScrHttpClientReq *c = scr_http_request_impl(host, 80, path, method, timeout_ms, header_pairs,
-                                               cb, fn, 80, NULL, NULL, sock);
+                                               cb, fn, 80, NULL, NULL, false, sock);
   scr_str_release(host);
   return scr_http_client_constructed(c, auto_end);
 }
@@ -8797,8 +9084,12 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
   ScrNetSocket *presock = socket_path != NULL ? scr_http_socket_dialer(socket_path, queue || reuse)
                           : queue || reuse    ? scr_net_connect_deferred(p, host)
                                               : NULL;
+  const ScrDyn *global_agent = scr_http_global_agent(default_port == 443);
+  bool env_proxy = global_agent != NULL && global_agent->kind == SCR_DYN_HANDLE &&
+                   global_agent->v.handle.ptr == (void *)ag;
   ScrHttpClientReq *c = scr_http_request_impl(host, p, path, method, timeout_ms, header_pairs,
-                                               cb, fn, default_port, wrap, wrap_ctx, presock);
+                                               cb, fn, default_port, wrap, wrap_ctx, env_proxy,
+                                               presock);
   if (c == NULL) { /* a constructor check threw: nothing registered */
     if (reuse != NULL) scr_http_agent_free_untake(ag, reuse); /* back to the list it came from */
     scr_str_release(name);
@@ -8852,7 +9143,8 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
     double p = port >= 0 ? port : (double)default_port;
     ScrNetSocket *presock = socket_path != NULL ? scr_http_socket_dialer(socket_path, false) : NULL;
     ScrHttpClientReq *c = scr_http_request_impl(host, p, path, method, timeout_ms, header_pairs,
-                                                 cb, fn, default_port, wrap, wrap_ctx, presock);
+                                                 cb, fn, default_port, wrap, wrap_ctx, false,
+                                                 presock);
     if (c != NULL) c->one_shot = true;
     return scr_http_client_constructed(c, auto_end);
   }

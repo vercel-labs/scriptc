@@ -6,8 +6,8 @@
 // OutgoingMessage's setHeaders, writableLength and 'drain',
 // OutgoingMessage.pipe(), the informational responses (writeInformation
 // and the three that delegate to it), the agent's keepSocketAlive and
-// reuseSocket hooks, and maxTotalSockets have their own differential
-// programs.
+// reuseSocket hooks, maxTotalSockets and the module's environment proxy
+// (setGlobalProxyFromEnv) have their own differential programs.
 import * as http from "node:http";
 
 // Agent: the dial hook.
@@ -20,6 +20,3 @@ agent.destroy();
 const server = http.createServer((request, response) => {
   response.end();
 });
-
-// The module: the proxy configuration read from the environment.
-http.setGlobalProxyFromEnv();

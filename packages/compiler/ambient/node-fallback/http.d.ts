@@ -19,6 +19,11 @@ declare module "http" {
   export const METHODS: string[];
   export const STATUS_CODES: { [status: number]: string | undefined };
   export const maxHeaderSize: number;
+  /* Node 24: turn on the module's environment proxy for the default agent.
+   * Without an argument the process environment is read (HTTP_PROXY /
+   * HTTPS_PROXY / NO_PROXY, and their lowercase spellings); an object
+   * supplies those variables explicitly. */
+  export function setGlobalProxyFromEnv(proxyEnv?: { [name: string]: string | undefined }): void;
   export interface Server extends NetServer {
     timeout: number;
     /* The incoming header count cap (null = unset; 0 = no limit) and the

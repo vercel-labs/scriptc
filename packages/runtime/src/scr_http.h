@@ -442,6 +442,9 @@ void scr_http_client_on_connect(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, S
 /* http.setMaxIdleHTTPParsers(max): validates like Node; there is no parser
  * pool to size. */
 void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/);
+/* http.setGlobalProxyFromEnv(proxyEnv?): configures the module's environment
+ * proxy (Node 24). An undefined argument reads the process environment. */
+void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/);
 void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);

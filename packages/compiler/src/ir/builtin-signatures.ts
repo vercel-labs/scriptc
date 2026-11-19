@@ -2800,6 +2800,9 @@ function buildLibFnSignatures() {
     "http.validateHeaderValue": { argTypes: [STRING, DYN], result: VOID },
     /** http.setMaxIdleHTTPParsers(max): Node's argument validation. */
     "http.setMaxIdleParsers": { argTypes: [DYN], result: VOID },
+    /** http.setGlobalProxyFromEnv(proxyEnv?): Node 24 configures the module's
+     * environment proxy; the default agent resolves it per target. */
+    "http.setGlobalProxyFromEnv": { argTypes: [DYN], result: VOID },
     "http.serverJoinDupHeaders": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverAllowMissingHostHeader": { argTypes: [NETSERVER_T], result: VOID },
     /** The five writable numeric http.Server timeout fields use one

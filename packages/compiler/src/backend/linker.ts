@@ -419,6 +419,10 @@ async function startupOrderingFile(plan: NativeLinkPlan, dir: string): Promise<s
   return path;
 }
 
+/** Extensions the driver compiles as source. A link that names one reads
+ * headers its preprocessor opens, which the driver's trace does not list. */
+const COMPILED_SOURCE = /\.(?:c|cc|cpp|cxx|m|mm|cu|s)$/i;
+
 export async function linkNativeExecutable(
   plan: NativeLinkPlan,
   options: {
@@ -491,6 +495,12 @@ export async function linkNativeExecutable(
     // own, with the output's own basename, which a driver may derive an
     // output identity from.
     const probeDependencies = async (): Promise<NativeArtifactDependency[]> => {
+      // A source input is compiled by the driver, and its trace names the
+      // source but not the headers its preprocessor read: a header edited
+      // after a publish would leave the cached executable holding the old
+      // code. Such a link keeps the executable out of the cache.
+      if (plan.inputs.some((input) => COMPILED_SOURCE.test(input)))
+        throw new Error("link input is a source file the driver compiles");
       const probeOut = join(
         await mkdtemp(join(privateOutRoot, "probe-link-")),
         basename(plan.outputPath),

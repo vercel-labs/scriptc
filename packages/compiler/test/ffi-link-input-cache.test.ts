@@ -113,6 +113,52 @@ describe.skipIf(!linux)("FFI link inputs the trace cannot name", () => {
     }
   });
 
+  test("an edited header of a source library is compiled again, not cached", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-ffi-source-header-cache-"));
+    dirs.push(dir);
+    const cache = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const profile = join(dir, "ffi.json");
+    const source = join(dir, "library.c");
+    const header = join(dir, "value.h");
+    const output = join(dir, "program");
+    const oldCacheDir = process.env["SCRIPTC_CACHE_DIR"];
+    const oldNoCache = process.env["SCRIPTC_NO_CACHE"];
+    try {
+      await writeFile(entry, entryText);
+      await writeFile(header, "#define VALUE 7.5\n");
+      await writeFile(
+        source,
+        '#include "value.h"\ndouble scriptc_link_input_probe(void) { return VALUE; }\n',
+      );
+      // A source library is compiled by the driver, whose trace names the
+      // source but not the headers its preprocessor reads.
+      await writeFile(profile, profileText([source]));
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      delete process.env["SCRIPTC_NO_CACHE"];
+      const options = {
+        outDir: dir,
+        outPath: output,
+        backend: "llvm" as const,
+        ffiProfilePath: profile,
+      };
+
+      const built = await compile(entry, options);
+      if (!built.ok) throw new Error(built.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout.trim()).toBe("7.5");
+
+      await writeFile(header, "#define VALUE 9.25\n");
+      const rebuilt = await compile(entry, options);
+      if (!rebuilt.ok) throw new Error(rebuilt.diagnostics.map((d) => d.message).join("\n"));
+      expect((await execFileAsync(output, [], { encoding: "utf8" })).stdout.trim()).toBe("9.25");
+    } finally {
+      if (oldCacheDir === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+      else process.env["SCRIPTC_CACHE_DIR"] = oldCacheDir;
+      if (oldNoCache === undefined) delete process.env["SCRIPTC_NO_CACHE"];
+      else process.env["SCRIPTC_NO_CACHE"] = oldNoCache;
+    }
+  });
+
   test("a rebuilt member of a thin archive is linked, not the cached executable", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-ffi-thin-cache-"));
     dirs.push(dir);

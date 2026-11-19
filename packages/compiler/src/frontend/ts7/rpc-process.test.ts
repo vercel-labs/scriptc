@@ -1,4 +1,7 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
 import { Ts7FifoIo } from "./rpc-process.js";
@@ -66,3 +69,72 @@ test.skipIf(!posix)(
     expect(result.stderr).toBe("");
   },
 );
+
+const reapModuleUrl = new URL("./rpc-process.ts", import.meta.url).href;
+
+/** A server stand-in that ignores its input and sleeps: only the lifetime
+ * watch can stop it. */
+function fakeServer(): string {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-reap-"));
+  const executable = join(directory, "server");
+  writeFileSync(executable, "#!/bin/sh\nexec sleep 60\n");
+  chmodSync(executable, 0o755);
+  return executable;
+}
+
+async function waitForDeath(pid: number): Promise<boolean> {
+  for (let waited = 0; waited < 100; waited++) {
+    if (!alive(pid)) return true;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  return !alive(pid);
+}
+
+/** A scriptc-like process that starts a server and then exits in `mode`. */
+function startHarness(
+  executable: string,
+  mode: "exit" | "throw" | "sleep",
+): ReturnType<typeof spawn> {
+  const code = `import { Ts7FifoIo } from ${JSON.stringify(reapModuleUrl)};
+const io = new Ts7FifoIo(${JSON.stringify(executable)}, []);
+console.log(io.pid);
+if (${JSON.stringify(mode)} === "sleep") setInterval(() => {}, 1000);
+if (${JSON.stringify(mode)} === "throw") throw new Error("boom");`;
+  return spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", code], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+}
+
+function serverPid(child: ReturnType<typeof spawn>): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    let text = "";
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      text += chunk;
+      const line = text.split("\n", 1)[0]!.trim();
+      if (/^\d+$/.test(line)) resolve(Number(line));
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      const line = text.split("\n", 1)[0]!.trim();
+      if (/^\d+$/.test(line)) resolve(Number(line));
+      else reject(new Error(`harness exited ${String(code)} before printing its server: ${text}`));
+    });
+  });
+}
+
+const cases: readonly (readonly [string, "exit" | "throw" | "sleep", NodeJS.Signals | null])[] = [
+  ["a normal exit", "exit", null],
+  ["an error exit", "throw", null],
+  ["SIGTERM", "sleep", "SIGTERM"],
+  ["SIGKILL", "sleep", "SIGKILL"],
+];
+for (const [label, mode, signal] of cases) {
+  test.skipIf(!posix)(`${label} leaves no TypeScript server behind`, async () => {
+    const child = startHarness(fakeServer(), mode);
+    const pid = await serverPid(child);
+    if (signal !== null) child.kill(signal);
+    await new Promise<void>((resolve) => child.on("exit", () => resolve()));
+    expect(await waitForDeath(pid)).toBe(true);
+  });
+}

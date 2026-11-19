@@ -141,8 +141,11 @@ class Ts7NamedPipeIo implements Ts7WireIo {
  * background subshell would otherwise block opening its input and the failure
  * would only surface as end of file on the first read. */
 const FIFO_LAUNCH =
-  'i=$1 o=$2; shift 2; command -v "$1" >/dev/null || exit 127; mkfifo -m 600 "$i" "$o" || exit 1; ' +
-  '( exec </dev/null >/dev/null; exec "$@" <"$i" >"$o" ) & echo $!';
+  'i=$1 o=$2 l=$3; shift 3; command -v "$1" >/dev/null || exit 127; ' +
+  'mkfifo -m 600 "$i" "$o" "$l" || exit 1; ' +
+  '( exec </dev/null >/dev/null; exec "$@" <"$i" >"$o" ) & s=$!; ' +
+  '( read -r _ <"$l"; kill -9 "$s" 2>/dev/null ) >/dev/null 2>&1 & ' +
+  "echo $s";
 
 /** How long a starting server may take to open its input, in milliseconds. */
 const FIFO_OPEN_TIMEOUT = 10_000;
@@ -159,6 +162,10 @@ function processAlive(pid: number): boolean {
 export class Ts7FifoIo implements Ts7WireIo {
   private readFd = -1;
   private writeFd = -1;
+  /** The lifetime pipe's writer: the watcher subshell kills the server when
+   * this end closes, which happens on close(), on any exit path, and when
+   * the process dies (its descriptors close with it). */
+  private lifeFd = -1;
   private closed = false;
   /** The server's process ID, for tests: it is never signaled. */
   readonly pid: number;
@@ -167,16 +174,20 @@ export class Ts7FifoIo implements Ts7WireIo {
     const directory = mkdtempSync(join(tmpdir(), "scriptc-ts7-"));
     const input = join(directory, "in");
     const output = join(directory, "out");
+    const life = join(directory, "life");
     try {
       const shell = spawnSync(
         "/bin/sh",
-        ["-c", FIFO_LAUNCH, "sh", input, output, executable, ...args],
+        ["-c", FIFO_LAUNCH, "sh", input, output, life, executable, ...args],
         { stdio: ["ignore", "pipe", "inherit"], encoding: "utf8" },
       );
       const pid = Number(shell.stdout?.trim());
       if (shell.status !== 0 || !Number.isSafeInteger(pid) || pid <= 0)
         throw new Error(`Unable to start TypeScript server: ${executable}`);
       this.pid = pid;
+      // The watcher blocks opening its end, so this returns once it is
+      // watching; closing this descriptor is the stop signal.
+      this.lifeFd = openSync(life, "w");
       // A non-blocking open fails with ENXIO until the server opens its end,
       // so a server that exits as it starts cannot block this process.
       let probe = -1;
@@ -226,7 +237,9 @@ export class Ts7FifoIo implements Ts7WireIo {
     if (this.closed) return;
     this.closed = true;
     untrack(this);
-    for (const fd of [this.writeFd, this.readFd]) {
+    // Closing the lifetime pipe makes the watcher kill the server; closing
+    // the data pipes also ends a server that watches its input.
+    for (const fd of [this.lifeFd, this.writeFd, this.readFd]) {
       if (fd === -1) continue;
       try {
         closeSync(fd);
@@ -236,6 +249,7 @@ export class Ts7FifoIo implements Ts7WireIo {
     }
     this.writeFd = -1;
     this.readFd = -1;
+    this.lifeFd = -1;
   };
 }
 

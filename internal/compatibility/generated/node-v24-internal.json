@@ -34790,8 +34790,11 @@
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
           "tests/corpus/compat-errors-http.mjs",
+          "tests/corpus/compat-errors-http2-controls.mjs",
+          "tests/corpus/compat-errors-ip-blocked.mjs",
           "tests/corpus/compat-errors-net.mjs",
           "tests/corpus/compat-errors-stream.mjs",
+          "tests/corpus/compat-errors-tls-keying-state.mjs",
           "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-system-error-fields.mjs",
@@ -34807,6 +34810,7 @@
           "tests/corpus/fs-dir-listing.ts",
           "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
+          "tests/corpus/http2-stream-error-code.ts",
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
           "tests/corpus/node-dns-resolve-errors.cjs",
@@ -37352,8 +37356,8 @@
       "anchor": "err_fs_cp_unknown",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.ERR_FS_CP_UNKNOWN"
       },
       "anchorSource": "exact"
     },
@@ -37553,8 +37557,11 @@
       "anchor": "err_http2_headers_after_respond",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP2_HEADERS_AFTER_RESPOND"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_HEADERS_AFTER_RESPOND",
+        "tests": [
+          "tests/corpus/compat-errors-http2-controls.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38162,8 +38169,11 @@
       "anchor": "err_http2_stream_error",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_STREAM_ERROR",
+        "tests": [
+          "tests/corpus/http2-stream-error-code.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38270,8 +38280,11 @@
       "anchor": "err_http2_trailers_not_ready",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP2_TRAILERS_NOT_READY"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP2_TRAILERS_NOT_READY",
+        "tests": [
+          "tests/corpus/compat-errors-http2-controls.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39572,8 +39585,11 @@
       "anchor": "err_ip_blocked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_IP_BLOCKED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_IP_BLOCKED",
+        "tests": [
+          "tests/corpus/compat-errors-ip-blocked.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40601,7 +40617,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_REQUIRE_ESM"
       },
       "anchorSource": "exact"
@@ -40624,7 +40640,7 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "not-applicable",
         "evidence": "compiler-feature:errors.ERR_REQUIRE_ESM_RACE_CONDITION"
       },
       "anchorSource": "exact"
@@ -41571,8 +41587,11 @@
       "anchor": "err_tls_invalid_state",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_STATE"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_STATE",
+        "tests": [
+          "tests/corpus/compat-errors-tls-keying-state.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -64092,7 +64111,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.ping",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"
@@ -64291,7 +64310,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.connecting",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"
@@ -64697,7 +64716,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'ping'",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"
@@ -66063,7 +66082,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.server.close",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66204,7 +66223,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'connection'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66230,7 +66249,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'request'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66256,7 +66275,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'session'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66305,7 +66324,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'stream'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66377,7 +66396,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.server.close",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66495,7 +66514,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'connection'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66521,7 +66540,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'request'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66547,7 +66566,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'session'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66596,7 +66615,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'stream'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66695,7 +66714,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2.createSecureServer",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -66748,7 +66767,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2.getDefaultSettings",
         "tests": [
           "tests/corpus/compat-http2-settings.mjs"
@@ -66774,7 +66793,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2.getPackedSettings",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"
@@ -66800,7 +66819,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2.getUnpackedSettings",
         "tests": [
           "tests/corpus/compat-http2-ping-settings.mjs"

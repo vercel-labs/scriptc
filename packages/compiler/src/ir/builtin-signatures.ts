@@ -7139,6 +7139,11 @@ function buildLibFnSignatures() {
     "ah.providers": { argTypes: [], result: DYN },
     "ah.executionId": { argTypes: [], result: F64 },
     "ah.triggerId": { argTypes: [], result: F64 },
+    /** executionAsyncResource(): the AsyncResource whose runInAsyncScope or
+     * bound call is executing, and a shared plain object elsewhere (timer,
+     * immediate, tick and promise executions have no resource object of
+     * their own in the runtime). */
+    "ah.executionResource": { argTypes: [], result: DYN },
     /** AsyncLocalStorage.withScope(store): enters the store now and answers
      * the native RunScope handle whose dispose()/[Symbol.dispose] installs
      * the value getStore() answered before it again. */

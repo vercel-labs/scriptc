@@ -2208,6 +2208,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "ah.providers": "scr_ah_providers",
   "ah.executionId": "scr_async_execution_id",
   "ah.triggerId": "scr_async_execution_trigger",
+  "ah.executionResource": "scr_ar_execution_resource",
   "dc.chanUnbindStore": "scr_dc_chan_unbind_store",
   "dc.chanRunStores": "scr_dc_chan_run_stores",
   // node:trace_events (scr_async_dyn.c): native Tracing handles.

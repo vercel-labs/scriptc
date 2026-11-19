@@ -151,7 +151,8 @@ struct ScrWatcher {
                       * the root watch is the only one) */
 #endif
 #if defined(__APPLE__)
-  void *fse; /* the FSEvents stream of a recursive directory watch */
+  void *fse;   /* the FSEvents stream of a recursive directory watch */
+  void *fse_q; /* the thread queue it delivers to (NULL until started) */
 #endif
 #ifdef SCR_HAVE_RDCW
   HANDLE dh;       /* the watched directory handle; INVALID once closed or
@@ -288,6 +289,9 @@ typedef struct ScrFseQueue {
   ScrFsePending *head;
   ScrFsePending *tail;
   int pipe[2];
+  /** Open recursive watchers on this thread. A queue with none is
+   * unregistered: nobody would poll it, so appends would only pile up. */
+  size_t watchers;
   struct ScrFseQueue *next; /* the process-wide registry */
 } ScrFseQueue;
 
@@ -371,6 +375,48 @@ static void scr_fse_queue_free(void *p) {
 
 static void scr_fse_key_init(void) { (void)pthread_key_create(&scr_fse_key, scr_fse_queue_free); }
 
+/** Adds one watcher to the thread's queue; the first one registers it so the
+ * stream callback delivers to it. */
+static void scr_fse_queue_attach(ScrFseQueue *q) {
+  pthread_mutex_lock(&scr_fse_reg_mu);
+  if (q->watchers++ == 0) {
+    q->next = scr_fse_queues;
+    scr_fse_queues = q;
+  }
+  pthread_mutex_unlock(&scr_fse_reg_mu);
+}
+
+/** Drops one watcher from the thread's queue; the last one unregisters it and
+ * discards whatever it still holds. */
+static void scr_fse_queue_detach(ScrFseQueue *q) {
+  pthread_mutex_lock(&scr_fse_reg_mu);
+  if (q->watchers > 0 && --q->watchers == 0) {
+    for (ScrFseQueue **link = &scr_fse_queues; *link != NULL; link = &(*link)->next)
+      if (*link == q) {
+        *link = q->next;
+        break;
+      }
+    q->next = NULL;
+    pthread_mutex_lock(&q->mu);
+    ScrFsePending *entry = q->head;
+    q->head = NULL;
+    q->tail = NULL;
+    pthread_mutex_unlock(&q->mu);
+    char buf[256];
+    ssize_t drained;
+    do {
+      drained = read(q->pipe[0], buf, sizeof buf);
+    } while (drained > 0);
+    while (entry != NULL) {
+      ScrFsePending *next = entry->next;
+      free(entry->path);
+      free(entry);
+      entry = next;
+    }
+  }
+  pthread_mutex_unlock(&scr_fse_reg_mu);
+}
+
 /** This thread's queue, created and armed on its own kqueue on first use. */
 static ScrFseQueue *scr_fse_queue_get(void) {
   pthread_once(&scr_fse_once, scr_fse_key_init);
@@ -405,12 +451,10 @@ static ScrFseQueue *scr_fse_queue_get(void) {
     free(q);
     return NULL;
   }
-  pthread_mutex_lock(&scr_fse_reg_mu);
-  q->next = scr_fse_queues;
-  scr_fse_queues = q;
-  pthread_mutex_unlock(&scr_fse_reg_mu);
   (void)pthread_setspecific(scr_fse_key, q);
   scr_fse_own = q;
+  /* The queue joins the registry when its first watcher starts, and leaves
+   * when the last one closes: an idle thread's queue receives no appends. */
   return q;
 }
 
@@ -460,7 +504,9 @@ static void scr_fse_callback(void *stream, void *info, size_t count, void *paths
  * stance). */
 static bool scr_fse_start(ScrWatcher *w) {
   ScrFseApi *a = &scr_fse_api_state;
-  if (!scr_fse_load() || scr_fse_queue_get() == NULL) return false;
+  if (!scr_fse_load()) return false;
+  ScrFseQueue *q = scr_fse_queue_get();
+  if (q == NULL) return false;
   /* FSEvents needs an absolute path: the root's canonical spelling is
    * also the one events come back under. */
   const ScrStr *root = w->abs_root != NULL ? w->abs_root : w->path;
@@ -471,16 +517,22 @@ static bool scr_fse_start(ScrWatcher *w) {
   a->cf_release(path);
   if (paths == NULL) return false;
   uint32_t flags = SCR_FSE_CREATE_FILE_EVENTS | SCR_FSE_CREATE_NO_DEFER | SCR_FSE_CREATE_WATCH_ROOT;
+  scr_fse_queue_attach(q);
   void *stream = a->stream_create(NULL, scr_fse_callback, NULL, paths, SCR_FSE_SINCE_NOW, 0.01, flags);
   a->cf_release(paths);
-  if (stream == NULL) return false;
+  if (stream == NULL) {
+    scr_fse_queue_detach(q);
+    return false;
+  }
   a->set_queue(stream, scr_fse_dispatch_queue);
   if (!a->start(stream)) {
     a->invalidate(stream);
     a->release(stream);
+    scr_fse_queue_detach(q);
     return false;
   }
   w->fse = stream;
+  w->fse_q = q;
   return true;
 }
 
@@ -490,7 +542,12 @@ static void scr_fse_stop(ScrWatcher *w) {
   a->stop(w->fse);
   a->invalidate(w->fse);
   a->release(w->fse);
+  ScrFseQueue *q = w->fse_q;
   w->fse = NULL;
+  w->fse_q = NULL;
+  /* The stream is gone, so the thread has one fewer watcher to deliver to;
+   * the last one unregisters the queue. */
+  if (q != NULL) scr_fse_queue_detach(q);
 }
 
 /** Delivers this thread's queued batches to its own recursive watchers whose
@@ -632,25 +689,30 @@ static const char *scr_watch_sub_name(const ScrWatchSub *sub, const char *name, 
   return heap;
 }
 
-/** The sub entry of the directory at `rel`, or NULL. */
-static ScrWatchSub *scr_watch_find_sub(ScrWatcher *w, const char *rel) {
-  for (ScrWatchSub *sub = w->subs; sub != NULL; sub = sub->next)
-    if (strcmp(sub->rel->data, rel) == 0) return sub;
-  return NULL;
-}
+static bool scr_watch_wd_shared(int wd, ScrWatcher *except);
 
-/** Forgets the sub entry for a directory that left the tree. */
-static void scr_watch_drop_sub(ScrWatcher *w, const char *rel) {
+/** Forgets the record for `rel` and every record below it. A directory that
+ * left the tree takes its descendants' watches with it: leaving them would
+ * keep obsolete-prefix records (and their duplicate deliveries) behind on
+ * every rename of a tree. Each descriptor is removed unless another open
+ * watcher shares it. */
+static void scr_watch_drop_subtree(ScrWatcher *w, const char *rel) {
+  size_t rlen = strlen(rel);
   ScrWatchSub **link = &w->subs;
   while (*link != NULL) {
     ScrWatchSub *sub = *link;
-    if (strcmp(sub->rel->data, rel) == 0) {
-      *link = sub->next;
-      scr_str_release(sub->rel);
-      free(sub);
-      return;
+    const char *srel = sub->rel->data;
+    bool below =
+        strncmp(srel, rel, rlen) == 0 && (srel[rlen] == '\0' || srel[rlen] == '/');
+    if (!below) {
+      link = &sub->next;
+      continue;
     }
-    link = &sub->next;
+    *link = sub->next;
+    if (sub->wd >= 0 && scr_watch_ino >= 0 && !scr_watch_wd_shared(sub->wd, w))
+      (void)inotify_rm_watch(scr_watch_ino, sub->wd);
+    scr_str_release(sub->rel);
+    free(sub);
   }
 }
 
@@ -1287,14 +1349,10 @@ static void scr_watch_dispatch(void) {
             scr_watch_add_sub(w, abs, name);
             scr_watch_walk(w, abs, name);
           } else if (e->mask & (IN_DELETE | IN_MOVED_FROM)) {
-            /* The event arrives on the PARENT's descriptor; the watch to
-             * drop is the CHILD's own, which the sub table holds. Removing
-             * the parent's would silence the whole subtree. */
-            ScrWatchSub *child = scr_watch_find_sub(w, name);
-            int child_wd = child != NULL ? child->wd : -1;
-            scr_watch_drop_sub(w, name);
-            if (child_wd >= 0 && scr_watch_ino >= 0 && !scr_watch_wd_shared(child_wd, w))
-              (void)inotify_rm_watch(scr_watch_ino, child_wd);
+            /* The event arrives on the PARENT's descriptor; the records to
+             * drop are the CHILD's own and its descendants'. Removing the
+             * parent's would silence the whole subtree. */
+            scr_watch_drop_subtree(w, name);
           }
           free(abs);
         }
@@ -1303,9 +1361,7 @@ static void scr_watch_dispatch(void) {
          * keep delivering events from its new place in the tree. */
         if (sub != NULL && (e->mask & (IN_MOVE_SELF | IN_DELETE_SELF))) {
           ScrStr *rel = scr_str_retain(sub->rel);
-          scr_watch_drop_sub(w, rel->data);
-          if (scr_watch_ino >= 0 && !scr_watch_wd_shared(e->wd, w))
-            (void)inotify_rm_watch(scr_watch_ino, e->wd);
+          scr_watch_drop_subtree(w, rel->data);
           scr_str_release(rel);
         }
         free(owned);

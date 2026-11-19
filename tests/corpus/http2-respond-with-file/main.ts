@@ -1,7 +1,9 @@
 // node:http2 respondWithFile/respondWithFD: the response headers go out,
 // then the file's bytes (offset/length applied), then END_STREAM. A file
 // that cannot be opened reports the fs error on the server stream and
-// resets the client stream with NGHTTP2_INTERNAL_ERROR.
+// resets the client stream with NGHTTP2_INTERNAL_ERROR; an unreadable
+// descriptor resets without an answer, and a positioned read leaves the
+// descriptor's own position alone.
 import * as fs from "node:fs";
 import * as http2 from "node:http2";
 import type { AddressInfo } from "node:net";
@@ -20,6 +22,27 @@ server.on("stream", (stream, headers) => {
     const fd = fs.openSync(bodyPath, "r");
     stream.respondWithFD(fd, { ":status": 201 }, { offset: 0, length: 5 });
     stream.on("close", () => fs.closeSync(fd));
+  } else if (headers[":path"] === "/fd-position") {
+    const fd = fs.openSync(bodyPath, "r+");
+    const first = Buffer.alloc(2);
+    fs.readSync(fd, first, 0, 2, null);
+    stream.respondWithFD(fd, { ":status": 200 }, { offset: 6, length: 3 });
+    stream.on("close", () => {
+      const next = Buffer.alloc(2);
+      const n = fs.readSync(fd, next, 0, 2, null);
+      lines.push(`fd position ${JSON.stringify(next.toString("utf8", 0, n))}`);
+      fs.closeSync(fd);
+    });
+  } else if (headers[":path"] === "/fd-unreadable") {
+    const fd = fs.openSync(bodyPath, "a");
+    stream.on("error", (error) =>
+      lines.push(`fd-unreadable error ${(error as NodeJS.ErrnoException).code}`),
+    );
+    stream.on("close", () => {
+      lines.push(`fd-unreadable close ${stream.rstCode}`);
+      fs.closeSync(fd);
+    });
+    stream.respondWithFD(fd, { ":status": 200 }, { offset: 0, length: 5 });
   } else {
     stream.on("error", (error) => lines.push(`server error ${(error as NodeJS.ErrnoException).code}`));
     stream.respondWithFile("/nonexistent-http2-file");
@@ -48,6 +71,8 @@ server.listen(0, "127.0.0.1", () => {
   void (async () => {
     await get("/file");
     await get("/fd");
+    await get("/fd-position");
+    await get("/fd-unreadable");
     await get("/missing");
     client.close(() => {
       server.close(() => {

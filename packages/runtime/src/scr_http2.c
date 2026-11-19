@@ -2528,6 +2528,28 @@ typedef __int64 scr_h2_file_off;
 typedef off_t scr_h2_file_off;
 #endif
 
+/* A positioned read that leaves the descriptor's position alone, as Node's
+ * fs.read with an explicit position does. */
+static int scr_h2_pread_at(int fd, char *buf, size_t n, scr_h2_file_off off) {
+#ifdef _WIN32
+  scr_h2_file_off save = _lseeki64(fd, 0, SEEK_CUR);
+  if (save < 0) return -1;
+  if (_lseeki64(fd, off, SEEK_SET) < 0) {
+    int e = errno;
+    _lseeki64(fd, save, SEEK_SET);
+    errno = e;
+    return -1;
+  }
+  int r = _read(fd, buf, (unsigned)n);
+  int e = errno;
+  _lseeki64(fd, save, SEEK_SET);
+  errno = e;
+  return r;
+#else
+  return (int)pread(fd, buf, n, (off_t)off);
+#endif
+}
+
 static const char *scr_h2_errno_name(int e) {
   switch (e) {
   case ENOENT: return "ENOENT";
@@ -2639,33 +2661,48 @@ void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs 
                                       double offset, double length, bool wait_trailers) {
   if (st->destroyed || st->respond_sent) return;
   int ifd = (int)fd;
-  scr_h2_file_off size = SCR_H2_LSEEK(ifd, 0, SEEK_END);
-  if (size < 0) {
-    scr_h2_stream_fail_file(st, errno, "read", NULL, 0);
+  /* The descriptor's own position must survive the call: size from fstat,
+   * bytes through a positioned read. */
+#ifdef _WIN32
+  struct _stat64 info;
+  int stat_ok = _fstat64(ifd, &info) == 0;
+#else
+  struct stat info;
+  int stat_ok = fstat(ifd, &info) == 0;
+#endif
+  if (!stat_ok) {
+    scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
     return;
   }
+  scr_h2_file_off size = (scr_h2_file_off)info.st_size;
   scr_h2_file_off start = offset > 0 ? (scr_h2_file_off)offset : 0;
   scr_h2_file_off want = length >= 0 ? (scr_h2_file_off)length : size - start;
   if (start > size) { start = size; want = 0; }
   if (want < 0) want = 0;
   if (start + want > size) want = size - start;
+  /* Node sends the response headers before reading the descriptor, so a
+   * read failure resets the stream mid-body instead of replacing the
+   * answer. */
+  scr_http2_stream_respond_wait(st, pairs, false, wait_trailers);
   char *buf = want > 0 ? malloc((size_t)want) : NULL;
   size_t got = 0;
   if (buf != NULL) {
-    if (SCR_H2_LSEEK(ifd, start, SEEK_SET) >= 0) {
-      while (got < (size_t)want) {
-        int n = SCR_H2_READ(ifd, buf + got, (unsigned)((size_t)want - got));
-        if (n <= 0) break;
-        got += (size_t)n;
+    while (got < (size_t)want) {
+      int n = scr_h2_pread_at(ifd, buf + got, (size_t)want - got, start + (scr_h2_file_off)got);
+      if (n < 0) {
+        /* An unreadable descriptor (a write-only one, say): Node resets the
+         * stream with NGHTTP2_INTERNAL_ERROR after the headers. */
+        free(buf);
+        scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
+        return;
       }
-    } else {
-      scr_h2_stream_fail_file(st, errno, "read", NULL, 0);
-      free(buf);
-      return;
+      if (n == 0) break;
+      got += (size_t)n;
     }
   }
-  scr_h2_respond_with_content(st, pairs, buf, got, wait_trailers);
+  if (got > 0) scr_h2_stream_send(st, buf, got);
   free(buf);
+  scr_http2_stream_end(st);
 }
 
 void scr_http2_stream_close(ScrH2Stream *st, double code, ScrClosure *cb /*moves, nullable*/) {

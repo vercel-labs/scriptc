@@ -34791,6 +34791,7 @@
           "tests/corpus/compat-error-validation-codes.mjs",
           "tests/corpus/compat-errors-async-resource-ids.mjs",
           "tests/corpus/compat-errors-buffer-encoding.mjs",
+          "tests/corpus/compat-errors-cert-crl.mjs",
           "tests/corpus/compat-errors-cli-tools.mjs",
           "tests/corpus/compat-errors-core.mjs",
           "tests/corpus/compat-errors-crypto.mjs",
@@ -44110,8 +44111,11 @@
       "anchor": "crl_not_yet_valid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_NOT_YET_VALID"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_NOT_YET_VALID",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44128,8 +44132,11 @@
       "anchor": "crl_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_HAS_EXPIRED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_HAS_EXPIRED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44146,8 +44153,11 @@
       "anchor": "cert_revoked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CERT_REVOKED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CERT_REVOKED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44281,8 +44291,11 @@
       "anchor": "unable_to_get_crl",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.UNABLE_TO_GET_CRL"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.UNABLE_TO_GET_CRL",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44521,8 +44534,11 @@
       "anchor": "crl_signature_failure",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_SIGNATURE_FAILURE"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_SIGNATURE_FAILURE",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

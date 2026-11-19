@@ -189,6 +189,18 @@ static int scr_tls_parse_crt(mbedtls_x509_crt *crt, const char *pem, size_t len)
   return r;
 }
 
+/* tls.connect's crl option (one PEM/DER CRL, or an array whose PEM blocks
+ * join on line boundaries): mbedTLS parses the whole PEM bundle. */
+static int scr_tls_parse_crl(mbedtls_x509_crl *crl, const char *pem, size_t len) {
+  unsigned char *buf = malloc(len + 1);
+  if (!buf) scr_tls_oom();
+  memcpy(buf, pem, len);
+  buf[len] = 0;
+  int r = mbedtls_x509_crl_parse(crl, buf, len + 1);
+  free(buf);
+  return r;
+}
+
 static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len) {
   unsigned char *buf = malloc(len + 1);
   if (!buf) scr_tls_oom();
@@ -605,6 +617,10 @@ typedef struct ScrTlsCli {
    * empty ca (an empty trust store) from none */
   bool has_ca;
   mbedtls_x509_crt ca;
+  /* tls.connect's crl option: the CRL bundle mbedTLS checks the chain
+   * against. has_crl tells a provided CRL (even an empty one) from none. */
+  bool has_crl;
+  mbedtls_x509_crl crl;
   char *hostname;    /* the SNI name; NULL sends none (an IP literal, servername: "") */
   char *verify_name; /* the name the leaf is checked against; NULL fails the check */
   /* true when the handshake RECORDS verification (VERIFY_OPTIONAL /
@@ -711,12 +727,14 @@ static bool scr_tls_is_ip(const char *h) {
 }
 
 static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const char *ca,
-                                    size_t ca_len, bool verify_optional) {
+                                    size_t ca_len, const char *crl, size_t crl_len,
+                                    bool verify_optional) {
   scr_tls_rng_init();
   ScrTlsCli *c = calloc(1, sizeof *c);
   if (!c) scr_tls_oom();
   mbedtls_ssl_config_init(&c->conf);
   mbedtls_x509_crt_init(&c->ca);
+  mbedtls_x509_crl_init(&c->crl);
   mbedtls_x509_crt_init(&c->own);
   mbedtls_pk_init(&c->own_pk);
   if (mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_CLIENT,
@@ -737,12 +755,18 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
     int r = scr_tls_parse_crt(&c->ca, ca, ca_len);
     if (r != 0) scr_tls_bad_material("ca certificate", r);
   }
+  c->has_crl = crl != NULL;
+  if (crl_len > 0) {
+    int r = scr_tls_parse_crl(&c->crl, crl, crl_len);
+    if (r != 0) scr_tls_bad_material("CRL", r);
+  }
   if (!reject_unauthorized && !verify_optional) {
     mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_NONE);
   } else {
     mbedtls_ssl_conf_authmode(&c->conf, reject_unauthorized ? MBEDTLS_SSL_VERIFY_REQUIRED
                                                             : MBEDTLS_SSL_VERIFY_OPTIONAL);
-    mbedtls_ssl_conf_ca_chain(&c->conf, c->has_ca ? &c->ca : scr_tls_system_ca(), NULL);
+    mbedtls_ssl_conf_ca_chain(&c->conf, c->has_ca ? &c->ca : scr_tls_system_ca(),
+                              c->has_crl ? &c->crl : NULL);
   }
   /* The host is the verified name; it is also the SNI name unless it is
    * an IP literal. */
@@ -777,13 +801,14 @@ static void scr_tls_cli_set_servername(ScrTlsCli *c, const ScrStr *servername) {
 
 static ScrTlsCli *scr_tls_cli_new(ScrStr *host, bool reject_unauthorized, const char *ca,
                                    size_t ca_len) {
-  return scr_tls_cli_new2(host, reject_unauthorized, ca, ca_len, false);
+  return scr_tls_cli_new2(host, reject_unauthorized, ca, ca_len, NULL, 0, false);
 }
 
 static void scr_tls_cli_free(ScrTlsCli *c) {
   mbedtls_ssl_config_free(&c->conf);
   scr_tls_alpn_free(c->alpn);
   mbedtls_x509_crt_free(&c->ca);
+  mbedtls_x509_crl_free(&c->crl);
   mbedtls_x509_crt_free(&c->own);
   mbedtls_pk_free(&c->own_pk);
   free(c->hostname);
@@ -830,6 +855,14 @@ typedef struct ScrTlsSock {
   bool vrfy_chain_self;
   bool vrfy_expired;
   bool vrfy_cn_mismatch;
+  /* the crl option's outcome: a CRL revoked a certificate (CERT_REVOKED),
+   * its validity window or signature failed, or the option held no CRL for
+   * a trusted issuer (Node's UNABLE_TO_GET_CRL) */
+  bool vrfy_crl_revoked;
+  bool vrfy_crl_expired;
+  bool vrfy_crl_future;
+  bool vrfy_crl_sig_fail;
+  bool vrfy_crl_missing;
   /* a certificate of the chain carried a blocked public key: the failure
    * Node reports as CERT_REVOKED, ahead of every other verification error */
   bool vrfy_blocked;
@@ -1058,6 +1091,21 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * IP literal against the IP SANs, another name with mbedtls_x509_crt_verify
  * on the leaf alone, keeping only its CN_MISMATCH bit. No name to check is
  * a mismatch. */
+/* Whether one of the crl option's CRLs is issued by a trusted CA: an
+ * untrusted issuer is Node's UNABLE_TO_GET_CRL, not a signature failure. */
+static bool scr_tls_crl_issuer_trusted(ScrTlsSock *t) {
+  if (t->cli == NULL || !t->cli->has_crl || t->vrfy_trust == NULL) return false;
+  for (const mbedtls_x509_crl *crl = &t->cli->crl; crl != NULL && crl->raw.len > 0;
+       crl = crl->next) {
+    for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+      if (ca->subject_raw.len == crl->issuer_raw.len &&
+          memcmp(ca->subject_raw.p, crl->issuer_raw.p, crl->issuer_raw.len) == 0)
+        return true;
+    }
+  }
+  return false;
+}
+
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   t->vrfy_seen = true;
@@ -1093,6 +1141,25 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     *flags |= MBEDTLS_X509_BADCERT_REVOKED;
     t->vrfy_blocked = true;
   }
+  /* A crl option holds CRLs for the issuers it names. A leaf whose issuer
+   * no provided CRL covers is OpenSSL's UNABLE_TO_GET_CRL (CRL checking
+   * finds no CRL for it), which fails the handshake like any other
+   * verification error. */
+  if (depth == 0 && !t->vrfy_blocked && t->cli != NULL && t->cli->has_crl) {
+    bool covered = false;
+    for (const mbedtls_x509_crl *crl = &t->cli->crl; crl != NULL && crl->raw.len > 0;
+         crl = crl->next) {
+      if (crl->issuer_raw.len == crt->issuer_raw.len &&
+          memcmp(crl->issuer_raw.p, crt->issuer_raw.p, crl->issuer_raw.len) == 0) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) {
+      t->vrfy_crl_missing = true;
+      *flags |= MBEDTLS_X509_BADCERT_OTHER;
+    }
+  }
   /* Node checks every certificate the peer sent when the chain did not
    * verify, the leaf and X509_STORE_CTX_get0_untrusted after it, so a
    * blocked key the chain did not select still reports CERT_REVOKED ahead
@@ -1122,6 +1189,17 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
   if (*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) {
     if (depth == 0 && self) t->vrfy_leaf_self = true;
     if (depth > 0 && self) t->vrfy_chain_self = true;
+  }
+  /* the crl option's verdict; the blocked-SPKI policy's own
+   * BADCERT_REVOKED is the same Node code and already recorded */
+  if ((*flags & MBEDTLS_X509_BADCERT_REVOKED) != 0 && !t->vrfy_blocked)
+    t->vrfy_crl_revoked = true;
+  if (*flags & MBEDTLS_X509_BADCRL_EXPIRED) t->vrfy_crl_expired = true;
+  if (*flags & MBEDTLS_X509_BADCRL_FUTURE) t->vrfy_crl_future = true;
+  if (*flags & (MBEDTLS_X509_BADCRL_NOT_TRUSTED | MBEDTLS_X509_BADCRL_BAD_MD |
+                MBEDTLS_X509_BADCRL_BAD_PK | MBEDTLS_X509_BADCRL_BAD_KEY)) {
+    if (scr_tls_crl_issuer_trusted(t)) t->vrfy_crl_sig_fail = true;
+    else t->vrfy_crl_missing = true;
   }
   return 0;
 }
@@ -1295,8 +1373,30 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
     snprintf(out, n, "certificate revoked");
     return;
   }
+  /* OpenSSL checks a CRL's issuer and signature, then its window, then the
+   * entries; the first failure is the one Node reports. */
+  if (t->vrfy_crl_missing) {
+    snprintf(out, n, "unable to get certificate CRL");
+    return;
+  }
+  if (t->vrfy_crl_sig_fail) {
+    snprintf(out, n, "CRL signature failure");
+    return;
+  }
+  if (t->vrfy_crl_expired) {
+    snprintf(out, n, "CRL has expired");
+    return;
+  }
+  if (t->vrfy_crl_future) {
+    snprintf(out, n, "CRL is not yet valid");
+    return;
+  }
   if (t->vrfy_expired) {
     snprintf(out, n, "certificate has expired");
+    return;
+  }
+  if (t->vrfy_crl_revoked) {
+    snprintf(out, n, "certificate revoked");
     return;
   }
   /* Node appends the --use-system-ca hint for exactly these two codes
@@ -2595,6 +2695,22 @@ static const char *scr_tls_ca_data(const ScrBytes *ca) {
   return ca->data != NULL ? (const char *)ca->data : "";
 }
 
+/* A client's crl for scr_tls_cli_new2, on the same rule as the ca. */
+static const char *scr_tls_crl_data(const ScrBytes *crl) {
+  if (crl == NULL) return NULL;
+  return crl->data != NULL ? (const char *)crl->data : "";
+}
+
+/* Whether the crl option carries at least one parseable CRL; Node throws
+ * ERR_CRYPTO_OPERATION_FAILED ("Failed to parse CRL") when it does not. */
+static bool scr_tls_crl_valid(const ScrBytes *crl) {
+  mbedtls_x509_crl parsed;
+  mbedtls_x509_crl_init(&parsed);
+  int r = scr_tls_parse_crl(&parsed, scr_tls_crl_data(crl), crl->len);
+  mbedtls_x509_crl_free(&parsed);
+  return r == 0;
+}
+
 /* https.request/get with a runtime options record: the http walk, then
  * the TLS options the literal https path lowers (rejectUnauthorized, ca,
  * servername) and a client certificate (cert and key). Other tls.connect
@@ -3816,7 +3932,7 @@ static bool scr_tls_alpn_dyn(const ScrDyn *v, char ***out) {
 static const char *const SCR_TLS_CONNECT_FENCED_OPTIONS[] = {
   "allowHalfOpen", "autoSelectFamily",
   "autoSelectFamilyAttemptTimeout", "certificateCompression", "checkServerIdentity",
-  "ciphers", "clientCertEngine", "crl", "dhparam", "ecdhCurve",
+  "ciphers", "clientCertEngine", "dhparam", "ecdhCurve",
   "enableTrace", "family", "fd", "hints", "highWaterMark",
   "honorCipherOrder", "keepAlive", "keepAliveInitialDelay",
   "localAddress", "localPort", "lookup", "minDHSize", "noDelay", "onread", "passphrase", "pfx",
@@ -3869,6 +3985,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   scr_tls_rng_init();
   bool reject = true;
   ScrBytes *ca = NULL;
+  ScrBytes *crl = NULL;
   ScrBytes *own_cert = NULL, *own_key = NULL; /* the client certificate */
   const ScrStr *servername = NULL;
   const ScrStr *opt_host = NULL;
@@ -3943,6 +4060,21 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
         if (!scr_tls_ca_dyn(v, "a tls.connect 'ca' option", &ca)) ok = false;
         continue;
       }
+      if (strcmp(e.key, "crl") == 0) {
+        /* Node parses the option whatever its shape: an empty string or
+         * Buffer is a parse failure, not "no CRL". */
+        scr_bytes_release(crl);
+        crl = v->kind == SCR_DYN_STR && v->v.str->len == 0
+                  ? NULL
+                  : scr_tls_pem_dyn(v, "a tls.connect 'crl' option", true);
+        if (crl == NULL || !scr_tls_crl_valid(crl)) {
+          static const char msg[] = "Failed to parse CRL";
+          scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1,
+                                   "ERR_CRYPTO_OPERATION_FAILED");
+          ok = false;
+        }
+        continue;
+      }
       if (strcmp(e.key, "cert") == 0 || strcmp(e.key, "key") == 0) {
         ScrBytes **slot = e.key[0] == 'c' ? &own_cert : &own_key;
         scr_bytes_release(*slot);
@@ -3981,7 +4113,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
       for (size_t k = 0; SCR_TLS_CONNECT_FENCED_OPTIONS[k] != NULL; k++) {
         if (strcmp(e.key, SCR_TLS_CONNECT_FENCED_OPTIONS[k]) == 0) {
           scr_tls_opt_fence("tls.connect", e.key,
-                            "port/host/socket/rejectUnauthorized/ca/servername/ALPNProtocols/minVersion/maxVersion/timeout are the implemented members of a runtime options record");
+                            "port/host/socket/rejectUnauthorized/ca/crl/servername/ALPNProtocols/minVersion/maxVersion/timeout are the implemented members of a runtime options record");
           ok = false;
           break;
         }
@@ -4023,6 +4155,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   if (!ok) {
     scr_tls_alpn_free(alpn);
     scr_bytes_release(ca);
+    scr_bytes_release(crl);
     scr_bytes_release(own_cert);
     scr_bytes_release(own_key);
     scr_closure_release(cb);
@@ -4067,8 +4200,9 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
     s = scr_net_connect(port, dial_addr, cb); /* cb fires post-handshake — secureConnect */
     if (dial_addr) scr_str_release(dial_addr);
   }
-  ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject,
-                                     scr_tls_ca_data(ca), ca != NULL ? ca->len : 0, !reject);
+  ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject, scr_tls_ca_data(ca),
+                                     ca != NULL ? ca->len : 0, scr_tls_crl_data(crl),
+                                     crl != NULL ? crl->len : 0, !reject);
   if (servername != NULL) scr_tls_cli_set_servername(cli, servername);
   if (own_cert != NULL) scr_tls_cli_set_own(cli, own_cert, own_key);
   scr_bytes_release(own_cert);
@@ -4087,6 +4221,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   scr_str_release(localhost_fallback);
   scr_str_release(socket_host);
   scr_bytes_release(ca);
+  scr_bytes_release(crl);
   return s;
 }
 
@@ -4127,7 +4262,8 @@ void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len,
  * preface/SETTINGS ride the socket's write buffer until establishment. */
 void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/,
                              bool reject_unauthorized, const char *ca, size_t ca_len) {
-  ScrTlsCli *cli = scr_tls_cli_new2(host, reject_unauthorized, ca, ca_len, !reject_unauthorized);
+  ScrTlsCli *cli =
+      scr_tls_cli_new2(host, reject_unauthorized, ca, ca_len, NULL, 0, !reject_unauthorized);
   mbedtls_ssl_conf_alpn_protocols(&cli->conf, SCR_TLS_ALPN_H2);
   scr_tls_cli_wrap(sock, cli);
 }
@@ -4141,6 +4277,11 @@ void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/,
 static const char *scr_tls_auth_code(ScrTlsSock *t) {
   uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
   if (t->vrfy_blocked) return "CERT_REVOKED";
+  if (t->vrfy_crl_missing) return "UNABLE_TO_GET_CRL";
+  if (t->vrfy_crl_sig_fail) return "CRL_SIGNATURE_FAILURE";
+  if (t->vrfy_crl_expired) return "CRL_HAS_EXPIRED";
+  if (t->vrfy_crl_future) return "CRL_NOT_YET_VALID";
+  if (t->vrfy_crl_revoked) return "CERT_REVOKED";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
   if (t->vrfy_leaf_self) return "DEPTH_ZERO_SELF_SIGNED_CERT";
   if (t->vrfy_chain_self) return "SELF_SIGNED_CERT_IN_CHAIN";

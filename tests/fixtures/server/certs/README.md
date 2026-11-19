@@ -31,3 +31,21 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
     openssl ecparam -genkey -name prime256v1 -noout -out embedded-key.pem
     openssl req -new -key embedded-key.pem -out embedded.csr -subj "/CN=embedded pem" -config embedded.cnf
     openssl x509 -req -in embedded.csr -CA ca.pem -CAkey ca-key.pem -set_serial 4242 -out embedded.pem -days 36500 -extfile embedded.cnf -extensions ext
+
+`crl-leaf.pem`/`crl-leaf-key.pem` is a localhost leaf signed by `ca.pem` through the `openssl ca` database, and the `crl-*.pem` files are CRLs for that CA (one per verification outcome) plus `crl-untrusted.pem`, a CRL signed by `ca2.pem`. They are minted in a throwaway CA directory that copies `ca.pem`/`ca-key.pem`, so the committed `ca.srl` is untouched:
+
+    mkdir -p ca-db/newcerts && cp ca.pem ca-key.pem ca-db/
+    : > ca-db/index.txt && echo 1000 > ca-db/serial && echo 1000 > ca-db/crlnumber
+    # ca-db/ca.cnf: database/new_certs_dir/certificate/private_key/serial/crlnumber point at ca-db,
+    # x509_extensions=leaf_ext (localhost SAN, serverAuth), crl_extensions=crl_ext
+    openssl ecparam -genkey -name prime256v1 -noout -out crl-leaf-key.pem
+    openssl req -new -key crl-leaf-key.pem -subj "/CN=localhost" -out crl-leaf.csr
+    openssl ca -batch -config ca-db/ca.cnf -in crl-leaf.csr -out crl-leaf.pem -notext
+    openssl ca -config ca-db/ca.cnf -revoke crl-leaf.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20300101000000Z -out crl-revoked.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20210101000000Z -out crl-expired.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20270101000000Z -crl_nextupdate 20370101000000Z -out crl-future.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -out crl-badsig.pem   # then flip one signature byte, as with badsig.pem
+    # crl-untrusted.pem repeats -gencrl in a second ca-db directory that copies ca2.pem/ca2-key.pem
+
+`crl-clean.pem` is the same valid-window CRL from a copy of the CA database with the revocation entry removed: an empty list, so the leaf verifies.

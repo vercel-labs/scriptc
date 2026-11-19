@@ -571,6 +571,7 @@ import {
 } from "./cjs-inline-require.js";
 import { tscInteropModuleOf } from "./cjs-tsc-interop.js";
 import { usesCjsExportsIdentity } from "./cjs-exports-object.js";
+import { cjsExportsObjectModules } from "./cjs-exports-object-value.js";
 import type { CjsExportsShape } from "./cjs-exports-receiver.js";
 import { registerBuiltinEventTargetClasses } from "./lower-event-target.js";
 import {
@@ -3915,6 +3916,9 @@ export class Lowerer {
   /** Per CommonJS file using top-level `this`: the global holding the
    * object that stands for its original exports (lowerCjsTopLevelThis). */
   readonly cjsExportsThis = new Map<ts.SourceFile, IrGlobal>();
+  /** Per CommonJS table module whose `module.exports` object some code takes
+   * as a value: the global holding that object (cjs-exports-object-value.ts). */
+  readonly cjsExportsObjects = new Map<ts.SourceFile, IrGlobal>();
   /** `var m; m = require("./x")` alias bindings (cjs-inline-require.ts).
    * Null entries cache declarations that keep ordinary storage. */
   readonly cjsSplitRequireBindings = new Map<ts.VariableDeclaration, SplitRequireBinding | null>();
@@ -6233,6 +6237,7 @@ export class Lowerer {
       checkedTable("enumObjectDecls", () => this.enumObjectDecls.size),
       checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
       checkedTable("cjsExportsThis", () => this.cjsExportsThis.size),
+      checkedTable("cjsExportsObjects", () => this.cjsExportsObjects.size),
       checkedTable("inlineRequireInitDone", () => this.inlineRequireInitDone.size),
       checkedTable(
         "runtimeOptionalArithmeticGlobals",
@@ -9332,6 +9337,13 @@ export class Lowerer {
     return ref === null ? null : cjsNamespaceTargetOf(this, ref.dep);
   }
 
+  /** The module-namespace type of a table module a CommonJS binding names:
+   * the object Node's `require` answers, which the module-namespace lowering
+   * (module-namespace-elements.ts) builds from the module's export table. */
+  cjsModuleNamespaceTypeOf(dep: ts.SourceFile): IrType & { kind: "moduleNs" } {
+    return { kind: "moduleNs", moduleId: `file:${tsgoPath(resolve(dep.fileName))}` };
+  }
+
   /** The table module a CommonJS module binding identifier names. */
   cjsModuleBindingDepOf(expr: ts.Identifier): ts.SourceFile | null {
     const dep = this.localModuleBindingDepOf(expr);
@@ -9973,6 +9985,22 @@ export class Lowerer {
         this.globalsList.push(exportsThis);
         this.cjsExportsThis.set(fp.sf, exportsThis);
       }
+    }
+    // The modules whose real `module.exports` object some code takes as a
+    // value hold it in one global each (cjs-exports-object-value.ts).
+    const exportsObjectModules = cjsExportsObjectModules(this);
+    for (const fp of parts) {
+      if (!exportsObjectModules.has(fp.sf)) continue;
+      const rawTag = this.fileTag.get(fp.sf) ?? "";
+      const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
+      const exportsObject: IrGlobal = {
+        id: `%g.${tag}%exportsObj`,
+        name: "%exportsObj",
+        type: DYN,
+        mutable: true,
+      };
+      this.globalsList.push(exportsObject);
+      this.cjsExportsObjects.set(fp.sf, exportsObject);
     }
 
     // A module is intrinsically async when an await/for-await occurs
@@ -14376,6 +14404,19 @@ export class Lowerer {
         if (sig.method) sig.method.ret = next;
       }
     }
+    // A function the class vtable does not hold — a generic method, or a
+    // JavaScript method with implicit-any parameters, both lowered per call
+    // site — has no entry above to widen. Its INSTANCES still return the
+    // undefined a missing indexed read produces, so record the declaration
+    // for generic-functions.ts (runtimeReturnType) the same way
+    // noteGenericReturn does for TypeScript generics.
+    for (const symbol of optionalReturns) {
+      if (signatureBySymbol.has(symbol)) continue;
+      const decl = functionDeclBySymbol.get(symbol);
+      if (decl) {
+        this.runtimeOptionalGenericReturns.add(decl);
+      }
+    }
     for (const [symbol, sig] of signatureBySymbol) {
       const params = optionalParams.get(symbol);
       if (params) {
@@ -18638,6 +18679,36 @@ export class Lowerer {
       expected.inner.kind !== "void" &&
       expr.type.kind === "promise" &&
       !typeEquals(expected, expr.type) &&
+      this.dynConvertible(expr.type) &&
+      canDynCheckTo(
+        expected,
+        (id) => this.shapes.get(id),
+        (id) => this.unions.get(id),
+      )
+    ) {
+      return {
+        kind: "dynCheck",
+        value: this.coerceToExpected(expr, DYN),
+        type: expected,
+        loc: expr.loc,
+      };
+    }
+    // A Map or Set whose key/value slots differ from the destination's
+    // (`const result = new Map()` in a JavaScript function whose JSDoc
+    // returns `Map<string, X>`: the checker leaves the local Map<any, any>).
+    // The checked-dynamic representation holds the entries, and the checked
+    // extraction rebuilds the declared layout, validating each key and value
+    // exactly like every other dyn→static edge. The copy is the entry order
+    // Node's map has; the destination never shares the source's identity
+    // because the two layouts could not. Only a checked-dynamic slot
+    // converts: a slot with another static layout (`new Set<number>()` cast
+    // to a `Set<string>` view) holds values the declared layout cannot
+    // describe, and keeps its refusal.
+    if (
+      (expected.kind === "map" || expected.kind === "set") &&
+      expr.type.kind === expected.kind &&
+      !typeEquals(expected, expr.type) &&
+      dynSlotsWiden(expr.type, expected) &&
       this.dynConvertible(expr.type) &&
       canDynCheckTo(
         expected,
@@ -26046,4 +26117,15 @@ function narrowedIntoClass(
     if (ts.isUnreadableConstituentsPanic(e)) return false;
     throw e;
   }
+}
+
+/** Whether every key, value or element slot where a Map or Set differs from
+ * the expected one is checked-dynamic in the source, so the checked
+ * extraction can rebuild the expected layout from the entries it holds. */
+function dynSlotsWiden(from: IrType, to: IrType): boolean {
+  const widens = (a: IrType, b: IrType): boolean => a.kind === "dyn" || typeEquals(a, b);
+  if (from.kind === "map" && to.kind === "map")
+    return widens(from.key, to.key) && widens(from.value, to.value);
+  if (from.kind === "set" && to.kind === "set") return widens(from.elem, to.elem);
+  return false;
 }

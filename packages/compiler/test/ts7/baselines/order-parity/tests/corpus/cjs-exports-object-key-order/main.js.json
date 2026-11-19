@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-object-key-order/lib.js",
+  "<repo>/tests/corpus/cjs-exports-object-key-order/main.js"
+ ],
+ "diags": []
+}

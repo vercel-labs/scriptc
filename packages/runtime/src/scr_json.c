@@ -6920,15 +6920,43 @@ static bool scr_typed_ref_record_assign(ScrDyn *d, const ScrDyn *src) {
   for (size_t i = 0; i < count; i++) {
     if (scr_dyn_obj_prop_at(src, i).accessor) return false;
   }
+  /* A field's conversion walks the checked value (a structural match reads
+   * its members, so their getters run). That code can replace or delete an
+   * entry of the source before this loop reaches it, so collect what the
+   * copy will store — the field index and a retained value — before the
+   * first store: the store must not read a source table the conversion can
+   * change underneath it. */
+  typedef struct {
+    size_t index;
+    ScrDyn *value;
+  } ScrPendingRecordAssign;
+  ScrPendingRecordAssign *pending = count == 0 ? NULL : malloc(count * sizeof *pending);
+  if (count != 0 && pending == NULL) return false;
+  size_t held = 0;
+  bool ok = true;
   for (size_t i = 0; i < count; i++) {
     ScrDynProp prop = scr_dyn_obj_prop_at(src, i);
     if (!prop.enumerable) continue;
     size_t index;
-    if (!scr_typed_ref_record_field_bytes(ops, prop.key, prop.key_len, &index)) return false;
-    if (!scr_typed_ref_record_store(d, ops, index, prop.value)) return false;
-    if (scr_exc_pending()) return true;
+    if (!scr_typed_ref_record_field_bytes(ops, prop.key, prop.key_len, &index)) {
+      ok = false;
+      break;
+    }
+    pending[held].index = index;
+    pending[held].value = prop.value == NULL ? NULL : scr_dyn_retain(prop.value);
+    held++;
   }
-  return true;
+  for (size_t i = 0; ok && i < held; i++) {
+    if (!scr_typed_ref_record_store(d, ops, pending[i].index, pending[i].value)) {
+      ok = false;
+      break;
+    }
+    if (scr_exc_pending()) break;
+  }
+  for (size_t i = 0; i < held; i++)
+    if (pending[i].value != NULL) scr_dyn_release(pending[i].value);
+  free(pending);
+  return ok;
 }
 
 static bool scr_typed_ref_array_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {

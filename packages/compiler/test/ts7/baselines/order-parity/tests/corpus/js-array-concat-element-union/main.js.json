@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-array-concat-element-union/schema/common/map.js",
+  "<repo>/tests/corpus/js-array-concat-element-union/schema/common/seq.js",
+  "<repo>/tests/corpus/js-array-concat-element-union/schema/json/schema.js",
+  "<repo>/tests/corpus/js-array-concat-element-union/main.js"
+ ],
+ "diags": []
+}

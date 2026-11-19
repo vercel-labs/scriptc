@@ -98167,6 +98167,7 @@
           "tests/fixtures/node-test/cases/suite-context.ts",
           "tests/fixtures/node-test/cases/suite-variants.ts",
           "tests/fixtures/node-test/cases/todo-suites.ts",
+          "tests/fixtures/node-test/cases/tracing-channels.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -99047,8 +99048,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "supported",
+        "evidence": "compiler-feature:test.'tracing:node.test:start'",
+        "tests": [
+          "tests/fixtures/node-test/cases/tracing-channels.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99070,8 +99075,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "supported",
+        "evidence": "compiler-feature:test.'tracing:node.test:end'",
+        "tests": [
+          "tests/fixtures/node-test/cases/tracing-channels.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -99093,8 +99102,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "status": "supported",
+        "evidence": "compiler-feature:test.'tracing:node.test:error'",
+        "tests": [
+          "tests/fixtures/node-test/cases/tracing-channels.ts",
+          "tests/harness/node-test.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },

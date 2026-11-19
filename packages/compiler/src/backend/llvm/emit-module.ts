@@ -692,6 +692,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // emitter: node:test owns the final status when present; otherwise an
   // embedded process.exitCode owns it; ordinary programs return zero.
   const usesNodeTest = runtimeFeatures.nodeTest;
+  /* The entry file path the runner's tracing events carry, interned here so
+   * the string constant exists before the globals are written. */
+  const testEntryPtr = usesNodeTest ? emitter.cstr(emitter.mod.sourceFile) : "";
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
@@ -763,7 +766,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
-    emitter.declare(`declare void @scr_test_init()`);
+    emitter.declare(`declare void @scr_test_init(ptr)`);
   }
   if (snapshotsTlsCa) {
     emitter.declare(`declare void @scr_tls_ca_install()`);
@@ -1567,7 +1570,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
     // node:test takes Node's runtime options (the snapshot update flag and
     // the reporter options) out of argv first.
-    ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
+    ...(usesNodeTest ? [`  call void @scr_test_init(ptr ${testEntryPtr})`] : []),
     ...(asyncEntry
       ? [`  %top = call ptr @${mangleAsyncSpawn(emitter.mod.entry)}()`]
       : // The entry runs once: `noinline` keeps LLVM from inlining the

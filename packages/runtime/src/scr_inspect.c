@@ -6249,6 +6249,70 @@ ScrStr *scr_insp_inspect_dir(ScrDyn *value, ScrDyn *options, double argc) {
   return insp_fmt_inspect(value, &o, o.depth, o.compact, o.colors);
 }
 
+/* Whether the options record spells `colors` (anything but undefined):
+ * Node's kGetInspectOptions applies colorMode only when it does not. */
+static bool insp_console_options_has_colors(const ScrDyn *options) {
+  if (options == NULL || options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL)
+    return false;
+  bool has = false;
+  ScrDyn *view = NULL;
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    view = scr_dyn_typed_ref_materialize(options);
+    if (view == NULL) return false;
+    options = view;
+  }
+  if (options->kind == SCR_DYN_OBJ) {
+    ScrDyn *colors = scr_dyn_obj_get(options, "colors", 6);
+    has = colors != NULL && colors->kind != SCR_DYN_UNDEF;
+  }
+  scr_dyn_release(view);
+  return has;
+}
+
+/* The colorMode answer over the instance's options: 1 forces colors, 2
+ * forces none, 0 leaves the options' own answer. */
+static void insp_console_colors(ScrInspFormatOptions *o, int colors_mode) {
+  if (colors_mode == 1) o->colors = true;
+  else if (colors_mode == 2) o->colors = false;
+}
+
+static bool insp_console_read_options(ScrInspFormatOptions *o, ScrDyn *options) {
+  if (options == NULL || options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL)
+    return true;
+  return scr_insp_format_read_options(options, o);
+}
+
+ScrStr *scr_insp_console_format(ScrDyn *pack, ScrDyn *inspect_options, const char *surface,
+                                int colors_mode) {
+  ScrInspFormatOptions o;
+  scr_insp_format_defaults(&o, surface);
+  if (!insp_console_read_options(&o, inspect_options)) return NULL;
+  if (!insp_console_options_has_colors(inspect_options)) {
+    if (scr_exc_pending()) return NULL;
+    insp_console_colors(&o, colors_mode);
+  }
+  return insp_fmt_pack(pack, &o);
+}
+
+ScrStr *scr_insp_console_inspect(ScrDyn *value, ScrDyn *inspect_options, ScrDyn *call_options,
+                                 double argc, int colors_mode) {
+  ScrInspFormatOptions o;
+  scr_insp_format_defaults(&o, "console.dir");
+  o.custom_inspect = false;
+  if (!insp_console_read_options(&o, inspect_options)) return NULL;
+  if (!insp_console_options_has_colors(inspect_options)) {
+    if (scr_exc_pending()) return NULL;
+    insp_console_colors(&o, colors_mode);
+  }
+  /* The call's own options spread over the instance's (Node's
+   * `{ ...kGetInspectOptions(stream), ...options, customInspect: false }`). */
+  if (argc > 1 && call_options != NULL &&
+      (call_options->kind == SCR_DYN_OBJ || call_options->kind == SCR_DYN_TYPED_REF)) {
+    if (!scr_insp_format_read_options(call_options, &o)) return NULL;
+  }
+  return insp_fmt_inspect(value, &o, o.depth, o.compact, o.colors);
+}
+
 static ScrDyn *insp_inspect_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure;
   ScrDyn *undefined = scr_dyn_undefined();

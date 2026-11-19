@@ -12,6 +12,11 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * the rule, and builtin-throw-undecided.txt lists the builtins that
  * predate it. */
 export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  // Error.prepareStackTrace's program state: the get retains the stored value
+  // (or builds the default function once) and the set retains and releases;
+  // neither runs program code or raises a catchable error.
+  "error.prepareStackTraceGet",
+  "error.prepareStackTraceSet",
   // perf_hooks histogram readings and state: the handle indexes the
   // thread's table, every selector is arithmetic over it, and none runs
   // program code. (Creating and recording validate their arguments, so
@@ -394,4 +399,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // own check, and running out of memory ends it too. The call reports no
   // error the emitter could deliver.
   "text.encodeIntoStr",
+  // Error.prepareStackTrace as program state (scr_exception.c): the getter
+  // and setter read and write the program's own cell, running no program
+  // code and raising no catchable error.
+  "error.prepareStackTraceGet",
+  "error.prepareStackTraceSet",
 ]);

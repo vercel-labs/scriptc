@@ -7772,6 +7772,12 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   return scr_bytes_instanceof_at(value, callee, NULL);
 }
 SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
+/* The timerified wrapper's construct form (scr_perf.c installs it when the
+ * program first wraps a function): a wrapper constructs its original with
+ * Node's `new` semantics and records the entry, then this dispatcher's own
+ * "not a constructor" refusal never sees it. */
+SCR_TL bool (*scr_dyn_timerified_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
+                                               ScrDyn **result) = NULL;
 SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
                                             bool descriptor) = NULL;
 SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
@@ -7796,6 +7802,9 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     return result;
   }
   ScrDyn *constructed = NULL;
+  if (callee->kind == SCR_DYN_FUNC && scr_dyn_timerified_construct_fn &&
+      scr_dyn_timerified_construct_fn(callee, args, &constructed))
+    return constructed;
   if (scr_dyn_global_construct_fn && scr_dyn_global_construct_fn(callee, args, &constructed))
     return constructed;
   /* The Buffer function value (scr_builtin_values.c): Node's construction
@@ -7835,6 +7844,7 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
   return NULL;
 }
+
 
 static bool scr_dyn_bytes_named(const char *method, const char *name) {
   return strcmp(method, name) == 0;
@@ -13734,6 +13744,37 @@ static ScrDyn *scr_domex_view_code_get(ScrClosure *closure, ScrDyn *const *args,
   scr_error_release(e);
   return scr_dyn_new_num(code);
 }
+/* A pending extra property for the next error view (scr_error_seed_own_prop):
+ * AssertionError's generatedMessage, which Node assigns before the class
+ * name and the view appends at a fixed place. */
+static SCR_TL const char *scr_error_seed_key;
+static SCR_TL size_t scr_error_seed_key_len;
+static SCR_TL ScrDyn *scr_error_seed_value;
+/* One cleanup registration per thread, not one per assertion: a caught
+ * assertion seeds and consumes its property repeatedly, and worker
+ * executables allocate an exit-list entry per registration. */
+static SCR_TL bool scr_error_seed_exit_registered;
+static SCR_TL size_t scr_error_seed_exit_registrations;
+size_t scr_error_seed_registration_count(void) { return scr_error_seed_exit_registrations; }
+static void scr_error_seed_cleanup(void) {
+  scr_dyn_release(scr_error_seed_value);
+  scr_error_seed_value = NULL;
+}
+void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value) {
+  if (!scr_error_seed_exit_registered && scr_atexit(scr_error_seed_cleanup) == 0) {
+    scr_error_seed_exit_registered = true;
+    scr_error_seed_exit_registrations++;
+  }
+  scr_dyn_release(scr_error_seed_value);
+  scr_error_seed_key = key;
+  scr_error_seed_key_len = key_len;
+  scr_error_seed_value = value;
+}
+ScrDyn *scr_error_take_seed(void) {
+  ScrDyn *value = scr_error_seed_value;
+  scr_error_seed_value = NULL;
+  return value;
+}
 
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   ScrDyn *d = scr_dyn_new_obj();
@@ -13779,6 +13820,12 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   if (e->message_present && !system) {
     scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->message_enumerable;
+  }
+  /* The seeded property sits where its assignment put it in Node's
+   * constructor order — after the message, before the class name. */
+  if (scr_error_seed_value != NULL) {
+    scr_dyn_obj_set(d, scr_error_seed_key, scr_error_seed_key_len, scr_error_seed_value);
+    scr_error_seed_value = NULL;
   }
   if (e->system_message) {
     /* SystemError: code, name, message, then the read-only `info` context

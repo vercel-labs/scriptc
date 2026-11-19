@@ -829,7 +829,12 @@ typedef struct ScrTlsSock {
   bool vrfy_leaf_self;
   bool vrfy_chain_self;
   bool vrfy_expired;
+  bool vrfy_future;
+  bool vrfy_bad_sig;
   bool vrfy_cn_mismatch;
+  /* the leaf's subjectAltName rendered the way OpenSSL prints it, recorded
+   * while the peer chain is alive for Node's altname-failure message */
+  char *vrfy_altnames;
   /* a certificate of the chain carried a blocked public key: the failure
    * Node reports as CERT_REVOKED, ahead of every other verification error */
   bool vrfy_blocked;
@@ -1058,6 +1063,86 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * IP literal against the IP SANs, another name with mbedtls_x509_crt_verify
  * on the leaf alone, keeping only its CN_MISMATCH bit. No name to check is
  * a mismatch. */
+/* mbedTLS folds every chain failure into BADCERT_NOT_TRUSTED, while
+ * OpenSSL separates a leaf whose signature does not verify
+ * (CERT_SIGNATURE_FAILURE) from one whose issuer never arrived. When the
+ * leaf names an issuer the trust list holds, verify the leaf's signature
+ * against that issuer's key: a failure is Node's CERT_SIGNATURE_FAILURE. */
+static bool scr_tls_leaf_bad_sig(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
+  if (t->vrfy_trust == NULL || leaf->MBEDTLS_PRIVATE(sig).len == 0) return false;
+  const mbedtls_md_info_t *md = mbedtls_md_info_from_type(leaf->MBEDTLS_PRIVATE(sig_md));
+  if (md == NULL) return false;
+  for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+    if (ca->subject_raw.len != leaf->issuer_raw.len ||
+        memcmp(ca->subject_raw.p, leaf->issuer_raw.p, leaf->issuer_raw.len) != 0)
+      continue;
+    if (!mbedtls_pk_can_do(&ca->pk, leaf->MBEDTLS_PRIVATE(sig_pk))) return false;
+    unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+    if (mbedtls_md(md, leaf->tbs.p, leaf->tbs.len, hash) != 0) return false;
+    int rc = mbedtls_pk_verify_ext(leaf->MBEDTLS_PRIVATE(sig_pk), leaf->MBEDTLS_PRIVATE(sig_opts),
+                                   &ca->pk, leaf->MBEDTLS_PRIVATE(sig_md), hash,
+                                   mbedtls_md_get_size(md), leaf->MBEDTLS_PRIVATE(sig).p,
+                                   leaf->MBEDTLS_PRIVATE(sig).len);
+    return rc != 0;
+  }
+  return false;
+}
+
+/* Node's ERR_TLS_CERT_ALTNAME_INVALID message carries the leaf's
+ * subjectAltName as OpenSSL renders it ("DNS:a, IP Address:1.2.3.4"). The
+ * peer chain is gone once the handshake has failed, so render it on the
+ * leaf's turn in the verify callback. */
+static void scr_tls_record_altnames(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
+  free(t->vrfy_altnames);
+  t->vrfy_altnames = NULL;
+  char buf[1024];
+  size_t used = 0;
+  bool first = true;
+  for (const mbedtls_x509_sequence *cur = &leaf->subject_alt_names; cur != NULL; cur = cur->next) {
+    if (cur->buf.p == NULL) continue;
+    unsigned char tag = (unsigned char)cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK;
+    char item[300];
+    int n = 0;
+    if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+      n = snprintf(item, sizeof item, "DNS:%.*s", (int)cur->buf.len, (const char *)cur->buf.p);
+    } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS) {
+      char ip[64];
+      if (cur->buf.len == 4) {
+        n = snprintf(ip, sizeof ip, "%u.%u.%u.%u", cur->buf.p[0], cur->buf.p[1], cur->buf.p[2],
+                     cur->buf.p[3]);
+      } else if (cur->buf.len == 16) {
+        /* OpenSSL prints an iPAddress SAN as eight uncompressed groups */
+        const unsigned char *b = cur->buf.p;
+        n = snprintf(ip, sizeof ip, "%x:%x:%x:%x:%x:%x:%x:%x", (b[0] << 8) | b[1],
+                     (b[2] << 8) | b[3], (b[4] << 8) | b[5], (b[6] << 8) | b[7],
+                     (b[8] << 8) | b[9], (b[10] << 8) | b[11], (b[12] << 8) | b[13],
+                     (b[14] << 8) | b[15]);
+      } else {
+        continue;
+      }
+      if (n < 0) continue;
+      n = snprintf(item, sizeof item, "IP Address:%.*s", n < (int)sizeof ip ? n : (int)sizeof ip, ip);
+    } else if (tag == MBEDTLS_X509_SAN_RFC822_NAME) {
+      n = snprintf(item, sizeof item, "email:%.*s", (int)cur->buf.len, (const char *)cur->buf.p);
+    } else if (tag == MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) {
+      n = snprintf(item, sizeof item, "URI:%.*s", (int)cur->buf.len, (const char *)cur->buf.p);
+    } else {
+      continue;
+    }
+    if (n < 0) continue;
+    if (used + (size_t)n + (first ? 0 : 2) >= sizeof buf) break;
+    if (!first) {
+      buf[used++] = ',';
+      buf[used++] = ' ';
+    }
+    memcpy(buf + used, item, (size_t)n);
+    used += (size_t)n;
+    first = false;
+  }
+  t->vrfy_altnames = strndup(buf, used);
+  if (t->vrfy_altnames == NULL) scr_tls_oom();
+}
+
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   t->vrfy_seen = true;
@@ -1118,10 +1203,15 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
   bool self = crt->issuer_raw.len == crt->subject_raw.len &&
               memcmp(crt->issuer_raw.p, crt->subject_raw.p, crt->subject_raw.len) == 0;
   if (*flags & MBEDTLS_X509_BADCERT_EXPIRED) t->vrfy_expired = true;
-  if (*flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) t->vrfy_cn_mismatch = true;
+  if (*flags & MBEDTLS_X509_BADCERT_FUTURE) t->vrfy_future = true;
+  if (*flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) {
+    t->vrfy_cn_mismatch = true;
+    scr_tls_record_altnames(t, crt);
+  }
   if (*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) {
     if (depth == 0 && self) t->vrfy_leaf_self = true;
     if (depth > 0 && self) t->vrfy_chain_self = true;
+    if (depth == 0 && !self && scr_tls_leaf_bad_sig(t, crt)) t->vrfy_bad_sig = true;
   }
   return 0;
 }
@@ -1299,6 +1389,14 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
     snprintf(out, n, "certificate has expired");
     return;
   }
+  if (t->vrfy_future) {
+    snprintf(out, n, "certificate is not yet valid");
+    return;
+  }
+  if (t->vrfy_bad_sig) {
+    snprintf(out, n, "certificate signature failure");
+    return;
+  }
   /* Node appends the --use-system-ca hint for exactly these two codes
    * (src/crypto/crypto_common.cc: DEPTH_ZERO_SELF_SIGNED_CERT and
    * UNABLE_TO_VERIFY_LEAF_SIGNATURE) — and NOT for the in-chain one. */
@@ -1316,7 +1414,37 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
    * (checkServerIdentity runs after verification succeeds) */
   if (t->vrfy_cn_mismatch &&
       (mbedtls_ssl_get_verify_result(&t->ssl) & MBEDTLS_X509_BADCERT_NOT_TRUSTED) == 0) {
-    snprintf(out, n, "Hostname/IP does not match certificate's altnames");
+    const char *name = t->cli != NULL ? t->cli->verify_name : NULL;
+    const char *names = t->vrfy_altnames != NULL ? t->vrfy_altnames : "";
+    if (name != NULL && scr_tls_is_ip(name)) {
+      /* Node lists only the certificate's IP entries for an IP request */
+      char ips[1024];
+      size_t used = 0;
+      const char *at = names;
+      while (*at != '\0') {
+        const char *comma = strstr(at, ", ");
+        size_t len = comma != NULL ? (size_t)(comma - at) : strlen(at);
+        if (len >= 11 && memcmp(at, "IP Address:", 11) == 0) {
+          if (used != 0 && used + 2 < sizeof ips) {
+            memcpy(ips + used, ", ", 2);
+            used += 2;
+          }
+          if (used + len < sizeof ips) {
+            memcpy(ips + used, at, len);
+            used += len;
+          }
+        }
+        if (comma == NULL) break;
+        at = comma + 2;
+      }
+      ips[used] = '\0';
+      snprintf(out, n, "Hostname/IP does not match certificate's altnames: IP: %s is not in the cert's list: %s",
+               name, ips);
+    } else {
+      snprintf(out, n,
+               "Hostname/IP does not match certificate's altnames: Host: %s. is not in the cert's altnames: %s",
+               name != NULL ? name : "", names);
+    }
     return;
   }
   snprintf(out, n, "unable to verify the first certificate%s", hint);
@@ -1805,7 +1933,7 @@ static int scr_tls_handshake(void *tctx) {
     else t->hang_up_pending = true;
     return -1;
   }
-  char msg[160];
+  char msg[512];
   if (r == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
     scr_tls_verify_msg(t, msg, sizeof msg);
   } else if (r == MBEDTLS_ERR_SSL_CONN_EOF) {
@@ -1905,6 +2033,7 @@ static void scr_tls_free(void *tctx) {
   mbedtls_x509_crt_free(&t->served_chain);
   if (t->server) scr_net_server_release(t->server);
   free(t->held);
+  free(t->vrfy_altnames);
   free(t);
 }
 
@@ -4142,6 +4271,8 @@ static const char *scr_tls_auth_code(ScrTlsSock *t) {
   uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
   if (t->vrfy_blocked) return "CERT_REVOKED";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
+  if (t->vrfy_future) return "CERT_NOT_YET_VALID";
+  if (t->vrfy_bad_sig) return "CERT_SIGNATURE_FAILURE";
   if (t->vrfy_leaf_self) return "DEPTH_ZERO_SELF_SIGNED_CERT";
   if (t->vrfy_chain_self) return "SELF_SIGNED_CERT_IN_CHAIN";
   if (vr & MBEDTLS_X509_BADCERT_NOT_TRUSTED) return "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
@@ -4254,6 +4385,128 @@ ScrDyn *scr_tls_sock_servername(ScrNetSocket *s) {
   ScrDyn *answer = scr_dyn_new_str(name);
   scr_str_release(name);
   return answer;
+}
+
+/* Whether `label` begins with one of the PRF labels RFC 5705 reserves for
+ * the handshake ("client finished", "server finished", "master secret",
+ * "extended master secret", "key expansion"): the provider compares the
+ * PRF argument's leading bytes, so the label's own prefix decides. */
+static bool scr_tls_reserved_exporter_label(const ScrStr *label) {
+  static const char *const reserved[] = {
+    "client finished",
+    "server finished",
+    "master secret",
+    "extended master secret",
+    "key expansion",
+  };
+  for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
+    size_t n = strlen(reserved[i]);
+    if (label->len >= n && memcmp(label->data, reserved[i], n) == 0) return true;
+  }
+  return false;
+}
+
+/* The error OpenSSL raises for an exporter label it refuses (a TLS 1.2
+ * connection's reserved PRF names, a TLS 1.3 connection's over-long label),
+ * as Node reports it: "error:0A00016F:SSL routines::tls illegal exporter
+ * label" with own library, reason and code properties in Node's key order. */
+static void scr_tls_throw_illegal_exporter_label(void) {
+  static const char text[] = "error:0A00016F:SSL routines::tls illegal exporter label";
+  static const char library[] = "SSL routines";
+  static const char reason[] = "tls illegal exporter label";
+  static const char code[] = "ERR_SSL_TLS_ILLEGAL_EXPORTER_LABEL";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  const char *keys[] = { "library", "reason", "code" };
+  const char *values[] = { library, reason, code };
+  for (size_t i = 0; i < 3; i++) {
+    if (i == 2) scr_error_set_code(e, code);
+    ScrStr *value = scr_str_new(values[i], strlen(values[i]));
+    scr_error_set_prop(e, keys[i], strlen(keys[i]), scr_dyn_new_str(value));
+    scr_str_release(value);
+  }
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* tlsSocket.exportKeyingMaterial(length, label[, context]): Node's
+ * validation ladder (validateInteger length 1..4294967295, a string label,
+ * a Buffer/TypedArray context) then the provider's TLS exporter. +1
+ * Buffer, NULL with an exception pending. */
+ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const ScrDyn *length,
+                                              const ScrDyn *label, const ScrDyn *context,
+                                              bool has_context) {
+  if (length->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("length", "of type number", length);
+    return NULL;
+  }
+  double len = length->v.num;
+  if (floor(len) != len || len < 1 || len > 4294967295.0) {
+    char recv[48];
+    char msg[192];
+    int n;
+    scr_num_received(len, recv);
+    if (floor(len) != len) {
+      n = snprintf(msg, sizeof msg,
+                   "The value of \"length\" is out of range. It must be an integer. Received %s", recv);
+    } else {
+      n = snprintf(msg, sizeof msg,
+                   "The value of \"length\" is out of range. It must be >= 1 && <= 4294967295. Received %s",
+                   recv);
+    }
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  if (label->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("label", "of type string", label);
+    return NULL;
+  }
+  const ScrBytes *ctx = NULL;
+  if (has_context && context->kind != SCR_DYN_UNDEF && context->kind != SCR_DYN_NULL) {
+    if (context->kind != SCR_DYN_BYTES) {
+      scr_dyn_arg_type_fail("context", "an instance of Buffer, TypedArray, or DataView", context);
+      return NULL;
+    }
+    ctx = context->v.bytes;
+  }
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || !scr_net_sock_established(s)) {
+    static const char msg[] = "TLS socket connection must be securely established";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_INVALID_STATE");
+    return NULL;
+  }
+  /* RFC 5705's reserved names: a TLS 1.2 exporter builds its PRF argument
+   * from the label, so a label that begins with one of the handshake's own
+   * PRF labels is refused; TLS 1.3 exporters have no such names. */
+  bool tls13 = strcmp(mbedtls_ssl_get_version(&t->ssl), "TLSv1.3") == 0;
+  if (!tls13 && scr_tls_reserved_exporter_label(label->v.str)) {
+    scr_tls_throw_illegal_exporter_label();
+    return NULL;
+  }
+  /* RFC 8446's 255-byte label ceiling less the provider's "tls13 " prefix:
+   * a TLS 1.3 connection refuses a longer label where a TLS 1.2 connection
+   * exports any label. */
+  if (tls13 && label->v.str->len > 249) {
+    scr_tls_throw_illegal_exporter_label();
+    return NULL;
+  }
+  size_t key_len = (size_t)len;
+  /* A typed-array context counts bytes, not elements: a Uint16Array view's
+   * suffix reaches the provider, so distinct contexts stay distinct. */
+  size_t context_len = ctx != NULL ? (size_t)scr_bytes_byte_len(ctx) : 0;
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)key_len);
+  out->is_buffer = true;
+  int rc = mbedtls_ssl_export_keying_material(
+    &t->ssl, out->data, key_len, (const char *)label->v.str->data, label->v.str->len,
+    ctx != NULL ? ctx->data : NULL, context_len, ctx != NULL ? 1 : 0);
+  if (rc != 0) {
+    scr_bytes_release(out);
+    static const char msg[] =
+      "the TLS provider cannot export keying material for these parameters";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_SSL_TLS_ILLEGAL_EXPORTER_LABEL");
+    return NULL;
+  }
+  return out;
 }
 
 /* tlsSocket.getSession(): the session a resumption would use. +1 dyn

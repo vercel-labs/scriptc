@@ -10286,16 +10286,23 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
   if (strcmp(method, "getHeaderNames") == 0) {
     ScrArr *names = scr_http_client_get_header_names(c);
     ScrDyn *out = scr_dyn_new_arr();
-    for (size_t i = 0; i < scr_arr_len(names); i++)
-      scr_dyn_arr_push(out, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(names, (double)i)));
+    for (size_t i = 0; i < scr_arr_len(names); i++) {
+      /* get_ref answers +1; scr_dyn_new_str retains its own reference. */
+      ScrStr *n = (ScrStr *)scr_arr_get_ref(names, (double)i);
+      scr_dyn_arr_push(out, scr_dyn_new_str(n));
+      scr_str_release(n);
+    }
     scr_arr_release(names);
     return out;
   }
   if (strcmp(method, "getRawHeaderNames") == 0) {
     ScrArr *names = scr_http_client_get_raw_header_names(c);
     ScrDyn *out = scr_dyn_new_arr();
-    for (size_t i = 0; i < scr_arr_len(names); i++)
-      scr_dyn_arr_push(out, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(names, (double)i)));
+    for (size_t i = 0; i < scr_arr_len(names); i++) {
+      ScrStr *n = (ScrStr *)scr_arr_get_ref(names, (double)i);
+      scr_dyn_arr_push(out, scr_dyn_new_str(n));
+      scr_str_release(n);
+    }
     scr_arr_release(names);
     return out;
   }

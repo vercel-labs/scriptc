@@ -202,6 +202,7 @@ import { carriesDebugSources, executableLinkFeatures } from "./backend/executabl
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
 import { debugJsIcWays } from "./backend/llvm/js-ic.js";
+import { invalidIrSourceLoc } from "./backend/llvm/invalid-ir-loc.js";
 import { dynIndexFastpath } from "./ir/js-ic.js";
 import { representationReportPath } from "./backend/llvm/repr-report.js";
 import {
@@ -860,6 +861,7 @@ async function compileExecutableNative(
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
     ...(features.stdioObject ? { stdioObject: true } : {}),
     ...(features.ttyColors ? { ttyColors: true } : {}),
+    ...(features.consoleOptions ? { consoleOptions: true } : {}),
     ...(features.streamPipeEvents ? { streamPipeEvents: true } : {}),
     ...(features.fsStreamSignal ? { fsStreamSignal: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
@@ -1382,9 +1384,14 @@ async function prepareExecutableInput(
         });
       } catch (err) {
         if (!(err instanceof NativeCodegenError)) throw err;
+        // The helper reports the emitted IR it rejected. When its message
+        // quotes a slot, name the construct whose lowering wrote it instead
+        // of pointing at the entry (1:1).
+        const diag = nativeCodegenDiag(err.diagnosticCode, err.message, entryPath);
+        const loc = invalidIrSourceLoc(mod, err.message);
         return {
           ok: false,
-          diagnostics: [nativeCodegenDiag(err.diagnosticCode, err.message, entryPath)],
+          diagnostics: [loc === null ? diag : { ...diag, loc }],
           sourceTexts,
         };
       }

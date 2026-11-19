@@ -738,6 +738,7 @@ function buildLibFnSignatures() {
      * entryResourceNum/Str read a view entry's resource fields by the
      * selector order builtins/performance.ts defines. */
     "perf.resourceMark": { argTypes: [DYN], result: F64 },
+    "perf.timerify": { argTypes: [DYN], result: DYN },
     "perf.resourceClear": { argTypes: [DYN], result: VOID },
     "perf.resourceBufferSize": { argTypes: [DYN], result: VOID },
     "perf.entryResourceNum": { argTypes: [F64, F64], result: F64 },
@@ -1867,8 +1868,8 @@ function buildLibFnSignatures() {
      * shape (zero-param, or the (eventType: string) form — runtime-
      * provided); an open watcher keeps the loop alive until watcher.close()
      * (idempotent, receiver borrowed, statement position only). */
-    "fs.watch": { argTypes: [STRING, BOOL], result: FSWATCHER_T },
-    "fs.watchCb": { argTypes: [STRING, null, BOOL], result: FSWATCHER_T },
+    "fs.watch": { argTypes: [STRING, BOOL, BOOL], result: FSWATCHER_T },
+    "fs.watchCb": { argTypes: [STRING, null, BOOL, BOOL], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
     "watcher.ref": { argTypes: [FSWATCHER_T], result: VOID },
     "watcher.unref": { argTypes: [FSWATCHER_T], result: VOID },
@@ -2558,6 +2559,10 @@ function buildLibFnSignatures() {
       argTypes: [DGRAMSOCK_T, F64, STRING, { kind: "func", params: [], ret: VOID }],
       result: VOID,
     },
+    /** A connect completion callback read as an untyped value: the runtime
+     * calls it with the error when the connection is refused (Node's
+     * nextTick(callback, ex)), so a JavaScript callback sees its argument. */
+    "dgram.connectDyn": { argTypes: [DGRAMSOCK_T, F64, STRING, DYN], result: VOID },
     "dgram.sendStr": { argTypes: [DGRAMSOCK_T, STRING, F64, STRING], result: VOID },
     "dgram.sendBytes": { argTypes: [DGRAMSOCK_T, BYTES_U8, F64, STRING], result: VOID },
     /** Connected AF_UNIX datagram sockets for the hot-shots package shim
@@ -3414,6 +3419,12 @@ function buildLibFnSignatures() {
     /** tlsSocket.servername (string or false) and getSession() (a Buffer
      * or null) as dyn values, and disableRenegotiation's no-op. */
     "tls.sockDynMember": { argTypes: [NETSOCKET_T, F64], result: DYN },
+    /** tlsSocket.exportKeyingMaterial(length, label[, context]); the flag
+     * says whether the call supplied a context argument. */
+    "tls.sockExportKeyingMaterial": {
+      argTypes: [NETSOCKET_T, DYN, DYN, DYN, BOOL],
+      result: BYTES_U8,
+    },
     /** `x instanceof tls.Server`: the server handle's TLS marker. */
     "tls.serverIs": { argTypes: [NETSERVER_T], result: BOOL },
     /** The same test over a checked-dynamic value (a union operand). */
@@ -5393,7 +5404,7 @@ function buildLibFnSignatures() {
      * writable stream to target 0 (stdout) or 1 (stderr); write prints
      * `text\n` to the selected target of an instance or the global console
      * handle. */
-    "console.new": { argTypes: [F64, F64, BOOL, DYN], result: DYN },
+    "console.new": { argTypes: [F64, F64, BOOL, DYN, DYN, DYN], result: DYN },
     "console.bind": { argTypes: [DYN, F64, null], result: VOID },
     "console.write": { argTypes: [DYN, STRING, BOOL], result: VOID },
     /** The global console's remaining members (scr_console_native.c; the
@@ -5444,6 +5455,18 @@ function buildLibFnSignatures() {
     "console.instClear": { argTypes: [DYN], result: VOID },
     "console.instTable": { argTypes: [DYN, DYN, DYN], result: VOID },
     "console.instTrace": { argTypes: [DYN, STRING], result: VOID },
+    /** The instance methods' run-time argument forms: a Console built with
+     * inspectOptions or colorMode formats its checked-dynamic arguments with
+     * util.formatWithOptions over the instance options and colorMode
+     * (scr_inspect.c). writeArgs names an output member (0 log, 1 info,
+     * 2 debug, 3 warn, 4 error); dirArgs renders console.dir for the
+     * call's argc; assert and group follow Node's Console methods. */
+    "console.instWriteArgs": { argTypes: [DYN, F64, DYN], result: VOID },
+    "console.instDirxmlArgs": { argTypes: [DYN, DYN], result: VOID },
+    "console.instDirArgs": { argTypes: [DYN, DYN], result: STRING },
+    "console.instTraceArgs": { argTypes: [DYN, DYN], result: VOID },
+    "console.instAssertArgs": { argTypes: [DYN, DYN], result: VOID },
+    "console.instGroupArgs": { argTypes: [DYN, DYN, BOOL], result: VOID },
     /** A native reference to the global object; known names retain value fences. */
     "global.native": { argTypes: [arrayOf(STRING)], result: DYN },
     /** Arms the runtime check for the Node globals the native runtime does not
@@ -5490,6 +5513,8 @@ function buildLibFnSignatures() {
     "error.setStack": { argTypes: [null, STRING], result: VOID },
     "error.stackLimitGet": { argTypes: [], result: F64 },
     "error.stackLimitSet": { argTypes: [F64], result: VOID },
+    "error.prepareStackTraceGet": { argTypes: [], result: DYN },
+    "error.prepareStackTraceSet": { argTypes: [DYN], result: VOID },
     // Receiver (any error-hierarchy object) and the program-dependent
     // `string | undefined` result are checked in the libCall case.
     /** NodeJS.ErrnoException's `.code` read: borrowed error-hierarchy

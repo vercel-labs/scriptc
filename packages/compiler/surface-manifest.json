@@ -2458,6 +2458,13 @@
       "note": "the global performance object and the performance.now.bind(performance) function value reach the same clock"
     },
     {
+      "id": "node-builtin.perf_hooks.timerify",
+      "kind": "node-builtin",
+      "name": "perf_hooks.timerify",
+      "status": "static",
+      "note": "performance.timerify and perf_hooks.timerify are the same wrapper: a timed call records a 'function' entry, delivered to the observers watching that type"
+    },
+    {
       "id": "node-builtin.process",
       "kind": "node-builtin",
       "name": "process",
@@ -5861,9 +5868,8 @@
       "id": "stdlib.readable-stream.values",
       "kind": "stdlib",
       "name": "ReadableStream.values",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; direct for-await consumption compiles statically; storing or driving the first-class iterator handle is unsupported"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-stream-values"
     },
     {
       "id": "stdlib.request.arrayBuffer",

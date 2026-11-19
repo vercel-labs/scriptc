@@ -35,6 +35,7 @@ import {
 } from "./lower-inspect.js";
 import { streamSidesOf } from "./lower-stream.js";
 import { programTouchesInspectTables } from "./inspect-tables.js";
+import { dynArgumentPack } from "./call-arguments.js";
 
 /** node:console Console instances: a native handle (the checked-dynamic
  * representation the stdlib Console type maps to) over two output
@@ -66,6 +67,39 @@ function isConsoleCtor(lowerer: Lowerer, callee: ts.Expression): boolean {
   );
 }
 
+/** Whether any module constructs a Console with inspectOptions or
+ * colorMode. Such a Console's methods format through the runtime's
+ * option-aware entries wherever their call sites sit, so the answer is a
+ * program-wide fact, not a lowering-order one (a call lowered before the
+ * constructor would otherwise keep the static path). Scanned once; the
+ * answer is cached on the lowerer. */
+function programConstructsOptionConsole(lowerer: Lowerer): boolean {
+  if (lowerer.consoleOptionsFact !== undefined) return lowerer.consoleOptionsFact;
+  const modules = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
+  let found = false;
+  for (const sf of modules) {
+    if (found) break;
+    ts.walkPreorder(sf, (node) => {
+      if (!ts.isNewExpression(node) || !isConsoleCtor(lowerer, node.expression)) return undefined;
+      const first = node.arguments?.nodes[0];
+      if (first === undefined || !ts.isObjectLiteralExpression(first)) return undefined;
+      for (const prop of first.properties.nodes) {
+        // `inspectOptions: value` and the shorthand `inspectOptions`.
+        if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) continue;
+        const key = prop.name;
+        const text = ts.isIdentifier(key) || ts.isStringLiteral(key) ? key.text : null;
+        if (text === "inspectOptions" || text === "colorMode") {
+          found = true;
+          return "stop";
+        }
+      }
+      return undefined;
+    });
+  }
+  lowerer.consoleOptionsFact = found;
+  return found;
+}
+
 function isUndefinedArg(node: ts.Expression | undefined): boolean {
   return (
     node === undefined ||
@@ -76,7 +110,14 @@ function isUndefinedArg(node: ts.Expression | undefined): boolean {
 
 type Target = { fd: number } | { local: string; type: IrType };
 
-type OptionRole = "stdout" | "stderr" | "ignoreErrors" | "groupIndentation" | "ignored";
+type OptionRole =
+  | "stdout"
+  | "stderr"
+  | "ignoreErrors"
+  | "groupIndentation"
+  | "inspectOptions"
+  | "colorMode"
+  | "ignored";
 
 /** `new Console(stdout[, stderr][, ignoreErrors])` and `new
  * Console({ stdout, stderr, ignoreErrors })`. Arguments and option
@@ -115,36 +156,21 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         );
       }
       if (name === "colorMode") {
-        // Node accepts 'auto', true and false; 'auto' colors only a TTY's
-        // inspect output, which this runtime never styles (the same
-        // boundary as util.inspect's colors: true), so both non-color
-        // spellings lower identically.
-        if (
-          !(
-            value.kind === ts.SyntaxKind.FalseKeyword ||
-            (ts.isStringLiteral(value) && value.text === "auto")
-          )
-        ) {
-          lowerer.noLowering(
-            "Console colorMode other than 'auto' or false",
-            value,
-            "ANSI styling has no lowering — only 'auto' and false",
-          );
-        }
+        // Node validates 'auto', true and false in its constructor, after
+        // the stream checks; the runtime reads the value there.
+        entries.push({ role: "colorMode", node: value });
         continue;
       }
       if (name === "groupIndentation") {
         entries.push({ role: "groupIndentation", node: value });
         continue;
       }
+      if (name === "inspectOptions") {
+        // The methods format with this record's knobs per call.
+        entries.push({ role: "inspectOptions", node: value });
+        continue;
+      }
       if (!OPTION_KEYS.has(name)) {
-        if (name === "inspectOptions") {
-          lowerer.noLowering(
-            "Console inspectOptions",
-            value,
-            "the lowered members render with scriptc's inspect defaults; util.inspect's option knobs have no Console plumbing yet",
-          );
-        }
         // Node destructures the known keys and ignores the rest. The
         // unknown initializer still evaluates, in source order.
         entries.push({ role: "ignored", node: value });
@@ -199,6 +225,8 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
   let errBad = false;
   let ignore: IrExpr | null = null;
   let groupIndent: IrExpr | null = null;
+  let inspectOptions: IrExpr | null = null;
+  let colorMode: IrExpr | null = null;
   for (const entry of entries) {
     const node = entry.node;
     if (isUndefinedArg(node)) {
@@ -212,6 +240,8 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         errBad = false;
       } else if (entry.role === "ignoreErrors") ignore = null;
       else if (entry.role === "groupIndentation") groupIndent = null;
+      else if (entry.role === "inspectOptions") inspectOptions = null;
+      else if (entry.role === "colorMode") colorMode = null;
       continue;
     }
     if (entry.role === "stdout") {
@@ -230,6 +260,20 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         loc,
       );
       groupIndent = value;
+    } else if (entry.role === "inspectOptions" || entry.role === "colorMode") {
+      // Node keeps the inspectOptions record (later mutation shows up in
+      // the next write) and validates colorMode in its constructor; the
+      // runtime reads both per call, so the methods format through the
+      // option-aware entries (lowerConsoleInstanceCall).
+      const value = hoist(
+        lowerer,
+        stmts,
+        entry.role === "inspectOptions" ? "%consoleInspectOptions" : "%consoleColorMode",
+        lowerer.lowerExprExpecting(node!, DYN),
+        loc,
+      );
+      if (entry.role === "inspectOptions") inspectOptions = value;
+      else colorMode = value;
     } else if (entry.role === "ignored") {
       // Node destructures the known keys and ignores the rest; the
       // unknown initializer still evaluates, in source order.
@@ -275,6 +319,8 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         fdOf(stderrTarget),
         ignore ?? boolLit(true, loc),
         groupIndent ?? dynUndefinedExpr(loc),
+        inspectOptions ?? dynUndefinedExpr(loc),
+        colorMode ?? dynUndefinedExpr(loc),
       ],
       type: DYN,
       loc,
@@ -394,6 +440,59 @@ function lowerConsoleInstanceMemberCall(
     type,
     loc: at,
   });
+
+  /* A program that constructs any Console with inspectOptions or colorMode
+   * formats the instance methods' arguments in the runtime, where the
+   * instance's options and colorMode apply per call (scr_inspect.c's
+   * console entries). The members Node's Console methods do not format
+   * (count/time labels use String, table cells have their own renderer)
+   * keep the static lowering. */
+  if (programConstructsOptionConsole(lowerer)) {
+    const args = call.arguments.nodes;
+    const packed = (at: SrcLoc): { stmts: IrStmt[]; pack: () => IrExpr } =>
+      dynArgumentPack(lowerer, args, at, { blame: call });
+    const withPack = (fn: IrLibFn, extra: (pack: IrExpr) => IrExpr[], at: SrcLoc): IrExpr => {
+      const p = packed(at);
+      return seq([...stmts, ...p.stmts], call_(fn, [handle(), ...extra(p.pack())], VOID, at), at);
+    };
+    switch (member) {
+      case "log":
+      case "info":
+      case "debug":
+      case "warn":
+      case "error": {
+        const index = ["log", "info", "debug", "warn", "error"].indexOf(member);
+        return withPack("console.instWriteArgs", (pack) => [numLit(index, loc), pack], loc);
+      }
+      case "dirxml":
+        return withPack("console.instDirxmlArgs", (pack) => [pack], loc);
+      case "trace":
+        return withPack("console.instTraceArgs", (pack) => [pack], loc);
+      case "assert":
+        return withPack("console.instAssertArgs", (pack) => [pack], loc);
+      case "group":
+      case "groupCollapsed":
+        return withPack(
+          "console.instGroupArgs",
+          (pack) => [pack, boolLit(member === "groupCollapsed", loc)],
+          loc,
+        );
+      case "dir": {
+        const p = packed(loc);
+        const dirStmts = [...stmts, ...p.stmts];
+        const rendered = hoist(
+          lowerer,
+          dirStmts,
+          "%consoleDir",
+          call_("console.instDirArgs", [handle(), p.pack()], STRING, loc),
+          loc,
+        );
+        return seq(dirStmts, write(true, [rendered], loc), loc);
+      }
+      default:
+        break;
+    }
+  }
 
   const outToStderr = member === "dirxml" ? false : OUTPUT_MEMBERS.get(member);
   if (outToStderr !== undefined) {

@@ -185,3 +185,16 @@ console.log(
   ["name", "message", "code", "stack"].filter((key) => domexKeys.includes(key)).join(","),
 );
 console.log("error for-in", enumeratedKeys(new Error("m")).length);
+
+// The DOMException class carries the WebIDL legacy code constants, and the
+// options form reads `name` (String of an absent member is "undefined", as
+// in Node) and records `cause` only when the member is present.
+console.log("dom statics", DOMException.INDEX_SIZE_ERR, DOMException.ABORT_ERR, DOMException.DATA_CLONE_ERR);
+const viaOptions = new DOMException("message", { name: "NotSupportedError", cause: "why" });
+console.log("dom options", viaOptions.name, viaOptions.code, viaOptions.cause, "cause" in viaOptions);
+const unknownName = new DOMException("message", "NoSuchError");
+console.log("dom unknown", unknownName.name, unknownName.code);
+const nullName = new DOMException("message", null);
+console.log("dom null name", nullName.name, nullName.code);
+const missingName = new DOMException("message", {});
+console.log("dom missing name", missingName.name, missingName.code);

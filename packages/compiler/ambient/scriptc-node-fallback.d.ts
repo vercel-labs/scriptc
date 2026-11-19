@@ -784,6 +784,31 @@ interface DOMException extends Error {
 declare var DOMException: {
   new (message?: unknown, nameOrOptions?: unknown): DOMException;
   readonly prototype: DOMException;
+  readonly INDEX_SIZE_ERR: number;
+  readonly DOMSTRING_SIZE_ERR: number;
+  readonly HIERARCHY_REQUEST_ERR: number;
+  readonly WRONG_DOCUMENT_ERR: number;
+  readonly INVALID_CHARACTER_ERR: number;
+  readonly NO_DATA_ALLOWED_ERR: number;
+  readonly NO_MODIFICATION_ALLOWED_ERR: number;
+  readonly NOT_FOUND_ERR: number;
+  readonly NOT_SUPPORTED_ERR: number;
+  readonly INUSE_ATTRIBUTE_ERR: number;
+  readonly INVALID_STATE_ERR: number;
+  readonly SYNTAX_ERR: number;
+  readonly INVALID_MODIFICATION_ERR: number;
+  readonly NAMESPACE_ERR: number;
+  readonly INVALID_ACCESS_ERR: number;
+  readonly VALIDATION_ERR: number;
+  readonly TYPE_MISMATCH_ERR: number;
+  readonly SECURITY_ERR: number;
+  readonly NETWORK_ERR: number;
+  readonly ABORT_ERR: number;
+  readonly URL_MISMATCH_ERR: number;
+  readonly QUOTA_EXCEEDED_ERR: number;
+  readonly TIMEOUT_ERR: number;
+  readonly INVALID_NODE_TYPE_ERR: number;
+  readonly DATA_CLONE_ERR: number;
 };
 
 /* WebCrypto (scr_webcrypto.c): crypto.subtle's importKey, generateKey and
@@ -2043,6 +2068,7 @@ declare module "node:perf_hooks" {
     /* performance.toJSON(): nodeTiming, timeOrigin and the event-loop
      * utilization, in that key order. */
     toJSON(): any;
+    timerify<T extends (...args: any[]) => any>(fn: T, options?: TimerifyOptions): T;
     eventLoopUtilization(
       utilization1?: EventLoopUtilization,
       utilization2?: EventLoopUtilization,
@@ -2113,6 +2139,10 @@ declare module "node:perf_hooks" {
     subtract(other: RecordableHistogram): void;
   }
   export function createHistogram(options?: CreateHistogramOptions): RecordableHistogram;
+  export interface TimerifyOptions {
+    histogram?: RecordableHistogram | undefined;
+  }
+  export function timerify<T extends (...args: any[]) => any>(fn: T, options?: TimerifyOptions): T;
 }
 declare module "perf_hooks" {
   export * from "node:perf_hooks";

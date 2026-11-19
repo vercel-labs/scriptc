@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/jsdoc-accessor-and-array-field-writes/targets.js",
+  "<repo>/tests/corpus/jsdoc-accessor-and-array-field-writes/main.ts"
+ ],
+ "diags": []
+}

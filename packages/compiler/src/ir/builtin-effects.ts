@@ -109,6 +109,12 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "console.instCountReset",
   "console.instTable",
   "console.instTrace",
+  "console.instWriteArgs",
+  "console.instDirxmlArgs",
+  "console.instDirArgs",
+  "console.instTraceArgs",
+  "console.instAssertArgs",
+  "console.instGroupArgs",
   "console.dirDyn",
   "console.dirHidden",
   "worker.new",
@@ -534,6 +540,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // getCipher throws the "not supported yet" error for a suite without a
   // known OpenSSL name.
   "tls.sockGetCipher",
+  // exportKeyingMaterial throws Node's validation ladder (ERR_OUT_OF_RANGE,
+  // ERR_INVALID_ARG_TYPE) and the TLS state error.
+  "tls.sockExportKeyingMaterial",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",
@@ -779,6 +788,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // markResourceTiming's argument reads and clearResourceTimings /
   // setResourceTimingBufferSize validation.
   "perf.resourceMark",
+  "perf.timerify",
   "perf.resourceClear",
   "perf.resourceBufferSize",
   "perf.measure",
@@ -1573,6 +1583,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "dgram.bindCb",
   "dgram.connect",
   "dgram.connectCb",
+  "dgram.connectDyn",
   "dgram.sendStr",
   "dgram.sendBytes",
   "dgram.sendChk",

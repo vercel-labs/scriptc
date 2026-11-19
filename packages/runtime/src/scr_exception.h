@@ -88,6 +88,10 @@ ScrStr *scr_stack_capture_after(const char *through); /* +1, NULL when none rema
 ScrStr *scr_stack_capture_after_name(const char *name);
 double scr_stack_limit_get(void);
 void scr_stack_limit_set(double limit);
+/* Error.prepareStackTrace: program state (a checked-dynamic value). Get
+ * returns +1; set takes its own +1 (a NULL value stores undefined). */
+ScrDyn *scr_error_prepare_stack_trace_get(void);
+void scr_error_prepare_stack_trace_set(ScrDyn *value);
 
 typedef struct ScrExcCell {
   ScrExcKind kind;

@@ -63,6 +63,10 @@ const available =
  * object. */
 const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   "scr_builtin_values.c -> scr_symbol.c": ["scr_dyn_new_symbol", "scr_sym_new", "scr_sym_release"],
+  // The option-aware Console writers are the only callers: their lib calls
+  // select consoleOptions, whose ttyColorTables answer links
+  // scr_tty_colors.c for colorMode 'auto'.
+  "scr_console_native.c -> scr_tty_colors.c": ["scr_tty_console_auto_colors"],
   "scr_dyn_builtin_stream.c -> scr_stream_dyn.c": ["scr_stream_dyn_native"],
   "scr_dyn_handle_props.c -> scr_async_dyn.c": ["scr_dyn_promise_resolve"],
   // sqlite.backup is the only function of the unit that mints a promise

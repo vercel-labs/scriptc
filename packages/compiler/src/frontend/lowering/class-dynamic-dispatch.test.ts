@@ -37,6 +37,7 @@ function context() {
   const liftedFns: IrFunction[] = [];
   const lowerer = {
     shapes: new Map(),
+    keyedNameKeys: new Map(),
     unions: new Map(),
     classes: new Map(),
     liftedFns,

@@ -14,9 +14,16 @@ type SqliteClass = "DatabaseSync" | "StatementSync" | "Session";
 
 /** The sqlite class `node` names, in any module spelling. */
 export function sqliteClassOf(lowerer: Lowerer, node: ts.Expression): SqliteClass | null {
+  // A sqlite member is spelled by the access's own name (builtinMemberOf
+  // composes a member only for another module's sub-object), so an access to
+  // any other name answers without resolving its receiver's symbol.
   const builtin = ts.isIdentifier(node)
     ? builtinImportOf(lowerer, node)
-    : ts.isPropertyAccessExpression(node) && !node.questionDotToken
+    : ts.isPropertyAccessExpression(node) &&
+        !node.questionDotToken &&
+        (node.name.text === "DatabaseSync" ||
+          node.name.text === "StatementSync" ||
+          node.name.text === "Session")
       ? lowerer.builtinMemberOf(node)
       : null;
   if (builtin?.module !== "sqlite") return null;
@@ -77,7 +84,13 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
   if (ts.isIdentifier(callee)) {
     const builtin = builtinImportOf(lowerer, callee);
     isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
-  } else if (ts.isPropertyAccessExpression(callee) && !callee.questionDotToken) {
+  } else if (
+    ts.isPropertyAccessExpression(callee) &&
+    !callee.questionDotToken &&
+    // The member read spells its name (`sqlite.backup`), so a call to any
+    // other member needs no receiver resolution.
+    callee.name.text === "backup"
+  ) {
     const builtin = lowerer.builtinMemberOf(callee);
     isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
   }

@@ -3975,6 +3975,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "dynamic specifiers cannot exist in a compiled binary's fixed module graph",
     isBuiltin:
       "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins",
+    findPackageJSON:
+      "the lowered call resolves a string-literal specifier against a static base (import.meta.url, __filename, or a path or file: URL literal) at build time and answers Node's nearest package.json; a runtime-computed specifier or base cannot exist in a compiled binary's fixed module graph",
     syncBuiltinESMExports:
       "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change",
   },

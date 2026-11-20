@@ -1756,15 +1756,16 @@ export function lowerHttpResPropertyAssignment(
     name === "statusMessage" &&
     ts.symbolNameOf(lowerer.typeOf(left.expression).getSymbol()) === "Http2ServerResponse"
   ) {
-    // HTTP/2 ignores a reason phrase; the value is still evaluated and the
-    // runtime reports Node's one-time UnsupportedWarning.
+    // HTTP/2 ignores a reason phrase; the receiver and value are still
+    // evaluated and the runtime reports Node's one-time UnsupportedWarning.
+    const receiver = coerceToHandle(lowerer, left.expression, HTTPRES_T);
     const value = lowerer.coerceToExpected(lowerer.lowerExpr(right), DYN);
     return {
       kind: "exprStmt",
       expr: {
         kind: "libCall",
         fn: "http2.statusMessageUnsupported",
-        args: [value],
+        args: [receiver, value],
         type: VOID,
         loc,
       },
@@ -5590,9 +5591,31 @@ export function lowerServerProperty(
     lowerer.isStdlibMember(expr) &&
     expr.name.text === "statusMessage"
   ) {
-    // HTTP/2 has no reason phrase: the compat response always answers "".
-    if (ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "Http2ServerResponse")
-      return { kind: "strLit", value: "", type: STRING, loc };
+    // HTTP/2 has no reason phrase: the compat response answers "", and the
+    // first read reports Node's one-time UnsupportedWarning (next tick).
+    // The receiver expression is still evaluated.
+    if (ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "Http2ServerResponse") {
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "http2.statusMessageRead",
+              args: [receiver],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: { kind: "strLit", value: "", type: STRING, loc },
+        type: STRING,
+        loc,
+      };
+    }
     // Unset until the head is sent; then the assigned or default reason.
     const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
     return {
@@ -10662,7 +10685,7 @@ function lowerHttpResMethodCall(
       return receiverReturningCall(lowerer, fn, withMsg, HTTPRES_T, loc, {
         prefix: {
           fn: h2Res ? "http2.statusMessageUnsupported" : "http.resStatusMsgSet",
-          argIndices: h2Res ? [1] : [0, 1],
+          argIndices: [0, 1],
         },
         mainArgIndices: [0, ...callArgs.slice(1).map((_, i) => i + 2)],
       });

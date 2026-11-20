@@ -16,7 +16,7 @@ await new Promise((resolve) => {
     lines.push(`request rawHeaders ${Array.isArray(request.rawHeaders)} ${request.rawHeaders.includes("x-t")}`);
     lines.push(`request socket ${typeof request.socket.remotePort} ${request.socket.remoteAddress} ${typeof request.connection.remotePort}`);
     request.setTimeout(5000, () => lines.push("request timeout"));
-    lines.push(`response start ${response.statusCode} ${response.headersSent} ${response.finished} ${response.writableEnded} ${response.req === request}`);
+    lines.push(`response start ${response.statusCode} ${response.headersSent} ${response.finished} ${response.writableEnded} ${response.req === request} ${JSON.stringify(response.statusMessage)}`);
     lines.push(`response socket ${typeof response.socket.remotePort} ${typeof response.connection.remotePort}`);
     response.setHeader("X-G", "v");
     response.setHeader("x-gone", "1");

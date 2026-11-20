@@ -1868,8 +1868,8 @@ function buildLibFnSignatures() {
      * shape (zero-param, or the (eventType: string) form — runtime-
      * provided); an open watcher keeps the loop alive until watcher.close()
      * (idempotent, receiver borrowed, statement position only). */
-    "fs.watch": { argTypes: [STRING, BOOL], result: FSWATCHER_T },
-    "fs.watchCb": { argTypes: [STRING, null, BOOL], result: FSWATCHER_T },
+    "fs.watch": { argTypes: [STRING, BOOL, BOOL], result: FSWATCHER_T },
+    "fs.watchCb": { argTypes: [STRING, null, BOOL, BOOL], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
     "watcher.ref": { argTypes: [FSWATCHER_T], result: VOID },
     "watcher.unref": { argTypes: [FSWATCHER_T], result: VOID },
@@ -2559,6 +2559,10 @@ function buildLibFnSignatures() {
       argTypes: [DGRAMSOCK_T, F64, STRING, { kind: "func", params: [], ret: VOID }],
       result: VOID,
     },
+    /** A connect completion callback read as an untyped value: the runtime
+     * calls it with the error when the connection is refused (Node's
+     * nextTick(callback, ex)), so a JavaScript callback sees its argument. */
+    "dgram.connectDyn": { argTypes: [DGRAMSOCK_T, F64, STRING, DYN], result: VOID },
     "dgram.sendStr": { argTypes: [DGRAMSOCK_T, STRING, F64, STRING], result: VOID },
     "dgram.sendBytes": { argTypes: [DGRAMSOCK_T, BYTES_U8, F64, STRING], result: VOID },
     /** Connected AF_UNIX datagram sockets for the hot-shots package shim
@@ -3658,7 +3662,8 @@ function buildLibFnSignatures() {
     "http2.streamAborted": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamPending": { argTypes: [HTTP2STREAM_T], result: BOOL },
     // Http2ServerResponse.statusMessage writes: evaluate the value, warn once.
-    "http2.statusMessageUnsupported": { argTypes: [DYN], result: VOID },
+    "http2.statusMessageUnsupported": { argTypes: [HTTPRES_T, DYN], result: VOID },
+    "http2.statusMessageRead": { argTypes: [HTTPRES_T], result: VOID },
     "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
     // Http2ServerRequest.complete: true once aborted, ended or closed.
     "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
@@ -5499,6 +5504,8 @@ function buildLibFnSignatures() {
     "error.setStack": { argTypes: [null, STRING], result: VOID },
     "error.stackLimitGet": { argTypes: [], result: F64 },
     "error.stackLimitSet": { argTypes: [F64], result: VOID },
+    "error.prepareStackTraceGet": { argTypes: [], result: DYN },
+    "error.prepareStackTraceSet": { argTypes: [DYN], result: VOID },
     // Receiver (any error-hierarchy object) and the program-dependent
     // `string | undefined` result are checked in the libCall case.
     /** NodeJS.ErrnoException's `.code` read: borrowed error-hierarchy

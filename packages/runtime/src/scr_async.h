@@ -763,6 +763,10 @@ void scr_queue_microtask_dyn_user(const ScrDyn *cb);
 void scr_queue_microtask_dyn_user_als(const ScrDyn *cb);
 typedef ScrClosure *(*ScrAsyncMicrotaskResource)(ScrClosure *cb /* moves in */);
 extern SCR_TL ScrAsyncMicrotaskResource scr_async_microtask_resource; /* NULL: no hooks */
+/* Run when a next-tick/microtask checkpoint has drained completely, the
+ * place Node's async destroy phase occupies. The dyn-async unit installs the
+ * Microtask destroy drain here with the hook registry; NULL until then. */
+extern SCR_TL void (*scr_async_checkpoint_idle)(void);
 /* The execution scope the public queueMicrotask wrapper (scr_async_dyn.c)
  * runs its callback under: a fresh id from the core's counter, and the
  * execution-id pair pushed and popped around the callback. `previous` holds

@@ -5768,6 +5768,8 @@ void scr_queue_microtask_dyn_als(const ScrDyn *cb) {
  * constructor's error. */
 SCR_TL ScrAsyncMicrotaskResource scr_async_microtask_resource = NULL;
 
+SCR_TL void (*scr_async_checkpoint_idle)(void) = NULL;
+
 /* The public queueMicrotask wrapper's execution scope (scr_async.h). */
 double scr_async_new_id(void) { return scr_async_next_id(); }
 
@@ -6956,6 +6958,7 @@ bool scr_loop_is_hosted(void) { return scr_loop_hosted != NULL; }
 
 static void scr_loop_run_hosted(bool first_checkpoint) {
   scr_loop_hosted->checkpoint(first_checkpoint || scr_hosted_microtasks_first ? 1 : 0);
+  if (scr_async_checkpoint_idle != NULL) scr_async_checkpoint_idle();
   /* The interrupted phase's work, each followed by Node's checkpoint. A
    * due entry cleared meanwhile is gone (or its token reused, not due). */
   for (size_t i = 0; i < scr_hosted_due_len; i++) {
@@ -6965,6 +6968,7 @@ static void scr_loop_run_hosted(bool first_checkpoint) {
     if (kind == SCR_HJ_IMMEDIATE) scr_hjobs[token - 1].due = false;
     scr_loop_hosted_run(kind, token);
     scr_loop_hosted->checkpoint(0);
+    if (scr_async_checkpoint_idle != NULL) scr_async_checkpoint_idle();
   }
   free(scr_hosted_due);
   scr_hosted_due = NULL;
@@ -7069,6 +7073,14 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     }
     if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a rejection listener */
     if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
+    /* Node's async destroy phase sits between the checkpoint and the next
+     * turn's timers and I/O, after every tick and microtask queued so far
+     * has run. A destroy hook may queue more work: start the turn again. */
+    if (scr_async_checkpoint_idle != NULL) {
+      scr_async_checkpoint_idle();
+      if (scr_exc_pending()) return false;
+      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+    }
     /* Quiescent between turns (microtasks drained, nothing running):
      * collect any cycles the turn left behind. One SCHEDULED pass — almost
      * always a nursery one, sized to the turn's own garbage. A full sweep

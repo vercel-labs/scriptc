@@ -3569,10 +3569,14 @@ static void scr_micro_state_release(void *p) {
  * Node's emitDestroy. */
 static SCR_TL double *scr_micro_destroy_ids = NULL;
 static SCR_TL size_t scr_micro_destroy_len = 0, scr_micro_destroy_cap = 0;
-static SCR_TL bool scr_micro_destroy_scheduled = false;
 
+
+/* Node emits async destroys after its next-tick and microtask queues drain,
+ * which the core's checkpoint-idle hook is called for (scr_async.c); this
+ * drain runs there, so a next tick or microtask queued later in the turn
+ * still runs first. */
 static void scr_micro_destroy_flush(void) {
-  scr_micro_destroy_scheduled = false;
+  if (scr_micro_destroy_len == 0) return;
   size_t n = scr_micro_destroy_len;
   double *ids = scr_micro_destroy_ids;
   scr_micro_destroy_ids = NULL;
@@ -3590,25 +3594,28 @@ static void scr_micro_destroy_queue(double id) {
     scr_micro_destroy_cap = cap;
   }
   scr_micro_destroy_ids[scr_micro_destroy_len++] = id;
-  if (!scr_micro_destroy_scheduled) {
-    scr_micro_destroy_scheduled = true;
-    scr_next_tick_raw(scr_micro_destroy_flush);
-  }
 }
 
 static void scr_micro_task_fire(ScrClosure *self) {
   ScrClosure *cb = scr_box_get_ref(self->caps[0]);     /* +1 */
   ScrMicroTask *task = scr_box_get_ref(self->caps[1]); /* +1 */
+  /* The resource's ids and scheduling store are active across the before
+   * hook, the callback and the after hook alike: Node's runInAsyncScope
+   * runs all three inside the resource's execution scope, so a resource
+   * scheduled by a hook takes the Microtask's id as its trigger. */
   double previous[2];
+  scr_async_exec_push(task->id, task->trigger, previous);
+  ScrAlsCtx *prev_ctx = scr_als_dispatch_enter(task->ctx);
   scr_ah_dispatch_id(task->id, 0); /* before */
+  /* A throwing before hook skips the callback and the after hook (Node's
+   * emitBefore sits outside runInAsyncScope's try); a throwing callback
+   * runs the after hook from the finally. */
   if (!scr_exc_pending()) {
-    scr_async_exec_push(task->id, task->trigger, previous);
-    ScrAlsCtx *prev_ctx = scr_als_dispatch_enter(task->ctx);
     ((void (*)(ScrClosure *))cb->fn)(cb);
-    scr_als_dispatch_leave(prev_ctx);
-    scr_async_exec_pop(previous);
     scr_ah_dispatch_id(task->id, 1); /* after */
   }
+  scr_als_dispatch_leave(prev_ctx);
+  scr_async_exec_pop(previous);
   /* Node's runMicrotask emits the destroy in its finally. */
   if (scr_ah_destroy_enabled()) scr_micro_destroy_queue(task->id);
   scr_closure_release(cb);
@@ -3649,6 +3656,7 @@ static ScrClosure *scr_micro_task_wrap(ScrClosure *cb) {
 void scr_async_hooks_install(void) {
   if (scr_async_hook_ops == NULL) scr_async_hook_ops = &scr_ah_ops;
   scr_async_microtask_resource = scr_micro_task_wrap;
+  scr_async_checkpoint_idle = scr_micro_destroy_flush;
 }
 
 /* createHook(callbacks): the five members are read the way Node's

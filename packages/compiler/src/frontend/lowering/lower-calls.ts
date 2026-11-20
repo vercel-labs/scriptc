@@ -1174,7 +1174,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
             `console.${consoleMember}`,
             loc,
             undefined,
-            consoleMember,
+            lowerer.usesDiagnosticsChannel() ? consoleMember : undefined,
           )
         : lowerConsoleMethodCall(lowerer, expr, consoleMethod!, loc);
     return receiver === null

@@ -28,5 +28,12 @@ console.debug(Symbol.for('tag'), 2n);
 console.warn(...['spread', 3]);
 console.error({ list: [1, 2] }, 'tail');
 
+// A subscriber's change to the published array reaches the printed line, as
+// Node formats the same array after its subscribers ran.
+dc.subscribe('console.log', (message) => {
+  message.push('from-subscriber');
+});
+console.log('mutable');
+
 // The capture goes through process.stdout, not a subscribed channel.
 process.stdout.write(`${JSON.stringify(seen)}\n`);

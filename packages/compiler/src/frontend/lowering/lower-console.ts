@@ -842,7 +842,7 @@ export function lowerConsoleOutput(
     // subscriber. An argument the compiler cannot represent as a
     // checked-dynamic value leaves the call unpublished; the line still
     // renders from its typed value.
-    let publish: IrStmt | null = null;
+    let subscribed: IrStmt[] | null = null;
     const boxed: IrExpr[] = [];
     for (const a of staged) {
       const ref = a.ref();
@@ -886,25 +886,38 @@ export function lowerConsoleOutput(
         },
         loc,
       });
-      publish = {
-        kind: "if",
-        cond: {
-          kind: "libCall",
-          fn: "console.channelActive",
-          args: [numLit(member, loc)],
-          type: BOOL,
-          loc,
-        },
-        then: build,
-        else_: [],
+      // The line is formatted from the array that was just published, as
+      // Node formats the same arguments after its subscribers saw them: a
+      // subscriber's mutation of the array reaches the printed line. The
+      // unsubscribed call keeps its typed rendering.
+      const formatted: IrExpr = {
+        kind: "libCall",
+        fn: "insp.format",
+        args: [varRef(arr.id, DYN, loc)],
+        type: STRING,
         loc,
       };
+      build.push({ kind: "exprStmt", expr: emitLine([formatted]), loc });
+      subscribed = build;
     }
+    const typedWrite: IrStmt = { kind: "exprStmt", expr: emitLine(args), loc };
+    if (subscribed === null) return seq([...stmts, typedWrite], noop(loc), loc);
     return seq(
       [
         ...stmts,
-        ...(publish === null ? [] : [publish]),
-        { kind: "exprStmt", expr: emitLine(args), loc },
+        {
+          kind: "if",
+          cond: {
+            kind: "libCall",
+            fn: "console.channelActive",
+            args: [numLit(member, loc)],
+            type: BOOL,
+            loc,
+          },
+          then: subscribed,
+          else_: [typedWrite],
+          loc,
+        },
       ],
       noop(loc),
       loc,

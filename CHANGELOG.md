@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+<!-- release:start -->
+
+## 0.4.15
+
 ### Highlights
 
 - **Node.js parity:**
@@ -13,8 +17,7 @@ All notable changes to scriptc will be documented in this file.
   - `RegExp(pattern, flags)` called without `new` compiles as the constructor call Node runs, instead of throwing SC2020 at startup, and a RegExp pattern whose flags argument is undefined — spelled that way or only undefined at run time — answers the pattern itself, keeping its identity and `lastIndex`; a pattern the compiler cannot see is a string is judged by the runtime, so an untyped pattern keeps that rule too.
 - **TypeScript parity:**
   - A relative JavaScript import resolves to its sibling declaration for types, as tsc resolves it: `./lib.js` is typed by `lib.d.ts`, `./lib.mjs` by `lib.d.mts` and `./lib.cjs` by `lib.d.cts` when the file sits beside the JavaScript, while the compiled module is the JavaScript Node loads. A call is checked against the declaration (an optional declared parameter stays optional although the JavaScript's inferred parameter type requires it), so a vendored dependency keeps its published types instead of losing them to the JavaScript's inferred shape. A declaration a project's tsconfig `include` loads beside its implementation also stays in the program, where a JSX project previously reported it as a missing file.
-
-<!-- release:start -->
+  - A promise executor's `resolve` called without an argument, such as a `requestAnimationFrame` callback that settles its promise when the frame arrives, compiles instead of failing with SC0001: Node settles the promise with `undefined`, the checker reports the call as TS2810, the JavaScript spelling of the arity error that names the missing JSDoc hint, and unchecked JavaScript admits that diagnostic as it already admits TS2554, while a `// @ts-check` file, or a project that sets `checkJs`, keeps it. A program that does not hit the diagnostic compiles to the same IR.
 
 ### Fixes
 
@@ -31,13 +34,6 @@ All notable changes to scriptc will be documented in this file.
 - A checked value from an indexed object's optional member, such as `JsonWebKey`'s `alg?: string` over `[key: string]: unknown`, keeps the present `undefined` a `(T | undefined)[]` slot admits instead of throwing `expected string at $, got undefined`: an array literal, an index write, `push`, `unshift`, `splice`, `toSpliced`, `with`, `fill`, `Array.of` and `new Array(...)` print `null` from `JSON.stringify` and read back as `undefined`, as Node does.
 - A property descriptor read from a class's prototype through an untyped value, such as a UI SDK's `Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")`, builds and answers Node's descriptor — the accessor pair the class declares, with its attributes — instead of failing the build with an empty SC3004: a class value's static table reflects a static method whose parameters complete as the checked-dynamic function Node holds, and a member the table cannot hold leaves the class's statics fenced rather than aborting lowering. Building the prototype view itself no longer reports the retry's diagnostic for a member whose body cannot run over a dynamic receiver (a typed field used as a `Map` key, say); that statement fences at run time. A native build that fails inside the compiler now names the failure, and no SC3002–SC3004 diagnostic is empty.
 - A class method read from a prototype view — an untyped value's `Object.getPrototypeOf`, or a descriptor taken from it — runs its class's compiled method instead of throwing at run time: a member whose body reads a generic method through `this` (a DOM node's `insertBefore` calling `this.appendChild`) has no checked-dynamic form to hand out, so the view answers that member's compiled, receiver-checked value and the body keeps the class's own `this`, where the generic call lowers as its typed call site does.
-
-## 0.4.15
-
-### Highlights
-
-- **TypeScript parity:**
-  - A promise executor's `resolve` called without an argument, such as a `requestAnimationFrame` callback that settles its promise when the frame arrives, compiles instead of failing with SC0001: Node settles the promise with `undefined`, the checker reports the call as TS2810, the JavaScript spelling of the arity error that names the missing JSDoc hint, and unchecked JavaScript admits that diagnostic as it already admits TS2554, while a `// @ts-check` file, or a project that sets `checkJs`, keeps it. A program that does not hit the diagnostic compiles to the same IR.
 
 <!-- release:end -->
 

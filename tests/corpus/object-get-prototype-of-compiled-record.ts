@@ -32,3 +32,19 @@ const unmodified = { m: 3 };
 const dynamicUnmodified: any = unmodified;
 void dynamicUnmodified.m;
 console.log("unmodified", Object.getPrototypeOf(unmodified) === Object.prototype);
+// A property defined through a dynamic view is committed back into the
+// prototyped array; the array keeps the prototype it stored.
+const committed: number[] = [1, 2];
+Object.setPrototypeOf(committed, { tag: 9 });
+const committedView: any = committed;
+Object.defineProperty(committedView, "extra", {
+  value: 5,
+  enumerable: true,
+  configurable: true,
+  writable: true,
+});
+console.log(
+  "committed",
+  Object.getPrototypeOf(committed) === Object.prototype,
+  committed.length,
+);

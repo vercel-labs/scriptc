@@ -51,6 +51,10 @@ for (let i = 0; i < 50; i++) {
   Object.setPrototypeOf(words, wordPrototype)
   total += wordPrototype.sized()
   const flags: boolean[] = [i % 2 === 0, true, false]
+  // A non-index property holds the element kind's own value (a raw boolean
+  // here), not a pointer: the array's trace must not walk it as an object.
+  const looseFlags: any = flags
+  looseFlags[-1] = true
   const flagPrototype = {
     sized(): number {
       return flags.length

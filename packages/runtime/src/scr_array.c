@@ -1709,9 +1709,12 @@ void scr_arr_trace_v(void *a0, ScrTraceVisit visit, void *ctx) {
     }
   }
   for (size_t i = 0; i < SCR_AX(a)->prop_len; i++) {
-    if (SCR_AX(a)->props[i].state == SCR_ARR_VALUE) {
+    /* A named property holds the element kind's own value: a raw boolean or
+     * number for a value kind, a pointer to a collector object only for a
+     * traced reference kind. */
+    uint8_t state = SCR_AX(a)->props[i].state;
+    if (state == SCR_ARR_FOREIGN || (state == SCR_ARR_VALUE && ref_elem))
       visit(scr_slot_to_ptr(SCR_AX(a)->props[i].slot), ctx);
-    }
   }
 }
 
@@ -6301,6 +6304,16 @@ bool scr_arr_has_named_key(ScrArr *a, ScrStr *key) {
 
 void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
   ScrArrExt *from = scr_arr_ext_of(target);
+  /* The prototype the array stored is the array's, not the storage block's:
+   * the commit gives `a`'s storage to `target`, so the reference moves to
+   * `a`'s out-of-line storage with the rest of the properties. */
+  if (from && from->prototype) {
+    ScrArrExt *x = scr_arr_ext(a);
+    ScrDyn *old = x->prototype;
+    x->prototype = from->prototype;
+    from->prototype = NULL;
+    scr_dyn_release(old);
+  }
   /* An Array subclass instance's class is in its out-of-line storage, which
    * the commit gives to `a`: the class moves to `a`'s, and so stays with the
    * instance, while `a` is released as a plain array. */

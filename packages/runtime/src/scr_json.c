@@ -3756,7 +3756,11 @@ static void scr_dyn_record_proto_apply(const ScrDynTypedRecordOps *ops, void *re
                                        ScrDyn *view) {
   if (!ops || !ops->proto_get || view->kind != SCR_DYN_OBJ) return;
   ScrDyn *proto = ops->proto_get(record);
-  ScrDyn *next = proto && proto->kind != SCR_DYN_NULL ? proto : NULL;
+  /* No prototype of its own: the record is unmodified, and its view keeps the
+   * prototype it is born with (Object.prototype). Only a null-kind value is
+   * the null prototype. */
+  if (!proto) return;
+  ScrDyn *next = proto->kind != SCR_DYN_NULL ? proto : NULL;
   if (view->prototype == next && view->null_proto == (next == NULL)) {
     if (proto) scr_dyn_release(proto);
     return;

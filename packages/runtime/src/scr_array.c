@@ -6195,6 +6195,13 @@ static ScrDyn *scr_arr_class_fields(ScrArr *a) {
 static const char SCR_ARR_PROTO_KEY[] = "\0scriptc.prototype";
 #define SCR_ARR_PROTO_KEY_LEN (sizeof SCR_ARR_PROTO_KEY - 1)
 
+/* Whether a metadata property is the private prototype storage: it is the
+ * array's own bookkeeping, never an own property of the array or of a view
+ * built from it. */
+static bool scr_arr_private_key(const char *key, size_t len) {
+  return len == SCR_ARR_PROTO_KEY_LEN && memcmp(key, SCR_ARR_PROTO_KEY, len) == 0;
+}
+
 static ScrDyn *scr_arr_prototype_metadata(ScrArr *a) {
   ScrArrExt *x = scr_arr_ext(a);
   if (!x) return NULL;
@@ -6244,7 +6251,11 @@ void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
     return;
   metadata = SCR_AX(a)->metadata;
   if (!metadata) return;
-  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) scr_dyn_copy_prop_at(target, metadata, i);
+  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) {
+    const ScrDynProp entry = scr_dyn_obj_prop_at(metadata, i);
+    if (scr_arr_private_key(entry.key, entry.key_len)) continue;
+    scr_dyn_copy_prop_at(target, metadata, i);
+  }
 }
 
 ScrArr *scr_arr_named_keys(ScrArr *a) {
@@ -6290,6 +6301,7 @@ bool scr_arr_has_named_key(ScrArr *a, ScrStr *key) {
   if (!metadata || metadata->kind != SCR_DYN_OBJ) return false;
   for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) {
     ScrDynProp entry = scr_dyn_obj_prop_at(metadata, i);
+    if (scr_arr_private_key(entry.key, entry.key_len)) continue;
     if (entry.key_len == key->len && memcmp(entry.key, key->data, key->len) == 0) return true;
   }
   return false;

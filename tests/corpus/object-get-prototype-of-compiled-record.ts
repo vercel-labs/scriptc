@@ -24,3 +24,11 @@ Object.setPrototypeOf(viewed, { i: 8 });
 const dynamic: any = viewed;
 void dynamic.h;
 console.log("viewed", isPlain(viewed), Object.getPrototypeOf(viewed) === null);
+// A record of a shape that another record gave a prototype is unmodified: its
+// view keeps the default prototype when it is built.
+const marked = { m: 1 };
+Object.setPrototypeOf(marked, { n: 2 });
+const unmodified = { m: 3 };
+const dynamicUnmodified: any = unmodified;
+void dynamicUnmodified.m;
+console.log("unmodified", Object.getPrototypeOf(unmodified) === Object.prototype);

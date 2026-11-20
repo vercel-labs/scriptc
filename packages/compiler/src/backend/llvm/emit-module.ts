@@ -1530,7 +1530,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // nullable event hooks before %main — scr_events.c links only when
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
-    ...prototypeArrayKinds.map((kind) => `  call void @scr_arr_force_cyclic_kind(double ${kind}.0)`),
+    ...prototypeArrayKinds.map(
+      (kind) => `  call void @scr_arr_force_cyclic_kind(double ${kind}.0)`,
+    ),
     // The runtime prints a boxed function through the program's own source
     // rows, so a program with any installs its lookup before %main runs.
     ...(fnSources !== null

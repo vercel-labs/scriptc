@@ -69,3 +69,13 @@ const nullPrototypeObject = { k: 1 };
 Object.setPrototypeOf(nullPrototypeObject, null);
 const reboxedObject = [nullPrototypeObject][0];
 console.log("reboxed-null-object", Object.getPrototypeOf(reboxedObject) === null);
+
+// Installing a prototype stores it privately: the array's own keys never list
+// the storage.
+const privateStorage = [1, 2];
+Object.setPrototypeOf(privateStorage, { marker: true });
+console.log(
+  "array-own-keys",
+  Object.getOwnPropertyNames(privateStorage).join(","),
+  Reflect.ownKeys(privateStorage).map(String).join(","),
+);

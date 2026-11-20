@@ -55,6 +55,10 @@ import { stdlibGlobalNameOf } from "./surfaces.js";
  * constructor value" catch-all is no longer needed (RELEASE-PLAN H-1). */
 export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
   for (const sf of lowerer.program.getSourceFiles()) {
+    // A type declaration writes no value. The standard library's
+    // `interface String` names the constructor without holding it, and a
+    // scan of declaration files would make every program hold one.
+    if (sf.isDeclarationFile) continue;
     let found = false;
     ts.walkPreorder(sf, (node) => {
       if (found || !ts.isIdentifier(node)) return;
@@ -85,7 +89,13 @@ export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
             ts.isImportSpecifier(parent) ||
             ts.isExportSpecifier(parent) ||
             ts.isImportClause(parent) ||
-            ts.isNamespaceImport(parent)) &&
+            ts.isNamespaceImport(parent) ||
+            ts.isInterfaceDeclaration(parent) ||
+            ts.isTypeAliasDeclaration(parent) ||
+            ts.isEnumDeclaration(parent) ||
+            ts.isEnumMember(parent) ||
+            ts.isTypeParameterDeclaration(parent) ||
+            ts.isModuleDeclaration(parent)) &&
           parent.name === node
         )
           return;

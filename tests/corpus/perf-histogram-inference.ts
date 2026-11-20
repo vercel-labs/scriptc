@@ -1,7 +1,7 @@
 // perf_hooks Histogram inference: the confidence interval for the mean and a
 // percentile (Student's t and the exact binomial method) and Welch's t-test,
 // over the same hdr_histogram readings the other getters answer.
-import { createHistogram } from "node:perf_hooks";
+import { createHistogram, monitorEventLoopDelay } from "node:perf_hooks";
 
 function round(value: number): number {
   return Number(value.toFixed(6));
@@ -104,3 +104,31 @@ showError("welch other number", () => a.welchTest(5 as any));
 showError("welch other null", () => a.welchTest(null as any));
 showError("welch other first", () => a.welchTest(5 as any, { confidence: 0 }));
 showError("welch confidence", () => a.welchTest(b, { confidence: 2 }));
+
+// An empty monitorEventLoopDelay histogram answers its interval-histogram
+// percentile (511) for every percentileCI field, unlike a recordable
+// histogram's zero.
+const interval = monitorEventLoopDelay({ resolution: 20 });
+interval.disable();
+const intervalPci = interval.percentileCI(50);
+console.log("eld pci", intervalPci.value, intervalPci.lower, intervalPci.upper);
+const intervalPci90 = interval.percentileCI(90.5, { confidence: 0.9 });
+console.log("eld pci 90", intervalPci90.value, intervalPci90.lower, intervalPci90.upper);
+
+// Every argument expression runs before the method validates anything, so an
+// options expression's side effects happen and its throw wins.
+let effects = 0;
+function options(): { confidence: number } {
+  effects++;
+  return { confidence: 0.9 };
+}
+showError("pci order", () => a.percentileCI(0, options()));
+console.log("pci effects", effects);
+showError("welch order", () => a.welchTest(5 as any, options()));
+console.log("welch effects", effects);
+function throwingOptions(): { confidence: number } {
+  throw new Error("options threw");
+}
+showError("pci options throw", () => a.percentileCI(0, throwingOptions()));
+showError("welch options throw", () => a.welchTest(5 as any, throwingOptions()));
+

@@ -1762,7 +1762,12 @@ double scr_histo_percentile_ci(ScrDyn *handle, double percentile, double confide
   ScrHisto *h = scr_histo_lookup(handle, &tmp);
   if (h == NULL) return 0.0;
   {
-    int64_t value = scr_histo_percentile_i64(h, percentile);
+    /* The interval histogram answers its empty-histogram percentile (511),
+     * which the generic hdr scan does not; its readings come from the
+     * event-loop histogram's own percentile. */
+    const ScrEld *eld = scr_eld_of(handle);
+    int64_t value = eld != NULL ? scr_eld_percentile_i64(eld, percentile)
+                                : scr_histo_percentile_i64(h, percentile);
     int64_t n = h->total;
     double p, alpha, lower_pct, upper_pct;
     int64_t lo, hi, lower_value, upper_value;
@@ -1789,8 +1794,10 @@ double scr_histo_percentile_ci(ScrDyn *handle, double percentile, double confide
         lo = mid + 1;
     }
     upper_pct = (double)lo / (double)n * 100.0;
-    lower_value = scr_histo_percentile_i64(h, lower_pct);
-    upper_value = scr_histo_percentile_i64(h, upper_pct);
+    lower_value = eld != NULL ? scr_eld_percentile_i64(eld, lower_pct)
+                              : scr_histo_percentile_i64(h, lower_pct);
+    upper_value = eld != NULL ? scr_eld_percentile_i64(eld, upper_pct)
+                              : scr_histo_percentile_i64(h, upper_pct);
     return which == 0 ? (double)value : which == 1 ? (double)lower_value : (double)upper_value;
   }
 }

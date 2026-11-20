@@ -95,6 +95,8 @@ export function lowerHistogramStatsMethodCall(
     if (args.length < 1 || args.length > 2) {
       lowerer.noLowering("Histogram.percentileCI with this argument shape", expr);
     }
+    const rawPercentile = lowerer.declareHiddenLocal("%percentileArg", DYN);
+    const rawOptions = lowerer.declareHiddenLocal("%optionsArg", DYN);
     const p = lowerer.declareHiddenLocal("%percentile", F64);
     const c = lowerer.declareHiddenLocal("%confidence", F64);
     const pRef = (): IrExpr => varRef(p.id, F64, loc);
@@ -110,16 +112,30 @@ export function lowerHistogramStatsMethodCall(
           init: lowerer.lowerExprExpecting(access.expression, DYN),
           loc,
         },
+        // Every argument expression runs before any validation, as a call's
+        // arguments do in Node.
+        {
+          kind: "varDecl",
+          localId: rawPercentile.id,
+          init: lowerer.lowerExprExpecting(args[0]!, DYN),
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: rawOptions.id,
+          init: confidenceArg(1),
+          loc,
+        },
         {
           kind: "varDecl",
           localId: p.id,
-          init: call("perf.histoPercentileArg", F64, [lowerer.lowerExprExpecting(args[0]!, DYN)]),
+          init: call("perf.histoPercentileArg", F64, [varRef(rawPercentile.id, DYN, loc)]),
           loc,
         },
         {
           kind: "varDecl",
           localId: c.id,
-          init: call("perf.histoConfidence", F64, [confidenceArg(1)]),
+          init: call("perf.histoConfidence", F64, [varRef(rawOptions.id, DYN, loc)]),
           loc,
         },
       ],
@@ -139,6 +155,7 @@ export function lowerHistogramStatsMethodCall(
     lowerer.noLowering("Histogram.welchTest with this argument shape", expr);
   }
   const o = lowerer.declareHiddenLocal("%other", DYN);
+  const rawOptions = lowerer.declareHiddenLocal("%optionsArg", DYN);
   const c = lowerer.declareHiddenLocal("%confidence", F64);
   const oRef = (): IrExpr => varRef(o.id, DYN, loc);
   const cRef = (): IrExpr => varRef(c.id, F64, loc);
@@ -179,11 +196,17 @@ export function lowerHistogramStatsMethodCall(
         init: lowerer.lowerExprExpecting(args[0]!, DYN),
         loc,
       },
+      {
+        kind: "varDecl",
+        localId: rawOptions.id,
+        init: confidenceArg(1),
+        loc,
+      },
       { kind: "exprStmt", expr: call("perf.histoOther", VOID, [oRef()]), loc },
       {
         kind: "varDecl",
         localId: c.id,
-        init: call("perf.histoConfidence", F64, [confidenceArg(1)]),
+        init: call("perf.histoConfidence", F64, [varRef(rawOptions.id, DYN, loc)]),
         loc,
       },
     ],

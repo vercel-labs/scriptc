@@ -65,4 +65,15 @@ const presetWrite = await new Promise((resolve) =>
 );
 log.push(`preset destroyed ${already.destroyed} write ${presetWrite} sink ${reached.length} ${await presetError}`);
 
+// A signal that is not an AbortSignal throws Node's ERR_INVALID_ARG_TYPE;
+// null and undefined are ignored.
+for (const signal of [{}, 42, null, undefined]) {
+  try {
+    const ignored = Writable.fromWeb(new WritableStream({ write() {} }), { signal });
+    log.push(`signal ${typeof signal} accepted ${ignored.destroyed}`);
+  } catch (error) {
+    log.push(`signal ${typeof signal} ${error.name} ${error.code}`);
+  }
+}
+
 for (const line of log) console.log(line);

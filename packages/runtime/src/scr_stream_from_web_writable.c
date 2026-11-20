@@ -229,9 +229,13 @@ static void sfww_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
   SfwwCtx *c = sfww_of(cb);
   /* decodeStrings: false and object mode hand the write step dyn values
    * (strings stay strings, objects stay objects); a byte-mode step hands a
-   * Buffer. */
-  ScrDyn *value = scr_stream_writes_values(s) ? scr_dyn_retain((ScrDyn *)chunk)
-                                              : scr_dyn_new_bytes(chunk);
+   * Buffer. A typed record arrives as the record itself with the write's
+   * descriptor, so it takes that descriptor's capsule conversion — reading
+   * it as a dyn value would follow record fields as dyn tags. */
+  const ScrStreamTypedDesc *typed = scr_stream_write_desc(s);
+  ScrDyn *value = typed != NULL ? typed->box((void *)chunk)
+                  : scr_stream_writes_values(s) ? scr_dyn_retain((ScrDyn *)chunk)
+                                                : scr_dyn_new_bytes(chunk);
   ScrDyn *args[1] = {value};
   ScrDyn *result = scr_dyn_invoke(c->writer, "write", args, 1, "writer.write");
   scr_dyn_release(value);
@@ -364,6 +368,17 @@ static ScrStream *sfww_build(ScrDyn *web, double flags, double hwm, ScrDyn *sign
   bool object_mode = ((int)flags & 2) != 0;
   bool decode_strings_off = ((int)flags & 4) != 0;
   if (object_mode && hwm < 0) hwm = 16;
+  /* Node's validateAbortSignal, before anything is built: a value that is
+   * not an AbortSignal throws (null and undefined are ignored). */
+  if (signal && signal->kind != SCR_DYN_UNDEF && signal->kind != SCR_DYN_NULL) {
+    ScrDyn *aborted = scr_dyn_obj_read(signal, "aborted", 7);
+    if (aborted == NULL || aborted->kind == SCR_DYN_UNDEF) {
+      if (aborted) scr_dyn_release(aborted);
+      scr_dyn_arg_type_fail("signal", "an instance of AbortSignal", signal);
+      return NULL;
+    }
+    scr_dyn_release(aborted);
+  }
   ScrDyn *writer = scr_dyn_invoke(web, "getWriter", NULL, 0, "writableStream.getWriter");
   if (!writer) return NULL;
   SfwwCtx *c = calloc(1, sizeof *c);

@@ -6468,7 +6468,7 @@ function buildLibFnSignatures() {
      * the value's inspection) — the frontend routes null/undefined to a
      * no-op and everything else here (Node throws for falsy values too).
      * All arguments are borrowed. */
-    "assert.ok": { argTypes: [BOOL, STRING, BOOL], result: VOID },
+    "assert.ok": { argTypes: [BOOL, STRING, BOOL, BOOL], result: VOID },
     /** fail(actual, expected, message|null, operator, has_message): the
      * deprecated form's AssertionError, built by the runtime. */
     "assert.failDeprecated": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },

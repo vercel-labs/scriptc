@@ -17,6 +17,7 @@
  * unit's strong definition tells it that Event, CustomEvent and EventTarget
  * construction is available. */
 int scr_dyn_event_target_unit_linked = 1;
+ScrAbortAddFn scr_optional_abort_listener(void) { return scr_events_add_abort_listener; }
 #endif
 
 #include <math.h>

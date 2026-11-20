@@ -7,6 +7,7 @@
  * ERR_STREAM_PREMATURE_CLOSE, and a rejected writer.closed destroys it with
  * that reason. */
 #include "scr_runtime.h"
+#include "scr_optional_abort_listener.h"
 #include "scr_stream.h"
 
 #include <stdio.h>
@@ -285,14 +286,6 @@ static void sfww_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   sfww_unref(c);
 }
 
-/* The resolver the events unit installs for a signal's abort listener.
- * Node's addAbortSignal registers its listener so that an earlier
- * listener's stopImmediatePropagation does not skip it
- * (kResistStopPropagation); this entry is that registration. A program that
- * cannot pass a signal links no such unit. */
-extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
-    __attribute__((weak));
-
 /* Destroy the writable now with Node's AbortError whose cause is the
  * signal's reason. A write issued after an already-aborted signal therefore
  * cannot reach the sink; the destroy's own 'error' emission still waits for
@@ -323,9 +316,9 @@ static ScrDyn *sfww_on_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
 /* The option's signal: the runtime's addAbortSignal when the events unit is
  * linked, the signal's own listener otherwise. */
 static void sfww_attach_signal(SfwwCtx *c, ScrDyn *signal) {
-  if (scr_events_add_abort_listener != NULL) {
-    ScrStream *attached =
-        scr_stream_add_abort_signal(c->writable, signal, true, scr_events_add_abort_listener);
+  ScrAbortAddFn add = scr_optional_abort_listener();
+  if (add != NULL) {
+    ScrStream *attached = scr_stream_add_abort_signal(c->writable, signal, true, add);
     if (attached) scr_stream_release(attached);
     else if (scr_exc_pending()) scr_exc_clear();
     return;

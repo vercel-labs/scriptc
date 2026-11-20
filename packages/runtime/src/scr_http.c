@@ -46,6 +46,7 @@
  * snapshot semantics, once-before-run), and errors/teardown follow the
  * socket's own story. */
 #include "scr_runtime.h"
+#include "scr_optional_abort_listener.h"
 
 #include <ctype.h>
 #include <limits.h>
@@ -10493,9 +10494,6 @@ static ScrDyn *scr_http_agent_hook_value(ScrHttpAgent *a, bool keep) {
  * net.createConnection, so the net unit's dynamic entry does the work — its
  * argument ladder, validation and dial. The `signal` option rides the signal
  * unit's abort-listener entry when the program links it. */
-extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
-    __attribute__((weak));
-
 static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *args,
                                                  size_t argc) {
   /* An https agent's default dialer is tls.connect. This path builds a plain
@@ -10513,7 +10511,7 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
   ScrNetSocket *sock = scr_net_connect_dyn(
       argc > 0 ? args[0] : scr_dyn_undefined(), argc > 1 ? args[1] : NULL,
       argc > 2 ? args[2] : NULL, NULL,
-      scr_events_add_abort_listener != NULL ? scr_events_add_abort_listener : NULL, fence);
+      scr_optional_abort_listener(), fence);
   scr_str_release(fence);
   if (sock == NULL) return NULL; /* an exception is pending */
   ScrDyn *out = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);

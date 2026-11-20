@@ -49,6 +49,7 @@ export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
       { id: "zlib", predicate: "zlibEffective" },
       { id: "brotli", predicate: all("zlib", "brotli") },
       { id: "zstd", predicate: all("zlib", "zstd") },
+      { id: "mlkem", predicate: "mlkem" },
       { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
       { id: "sqlite", predicate: "sqlite" },
     ],

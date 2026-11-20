@@ -2,6 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { RUNTIME_PACK_MATRIX } from "../runtime-pack-matrix.mjs";
 import { createDeterministicArchive } from "../scripts/archive.mjs";
 import { installRuntimePack, withBuildLock } from "../scripts/build-state.mjs";
 
@@ -42,6 +43,14 @@ function memberMetadata(bytes: Buffer) {
 
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+test("the macOS arm64 pack selects the ML-KEM wrapper and its archive together", () => {
+  const wrapper = RUNTIME_PACK_MATRIX.runtime_units.find(
+    (unit: { source: string }) => unit.source === "scr_mlkem.c",
+  );
+  expect(wrapper?.predicate).toBe("mlkem");
+  expect(RUNTIME_PACK_MATRIX.archives).toContainEqual({ id: "mlkem", predicate: "mlkem" });
 });
 
 describe.runIf(process.platform === "darwin")("runtime-pack archives", () => {

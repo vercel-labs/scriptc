@@ -19,6 +19,7 @@ import {
 } from "../../runtime-pack-common/scripts/hardening.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
+import { buildMlkemArchive } from "../../runtime-pack-common/scripts/mlkem-archive.mjs";
 import { zlibInputs } from "../../runtime-pack-common/scripts/zlib-inputs.mjs";
 import { zstdInputs } from "../../runtime-pack-common/scripts/zstd-inputs.mjs";
 import { sqliteInputs } from "../../runtime-pack-common/scripts/sqlite-inputs.mjs";
@@ -320,6 +321,14 @@ async function build() {
         "-I",
         sqlite,
       ]),
+      await buildMlkemArchive({
+        source: join(vendorRoot, "mlkem-native"),
+        stagedOutputRoot,
+        compile,
+        parallel,
+        archiver,
+        flags: ["-target", RUNTIME_PACK_MATRIX.target.llvm_triple, ...vendorHardening],
+      }),
       await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -353,6 +362,7 @@ async function build() {
       [join(zlib, "LICENSE.chromium"), "artifacts/licenses/zlib-chromium.txt", "BSD-3-Clause"],
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
+      [join(vendorRoot, "mlkem-native", "LICENSE"), "artifacts/licenses/mlkem.txt", "Apache-2.0"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
       [join(sqlite, "NOTICE"), "artifacts/licenses/sqlite.txt", "Public-Domain"],
     ];

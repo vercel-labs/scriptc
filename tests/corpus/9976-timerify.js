@@ -88,6 +88,9 @@ await new Promise((resolve) => setTimeout(resolve, 20));
 const histogram = createHistogram();
 const timedSum = performance.timerify(
   function sum(a, b) {
+    // A histogram sample must span at least one clock tick.
+    const start = performance.now();
+    while (performance.now() === start) {}
     return a + b;
   },
   { histogram },

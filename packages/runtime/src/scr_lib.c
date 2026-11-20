@@ -3238,6 +3238,12 @@ void scr_process_exit_dyn(const ScrDyn *code) {
   scr_process_exit_finish(converted);
 }
 
+#ifdef __APPLE__
+/* Mach-O requires a definition for an optional import. The event-target
+ * unit supplies the strong accessor when a program links it. */
+__attribute__((weak)) ScrAbortAddFn scr_optional_abort_listener(void) { return NULL; }
+#endif
+
 /* ── the process introspection statics ────────────────────────────────
  * process.uptime/cpuUsage/threadCpuUsage/resourceUsage/availableMemory/
  * constrainedMemory — plain reads of the process's own clocks and
@@ -3278,6 +3284,12 @@ static double scr_uptime_now_ms(void) { return (double)GetTickCount64(); }
  * initial thread, while thread-instanced archives are entered from worker
  * threads whose TLS slots would otherwise stay zero. It is immutable once
  * main starts, so sharing it adds no cross-instance mutable state. */
+#ifdef __APPLE__
+static uint64_t scr_uptime_origin_ns;
+__attribute__((constructor)) static void scr_uptime_anchor_init(void) {
+  scr_uptime_origin_ns = scr_hrtime_ns();
+}
+#else
 static double scr_uptime_t0_ms;
 static double scr_uptime_now_ms(void) {
   struct timespec ts;
@@ -3288,27 +3300,24 @@ __attribute__((constructor)) static void scr_uptime_anchor_init(void) {
   scr_uptime_t0_ms = scr_uptime_now_ms();
 }
 #endif
-
-double scr_process_uptime(void) {
-#if defined(_WIN32) && ((defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS))
-  scr_uptime_anchor_init();
-#elif defined(_WIN32)
-  if (scr_uptime_t0_ms == 0) scr_uptime_anchor_init();
 #endif
-  return (scr_uptime_now_ms() - scr_uptime_t0_ms) / 1000.0;
-}
 
-/* perf_hooks performance.now(): milliseconds since the process's own
- * start (Node's timeOrigin anchor), fractional — the same monotonic
- * clock and anchor as uptime, in Node's performance.now units. */
+/* Subtract the process origin before converting nanoseconds to milliseconds
+ * so short timerify calls retain the precision of Darwin's hrtime clock. */
 double scr_perf_now(void) {
+#ifdef __APPLE__
+  return (double)(scr_hrtime_ns() - scr_uptime_origin_ns) / 1e6;
+#else
 #if defined(_WIN32) && ((defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS))
   scr_uptime_anchor_init();
 #elif defined(_WIN32)
   if (scr_uptime_t0_ms == 0) scr_uptime_anchor_init();
 #endif
   return scr_uptime_now_ms() - scr_uptime_t0_ms;
+#endif
 }
+
+double scr_process_uptime(void) { return scr_perf_now() / 1000.0; }
 
 #ifdef __APPLE__
 /* libuv's uv__hrtime reads mach_continuous_time scaled by the machine's time

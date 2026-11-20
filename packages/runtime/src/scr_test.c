@@ -544,9 +544,24 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
  * thrown error on error). The diagnostics_channel unit links only for a
  * program that uses it (a subscriber lives in the program), so its entry
  * points are weak: a program without subscribers has nothing to publish. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dc_unit_linked = 0;
+__attribute__((weak)) double scr_dc_channel(ScrDyn *name) { (void)name; return NAN; }
+__attribute__((weak)) void scr_dc_publish(double handle, ScrDyn *message) {
+  (void)handle;
+  (void)message;
+}
+__attribute__((weak)) bool scr_dc_chan_has_subscribers(double handle) {
+  (void)handle;
+  return false;
+}
+static bool scr_test_tr_available(void) { return scr_dc_unit_linked != 0; }
+#else
 extern double scr_dc_channel(ScrDyn *name) __attribute__((weak));
 extern void scr_dc_publish(double handle, ScrDyn *message) __attribute__((weak));
 extern bool scr_dc_chan_has_subscribers(double handle) __attribute__((weak));
+static bool scr_test_tr_available(void) { return scr_dc_channel != NULL; }
+#endif
 
 static SCR_TL ScrStr *scr_test_entry; /* the compiled entry file's path, owned */
 
@@ -554,7 +569,7 @@ enum { SCR_TR_START = 0, SCR_TR_END = 1, SCR_TR_ERROR = 2 };
 static SCR_TL double scr_test_tr_handles[3] = {-1, -1, -1};
 
 static double scr_test_tr_channel(int which) {
-  if (!scr_dc_channel) return NAN;
+  if (!scr_test_tr_available()) return NAN;
   if (scr_test_tr_handles[which] >= 0) return scr_test_tr_handles[which];
   static const char *const names[] = {"tracing:node.test:start", "tracing:node.test:end",
                                       "tracing:node.test:error"};
@@ -638,7 +653,7 @@ static void scr_test_tr_publish(int which, ScrTestCtx *t, bool with_error) {
   if (isnan(handle)) return;
   /* Node publishes only with a subscriber attached; skip building the
    * message otherwise (every test start and end takes this path). */
-  if (scr_dc_chan_has_subscribers && !scr_dc_chan_has_subscribers(handle)) return;
+  if (!scr_dc_chan_has_subscribers(handle)) return;
   ScrDyn *msg;
   if (with_error && t->err) {
     /* Node's error event is `{ ...channelContext, error }`: a fresh object

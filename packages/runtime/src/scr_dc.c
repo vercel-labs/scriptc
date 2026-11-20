@@ -23,6 +23,11 @@
  */
 #include "scr_runtime.h"
 
+#if defined(__APPLE__)
+/* The node:test tracing hooks are optional in Mach-O executables. */
+int scr_dc_unit_linked = 1;
+#endif
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

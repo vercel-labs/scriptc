@@ -14,6 +14,7 @@ import {
   assertArtifactsExcludeStrings,
   runtimeForbiddenStrings,
 } from "./artifact-policy.mjs";
+import { buildMlkemArchive } from "./mlkem-archive.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
 import { buildRuntimeUnit, hostHelperPath, resolveRuntimeUnitHelper } from "./runtime-unit.mjs";
 import { probeHardeningSupport, runtimeHardeningFlags } from "./hardening.mjs";
@@ -607,51 +608,6 @@ async function build() {
       ...codeAlignment,
       ...(config.runtimeDefines ?? []).map((define) => `-D${define}`),
     ];
-    // ML-KEM (mlkem-native): the C backend compiled once per parameter
-    // set; the multilevel build keeps the shared code in the 768 object and
-    // prefixes the level-dependent symbols.
-    const mlkemArchive = async () => {
-      process.stdout.write(`building ${packageManifest.name} mlkem archive\n`);
-      const root = join(stagedOutputRoot, "vendor", "mlkem");
-      const objectRoot = join(root, "objects");
-      const flags = [
-        ...vendorTarget,
-        "-std=c11",
-        "-O2",
-        "-I",
-        mlkem,
-        "-I",
-        join(mlkem, "src"),
-        ...vendorHardening,
-      ];
-      const levels = [
-        { set: 512, name: "mlkem512", define: "MLK_CONFIG_MULTILEVEL_NO_SHARED" },
-        { set: 768, name: "mlkem768", define: "MLK_CONFIG_MULTILEVEL_WITH_SHARED" },
-        { set: 1024, name: "mlkem1024", define: "MLK_CONFIG_MULTILEVEL_NO_SHARED" },
-      ];
-      await parallel(levels, async (level) =>
-        compile(join(mlkem, "mlkem_native.c"), join(objectRoot, `${level.name}.o`), [
-          ...flags,
-          `-DMLK_CONFIG_PARAMETER_SET=${level.set}`,
-          "-DMLK_CONFIG_MULTILEVEL_BUILD",
-          `-D${level.define}`,
-        ]),
-      );
-      const output = join(root, "libscriptc-mlkem.a");
-      await createDeterministicArchive(
-        archiver,
-        output,
-        levels.map((level) => join(objectRoot, `${level.name}.o`)),
-        archiverArgs,
-      );
-      await rm(objectRoot, { recursive: true, force: true });
-      return {
-        id: "mlkem",
-        path: artifactPath(output),
-        sha256: await sha256(output),
-        size: (await stat(output)).size,
-      };
-    };
     // zlib, brotli, zstd and mbedtls parse untrusted input and get every
     // protection; libregexp keeps its flags (see hardening.mjs).
     const vendorHardening = runtimeHardeningFlags(config, {
@@ -735,7 +691,19 @@ async function build() {
                 ]
               : []),
             ...(requestedArchives.has("icu") ? [await icuArchive()] : []),
-            ...(requestedArchives.has("mlkem") ? [await mlkemArchive()] : []),
+            ...(requestedArchives.has("mlkem")
+              ? [
+                  await buildMlkemArchive({
+                    source: mlkem,
+                    stagedOutputRoot,
+                    compile,
+                    parallel,
+                    archiver,
+                    archiverArgs,
+                    flags: [...vendorTarget, ...vendorHardening],
+                  }),
+                ]
+              : []),
             ...(requestedArchives.has("mbedtls")
               ? [
                   await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [

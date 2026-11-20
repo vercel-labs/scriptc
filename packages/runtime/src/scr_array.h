@@ -860,4 +860,18 @@ ScrStr *scr_arr_join_str(ScrArr *a, ScrStr *sep);
  * missing ones skip. Borrows both; +1 result; never throws. */
 ScrStr *scr_str_raw(ScrArr *raw, ScrArr *subs);
 
+/* Marks an element kind whose arrays the program can give a prototype: such
+ * arrays carry the collector header, so a prototype whose closure captures
+ * the array is a cycle the collector can reclaim. Called from the compiled
+ * entry at startup, once per kind the program prototypes. */
+void scr_arr_force_cyclic_kind(double kind);
+
+/* The prototype Object.setPrototypeOf installed on this array (+1), or NULL
+ * when none was: *present tells an absent override from a null-prototype
+ * one. It lives on the array's own metadata object, so the reference is the
+ * array's — traced with it and released with it, never an external table. */
+ScrDyn *scr_arr_prototype_override(ScrArr *a, bool *present);
+/* Installs the override (borrowed; NULL installs the null prototype). */
+void scr_arr_set_prototype_override(ScrArr *a, ScrDyn *prototype);
+
 #endif /* SCR_ARRAY_H */

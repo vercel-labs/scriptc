@@ -1872,9 +1872,11 @@ static const char *scr_instance_proto_key(ScrInstanceProto *entry, const char *t
 /* Gives a class instance's view the prototype the table holds for it. */
 static void scr_instance_proto_apply(const ScrDyn *capsule, ScrDyn *view) {
   ScrInstanceProto *entry = scr_typed_ref_instance_proto(capsule);
-  if (!entry || (view->kind != SCR_DYN_OBJ && view->kind != SCR_DYN_ARR) ||
-      view->prototype == entry->prototype)
-    return;
+  if (!entry || (view->kind != SCR_DYN_OBJ && view->kind != SCR_DYN_ARR)) return;
+  /* A null prototype is a NULL pointer plus the flag: a fresh view whose
+   * pointer is already NULL is a plain object, not the null-prototype one. */
+  bool null_proto = entry->prototype == NULL;
+  if (view->prototype == entry->prototype && view->null_proto == null_proto) return;
   ScrDyn *old = view->prototype;
   view->prototype = entry->prototype ? scr_dyn_retain(entry->prototype) : NULL;
   view->null_proto = entry->prototype == NULL;
@@ -3724,6 +3726,66 @@ bool scr_dyn_perf_handle_is(const ScrDyn *value, double which) {
 static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
 static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d);
 static bool scr_typed_ref_plain_array(const ScrDyn *d);
+static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d);
+
+/* The prototype a record capsule's native record owns (ops->proto_get), or
+ * NULL when it has none. Answers +1 for a found prototype. */
+static ScrDyn *scr_typed_ref_record_proto(const ScrDyn *d) {
+  const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
+  return ops && ops->proto_get ? ops->proto_get(d->v.typed_ref.ptr) : NULL;
+}
+
+/* Whether a capsule views a native array and the program gave that array a
+ * prototype: *override is it (+1; a null-kind value for the null prototype)
+ * and the answer is true. */
+static bool scr_typed_ref_array_override(const ScrDyn *d, ScrDyn **override) {
+  if (d->kind != SCR_DYN_TYPED_REF || d->v.typed_ref.type_key_len < 6 ||
+      memcmp(d->v.typed_ref.type_key, "array<", 6) != 0)
+    return false;
+  bool present = false;
+  ScrDyn *value = scr_arr_prototype_override((ScrArr *)d->v.typed_ref.ptr, &present);
+  if (override) *override = value;
+  else if (value) scr_dyn_release(value);
+  return present;
+}
+
+/* Gives a record capsule's view the prototype the native record owns in its
+ * hidden slot, so a view built after Object.setPrototypeOf answers it too.
+ * `ops` is the capsule's live record ops, read before the view was built. */
+static void scr_dyn_record_proto_apply(const ScrDynTypedRecordOps *ops, void *record,
+                                       ScrDyn *view) {
+  if (!ops || !ops->proto_get || view->kind != SCR_DYN_OBJ) return;
+  ScrDyn *proto = ops->proto_get(record);
+  ScrDyn *next = proto && proto->kind != SCR_DYN_NULL ? proto : NULL;
+  if (view->prototype == next && view->null_proto == (next == NULL)) {
+    if (proto) scr_dyn_release(proto);
+    return;
+  }
+  ScrDyn *held = next ? scr_dyn_retain(next) : NULL;
+  ScrDyn *old = view->prototype;
+  view->prototype = held;
+  view->null_proto = held == NULL;
+  if (proto) scr_dyn_release(proto);
+  scr_dyn_release(old);
+}
+
+/* Gives an array capsule's view the prototype the array owns (its metadata
+ * carries the reference, so a reboxed view shows it again). */
+static void scr_dyn_array_proto_apply(const ScrDyn *capsule, ScrDyn *view) {
+  ScrDyn *override = NULL;
+  if (view->kind != SCR_DYN_ARR || !scr_typed_ref_array_override(capsule, &override)) return;
+  ScrDyn *next = override && override->kind != SCR_DYN_NULL ? override : NULL;
+  if (view->prototype == next && view->null_proto == (next == NULL)) {
+    if (override) scr_dyn_release(override);
+    return;
+  }
+  ScrDyn *held = next ? scr_dyn_retain(next) : NULL;
+  ScrDyn *old = view->prototype;
+  view->prototype = held;
+  view->null_proto = held == NULL;
+  if (override) scr_dyn_release(override);
+  scr_dyn_release(old);
+}
 
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
@@ -3737,7 +3799,36 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
     /* A live record's snapshot is an ordinary object and a live array's an
      * ordinary array, each with the prototype it is born with. */
+    {
+      ScrDyn *record_proto = scr_typed_ref_record_proto(object);
+      if (record_proto) {
+        if (record_proto->kind == SCR_DYN_NULL) {
+          scr_dyn_release(record_proto);
+          return scr_dyn_new_null();
+        }
+        return record_proto;
+      }
+    }
+    /* A materialized record capsule answers from its cached view, which
+     * carries the prototype setPrototypeOf applied (the native slot no
+     * longer answers once the view exists). */
+    if (object->v.typed_ref.materialized && object->v.typed_ref.type_key_len >= 7 &&
+        memcmp(object->v.typed_ref.type_key, "record:", 7) == 0) {
+      ScrDyn *view = object->v.typed_ref.materialized;
+      if (view->kind == SCR_DYN_OBJ) {
+        if (view->prototype) return scr_dyn_retain(view->prototype);
+        if (view->null_proto) return scr_dyn_new_null();
+      }
+    }
     if (scr_typed_ref_plain_record(object)) return scr_dyn_object_prototype();
+    ScrDyn *array_override = NULL;
+    if (scr_typed_ref_array_override(object, &array_override)) {
+      if (!array_override || array_override->kind == SCR_DYN_NULL) {
+        if (array_override) scr_dyn_release(array_override);
+        return scr_dyn_new_null();
+      }
+      return array_override;
+    }
     if (scr_typed_ref_plain_array(object)) return scr_dyn_array_prototype_base();
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (!view) return NULL;
@@ -3834,6 +3925,29 @@ bool scr_dyn_is_plain_object(ScrDyn *value) {
     ScrInstanceProto *replaced = scr_typed_ref_instance_proto(value);
     if (replaced)
       return replaced->prototype != NULL && replaced->prototype == scr_builtin_object_prototype;
+    {
+      ScrDyn *record_proto = scr_typed_ref_record_proto(value);
+      if (record_proto) {
+        bool plain = record_proto->kind != SCR_DYN_NULL &&
+                     record_proto == scr_builtin_object_prototype;
+        scr_dyn_release(record_proto);
+        return plain;
+      }
+    }
+    if (value->v.typed_ref.materialized && value->v.typed_ref.type_key_len >= 7 &&
+        memcmp(value->v.typed_ref.type_key, "record:", 7) == 0) {
+      ScrDyn *view = value->v.typed_ref.materialized;
+      if (view->kind == SCR_DYN_OBJ)
+        return !view->null_proto &&
+               (view->prototype == NULL || view->prototype == scr_builtin_object_prototype);
+    }
+    ScrDyn *array_override = NULL;
+    if (scr_typed_ref_array_override(value, &array_override)) {
+      bool plain = array_override && array_override->kind != SCR_DYN_NULL &&
+                   array_override == scr_builtin_object_prototype;
+      if (array_override) scr_dyn_release(array_override);
+      return plain;
+    }
     return value->v.typed_ref.type_key_len >= 7 &&
            memcmp(value->v.typed_ref.type_key, "record:", 7) == 0;
   }
@@ -3852,21 +3966,32 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
       (prototype != scr_builtin_object_prototype && scr_dyn_class_reflection_fence(prototype)))
     return NULL;
   if (object->kind == SCR_DYN_TYPED_REF) {
+    /* A native record's hidden slot is reachable only while the capsule
+     * answers from the record: read its ops before the view is built, since
+     * a materialized capsule's ops answer NULL. */
+    const ScrDynTypedRecordOps *record_ops = scr_typed_ref_record_ops(object);
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
     ScrDyn *result = scr_dyn_set_prototype(view, prototype);
     scr_dyn_release(view);
     if (!result) return NULL;
     scr_dyn_release(result);
-    /* A program class instance, and a native record behind a checked view,
-     * keep the prototype past this boxing: the next view is built from the
-     * instance or record again. */
-    if ((object->v.typed_ref.type_key_len >= 7 &&
-         (memcmp(object->v.typed_ref.type_key, "object:", 7) == 0 ||
-          memcmp(object->v.typed_ref.type_key, "record:", 7) == 0)) ||
-        (object->v.typed_ref.type_key_len >= 6 &&
-         memcmp(object->v.typed_ref.type_key, "array<", 6) == 0))
-    {
+    /* A native array behind a checked view keeps the prototype the array
+     * owns: the next view is built from the array again, and the reference
+     * is the array's own (traced and released with it). */
+    if (object->v.typed_ref.type_key_len >= 6 &&
+        memcmp(object->v.typed_ref.type_key, "array<", 6) == 0) {
+      scr_arr_set_prototype_override((ScrArr *)object->v.typed_ref.ptr, prototype);
+    } else if (object->v.typed_ref.type_key_len >= 7 &&
+               memcmp(object->v.typed_ref.type_key, "record:", 7) == 0) {
+      /* A native record keeps the prototype in its own slot. */
+      if (record_ops && record_ops->proto_set)
+        record_ops->proto_set(object->v.typed_ref.ptr, prototype);
+      else scr_instance_proto_set(object->v.typed_ref.ptr, prototype);
+    } else if (object->v.typed_ref.type_key_len >= 7 &&
+               memcmp(object->v.typed_ref.type_key, "object:", 7) == 0) {
+      /* A program class instance keeps the prototype past this boxing: the
+       * next view is built from the instance again. */
       scr_instance_proto_set(object->v.typed_ref.ptr, prototype);
       if (memcmp(object->v.typed_ref.type_key, "object:", 7) == 0) {
         ScrInstanceProto *entry = scr_instance_proto_find(object->v.typed_ref.ptr);
@@ -6138,6 +6263,10 @@ static void scr_typed_ref_view_keep_own(
 
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
   ScrDyn *capsule = (ScrDyn *)d;
+  /* The record's prototype slot answers only while the capsule has no view:
+   * read its ops before this call builds one. */
+  const ScrDynTypedRecordOps *record_ops =
+      capsule->v.typed_ref.record ? scr_typed_ref_record_ops(capsule) : NULL;
   ScrDyn *fresh = capsule->v.typed_ref.materialize(capsule->v.typed_ref.ptr);
   if (scr_exc_pending()) {
     scr_dyn_release(fresh);
@@ -6202,7 +6331,10 @@ ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d) {
     fresh->rc = fresh_rc;
     scr_dyn_release(fresh);
   }
+  scr_dyn_record_proto_apply(record_ops, capsule->v.typed_ref.ptr,
+                             capsule->v.typed_ref.materialized);
   scr_instance_proto_apply(capsule, capsule->v.typed_ref.materialized);
+  scr_dyn_array_proto_apply(capsule, capsule->v.typed_ref.materialized);
   if (scr_dyn_typed_ref_frozen(capsule)) scr_dyn_record_view_freeze(capsule->v.typed_ref.materialized);
   return scr_dyn_retain(capsule->v.typed_ref.materialized);
 }

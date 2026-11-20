@@ -38,14 +38,44 @@ import { weakKeyUnits } from "./weak-keys.js";
  * subclass and retain touches the cycle header, so header presence must be
  * uniform across an extends tree): a unit is cycle-capable iff ANY member
  * is — every backend uses the same grouping. */
+/** The record shapes the program gives a prototype with
+ * Object.setPrototypeOf (reflection.ts lowers the receiver through a live
+ * `dynFrom`). A receiver owns the reference in a hidden slot, so its shape
+ * must be traced for the collector to walk the edge and reclaim a prototype
+ * whose closure captures the receiver; the emitter adds these shapes to the
+ * traced set and emits the slot (llvm/shapes.ts recordPrototypeIndex). */
+export function prototypeOverrides(mod: IrModule): { shapes: Set<string>; arrays: boolean } {
+  const shapes = new Set<string>();
+  let arrays = false;
+  const seen = new WeakSet<object>();
+  const scan = (value: unknown): void => {
+    if (typeof value !== "object" || value === null) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) scan(item);
+      return;
+    }
+    const node = value as { kind?: unknown; fn?: unknown; args?: unknown };
+    if (node.kind === "libCall" && node.fn === "dyn.setPrototype" && Array.isArray(node.args)) {
+      const receiver = node.args[0] as { kind?: unknown; value?: { type?: IrType } } | undefined;
+      const type = receiver?.kind === "dynFrom" ? receiver.value?.type : undefined;
+      if (type?.kind === "record") shapes.add(type.shapeId);
+      if (type?.kind === "array") arrays = true;
+    }
+    for (const key of Object.keys(value)) scan((value as Record<string, unknown>)[key]);
+  };
+  scan(mod);
+  return { shapes, arrays };
+}
+
 export function computeTraced(
   mod: IrModule,
   stores?: DynamicFieldStores,
   /** computeCycleMutability's answer for this module, when the caller has it. */
   precomputed?: CycleMutability,
 ): { shapes: Set<string>; unions: Set<string> } {
-  const { shapes, unions } = analyzeCycles(mod, false, stores, precomputed);
-  return { shapes, unions };
+  return analyzeCycles(mod, false, stores, precomputed);
 }
 
 /** The shapes that can be on a cycle of counted references in a program

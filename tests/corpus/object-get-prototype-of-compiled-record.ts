@@ -11,3 +11,16 @@ Object.setPrototypeOf(restored, { f: 6 });
 Object.setPrototypeOf(restored, Object.prototype);
 const isPlain = (value: object) => Object.getPrototypeOf(value) === Object.prototype;
 console.log(isPlain(plain), isPlain(nulled), isPlain(custom), isPlain(restored));
+// Re-boxing a record whose prototype is null keeps the null prototype: the
+// checked view is rebuilt from the record on every boxing.
+const nullPrototype = { g: 6 };
+Object.setPrototypeOf(nullPrototype, null);
+const reboxed = [nullPrototype][0];
+console.log(Object.getPrototypeOf(reboxed) === null, Object.getPrototypeOf(nullPrototype) === null);
+// A dynamic read builds the record's snapshot view: the view carries the
+// prototype the native record owns, so the plain-object test still sees it.
+const viewed = { h: 7 };
+Object.setPrototypeOf(viewed, { i: 8 });
+const dynamic: any = viewed;
+void dynamic.h;
+console.log("viewed", isPlain(viewed), Object.getPrototypeOf(viewed) === null);

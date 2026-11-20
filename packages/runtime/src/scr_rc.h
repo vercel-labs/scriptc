@@ -206,8 +206,15 @@ enum {
   SCR_CYC_KIND_NONE = 0,
   /* Also how the collector recognizes a cycle-capable ScrArr, whose dense
    * elements it visits inline (scr_cycle.c SCR_CYC_CHILDREN): reserved for
-   * scr_array.c's descriptor. */
+   * scr_array.c's descriptor of arrays whose slots are all headed object
+   * pointers. */
   SCR_CYC_KIND_ARRAY,
+  /* A cycle-capable ScrArr whose slots are not all object pointers (a
+   * program gave an array of numbers, strings or an untraced reference
+   * type a prototype): the collector walks it through the array's trace
+   * function, which visits only the slots that hold a headed child, never
+   * through the inline dense walk. */
+  SCR_CYC_KIND_VALUED_ARRAY,
   SCR_CYC_KIND_PROMISE,
   SCR_CYC_KIND_BOX,
   SCR_CYC_KIND_CLOSURE,

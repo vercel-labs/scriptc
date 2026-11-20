@@ -47,3 +47,25 @@ for (const missing of [null, undefined]) {
     console.log("missing", error.message);
   }
 }
+// The comparison itself throws for null and undefined, so a catch around it
+// runs (the fold must not be treated as unable to throw).
+try {
+  console.log("compare-null", Object.getPrototypeOf(null) === Object.prototype);
+} catch (error) {
+  console.log("compare-null", error.message);
+}
+try {
+  console.log("compare-undefined", Object.getPrototypeOf(undefined) === Object.prototype);
+} catch (error) {
+  console.log("compare-undefined", error.message);
+}
+// Re-boxing a value whose prototype is null keeps the null prototype (a
+// checked view is rebuilt from the source on every boxing).
+const nullPrototypeArray = [1, 2];
+Object.setPrototypeOf(nullPrototypeArray, null);
+const reboxedArray = [nullPrototypeArray][0];
+console.log("reboxed-null-array", Object.getPrototypeOf(reboxedArray) === null);
+const nullPrototypeObject = { k: 1 };
+Object.setPrototypeOf(nullPrototypeObject, null);
+const reboxedObject = [nullPrototypeObject][0];
+console.log("reboxed-null-object", Object.getPrototypeOf(reboxedObject) === null);

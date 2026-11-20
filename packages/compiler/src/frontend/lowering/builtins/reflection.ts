@@ -522,6 +522,25 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
  * prototype of their boxed view. The identity-only flag marks a producer
  * the runtime can answer without materializing the prototype (a `===`).
  * Null when the value has no checked-dynamic form (the caller's fence). */
+/** The SCR_ELEM_* kind a native array of `elem` allocates as (the runtime's
+ * scr_arr_new kind argument; anything else is SCR_ELEM_REF). */
+function arrayElemKindNumber(elem: IrType): number {
+  switch (elem.kind) {
+    case "f64":
+      return 0;
+    case "bool":
+      return 1;
+    case "string":
+      return 2;
+    case "array":
+      return 3;
+    case "bytes":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
 /** `Object.getPrototypeOf(value) === Object.prototype`, and its `!==`, with
  * parentheses around either side: the plain-object test programs write
  * (ui-sdk's `isRecord`). Answering the whole comparison keeps a primitive, a
@@ -551,11 +570,21 @@ export function plainObjectPrototypeComparison(
   )
     object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
   if (object.type.kind !== "dyn") return null;
-  // A record's checked view is rebuilt from the native record every time it
-  // is boxed, so a boxing that copies the record would miss a prototype
-  // Object.setPrototypeOf gave it: the question views the live record.
-  if (object.kind === "dynFrom" && object.value.type.kind === "record") object.liveRef = true;
-  const test: IrExpr = { kind: "libCall", fn: "dyn.isPlainObject", args: [object], type: BOOL, loc };
+  // A record's or array's checked view is rebuilt from the native value every
+  // time it is boxed, so a boxing that copies it would miss a prototype
+  // Object.setPrototypeOf gave it: the question views the live receiver.
+  if (
+    object.kind === "dynFrom" &&
+    (object.value.type.kind === "record" || object.value.type.kind === "array")
+  )
+    object.liveRef = true;
+  const test: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.isPlainObject",
+    args: [object],
+    type: BOOL,
+    loc,
+  };
   return equals ? test : { kind: "unary", op: "!", operand: test, type: BOOL, loc };
 }
 
@@ -636,10 +665,22 @@ export function lowerPrototypeReflectionCall(
   )
     object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
   if (object.type.kind !== "dyn") return null;
-  // The prototype a record carries lives on the live record, not on a copy
-  // of it (Object.setPrototypeOf's table answers the next boxing), so both
-  // reads box the record itself.
-  if (object.kind === "dynFrom" && object.value.type.kind === "record") object.liveRef = true;
+  // The prototype a record or array carries lives on the receiver itself,
+  // not on a copy of it, so both reads box the live value. Setting one also
+  // records the array's element kind: every array of a kind the program
+  // prototypes is born with the collector header, so the reference the array
+  // owns is an edge the collector walks.
+  if (
+    object.kind === "dynFrom" &&
+    (object.value.type.kind === "record" || object.value.type.kind === "array")
+  ) {
+    object.liveRef = true;
+    // The array keeps the prototype on its own metadata, and the reference
+    // is only visible to the collector when the array carries the header:
+    // the kinds the program prototypes are stamped before the program runs.
+    if (member === "setPrototypeOf" && object.value.type.kind === "array")
+      lowerer.prototypeArrayKinds.add(arrayElemKindNumber(object.value.type.elem));
+  }
   if (member === "getPrototypeOf") {
     let parent: ts.Node | undefined = call.parent;
     while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;

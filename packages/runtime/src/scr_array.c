@@ -1432,17 +1432,30 @@ static void scr_arr_put_slots(ScrArr *a, size_t to, size_t count, const uint64_t
 static void scr_arr_arena_dispose(void *object);
 static void scr_arr_arena_dispose_closed(void *object);
 static ScrCycType scr_arr_cyc_type;
+static ScrCycType scr_arr_cyc_valued_type;
+
+/* The collector descriptor of a cycle-capable array: the dense walk kind only
+ * when every slot holds an object the collector can walk (arrays, bytes, and
+ * references of a traced element type); a forced-cyclic array of a value or
+ * untraced kind takes the valued descriptor, whose walks go through
+ * scr_arr_trace_v and skip the untraced slots. */
+static inline __attribute__((always_inline)) const ScrCycType *scr_arr_cyc_desc(
+    ScrElemKind elem, const ScrArrOps *ops) {
+  if (elem == SCR_ELEM_ARR || elem == SCR_ELEM_BYTES) return &scr_arr_cyc_type;
+  if (elem == SCR_ELEM_REF && ops != NULL && ops->trace != NULL) return &scr_arr_cyc_type;
+  return &scr_arr_cyc_valued_type;
+}
 
 /* An array block of `size` bytes in the current group arena, or NULL.
  * Its storage beyond the block is the heap's, so it goes on the arena's
  * dispose list even when the arena is closed; there, its elements are
  * arena objects and immortal values, which need no release. */
-static inline ScrArr *scr_arr_arena_block(size_t size, bool cyc) {
+static inline ScrArr *scr_arr_arena_block(size_t size, const ScrCycType *cyc) {
   void *arena = scr_arena_cur;
   if (!arena) return NULL;
   size_t hdr = cyc ? sizeof(ScrCycHdr) : 0;
   size_t n = (hdr + size + 7) & ~(size_t)7;
-  uint32_t id = cyc ? scr_cyc_type_id(&scr_arr_cyc_type) : 0;
+  uint32_t id = cyc ? scr_cyc_type_id(cyc) : 0;
   char *block = scr_arena_bump(arena, n);
   ScrArr *a;
   if (block) {
@@ -1451,13 +1464,25 @@ static inline ScrArr *scr_arr_arena_block(size_t size, bool cyc) {
     if (cyc) *(ScrCycHdr *)block = (ScrCycHdr){.id = (uint16_t)id, .buf = SCR_CYC_ACYCLIC};
     a = (ScrArr *)(block + hdr);
   } else {
-    a = scr_arena_obj(arena, size, cyc ? &scr_arr_cyc_type : NULL);
+    a = scr_arena_obj(arena, size, cyc);
     if (!a) return NULL;
   }
   scr_arena_dispose_later(arena, a,
                           scr_arena_is_closed(arena) ? scr_arr_arena_dispose_closed
                                                      : scr_arr_arena_dispose);
   return a;
+}
+
+/* Element kinds whose arrays can receive a prototype (see the header): a
+ * thread flag, set before any module runs, so every array of the kind is
+ * born with the collector header. */
+static SCR_TL bool scr_arr_force_cyclic[SCR_ELEM_I32 + 1];
+void scr_arr_force_cyclic_kind(double kind) {
+  if (!(kind >= 0 && kind <= SCR_ELEM_I32)) return;
+  scr_arr_force_cyclic[(int)kind] = true;
+  /* An element type the compiler could not place is a typed reference,
+   * compact or not: force both slot kinds. */
+  if ((int)kind == SCR_ELEM_REF) scr_arr_force_cyclic[SCR_ELEM_CREF] = true;
 }
 
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind elem,
@@ -1468,18 +1493,20 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind el
   size_t inline_cap = small ? scr_arr_small_cap(SCR_ARR_INLINE_OFFSET, unit)
                             : scr_arr_known_cap(SCR_ARR_INLINE_OFFSET, initial_cap, unit);
   size_t size = inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * unit : sizeof(ScrArr);
-  ScrArr *a = arena ? scr_arr_arena_block(size, false) : NULL;
+  bool cyc = scr_arr_force_cyclic[elem];
+  const ScrCycType *cyc_type = cyc ? scr_arr_cyc_desc(elem, NULL) : NULL;
+  ScrArr *a = arena ? scr_arr_arena_block(size, cyc_type) : NULL;
   if (a)
     a->rc = SCR_ARENA_RC;
   else {
-    a = scr_mem_alloc_ref(size);
+    a = cyc ? scr_cyc_alloc_inline(size, cyc_type) : scr_mem_alloc_ref(size);
     if (!a) scr_arr_oom();
     a->rc = 1;
   }
   a->len = 0;
   a->cap = 0;
   a->elem = (uint8_t)elem;
-  a->cyc = 0;
+  a->cyc = cyc ? 1 : 0;
   a->spare = 0;
   a->filled = 0;
   a->data = NULL;
@@ -1576,28 +1603,99 @@ void scr_arr_swap_indexed_ext(ScrArr *a, ScrArr *b) {
   wb->prop_cap = t.prop_cap;
 }
 
+/* Whether the array's elements are the collector's children: a reference
+ * element kind whose type carries the cycle header (an array forced cyclic
+ * only for the prototype it received may hold elements that do not). */
+static bool scr_arr_elements_traced(const ScrArr *a) {
+  switch (a->elem) {
+  /* Arrays and bytes are always collector objects. */
+  case SCR_ELEM_ARR:
+  case SCR_ELEM_BYTES:
+    return true;
+  /* A typed reference's header exists only when its element type is
+   * traceable; strings and values carry none. */
+  case SCR_ELEM_REF: {
+    const ScrArrOps *ops = scr_arr_ops(a);
+    return ops != NULL && ops->trace != NULL;
+  }
+  default:
+    return false;
+  }
+}
+
+/* The teardown complement for a forced-cyclic array whose element type
+ * carries no header: its VALUE slots are the array's own references, so the
+ * teardown releases them (foreign slots are dynamic values the collector
+ * visits, so they stay). */
+static void scr_arr_release_untraced_elements(ScrArr *a) {
+  size_t end = a->len < a->cap ? a->len : a->cap;
+  uint8_t elem = a->elem;
+  const ScrArrOps *ops = scr_arr_ops(a);
+  if (!scr_arr_has_states(a)) {
+    for (size_t i = 0; i < end; i++) {
+      uint64_t old = a->data[i];
+      a->data[i] = 0;
+      scr_elem_release_with(elem, ops, old);
+    }
+  } else {
+    uint8_t *states = scr_arr_states_end(a);
+    for (size_t i = 0; i < end; i++) {
+      if (*scr_arr_state_in(states, i) != SCR_ARR_VALUE) continue;
+      uint64_t old = a->data[i];
+      a->data[i] = 0;
+      *scr_arr_state_in(states, i) = 0;
+      scr_elem_release_with(elem, ops, old);
+    }
+  }
+  if (scr_arr_ext_of(a)) {
+    while (scr_arr_ext_of(a)->sparse_len > 0) {
+      size_t i = scr_arr_ext_of(a)->sparse_len - 1;
+      uint64_t old = scr_arr_ext_of(a)->sparse[i].slot;
+      uint8_t state = scr_arr_ext_of(a)->sparse[i].state;
+      scr_arr_ext_of(a)->sparse_len = i;
+      if (state == SCR_ARR_VALUE) scr_elem_release_with(elem, ops, old);
+    }
+    while (scr_arr_ext_of(a)->prop_len > 0) {
+      size_t i = scr_arr_ext_of(a)->prop_len - 1;
+      uint64_t old = scr_arr_ext_of(a)->props[i].slot;
+      uint8_t state = scr_arr_ext_of(a)->props[i].state;
+      free(scr_arr_ext_of(a)->props[i].key);
+      scr_arr_ext_of(a)->prop_len = i;
+      if (state == SCR_ARR_VALUE) scr_elem_release_with(elem, ops, old);
+    }
+  }
+}
+
 /* Collector trace of a cycle-capable array: every element is a headered
  * child (`cyc` means the element TYPE carries a header, and
  * arrays are monomorphic), so trace visits all of them and the teardown
  * below releases none — the complement contract in scr_runtime.h. */
 void scr_arr_trace_v(void *a0, ScrTraceVisit visit, void *ctx) {
   ScrArr *a = (ScrArr *)a0;
-  if (SCR_AX(a)->metadata) visit(SCR_AX(a)->metadata, ctx);
+  if (SCR_AX(a)->metadata) {
+    visit(SCR_AX(a)->metadata, ctx);
+  }
   /* Growth and truncation leave spare capacity empty. Sparse slots and
    * named properties are separate edges, independent of dense length. */
   size_t end = a->len < a->cap ? a->len : a->cap;
+  /* An array forced cyclic for a prototype it received may hold VALUE
+   * slots of a primitive kind: those slots are the values themselves, not
+   * references. A foreign slot is always a dyn pointer. */
+  bool ref_elem = scr_arr_elements_traced(a);
   if (!scr_arr_has_states(a)) {
-    for (size_t i = 0; i < end; i++) visit(scr_slot_to_ptr(a->data[i]), ctx);
+    if (ref_elem)
+      for (size_t i = 0; i < end; i++) visit(scr_slot_to_ptr(a->data[i]), ctx);
   } else {
     const uint8_t *states = scr_arr_states_end(a);
     for (size_t i = 0; i < end; i++) {
       uint8_t state = *scr_arr_state_in(states, i);
-      if (state == SCR_ARR_VALUE || state == SCR_ARR_FOREIGN) visit(scr_slot_to_ptr(a->data[i]), ctx);
+      if (state == SCR_ARR_FOREIGN || (state == SCR_ARR_VALUE && ref_elem))
+        visit(scr_slot_to_ptr(a->data[i]), ctx);
     }
   }
   for (size_t i = 0; i < SCR_AX(a)->sparse_len; i++) {
     uint8_t state = SCR_AX(a)->sparse[i].state;
-    if (state == SCR_ARR_VALUE || state == SCR_ARR_FOREIGN) {
+    if (state == SCR_ARR_FOREIGN || (state == SCR_ARR_VALUE && ref_elem)) {
       visit(scr_slot_to_ptr(SCR_AX(a)->sparse[i].slot), ctx);
     }
   }
@@ -1627,6 +1725,7 @@ static inline __attribute__((always_inline)) void scr_arr_free_parts(ScrArr *a) 
 
 static void scr_arr_gc_free(void *a0) {
   ScrArr *a = (ScrArr *)a0;
+  if (!scr_arr_elements_traced(a)) scr_arr_release_untraced_elements(a);
   scr_arr_free_parts(a);
 #ifdef SCR_RC_AUDIT
   scr_live_arrays--;
@@ -1635,6 +1734,8 @@ static void scr_arr_gc_free(void *a0) {
 }
 
 static ScrCycType scr_arr_cyc_type = {&scr_arr_trace_v, &scr_arr_gc_free, SCR_CYC_KIND_ARRAY};
+static ScrCycType scr_arr_cyc_valued_type = {&scr_arr_trace_v, &scr_arr_gc_free,
+                                             SCR_CYC_KIND_VALUED_ARRAY};
 
 /* Inlined into each constructor like scr_arr_make: with `small`, the count
  * and `elem` constant, scr_arr_new_ops_small's size class folds to a table
@@ -1645,19 +1746,20 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const
                                                                            uint8_t elem,
                                                                            bool arena) {
   ScrArr *a;
-  bool cyc = ops->trace != NULL;
+  bool cyc = ops->trace != NULL || scr_arr_force_cyclic[elem];
+  const ScrCycType *cyc_type = cyc ? scr_arr_cyc_desc((ScrElemKind)elem, ops) : NULL;
   /* The array starts without states: slots of the value width alone. */
   size_t unit = scr_elem_slot_width(elem);
   size_t prefix = SCR_ARR_INLINE_OFFSET + (cyc ? sizeof(ScrCycHdr) : 0);
   size_t inline_cap =
       small ? scr_arr_small_cap(prefix, unit) : scr_arr_known_cap(prefix, initial_cap, unit);
   size_t size = inline_cap ? SCR_ARR_INLINE_OFFSET + inline_cap * unit : sizeof(ScrArr);
-  a = arena ? scr_arr_arena_block(size, cyc) : NULL;
+  a = arena ? scr_arr_arena_block(size, cyc_type) : NULL;
   if (a)
     a->rc = SCR_ARENA_RC;
   else {
     if (cyc)
-      a = scr_cyc_alloc_inline(size, &scr_arr_cyc_type);
+      a = scr_cyc_alloc_inline(size, cyc_type);
     else {
       a = scr_mem_alloc_ref(size);
       if (!a) scr_arr_oom();
@@ -6083,6 +6185,42 @@ static ScrDyn *scr_arr_class_fields(ScrArr *a) {
   const ScrArrClass *cls = scr_arr_class_of(a);
   if (!cls || !cls->fields) return NULL;
   return cls->fields(scr_arr_retain(a));
+}
+
+/* Object.setPrototypeOf's prototype for this array: a hidden named
+ * property of the array's own metadata object (created on first use), so the
+ * reference belongs to the array — the collector visits it with the array's
+ * metadata and the array's teardown releases it. The key begins with NUL so
+ * no JavaScript property write can collide with it. */
+static const char SCR_ARR_PROTO_KEY[] = "\0scriptc.prototype";
+#define SCR_ARR_PROTO_KEY_LEN (sizeof SCR_ARR_PROTO_KEY - 1)
+
+static ScrDyn *scr_arr_prototype_metadata(ScrArr *a) {
+  ScrArrExt *x = scr_arr_ext(a);
+  if (!x) return NULL;
+  if (!x->metadata) x->metadata = scr_dyn_new_obj();
+  return x->metadata;
+}
+
+ScrDyn *scr_arr_prototype_override(ScrArr *a, bool *present) {
+  *present = false;
+  ScrArrExt *x = scr_arr_ext_of(a);
+  if (!x || !x->metadata) return NULL;
+  ScrDyn *metadata = x->metadata;
+  ScrDyn *value = scr_dyn_obj_get(metadata, SCR_ARR_PROTO_KEY, SCR_ARR_PROTO_KEY_LEN);
+  if (!value) return NULL;
+  *present = true;
+  return scr_dyn_retain(value);
+}
+
+void scr_arr_set_prototype_override(ScrArr *a, ScrDyn *prototype) {
+  ScrDyn *metadata = scr_arr_prototype_metadata(a);
+  if (!metadata) return;
+  ScrDyn *held = prototype ? scr_dyn_retain(prototype) : scr_dyn_new_null();
+  scr_dyn_obj_set(metadata, SCR_ARR_PROTO_KEY, SCR_ARR_PROTO_KEY_LEN, held);
+  scr_dyn_obj_set_attrs_at(metadata,
+                           scr_dyn_obj_index_of(metadata, SCR_ARR_PROTO_KEY, SCR_ARR_PROTO_KEY_LEN),
+                           false, false, true);
 }
 
 void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {

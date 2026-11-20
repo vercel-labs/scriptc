@@ -1023,6 +1023,12 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "imports-diagnostics-channel",
   ),
   scan(
+    "frontend/diagnostics-channel-import.ts#sourceImportsDiagnosticsChannel",
+    1,
+    "prefilter",
+    "a file whose text never spells `diagnostics_channel` cannot name the module in a static import, export or require, so the walk skips it",
+  ),
+  scan(
     "frontend/pipeline.ts#addDynamicImportGraph",
     1,
     "prefilter",

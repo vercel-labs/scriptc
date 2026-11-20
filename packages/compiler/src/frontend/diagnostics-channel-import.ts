@@ -43,8 +43,18 @@ function importsChannel(file: ts.SourceFile): boolean {
   return false;
 }
 
+/** Whether this file's own code can import node:diagnostics_channel. A
+ * declaration file's module specifiers are types and run nothing, and a file
+ * whose text never spells the module cannot name it in a static import,
+ * export or require — the two cheap answers that keep the program's library
+ * and declaration files out of the walk. */
+export function sourceImportsDiagnosticsChannel(file: ts.SourceFile): boolean {
+  if (file.isDeclarationFile || !ts.sourceTextIncludes(file, "diagnostics_channel")) return false;
+  return importsChannel(file);
+}
+
 export function programImportsDiagnosticsChannel(program: ts.Program): boolean {
-  if (program.getSourceFiles().some(importsChannel)) return true;
+  if (program.getSourceFiles().some(sourceImportsDiagnosticsChannel)) return true;
   // A module imported through the CJS linker that is not in the source
   // files (an npm package's require) cannot subscribe: the compiler treats
   // such a module as its own body, whose own sources are in the program.

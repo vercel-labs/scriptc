@@ -2,6 +2,8 @@
  "order": [
   "<repo>/tests/corpus/module-children-dynamic-fields/grand.cjs",
   "<repo>/tests/corpus/module-children-dynamic-fields/child.cjs",
+  "<repo>/tests/corpus/module-children-dynamic-fields/other.cjs",
+  "<repo>/tests/corpus/module-children-dynamic-fields/boom.cjs",
   "<repo>/tests/corpus/module-children-dynamic-fields/main.cjs"
  ],
  "diags": []

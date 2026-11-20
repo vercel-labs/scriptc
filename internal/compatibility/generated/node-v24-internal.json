@@ -30387,7 +30387,8 @@
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
           "tests/corpus/2214-dc-bind-store.cjs",
-          "tests/corpus/diagnostics-channel-audit.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs",
+          "tests/corpus/diagnostics-channel-console.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -30805,8 +30806,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.log'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30828,8 +30832,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.info'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30851,8 +30858,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.debug'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30874,8 +30884,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.warn'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30897,8 +30910,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.error'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31473,7 +31489,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.require:start'"
       },
       "anchorSource": "exact"
     },
@@ -31496,7 +31512,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.require:end'"
       },
       "anchorSource": "exact"
     },
@@ -31519,7 +31535,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.require:error'"
       },
       "anchorSource": "exact"
     },
@@ -31542,7 +31558,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.import:asyncStart'"
       },
       "anchorSource": "exact"
     },
@@ -31565,7 +31581,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.import:asyncEnd'"
       },
       "anchorSource": "exact"
     },
@@ -31588,7 +31604,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.import:error'"
       },
       "anchorSource": "exact"
     },

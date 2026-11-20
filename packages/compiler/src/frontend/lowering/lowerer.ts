@@ -295,6 +295,7 @@ import {
 import type { FrontendServices } from "../services.js";
 import type { Defines } from "../defines.js";
 import { programImportsNodeApi } from "../node-api-import.js";
+import { programImportsDiagnosticsChannel } from "../diagnostics-channel-import.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
@@ -5272,6 +5273,11 @@ export class Lowerer {
    * a checked-dynamic value may be a Node island value and code the build
    * does not lower may run (mayRunInNode); computed on first use. */
   importsNodeApi: boolean | undefined = undefined;
+  /** Whether the program imports diagnostics_channel
+   * (programImportsDiagnosticsChannel), so a console output call's channel
+   * can have a subscriber and the call publishes its arguments; computed on
+   * first use. */
+  importsDiagnosticsChannel: boolean | undefined = undefined;
   /** Whether the program reads util.inspect's function value
    * (programTouchesInspectTables), so its defaultOptions, colors and styles
    * tables can change and static inspect renderings route through the
@@ -6677,6 +6683,7 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    "importsDiagnosticsChannel",
     "inspectTablesTouched",
     // The census of the program's writes on the global object, a pure
     // function of its modules, read again when a unit replays.
@@ -17456,6 +17463,12 @@ export class Lowerer {
     return (
       this.nodeIslands !== null || (this.importsNodeApi ??= programImportsNodeApi(this.program))
     );
+  }
+
+  /** Whether the program imports diagnostics_channel, so a console output
+   * call can have a channel subscriber. */
+  usesDiagnosticsChannel(): boolean {
+    return (this.importsDiagnosticsChannel ??= programImportsDiagnosticsChannel(this.program));
   }
 
   /** The IR type of a type's canonical form (canon-map.ts), or null when

@@ -6014,6 +6014,20 @@ ScrStr *scr_insp_format_pack(ScrDyn *pack) {
   return insp_fmt_pack(pack, &o);
 }
 
+ScrStr *scr_insp_format_pack_snapshot(ScrDyn *pack) {
+  /* A console channel subscriber can keep the published array and mutate it
+   * from a value's toString or inspect hook while the formatter runs; the
+   * formatter reads a private copy whose elements are retained for it. */
+  ScrDyn *copy = scr_dyn_new_arr();
+  if (pack->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < pack->v.arr.len; i++)
+      scr_dyn_arr_push(copy, scr_dyn_retain(pack->v.arr.items[i]));
+  }
+  ScrStr *out = scr_insp_format_pack(copy);
+  scr_dyn_release(copy);
+  return out;
+}
+
 ScrStr *scr_insp_format_list(ScrArr *list) {
   ScrDyn *pack = insp_list_pack(list);
   ScrStr *out = scr_insp_format_pack(pack);

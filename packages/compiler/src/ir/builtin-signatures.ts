@@ -5423,6 +5423,15 @@ function buildLibFnSignatures() {
      * properties = all). dirDyn is console.dir's inspect of a dyn value
      * (custom inspection off: a Buffer anywhere inside throws the fence). */
     "console.noop": { argTypes: [], result: VOID },
+    /** A global console output member's diagnostics-channel publish: the
+     * call's evaluated argument array (spreads expanded), published on
+     * console.<member> (0 log, 1 info, 2 debug, 3 warn, 4 error) before the
+     * line is written. Never throws: a subscriber's throw becomes the
+     * channel's deferred uncaught report (scr_console.c). */
+    "console.publishArgs": { argTypes: [F64, DYN], result: VOID },
+    /** Whether console.<member> has a diagnostics-channel subscriber: the
+     * guard around building the published argument array (scr_console.c). */
+    "console.channelActive": { argTypes: [F64], result: BOOL },
     "console.label": { argTypes: [DYN], result: STRING },
     "console.count": { argTypes: [STRING], result: VOID },
     "console.countReset": { argTypes: [DYN], result: STRING },
@@ -6590,6 +6599,10 @@ function buildLibFnSignatures() {
      * util.formatWithOptions(options, pack): the runtime formatter for format
      * strings known at run time and spread arguments. */
     "insp.format": { argTypes: [DYN], result: STRING },
+    /** The console channels' formatter: insp.format over a private copy of
+     * the published arguments, so a subscriber's reentrant mutation of the
+     * array cannot free the vector the formatter reads. */
+    "insp.formatSnapshot": { argTypes: [DYN], result: STRING },
     /** insp.format over arguments that are all strings, numbers, booleans,
      * null or undefined, without the checked-dynamic walk. */
     "insp.formatPrimitives": { argTypes: [arrayOf(DYN)], result: STRING },

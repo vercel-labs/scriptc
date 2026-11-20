@@ -78,14 +78,21 @@ static SCR_TL bool scr_cl_worker_mode = false;
 static SCR_TL double scr_cl_self_id = 0;
 static SCR_TL ScrClusterWorker *scr_cl_self = NULL;
 static SCR_TL bool scr_cl_disconnect_pending = false;
-static SCR_TL bool scr_cl_setup_initialized = false;
+/* The 'setup' emissions scheduled so far, FIFO: every setupPrimary call
+ * (and every cluster.fork(), which calls it) emits one, carrying the
+ * settings object that call produced (Node's setupSettingsNT(settings)). */
+typedef struct {
+  ScrDyn *settings; /* +1 */
+} ScrClSetup;
+static SCR_TL ScrClSetup *scr_cl_setups = NULL;
+static SCR_TL size_t scr_cl_setups_n = 0;
 static SCR_TL size_t scr_cl_disconnect_waiting = 0;
 static SCR_TL ScrDyn *scr_cl_disconnect_cb = NULL; /* +1 */
 static SCR_TL ScrClusterWorker **scr_cl_fork_pending = NULL; /* +1 entries */
 static SCR_TL size_t scr_cl_fork_pending_n = 0;
 
 static void scr_cl_finish_disconnect(void);
-static void scr_cl_schedule_setup(void);
+static void scr_cl_schedule_setup(ScrDyn *settings);
 static void scr_cl_levels_cleanup(void);
 static ScrDyn *scr_cl_worker_handle(ScrClusterWorker *w);
 
@@ -379,17 +386,28 @@ static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
 }
 
 static void scr_cl_fire_setup(void) {
-  if (scr_cl_settings == NULL) return;
-  ScrDyn *args[] = {scr_cl_settings};
+  if (scr_cl_setups_n == 0) return;
+  ScrDyn *settings = scr_cl_setups[0].settings;
+  memmove(scr_cl_setups, scr_cl_setups + 1, (scr_cl_setups_n - 1) * sizeof *scr_cl_setups);
+  scr_cl_setups_n--;
+  ScrDyn *args[] = {settings};
   scr_cl_ls_emit(&scr_cl_events, "setup", args, 1);
+  scr_dyn_release(settings);
 }
 
-static void scr_cl_schedule_setup(void) { scr_next_tick_raw(&scr_cl_fire_setup); }
+static void scr_cl_schedule_setup(ScrDyn *settings) {
+  ScrClSetup *items = realloc(scr_cl_setups, (scr_cl_setups_n + 1) * sizeof *items);
+  if (!items) scr_trap("out of memory");
+  scr_cl_setups = items;
+  items[scr_cl_setups_n++] = (ScrClSetup){scr_dyn_retain(settings)};
+  scr_next_tick_raw(&scr_cl_fire_setup);
+}
 
 /* Node's setupPrimary merge: the defaults, then the settings object as the
  * program left it (Node's `...cluster.settings`), then `options`. Node
- * assigns a fresh object each call; the 'setup' emission is scheduled only
- * on the first one. `options` is borrowed; NULL is the bare call. */
+ * assigns a fresh object and schedules a 'setup' emission per call, each
+ * carrying that call's object. `options` is borrowed; NULL is the bare
+ * call. */
 static void scr_cl_setup_impl(const ScrDyn *options) {
   ScrDyn *previous = scr_cl_settings;
   ScrDyn *settings = scr_cl_default_settings();
@@ -397,10 +415,7 @@ static void scr_cl_setup_impl(const ScrDyn *options) {
   if (options != NULL && options->kind == SCR_DYN_OBJ) scr_cl_object_assign(settings, options);
   scr_dyn_release(previous);
   scr_cl_settings = settings;
-  if (!scr_cl_setup_initialized) {
-    scr_cl_setup_initialized = true;
-    scr_cl_schedule_setup();
-  }
+  scr_cl_schedule_setup(settings);
 }
 
 void scr_cluster_setup(const ScrDyn *options) {
@@ -532,10 +547,24 @@ static bool scr_cl_worker_connected(ScrClusterWorker *w) {
   return w->self ? scr_process_ipc_connected() : scr_child_ipc_connected(w->child);
 }
 
-/* Node's send callback is asynchronous: the value lands on the next tick. */
+/* Node's send callback is asynchronous: the value lands on the next tick.
+ * `failed` marks a send the closed channel never carried, whose callback
+ * Node calls with ERR_IPC_CHANNEL_CLOSED ("Channel closed"). */
 typedef struct {
   ScrDyn *cb; /* +1 */
+  bool failed;
 } ScrClSendCb;
+
+/* The dyn %Error Node's closed-channel send delivers. */
+static ScrDyn *scr_cl_channel_closed_error(void) {
+  ScrStr *message = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
+  ScrError *error = scr_error_new(0, message);
+  scr_str_release(message);
+  scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
+  ScrDyn *result = scr_dyn_from_error(error);
+  scr_error_release(error);
+  return result;
+}
 
 static SCR_TL ScrClSendCb *scr_cl_send_cbs = NULL;
 static SCR_TL size_t scr_cl_send_cbs_n = 0;
@@ -543,10 +572,11 @@ static SCR_TL size_t scr_cl_send_cbs_n = 0;
 static void scr_cl_send_cb_drain(void) {
   while (scr_cl_send_cbs_n > 0 && !scr_exc_pending()) {
     ScrDyn *cb = scr_cl_send_cbs[0].cb;
+    bool failed = scr_cl_send_cbs[0].failed;
     memmove(scr_cl_send_cbs, scr_cl_send_cbs + 1,
             (scr_cl_send_cbs_n - 1) * sizeof *scr_cl_send_cbs);
     scr_cl_send_cbs_n--;
-    ScrDyn *arg = scr_cl_undefined();
+    ScrDyn *arg = failed ? scr_cl_channel_closed_error() : scr_cl_undefined();
     ScrDyn *args[] = {arg};
     ScrDyn *r = scr_dyn_call(cb, args, 1, "send callback");
     scr_dyn_release(r);
@@ -555,18 +585,18 @@ static void scr_cl_send_cb_drain(void) {
   }
 }
 
-static void scr_cl_send_cb_queue(ScrDyn *cb) {
+static void scr_cl_send_cb_queue(ScrDyn *cb, bool failed) {
   ScrClSendCb *items = realloc(scr_cl_send_cbs, (scr_cl_send_cbs_n + 1) * sizeof *items);
   if (!items) scr_trap("out of memory");
   scr_cl_send_cbs = items;
-  items[scr_cl_send_cbs_n++] = (ScrClSendCb){scr_dyn_retain(cb)};
+  items[scr_cl_send_cbs_n++] = (ScrClSendCb){scr_dyn_retain(cb), failed};
   if (scr_cl_send_cbs_n == 1) scr_next_tick_raw(&scr_cl_send_cb_drain);
 }
 
 static bool scr_cl_worker_send(ScrClusterWorker *w, ScrDyn *message, ScrDyn *callback) {
   bool connected = scr_cl_worker_connected(w);
   if (!connected) {
-    if (callback != NULL) scr_cl_send_cb_queue(callback);
+    if (callback != NULL) scr_cl_send_cb_queue(callback, true);
     return false;
   }
   /* The checked-dynamic JSON walker the compiler's own message sends use;
@@ -576,7 +606,7 @@ static bool scr_cl_worker_send(ScrClusterWorker *w, ScrDyn *message, ScrDyn *cal
   if (text == NULL) return false;
   bool ok = w->self ? scr_process_ipc_send(text) : scr_child_ipc_send(w->child, text);
   scr_str_release(text);
-  if (callback != NULL) scr_cl_send_cb_queue(callback);
+  if (callback != NULL) scr_cl_send_cb_queue(callback, !ok);
   return ok;
 }
 
@@ -989,9 +1019,19 @@ ScrDyn *scr_cluster_worker_value(void) {
 
 /* ── the worker process's start ────────────────────────────────────── */
 
-static void scr_cl_noop_message(ScrClosure *cb, ScrDyn *message) {
+/* The worker's process-channel listener: Node's Worker wraps the process
+ * and forwards its 'message' event, so cluster.worker.on('message', ...)
+ * sees every message the primary sends (before the program's
+ * process.on('message') listeners, which registered later). Cluster
+ * protocol messages never reach here: the child unit routes those to the
+ * cluster hook. */
+static void scr_cl_self_message(ScrClosure *cb, ScrDyn *message) {
   (void)cb;
-  (void)message;
+  if (scr_cl_self == NULL) return;
+  ScrDyn *handle = scr_cl_undefined();
+  ScrDyn *args[] = {message, handle};
+  scr_cl_ls_emit(&scr_cl_self->ls, "message", args, 2);
+  scr_dyn_release(handle);
 }
 
 static void scr_cl_self_disconnect(ScrClosure *cb) {
@@ -1026,8 +1066,8 @@ void scr_cluster_init(void) {
     w->online = true;
     w->state = "online";
     scr_cl_self = w;
-    ScrClosure *msg = scr_closure_new((void *)&scr_cl_noop_message, 1);
-    scr_process_ipc_on_message(msg, scr_cl_noop_message, false);
+    ScrClosure *msg = scr_closure_new((void *)&scr_cl_self_message, 1);
+    scr_process_ipc_on_message(msg, scr_cl_self_message, false);
     ScrClosure *dc = scr_closure_new((void *)&scr_cl_self_disconnect, 1);
     scr_process_ipc_on_disconnect(dc, false);
     /* The primary waits for the 'online' act before it marks the worker
@@ -1109,6 +1149,9 @@ static void scr_cl_levels_cleanup(void) {
     w->rc = 1;
     scr_clw_release(w);
   }
+  for (size_t i = 0; i < scr_cl_setups_n; i++) scr_dyn_release(scr_cl_setups[i].settings);
+  free(scr_cl_setups);
+  scr_cl_setups = NULL;
+  scr_cl_setups_n = 0;
   scr_cl_initialized = false;
-  scr_cl_setup_initialized = false;
 }

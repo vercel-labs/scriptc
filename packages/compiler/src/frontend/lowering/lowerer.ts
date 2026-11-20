@@ -6959,6 +6959,13 @@ export class Lowerer {
         () => this.writesOntoChildren,
         () => (this.writesOntoChildren = true),
       ),
+      // node:cluster: %main calls cluster.init and always uses the fork
+      // dispatch when the program names the module (buildMain).
+      flag(
+        "clusterUsed",
+        () => this.clusterUsed,
+        () => (this.clusterUsed = true),
+      ),
       flag(
         "regexGroupResults",
         () => this.regexGroupResults,

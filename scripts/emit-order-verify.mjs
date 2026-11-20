@@ -6,7 +6,7 @@
 //
 // usage: node emit-order.mjs <program.ts> [...]
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -127,36 +127,44 @@ function compare(label, a, b) {
 
 const programs = process.argv.slice(2);
 let failures = 0;
-for (const program of programs) {
-  const out = join(tmpdir(), `emit-order-${process.pid}-${programs.indexOf(program)}.ir`);
-  execFileSync(
-    "node",
-    [join(root, "packages/cli/dist/main.js"), "build", program, "--emit=ir", "-o", out],
-    { stdio: "ignore" },
-  );
-  const input = parseModule(out);
-  const pre = preChain(input);
-  const preRev = preChain(input);
-  // Bisect: apply each step to both orders and compare after each. The
-  // functions are reversed after preparation, not before: preparation
-  // numbers the deferred initializer groups by function order, so reversing
-  // the input would change those ids instead of the order under test.
-  let normal = pre.mod;
-  let reversed = { ...preRev.mod, functions: [...preRev.mod.functions].reverse() };
-  let first = null;
-  for (const [name, step] of chainSteps(pre.nodes)) {
-    normal = step(normal);
-    // The reversed chain must use the reversed module's own index.
-    const reversedStep = chainSteps(preRev.nodes).find(([n]) => n === name)[1];
-    reversed = reversedStep(reversed);
-    if (!compare(`${program} after ${name}`, normal, reversed)) {
-      first = first ?? name;
-      break;
+// The scratch IR of a program is its source in serialized form, so it lives in
+// a private directory only this user can enter (mkdtemp creates it 0700) and
+// is removed when the run ends, including when a program fails.
+const work = mkdtempSync(join(tmpdir(), "scriptc-emit-order-"));
+try {
+  for (const program of programs) {
+    const out = join(work, `input-${programs.indexOf(program)}.ir`);
+    execFileSync(
+      "node",
+      [join(root, "packages/cli/dist/main.js"), "build", program, "--emit=ir", "-o", out],
+      { stdio: "ignore" },
+    );
+    if (existsSync(out)) chmodSync(out, 0o600);
+    const input = parseModule(out);
+    const pre = preChain(input);
+    const preRev = preChain(input);
+    // Bisect: apply each step to both orders and compare after each. The
+    // functions are reversed after preparation, not before: preparation
+    // numbers the deferred initializer groups by function order, so reversing
+    // the input would change those ids instead of the order under test.
+    let normal = pre.mod;
+    let reversed = { ...preRev.mod, functions: [...preRev.mod.functions].reverse() };
+    let first = null;
+    for (const [name, step] of chainSteps(pre.nodes)) {
+      normal = step(normal);
+      const reversedStep = chainSteps(preRev.nodes).find(([n]) => n === name)[1];
+      reversed = reversedStep(reversed);
+      if (!compare(`${program} after ${name}`, normal, reversed)) {
+        first = first ?? name;
+        break;
+      }
     }
+    console.log(
+      `${first === null ? "ORDER-INDEPENDENT" : "FIRST DIVERGENT PASS: " + first} ${program}`,
+    );
+    if (first !== null) failures++;
   }
-  console.log(
-    `${first === null ? "ORDER-INDEPENDENT" : "FIRST DIVERGENT PASS: " + first} ${program}`,
-  );
-  if (first !== null) failures++;
+} finally {
+  rmSync(work, { recursive: true, force: true });
 }
 process.exitCode = failures === 0 ? 0 : 1;

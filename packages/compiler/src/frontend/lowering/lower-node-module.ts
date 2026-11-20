@@ -207,7 +207,7 @@ export function isNodeModuleHandle(lowerer: Lowerer, node: ts.Node): boolean {
 }
 
 /** Whether `type` is the `Module` class the standard library declares. */
-function isNodeModuleType(lowerer: Lowerer, type: ts.Type): boolean {
+export function isNodeModuleType(lowerer: Lowerer, type: ts.Type): boolean {
   if ((type.flags & ts.TypeFlags.Object) === 0) return false;
   const symbol = type.getSymbol();
   return (

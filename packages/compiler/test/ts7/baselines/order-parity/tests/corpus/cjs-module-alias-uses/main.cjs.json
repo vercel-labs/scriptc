@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-module-alias-uses/child.cjs",
+  "<repo>/tests/corpus/cjs-module-alias-uses/main.cjs"
+ ],
+ "diags": []
+}

@@ -70,15 +70,6 @@ options-record.ts:43:41 - error SC2020: 'tls.createServer option 'ticketKeys'' i
 
   hint: cert and key (PEM strings or Buffers) are the supported options
 
-options-record.ts:48:20 - error SC2020: 'fs.watch with the recursive option' is part of the standard library types but has no scriptc lowering yet
-
-  47 | // (corpus fs-watch-ref-unref).
-  48 | fs.watch("/tmp", { recursive: true }, () => {});
-     |                    ^~~~~~~~~~~~~~~
-  49 | fs.watch("/tmp", { encoding: "buffer" }, () => {});
-
-  hint: recursive watching has no lowering yet — kqueue watches the one opened path; watch each path
-
 options-record.ts:49:20 - error SC2020: 'fs.watch with a non-utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 
   48 | fs.watch("/tmp", { recursive: true }, () => {});

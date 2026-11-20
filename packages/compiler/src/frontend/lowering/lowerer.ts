@@ -3516,6 +3516,11 @@ export class Lowerer {
   /** Whether any implementation source spells `versions`
    * (programMentionsVersions in builtins/process.ts). */
   mentionsProcessVersions: boolean | undefined = undefined;
+  /** Whether the program constructs a Console with inspectOptions or
+   * colorMode anywhere (lower-console.ts's program-wide scan): its methods
+   * format through the runtime's option-aware entries. Cached; undefined
+   * until the scan runs. */
+  consoleOptionsFact: boolean | undefined = undefined;
   private stringIndexBoundsCache: StringIndexBounds | null = null;
   /** Proofs that a string element read names an existing code unit. The
    * indexed-read analysis and expression lowering share one instance, so a
@@ -6654,6 +6659,9 @@ export class Lowerer {
     "constructorHolders",
     "constructorFunctionMemo",
     "abortOnStreamFlags",
+    // Whether the program constructs an option-bearing Console: a scan of
+    // the sources, computed again when needed.
+    "consoleOptionsFact",
     // The stream mode the pass settled on asking for (pass scratch, read
     // from the journaled requiresGeneralNodeStreams / requiresDynNodeStreams).
     "streamRequest",
@@ -15214,6 +15222,19 @@ export class Lowerer {
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
   }
 
+  /** Runs one finish pass, timing it when SCRIPTC_TIMING=1 and it takes
+   * over 0.3 s. A method rather than a generic arrow binding: the
+   * self-hosted native frontend compiles a generic function-expression
+   * binding's instantiations as module functions, which cannot capture the
+   * enclosing frame's `this`, so it refuses one declared inside a method. */
+  private timedPass<T>(name: string, run: () => T): T {
+    const started = performance.now();
+    const value = run();
+    const elapsed = performance.now() - started;
+    if (elapsed >= 300) this.emitPhase(`finish:${name}`, performance.now() - elapsed);
+    return value;
+  }
+
   /** Final retention, pruning, and module assembly shared by ordinary emit
    * and the retained reachability worklist. `library` is true for a native
    * library's emit, whose runtime has no builtin-statics unit. */
@@ -15227,20 +15248,12 @@ export class Lowerer {
     // that looks for a rare kind: they skip a function that cannot hold one
     // instead of walking it.
     const census = new FunctionCensus();
-    // The passes below that take over 0.3 s (SCRIPTC_TIMING=1).
-    const pass = <T>(name: string, run: () => T): T => {
-      const started = performance.now();
-      const value = run();
-      const elapsed = performance.now() - started;
-      if (elapsed >= 300) this.emitPhase(`finish:${name}`, performance.now() - elapsed);
-      return value;
-    };
     // Whether the program uses workers is final now.
-    pass("settleLoaderShareEnv", () => settleLoaderShareEnv(this, functions));
+    this.timedPass("settleLoaderShareEnv", () => settleLoaderShareEnv(this, functions));
     // Every instance of every generic value is known now (the
     // monomorphization worklists drained): an identity comparison against
     // one is exact only if the declaration is held at a single signature.
-    pass("checkGenericIdentityPins", () => checkGenericIdentityPins(this));
+    this.timedPass("checkGenericIdentityPins", () => checkGenericIdentityPins(this));
     // Every function value and conversion is in the IR now: a variadic
     // function must not reach a native call of fixed arity, and one stored
     // as a fixed signature is exact only if no function of that type is
@@ -15248,49 +15261,60 @@ export class Lowerer {
     // devirtualization found in them) answers for a program that holds no
     // variadic function without another walk of its IR; the one step since,
     // settleLoaderShareEnv above, stores a boxed symbol and no function.
-    pass("checkVariadicFunctions", () => checkVariadicFunctions(this, functions, bodies));
+    this.timedPass("checkVariadicFunctions", () => checkVariadicFunctions(this, functions, bodies));
     // Before the links are pruned to the observed ones: an unlinked copy
     // is a copy all the same.
-    pass("refuseSourceFieldDeletes", () => refuseSourceFieldDeletes(this, functions));
+    this.timedPass("refuseSourceFieldDeletes", () => refuseSourceFieldDeletes(this, functions));
     // A record built into a class instance, or a union's arm copied into
     // another union's arm, where the program can tell the copy from the
     // object is refused while a module can still fail.
-    pass("refuseObservedCopies", () => refuseObservedCopies(this, functions));
-    pass("finalizeRecordLinks", () => finalizeRecordLinks(this, functions));
-    pass("finalizeGeneratorArrays", () => finalizeGeneratorArrays(this, functions));
+    this.timedPass("refuseObservedCopies", () => refuseObservedCopies(this, functions));
+    this.timedPass("finalizeRecordLinks", () => finalizeRecordLinks(this, functions));
+    this.timedPass("finalizeGeneratorArrays", () => finalizeGeneratorArrays(this, functions));
     // The statics lookup installs before value boxing, so the function
     // values it adds to the entry module are boxed with the rest.
     if (!library)
-      pass("installBuiltinStatics", () => installBuiltinStatics(this, functions, census));
-    if (!library) pass("registerIslandIntrinsics", () => registerIslandIntrinsics(this, functions));
-    pass("boxBuiltinValuesChecked", () => boxBuiltinValuesChecked(this, functions, census));
-    pass("shareBuiltinValueIdentities", () => shareBuiltinValueIdentities(this, functions));
-    pass("finalizeFunctionNames", () => finalizeFunctionNames(this, functions));
-    pass("finalizeFunctionSourceText", () => finalizeFunctionSourceText(this, functions));
+      this.timedPass("installBuiltinStatics", () => installBuiltinStatics(this, functions, census));
+    if (!library)
+      this.timedPass("registerIslandIntrinsics", () => registerIslandIntrinsics(this, functions));
+    this.timedPass("boxBuiltinValuesChecked", () =>
+      boxBuiltinValuesChecked(this, functions, census),
+    );
+    this.timedPass("shareBuiltinValueIdentities", () =>
+      shareBuiltinValueIdentities(this, functions),
+    );
+    this.timedPass("finalizeFunctionNames", () => finalizeFunctionNames(this, functions));
+    this.timedPass("finalizeFunctionSourceText", () => finalizeFunctionSourceText(this, functions));
     if (this.diags.length === 0)
-      pass("fuseArrayPipelines", () => fuseArrayPipelines(this, functions));
-    pass("finalizeClassMethodValues", () => finalizeClassMethodValues(this, functions));
-    pass("finalizePrivateBrands", () => finalizePrivateBrands(this, functions));
-    pass("routeWrapperConsumers", () => routeWrapperConsumers(this, functions, census));
-    pass("trackClassFieldCreation", () => trackClassFieldCreation(this, functions, census));
-    pass("boxClassInstancesExactly", () => boxClassInstancesExactly(this, functions));
-    pass("addUntypedIntegrityWords", () => addUntypedIntegrityWords(this));
-    pass("guardClassAttributeWrites", () => guardClassAttributeWrites(this, functions, census));
-    pass("guardPartialReads", () => guardPartialReads(this, functions));
-    pass("guardFrozenWrites", () => guardFrozenWrites(this, functions, census));
-    pass("applyHandleProperties", () => applyHandleProperties(this, functions));
-    pass("adoptIslandThenables", () => adoptIslandThenables(this, functions));
-    pass("shareIslandProcessState", () => shareIslandProcessState(this, functions));
+      this.timedPass("fuseArrayPipelines", () => fuseArrayPipelines(this, functions));
+    this.timedPass("finalizeClassMethodValues", () => finalizeClassMethodValues(this, functions));
+    this.timedPass("finalizePrivateBrands", () => finalizePrivateBrands(this, functions));
+    this.timedPass("routeWrapperConsumers", () => routeWrapperConsumers(this, functions, census));
+    this.timedPass("trackClassFieldCreation", () =>
+      trackClassFieldCreation(this, functions, census),
+    );
+    this.timedPass("boxClassInstancesExactly", () => boxClassInstancesExactly(this, functions));
+    this.timedPass("addUntypedIntegrityWords", () => addUntypedIntegrityWords(this));
+    this.timedPass("guardClassAttributeWrites", () =>
+      guardClassAttributeWrites(this, functions, census),
+    );
+    this.timedPass("guardPartialReads", () => guardPartialReads(this, functions));
+    this.timedPass("guardFrozenWrites", () => guardFrozenWrites(this, functions, census));
+    this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions));
+    this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions));
+    this.timedPass("shareIslandProcessState", () => shareIslandProcessState(this, functions));
     // applyHandleProperties, adoptIslandThenables and shareIslandProcessState
     // rewrite nodes inside unchanged statement lists, so the census of every
     // function they touched no longer describes its body.
     census.clear();
-    pass("installBufferValue", () => installBufferValue(functions, census));
+    this.timedPass("installBufferValue", () => installBufferValue(functions, census));
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
     const buffersMutable = this.buffersMutable && installMutableBuffersArm(functions);
-    pass("installFetchBodyWebStreams", () => installFetchBodyWebStreams(this, functions));
-    pass("returnDispatchReceivers", () => returnDispatchReceivers(this, functions, census));
+    this.timedPass("installFetchBodyWebStreams", () => installFetchBodyWebStreams(this, functions));
+    this.timedPass("returnDispatchReceivers", () =>
+      returnDispatchReceivers(this, functions, census),
+    );
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the
@@ -15471,7 +15495,8 @@ export class Lowerer {
       });
     }
     if (module?.declOrigins !== undefined) compactDeclOrigins(module);
-    if (module) pass("checkCycleBindingAccesses", () => checkCycleBindingAccesses(this, module));
+    if (module)
+      this.timedPass("checkCycleBindingAccesses", () => checkCycleBindingAccesses(this, module));
     if (module) bindCompletionCallbacks(module);
     // SCRIPTC_DYNAMIC_CLASSES: where the finished program makes instances of
     // the named classes dynamic values (dynamic-class-report.ts).
@@ -15488,7 +15513,7 @@ export class Lowerer {
     // rewrite keeps every dynamic operation dynamic (each dyn operator
     // becomes its js twin), so coverage's dynamic statements are unchanged.
     if (module && this.dynamicFunctions.length > 0)
-      pass("promoteJsvals", () => promoteJsvals(module));
+      this.timedPass("promoteJsvals", () => promoteJsvals(module));
     // Receiver proofs that took `call` and `apply` for the builtins, in a
     // program whose finished module gives a function its own.
     const ownCallRefusals = module ? refuseForwardsToOwnCall(this, module) : [];

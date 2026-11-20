@@ -123,6 +123,7 @@ test("the runtime exports the checked-dynamic kinds the island lowering relies o
     "SCR_DYN_OBJ",
     "SCR_DYN_ARR",
     "SCR_DYN_TYPED_REF",
+    "SCR_DYN_PROXY",
     "SCR_DYN_HANDLE",
   ]);
 });

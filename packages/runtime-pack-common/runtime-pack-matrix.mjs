@@ -188,8 +188,11 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_events.c", "events"],
   // getColorDepth and hasColors of the process stream object: a program
   // that holds a process stream as a value and names one of them. It is
-  // called by the SCR_TTY_COLORS build of scr_events.c.
-  ["scr_tty_colors.c", all("events", "ttyColors")],
+  // called by the SCR_TTY_COLORS build of scr_events.c. A Console built with
+  // inspectOptions or colorMode reads the same tables for colorMode 'auto',
+  // and the console unit rides with the inspect unit, so all of them select
+  // it (runtime-pack-core's ttyColorTables).
+  ["scr_tty_colors.c", "ttyColorTables"],
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
   ["scr_events_emitter.c", "emitter"],

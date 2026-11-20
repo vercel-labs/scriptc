@@ -81038,6 +81038,7 @@
           "tests/corpus/perf-entry-globals.cjs",
           "tests/corpus/perf-entry-object-tag.ts",
           "tests/corpus/perf-event-loop-utilization.ts",
+          "tests/corpus/perf-histogram-inference.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/perf-hooks-now-arguments.cjs",
           "tests/corpus/perf-hooks-observer.ts",
@@ -83357,8 +83358,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.meanCI",
+        "tests": [
+          "tests/corpus/perf-histogram-inference.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83437,8 +83441,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.percentileCI",
+        "tests": [
+          "tests/corpus/perf-histogram-inference.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83534,8 +83541,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.welchTest",
+        "tests": [
+          "tests/corpus/perf-histogram-inference.ts"
+        ]
       },
       "anchorSource": "exact"
     },

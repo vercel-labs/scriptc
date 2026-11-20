@@ -2116,6 +2116,24 @@ declare module "node:perf_hooks" {
       readonly zScore: number;
       readonly pValue: number;
     };
+    meanCI(options?: { confidence?: number }): {
+      readonly mean: number;
+      readonly lower: number;
+      readonly upper: number;
+    };
+    percentileCI(
+      percentile: number,
+      options?: { confidence?: number },
+    ): { readonly value: number; readonly lower: number; readonly upper: number };
+    welchTest(
+      other: Histogram,
+      options?: { confidence?: number },
+    ): {
+      readonly tStatistic: number;
+      readonly degreesOfFreedom: number;
+      readonly pValue: number;
+      readonly confidenceInterval: { readonly lower: number; readonly upper: number };
+    };
     reset(): void;
   }
   export interface IntervalHistogram extends Histogram {

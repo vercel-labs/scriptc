@@ -616,6 +616,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["importsNodeApi"],
   },
   {
+    name: "imports-diagnostics-channel",
+    file: `${SRC}/frontend/diagnostics-channel-import.ts`,
+    symbol: "programImportsDiagnosticsChannel",
+    source: "syntax",
+    scope: "program",
+    setBy: "an import or require of `diagnostics_channel` in any source file of the program",
+    gates:
+      "whether a global console output call publishes its arguments on the console.<member> diagnostics channels and formats a subscribed line from that array; a program without the import has no possible subscriber and keeps the plain console lowering",
+    narrower:
+      "the module specifier, at compile time: a require computed at run time is not followed, and such a program keeps the plain console lowering",
+    tracked: null,
+    lowererFields: ["importsDiagnosticsChannel"],
+  },
+  {
     name: "js-widened-fields",
     file: `${SRC}/frontend/lowering/lowerer.ts`,
     symbol: "jsWidenedFields",
@@ -1003,6 +1017,11 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "a digest of the files a reused unit does not own",
   ),
   decides("frontend/node-api-import.ts#programImportsNodeApi", 1, "imports-node-api"),
+  decides(
+    "frontend/diagnostics-channel-import.ts#programImportsDiagnosticsChannel",
+    1,
+    "imports-diagnostics-channel",
+  ),
   scan(
     "frontend/pipeline.ts#addDynamicImportGraph",
     1,

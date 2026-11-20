@@ -25,6 +25,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoStatBig",
   "perf.histoPercentile",
   "perf.histoPercentileBig",
+  "perf.histoMeanCI",
+  "perf.histoWelch",
+  "perf.histoPercentileCI",
   "perf.histoCountAt",
   "perf.histoCdf",
   "perf.histoCcdf",
@@ -45,6 +48,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Console instance state that answers text: the timer labels are already
   // strings, the stores are the instance's own tables, and no program code
   // runs. (The counters and the table can throw, so they are not here.)
+  "console.channelActive",
+  "console.publishArgs",
   "console.instTime",
   "console.instTimeEnd",
   "console.instTimeLog",
@@ -118,6 +123,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "ah.enable",
   "ah.providers",
   "ah.executionId",
+  "ah.executionResource",
   "ah.triggerId",
   // scr_als_with_scope reads the effective store, enters the new one and
   // boxes the RunScope; no program code runs and nothing raises.

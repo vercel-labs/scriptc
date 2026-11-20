@@ -1,8 +1,8 @@
 /* node:async_hooks — AsyncLocalStorage and AsyncResource lower onto the
  * runtime's fiber-carried context snapshots and resource registry (the
- * als and ar libCalls); async-hook instrumentation itself
- * (createHook/AsyncHook) is declared without lowering — a reached use
- * fences at its site. */
+ * als and ar libCalls); createHook/AsyncHook and the execution-id
+ * readers lower onto the runtime's hook registry and execution state
+ * (the ah libCalls). */
 declare module "async_hooks" {
   /* AsyncLocalStorage: fiber-carried context snapshots — run/getStore/
    * exit/enterWith/disable lower onto the runtime's active-slot machinery
@@ -68,9 +68,15 @@ declare module "async_hooks" {
     before?: (asyncId: number) => void;
     after?: (asyncId: number) => void;
     destroy?: (asyncId: number) => void;
+    promiseResolve?: (asyncId: number) => void;
   }): AsyncHook;
   export function executionAsyncId(): number;
   export function triggerAsyncId(): number;
+  /* The resource the current execution belongs to: the AsyncResource whose
+   * runInAsyncScope/bind scope is executing, and a plain object elsewhere
+   * (timer, immediate, tick and promise executions answer that shared
+   * object rather than each execution's own resource). */
+  export function executionAsyncResource(): object;
 }
 
 declare module "node:async_hooks" {

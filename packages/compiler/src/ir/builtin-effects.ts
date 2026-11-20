@@ -213,6 +213,12 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // (scr_module_cache.c), and reading the options object can run a getter.
   "module.compileCacheEnable",
   "module.compileCacheFlush",
+  // setSourceMapsSupport validates a boolean and an options object
+  // (scr_lib.c), and reading the options members can run a getter.
+  "module.setSourceMapsSupport",
+  // The SourceMap constructor validates its payload and reads its members,
+  // whose getters can throw.
+  "sourceMap.new",
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",

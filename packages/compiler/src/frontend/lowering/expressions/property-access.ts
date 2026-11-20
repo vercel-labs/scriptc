@@ -362,19 +362,38 @@ function isParseArgsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpress
   });
 }
 
-/** A member of module.enableCompileCache()'s result (or of its options
- * object), which stays the checked-dynamic object the runtime built. */
-function isCompileCacheDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
-  if (!["status", "message", "directory", "portable"].includes(expr.name.text)) return false;
+/** The node:module results and option bags that stay the checked-dynamic
+ * objects the runtime built: enableCompileCache's result and options, the
+ * source-map support record and its options, and a SourceMap (which a
+ * compiled program never hands out, since it registers no source map, but
+ * whose declared shape must still read). */
+const MODULE_DYN_MEMBERS: Readonly<Record<string, readonly string[]>> = {
+  EnableCompileCacheResult: ["status", "message", "directory"],
+  EnableCompileCacheOptions: ["directory", "portable"],
+  SourceMapsSupport: ["enabled", "nodeModules", "generatedCode"],
+  SetSourceMapsSupportOptions: ["nodeModules", "generatedCode"],
+  SourceMap: ["payload", "findEntry", "findOrigin"],
+};
+
+function isModuleDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  const name = expr.name.text;
   const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
   return (
     !!symbol &&
     symbol.declarations.some((declaration) => {
       if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
-      const parent = declaration.parent;
-      if (!ts.isInterfaceDeclaration(parent)) return false;
-      if (!["EnableCompileCacheResult", "EnableCompileCacheOptions"].includes(parent.name.text))
-        return false;
+      // @types/node declares SourceMap as a class; the record and its option
+      // bags are interfaces.
+      const parent: ts.Node | undefined = declaration.parent;
+      if (parent === undefined) return false;
+      const parentName = ts.isInterfaceDeclaration(parent)
+        ? parent.name.text
+        : ts.isClassDeclaration(parent) && parent.name !== undefined
+          ? parent.name.text
+          : undefined;
+      if (parentName === undefined) return false;
+      const members = MODULE_DYN_MEMBERS[parentName];
+      if (members === undefined || !members.includes(name)) return false;
       for (let node: ts.Node | undefined = parent.parent; node; node = node.parent) {
         if (ts.isModuleDeclaration(node) && ts.isStringLiteral(node.name))
           return node.name.text === "module" || node.name.text === "node:module";
@@ -2025,7 +2044,9 @@ export function lowerPropertyAccessExpr(
   if (
     isParseArgsDynProperty(lowerer, expr) ||
     isStatFsDynProperty(lowerer, expr) ||
-    isCompileCacheDynProperty(lowerer, expr) ||
+    // Covers the compile cache result and options, the source-map support
+    // record and its options, and a SourceMap's members.
+    isModuleDynProperty(lowerer, expr) ||
     segmentDataProperty ||
     osConstants ||
     moduleConstants ||

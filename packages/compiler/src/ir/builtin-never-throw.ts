@@ -298,6 +298,13 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // neither takes an argument, and running out of memory ends the process.
   "module.compileCacheDir",
   "module.compileCacheConstants",
+  // getSourceMapsSupport retains the thread's frozen record (building it on
+  // first use), and findSourceMap answers the immortal undefined value;
+  // neither throws, and allocation failure ends the process.
+  "module.sourceMapsSupport",
+  "module.findSourceMap",
+  // instanceof a SourceMap compares the handle's tag and allocates nothing.
+  "sourceMap.is",
   // scr_module_namespace_copy_value retains the module's namespace object,
   // marks it as one and records it: no program code runs, and allocation
   // failure ends the process.

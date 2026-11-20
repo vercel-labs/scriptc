@@ -1847,6 +1847,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.module.findSourceMap",
+      "kind": "node-builtin",
+      "name": "module.findSourceMap",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.module.flushCompileCache",
       "kind": "node-builtin",
       "name": "module.flushCompileCache",
@@ -1859,12 +1865,24 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.module.getSourceMapsSupport",
+      "kind": "node-builtin",
+      "name": "module.getSourceMapsSupport",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.module.isBuiltin",
       "kind": "node-builtin",
       "name": "module.isBuiltin",
       "status": "unsupported",
       "code": "SC2020",
       "note": "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins"
+    },
+    {
+      "id": "node-builtin.module.setSourceMapsSupport",
+      "kind": "node-builtin",
+      "name": "module.setSourceMapsSupport",
+      "status": "static"
     },
     {
       "id": "node-builtin.module.syncBuiltinESMExports",

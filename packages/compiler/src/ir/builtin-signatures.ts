@@ -1185,6 +1185,18 @@ function buildLibFnSignatures() {
     /** module.constants: the per-thread frozen null-prototype object that
      * holds compileCacheStatus. */
     "module.compileCacheConstants": { argTypes: [], result: DYN },
+    /** node:module's source-map support (scr_lib.c). A compiled program
+     * registers no source map, so the record answers the flags the program
+     * set (Node's frozen { enabled, nodeModules, generatedCode }) and
+     * findSourceMap answers undefined, as Node does for a file whose map was
+     * never parsed. */
+    "module.sourceMapsSupport": { argTypes: [], result: DYN },
+    "module.setSourceMapsSupport": { argTypes: [DYN, DYN], result: VOID },
+    "module.findSourceMap": { argTypes: [DYN], result: DYN },
+    /** node:module's SourceMap class (scr_source_map.c): the constructor
+     * validates and copies the payload, and instanceof compares handles. */
+    "sourceMap.new": { argTypes: [DYN, DYN], result: DYN },
+    "sourceMap.is": { argTypes: [DYN], result: BOOL },
     /** Native realpath with syscall "realpath" on failure. +1 fresh string. */
     "fs.realpathNativeSync": { argTypes: [STRING], result: STRING },
     /** The os.userInfo() fields (uv_os_get_passwd's slices of the passwd

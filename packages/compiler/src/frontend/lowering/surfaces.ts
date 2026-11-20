@@ -2364,6 +2364,36 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         valueParams: [{ mode: "optional", type: DYN, defaultValue: undefined }],
         valueLength: 0,
       },
+      // node:module's source-map support (lowerSourceMapsCall in
+      // builtins/module-resolution.ts completes a call; these rows carry the
+      // function values). A compiled program registers no source map: the
+      // record answers the flags the program set, exactly as Node's frozen
+      // { enabled, nodeModules, generatedCode } answers them, and
+      // findSourceMap answers undefined.
+      getSourceMapsSupport: {
+        fn: "module.sourceMapsSupport",
+        params: [],
+        result: DYN,
+        valueParams: [],
+      },
+      setSourceMapsSupport: {
+        fn: "module.setSourceMapsSupport",
+        params: [DYN, DYN],
+        result: VOID,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        // Node's options parameter is defaulted, so the function's length is
+        // one even though the adapter takes two.
+        valueLength: 1,
+      },
+      findSourceMap: {
+        fn: "module.findSourceMap",
+        params: [DYN],
+        result: DYN,
+        valueParams: [{ mode: "required", type: DYN }],
+      },
     },
     // node:stream/web re-exports the web stream globals (the same objects);
     // its members lower through the globals' own paths.

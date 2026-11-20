@@ -534,7 +534,7 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
           "timers.setTimeoutHandle": "scr_set_timeout_handle",
           "timers.setImmediate": "scr_set_immediate",
           "process.nextTick": "scr_next_tick",
-          "timers.queueMicrotask": "scr_queue_microtask",
+          "timers.queueMicrotask": "scr_queue_microtask_user",
         }[e.fn]!) + (host.schedulesInContext ? "_als" : "");
     const rest = e.args.slice(1).map((a) => host.emitExpr(a));
     const argList = [`ptr ${cb.name}`, ...rest.map((a) => `${host.llType(a.type)} ${a.name}`)].join(

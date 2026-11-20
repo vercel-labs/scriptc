@@ -2093,6 +2093,7 @@
           "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/corpus/7391-als-response-end-and-finished.mjs",
           "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs",
           "tests/corpus/async-local-storage-audit.cjs"
         ]
       },
@@ -2306,7 +2307,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.init",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2332,7 +2334,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.type",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2358,7 +2361,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.triggerAsyncId",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2384,7 +2388,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.resource",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2433,7 +2438,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.before",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2459,7 +2465,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.after",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2485,7 +2492,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.destroy",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2511,7 +2519,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.promiseResolve",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-microtask-resource.cjs"
         ]
       },
       "anchorSource": "exact"

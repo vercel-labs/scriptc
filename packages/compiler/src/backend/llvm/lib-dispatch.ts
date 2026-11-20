@@ -1163,7 +1163,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   const sym =
     mockTimerSym(host, e) ??
     (e.fn === "timers.queueMicrotaskDyn" && host.schedulesInContext
-      ? "scr_queue_microtask_dyn_als"
+      ? "scr_queue_microtask_dyn_user_als"
       : // Programs with constructor-function streams unbox untyped pipe
         // destinations and pipeline stages through scr_dyn_builtin_stream.c,
         // which also takes those streams.

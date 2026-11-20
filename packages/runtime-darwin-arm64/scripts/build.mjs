@@ -87,6 +87,7 @@ async function build() {
   const brotli = join(vendorRoot, "brotli", "c");
   const zstd = join(vendorRoot, "zstd", "lib");
   const sqlite = join(vendorRoot, "sqlite");
+  const mlkem = join(vendorRoot, "mlkem-native");
   const LRE_SOURCES = ["libregexp.c", "libunicode.c"];
   const ZLIB_BUILD = zlibInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
   const ZSTD_BUILD = zstdInputs(RUNTIME_PACK_MATRIX.target.llvm_triple);
@@ -265,6 +266,51 @@ async function build() {
     )
       .flat()
       .sort();
+    // ML-KEM (mlkem-native): the C backend compiled once per parameter set;
+    // the multilevel build keeps the shared code in the 768 object and
+    // prefixes the level-dependent symbols.
+    const mlkemArchive = async () => {
+      process.stdout.write(`building ${packageManifest.name} mlkem archive\n`);
+      const root = join(stagedOutputRoot, "vendor", "mlkem");
+      const objectRoot = join(root, "objects");
+      const flags = [
+        ...commonFlags,
+        "-O2",
+        "-g0",
+        ...codeAlignment,
+        ...vendorHardening,
+        "-I",
+        mlkem,
+        "-I",
+        join(mlkem, "src"),
+      ];
+      const levels = [
+        { set: 512, name: "mlkem512", define: "MLK_CONFIG_MULTILEVEL_NO_SHARED" },
+        { set: 768, name: "mlkem768", define: "MLK_CONFIG_MULTILEVEL_WITH_SHARED" },
+        { set: 1024, name: "mlkem1024", define: "MLK_CONFIG_MULTILEVEL_NO_SHARED" },
+      ];
+      await parallel(levels, async (level) =>
+        compile(join(mlkem, "mlkem_native.c"), join(objectRoot, `${level.name}.o`), [
+          ...flags,
+          `-DMLK_CONFIG_PARAMETER_SET=${level.set}`,
+          "-DMLK_CONFIG_MULTILEVEL_BUILD",
+          `-D${level.define}`,
+        ]),
+      );
+      const output = join(root, "libscriptc-mlkem.a");
+      await createDeterministicArchive(
+        archiver,
+        output,
+        levels.map((level) => join(objectRoot, `${level.name}.o`)),
+      );
+      await rm(objectRoot, { recursive: true, force: true });
+      return {
+        id: "mlkem",
+        path: artifactPath(output),
+        sha256: await sha256(output),
+        size: (await stat(output)).size,
+      };
+    };
     const archives = [
       await archive("libregexp", LRE_SOURCES, quickjs, [
         "-target",
@@ -332,6 +378,7 @@ async function build() {
         "-I",
         join(mbedtls, "library"),
       ]),
+      await mlkemArchive(),
     ];
     const archiveSpecs = new Map(RUNTIME_PACK_MATRIX.archives.map((entry) => [entry.id, entry]));
     const licensed = [
@@ -354,6 +401,7 @@ async function build() {
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(vendorRoot, "zstd", "LICENSE"), "artifacts/licenses/zstd.txt", "BSD-3-Clause"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
+      [join(mlkem, "LICENSE"), "artifacts/licenses/mlkem.txt", "Apache-2.0"],
       [join(sqlite, "NOTICE"), "artifacts/licenses/sqlite.txt", "Public-Domain"],
     ];
     await Promise.all(

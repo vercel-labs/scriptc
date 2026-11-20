@@ -38,6 +38,10 @@ typedef struct ScrJsWrapperSlot {
 } ScrJsWrapperSlot;
 
 static SCR_TL ScrDyn *scr_js_wrapper_prototypes[3];
+/* Seeded per thread, like the prototypes themselves: a worker that boxes a
+ * primitive before reading X.prototype must still seed its own prototype's
+ * constructor when the read comes. */
+static SCR_TL bool scr_js_wrapper_protos_seeded[3];
 static SCR_TL bool scr_js_wrapper_cleanup_registered;
 /* The interned Boolean.prototype.valueOf (0) and toString (1) values read
  * as functions in a JavaScript source. */
@@ -75,6 +79,7 @@ static void scr_js_wrapper_cleanup(void) {
   for (int i = 0; i < 3; i++) {
     ScrDyn *prototype = scr_js_wrapper_prototypes[i];
     scr_js_wrapper_prototypes[i] = NULL;
+    scr_js_wrapper_protos_seeded[i] = false;
     scr_dyn_release(prototype);
   }
   for (int i = 0; i < 2; i++) {
@@ -180,7 +185,10 @@ static ScrDyn *scr_js_wrapper_apply(int kind, const char *method, ScrDyn *primit
   } else if (strcmp(method, "at") == 0 || strcmp(method, "slice") == 0 ||
              strcmp(method, "indexOf") == 0 || strcmp(method, "lastIndexOf") == 0 ||
              strcmp(method, "includes") == 0) {
-    return scr_dyn_invoke(primitive, method, args, argc, method);
+    /* The generic string algorithm lives in the untyped-invoke unit, which
+     * links only for programs that call through values: reach it through
+     * its hook, and refuse in our own voice when it is absent. */
+    if (scr_dyn_invoke_fn) return scr_dyn_invoke_fn(primitive, method, args, argc, method);
   }
   ScrJsonBuf text;
   scr_jb_init(&text);
@@ -362,7 +370,6 @@ static ScrDyn *scr_js_wrapper_object(int kind, ScrDyn *primitive) {
  * As in Node, it is itself a wrapper of "", 0 or false, so its valueOf
  * and toString answer that primitive; its own prototype is
  * Object.prototype. */
-static bool scr_js_wrapper_protos_seeded[3];
 static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   if (scr_js_wrapper_prototypes[kind]) {
     /* The prototype may have been built first for Object.getPrototypeOf,

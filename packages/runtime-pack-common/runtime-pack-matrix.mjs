@@ -108,7 +108,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_console_native.c", "inspect"],
   // Island libCalls on native values typed by island declarations invoke
   // through the checked-dynamic path (scr_node_island_handle.c).
-  ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland", "primitiveWrapper")],
+  ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
   // Array.prototype generic algorithms over array-like receivers
   // (scr_dyn_array_like.c); it calls the invoke unit's dispatch.
   ["scr_dyn_array_like.c", all("arrayLikeDispatch", "dynInvoke")],
@@ -148,9 +148,6 @@ export const OPTIONAL_RUNTIME_SOURCES = [
     any(
       "dynAsync",
       "dynInvoke",
-      // The wrapper unit's method dispatch calls the invoke unit, which
-      // settles through this one.
-      "primitiveWrapper",
       "dc",
       "fileHandle",
       "nativeFetch",

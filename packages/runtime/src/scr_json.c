@@ -3716,6 +3716,8 @@ static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
 static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d);
 static bool scr_typed_ref_plain_array(const ScrDyn *d);
 
+ScrDyn *(*scr_dyn_invoke_fn)(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc,
+                          const char *what) = NULL;
 /* The wrapper unit's primitive prototype (scr_js_wrapper.c) and the
  * collection unit's class prototype (scr_dyn_collections.c): each installed
  * by the unit that owns the objects, so an Object.getPrototypeOf on those

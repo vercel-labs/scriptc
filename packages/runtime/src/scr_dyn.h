@@ -2406,6 +2406,14 @@ ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *m
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer_wide(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* The invoke unit installs itself here when it links: units that may call a
+ * dynamic method only for a value form (the wrapper prototype's generic
+ * string methods called through their function value) reach it through this
+ * pointer, so they do not make the whole invoke unit a link dependency of
+ * every program that boxes a primitive. NULL means the program links no
+ * untyped-call support, and the caller raises its own refusal. */
+extern ScrDyn *(*scr_dyn_invoke_fn)(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                    size_t argc, const char *what);
 /* A %TypedArray%.prototype method called on a checked typed array (not a
  * DataView): its answer (+1, or NULL with the exception pending), with
  * *handled false for a name it does not implement. */

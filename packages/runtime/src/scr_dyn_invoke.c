@@ -905,6 +905,10 @@ ScrDyn *scr_dyn_invoke_prepared(ScrDyn *recv, ScrDyn *callee, const char *method
   return result;
 }
 
+__attribute__((constructor)) static void scr_dyn_install_invoke_fn(void) {
+  scr_dyn_invoke_fn = scr_dyn_invoke;
+}
+
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method,
                        ScrDyn *const *args, size_t argc,
                        const char *what) {

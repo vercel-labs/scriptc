@@ -43,6 +43,7 @@
   The `Writable.fromWeb` options have no lowering yet.
   `Duplex.fromWeb` wraps a `{ readable, writable }` web stream pair with those two adapters and joins them (`allowHalfOpen: false`, as Node's adapter); its options have no lowering yet.
   `Writable.toWeb` returns a web `WritableStream` over the writable: a writer's `write()` completes once the writable accepts the chunk, waits for its `drain` when the write was backpressured, and rejects with the stream's error when that write fails; `close()` ends the writable, and `abort()` destroys it with the reason.
+  In JavaScript, `Writable.toWeb` accepts any object that reports `write` and `on` — a userland stream, an `OutgoingMessage`, a plain emitter — and refuses a value without them with Node's `ERR_INVALID_ARG_TYPE`.
   `Duplex.toWeb` returns the `{ writable, readable }` pair over the duplex, each side the corresponding adapter; the pair enumerates `writable` then `readable`, a destroyed duplex adapts to a closed writable and an ended readable, and the `readableType` option has no lowering yet.
   `stream.duplexPair` returns two Duplexes wired to each other: whatever is written to one is readable on the other, a write completes when the other side reads its chunk, `end()` ends the other side's readable and finishes this side after it, and destroying one side closes the other without its error.
   `readable.wrap(stream)` pushes the source's chunks into the readable (pausing the source while the readable is full), ends it at the source's `end`, destroys it with the source's error, and destroys it when the source closes or is destroyed; the source must be a native readable stream, and in JavaScript any other value is refused by name.
@@ -56,7 +57,6 @@
   `readableAborted`, `readableDidRead`, `readableEncoding`, and `writableAborted` read as in Node, on a typed stream and through an untyped value.
   `writableAborted` is `undefined` on a `Duplex`, `Transform`, or `PassThrough`, as in Node, so a `boolean` slot refuses that read with a TypeError.
   `stream[Symbol.asyncDispose]()` and `await using` work on a value typed as a stream class; on an untyped value they are unsupported.
-  `Writable.fromWeb` and `Duplex.fromWeb` are unsupported.
   The `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.

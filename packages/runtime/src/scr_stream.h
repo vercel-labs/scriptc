@@ -209,6 +209,10 @@ struct ScrDyn *scr_stream_to_web_readable_dyn(const struct ScrDyn *value, double
 /* Writable.toWeb(writable) (scr_stream_writable_to_web.c): a web
  * WritableStream over the writable, +1. */
 struct ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags);
+/* The same over a checked-dynamic value: any object with write() and on()
+ * adapts, as Node's adapter accepts; a value without them throws
+ * ERR_INVALID_ARG_TYPE. */
+struct ScrDyn *scr_stream_writable_to_web_dyn(const struct ScrDyn *value, double flags);
 
 /* Duplex.toWeb(duplex[, options]) (scr_stream_to_web_pair.c): the
  * { writable, readable } pair of web streams over the duplex, +1. flags bit

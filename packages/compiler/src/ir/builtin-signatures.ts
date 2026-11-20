@@ -1730,6 +1730,9 @@ function buildLibFnSignatures() {
     /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
      * option flags; a web WritableStream. */
     "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
+    /** Writable.toWeb over a checked-dynamic value (scr_stream_writable_to_web.c):
+     * any object with write() and on(), as Node's adapter accepts. */
+    "webstream.writableToWebDyn": { argTypes: [DYN, F64], result: DYN },
     /** Duplex.fromWeb (scr_stream_duplex_from_web.c): the { readable,
      * writable } pair and the option flags; a Duplex. */
     "webstream.duplexFromWeb": { argTypes: [DYN, F64], result: VOID },

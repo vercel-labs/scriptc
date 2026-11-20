@@ -9,10 +9,13 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+// A checkout may live under a path with spaces: the URL form keeps them
+// escaped, so the CLI subprocess and the dynamic imports take file paths.
+const root = fileURLToPath(new URL("..", import.meta.url));
 const D = join(root, "packages/compiler/dist");
-const imp = (p) => import(`${D}/${p}`);
+const imp = (p) => import(pathToFileURL(join(D, p)).href);
 const { deserializeModule, encodeFunction } = await imp("ir/serialize.js");
 const { IrNodeIndex } = await imp("ir/node-index.js");
 const { unshareNodes } = await imp("ir/unshare.js");
@@ -132,12 +135,14 @@ for (const program of programs) {
     { stdio: "ignore" },
   );
   const input = parseModule(out);
-  const reversedInput = { ...input, functions: [...input.functions].reverse() };
   const pre = preChain(input);
-  const preRev = preChain(reversedInput);
-  // Bisect: apply each step to both orders and compare after each.
+  const preRev = preChain(input);
+  // Bisect: apply each step to both orders and compare after each. The
+  // functions are reversed after preparation, not before: preparation
+  // numbers the deferred initializer groups by function order, so reversing
+  // the input would change those ids instead of the order under test.
   let normal = pre.mod;
-  let reversed = preRev.mod;
+  let reversed = { ...preRev.mod, functions: [...preRev.mod.functions].reverse() };
   let first = null;
   for (const [name, step] of chainSteps(pre.nodes)) {
     normal = step(normal);

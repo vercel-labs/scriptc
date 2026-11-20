@@ -3607,17 +3607,23 @@ static void scr_micro_task_fire(ScrClosure *self) {
   scr_async_exec_push(task->id, task->trigger, previous);
   ScrAlsCtx *prev_ctx = scr_als_dispatch_enter(task->ctx);
   scr_ah_dispatch_id(task->id, 0); /* before */
+  /* The callback has its own context boundary: a store the before hook put
+   * in place with enterWith is not the callback's. The after hook runs with
+   * the context the before hook left, as Node emits the callback in the
+   * resource's captured context and the after hook in the hook's. Enter the
+   * captured context for the callback and keep the hook's context for after. */
+  ScrAlsCtx *hook_ctx = scr_als_dispatch_enter(task->ctx);
   /* A throwing before hook skips the callback and the after hook (Node's
    * emitBefore sits outside runInAsyncScope's try); a throwing callback
    * runs the after hook from the finally. */
   if (!scr_exc_pending()) {
     ((void (*)(ScrClosure *))cb->fn)(cb);
-    /* Node restores the resource's context before it runs the after hook:
-     * an enterWith inside the callback is discarded, so the hook sees the
-     * scheduling store (or none), as it does in Node. */
-    ScrAlsCtx *discarded = scr_als_dispatch_enter(task->ctx);
-    scr_als_ctx_release(discarded);
+    ScrAlsCtx *callback_ctx = *SCR_ALS_SLOT();
+    *SCR_ALS_SLOT() = hook_ctx; /* ownership moves in */
+    scr_als_ctx_release(callback_ctx);
     scr_ah_dispatch_id(task->id, 1); /* after */
+  } else {
+    scr_als_ctx_release(hook_ctx);
   }
   scr_als_dispatch_leave(prev_ctx);
   scr_async_exec_pop(previous);

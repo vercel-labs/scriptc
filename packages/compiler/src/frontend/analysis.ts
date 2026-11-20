@@ -314,6 +314,19 @@ export function analyzeWithFrontend(
           });
     const nodeIslands =
       islandReport !== null && hasNodeIslandFindings(islandReport) ? islandReport : null;
+    // The lowering names every deferred runtime fence as an SC6015 warning so
+    // a build log shows the statements that throw when they run. Coverage
+    // already lists those sites under "deferred to runtime", so the warning
+    // would name the same site twice — and, as a divergence, it would make
+    // --fail-on=divergences fail on a program that builds. Keep the SC6015
+    // warnings coverage alone reports (a TypeScript statement that throws
+    // when it runs); drop the ones a runtime fence already names.
+    const fenceSites = new Set(
+      lowered.runtimeFences.map((d) => `${d.loc.file}\u0000${d.loc.start}`),
+    );
+    const divergences = lowered.divergences?.filter(
+      (d) => d.code !== "SC6015" || !fenceSites.has(`${d.loc.file}\u0000${d.loc.start}`),
+    );
     return {
       coverage: {
         file: entryPath,
@@ -325,7 +338,7 @@ export function analyzeWithFrontend(
         // (SC8101–SC8105), as scope B's builds will make them errors.
         diagnostics: [...preflight, ...lowered.diagnostics, ...(nodeIslands?.userJs ?? [])],
         ...(lowered.runtimeFences.length > 0 ? { runtimeFences: lowered.runtimeFences } : {}),
-        ...(lowered.divergences !== undefined ? { divergences: lowered.divergences } : {}),
+        ...(divergences !== undefined && divergences.length > 0 ? { divergences } : {}),
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
         ...(lowered.dynamicSlots !== undefined ? { dynamicSlots: lowered.dynamicSlots } : {}),
         ...(lowered.typeClaims !== undefined ? { typeClaims: lowered.typeClaims } : {}),

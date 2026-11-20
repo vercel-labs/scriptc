@@ -73,7 +73,7 @@ import {
 import type { Writes } from "./reference-writes.js";
 import { capsuleCallSite, emitCapsuleCall, emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
-import { registerReplay } from "./emit-journal.js";
+import { registerContentReplay } from "./emit-journal.js";
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -1894,7 +1894,7 @@ export function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
   // The box binds the same live view eager boxing attaches, so `in`,
   // for-in and Object.keys see the class members.
   const view = liveRefView(adapter);
-  recipe = `@sc_trr_${host.typedRefRecipes.size}`;
+  recipe = `@${host.contentSymbol("sc_trr_", key)}`;
   host.typedRefRecipes.set(key, recipe);
   host.journal?.allocated(recipe, "typedRefRecipe", [t]);
   host.resolveThunkDefs.push(
@@ -1904,4 +1904,4 @@ export function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
   return recipe;
 }
 
-registerReplay("typedRefRecipe", (host, args) => typedRefRecipe(host, args[0] as IrType));
+registerContentReplay("typedRefRecipe", (host, args) => typedRefRecipe(host, args[0] as IrType));

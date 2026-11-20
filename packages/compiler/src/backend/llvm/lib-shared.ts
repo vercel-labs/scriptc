@@ -367,6 +367,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "console.instClear": "scr_console_inst_clear",
   "console.instTable": "scr_console_inst_table",
   "console.instTrace": "scr_console_inst_trace",
+  "console.instWriteArgs": "scr_console_inst_write_args",
+  "console.instDirxmlArgs": "scr_console_inst_write_args_dirxml",
+  "console.instDirArgs": "scr_console_inst_dir_args",
+  "console.instTraceArgs": "scr_console_inst_trace_args",
+  "console.instAssertArgs": "scr_console_inst_assert_args",
+  "console.instGroupArgs": "scr_console_inst_group_args",
   "global.native": "scr_global_native",
   "global.hostAbsent": "scr_global_host_absent_install",
   "dyn.globalHas": "scr_global_host_absent_has",
@@ -1322,6 +1328,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "error.setStack": "scr_error_set_stack",
   "error.stackLimitGet": "scr_stack_limit_get",
   "error.stackLimitSet": "scr_stack_limit_set",
+  "error.prepareStackTraceGet": "scr_error_prepare_stack_trace_get",
+  "error.prepareStackTraceSet": "scr_error_prepare_stack_trace_set",
   "class.name": "scr_classobj_name",
   // The dyn (ScrDyn dyn) surface (scr_json.c / scr_dyn_invoke.c):
   // json.parse throws the catchable SyntaxError; keySet/toString/

@@ -325,6 +325,15 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "text.decodeStream",
 ]);
 
+/** Whether a dgram createSocket call can read an options record (and with
+ * it options.signal): the checked-dynamic view of an untyped value, or of
+ * a boxed value that is not the bare type string. */
+export function dgramCreateReadsSignal(arg: IrExpr | undefined): boolean {
+  if (arg === undefined) return false;
+  if (arg.kind !== "dynFrom") return true;
+  return arg.value.type.kind !== "string";
+}
+
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "events.onceSignal",
@@ -2214,6 +2223,10 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box
    * through the EventTarget unit even when no event.* libCall survives. */
+  /** The event-target unit also carries events.addAbortListener, which a
+   * dgram socket's options.signal is subscribed through: a createSocket
+   * call whose checked-dynamic argument can be an options record needs it
+   * (a bare type string does not). */
   eventTarget: rule({
     initial: (mod) =>
       (mod.classes ?? []).some(
@@ -2237,6 +2250,11 @@ const RUNTIME_FEATURE_RULES = {
       (node.fn === "cp.spawnArmed" &&
         node.args[14] !== undefined &&
         !isDynUndefined(node.args[14])) ||
+      // dgram's createSocket options form reads options.signal at run time
+      // and closes the socket on abort through addAbortListener. Only the
+      // options form: the bare type string links the dgram unit alone.
+      ((node.fn === "dgram.createSocket" || node.fn === "dgram.createSocketCb") &&
+        dgramCreateReadsSignal(node.args[0])) ||
       // A program that reads one of these classes as a value may build or
       // call one (dyn.globalConstructor), and the construction runs this
       // unit.
@@ -2340,6 +2358,20 @@ const RUNTIME_FEATURE_RULES = {
    * number format and the table-driven grapheme segmenter — which must keep
    * linking no ICU code. */
   icu: rule({ prefixes: ["icu."] }),
+  /** A Console built with inspectOptions or colorMode formats its methods
+   * through the runtime's option-aware entries: scr_inspect.c's console
+   * entries with scr_console_native.c's argument forms. colorMode 'auto'
+   * reads the environment's color depth (scr_tty_colors.c). */
+  consoleOptions: rule({
+    fns: [
+      "console.instWriteArgs",
+      "console.instDirxmlArgs",
+      "console.instDirArgs",
+      "console.instTraceArgs",
+      "console.instAssertArgs",
+      "console.instGroupArgs",
+    ],
+  }),
   /** scr_test.c renders thrown strings with the inspect unit's string
    * formatting; scr_util_callable.c wraps the inspect unit; readline's
    * terminal unit prints completion errors through it when there is a
@@ -2905,6 +2937,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     http: false,
     icu: false,
     inspect: false,
+    consoleOptions: false,
     jsObjectModel: false,
     mutableBuffers: false,
     legacyTextDecoder: false,

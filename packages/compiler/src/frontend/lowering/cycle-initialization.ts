@@ -720,7 +720,28 @@ function markUninitializedWrites(lowerer: Lowerer, mod: IrModule): void {
   if (ids.size === 0) return;
   const mark = (s: IrStmt): IrStmt =>
     s.kind === "assign" && !s.initializes && ids.has(s.localId) ? { ...s, initializes: true } : s;
+  /** Whether `body` holds a write to one of the bindings, which is what the
+   * walk below marks; a function without one keeps its nodes as they are. */
+  const marks = (body: readonly IrStmt[]): boolean => {
+    let found = false;
+    const expr = (e: IrExpr): boolean => {
+      if (found) return false;
+      if (e.kind === "assignExpr" && ids.has(e.localId)) found = true;
+      return !found;
+    };
+    const stmt = (s: IrStmt): boolean => {
+      if (found) return false;
+      if (s.kind === "assign" && !s.initializes && ids.has(s.localId)) found = true;
+      return !found;
+    };
+    for (const statement of body) {
+      everyStmt(statement, { expr, stmt });
+      if (found) return true;
+    }
+    return false;
+  };
   for (const fn of mod.functions) {
+    if (!marks(fn.body)) continue;
     let temps = 0;
     const markExpr = (e: IrExpr): IrExpr => {
       if (e.kind !== "assignExpr" || !ids.has(e.localId)) return e;
@@ -817,6 +838,40 @@ function rewriteFunction(
         return undefined;
     }
   };
+  // Most functions name no flagged binding: the walk below only asks whether
+  // one node would be rewritten, and stops at the first that would, so a
+  // function that holds none keeps its nodes as they are (rebuilt, they
+  // would be identical).
+  const wouldRewrite = (): boolean => {
+    let found = false;
+    const expr = (e: IrExpr): boolean => {
+      if (found) return false;
+      if (
+        classFlagOf(e) !== undefined ||
+        called.some((flag) => calledReference(flag, e.loc) !== undefined) ||
+        ((e.kind === "varRef" || e.kind === "incDec" || e.kind === "assignExpr") &&
+          flagOf(e.localId, e.loc) !== undefined)
+      ) {
+        found = true;
+        return false;
+      }
+      return true;
+    };
+    const stmt = (s: IrStmt): boolean => {
+      if (found) return false;
+      if (s.kind === "assign" && !s.initializes && flagOf(s.localId, s.loc) !== undefined) {
+        found = true;
+        return false;
+      }
+      return true;
+    };
+    for (const statement of fn.body) {
+      everyStmt(statement, { expr, stmt });
+      if (found) return true;
+    }
+    return false;
+  };
+  if (!wouldRewrite()) return;
   let temps = 0;
   const check = (flag: CycleInitFlag, loc: SrcLoc): IrStmt => {
     // Node's ReferenceError names the binding the reference spells.

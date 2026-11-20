@@ -28,6 +28,22 @@ function facadeExportOf(
   return ts.isIdentifier(name) ? builtinImportOf(lowerer, name) : null;
 }
 
+/** Whether the access's receiver is a namespace expression whose evaluation
+ * has nothing to preserve: an identifier or a member chain of identifiers
+ * (through parentheses). A comma, conditional, call or assignment receiver
+ * evaluates something of its own: a class lookup (`new`, `instanceof`, a
+ * static read) takes no facade shortcut on one and keeps its ordinary
+ * lowering, while a call lowers the receiver ahead of its arguments. */
+function plainNamespaceReceiver(receiver: ts.Expression): boolean {
+  let current: ts.Expression = receiver;
+  for (;;) {
+    while (ts.isParenthesizedExpression(current)) current = current.expression;
+    if (ts.isIdentifier(current)) return true;
+    if (!ts.isPropertyAccessExpression(current) || current.questionDotToken) return false;
+    current = current.expression;
+  }
+}
+
 /** The sqlite class `node` names, in any module spelling. */
 export function sqliteClassOf(lowerer: Lowerer, node: ts.Expression): SqliteClass | null {
   let builtin = ts.isIdentifier(node) ? builtinImportOf(lowerer, node) : null;
@@ -37,7 +53,7 @@ export function sqliteClassOf(lowerer: Lowerer, node: ts.Expression): SqliteClas
     // (builtinMemberOf composes a member only for another module's
     // sub-object), so an access to any other name answers without resolving
     // its receiver's symbol.
-    builtin = facadeExportOf(lowerer, node.name);
+    if (plainNamespaceReceiver(node.expression)) builtin = facadeExportOf(lowerer, node.name);
     if (builtin === null && SQLITE_CLASSES.has(node.name.text))
       builtin = lowerer.builtinMemberOf(node);
   }
@@ -96,6 +112,7 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
   if (call.questionDotToken) return null;
   const callee = call.expression;
   let isBackup = false;
+  let receiverEffect: IrExpr | null = null;
   if (ts.isIdentifier(callee)) {
     const builtin = builtinImportOf(lowerer, callee);
     isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
@@ -107,6 +124,12 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
       facadeExportOf(lowerer, callee.name) ??
       (callee.name.text === "backup" ? lowerer.builtinMemberOf(callee) : null);
     isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
+    // The member's symbol identifies a facade re-export whatever its
+    // receiver evaluates to, and Node evaluates that receiver once, in order,
+    // before the arguments (`(mark(), facade).snapshotBackup(...)`), so a
+    // receiver with evaluation of its own is lowered ahead of the call.
+    if (isBackup && !plainNamespaceReceiver(callee.expression))
+      receiverEffect = lowerer.lowerExprExpecting(callee.expression, DYN);
   }
   if (!isBackup) return null;
   if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
@@ -122,10 +145,18 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
   // source order, then the call reads the three it keeps.
   const surplus = nodes.slice(3).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
   if (surplus.length === 0) {
-    return {
+    const backup: IrExpr = {
       kind: "libCall",
       fn: "sqlite.backup",
       args: [source, path, options],
+      type: DYN,
+      loc,
+    };
+    if (receiverEffect === null) return backup;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: receiverEffect, loc: locOf(callee) }],
+      result: backup,
       type: DYN,
       loc,
     };
@@ -136,6 +167,9 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
   return {
     kind: "seqExpr",
     stmts: [
+      ...(receiverEffect === null
+        ? []
+        : [{ kind: "exprStmt" as const, expr: receiverEffect, loc: locOf(callee) }]),
       { kind: "varDecl", localId: sourceLocal.id, init: source, loc },
       { kind: "varDecl", localId: pathLocal.id, init: path, loc },
       { kind: "varDecl", localId: optionsLocal.id, init: options, loc },

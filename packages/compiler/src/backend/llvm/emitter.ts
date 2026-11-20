@@ -485,6 +485,7 @@ import {
   llFieldType,
   mapFlagsOffset,
   type MapKeyAccess,
+  recordPrototypeIndex,
   releaseSym,
   retainSym,
   traceArg,
@@ -9155,6 +9156,10 @@ export class LlEmitter {
         return nullable === null || nullable.repr === "single" ? null : pointerTagFn(nullable);
       },
       fieldBase: (shapeId) => this.nullableUnions.fieldBase(shapeId),
+      recordPrototypeIndex: (shapeId) => {
+        const shape = this.recordsById.get(shapeId);
+        return shape === undefined ? -1 : recordPrototypeIndex(this.shapeHost, shape);
+      },
       classInfo: (className) => {
         const meta = this.classMetaOf(className);
         const tail = this.inlineTailOf(className);

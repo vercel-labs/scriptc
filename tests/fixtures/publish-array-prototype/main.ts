@@ -28,3 +28,14 @@ Object.setPrototypeOf(nullPrototype, null);
 attempt("null-prototype", () => {
   publish(nullPrototype);
 });
+
+const plainRecord = { a: 1 };
+attempt("record", () => {
+  publish(plainRecord);
+});
+
+const prototypedRecord = { b: 2 };
+Object.setPrototypeOf(prototypedRecord, { marker: 2 });
+attempt("record-prototype", () => {
+  publish(prototypedRecord);
+});

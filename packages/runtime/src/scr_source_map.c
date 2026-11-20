@@ -107,6 +107,15 @@ static ScrDyn *scr_source_map_clone_payload(const ScrDyn *payload) {
     ScrDyn *value = scr_source_map_slice_value(pair->value);
     scr_dyn_obj_set(clone, pair->key->data, pair->key->len, value);
   }
+  /* The snapshot owns a reference to every key and value it lists. The keys
+   * were only read, and each value's reference was either retained (copied
+   * into the clone as a new reference) or sliced (the clone holds its own
+   * array), so both references are released here; freeing the snapshot
+   * frees only its array. */
+  for (size_t i = 0; i < pairs->count; i++) {
+    scr_str_release(pairs->pairs[i].key);
+    scr_dyn_release(pairs->pairs[i].value);
+  }
   scr_dyn_entry_pairs_free(pairs);
   return clone;
 }
@@ -240,25 +249,51 @@ static void scr_source_map_parse(ScrSourceMap *map, const ScrDyn *payload, int64
   scr_str_release(text);
 }
 
+/* Whether `a` sorts before `b` by generated line, then column. */
+static bool scr_source_map_entry_before(const ScrSourceMapRange *a, const ScrSourceMapRange *b) {
+  if (a->generated_line != b->generated_line) return a->generated_line < b->generated_line;
+  return a->generated_column < b->generated_column;
+}
+
 /* A stable sort by generated line, then column (Node's Array.prototype.sort
- * over the parsed ranges, whose order is stable). Insertion sort: source
- * maps are nearly sorted, and a stable order keeps equal segments in source
- * order for the binary search. */
+ * over the parsed ranges, whose order is stable). A bottom-up merge sort:
+ * a mapping may name its segments in any column order (delta coding allows
+ * negative columns), so a quadratic sort would be reachable from a large
+ * valid document. An already ordered list, the common case, is left as it
+ * is. */
 static void scr_source_map_sort(ScrSourceMap *map) {
-  for (size_t i = 1; i < map->range_count; i++) {
-    ScrSourceMapRange value = map->ranges[i];
-    size_t j = i;
-    while (j > 0) {
-      ScrSourceMapRange *previous = &map->ranges[j - 1];
-      bool after = previous->generated_line > value.generated_line ||
-                   (previous->generated_line == value.generated_line &&
-                    previous->generated_column > value.generated_column);
-      if (!after) break;
-      map->ranges[j] = *previous;
-      j--;
+  size_t n = map->range_count;
+  if (n < 2) return;
+  bool ordered = true;
+  for (size_t i = 1; i < n && ordered; i++)
+    if (scr_source_map_entry_before(&map->ranges[i], &map->ranges[i - 1])) ordered = false;
+  if (ordered) return;
+  if (n > SIZE_MAX / sizeof(ScrSourceMapRange)) scr_trap("scriptc: out of memory\n");
+  ScrSourceMapRange *scratch = malloc(n * sizeof *scratch);
+  if (!scratch) scr_trap("scriptc: out of memory\n");
+  ScrSourceMapRange *src = map->ranges;
+  ScrSourceMapRange *dst = scratch;
+  for (size_t width = 1; width < n; width = width > n / 2 ? n : width * 2) {
+    for (size_t start = 0; start < n; start += 2 * width) {
+      size_t mid = start + width < n ? start + width : n;
+      size_t end = start + 2 * width < n ? start + 2 * width : n;
+      size_t left = start, right = mid, out = start;
+      while (left < mid && right < end) {
+        /* Ties take the left run, so equal ranges keep source order. */
+        if (scr_source_map_entry_before(&src[right], &src[left]))
+          dst[out++] = src[right++];
+        else
+          dst[out++] = src[left++];
+      }
+      while (left < mid) dst[out++] = src[left++];
+      while (right < end) dst[out++] = src[right++];
     }
-    map->ranges[j] = value;
+    ScrSourceMapRange *swap = src;
+    src = dst;
+    dst = swap;
   }
+  if (src != map->ranges) memcpy(map->ranges, src, n * sizeof *src);
+  free(scratch);
 }
 
 static void scr_source_map_build(ScrSourceMap *map) {

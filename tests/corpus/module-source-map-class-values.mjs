@@ -68,6 +68,17 @@ console.log("empty", JSON.stringify(sections.findEntry(-1, 0)));
 const origin = sections.findOrigin(3, 6);
 console.log("origin", origin.name, origin.fileName, origin.lineNumber, origin.columnNumber);
 
+// Every construction and every payload read owns what it copies; the
+// sanitized lane checks that the snapshot each one takes is released.
+const repeats = [];
+for (let i = 0; i < 200; i++) {
+  const copy = map.payload;
+  if (copy.sources.length !== 1 || copy.mappings !== "AAAA")
+    throw new Error("payload copy changed");
+  repeats.push(new SourceMap(payload));
+}
+console.log("repeat", repeats.length, repeats[199].findEntry(0, 0).generatedColumn);
+
 const show = (label, call) => {
   try {
     call();

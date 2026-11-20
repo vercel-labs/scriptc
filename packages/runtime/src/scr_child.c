@@ -59,11 +59,12 @@ static void scr_child_drop_spawn_listeners(ScrChild *c);
 static void scr_child_loop_install(void);
 
 static ScrArr *scr_fork_argv(double target, uintptr_t read_handle,
-                             uintptr_t write_handle, ScrArr *args) {
+                             uintptr_t write_handle, double uid, double gid,
+                             ScrArr *args) {
   char marker[160];
   int marker_len = snprintf(
-      marker, sizeof marker, "--scriptc-fork=%.0f,%llu,%llu", target,
-      (unsigned long long)read_handle, (unsigned long long)write_handle);
+      marker, sizeof marker, "--scriptc-fork=%.0f,%llu,%llu,%.0f,%.0f", target,
+      (unsigned long long)read_handle, (unsigned long long)write_handle, uid, gid);
   if (marker_len < 0 || (size_t)marker_len >= sizeof marker) {
     scr_trap("invalid fork startup marker");
   }
@@ -3142,7 +3143,10 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 
 ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
                    double out_mode, double err_mode, bool has_env,
-                   ScrArr *env_pairs, ScrStr *cwd) {
+                   ScrArr *env_pairs, ScrStr *cwd, double uid, double gid) {
+  /* uid/gid do not apply on Windows (Node ignores them there too). */
+  (void)uid;
+  (void)gid;
   HANDLE parent_write = NULL, child_read = NULL;
   HANDLE parent_read = NULL, child_write = NULL;
   if (!scr_win_stdin_pipe(&parent_write, &child_read) ||
@@ -3154,7 +3158,7 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
     scr_trap("could not create fork IPC channel");
   }
   ScrArr *spawn_args = scr_fork_argv(
-      target, (uintptr_t)child_read, (uintptr_t)child_write, args);
+      target, (uintptr_t)child_read, (uintptr_t)child_write, uid, gid, args);
   ScrStr *command = scr_process_exec_path();
   ScrChild *child = scr_spawn_opts(
       command, spawn_args, in_mode, out_mode, err_mode, 0, 0, false,
@@ -7136,7 +7140,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 
 ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
                    double out_mode, double err_mode, bool has_env,
-                   ScrArr *env_pairs, ScrStr *cwd) {
+                   ScrArr *env_pairs, ScrStr *cwd, double uid, double gid) {
   int parent_to_child[2] = {-1, -1};
   int child_to_parent[2] = {-1, -1};
   if (pipe(parent_to_child) != 0 || pipe(child_to_parent) != 0) {
@@ -7153,7 +7157,7 @@ ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
 
   ScrArr *spawn_args = scr_fork_argv(
       target, (uintptr_t)parent_to_child[0],
-      (uintptr_t)child_to_parent[1], args);
+      (uintptr_t)child_to_parent[1], uid, gid, args);
   ScrStr *command = scr_process_exec_path();
   ScrChild *child = scr_spawn_opts(
       command, spawn_args, in_mode, out_mode, err_mode, 0, 0, false,

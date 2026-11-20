@@ -201,7 +201,7 @@ typedef void (*ScrIpcSendFn)(ScrClosure *cb, ScrError *error);
 ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args); /* +1, never throws */
 ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
                    double out_mode, double err_mode, bool has_env,
-                   ScrArr *env_pairs, ScrStr *cwd); /* +1 */
+                   ScrArr *env_pairs, ScrStr *cwd, double uid, double gid); /* +1 */
 /* The options form (cp.spawnOpts): PER-SLOT stdio modes — 0 = ignore
  * (/dev/null), 1 = inherit, 2 = fd (out/err only: out_fd/err_fd dup2
  * into the child's slot, the openSync daemon-log idiom), 3 = pipe

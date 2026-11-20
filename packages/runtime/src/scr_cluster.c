@@ -64,11 +64,32 @@ static SCR_TL ScrClusterWorker *scr_cl_all_workers = NULL;
 static SCR_TL ScrClusterWorker **scr_cl_deferred = NULL;
 static SCR_TL size_t scr_cl_deferred_n = 0;
 
+static void scr_clw_release(ScrClusterWorker *w);
+static void scr_cl_deferred_drain(void);
+
+static SCR_TL bool scr_cl_deferred_scheduled = false;
+
+/* Drops the references terminal callbacks handed back: a worker freed the
+ * moment its last event ran, not at exit, so recycling workers does not
+ * accumulate them. */
+static void scr_cl_deferred_drain(void) {
+  scr_cl_deferred_scheduled = false;
+  for (size_t i = 0; i < scr_cl_deferred_n; i++) scr_clw_release(scr_cl_deferred[i]);
+  free(scr_cl_deferred);
+  scr_cl_deferred = NULL;
+  scr_cl_deferred_n = 0;
+  scr_cl_deferred_scheduled = false;
+}
+
 static void scr_cl_defer_release(ScrClusterWorker *w) {
   ScrClusterWorker **items = realloc(scr_cl_deferred, (scr_cl_deferred_n + 1) * sizeof *items);
   if (!items) scr_trap("out of memory");
   scr_cl_deferred = items;
   items[scr_cl_deferred_n++] = w; /* the +1 moves here */
+  if (!scr_cl_deferred_scheduled) {
+    scr_cl_deferred_scheduled = true;
+    scr_next_tick_raw(&scr_cl_deferred_drain);
+  }
 }
 static SCR_TL ScrClListeners scr_cl_events; /* the cluster object's listeners */
 static SCR_TL ScrDyn *scr_cl_settings = NULL;
@@ -440,6 +461,18 @@ static void scr_cl_register(ScrClusterWorker *w) {
  * referenced until the process's exit event, which is what keeps a primary
  * from exiting ahead of a worker it just disconnected. */
 static void scr_cl_maybe_remove(ScrClusterWorker *w) { w->removed = true; }
+
+/* Drops the teardown list's reference once a worker's terminal events ran,
+ * so a long-lived primary does not retain every worker it ever forked. */
+static void scr_cl_forget_worker(ScrClusterWorker *w) {
+  for (ScrClusterWorker **p = &scr_cl_all_workers; *p != NULL; p = &(*p)->all_next) {
+    if (*p != w) continue;
+    *p = w->all_next;
+    w->all_next = NULL;
+    scr_clw_release(w);
+    break;
+  }
+}
 
 /* Drops the registry's reference (the exit event, and teardown). */
 static void scr_cl_unlink(ScrClusterWorker *w) {
@@ -826,7 +859,12 @@ static void scr_cl_child_exit_thunk(ScrClosure *cb, bool has_code, double code,
   scr_dyn_release(code_arg);
   scr_dyn_release(signal_arg);
   scr_cl_disconnect_advance(w);
+  /* The worker is dead: its listeners are moot, and dropping them here
+   * breaks the cycles they may form (a listener that captured its worker)
+   * so the worker can be reclaimed instead of living until exit. */
+  scr_cl_ls_clear(&w->ls);
   scr_cl_unlink(w);
+  scr_cl_forget_worker(w);
   scr_cl_defer_release(w);
 }
 
@@ -923,6 +961,7 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
   ScrArr *args = scr_cl_worker_args();
   ScrStr *cwd = scr_str_new("", 0);
   bool silent = false;
+  double uid = -1, gid = -1;
   if (scr_cl_settings != NULL && scr_cl_settings->kind == SCR_DYN_OBJ) {
     ScrDyn *s = scr_dyn_obj_get(scr_cl_settings, "silent", 6); /* borrowed */
     if (s != NULL && s->kind == SCR_DYN_BOOL) silent = s->v.b;
@@ -931,9 +970,32 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
       scr_str_release(cwd);
       cwd = scr_str_retain(c->v.str);
     }
+    /* The worker starts with setupPrimary's credentials: the child drops
+     * them (setgid then setuid) before its first module runs. A value that
+     * is not a non-negative integer is Node's ERR_INVALID_ARG_VALUE. */
+    ScrDyn *u = scr_dyn_obj_get(scr_cl_settings, "uid", 3); /* borrowed */
+    ScrDyn *g = scr_dyn_obj_get(scr_cl_settings, "gid", 3); /* borrowed */
+    if (u != NULL && u->kind != SCR_DYN_UNDEF) {
+      if (u->kind != SCR_DYN_NUM || u->v.num < 0 ||
+          (double)(unsigned long long)u->v.num != u->v.num) {
+        const char msg[] = "The \"uid\" option must be a non-negative integer";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+        return NULL;
+      }
+      uid = u->v.num;
+    }
+    if (g != NULL && g->kind != SCR_DYN_UNDEF) {
+      if (g->kind != SCR_DYN_NUM || g->v.num < 0 ||
+          (double)(unsigned long long)g->v.num != g->v.num) {
+        const char msg[] = "The \"gid\" option must be a non-negative integer";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+        return NULL;
+      }
+      gid = g->v.num;
+    }
   }
   double mode = silent ? 3 : 1;
-  ScrChild *child = scr_fork(-1, args, mode, mode, mode, true, pairs, cwd);
+  ScrChild *child = scr_fork(-1, args, mode, mode, mode, true, pairs, cwd, uid, gid);
 
   scr_str_release(cwd);
   scr_arr_release(args);
@@ -1156,6 +1218,7 @@ static void scr_cl_levels_cleanup(void) {
   free(scr_cl_deferred);
   scr_cl_deferred = NULL;
   scr_cl_deferred_n = 0;
+  scr_cl_deferred_scheduled = false;
   for (ScrClusterWorker *w = scr_cl_all_workers; w != NULL; w = w->all_next) {
     scr_cl_ls_clear(&w->ls);
   }

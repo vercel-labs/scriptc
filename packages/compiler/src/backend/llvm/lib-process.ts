@@ -128,6 +128,12 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
             ? "scr_spawn_dynamic"
             : "scr_spawn_opts";
     const args = e.args.map((a) => host.emitExpr(a));
+    if (e.fn === "cp.fork") {
+      /* child_process.fork has no credential options (they fence); the
+       * cluster unit passes its settings' uid/gid to its own fork. */
+      args.push({ name: "-1.0", type: F64 });
+      args.push({ name: "-1.0", type: F64 });
+    }
     const argDecl = args
       .map((a) => (host.llType(a.type) === "i1" ? "i1 zeroext" : host.llType(a.type)))
       .join(", ");

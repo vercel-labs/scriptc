@@ -12,7 +12,7 @@ const tail = (path: string): string => {
 };
 const base = "tmp-sqlite-facade-" + tail(process.argv[1] ?? "program") + "-" + process.pid;
 const source = base + "-source.db";
-const copies = [1, 2, 3, 4].map((n) => `${base}-copy${n}.db`);
+const copies = [1, 2, 3, 4, 5, 6].map((n) => `${base}-copy${n}.db`);
 
 const marks: string[] = [];
 const pick = (): typeof facade => {
@@ -33,13 +33,30 @@ async function main(): Promise<void> {
   console.log("comma", comma, marks.join(","));
   marks.length = 0;
 
+  // The receiver runs before the arguments, each exactly once.
+  const ordered = await (marks.push("receiver"), facade).snapshotBackup(
+    db,
+    (marks.push("argument"), copies[2]!),
+  );
+  console.log("ordered", ordered, marks.join(","));
+  marks.length = 0;
+
+  // A conditional receiver evaluates its condition and only the chosen branch.
   const cond = await (
-    marks.length === 0 ? (marks.push("cond"), facade) : facade
-  ).snapshotBackup(db, copies[2]!);
+    marks.push("condition"),
+    marks.length > 0 ? (marks.push("branch"), facade) : facade
+  ).snapshotBackup(db, copies[3]!);
   console.log("cond", cond, marks.join(","));
   marks.length = 0;
 
-  const call = await pick().snapshotBackup(db, copies[3]!);
+  const condFalse = await (
+    marks.push("condition"),
+    marks.length > 1 ? (marks.push("branch"), facade) : facade
+  ).snapshotBackup(db, copies[4]!);
+  console.log("condfalse", condFalse, marks.join(","));
+  marks.length = 0;
+
+  const call = await pick().snapshotBackup(db, (marks.push("argument"), copies[5]!));
   console.log("call", call, marks.join(","));
 
   db.close();

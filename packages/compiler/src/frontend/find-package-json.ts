@@ -13,7 +13,7 @@
  * or to a package directory rebuilds the program. The paths are the host's;
  * a build whose target uses other path rules refuses instead of guessing.
  */
-import { dirname, isAbsolute, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   trackedDirectoryExists,
@@ -29,6 +29,8 @@ interface PackageScope {
   name: string | null;
   hasExports: boolean;
 }
+
+type PackageScopeResult = { ok: true; scope: PackageScope | null } | { ok: false; refusal: string };
 
 /* Node's parsePackageName: a package name cannot start with `.`, and cannot
  * contain a percent sign or a backslash. */
@@ -53,37 +55,44 @@ function packageNameOf(specifier: string): { name: string } | FindPackageJsonRes
 }
 
 /** The nearest package.json at or above `path` (for a file, from its
- * directory). `hasExports` records whether the document names an "exports"
- * field, which Node requires for a self-reference. */
-function packageScopeOf(path: string): PackageScope | null {
+ * directory), as Node reads it: the walk stops at a node_modules directory,
+ * a document that is not a JSON object is Node's ERR_INVALID_PACKAGE_CONFIG,
+ * and `hasExports` records an "exports" field that is neither absent nor
+ * null (Node's `exports != null` self-reference test). */
+function packageScopeOf(path: string): PackageScopeResult {
   /* Node starts at the path itself only when the resolved URL ends with a
    * separator, and at its parent otherwise: `./nested/` walks from the
    * directory, while `./nested` and `../bar` walk from the parent even when
    * they name a directory. */
   let dir = path.endsWith(sep) ? path : dirname(path);
   for (;;) {
+    if (basename(dir) === "node_modules") return { ok: true, scope: null };
     const candidate = join(dir, "package.json");
     if (trackedFileExists(candidate)) {
-      let name: string | null = null;
-      let hasExports = false;
       const text = trackedReadFile(candidate);
+      let parsed: unknown = null;
+      let valid = false;
       if (text !== null) {
         try {
-          const parsed: unknown = JSON.parse(text);
-          if (parsed !== null && typeof parsed === "object") {
-            const record = parsed as { name?: unknown; exports?: unknown };
-            if (typeof record.name === "string") name = record.name;
-            hasExports = record.exports !== undefined;
-          }
+          parsed = JSON.parse(text);
+          valid = parsed !== null && typeof parsed === "object";
         } catch {
-          /* An unreadable document still names the file, as Node's reader
-           * returns its path. */
+          valid = false;
         }
       }
-      return { path: candidate, name, hasExports };
+      if (!valid) return { ok: false, refusal: `Invalid package config ${candidate}.` };
+      const record = parsed as { name?: unknown; exports?: unknown };
+      return {
+        ok: true,
+        scope: {
+          path: candidate,
+          name: typeof record.name === "string" ? record.name : null,
+          hasExports: record.exports !== undefined && record.exports !== null,
+        },
+      };
     }
     const parent = dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) return { ok: true, scope: null };
     dir = parent;
   }
 }
@@ -101,8 +110,9 @@ function barePackageJson(specifier: string, baseHref: string): FindPackageJsonRe
     return { ok: false, refusal: "the base must be a file: URL to resolve a package name" };
   }
   const scope = packageScopeOf(basePath);
-  if (scope !== null && scope.hasExports && scope.name === named.name)
-    return { ok: true, path: scope.path };
+  if (!scope.ok) return { ok: false, refusal: scope.refusal };
+  if (scope.scope !== null && scope.scope.hasExports && scope.scope.name === named.name)
+    return { ok: true, path: scope.scope.path };
   const scoped = specifier.startsWith("@");
   let url = new URL(`./node_modules/${named.name}/package.json`, baseHref);
   let previous = "";
@@ -139,9 +149,15 @@ function resolvedPackageJson(specifier: string, baseHref: string): FindPackageJs
   }
   if (trackedFileExists(path)) {
     const real = trackedRealpath(path) ?? path;
-    return { ok: true, path: packageScopeOf(real)?.path ?? real };
+    const scope = packageScopeOf(real);
+    if (!scope.ok) return { ok: false, refusal: scope.refusal };
+    return { ok: true, path: scope.scope?.path ?? real };
   }
-  if (trackedDirectoryExists(path)) return { ok: true, path: packageScopeOf(path)?.path ?? path };
+  if (trackedDirectoryExists(path)) {
+    const scope = packageScopeOf(path);
+    if (!scope.ok) return { ok: false, refusal: scope.refusal };
+    return { ok: true, path: scope.scope?.path ?? path };
+  }
   return { ok: false, refusal: `Cannot find module '${path}'` };
 }
 

@@ -37,6 +37,12 @@ function tree(): { root: string; base: string } {
     '{"name":"some-package"}',
   );
   write(join(root, "project/node_modules/hoisted/package.json"), '{"name":"hoisted"}');
+  write(join(root, "project/node_modules/@foo/bar/package.json"), '{"name":"@foo/bar"}');
+  write(join(root, "project/packages/nully/package.json"), '{"name":"@foo/bar","exports":null}');
+  write(join(root, "project/packages/nully/index.js"), "");
+  write(join(root, "project/packages/bar/node_modules/broken/package.json"), "{bad json");
+  write(join(root, "project/packages/bar/node_modules/broken/lib/x.js"), "");
+  write(join(root, "project/packages/bar/node_modules/plain/lib/x.js"), "");
   write(join(root, "outside/deep/file.js"), "");
   symlinkSync(join(root, "project/packages/bar"), join(root, "linkbar"));
   return { root, base: join(root, "project/packages/bar/index.js") };
@@ -77,6 +83,12 @@ test("answers what Node's findPackageJSON answers", () => {
     [`${pathToFileURL(join(root, "project/packages/bar/index.js")).href}?q=1`, base],
     ["file:///tmp", undefined],
     ["data:text/javascript,1", base],
+    // A package with "exports": null is not a self-reference; the installed
+    // package of that name answers instead.
+    ["@foo/bar", join(root, "project/packages/nully/index.js")],
+    // A malformed nearest package.json and a target under node_modules with
+    // no package.json of its own.
+    ["./lib/x.js", join(root, "project/packages/bar/node_modules/plain/x.js")],
     ["@foo", base],
     ["%2f", base],
   ];
@@ -93,6 +105,19 @@ test("answers what Node's findPackageJSON answers", () => {
     ok: true,
     path: join(root, "project/packages/bar/package.json"),
   });
+  // A malformed nearest package.json is Node's ERR_INVALID_PACKAGE_CONFIG.
+  const broken = join(root, "project/packages/bar/node_modules/broken/lib/x.js");
+  expect(findPackageJson(broken, baseHref)).toEqual({
+    ok: false,
+    refusal: expect.stringContaining(
+      `Invalid package config ${join(root, "project/packages/bar/node_modules/broken/package.json")}.`,
+    ),
+  });
+  expect(findPackageJson("anything", pathToFileURL(broken).href).ok).toBe(false);
+  // A bare lookup from inside a package with no package.json of its own
+  // walks no further than the node_modules boundary.
+  const plain = join(root, "project/packages/bar/node_modules/plain/lib/x.js");
+  expect(findPackageJson(plain, baseHref)).toEqual({ ok: true, path: plain });
 });
 
 test("a base that is not static or not a file: URL is refused", () => {

@@ -74,7 +74,8 @@ function packageScopeOf(path: string): PackageScopeResult {
       let valid = false;
       if (text !== null) {
         try {
-          parsed = JSON.parse(text);
+          /* Node's package reader accepts a UTF-8 BOM before the document. */
+          parsed = JSON.parse(text.replace(/^\uFEFF/, ""));
           valid = parsed !== null && typeof parsed === "object";
         } catch {
           valid = false;

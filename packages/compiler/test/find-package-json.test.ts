@@ -37,6 +37,11 @@ function tree(): { root: string; base: string } {
     '{"name":"some-package"}',
   );
   write(join(root, "project/node_modules/hoisted/package.json"), '{"name":"hoisted"}');
+  write(
+    join(root, "project/bom/package.json"),
+    '\uFEFF{"name":"bom-package","exports":{".":"./index.js"}}',
+  );
+  write(join(root, "project/bom/index.js"), "");
   write(join(root, "project/node_modules/@foo/bar/package.json"), '{"name":"@foo/bar"}');
   write(join(root, "project/packages/nully/package.json"), '{"name":"@foo/bar","exports":null}');
   write(join(root, "project/packages/nully/index.js"), "");
@@ -83,6 +88,10 @@ test("answers what Node's findPackageJSON answers", () => {
     [`${pathToFileURL(join(root, "project/packages/bar/index.js")).href}?q=1`, base],
     ["file:///tmp", undefined],
     ["data:text/javascript,1", base],
+    // A UTF-8 BOM before an otherwise valid document is accepted, as Node
+    // accepts it.
+    ["bom-package", join(root, "project/bom/index.js")],
+    [".", join(root, "project/bom/index.js")],
     // A package with "exports": null is not a self-reference; the installed
     // package of that name answers instead.
     ["@foo/bar", join(root, "project/packages/nully/index.js")],

@@ -5872,6 +5872,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "bigintStats" };
   }
+  // `import.meta` read as a value is the checked-dynamic metadata object the
+  // compiler builds for the module (import-meta.ts); its members read through
+  // it like any other checked-dynamic record.
+  if (
+    psym !== undefined &&
+    psymName === "ImportMeta" &&
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  )
+    return DYN;
   // module.enableCompileCache()'s result and its options argument
   // (@types/node's EnableCompileCacheResult and EnableCompileCacheOptions,
   // and the fallback's twins) are the plain objects Node passes: a result

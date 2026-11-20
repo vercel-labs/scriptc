@@ -1,4 +1,4 @@
-- **ESM metadata:** Native `import.meta.url`, `filename`, `dirname`, and `main` support dot access, statically known keys, and destructuring selected fields.
-  Storing or mutating the metadata object, rest bindings, runtime keys, and stored `resolve` callbacks are unsupported.
+- **ESM metadata:** `import.meta.url`, `filename`, `dirname` and `main` support dot access, statically known keys, destructuring selected fields, and storing `import.meta` in a variable: the stored object answers the same members, keeps its identity across reads, and accepts added properties, as Node.js's does.
+  Rest bindings from `import.meta`, runtime keys on the `import.meta` spelling, and a stored `resolve` function remain unsupported; a stored `resolve` throws `SC2020` when it is called.
   Native `import.meta.resolve()` requires a literal specifier.
   Module instances distinguished by URL query strings or fragments are unsupported.

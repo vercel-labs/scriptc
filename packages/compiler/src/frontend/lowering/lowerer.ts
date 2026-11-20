@@ -5471,6 +5471,13 @@ export class Lowerer {
    * and the calls reading it (json-require.ts). */
   readonly jsonRequireModules = new Map<string, JsonRequireModule>();
   readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
+  /** The module's `import.meta` object read as a value: one checked-dynamic
+   * object per source file, created in that file's %init prelude on first use
+   * (import-meta.ts). */
+  readonly importMetaObjects = new Map<
+    ts.SourceFile,
+    { global: IrGlobal; loadedId: string; object: IrExpr }
+  >();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). A program module
@@ -6469,6 +6476,7 @@ export class Lowerer {
       checkedTable("jsonInitActions", () => this.jsonInitActions.size),
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
+      checkedTable("importMetaObjects", () => this.importMetaObjects.size),
       checkedTable("dynImports", () => this.dynImports.size),
       checkedTable("createRequireImports", () => this.createRequireImports.size),
       checkedTable("dynNsBuilders", () => this.dynNsBuilders.size),

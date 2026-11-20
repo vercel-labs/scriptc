@@ -10,6 +10,7 @@
  * roots are refcounted the same way, so a dispatch keeps walking a root
  * that removeEventListener dropped from the target's map.
  */
+#include "scr_optional.h"
 #include "scr_runtime.h"
 
 #if defined(__APPLE__)
@@ -4186,4 +4187,11 @@ void scr_events_on_error_fire(ScrClosure *cb, ScrArr *args) {
   scr_arr_release(args);
   scr_eon_on_error(st, err);
   scr_eon_state_release(st);
+}
+
+/* The abort-listener entry other units reach through scr_optional.h. */
+static const ScrEventTargetOps scr_event_target_optional_ops = {scr_events_add_abort_listener};
+
+__attribute__((constructor)) static void scr_event_target_install(void) {
+  scr_optional_event_target = &scr_event_target_optional_ops;
 }

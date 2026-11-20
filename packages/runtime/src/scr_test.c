@@ -39,6 +39,7 @@
  * 1 when any non-todo test failed (todo failures print ⚠ and list in the
  * failing section but exit 0, Node's contract), else 0. */
 #include "scr_platform.h"
+#include "scr_optional.h"
 #include "scr_runtime.h"
 #include "scr_abort_signal.h"
 
@@ -544,28 +545,9 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
  * thrown error on error). The diagnostics_channel unit links only for a
  * program that uses it (a subscriber lives in the program), so its entry
  * points are weak: a program without subscribers has nothing to publish. */
-#if defined(__APPLE__)
-/* Mach-O refuses an undefined weak *reference* in an executable, so Apple gets
- * weak definitions answering what the unit's absence means: no channel, no
- * subscribers, nothing published. A linked unit's strong definitions replace
- * them. */
-__attribute__((weak)) double scr_dc_channel(ScrDyn *name) {
-  (void)name;
-  return NAN;
-}
-__attribute__((weak)) void scr_dc_publish(double handle, ScrDyn *message) {
-  (void)handle;
-  (void)message; /* the caller keeps its reference */
-}
-__attribute__((weak)) bool scr_dc_chan_has_subscribers(double handle) {
-  (void)handle;
-  return false;
-}
-#else
-extern double scr_dc_channel(ScrDyn *name) __attribute__((weak));
-extern void scr_dc_publish(double handle, ScrDyn *message) __attribute__((weak));
-extern bool scr_dc_chan_has_subscribers(double handle) __attribute__((weak));
-#endif
+/* The entries are read from the unit's table (scr_optional.h), which is NULL
+ * when the program links no diagnostics channel, so a program without
+ * subscribers links nothing for it on any object format. */
 
 static SCR_TL ScrStr *scr_test_entry; /* the compiled entry file's path, owned */
 
@@ -573,7 +555,7 @@ enum { SCR_TR_START = 0, SCR_TR_END = 1, SCR_TR_ERROR = 2 };
 static SCR_TL double scr_test_tr_handles[3] = {-1, -1, -1};
 
 static double scr_test_tr_channel(int which) {
-  if (!scr_dc_channel) return NAN;
+  if (scr_optional_dc == NULL) return NAN;
   if (scr_test_tr_handles[which] >= 0) return scr_test_tr_handles[which];
   static const char *const names[] = {"tracing:node.test:start", "tracing:node.test:end",
                                       "tracing:node.test:error"};
@@ -581,7 +563,7 @@ static double scr_test_tr_channel(int which) {
   ScrStr *text = scr_str_new(name, strlen(name));
   ScrDyn *key = scr_dyn_new_str(text);
   scr_str_release(text);
-  double handle = scr_dc_channel(key);
+  double handle = scr_optional_dc->channel(key);
   scr_dyn_release(key);
   if (scr_exc_pending()) {
     scr_exc_clear();
@@ -657,7 +639,7 @@ static void scr_test_tr_publish(int which, ScrTestCtx *t, bool with_error) {
   if (isnan(handle)) return;
   /* Node publishes only with a subscriber attached; skip building the
    * message otherwise (every test start and end takes this path). */
-  if (scr_dc_chan_has_subscribers && !scr_dc_chan_has_subscribers(handle)) return;
+  if (scr_optional_dc == NULL || !scr_optional_dc->chan_has_subscribers(handle)) return;
   ScrDyn *msg;
   if (with_error && t->err) {
     /* Node's error event is `{ ...channelContext, error }`: a fresh object
@@ -670,7 +652,7 @@ static void scr_test_tr_publish(int which, ScrTestCtx *t, bool with_error) {
   } else {
     msg = scr_test_tr_roster(t);
   }
-  scr_dc_publish(handle, msg);
+  scr_optional_dc->publish(handle, msg);
   scr_dyn_release(msg);
 }
 

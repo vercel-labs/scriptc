@@ -4699,7 +4699,10 @@ function validateFunction(
         e.args[3]?.type.kind !== "dyn" ||
         e.type.kind !== "object"
       )
-        err(`libCall ${e.fn} must take (writableStream, flags, hwm, signal) and return a Writable`, e.loc);
+        err(
+          `libCall ${e.fn} must take (writableStream, flags, hwm, signal) and return a Writable`,
+          e.loc,
+        );
       return true;
     }
     if (e.fn === "webstream.writableFromWeb") {

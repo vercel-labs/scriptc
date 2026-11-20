@@ -281,13 +281,20 @@ static void sfww_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   sfww_unref(c);
 }
 
-/* An AbortSignal from the options firing while the writable is live
- * destroys it with Node's AbortError whose cause is the signal's reason. */
-static ScrDyn *sfww_on_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
-  (void)args;
-  (void)argc;
-  SfwwCtx *c = sfww_of(cl);
-  ScrDyn *reason = c->signal ? scr_dyn_obj_read(c->signal, "reason", 6) : NULL;
+/* The resolver the events unit installs for a signal's abort listener.
+ * Node's addAbortSignal registers its listener so that an earlier
+ * listener's stopImmediatePropagation does not skip it
+ * (kResistStopPropagation); this entry is that registration. A program that
+ * cannot pass a signal links no such unit. */
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
+    __attribute__((weak));
+
+/* Destroy the writable now with Node's AbortError whose cause is the
+ * signal's reason. A write issued after an already-aborted signal therefore
+ * cannot reach the sink; the destroy's own 'error' emission still waits for
+ * a tick, so a listener attached after construction sees it. */
+static void sfww_destroy_aborted(SfwwCtx *c, ScrDyn *signal) {
+  ScrDyn *reason = scr_dyn_obj_read(signal, "reason", 6);
   ScrError *aborted = scr_error_abort(reason); /* +1; reason borrowed */
   if (aborted) {
     ScrStream *destroyed = scr_stream_destroy(c->writable, aborted);
@@ -296,42 +303,34 @@ static ScrDyn *sfww_on_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   }
   if (reason) scr_dyn_release(reason);
   if (scr_exc_pending()) scr_exc_clear();
+}
+
+/* The fallback when the events unit is not linked: the signal's own
+ * addEventListener destroys the writable when it fires. */
+static ScrDyn *sfww_on_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  SfwwCtx *c = sfww_of(cl);
+  if (c->signal) sfww_destroy_aborted(c, c->signal);
   sfww_unref(c);
   return scr_dyn_undefined();
 }
 
-/* The abort a signal that was already aborted asks for runs on the next
- * tick, so the caller can attach its 'error' listener, as Node's
- * addAbortSignal does. */
-static void sfww_abort_tick(ScrClosure *cl) {
-  ScrStream *w = scr_box_get_ref(cl->caps[0]); /* +1 */
-  ScrDyn *reason = scr_box_get_ref(cl->caps[1]); /* +1 */
-  if (w) {
-    ScrError *err = scr_error_abort(reason); /* +1; reason borrowed */
-    if (err) {
-      ScrStream *destroyed = scr_stream_destroy(w, err);
-      if (destroyed) scr_stream_release(destroyed);
-      scr_error_release(err);
-    }
-  }
-  if (reason) scr_dyn_release(reason);
-  if (w) scr_stream_release(w);
-}
-
-/* The option's signal: an already-aborted signal destroys the writable on
- * the next tick, otherwise an 'abort' listener destroys it when the signal
- * fires. */
+/* The option's signal: the runtime's addAbortSignal when the events unit is
+ * linked, the signal's own listener otherwise. */
 static void sfww_attach_signal(SfwwCtx *c, ScrDyn *signal) {
+  if (scr_events_add_abort_listener != NULL) {
+    ScrStream *attached =
+        scr_stream_add_abort_signal(c->writable, signal, true, scr_events_add_abort_listener);
+    if (attached) scr_stream_release(attached);
+    else if (scr_exc_pending()) scr_exc_clear();
+    return;
+  }
   ScrDyn *aborted = scr_dyn_obj_read(signal, "aborted", 7);
   bool is_aborted = scr_dyn_truthy(aborted);
   if (aborted) scr_dyn_release(aborted);
   if (is_aborted) {
-    ScrClosure *tick = scr_closure_new((void *)&sfww_abort_tick, 2);
-    tick->caps[0] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, NULL);
-    scr_box_set_ref(tick->caps[0], scr_stream_retain(c->writable));
-    tick->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
-    scr_box_set_ref(tick->caps[1], scr_dyn_obj_read(signal, "reason", 6));
-    scr_next_tick(tick);
+    sfww_destroy_aborted(c, signal);
     return;
   }
   c->signal = scr_dyn_retain(signal);

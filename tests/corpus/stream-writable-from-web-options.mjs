@@ -31,12 +31,38 @@ const aborted = new Promise((resolve) =>
 controller.abort(new Error("stop"));
 log.push(`abort ${await aborted} destroyed ${signalled.destroyed}`);
 
+// An earlier abort listener's stopImmediatePropagation does not keep the
+// writable alive.
+const stopped = new AbortController();
+stopped.signal.addEventListener("abort", (event) => event.stopImmediatePropagation());
+const stoppedWritable = Writable.fromWeb(new WritableStream({ write() {} }), {
+  signal: stopped.signal,
+});
+const stoppedError = new Promise((resolve) =>
+  stoppedWritable.on("error", (error) => resolve(`${error.name} ${error.code}`)),
+);
+stopped.abort(new Error("stop"));
+log.push(`stopped ${await stoppedError} destroyed ${stoppedWritable.destroyed}`);
+
+// An already-aborted signal destroys before the caller can write: the write
+// fails and the sink never sees a chunk.
 const preset = new AbortController();
 preset.abort();
-const already = Writable.fromWeb(new WritableStream({ write() {} }), { signal: preset.signal });
+const reached = [];
+const already = Writable.fromWeb(
+  new WritableStream({
+    write(chunk) {
+      reached.push(String(chunk));
+    },
+  }),
+  { signal: preset.signal },
+);
 const presetError = new Promise((resolve) =>
   already.on("error", (error) => resolve(`${error.name} ${error.code}`)),
 );
-log.push(`preset ${await presetError} destroyed ${already.destroyed}`);
+const presetWrite = await new Promise((resolve) =>
+  already.write(Buffer.from("x"), (error) => resolve(error ? error.name : "ok")),
+);
+log.push(`preset destroyed ${already.destroyed} write ${presetWrite} sink ${reached.length} ${await presetError}`);
 
 for (const line of log) console.log(line);

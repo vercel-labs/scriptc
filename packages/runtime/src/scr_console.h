@@ -40,6 +40,20 @@ typedef struct {
 
 /* Space-joined args + '\n', submitted before return. Borrows string args. */
 void scr_console_log(size_t n, const ScrLogArg *args);
+/* The global console output member's diagnostics channel: publishes the
+ * call's own argument array (spreads already expanded) on console.<member>
+ * (0 log, 1 info, 2 debug, 3 warn, 4 error) when it has subscribers, before
+ * the line is written. The diagnostics_channel unit supplies the publisher
+ * through a weak slot; a program that never imports it pays one null check. */
+void scr_console_publish_args(double member, ScrDyn *args);
+/* The diagnostics_channel unit installs its console publisher here the first
+ * time it creates a channel: a program that never imports
+ * diagnostics_channel has no subscribers and keeps the null check. */
+void scr_console_set_channel_publisher(void (*publisher)(double member, ScrDyn *args));
+/* Whether console.<member> (0 log .. 4 error) has a subscriber. False when
+ * the diagnostics_channel unit never installed its probe. */
+bool scr_console_channel_active(double member);
+void scr_console_set_channel_active(bool (*active)(double member));
 /* The stderr twin (console.error AND console.warn — one stream in Node):
  * identical formatting, with stdout settled first so merged (2>&1) output
  * keeps source order. */

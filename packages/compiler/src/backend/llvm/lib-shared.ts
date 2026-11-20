@@ -343,6 +343,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "process.versionsNode": "scr_process_versions_node",
   "process.versions": "scr_process_versions",
   "process.builtinId": "scr_process_builtin_id",
+  "console.channelActive": "scr_console_channel_active",
+  "console.publishArgs": "scr_console_publish_args",
   "console.native": "scr_console_native",
   "console.new": "scr_console_new",
   "console.bind": "scr_console_bind",

@@ -76,6 +76,26 @@ console.log("survived");
   }
 });
 
+test("an http agent's dialer passes the abort listener it can see", async () => {
+  // `signal` reaches net.connect's addAbortListener. A value that only looks
+  // like a signal (Node's check is duck-typed) is refused there with the
+  // addEventListener TypeError — so this only raises when the event-target
+  // unit's listener was actually passed, which is what a capability probe that
+  // answers "not linked" would drop.
+  const { code, stderr } = await run(
+    "abort-listener",
+    `import * as http from "node:http";
+const controller = new AbortController(); // links the event-target unit
+const agent = new http.Agent({ keepAlive: true });
+agent.createConnection({ port: 1, host: "127.0.0.1", signal: { aborted: false } });
+console.log("dialed");
+`,
+  );
+  expect(code).toBe(1);
+  expect(stderr).toContain("signal.addEventListener is not a function");
+  expect(stderr).not.toContain("dialed");
+});
+
 test("an http agent's dialer still dials", async () => {
   const { code, stdout } = await run(
     "plain-agent",

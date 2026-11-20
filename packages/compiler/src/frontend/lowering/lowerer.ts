@@ -5476,7 +5476,7 @@ export class Lowerer {
    * (import-meta.ts). */
   readonly importMetaObjects = new Map<
     ts.SourceFile,
-    { global: IrGlobal; loadedId: string; object: IrExpr }
+    { global: IrGlobal; loadedId: string; build: () => IrExpr }
   >();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm

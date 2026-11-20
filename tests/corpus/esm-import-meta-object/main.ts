@@ -35,3 +35,13 @@ function read(m: ImportMeta): string {
 }
 console.log("passed", read(meta), meta.main);
 console.log("child", child !== meta, child.main, basename(child.filename), Object.keys(child).join(","));
+
+// Node's metadata object has no prototype, and a write through the stored
+// object is what direct reads and destructuring report afterwards.
+console.log("prototype", Object.getPrototypeOf(meta) === null);
+const original = meta.url;
+meta.url = "https://example.test/x";
+const { url: mutated } = import.meta;
+console.log("mutated", import.meta.url, meta.url, mutated);
+meta.url = original;
+console.log("restored", import.meta.url === original);

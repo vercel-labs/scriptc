@@ -13,10 +13,7 @@ import { join } from "node:path";
 const root = new URL("..", import.meta.url).pathname;
 const D = join(root, "packages/compiler/dist");
 const imp = (p) => import(`${D}/${p}`);
-const {
-  deserializeModule,
-  encodeFunction,
-} = await imp("ir/serialize.js");
+const { deserializeModule, encodeFunction } = await imp("ir/serialize.js");
 const { IrNodeIndex } = await imp("ir/node-index.js");
 const { unshareNodes } = await imp("ir/unshare.js");
 const { rollLiteralTables } = await imp("ir/literal-tables.js");
@@ -95,19 +92,13 @@ function chainSteps(nodes) {
   ];
 }
 
-function runChain(input) {
-  const { mod, nodes } = preChain(input);
-  let out = mod;
-  for (const [, step] of chainSteps(nodes)) out = step(out);
-  return out;
-}
-
 function parseModule(file) {
   return deserializeModule(readFileSync(file, "utf8"));
 }
 
 function moduleWide(mod) {
-  const { functions, ...rest } = mod;
+  const rest = { ...mod };
+  delete rest.functions;
   return JSON.stringify(rest);
 }
 
@@ -158,7 +149,9 @@ for (const program of programs) {
       break;
     }
   }
-  console.log(`${first === null ? "ORDER-INDEPENDENT" : "FIRST DIVERGENT PASS: " + first} ${program}`);
+  console.log(
+    `${first === null ? "ORDER-INDEPENDENT" : "FIRST DIVERGENT PASS: " + first} ${program}`,
+  );
   if (first !== null) failures++;
 }
 process.exitCode = failures === 0 ? 0 : 1;

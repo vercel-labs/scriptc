@@ -115,6 +115,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseResolve",
   // A promise boxed as a weak collection's key (scr_dyn_new_promise).
   "weakMap.promiseKey",
+  // Formatting a checked-dynamic value from a retained snapshot boxes any
+  // promise it holds (scr_dyn_new_promise, scr_dyn_promise_resolve).
+  "insp.formatSnapshot",
   // sqlite.backup answers a promise minted by the dyn-async unit.
   "sqlite.backup",
   // The generic Promise statics build and settle their capability's promise
@@ -214,6 +217,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "ah.providers",
   "ah.enable",
   "ah.executionId",
+  "ah.executionResource",
   "ah.triggerId",
   // The RunScope handle withScope answers, and AsyncResource's registry
   // with its bound functions.
@@ -376,6 +380,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
+  "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
   "webstream.toWebDuplex",
   "webstream.toWebDuplexDyn",
@@ -471,6 +476,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
   "webstream.writableFromWeb",
+  "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
   "webstream.toWebDuplex",
   "webstream.toWebDuplexDyn",
@@ -2017,6 +2023,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
+      "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
       "webstream.toWebDuplex",
@@ -2360,10 +2367,14 @@ const RUNTIME_FEATURE_RULES = {
   icu: rule({ prefixes: ["icu."] }),
   /** A Console built with inspectOptions or colorMode formats its methods
    * through the runtime's option-aware entries: scr_inspect.c's console
-   * entries with scr_console_native.c's argument forms. colorMode 'auto'
-   * reads the environment's color depth (scr_tty_colors.c). */
+   * entries with scr_console_native.c's argument forms. console.table
+   * inspects its cells over the same options, and both tables color per
+   * colorMode, so colorMode 'auto' reads the environment's color depth
+   * (scr_tty_colors.c). */
   consoleOptions: rule({
     fns: [
+      "console.table",
+      "console.instTable",
       "console.instWriteArgs",
       "console.instDirxmlArgs",
       "console.instDirArgs",
@@ -2390,6 +2401,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
       "webstream.writableFromWeb",
+      "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
       "webstream.toWebDuplex",

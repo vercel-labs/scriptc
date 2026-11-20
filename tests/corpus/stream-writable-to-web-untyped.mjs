@@ -15,9 +15,13 @@ function fakeWritable(highWaterMark = 16) {
     destroyed: false,
     writableHighWaterMark: highWaterMark,
     chunks: [],
+    destroys: [],
     write(chunk) {
       target.chunks.push(Buffer.from(chunk).toString());
       return true;
+    },
+    emitLocal(name, arg) {
+      emit(name, arg);
     },
     end() {
       target.writable = false;
@@ -29,6 +33,7 @@ function fakeWritable(highWaterMark = 16) {
     destroy(error) {
       target.destroyed = true;
       target.writable = false;
+      target.destroys.push(error === undefined ? "undefined" : `${error.name}:${error.code}`);
       if (error) emit("error", error);
       setImmediate(() => emit("close"));
     },
@@ -60,6 +65,27 @@ const abortedWriter = Writable.toWeb(aborted).getWriter();
 await abortedWriter.abort(new Error("stop"));
 await new Promise((resolve) => setTimeout(resolve, 10));
 log.push(`aborted ${aborted.destroyed}`);
+
+// A cancellation without a reason destroys with Node's AbortError, not a
+// clean destroy.
+const bare = fakeWritable();
+const bareWriter = Writable.toWeb(bare).getWriter();
+await bareWriter.abort();
+await new Promise((resolve) => setTimeout(resolve, 10));
+log.push(`bare abort destroy ${bare.destroys.join("|")}`);
+
+// A writable that closes without finishing leaves the writer's pending close
+// rejecting with the AbortError Node's eos calls a premature close.
+const premature = fakeWritable();
+premature.end = function () {
+  setImmediate(() => this.emitLocal("close"));
+};
+const prematureWriter = Writable.toWeb(premature).getWriter();
+const prematureClose = prematureWriter.close().then(
+  () => "resolved",
+  (error) => `rejected ${error.name} ${error.code}`,
+);
+log.push(`premature close ${await prematureClose}`);
 
 // A value without write() and on() throws Node's ERR_INVALID_ARG_TYPE.
 for (const value of [42, {}]) {

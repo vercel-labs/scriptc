@@ -722,20 +722,32 @@ static ScrDyn *stw3d_on_finish(ScrClosure *cl, ScrDyn *const *args, size_t argc)
   return stw3d_emit_void();
 }
 
-/* 'close': a stream that closed without a finish settles a pending close,
- * or aborts the web stream when nothing waits on it. */
+/* 'close' without a finish is Node's premature close (eos reports
+ * ERR_STREAM_PREMATURE_CLOSE, which the adapter maps to an AbortError): the
+ * pending close and write reject with it and the web stream errors. */
 static ScrDyn *stw3d_on_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   Stw3Dyn *c = stw3d_of(cl);
-  if (c->closed) {
-    ScrPromise *p = c->closed;
-    c->closed = NULL;
-    scr_promise_fulfill_void(p);
-    scr_promise_release(p);
-  } else {
-    stw3d_controller_abort(c);
+  ScrError *aborted = scr_error_abort(NULL); /* +1 */
+  ScrDyn *reason = aborted ? scr_dyn_from_error(aborted) : NULL; /* +1 */
+  if (reason) {
+    if (c->backpressure) {
+      ScrPromise *p = c->backpressure;
+      c->backpressure = NULL;
+      stw3d_settle_reject(p, reason);
+      scr_promise_release(p);
+    }
+    if (c->closed) {
+      ScrPromise *p = c->closed;
+      c->closed = NULL;
+      stw3d_settle_reject(p, reason);
+      scr_promise_release(p);
+    }
+    stw3d_controller_error(c, reason);
+    scr_dyn_release(reason);
   }
+  if (aborted) scr_error_release(aborted);
   stw3d_retire(c);
   stw3d_unref(c);
   return stw3d_emit_void();
@@ -898,11 +910,23 @@ done:;
   return out;
 }
 
-/* sink.abort(reason): destroy the value with the reason. */
+/* sink.abort(reason): destroy the value with the reason, or with Node's
+ * AbortError when the writer passed none. A cancellation must not look like
+ * a clean destroy. */
 static ScrDyn *stw3d_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   Stw3Dyn *c = stw3d_of(cl);
   ScrPromise *p = scr_promise_new();
-  ScrDyn *reason = argc > 0 ? args[0] : NULL;
+  ScrDyn *given = argc > 0 ? args[0] : NULL;
+  ScrDyn *reason = NULL;
+  if (given && given->kind != SCR_DYN_UNDEF && given->kind != SCR_DYN_NULL) {
+    reason = scr_dyn_retain(given);
+  } else {
+    ScrError *aborted = scr_error_abort(NULL); /* +1 */
+    if (aborted) {
+      reason = scr_dyn_from_error(aborted); /* +1 */
+      scr_error_release(aborted);
+    }
+  }
   bool failed = false;
   if (c->target && reason) {
     ScrDyn *result = stw3d_call(c->target, "destroy", &reason, 1);
@@ -914,6 +938,7 @@ static ScrDyn *stw3d_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
       scr_dyn_release(result);
     }
   }
+  if (reason) scr_dyn_release(reason);
   if (!failed) scr_promise_fulfill_void(p);
   ScrDyn *out = scr_dyn_new_promise(p);
   scr_promise_release(p);

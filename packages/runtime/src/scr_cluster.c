@@ -976,19 +976,22 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
     ScrDyn *u = scr_dyn_obj_get(scr_cl_settings, "uid", 3); /* borrowed */
     ScrDyn *g = scr_dyn_obj_get(scr_cl_settings, "gid", 3); /* borrowed */
     if (u != NULL && u->kind != SCR_DYN_UNDEF) {
-      if (u->kind != SCR_DYN_NUM || u->v.num < 0 ||
+      /* The value must fit the platform's uid_t: a larger double would
+       * wrap in the child's setuid and silently keep a privileged primary's
+       * identity. */
+      if (u->kind != SCR_DYN_NUM || u->v.num < 0 || u->v.num > 4294967295.0 ||
           (double)(unsigned long long)u->v.num != u->v.num) {
-        const char msg[] = "The \"uid\" option must be a non-negative integer";
-        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+        const char msg[] = "The \"uid\" option must be a non-negative integer below 2^32";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
         return NULL;
       }
       uid = u->v.num;
     }
     if (g != NULL && g->kind != SCR_DYN_UNDEF) {
-      if (g->kind != SCR_DYN_NUM || g->v.num < 0 ||
+      if (g->kind != SCR_DYN_NUM || g->v.num < 0 || g->v.num > 4294967295.0 ||
           (double)(unsigned long long)g->v.num != g->v.num) {
-        const char msg[] = "The \"gid\" option must be a non-negative integer";
-        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+        const char msg[] = "The \"gid\" option must be a non-negative integer below 2^32";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
         return NULL;
       }
       gid = g->v.num;

@@ -446,18 +446,26 @@ void scr_lib_init(int argc, char **argv) {
       scr_lib_fork_target_id = (double)target;
       scr_lib_fork_read_handle = (uintptr_t)read_handle;
       scr_lib_fork_write_handle = (uintptr_t)write_handle;
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__wasi__)
       /* A cluster worker starts with the primary's setupPrimary
        * credentials: drop to the requested gid and then uid (Node's spawn
-       * order) before any module, process-global or user code runs. A
+       * order) before any module, process-global or user code runs. The
+       * primary's supplementary groups go first — they would otherwise
+       * outlive the drop and keep the access a privileged primary had. A
        * failed drop is fatal and reported here, never silently ignored. */
-      if (gid >= 0 && setgid((gid_t)gid) != 0) {
-        fprintf(stderr, "scriptc: cannot set gid %lld: %s\n", gid, strerror(errno));
-        _exit(1);
-      }
-      if (uid >= 0 && setuid((uid_t)uid) != 0) {
-        fprintf(stderr, "scriptc: cannot set uid %lld: %s\n", uid, strerror(errno));
-        _exit(1);
+      if (uid >= 0 || gid >= 0) {
+        if (geteuid() == 0 && setgroups(0, NULL) != 0) {
+          fprintf(stderr, "scriptc: cannot clear supplementary groups: %s\n", strerror(errno));
+          _exit(1);
+        }
+        if (gid >= 0 && setgid((gid_t)gid) != 0) {
+          fprintf(stderr, "scriptc: cannot set gid %lld: %s\n", gid, strerror(errno));
+          _exit(1);
+        }
+        if (uid >= 0 && setuid((uid_t)uid) != 0) {
+          fprintf(stderr, "scriptc: cannot set uid %lld: %s\n", uid, strerror(errno));
+          _exit(1);
+        }
       }
 #endif
       scr_lib_argv_owned = malloc((size_t)argc * sizeof(char *));

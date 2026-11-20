@@ -1861,6 +1861,24 @@ ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
  * over the same primitive, or NULL when `value` is not a wrapper. Installed
  * by the wrapper unit, so a program without one keeps the refusal. */
 extern SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value);
+/* The wrapper unit's primitive prototype of a kind (0 String, 1 Number,
+ * 2 Boolean), +1: the object X.prototype reads, so Object.getPrototypeOf(prim)
+ * answers it. NULL when the program links no wrapper unit. */
+extern SCR_TL ScrDyn *(*scr_js_wrapper_primitive_proto_hook)(double kind);
+/* The collection unit's class prototype of a Map, Set, WeakMap or WeakSet
+ * value (+1), NULL for any other value. Installed by scr_dyn_collections.c. */
+extern SCR_TL ScrDyn *(*scr_dyn_collection_proto_hook)(ScrDyn *value);
+/* Function.prototype as a value (+1), installed by the untyped-invoke unit
+ * (scr_dyn_invoke.c), which owns it; NULL when the program links no unit
+ * that can hold a function prototype. */
+extern SCR_TL ScrDyn *(*scr_dyn_function_proto_hook)(void);
+/* Date.prototype as a value (+1), installed by scr_dyn_stdlib_prototype.c,
+ * which owns it; NULL when the program links no standard-library prototype
+ * unit (it cannot name Date.prototype then). */
+extern SCR_TL ScrDyn *(*scr_dyn_date_proto_hook)(void);
+/* Object.getPrototypeOf's answer for a primitive: its wrapper prototype
+ * where the program has one, else the per-kind cached ordinary object. +1. */
+ScrDyn *scr_dyn_primitive_prototype(double kind);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);

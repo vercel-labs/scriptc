@@ -2217,6 +2217,13 @@ static void dyn_function_prototype_cleanup(void) {
   dyn_function_prototype_value = NULL;
 }
 
+/* Object.getPrototypeOf's function arm (scr_json.c): this unit's
+ * Function.prototype, installed at load so the edge answers the object the
+ * program's Function.prototype read shares. */
+__attribute__((constructor)) static void scr_dyn_install_function_proto_hook(void) {
+  scr_dyn_function_proto_hook = scr_dyn_function_prototype;
+}
+
 ScrDyn *scr_dyn_function_prototype(void) {
   if (!dyn_function_prototype_value) {
     ScrClosure *closure = scr_closure_new(NULL, 0);

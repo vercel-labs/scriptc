@@ -16,15 +16,16 @@ function moduleText(node: ts.Expression | undefined): string | null {
 }
 
 function importsChannel(file: ts.SourceFile): boolean {
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) return;
+  // An explicit stack, not recursion: a program's nested expression can be
+  // deep enough to exhaust the call stack (errors.test.ts's 7000-level
+  // expression), and this scan runs for every source file.
+  const pending: ts.Node[] = [file];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       const specifier = node.moduleSpecifier;
-      if (specifier !== undefined && ts.isStringLiteral(specifier) && MODULES.has(specifier.text)) {
-        found = true;
-        return;
-      }
+      if (specifier !== undefined && ts.isStringLiteral(specifier) && MODULES.has(specifier.text))
+        return true;
     }
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
@@ -32,16 +33,14 @@ function importsChannel(file: ts.SourceFile): boolean {
       const required = ts.isIdentifier(callee) && callee.text === "require";
       if (dynamic || required) {
         const text = moduleText(node.arguments.nodes[0]);
-        if (text !== null && MODULES.has(text)) {
-          found = true;
-          return;
-        }
+        if (text !== null && MODULES.has(text)) return true;
       }
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(file);
-  return found;
+    ts.forEachChild(node, (child) => {
+      pending.push(child);
+    });
+  }
+  return false;
 }
 
 export function programImportsDiagnosticsChannel(program: ts.Program): boolean {

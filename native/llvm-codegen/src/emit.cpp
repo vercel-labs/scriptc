@@ -121,6 +121,8 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
       Options.RecordProfileBlocks = Value.str();
     else if (Arg == "--split" && Value == "codegen")
       Options.SplitCodegen = true;
+    else if (Arg == "--dispatch-opt" && (Value == "off" || Value == "light"))
+      Options.DispatchOpt = Value.str();
     else
       return std::nullopt;
   }
@@ -160,6 +162,35 @@ PipelineTuningOptions tuningFor(OptimizationLevel Level) {
     Tuning.SLPVectorization = true;
   }
   return Tuning;
+}
+
+// The emitter's generated dynamic-dispatch helpers (emit-function.ts,
+// "dyn.class"): the class-operation bodies it builds for untyped property
+// and method access. They are large, called directly from program code, and
+// rarely inlined, so their own optimization spends most of its time on
+// passes whose result the program cannot observe; a release build may run
+// them at a cheaper level than the program code around them. Their mangled
+// names (`sc_f_`/`sc_bf_` + `%dyn.class` with `%` and `.` encoded) carry the
+// prefix through parsing.
+constexpr StringLiteral DispatchHelperPrefixes[] = {
+    "sc_f__x25_dyn_class_", "sc_bf__x25_dyn_class_"};
+
+enum class DispatchOptimization { Off, Light };
+
+// The treatment of the generated dispatch helpers, from --dispatch-opt.
+// An unoptimized build has no level to lower.
+DispatchOptimization dispatchOptimization(const EmitOptions &Options) {
+  if (Options.OptLevel == "0")
+    return DispatchOptimization::Off;
+  return StringRef(Options.DispatchOpt) == "light" ? DispatchOptimization::Light
+                                                   : DispatchOptimization::Off;
+}
+
+bool isDispatchHelper(const Function &F) {
+  StringRef Name = F.getName();
+  return any_of(DispatchHelperPrefixes, [&](StringLiteral Prefix) {
+    return Name.starts_with(Prefix);
+  });
 }
 
 // Whether the ProfileUse profile also holds context-sensitive counts, which
@@ -687,6 +718,37 @@ struct Pipeline {
   }
 };
 
+// A generated dispatch helper at least this large is past any inline
+// threshold, so the program only ever calls it, never inlines it: the O2
+// passes over its body cost build time the program cannot observe. The
+// smaller helpers are the per-call gadgets program code does inline and the
+// most dynamic code runs through, and they keep the program's own level.
+constexpr unsigned LightDispatchMinInstructions = 512;
+
+// Runs the O1 function simplification over the large generated dispatch
+// helpers and then marks each `optnone noinline`. The module pipeline that
+// runs afterwards through the same PassBuilder — which, given the
+// instrumentation callbacks `Pipeline` passes it, registers the skip that
+// makes it leave `optnone` functions alone — therefore costs a helper
+// nothing: it gets the cheap O1 passes (memory promotion, constant folding,
+// branch simplification) without the O2 passes that scale with the size of a
+// body the program only ever calls.
+void simplifyDispatchHelpers(Module &M, Pipeline &P,
+                             DispatchOptimization Mode) {
+  if (Mode != DispatchOptimization::Light)
+    return;
+  FunctionPassManager FPM = P.PB.buildFunctionSimplificationPipeline(
+      OptimizationLevel::O1, ThinOrFullLTOPhase::None);
+  for (Function &F : M) {
+    if (F.isDeclaration() || !isDispatchHelper(F) ||
+        F.getInstructionCount() < LightDispatchMinInstructions)
+      continue;
+    FPM.run(F, P.FAM);
+    F.addFnAttr(Attribute::NoInline);
+    F.addFnAttr(Attribute::OptimizeNone);
+  }
+}
+
 std::optional<EmitFailure> verify(Module &M, StringRef Code) {
   std::string Error;
   raw_string_ostream Stream(Error);
@@ -867,7 +929,7 @@ std::optional<EmitFailure>
 emitModule(Module &M, TargetMachine &Machine, OptimizationLevel Level,
            std::optional<PGOOptions> Profile, CodeGenFileType Type,
            StringRef OutputPath, std::vector<SmallString<256>> &Temporaries,
-           ProfileMatch &Match) {
+           ProfileMatch &Match, DispatchOptimization DispatchMode) {
   bool Annotating = Profile && Profile->Action == PGOOptions::IRUse;
   std::string ProfileUse = Annotating ? Profile->ProfileFile : "";
   MatchWeigher Weigher(M);
@@ -875,6 +937,7 @@ emitModule(Module &M, TargetMachine &Machine, OptimizationLevel Level,
     M.getContext().setDiagnosticHandler(
         std::make_unique<ProfileMatchHandler>(Match, &Weigher.Mismatched));
   Pipeline P(Machine, Level, std::move(Profile));
+  simplifyDispatchHelpers(M, P, DispatchMode);
   if (Annotating) {
     // Registered first, so it lists the functions the profile itself
     // annotated, before block counts recover any.
@@ -1170,12 +1233,14 @@ compileOptimizedPartitions(const EmitOptions &Options,
               verify(Mod, "runtime_import_verification_failed"))
         return Failures.set(std::move(*Failure));
     }
+    DispatchOptimization DispatchMode = dispatchOptimization(Options);
     SmallVector<char, 0> Bitcode;
     {
       raw_svector_ostream Stream(Bitcode);
       // Profile instrumentation or annotation happens here, before the thin
       // link; the post-link optimization reads the annotated weights.
       Pipeline P(*Machine, Level, profileOptions(Options));
+      simplifyDispatchHelpers(Mod, P, DispatchMode);
       if (Annotating) {
         // Registered first, so it lists the functions the profile itself
         // annotated, before block counts recover any.
@@ -1410,11 +1475,14 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
                   ProfileMatch &Match) {
   // Everything besides a partition's own bytes that determines its
   // artifacts. The caller's cache directory already identifies the exact
-  // helper build; source content and partition count arrive per module.
+  // helper build; source content and partition count arrive per module. The
+  // dispatch level changes the simplified bitcode of every partition that
+  // holds a generated helper, so it keys them too.
   std::string Salt = hashParts({"scriptc-partition-v1", LLVM_VERSION_STRING,
                                 Options.Target, Options.OptLevel,
-                                Options.RelocationModel, Options.SourcePath,
-                                "profile-generate", Options.ProfileGenerate});
+                                Options.DispatchOpt, Options.RelocationModel,
+                                Options.SourcePath, "profile-generate",
+                                Options.ProfileGenerate});
   // A profile changes every partition it describes, so its bytes key them.
   if (!Options.ProfileUse.empty()) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> Profile =
@@ -1730,8 +1798,10 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
   if (Annotating)
     M.getContext().setDiagnosticHandler(
         std::make_unique<ProfileMatchHandler>(Match, &Weigher.Mismatched));
+  DispatchOptimization DispatchMode = dispatchOptimization(Options);
   {
     Pipeline P(Machine, Level, profileOptions(Options));
+    simplifyDispatchHelpers(M, P, DispatchMode);
     if (Annotating) {
       // Registered first, so it lists the functions the profile itself
       // annotated, before block counts recover any.
@@ -2035,7 +2105,8 @@ int emit(const EmitOptions &Options) {
   ProfileMatch Match;
   std::optional<EmitFailure> Failure =
       emitModule(*Mod, *Machine, Level, profileOptions(Options), Type,
-                 Options.Outputs[0], Temporaries, Match);
+                 Options.Outputs[0], Temporaries, Match,
+                 dispatchOptimization(Options));
   if (!Failure)
     Failure = publish(Temporaries[0], Options.Outputs[0]);
   if (!Failure)

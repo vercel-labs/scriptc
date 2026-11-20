@@ -62,7 +62,8 @@ int version(int Argc, char **Argv) {
       // Commands and options added within one protocol version, for callers
       // that also run against older helpers.
       {"features", json::Array{"runtime-unit-profile", "profile-functions",
-                                "runtime-unit-optional-bitcode"}},
+                                "runtime-unit-optional-bitcode",
+                                "dispatch-opt"}},
   };
   outs() << formatv("{0}\n", json::Value(std::move(Response)));
   return 0;

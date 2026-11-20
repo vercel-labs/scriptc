@@ -14,6 +14,7 @@
  *   pending checks after every fs call (the MAY_THROW_LIB_FNS seed).
  *   scr_fs_exists never throws, like Node's existsSync.
  */
+#include "scr_optional.h"
 #include "scr_runtime.h"
 #include "scr_system_errors.h"
 #include "scr_dir_private.h"
@@ -18121,3 +18122,10 @@ ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
   scr_bytes_release(filled);
   return scr_dyn_retain(value);
 }
+
+/* The optional-unit tables (scr_optional.h). They live in this always-linked
+ * unit rather than one of their own, so a program that links neither unit adds
+ * no object to its link for them; a unit that is there installs its table from
+ * a constructor. */
+const ScrEventTargetOps *scr_optional_event_target = NULL;
+const ScrDcOps *scr_optional_dc = NULL;

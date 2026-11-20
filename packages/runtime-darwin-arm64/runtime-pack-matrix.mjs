@@ -50,6 +50,9 @@ export const RUNTIME_PACK_MATRIX = withLibraryRuntimeFlavors(
       { id: "brotli", predicate: all("zlib", "brotli") },
       { id: "zstd", predicate: all("zlib", "zstd") },
       { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
+      // ML-KEM (mlkem-native): the post-quantum KEM surfaces of node:crypto
+      // and WebCrypto.
+      { id: "mlkem", predicate: "mlkem" },
       { id: "sqlite", predicate: "sqlite" },
     ],
     system_libraries: [{ name: "System", predicate: true }],

@@ -54,8 +54,10 @@ import {
   nativePartitionPaths,
   parseJsonObject,
   validateNativeCodegenVersion as validateHelperVersion,
+  GENERATED_DISPATCH_OPT,
   type NativeCodegenVersion,
   type NativeCodegenOutputKind,
+  type NativeDispatchOpt,
   type NativeHelperFailure,
 } from "./native-codegen-core.js";
 export {
@@ -373,6 +375,17 @@ function cacheKey(
     .digest("hex");
 }
 
+/** The dispatch-helper level a program object asks for, when this helper
+ * understands `--dispatch-opt`: the release level (the default), and nothing
+ * for the levels that already trim the whole program. */
+function dispatchOptFor(
+  options: NativeCodegenOptions,
+  helper: HelperIdentity,
+): NativeDispatchOpt | undefined {
+  if (helper.version.features?.includes("dispatch-opt") !== true) return undefined;
+  return (options.optimization ?? "2") === "2" ? GENERATED_DISPATCH_OPT : undefined;
+}
+
 function artifactMode(): number {
   return 0o666 & ~process.umask();
 }
@@ -466,6 +479,7 @@ export async function emitNativeArtifact(
     );
   }
   const helper = await resolveHelper(target, options.resolvePackageJson, options.helperHost);
+  const dispatchOpt = dispatchOptFor(options, helper.identity);
   // A build that records block counts runs the helper on every partition.
   const root = await prepareBuildCacheRoot(
     options.profile?.recordBlocks !== undefined
@@ -540,6 +554,7 @@ export async function emitNativeArtifact(
       "--source-path",
       options.sourcePath,
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
+      ...(dispatchOpt === undefined ? [] : ["--dispatch-opt", dispatchOpt]),
       ...nativeProfileHelperArgs(options.profile),
     ]);
     for (const stage of stages) {

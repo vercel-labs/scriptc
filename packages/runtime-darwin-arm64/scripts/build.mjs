@@ -84,6 +84,7 @@ async function build() {
   const quickjs = join(vendorRoot, "quickjs-ng");
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
+  const mlkem = join(vendorRoot, "mlkem-native");
   const brotli = join(vendorRoot, "brotli", "c");
   const zstd = join(vendorRoot, "zstd", "lib");
   const sqlite = join(vendorRoot, "sqlite");
@@ -265,6 +266,53 @@ async function build() {
     )
       .flat()
       .sort();
+    // ML-KEM (mlkem-native): the C backend compiled once per parameter set;
+    // the multilevel build keeps the shared code in the 768 object and
+    // prefixes the level-dependent symbols. One source compiled three ways, so
+    // it builds its objects by name instead of through `archive`.
+    async function mlkemArchive() {
+      const root = join(stagedOutputRoot, "vendor", "mlkem");
+      const objectRoot = join(root, "objects");
+      const flags = [
+        "-target",
+        RUNTIME_PACK_MATRIX.target.llvm_triple,
+        "-std=c11",
+        "-O2",
+        ...codeAlignment,
+        ...vendorHardening,
+        "-I",
+        mlkem,
+        "-I",
+        join(mlkem, "src"),
+      ];
+      const levels = [
+        { set: 512, name: "mlkem512", define: "MLK_CONFIG_MULTILEVEL_NO_SHARED" },
+        { set: 768, name: "mlkem768", define: "MLK_CONFIG_MULTILEVEL_WITH_SHARED" },
+        { set: 1024, name: "mlkem1024", define: "MLK_CONFIG_MULTILEVEL_NO_SHARED" },
+      ];
+      await parallel(levels, async (level) =>
+        compile(join(mlkem, "mlkem_native.c"), join(objectRoot, `${level.name}.o`), [
+          ...flags,
+          `-DMLK_CONFIG_PARAMETER_SET=${level.set}`,
+          "-DMLK_CONFIG_MULTILEVEL_BUILD",
+          `-D${level.define}`,
+        ]),
+      );
+      const output = join(root, "libscriptc-mlkem.a");
+      await createDeterministicArchive(
+        archiver,
+        output,
+        levels.map((level) => join(objectRoot, `${level.name}.o`)),
+      );
+      await rm(objectRoot, { recursive: true, force: true });
+      return {
+        id: "mlkem",
+        path: artifactPath(output),
+        sha256: await sha256(output),
+        size: (await stat(output)).size,
+      };
+    }
+
     const archives = [
       await archive("libregexp", LRE_SOURCES, quickjs, [
         "-target",
@@ -320,6 +368,7 @@ async function build() {
         "-I",
         sqlite,
       ]),
+      await mlkemArchive(),
       await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [
         "-target",
         RUNTIME_PACK_MATRIX.target.llvm_triple,

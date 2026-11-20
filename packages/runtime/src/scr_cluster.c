@@ -576,7 +576,10 @@ static void scr_cl_send_cb_drain(void) {
     memmove(scr_cl_send_cbs, scr_cl_send_cbs + 1,
             (scr_cl_send_cbs_n - 1) * sizeof *scr_cl_send_cbs);
     scr_cl_send_cbs_n--;
-    ScrDyn *arg = failed ? scr_cl_channel_closed_error() : scr_cl_undefined();
+    /* Node's send callback's success argument is null (not undefined):
+     * a typed (error: Error | null) parameter converts it, and an untyped
+     * one reads null as Node hands it. */
+    ScrDyn *arg = failed ? scr_cl_channel_closed_error() : scr_dyn_new_null();
     ScrDyn *args[] = {arg};
     ScrDyn *r = scr_dyn_call(cb, args, 1, "send callback");
     scr_dyn_release(r);
@@ -606,7 +609,10 @@ static bool scr_cl_worker_send(ScrClusterWorker *w, ScrDyn *message, ScrDyn *cal
   if (text == NULL) return false;
   bool ok = w->self ? scr_process_ipc_send(text) : scr_child_ipc_send(w->child, text);
   scr_str_release(text);
-  if (callback != NULL) scr_cl_send_cb_queue(callback, !ok);
+  /* A false return means the channel is at its high-water mark, not that
+   * the message was lost: the queued send still flushes, and its callback
+   * answers success (only a disconnected channel fails it, above). */
+  if (callback != NULL) scr_cl_send_cb_queue(callback, false);
   return ok;
 }
 

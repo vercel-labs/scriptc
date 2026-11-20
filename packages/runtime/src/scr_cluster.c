@@ -547,19 +547,16 @@ static bool scr_cl_worker_connected(ScrClusterWorker *w) {
   return w->self ? scr_process_ipc_connected() : scr_child_ipc_connected(w->child);
 }
 
-/* Node's send callback is asynchronous: it lands on the next tick, and it
- * carries ERR_IPC_CHANNEL_CLOSED ("Channel closed") when the message did
- * not leave the process. A false return alone does not decide that: it is
- * also the backpressure answer for a message that still flushes. An entry
- * remembers the worker (`recheck`) for the sends that answered false, so
- * the drain can see whether the worker exited or its channel closed before
- * the callback ran — the broken-pipe case, where the send failed just as
- * the worker went away. */
+/* Node's send callback is asynchronous and carries the write's outcome:
+ * the channel's send entry reports a write that could not complete (the
+ * broken pipe of a worker that is already gone) as well as a channel
+ * closed first. The thunk below turns that outcome into a queued callback
+ * pair — it does not box the channel's error, so nothing of the error
+ * survives the send — and the drain calls the program's callback on the
+ * next tick with null or the canonical ERR_IPC_CHANNEL_CLOSED. */
 typedef struct {
   ScrDyn *cb; /* +1 */
-  ScrClusterWorker *w; /* +1, or NULL */
   bool failed;
-  bool recheck;
 } ScrClSendCb;
 
 /* The dyn %Error Node's closed-channel send delivers. */
@@ -576,52 +573,71 @@ static ScrDyn *scr_cl_channel_closed_error(void) {
 static SCR_TL ScrClSendCb *scr_cl_send_cbs = NULL;
 static SCR_TL size_t scr_cl_send_cbs_n = 0;
 
+static void scr_cl_send_cb_queue(ScrDyn *cb, bool failed) {
+  ScrClSendCb *items = realloc(scr_cl_send_cbs, (scr_cl_send_cbs_n + 1) * sizeof *items);
+  if (!items) scr_trap("out of memory");
+  scr_cl_send_cbs = items;
+  items[scr_cl_send_cbs_n++] = (ScrClSendCb){scr_dyn_retain(cb), failed};
+}
+
 static void scr_cl_send_cb_drain(void) {
   while (scr_cl_send_cbs_n > 0 && !scr_exc_pending()) {
     ScrClSendCb entry = scr_cl_send_cbs[0];
     memmove(scr_cl_send_cbs, scr_cl_send_cbs + 1,
             (scr_cl_send_cbs_n - 1) * sizeof *scr_cl_send_cbs);
     scr_cl_send_cbs_n--;
-    bool failed = entry.failed;
-    if (!failed && entry.recheck && entry.w != NULL)
-      failed = entry.w->exited || !scr_cl_worker_connected(entry.w);
     /* Node's success argument is null (not undefined): a typed
      * (error: Error | null) parameter converts it. */
-    ScrDyn *arg = failed ? scr_cl_channel_closed_error() : scr_dyn_new_null();
+    ScrDyn *arg = entry.failed ? scr_cl_channel_closed_error() : scr_dyn_new_null();
     ScrDyn *args[] = {arg};
     ScrDyn *r = scr_dyn_call(entry.cb, args, 1, "send callback");
     scr_dyn_release(r);
     scr_dyn_release(arg);
     scr_dyn_release(entry.cb);
-    scr_clw_release(entry.w);
   }
 }
 
-static void scr_cl_send_cb_queue(ScrDyn *cb, ScrClusterWorker *w, bool failed, bool recheck) {
-  ScrClSendCb *items = realloc(scr_cl_send_cbs, (scr_cl_send_cbs_n + 1) * sizeof *items);
-  if (!items) scr_trap("out of memory");
-  scr_cl_send_cbs = items;
-  items[scr_cl_send_cbs_n++] =
-      (ScrClSendCb){scr_dyn_retain(cb), w != NULL ? scr_clw_retain(w) : NULL, failed, recheck};
+/* The channel's completion entry: it runs once, with the send's error or
+ * NULL, and hands the outcome to the callback queue. The channel owns the
+ * closure and releases it after this call. */
+static void scr_cl_send_done_thunk(ScrClosure *cb, ScrError *error) {
+  ScrDyn *dyn_cb = scr_box_get_ref(cb->caps[0]); /* +1 */
+  scr_cl_send_cb_queue(dyn_cb, error != NULL);
+  scr_dyn_release(dyn_cb);
+  /* The completion's error belongs to this callback (the channel releases
+   * it only when no callback runs); its outcome is all the queue keeps. */
+  scr_error_release(error);
   if (scr_cl_send_cbs_n == 1) scr_next_tick_raw(&scr_cl_send_cb_drain);
 }
 
+static ScrClosure *scr_cl_send_done_closure(ScrDyn *callback) {
+  ScrClosure *cb = scr_closure_new((void *)&scr_cl_send_done_thunk, 1);
+  cb->caps[0] = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
+  scr_box_set_ref(cb->caps[0], scr_dyn_retain(callback));
+  return cb;
+}
+
 static bool scr_cl_worker_send(ScrClusterWorker *w, ScrDyn *message, ScrDyn *callback) {
-  if (!scr_cl_worker_connected(w)) {
-    if (callback != NULL) scr_cl_send_cb_queue(callback, w, true, false);
-    return false;
-  }
   /* The checked-dynamic JSON walker the compiler's own message sends use;
    * it answers the serialized text (+1) and reports a refusal through the
    * pending exception. */
   ScrStr *text = scr_dyn_format_j(message);
   if (text == NULL) {
-    if (callback != NULL) scr_cl_send_cb_queue(callback, w, true, false);
+    if (callback != NULL) {
+      scr_cl_send_cb_queue(callback, true);
+      if (scr_cl_send_cbs_n == 1) scr_next_tick_raw(&scr_cl_send_cb_drain);
+    }
     return false;
   }
-  bool ok = w->self ? scr_process_ipc_send(text) : scr_child_ipc_send(w->child, text);
+  bool ok;
+  if (callback == NULL) {
+    ok = w->self ? scr_process_ipc_send(text) : scr_child_ipc_send(w->child, text);
+  } else {
+    ScrClosure *done = scr_cl_send_done_closure(callback);
+    ok = w->self ? scr_process_ipc_send_cb(text, done, scr_cl_send_done_thunk)
+                 : scr_child_ipc_send_cb(w->child, text, done, scr_cl_send_done_thunk);
+  }
   scr_str_release(text);
-  if (callback != NULL) scr_cl_send_cb_queue(callback, w, false, !ok);
   return ok;
 }
 
@@ -1132,10 +1148,7 @@ static void scr_cl_levels_cleanup(void) {
   free(scr_cl_fork_pending);
   scr_cl_fork_pending = NULL;
   scr_cl_fork_pending_n = 0;
-  for (size_t i = 0; i < scr_cl_send_cbs_n; i++) {
-    scr_dyn_release(scr_cl_send_cbs[i].cb);
-    scr_clw_release(scr_cl_send_cbs[i].w);
-  }
+  for (size_t i = 0; i < scr_cl_send_cbs_n; i++) scr_dyn_release(scr_cl_send_cbs[i].cb);
   free(scr_cl_send_cbs);
   scr_cl_send_cbs = NULL;
   scr_cl_send_cbs_n = 0;

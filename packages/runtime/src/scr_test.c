@@ -544,9 +544,28 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
  * thrown error on error). The diagnostics_channel unit links only for a
  * program that uses it (a subscriber lives in the program), so its entry
  * points are weak: a program without subscribers has nothing to publish. */
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak *reference* in an executable, so Apple gets
+ * weak definitions answering what the unit's absence means: no channel, no
+ * subscribers, nothing published. A linked unit's strong definitions replace
+ * them. */
+__attribute__((weak)) double scr_dc_channel(ScrDyn *name) {
+  (void)name;
+  return NAN;
+}
+__attribute__((weak)) void scr_dc_publish(double handle, ScrDyn *message) {
+  (void)handle;
+  (void)message; /* the caller keeps its reference */
+}
+__attribute__((weak)) bool scr_dc_chan_has_subscribers(double handle) {
+  (void)handle;
+  return false;
+}
+#else
 extern double scr_dc_channel(ScrDyn *name) __attribute__((weak));
 extern void scr_dc_publish(double handle, ScrDyn *message) __attribute__((weak));
 extern bool scr_dc_chan_has_subscribers(double handle) __attribute__((weak));
+#endif
 
 static SCR_TL ScrStr *scr_test_entry; /* the compiled entry file's path, owned */
 

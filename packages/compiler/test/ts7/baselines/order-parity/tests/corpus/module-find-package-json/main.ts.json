@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-find-package-json/nested/child.mjs",
+  "<repo>/tests/corpus/module-find-package-json/main.ts"
+ ],
+ "diags": []
+}

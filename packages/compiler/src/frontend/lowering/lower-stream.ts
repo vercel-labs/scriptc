@@ -2407,45 +2407,93 @@ function lowerReadableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
   };
 }
 
-/** Writable.fromWeb(writableStream): a Writable over the web stream's writer
- * (scr_stream_from_web_writable.c). The options have no lowering yet. */
+/** Writable.fromWeb(writableStream[, options]): a Writable over the web
+ * stream's writer (scr_stream_from_web_writable.c). The options take
+ * objectMode, decodeStrings, highWaterMark and signal. */
 function lowerWritableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
   if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
     lowerer.noLowering(
       `Writable.fromWeb with ${args.length} arguments`,
       call,
-      "the supported form is Writable.fromWeb(writableStream)",
+      "the supported form is Writable.fromWeb(writableStream, options)",
     );
   }
+  const web = lowerer.lowerExprExpecting(args[0]!, DYN);
+  let objectMode = false;
+  let decodeStrings = true;
+  let hwm: IrExpr = numLit(-1, loc);
+  let signal: IrExpr | null = null;
   const options = args[1];
   if (options !== undefined) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
         "Writable.fromWeb options that are not an object literal",
         options,
-        "pass no options, or an empty object literal",
+        "pass { objectMode, decodeStrings, highWaterMark, signal } as an object literal",
       );
     }
-    for (const option of options.properties.nodes) {
+    for (const p of options.properties.nodes) {
       const key =
-        (ts.isPropertyAssignment(option) || ts.isShorthandPropertyAssignment(option)) &&
-        ts.isIdentifier(option.name)
-          ? option.name.text
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        ts.isIdentifier(p.name)
+          ? p.name.text
           : null;
+      const value =
+        key === null
+          ? null
+          : ts.isShorthandPropertyAssignment(p)
+            ? (p.name as ts.Identifier)
+            : (p as ts.PropertyAssignment).initializer;
+      if (key === "objectMode" && value) {
+        if (value.kind === ts.SyntaxKind.TrueKeyword) objectMode = true;
+        else if (value.kind !== ts.SyntaxKind.FalseKeyword)
+          lowerer.noLowering(
+            "the Writable.fromWeb option 'objectMode' with this value",
+            p,
+            "write true or false",
+          );
+        continue;
+      }
+      if (key === "decodeStrings" && value) {
+        if (value.kind === ts.SyntaxKind.FalseKeyword) decodeStrings = false;
+        else if (value.kind !== ts.SyntaxKind.TrueKeyword)
+          lowerer.noLowering(
+            "the Writable.fromWeb option 'decodeStrings' with this value",
+            p,
+            "write true or false",
+          );
+        continue;
+      }
+      if (key === "highWaterMark" && value) {
+        hwm = lowerer.lowerExprExpecting(value, F64);
+        continue;
+      }
+      if (key === "signal" && value) {
+        if (!sideEffectFreeOptionValue(value) && !pureRead(value)) {
+          lowerer.noLowering(
+            "the Writable.fromWeb option 'signal' with this value",
+            p,
+            "pass a variable or property read (const signal = controller.signal)",
+          );
+        }
+        signal = lowerer.lowerExprExpecting(value, DYN);
+        continue;
+      }
       lowerer.noLowering(
         key === null
           ? "Writable.fromWeb options with this member"
           : `the Writable.fromWeb option '${key}'`,
-        option,
-        "the supported form is Writable.fromWeb(writableStream)",
+        p,
+        "objectMode, decodeStrings, highWaterMark and signal are the Writable.fromWeb options",
       );
     }
   }
+  const flags = (objectMode ? 2 : 0) | (decodeStrings ? 0 : 4);
   return {
     kind: "libCall",
-    fn: "webstream.writableFromWeb",
-    args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
+    fn: "webstream.writableFromWebOpts",
+    args: [web, numLit(flags, loc), hwm, signal ?? dynUndefinedExpr(loc)],
     type: { kind: "object", className: "%Writable" },
     loc,
   };

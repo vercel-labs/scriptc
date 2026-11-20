@@ -6,6 +6,8 @@
   "<repo>/packages/compiler/shims/undici/core/readable.ts",
   "<repo>/packages/compiler/shims/undici/core/util.ts",
   "<repo>/packages/compiler/shims/undici/core/dispatcher.ts",
+  "<repo>/packages/compiler/shims/undici/core/dispatcher-v8.ts",
+  "<repo>/packages/compiler/shims/undici/core/dispatcher-base.ts",
   "<repo>/packages/compiler/shims/undici/core/request.ts",
   "<repo>/packages/compiler/shims/undici/core/timers.ts",
   "<repo>/packages/compiler/shims/undici/core/client.ts",

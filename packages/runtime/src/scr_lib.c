@@ -428,9 +428,12 @@ void scr_lib_init(int argc, char **argv) {
   scr_lib_argc = argc;
   scr_lib_argv = argv;
   if (argc >= 2 && strncmp(argv[1], "--scriptc-fork=", 15) == 0) {
-    unsigned long long target = 0, read_handle = 0, write_handle = 0;
+    /* The target is signed: -1 selects the program's own entry, the module
+     * node:cluster restarts its workers with (scr_cluster.c). */
+    long long target = 0;
+    unsigned long long read_handle = 0, write_handle = 0;
     char tail = '\0';
-    if (sscanf(argv[1] + 15, "%llu,%llu,%llu%c", &target, &read_handle,
+    if (sscanf(argv[1] + 15, "%lld,%llu,%llu%c", &target, &read_handle,
                &write_handle, &tail) == 3) {
       scr_lib_has_fork = true;
       scr_lib_fork_target_id = (double)target;

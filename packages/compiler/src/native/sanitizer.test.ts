@@ -21,6 +21,7 @@ const features = {
   processFeatures: false,
   islandChild: false,
   childOptionExt: false,
+  cluster: false,
   spawnCaptureBytes: false,
   childErrorFields: false,
   childStreamFlow: false,

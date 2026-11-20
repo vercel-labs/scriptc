@@ -498,6 +498,20 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.cluster.SCHED_NONE",
+      "kind": "node-builtin",
+      "name": "cluster.SCHED_NONE",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.cluster.SCHED_RR",
+      "kind": "node-builtin",
+      "name": "cluster.SCHED_RR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
       "id": "node-builtin.cluster.isMaster",
       "kind": "node-builtin",
       "name": "cluster.isMaster",

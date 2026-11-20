@@ -3965,6 +3965,22 @@ function buildLibFnSignatures() {
     "process.disconnect": { argTypes: [], result: VOID },
     "process.onMessage": { argTypes: [null, BOOL], result: VOID },
     "process.onDisconnect": { argTypes: [null, BOOL], result: VOID },
+    /** node:cluster (scr_cluster.c). The module's reads are runtime values
+     * (a compiled program can be either a primary or a worker), fork
+     * answers the worker handle, and the cluster object's events take a
+     * checked-dynamic listener. */
+    "cluster.init": { argTypes: [], result: VOID },
+    "cluster.isPrimary": { argTypes: [], result: BOOL },
+    "cluster.isWorker": { argTypes: [], result: BOOL },
+    "cluster.schedulingPolicy": { argTypes: [], result: F64 },
+    "cluster.fork": { argTypes: [DYN], result: DYN },
+    "cluster.setup": { argTypes: [DYN], result: VOID },
+    "cluster.disconnect": { argTypes: [DYN], result: VOID },
+    "cluster.settings": { argTypes: [], result: DYN },
+    "cluster.workers": { argTypes: [], result: DYN },
+    "cluster.worker": { argTypes: [], result: DYN },
+    "cluster.on": { argTypes: [STRING, DYN, BOOL], result: VOID },
+    "cluster.off": { argTypes: [STRING, DYN], result: VOID },
     /** child_process.execFile's callback slice: starts an all-piped child,
      * captures stdout/stderr, and moves the error-first callback into the
      * child registry. The callback shape is program-dependent and checked

@@ -13324,7 +13324,10 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/cluster-disconnect-primary.cjs",
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -13347,8 +13350,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "compiler-feature:cluster.Worker",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13370,8 +13379,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.worker.disconnect",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13393,8 +13408,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.worker.isConnected",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13416,8 +13437,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.worker.isDead",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13439,8 +13466,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.worker.kill",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13462,8 +13495,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.worker.send",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13485,8 +13524,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.exitedAfterDisconnect",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -13508,8 +13553,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.id",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -13531,8 +13582,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "compiler-feature:cluster.process",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -13554,8 +13611,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'disconnect'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13600,8 +13663,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'exit'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13646,8 +13715,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'message'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13669,8 +13744,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'online'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13692,8 +13773,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.cluster.disconnect",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13715,8 +13802,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.cluster.fork",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13738,8 +13831,14 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "compiler-feature:cluster.cluster.setupMaster",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13761,8 +13860,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "compiler-feature:cluster.cluster.setupPrimary",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13784,10 +13889,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.cluster.isMaster",
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.cluster.isMaster",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -13810,10 +13918,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.cluster.isPrimary",
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.isPrimary",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -13836,10 +13947,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.cluster.isWorker",
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.isWorker",
         "tests": [
-          "tests/corpus/957-builtins-namespace.ts"
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -13862,8 +13976,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "compiler-feature:cluster.cluster.schedulingPolicy",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13885,8 +14005,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "compiler-feature:cluster.settings",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -13908,8 +14034,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.worker",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -13931,8 +14063,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "partial",
+        "evidence": "compiler-feature:cluster.workers",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -13954,8 +14092,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'disconnect'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -13977,8 +14121,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'exit'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -14000,8 +14150,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'fork'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -14046,8 +14202,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'message'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -14069,8 +14231,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'online'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -14092,8 +14260,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:cluster"
+        "status": "supported",
+        "evidence": "compiler-feature:cluster.'setup'",
+        "tests": [
+          "tests/corpus/cluster-fork-lifecycle.cjs",
+          "tests/corpus/cluster-settings-policy.cjs",
+          "tests/corpus/cluster-worker-marker/main.ts",
+          "tests/corpus/cluster-disconnect-primary.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

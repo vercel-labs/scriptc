@@ -711,6 +711,14 @@ function lowerVoidTruthinessCall(
 
 function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   refuseOwnCallPrototype(lowerer, expr);
+  // node:cluster's own event registration (`cluster.on('exit', ...)`) is a
+  // method of the exports object, not one of the module's named exports, so
+  // it is claimed before the checked-dynamic member path can read the
+  // namespace object's inherited EventEmitter method and fence it.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const clusterEvent = lowerer.lowerClusterMethodCall(expr, expr.expression);
+    if (clusterEvent) return clusterEvent;
+  }
   // `c.toString()` of a builtin constructor value is the constructor's text,
   // whatever tier holds the value (held-constructors.ts).
   if (
@@ -2258,6 +2266,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // traceCallback over the f64 tracing handle.
       lowerer.lowerTracingChannelMethodCall(expr, expr.expression) ??
       lowerer.lowerServerMethodCall(expr, expr.expression) ??
+      lowerer.lowerClusterMethodCall(expr, expr.expression) ??
       lowerer.lowerDgramMethodCall(expr, expr.expression) ??
       // node:test — skip/todo/only twins on named import bindings, the
       // TestContext surface (t.test/t.skip/t.diagnostic), t.assert.*.

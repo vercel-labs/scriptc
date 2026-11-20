@@ -332,6 +332,13 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
 ];
 
 const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
+  // node:cluster validates its env argument and refuses setupPrimary in a
+  // worker process (ERR_WORKER_INIT_FAILED).
+  "cluster.fork",
+  "cluster.setup",
+  "cluster.on",
+  "cluster.off",
+  "cluster.disconnect",
   "icu.dateTimeFormatFormatDyn",
   "icu.numToLocaleString",
   "icu.dateTimeFormatNew",

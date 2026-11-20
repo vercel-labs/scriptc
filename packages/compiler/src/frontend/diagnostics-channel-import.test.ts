@@ -17,6 +17,12 @@ test("an import, an export or a require of the module is the fact", () => {
   expect(imports("c.ts", 'export * from "node:diagnostics_channel";')).toBe(true);
 });
 
+test("an escaped specifier is still found", () => {
+  expect(imports("escaped-u.js", 'require("node:diagnostics\\u005fchannel");')).toBe(true);
+  expect(imports("escaped-x.js", 'require("node:diagnostics\\x5fchannel");')).toBe(true);
+  expect(imports("escaped-all.js", 'require("\\u006eode:diagnostics_channel");')).toBe(true);
+});
+
 test("a file that cannot name the module answers without the walk", () => {
   expect(imports("plain.js", "console.log(1);")).toBe(false);
   expect(

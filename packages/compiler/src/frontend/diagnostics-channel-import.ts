@@ -49,7 +49,14 @@ function importsChannel(file: ts.SourceFile): boolean {
  * export or require — the two cheap answers that keep the program's library
  * and declaration files out of the walk. */
 export function sourceImportsDiagnosticsChannel(file: ts.SourceFile): boolean {
-  if (file.isDeclarationFile || !ts.sourceTextIncludes(file, "diagnostics_channel")) return false;
+  if (file.isDeclarationFile) return false;
+  // A static import, export or require spells the module's name, but a
+  // string literal may spell any character as an escape
+  // (`require("node:diagnostics\\u005fchannel")`), and the parsed literal's
+  // text is the decoded name. A file is walked when its text spells the name
+  // or contains a backslash, the only other way to write it.
+  if (!ts.sourceTextIncludes(file, "diagnostics_channel") && !ts.sourceTextIncludes(file, "\\"))
+    return false;
   return importsChannel(file);
 }
 

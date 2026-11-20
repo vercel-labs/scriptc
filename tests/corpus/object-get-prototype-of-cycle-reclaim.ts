@@ -26,4 +26,37 @@ for (let i = 0; i < 200; i++) {
   Object.setPrototypeOf(list, listPrototype)
   total += listPrototype.first()
 }
+// An array of arrays given a prototype: its child slots are arrays the
+// collector walks, so every array in the program must be a collector object
+// too, or a plain child would be read as one.
+for (let i = 0; i < 50; i++) {
+  const outer: number[][] = [[i, i + 1], [i + 2]]
+  const outerPrototype = {
+    first(): number {
+      return outer[0]![0]!
+    },
+  }
+  Object.setPrototypeOf(outer, outerPrototype)
+  total += outerPrototype.first()
+}
+// Arrays of strings and of booleans given prototypes: each element is
+// released exactly once, at the element kind's slot width.
+for (let i = 0; i < 50; i++) {
+  const words: string[] = ["a" + i, "b" + i, "c" + i]
+  const wordPrototype = {
+    sized(): number {
+      return words.length
+    },
+  }
+  Object.setPrototypeOf(words, wordPrototype)
+  total += wordPrototype.sized()
+  const flags: boolean[] = [i % 2 === 0, true, false]
+  const flagPrototype = {
+    sized(): number {
+      return flags.length
+    },
+  }
+  Object.setPrototypeOf(flags, flagPrototype)
+  total += flagPrototype.sized()
+}
 console.log("total", total)

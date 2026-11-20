@@ -1483,6 +1483,12 @@ void scr_arr_force_cyclic_kind(double kind) {
   /* An element type the compiler could not place is a typed reference,
    * compact or not: force both slot kinds. */
   if ((int)kind == SCR_ELEM_REF) scr_arr_force_cyclic[SCR_ELEM_CREF] = true;
+  /* An array of arrays' child slots are arrays, which its trace hands to the
+   * collector as objects: every array kind the program builds must then
+   * carry the header too, because the trace cannot tell a headered child
+   * from a plain one. */
+  if ((int)kind == SCR_ELEM_ARR)
+    for (int k = 0; k <= SCR_ELEM_I32; k++) scr_arr_force_cyclic[k] = true;
 }
 
 static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind elem,
@@ -1633,16 +1639,18 @@ static void scr_arr_release_untraced_elements(ScrArr *a) {
   const ScrArrOps *ops = scr_arr_ops(a);
   if (!scr_arr_has_states(a)) {
     for (size_t i = 0; i < end; i++) {
-      uint64_t old = a->data[i];
-      a->data[i] = 0;
+      /* A slot's width is the element kind's: one byte for booleans, four
+       * for compact references and int32s, eight otherwise. */
+      uint64_t old = scr_arr_dense_get(a, i);
+      scr_arr_dense_put(a, i, 0);
       scr_elem_release_with(elem, ops, old);
     }
   } else {
     uint8_t *states = scr_arr_states_end(a);
     for (size_t i = 0; i < end; i++) {
       if (*scr_arr_state_in(states, i) != SCR_ARR_VALUE) continue;
-      uint64_t old = a->data[i];
-      a->data[i] = 0;
+      uint64_t old = scr_arr_dense_get(a, i);
+      scr_arr_dense_put(a, i, 0);
       *scr_arr_state_in(states, i) = 0;
       scr_elem_release_with(elem, ops, old);
     }
@@ -1675,6 +1683,7 @@ void scr_arr_trace_v(void *a0, ScrTraceVisit visit, void *ctx) {
   if (SCR_AX(a)->metadata) {
     visit(SCR_AX(a)->metadata, ctx);
   }
+  if (SCR_AX(a)->prototype) visit(SCR_AX(a)->prototype, ctx);
   /* Growth and truncation leave spare capacity empty. Sparse slots and
    * named properties are separate edges, independent of dense length. */
   size_t end = a->len < a->cap ? a->len : a->cap;
@@ -1904,6 +1913,8 @@ static void scr_arr_release_contents(ScrArr *a) {
   if (scr_arr_ext_of(a)) {
     scr_dyn_release(scr_arr_ext_of(a)->metadata);
     scr_arr_ext_of(a)->metadata = NULL;
+    scr_dyn_release(scr_arr_ext_of(a)->prototype);
+    scr_arr_ext_of(a)->prototype = NULL;
     if (scr_arr_ext_of(a)->foreign) scr_arr_release_foreign(a);
   }
   if (scr_elem_is_ref(a->elem)) {
@@ -1912,18 +1923,23 @@ static void scr_arr_release_contents(ScrArr *a) {
       /* Releasing a string runs no user code, so the slots need no clearing
        * first (and the storage cannot move under the loop); immortal strings
        * (interned characters, literals) need no call. */
-      const uint64_t *data = a->data;
+      uint64_t *data = a->data;
       /* Slots below the hole-free prefix bound hold values, as do all
-       * slots below the length of an array without states. */
+       * slots below the length of an array without states. Each slot is
+       * cleared before its release, so the collector-path teardown cannot
+       * release the same string again. */
       size_t filled = !scr_arr_has_states(a) ? end : a->filled < end ? a->filled : end;
       for (size_t i = 0; i < filled; i++) {
         ScrStr *s = (ScrStr *)scr_slot_to_ptr(data[i]);
+        data[i] = 0;
         if (s && s->rc != SIZE_MAX) scr_str_release(s);
       }
-      const uint8_t *states = scr_arr_states_end_w(a, 8);
+      uint8_t *states = scr_arr_states_end_w(a, 8);
       for (size_t i = filled; i < end; i++) {
         if (*scr_arr_state_in(states, i) != SCR_ARR_VALUE) continue;
         ScrStr *s = (ScrStr *)scr_slot_to_ptr(data[i]);
+        data[i] = 0;
+        *scr_arr_state_in(states, i) = 0;
         if (s && s->rc != SIZE_MAX) scr_str_release(s);
       }
     } else if (!scr_arr_has_states(a)) {
@@ -1967,6 +1983,10 @@ static void scr_arr_release_contents(ScrArr *a) {
       }
     }
   }
+  /* Everything was released here: a teardown that runs next (the collector
+   * path of a cycle-capable array) finds no slot to release again. */
+  a->len = 0;
+  a->filled = 0;
 }
 
 static void scr_arr_destroy(void *object) {
@@ -6187,47 +6207,24 @@ static ScrDyn *scr_arr_class_fields(ScrArr *a) {
   return cls->fields(scr_arr_retain(a));
 }
 
-/* Object.setPrototypeOf's prototype for this array: a hidden named
- * property of the array's own metadata object (created on first use), so the
- * reference belongs to the array — the collector visits it with the array's
- * metadata and the array's teardown releases it. The key begins with NUL so
- * no JavaScript property write can collide with it. */
-static const char SCR_ARR_PROTO_KEY[] = "\0scriptc.prototype";
-#define SCR_ARR_PROTO_KEY_LEN (sizeof SCR_ARR_PROTO_KEY - 1)
-
-/* Whether a metadata property is the private prototype storage: it is the
- * array's own bookkeeping, never an own property of the array or of a view
- * built from it. */
-static bool scr_arr_private_key(const char *key, size_t len) {
-  return len == SCR_ARR_PROTO_KEY_LEN && memcmp(key, SCR_ARR_PROTO_KEY, len) == 0;
-}
-
-static ScrDyn *scr_arr_prototype_metadata(ScrArr *a) {
-  ScrArrExt *x = scr_arr_ext(a);
-  if (!x) return NULL;
-  if (!x->metadata) x->metadata = scr_dyn_new_obj();
-  return x->metadata;
-}
-
+/* Object.setPrototypeOf's prototype for this array, owned by the array's own
+ * out-of-line storage: the collector visits it with the array and the
+ * teardown releases it, and no JavaScript property can observe or collide
+ * with it. NULL means the array has no prototype of its own; a null-kind
+ * value is the null prototype. */
 ScrDyn *scr_arr_prototype_override(ScrArr *a, bool *present) {
-  *present = false;
   ScrArrExt *x = scr_arr_ext_of(a);
-  if (!x || !x->metadata) return NULL;
-  ScrDyn *metadata = x->metadata;
-  ScrDyn *value = scr_dyn_obj_get(metadata, SCR_ARR_PROTO_KEY, SCR_ARR_PROTO_KEY_LEN);
-  if (!value) return NULL;
-  *present = true;
-  return scr_dyn_retain(value);
+  *present = x != NULL && x->prototype != NULL;
+  return *present ? scr_dyn_retain(x->prototype) : NULL;
 }
 
 void scr_arr_set_prototype_override(ScrArr *a, ScrDyn *prototype) {
-  ScrDyn *metadata = scr_arr_prototype_metadata(a);
-  if (!metadata) return;
+  ScrArrExt *x = scr_arr_ext(a);
+  if (!x) return;
   ScrDyn *held = prototype ? scr_dyn_retain(prototype) : scr_dyn_new_null();
-  scr_dyn_obj_set(metadata, SCR_ARR_PROTO_KEY, SCR_ARR_PROTO_KEY_LEN, held);
-  scr_dyn_obj_set_attrs_at(metadata,
-                           scr_dyn_obj_index_of(metadata, SCR_ARR_PROTO_KEY, SCR_ARR_PROTO_KEY_LEN),
-                           false, false, true);
+  ScrDyn *old = x->prototype;
+  x->prototype = held;
+  scr_dyn_release(old);
 }
 
 void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
@@ -6251,11 +6248,7 @@ void scr_arr_copy_metadata(ScrArr *a, ScrDyn *target) {
     return;
   metadata = SCR_AX(a)->metadata;
   if (!metadata) return;
-  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) {
-    const ScrDynProp entry = scr_dyn_obj_prop_at(metadata, i);
-    if (scr_arr_private_key(entry.key, entry.key_len)) continue;
-    scr_dyn_copy_prop_at(target, metadata, i);
-  }
+  for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) scr_dyn_copy_prop_at(target, metadata, i);
 }
 
 ScrArr *scr_arr_named_keys(ScrArr *a) {
@@ -6301,7 +6294,6 @@ bool scr_arr_has_named_key(ScrArr *a, ScrStr *key) {
   if (!metadata || metadata->kind != SCR_DYN_OBJ) return false;
   for (size_t i = 0; i < scr_dyn_obj_count(metadata); i++) {
     ScrDynProp entry = scr_dyn_obj_prop_at(metadata, i);
-    if (scr_arr_private_key(entry.key, entry.key_len)) continue;
     if (entry.key_len == key->len && memcmp(entry.key, key->data, key->len) == 0) return true;
   }
   return false;

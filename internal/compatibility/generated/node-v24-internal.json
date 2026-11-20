@@ -438,6 +438,7 @@
           "tests/corpus/5523-assert-class-options.js",
           "tests/corpus/5524-assert-class-skip-prototype.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts",
           "tests/corpus/node24-no-error-assertions-coercion.js",
           "tests/corpus/node24-no-error-assertions.cjs",
           "tests/corpus/node24-no-error-assertions.ts",
@@ -706,16 +707,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -844,16 +842,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.doesNotMatch",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -968,16 +963,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.fail",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1000,16 +992,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.fail",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1064,16 +1053,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.match",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1220,16 +1206,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.ok",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -28231,16 +28214,13 @@
       "anchor": "dep0094-using-assertfail-with-more-than-one-argument",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.fail",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -98482,16 +98462,13 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts",
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
@@ -99236,16 +99213,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"

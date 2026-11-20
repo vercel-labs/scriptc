@@ -331,7 +331,14 @@ __attribute__((weak)) void scr_abort_signal_abort(ScrDyn *controller) { (void)co
 __attribute__((weak)) void scr_abort_signal_drop_listeners(ScrDyn *controller) {
   (void)controller;
 }
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
 static bool scr_http_abort_available(void) { return scr_dyn_abort_unit_linked != 0; }
+static bool scr_http_events_available(void) { return scr_dyn_event_target_unit_linked != 0; }
 #else
 extern ScrDyn *scr_abort_signal_controller_new(void) __attribute__((weak));
 extern ScrDyn *scr_abort_signal_signal(ScrDyn *controller) __attribute__((weak));
@@ -341,6 +348,9 @@ static bool scr_http_abort_available(void) {
   return scr_abort_signal_controller_new != NULL && scr_abort_signal_signal != NULL &&
          scr_abort_signal_abort != NULL && scr_abort_signal_drop_listeners != NULL;
 }
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
+    __attribute__((weak));
+static bool scr_http_events_available(void) { return scr_events_add_abort_listener != NULL; }
 #endif
 
 static void scr_http_req_abort_signal(ScrHttpReq *r) {
@@ -10513,7 +10523,7 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
   ScrNetSocket *sock = scr_net_connect_dyn(
       argc > 0 ? args[0] : scr_dyn_undefined(), argc > 1 ? args[1] : NULL,
       argc > 2 ? args[2] : NULL, NULL,
-      scr_events_add_abort_listener != NULL ? scr_events_add_abort_listener : NULL, fence);
+      scr_http_events_available() ? scr_events_add_abort_listener : NULL, fence);
   scr_str_release(fence);
   if (sock == NULL) return NULL; /* an exception is pending */
   ScrDyn *out = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);

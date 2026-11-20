@@ -1,0 +1,6 @@
+{
+  "order": [
+    "<repo>/tests/corpus/held-constructor-callback-filter/main.ts"
+  ],
+  "diags": []
+}

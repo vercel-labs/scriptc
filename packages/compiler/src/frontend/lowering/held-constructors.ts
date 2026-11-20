@@ -58,6 +58,11 @@ export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
     let found = false;
     ts.walkPreorder(sf, (node) => {
       if (found || !ts.isIdentifier(node)) return;
+      // A cheap prefilter: only these four spellings can name a primitive
+      // constructor, so the symbol resolution (a checker round trip) runs for
+      // the few identifiers that do.
+      const text = node.text;
+      if (text !== "String" && text !== "Number" && text !== "Boolean" && text !== "BigInt") return;
       const parent = node.parent;
       if (parent !== undefined) {
         if (
@@ -101,7 +106,6 @@ export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
   }
   return false;
 }
-
 
 /** Whether a value of `type` holds a primitive constructor by its own
  * function type at any depth: the function itself, a member of a record, an

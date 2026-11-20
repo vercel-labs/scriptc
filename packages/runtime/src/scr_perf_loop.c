@@ -1547,7 +1547,7 @@ typedef struct {
   uint64_t *generations;  /* per slot; SCR_SLIDING_NO_GENERATION = empty */
   size_t chunk_count;
   bool time_based;
-  uint64_t rotate_at;     /* chunkDuration in ns, or recordsPerChunk */
+  uint64_t rotate_at;     /* chunkDuration converted to ns, or recordsPerChunk */
   uint64_t origin_ns;
   uint64_t current_generation;
   uint64_t records_in_current_chunk;
@@ -1883,7 +1883,10 @@ done:
   }
   for (size_t i = 0; i < s->chunk_count; i++) s->generations[i] = SCR_SLIDING_NO_GENERATION;
   s->time_based = has_duration;
-  s->rotate_at = has_duration ? (uint64_t)chunk_duration : (uint64_t)records_per_chunk;
+  /* chunkDuration is milliseconds (Node multiplies by 1,000,000 for the
+   * nanosecond rotation interval). */
+  s->rotate_at = has_duration ? (uint64_t)chunk_duration * 1000000ULL
+                              : (uint64_t)records_per_chunk;
   s->origin_ns = scr_hrtime_ns();
   s->rc = 1;
   ScrDyn *box = scr_dyn_new_handle(s, SCR_DYNH_SLIDING_HISTOGRAM);
@@ -1904,13 +1907,20 @@ void scr_sliding_record_checked(ScrDyn *handle, double value) {
 
 void scr_sliding_record_big(ScrDyn *handle, ScrBigInt *value) {
   ScrSliding *s = scr_sliding_of(handle);
+  int64_t recorded = 0;
+  bool fits;
   if (s == NULL || value == NULL) return;
-  if (!scr_bigint_i64_fits(value)) {
-    static const char msg[] = "The value of \"val\" is out of range";
+  fits = scr_bigint_i64_fits(value);
+  if (fits) recorded = scr_bigint_to_i64(value);
+  /* Node takes the BigInt through Int64Value and refuses anything below 1
+   * before the value reaches the window, so a rejected record does not
+   * advance a generation or evict a sample. */
+  if (!fits || recorded < 1) {
+    static const char msg[] = "value is out of range";
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
     return;
   }
-  scr_sliding_record_value(s, scr_bigint_to_i64(value));
+  scr_sliding_record_value(s, recorded);
 }
 
 void scr_sliding_reset(ScrDyn *handle) {

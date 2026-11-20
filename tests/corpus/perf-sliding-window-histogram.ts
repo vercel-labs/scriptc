@@ -80,14 +80,36 @@ for (let i = 0; i < 100; i++) custom.record(1000 + i * 10);
   );
 }
 
-// A time-rotated window: one second per chunk, so both records stay inside.
-const timed = createSlidingWindowHistogram({ chunks: 2, chunkDuration: 1_000_000_000 });
+// A time-rotated window: one minute per chunk, so both records stay inside.
+const timed = createSlidingWindowHistogram({ chunks: 2, chunkDuration: 60_000 });
 timed.record(10);
 timed.record(20);
 {
   const snapshot = timed.snapshot();
   console.log("timed", snapshot.count, snapshot.min, snapshot.max);
 }
+
+// BigInt records below 1, or outside the int64 range, throw Node's
+// ERR_OUT_OF_RANGE and do not advance the window.
+const guard = createSlidingWindowHistogram({ chunks: 2, recordsPerChunk: 2 });
+guard.record(5);
+guard.record(6);
+for (const value of [0n, -1n, 2n ** 70n]) {
+  show(`guard record ${value}`, () => guard.record(value));
+}
+console.log("guard count", guard.snapshot().count);
+
+// chunkDuration is milliseconds. A burst of records with a little work
+// between them stays in one 1 s chunk; read as nanoseconds, 1000 would be
+// one microsecond and the burst would span several generations, so a
+// single-chunk window would keep only the last.
+const burst = createSlidingWindowHistogram({ chunks: 1, chunkDuration: 1000 });
+let spin = 0;
+for (const value of [1, 2, 3, 4, 5]) {
+  for (let i = 0; i < 20000; i++) spin += i;
+  burst.record(value);
+}
+console.log("burst", burst.snapshot().count, spin > 0);
 
 // Options validation: Node's messages.
 show("no options", () => createSlidingWindowHistogram(undefined as any));

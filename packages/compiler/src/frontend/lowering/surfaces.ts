@@ -3319,7 +3319,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoPercentilesKey",
         "perf.histoPercentilesValue",
       ],
-      note: "a SlidingWindowHistogram rotated by chunkDuration (ns) or recordsPerChunk; record, reset and snapshot, whose Histogram answers the same readings as createHistogram's",
+      note: "a SlidingWindowHistogram rotated by chunkDuration (milliseconds) or recordsPerChunk; record, reset and snapshot, whose Histogram answers the same readings as createHistogram's",
     },
     {
       id: "node-builtin.perf_hooks.timerify",

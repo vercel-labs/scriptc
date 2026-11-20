@@ -73216,6 +73216,8 @@
           "tests/corpus/2934-static-import-stored.ts",
           "tests/corpus/2935-module-namespace-values/main.ts",
           "tests/corpus/950-modules-basic/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
           "tests/corpus/node24-esm-metadata/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
@@ -73240,11 +73242,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.meta",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -73294,11 +73298,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.dirname",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -73322,11 +73328,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.filename",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -73350,11 +73358,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.url",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -73378,11 +73388,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.main",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },

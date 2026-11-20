@@ -18,6 +18,9 @@ function named() {}
 console.log("function", Object.getPrototypeOf(named) === Function.prototype);
 console.log("arrow", Object.getPrototypeOf(() => 0) === Function.prototype);
 console.log("class", Object.getPrototypeOf(class C {}) === Function.prototype);
+// Function.prototype is itself a function whose prototype is the object one:
+// a walker must not see a cycle there.
+console.log("function-prototype", Object.getPrototypeOf(Function.prototype) === Object.prototype);
 console.log("date", Object.getPrototypeOf(new Date(0)) === Date.prototype);
 console.log("map", Object.getPrototypeOf(new Map()) === Map.prototype);
 console.log("set", Object.getPrototypeOf(new Set()) === Set.prototype);

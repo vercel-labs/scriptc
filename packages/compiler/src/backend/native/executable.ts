@@ -260,7 +260,12 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.workers, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
-    (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
+    (u) =>
+      u.opts.dynInvoke ||
+      u.opts.workers ||
+      u.nativeFetch ||
+      u.opts.nodeIsland === true ||
+      u.opts.primitiveWrapper === true,
     "scr_dyn_invoke.c",
   ),
   // Buffer.prototype methods called on checked-dynamic values.

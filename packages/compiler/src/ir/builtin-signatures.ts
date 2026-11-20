@@ -1727,6 +1727,10 @@ function buildLibFnSignatures() {
     /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
      * WritableStream and the option flags; a Writable. */
     "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Writable.fromWeb with options (scr_stream_from_web_writable.c): the web
+     * stream, the option flags, the highWaterMark (-1 default), and the
+     * signal (undefined when absent); a Writable. */
+    "webstream.writableFromWebOpts": { argTypes: [DYN, F64, F64, DYN], result: VOID },
     /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
      * option flags; a web WritableStream. */
     "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },

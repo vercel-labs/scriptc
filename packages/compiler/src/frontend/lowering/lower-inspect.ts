@@ -5741,7 +5741,13 @@ export function lowerRuntimeFormat(
     });
   const result: IrExpr =
     optionsRef === null
-      ? { kind: "libCall", fn: "insp.format", args: [pack.pack()], type: STRING, loc }
+      ? {
+          kind: "libCall",
+          fn: channelMember === undefined ? "insp.format" : "insp.formatSnapshot",
+          args: [pack.pack()],
+          type: STRING,
+          loc,
+        }
       : {
           kind: "libCall",
           fn: "insp.formatWithOptions",

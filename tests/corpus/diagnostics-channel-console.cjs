@@ -3,6 +3,7 @@
 // channel has subscribers. Every argument type crosses: objects, symbols,
 // bigints, undefined, null, and a spread's elements.
 'use strict';
+const util = require('util');
 const dc = require('diagnostics_channel');
 
 const seen = [];
@@ -34,6 +35,23 @@ dc.subscribe('console.log', (message) => {
   message.push('from-subscriber');
 });
 console.log('mutable');
+
+// A subscriber can keep the published array and mutate it from inside a
+// formatted value's inspect hook: the formatter reads a private copy, and the
+// printed line is unaffected while the retained array shows the mutations.
+let retained;
+dc.subscribe('console.log', (message) => {
+  retained = message;
+});
+const hostile = {
+  [util.inspect.custom]() {
+    retained.push('late');
+    retained.splice(0, 1);
+    return 'hostile';
+  },
+};
+console.log('kept', hostile);
+process.stdout.write('survived reentrant mutation\n');
 
 // The capture goes through process.stdout, not a subscribed channel.
 process.stdout.write(`${JSON.stringify(seen)}\n`);

@@ -6599,6 +6599,10 @@ function buildLibFnSignatures() {
      * util.formatWithOptions(options, pack): the runtime formatter for format
      * strings known at run time and spread arguments. */
     "insp.format": { argTypes: [DYN], result: STRING },
+    /** The console channels' formatter: insp.format over a private copy of
+     * the published arguments, so a subscriber's reentrant mutation of the
+     * array cannot free the vector the formatter reads. */
+    "insp.formatSnapshot": { argTypes: [DYN], result: STRING },
     /** insp.format over arguments that are all strings, numbers, booleans,
      * null or undefined, without the checked-dynamic walk. */
     "insp.formatPrimitives": { argTypes: [arrayOf(DYN)], result: STRING },

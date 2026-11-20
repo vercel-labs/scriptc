@@ -892,7 +892,7 @@ export function lowerConsoleOutput(
       // unsubscribed call keeps its typed rendering.
       const formatted: IrExpr = {
         kind: "libCall",
-        fn: "insp.format",
+        fn: "insp.formatSnapshot",
         args: [varRef(arr.id, DYN, loc)],
         type: STRING,
         loc,

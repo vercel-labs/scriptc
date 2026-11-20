@@ -716,7 +716,10 @@ interface SharedCycleChecks {
    * `.`, which is the whole name for an ordinary class. */
   classNames: ReadonlySet<string>;
   dottedHeads: ReadonlySet<string>;
-  withoutClass: Map<string, { classes: Map<string, CycleInitFlag>; statics: Map<string, CycleInitFlag[]> }>;
+  withoutClass: Map<
+    string,
+    { classes: Map<string, CycleInitFlag>; statics: Map<string, CycleInitFlag[]> }
+  >;
 }
 
 function sharedCycleChecks(lowerer: Lowerer): SharedCycleChecks {

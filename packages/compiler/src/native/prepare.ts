@@ -16,6 +16,7 @@ import {
 } from "../backend/llvm/emitter.js";
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { carriesDebugSources, executableLinkFeatures } from "../backend/executable-features.js";
+import { sourceTextLoader } from "../backend/source-text-loader.js";
 import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
 import { finishNodeIslands } from "../executable/islands.js";
@@ -658,6 +659,9 @@ export function prepareNativeExecutable(
             ? { debugSources: prepared.sourceTexts }
             : {}),
           positionSources: prepared.sourceTexts,
+          ...(options.fromLowered === undefined
+            ? {}
+            : { positionSourceLoader: sourceTextLoader() }),
           ...(conversionTrace ? { conversionTrace: true } : {}),
           ...(islandModuleData === undefined ? {} : { nodeIslandModuleData: islandModuleData }),
         });

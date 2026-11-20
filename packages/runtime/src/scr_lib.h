@@ -47,6 +47,10 @@ ScrDyn *scr_module_dyn_children(double module_id);
 /* module.parent as a checked-dynamic value (+1): null, undefined or the
  * parent's view, per the registry's absent markers. */
 ScrDyn *scr_module_dyn_parent(double module_id);
+/* A handle as its view, absent markers as undefined (+1). */
+ScrDyn *scr_module_dyn_object_or_absent(double module_id);
+/* The same for a checked-dynamic handle value (+1). */
+ScrDyn *scr_module_dyn_of_value(ScrDyn *value);
 /* The compiled prologue stores a module's exports value for that view. */
 void scr_module_set_exports_dyn(double module_id, ScrDyn *value);
 double scr_module_parent(double module_id);

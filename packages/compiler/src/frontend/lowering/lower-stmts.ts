@@ -8081,6 +8081,22 @@ export function lowerVarDecl(
       g.type = raw.type;
       lowerer.runtimeOptionalArithmeticGlobals.add(g);
     }
+    // A JavaScript module binding holds the checked-dynamic view
+    // (`/* @type {ScriptcModule | undefined} */ const parent = module.parent`
+    // included): the handle the declaration names cannot hold it.
+    if (g.type.kind !== "dyn" && isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+      let view = raw;
+      while (view.kind === "seqExpr") view = view.result;
+      if (view.kind === "dynFrom") view = view.value;
+      if (view.kind === "dynCheck" && view.value.type.kind === "dyn") view = view.value;
+      if (
+        view.type.kind === "dyn" &&
+        (view.kind === "libCall"
+          ? view.fn.startsWith("module.dyn")
+          : isNodeModuleHandle(lowerer, decl.name))
+      )
+        g.type = DYN;
+    }
     const init = lowerer.coerceInto(decl.initializer, raw, g.type);
     refuseAssertionViewWrite(lowerer, decl);
     return {
@@ -8839,9 +8855,13 @@ export function lowerVarDecl(
     let view = init;
     while (view.kind === "seqExpr") view = view.result;
     if (view.kind === "dynFrom") view = view.value;
+    // An ANNOTATED module binding (`/** @type {ScriptcModule | undefined} */`)
+    // arrives wrapped in the declared union: the view inside is still the
+    // value the binding holds.
+    if (view.kind === "dynCheck" && view.value.type.kind === "dyn") view = view.value;
     const moduleView = view.kind === "libCall" && view.fn.startsWith("module.dyn");
     if (
-      init.type.kind === "dyn" &&
+      view.type.kind === "dyn" &&
       settledType.kind !== "dyn" &&
       (moduleView || isNodeModuleHandle(lowerer, decl.name))
     )

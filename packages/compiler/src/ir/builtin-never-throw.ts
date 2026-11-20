@@ -224,6 +224,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "module.dynObject",
   "module.dynChildren",
   "module.dynParent",
+  "module.dynObjectOrAbsent",
+  "module.dynOf",
   "module.setExportsDyn",
   // The stream object a descriptor the program already holds names: a cache
   // lookup and a retain, with no allocation, coercion or program code. The

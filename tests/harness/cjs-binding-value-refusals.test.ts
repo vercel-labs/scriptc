@@ -37,7 +37,7 @@ function attempt(label, run) {
 // Node holds the object in every position, so a position that would hold the
 // number instead is refused by name; members, typeof, comparisons and
 // truthiness answer as in Node.
-test("the CommonJS module object in an untyped position is refused by name", async () => {
+test("the CommonJS module object holds the object in untyped positions, as Node does", async () => {
   const refused =
     "Error SC1090 the CommonJS 'module' object as a value in an untyped position (its members, typeof, and comparisons such as require.main === module lower; an untyped use would see a number where Node has the object) is not supported yet";
   const stdout = await run(
@@ -67,12 +67,12 @@ attempt("returned", () => kind((() => module)()));
     "member . boolean",
     "main true",
     "truthy yes",
-    `argument ${refused}`,
-    `string ${refused}`,
-    `template ${refused}`,
-    `concatenation ${refused}`,
-    `in ${refused}`,
-    `held ${refused}`,
+    "argument object",
+    "string [object Object]",
+    "template [object Object]",
+    "concatenation [object Object]",
+    "in true",
+    "held true",
     `returned ${refused}`,
     "",
   ]);

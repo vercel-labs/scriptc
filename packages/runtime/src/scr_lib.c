@@ -694,6 +694,23 @@ ScrDyn *scr_module_dyn_parent(double module_id) {
   return m->parent == -1 ? scr_dyn_new_null() : scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* A module handle as its checked-dynamic view, absent markers answering
+ * undefined: the comparison between a view and a handle Node compares as
+ * one object (+1). */
+ScrDyn *scr_module_dyn_object_or_absent(double module_id) {
+  if (module_id < 0) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_module_dyn_object(module_id);
+}
+
+/* A checked-dynamic module handle (a number, or an absent marker) as its
+ * view: the comparison between a view and a handle Node compares as one
+ * object (+1). */
+ScrDyn *scr_module_dyn_of_value(ScrDyn *value) {
+  if (value && value->kind == SCR_DYN_NUM) return scr_module_dyn_object_or_absent(value->v.num);
+  /* A value that already is the view (or an absent marker) answers itself. */
+  return scr_dyn_retain(value ? value : scr_dyn_undefined());
+}
+
 /* module.children as checked-dynamic values: a fresh array of the
  * children's Module objects (Node's array is live and per parent; the
  * compiled form reads it at the call, as the static array does). +1. */

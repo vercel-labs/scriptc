@@ -724,6 +724,11 @@ export function lowerNodeModuleProperty(
   let moduleRef = direct
     ? cjsModuleRef(lowerer, expr.expression)
     : lowerer.lowerExpr(expr.expression);
+  // A binding that holds a module view in checked-dynamic storage reads as
+  // the view itself: the checker's handle type must not narrow the read back
+  // to a number before the member is chosen.
+  if (moduleRef && moduleRef.kind === "dynCheck" && moduleRef.value.type.kind === "dyn")
+    moduleRef = moduleRef.value;
   if (moduleRef?.type.kind === "union") {
     // `module.parent` is `ScriptcModule | null | undefined`; the module arm
     // is the only non-unit arm, and it is the one every field read wants.

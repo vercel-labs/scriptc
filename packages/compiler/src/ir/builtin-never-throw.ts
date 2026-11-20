@@ -123,6 +123,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "ah.enable",
   "ah.providers",
   "ah.executionId",
+  "ah.executionResource",
   "ah.triggerId",
   // scr_als_with_scope reads the effective store, enters the new one and
   // boxes the RunScope; no program code runs and nothing raises.

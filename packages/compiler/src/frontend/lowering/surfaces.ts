@@ -2422,6 +2422,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       createHook: { fn: "ah.createHook", params: [DYN], result: F64 },
       executionAsyncId: { fn: "ah.executionId", params: [], result: F64 },
       triggerAsyncId: { fn: "ah.triggerId", params: [], result: F64 },
+      executionAsyncResource: { fn: "ah.executionResource", params: [], result: DYN },
     },
     diagnostics_channel: {
       channel: { fn: "dc.channel", params: [STRING], result: F64 },

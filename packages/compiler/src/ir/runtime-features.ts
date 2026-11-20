@@ -214,6 +214,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "ah.providers",
   "ah.enable",
   "ah.executionId",
+  "ah.executionResource",
   "ah.triggerId",
   // The RunScope handle withScope answers, and AsyncResource's registry
   // with its bound functions.

@@ -388,6 +388,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.async_hooks.executionAsyncResource",
+      "kind": "node-builtin",
+      "name": "async_hooks.executionAsyncResource",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.async_hooks.triggerAsyncId",
       "kind": "node-builtin",
       "name": "async_hooks.triggerAsyncId",

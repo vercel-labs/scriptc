@@ -47,11 +47,17 @@ als.run('scheduled', () => queueMicrotask(() => order.push('stored')));
 const storedId = lastMicrotask;
 microIds.add(storedId);
 
+// An enterWith inside the callback is discarded before the after hook, so
+// the hook sees the store the call captured, as in Node.
+als.run('outer', () => queueMicrotask(() => als.enterWith('replacement')));
+const enterId = lastMicrotask;
+microIds.add(enterId);
+
 setImmediate(() => {
   console.log('hooks in the resource scope:', scoped.length, scoped.every(Boolean));
   console.log(
     'stores:',
-    JSON.stringify([firstId, secondId, storedId].map((id) => stores[id])),
+    JSON.stringify([firstId, secondId, storedId, enterId].map((id) => stores[id])),
   );
   console.log(
     'destroy after the later tick:',

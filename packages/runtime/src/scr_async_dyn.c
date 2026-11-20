@@ -3612,6 +3612,11 @@ static void scr_micro_task_fire(ScrClosure *self) {
    * runs the after hook from the finally. */
   if (!scr_exc_pending()) {
     ((void (*)(ScrClosure *))cb->fn)(cb);
+    /* Node restores the resource's context before it runs the after hook:
+     * an enterWith inside the callback is discarded, so the hook sees the
+     * scheduling store (or none), as it does in Node. */
+    ScrAlsCtx *discarded = scr_als_dispatch_enter(task->ctx);
+    scr_als_ctx_release(discarded);
     scr_ah_dispatch_id(task->id, 1); /* after */
   }
   scr_als_dispatch_leave(prev_ctx);

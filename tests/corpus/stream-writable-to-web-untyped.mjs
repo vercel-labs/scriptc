@@ -87,6 +87,24 @@ const prematureClose = prematureWriter.close().then(
 );
 log.push(`premature close ${await prematureClose}`);
 
+// A writable-like object that emits 'error' synchronously during write():
+// the write settles, and the adapter does not read through its released
+// target afterwards.
+const syncError = fakeWritable();
+syncError.write = function (chunk) {
+  this.chunks.push(Buffer.from(chunk).toString());
+  this.writableNeedDrain = false;
+  this.emitLocal("error", new Error("sync fail"));
+  return false;
+};
+const syncErrorWeb = Writable.toWeb(syncError);
+const syncErrorWriter = syncErrorWeb.getWriter();
+const syncErrorWrite = await syncErrorWriter.write(encoder.encode("x")).then(
+  () => "resolved",
+  (error) => `rejected ${error.message}`,
+);
+log.push(`write with sync error ${syncErrorWrite}`);
+
 // A value without write() and on() throws Node's ERR_INVALID_ARG_TYPE.
 for (const value of [42, {}]) {
   try {

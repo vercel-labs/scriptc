@@ -542,6 +542,7 @@ static bool stw3d_truthy(const ScrDyn *d) {
  * instance answers through its materialized view, as every checked member
  * read does. */
 static ScrDyn *stw3d_member(const ScrDyn *target, const char *name, size_t length) {
+  if (!target) return NULL;
   const ScrDyn *receiver = target;
   ScrDyn *view = NULL;
   if (target && target->kind == SCR_DYN_TYPED_REF) {
@@ -585,6 +586,25 @@ static void stw3d_controller_abort(Stw3Dyn *c) {
 
 /* Fail what the adapter has pending with the writable's error. */
 static void stw3d_fail(Stw3Dyn *c, ScrDyn *reason) {
+  if (c->backpressure) {
+    ScrPromise *p = c->backpressure;
+    c->backpressure = NULL;
+    stw3d_settle_reject(p, reason);
+    scr_promise_release(p);
+  }
+  if (c->closed) {
+    ScrPromise *p = c->closed;
+    c->closed = NULL;
+    stw3d_settle_reject(p, reason);
+    scr_promise_release(p);
+  }
+  stw3d_controller_error(c, reason);
+}
+
+/* Error the web stream with `reason` and settle what waits on it: a
+ * backpressured write and a pending close reject with the same reason. A
+ * write waiting for a drain that can no longer come must not be stranded. */
+static void stw3d_abort_pending(Stw3Dyn *c, ScrDyn *reason) {
   if (c->backpressure) {
     ScrPromise *p = c->backpressure;
     c->backpressure = NULL;
@@ -715,7 +735,16 @@ static ScrDyn *stw3d_on_finish(ScrClosure *cl, ScrDyn *const *args, size_t argc)
     scr_promise_fulfill_void(p);
     scr_promise_release(p);
   } else {
-    stw3d_controller_abort(c);
+    /* A clean end without the writer's close: the web stream errors with an
+     * AbortError and a write waiting on drain rejects with it rather than
+     * waiting for a drain the ended writable never emits. */
+    ScrError *aborted = scr_error_abort(NULL); /* +1 */
+    ScrDyn *reason = aborted ? scr_dyn_from_error(aborted) : NULL; /* +1 */
+    if (reason) {
+      stw3d_abort_pending(c, reason);
+      scr_dyn_release(reason);
+    }
+    if (aborted) scr_error_release(aborted);
   }
   stw3d_retire(c);
   stw3d_unref(c);
@@ -732,19 +761,7 @@ static ScrDyn *stw3d_on_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) 
   ScrError *aborted = scr_error_abort(NULL); /* +1 */
   ScrDyn *reason = aborted ? scr_dyn_from_error(aborted) : NULL; /* +1 */
   if (reason) {
-    if (c->backpressure) {
-      ScrPromise *p = c->backpressure;
-      c->backpressure = NULL;
-      stw3d_settle_reject(p, reason);
-      scr_promise_release(p);
-    }
-    if (c->closed) {
-      ScrPromise *p = c->closed;
-      c->closed = NULL;
-      stw3d_settle_reject(p, reason);
-      scr_promise_release(p);
-    }
-    stw3d_controller_error(c, reason);
+    stw3d_abort_pending(c, reason);
     scr_dyn_release(reason);
   }
   if (aborted) scr_error_release(aborted);
@@ -859,6 +876,13 @@ static ScrDyn *stw3d_write(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
     }
     accepted = stw3d_truthy(result);
     if (result) scr_dyn_release(result);
+  }
+  if (c->retired || c->target == NULL) {
+    /* The writable finished or failed inside write(): its error already
+     * reached the controller and the target is gone. Settle this write
+     * instead of reading writableNeedDrain through it. */
+    scr_promise_fulfill_void(p);
+    goto settled;
   }
   if (!needed && accepted) {
     scr_promise_fulfill_void(p);

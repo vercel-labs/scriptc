@@ -10488,17 +10488,20 @@ static ScrDyn *scr_http_agent_hook_value(ScrHttpAgent *a, bool keep) {
  * undefined weak reference, so Apple gets a weak definition and the unit's
  * linked flag as the capability test, as the abort unit's bindings above do. */
 #if defined(__APPLE__)
-__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
 __attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
   (void)signal;
   (void)listener;
   return NULL;
 }
 #else
-extern int scr_dyn_event_target_unit_linked __attribute__((weak));
 extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
     __attribute__((weak));
 #endif
+/* The event-target unit's linked flag. Defined here as a weak zero on every
+ * platform, so the probe below reads a definition even where the unit is not
+ * linked — an undefined weak data symbol is address zero, which reading it
+ * faults on. A linked unit's strong definition wins over this one. */
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
 static bool scr_http_event_target_linked(void) {
   return scr_dyn_event_target_unit_linked != 0;
 }

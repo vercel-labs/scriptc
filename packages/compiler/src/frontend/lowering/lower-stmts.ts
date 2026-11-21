@@ -2485,17 +2485,22 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
   // ESM default import binds this value.
   const snapshot = lowerer.cjsRuntimeExportSnapshotOf(sf);
   const exportSlot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
-  const store: IrStmt[] =
-    snapshot !== null && exportSlot !== null
+  const store: IrStmt[] = [
+    ...(snapshot !== null && exportSlot !== null
       ? [
           {
-            kind: "assign",
+            kind: "assign" as const,
             localId: snapshot.id,
-            value: { kind: "varRef", localId: exportSlot.id, type: DYN, loc },
+            value: { kind: "varRef" as const, localId: exportSlot.id, type: DYN, loc },
             loc,
           },
         ]
-      : [];
+      : []),
+    // A namespace import's snapshot slots copy the members whose values the
+    // module finished evaluating with; this return ends evaluation, so it
+    // fills them here, exactly as the end of the init body does.
+    ...lowerer.cjsNamespaceSnapshotStores(sf, loc),
+  ];
   if (!stmt.expression)
     return store.length === 0 ? ret : { kind: "block", body: [...store, ret], loc };
   return {

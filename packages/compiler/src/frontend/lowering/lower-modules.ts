@@ -5107,16 +5107,9 @@ export function lowerFileInit(
     // A member an exported function may reassign afterwards: the namespace
     // some importer holds keeps the value the module finished evaluating
     // with (Node's CommonJS namespace object), so the slot copies the live
-    // member here, once its statements have run.
-    for (const { snapshot, source } of lowerer.cjsNamespaceMemberSnapshots.get(sf)?.values() ??
-      []) {
-      body.push({
-        kind: "assign",
-        localId: snapshot.id,
-        value: { kind: "varRef", localId: source.id, type: source.type, loc: loc0 },
-        loc: loc0,
-      });
-    }
+    // member here, once its statements have run. A top-level return ends
+    // evaluation just as early (lowerModuleLevelReturn stores there too).
+    body.push(...lowerer.cjsNamespaceSnapshotStores(sf, loc0));
     for (const { at, g } of unionEntryInits) {
       if (g.type.kind !== "dyn") continue;
       body[at] = {

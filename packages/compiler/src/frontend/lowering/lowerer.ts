@@ -9555,6 +9555,26 @@ export class Lowerer {
     return this.cjsRuntimeExportSnapshotGlobals.get(dep) ?? null;
   }
 
+  /** The stores that fill a module's namespace-member snapshot slots
+   * (`cjsNamespaceMemberSnapshots`) from its live export storage. Emitted
+   * where the module finishes evaluating — the end of its init body and
+   * every top-level return, which ends evaluation just the same — so a
+   * namespace read never observes an unassigned slot. */
+  cjsNamespaceSnapshotStores(sf: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const slots = this.cjsNamespaceMemberSnapshots.get(sf);
+    if (slots === undefined) return [];
+    const stores: IrStmt[] = [];
+    for (const { snapshot, source } of slots.values()) {
+      stores.push({
+        kind: "assign",
+        localId: snapshot.id,
+        value: { kind: "varRef", localId: source.id, type: source.type, loc },
+        loc,
+      });
+    }
+    return stores;
+  }
+
   /** Whether a write of export global `globalId` also has to reach the slots
    * of modules whose conditional whole export selected its table. */
   hasCjsConditionalExportMirrors(globalId: string): boolean {

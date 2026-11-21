@@ -56,3 +56,23 @@ for (const [label, run] of [
 const lowResolution = createHistogram({ lowest: 10 });
 for (const value of [5, 5, 25]) lowResolution.record(value);
 console.log("linear-low", pairs(lowResolution.linearBuckets(10)));
+
+// A sampled event-loop histogram answers the same bucket maps as a
+// RecordableHistogram: the interval histogram's own bucket layout feeds the
+// Map, not an empty view.
+const sampled = monitorEventLoopDelay({ resolution: 10 });
+sampled.enable();
+for (let i = 0; i < 4; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 25));
+}
+sampled.disable();
+const sampledLinear = [...sampled.linearBuckets(100000)];
+const sampledLog = [...sampled.logBuckets(1000000, 2)];
+console.log(
+  "eld",
+  sampled.count > 0,
+  sampledLinear.length > 0,
+  sampledLog.length > 0,
+  sampledLinear.reduce((n, [, count]) => n + count, 0) > 0,
+  sampledLog.reduce((n, [, count]) => n + count, 0) > 0,
+);

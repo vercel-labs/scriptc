@@ -1819,7 +1819,7 @@
  },
  {
   "file": "scr_stream_to_web.c",
-  "function": "scr_stream_to_web_readable_dyn",
+  "function": "scr_stream_to_web_readable_dyn_opts",
   "message": "Readable.toWeb over a checked-dynamic value that is not a native readable stream is not supported yet",
   "code": "SC2020"
  },

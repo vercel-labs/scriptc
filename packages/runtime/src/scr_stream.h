@@ -203,9 +203,15 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
  * ReadableStream over the readable's chunks. +1. flags bit 1 asks for a byte
  * stream. */
 struct ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags);
+/* Readable.toWeb with an options strategy: the strategy (borrowed; NULL for
+ * none) supplies the stream's highWaterMark and size, as Node's adapter
+ * passes options.strategy to the ReadableStream constructor. */
+struct ScrDyn *scr_stream_to_web_readable_opts(ScrStream *s, double flags, struct ScrDyn *strategy);
 /* The same over a checked-dynamic value (a boxed native stream unwraps; any
  * other value throws the not-supported Error). */
 struct ScrDyn *scr_stream_to_web_readable_dyn(const struct ScrDyn *value, double flags);
+struct ScrDyn *scr_stream_to_web_readable_dyn_opts(const struct ScrDyn *value, double flags,
+                                                   struct ScrDyn *strategy);
 /* Writable.toWeb(writable) (scr_stream_writable_to_web.c): a web
  * WritableStream over the writable, +1. */
 struct ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags);

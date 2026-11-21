@@ -103548,6 +103548,7 @@
           "tests/corpus/tls-handshake-events.ts",
           "tests/corpus/tls-keylog.ts",
           "tests/corpus/tls-server-class.ts",
+          "tests/corpus/tls-server-keylog-capture.ts",
           "tests/corpus/tls-server-keylog-this.cjs",
           "tests/corpus/tls-server-members.ts",
           "tests/corpus/tls-session-event.ts",
@@ -104248,7 +104249,8 @@
         "tests": [
           "tests/corpus/tls-keylog.ts",
           "tests/corpus/net-server-inert-keylog.ts",
-          "tests/corpus/tls-server-keylog-this.cjs"
+          "tests/corpus/tls-server-keylog-this.cjs",
+          "tests/corpus/tls-server-keylog-capture.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105581,7 +105583,8 @@
         "tests": [
           "tests/corpus/tls-keylog.ts",
           "tests/corpus/net-server-inert-keylog.ts",
-          "tests/corpus/tls-server-keylog-this.cjs"
+          "tests/corpus/tls-server-keylog-this.cjs",
+          "tests/corpus/tls-server-keylog-capture.ts"
         ]
       },
       "anchorSource": "exact"

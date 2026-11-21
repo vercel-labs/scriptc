@@ -77,6 +77,9 @@ void *scr_net_server_get_http_ctx(ScrNetServer *s);
  * drops its own request/upgrade/connect lists there (the settle-releases-
  * listeners story across the layer seam). */
 void scr_net_server_set_proto_settle(ScrNetServer *s, void (*fn)(void *));
+/* the native context's settle hook: releases the listeners it owns that can
+ * no longer fire once the server settles */
+void scr_net_server_set_native_settle(ScrNetServer *s, void (*fn)(void *));
 bool scr_net_server_settled(ScrNetServer *s); /* 'close' already emitted */
 /* The dyn-dispatch hook for HTTP server events: scr_http.c registers it
  * at scr_http_dyn_install, and the netServer handle ops route

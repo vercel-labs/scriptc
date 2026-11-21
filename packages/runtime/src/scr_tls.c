@@ -568,6 +568,14 @@ static void scr_tls_srv_release(ScrTlsSrv *s) {
 
 static void scr_tls_srv_release_v(void *p) { scr_tls_srv_release((ScrTlsSrv *)p); }
 
+/* The server settled: its 'keylog' listeners can no longer fire, and one
+ * that captures the server must not keep it alive through the TLS context
+ * (scr_net.c calls this at settlement). */
+static void scr_tls_srv_settle(void *ctx) {
+  ScrTlsSrv *s = (ScrTlsSrv *)ctx;
+  scr_net_ls_drop(&s->keylog_ls);
+}
+
 /* The client-certificate options of a server: requestCert, rejectUnauthorized
  * (Node's true default) and ca (+1, NULL for none). */
 typedef struct {
@@ -2046,6 +2054,7 @@ static ScrNetServer *scr_tls_create_server_alpn(const char *cert, size_t cert_le
    * accept. */
   ScrNetServer *s = scr_net_create_server(NULL, NULL);
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
+  scr_net_server_set_native_settle(s, &scr_tls_srv_settle);
   scr_net_server_defer_connections(s);
   if (handler != NULL) scr_net_server_on_secure_connection(s, handler, fn, false);
   return s;
@@ -2080,6 +2089,7 @@ static ScrNetServer *scr_https_create_server_auth(const char *cert, size_t cert_
   /* wrap the parser hook: TLS first, parser at establishment */
   scr_net_server_get_native_conn(s, &srv->inner_conn, &srv->inner_ctx, &srv->inner_ctx_free);
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
+  scr_net_server_set_native_settle(s, &scr_tls_srv_settle);
   scr_net_server_defer_connections(s);
   return s;
 }
@@ -2106,6 +2116,7 @@ ScrNetServer *scr_https_create_server_sni(const char *cert, size_t cert_len, con
   }
   scr_net_server_get_native_conn(s, &srv->inner_conn, &srv->inner_ctx, &srv->inner_ctx_free);
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
+  scr_net_server_set_native_settle(s, &scr_tls_srv_settle);
   scr_net_server_defer_connections(s);
   return s;
 }
@@ -4159,6 +4170,7 @@ void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len,
     mbedtls_ssl_conf_sni(&srv->conf, &scr_tls_f_sni, NULL);
   }
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
+  scr_net_server_set_native_settle(s, &scr_tls_srv_settle);
   scr_net_server_defer_connections(s); /* 'connection'/'secureConnection' wait for the handshake */
 }
 

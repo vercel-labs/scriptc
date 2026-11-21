@@ -554,6 +554,9 @@ struct ScrNetServer {
   ScrNetNativeConnFn native_conn;
   void *native_ctx;
   void (*native_ctx_free)(void *);
+  /* the native context's settle-time hook: releases the listeners the
+   * context owns that can no longer fire once the server settles */
+  void (*native_settle)(void *);
   /* the HTTP-parser ctx ALIAS (borrowed — owned through the native-conn
    * chain): late 'request' installs reach it even after a TLS wrap
    * replaced native_ctx (the https/http2 servers). NULL = no parser. */
@@ -904,6 +907,8 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_net_ls_drop(&s->timeout_ls);
     scr_net_ls_drop(&s->drop_ls);
     scr_net_ls_drop(&s->new_listener_ls);
+    scr_net_ls_drop(&s->inert_ls);
+    scr_net_ls_drop(&s->client_error_ls);
     scr_als_ctx_release(s->listen_ctx);
     scr_als_ctx_release(s->close_ctx);
     scr_closure_release(s->close_override);
@@ -8508,6 +8513,10 @@ void scr_net_server_set_native_conn(ScrNetServer *s, ScrNetNativeConnFn fn, void
   s->native_ctx_free = ctx_free;
 }
 
+void scr_net_server_set_native_settle(ScrNetServer *s, void (*fn)(void *)) {
+  s->native_settle = fn;
+}
+
 void scr_net_server_set_proto_settle(ScrNetServer *s, void (*fn)(void *)) {
   s->proto_settle = fn;
 }
@@ -8908,6 +8917,7 @@ static void scr_net_server_settle(ScrNetServer *srv) {
     scr_dyn_release(dispose);
   }
   if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
+  if (srv->native_settle && srv->native_ctx) srv->native_settle(srv->native_ctx);
   scr_net_server_unregister(srv);
 }
 
@@ -9171,6 +9181,7 @@ static void scr_net_sweep(void) {
         scr_net_ls_drop(&srv->listening_cbs);
         scr_net_ls_drop(&srv->timeout_ls);
         scr_net_ls_drop(&srv->new_listener_ls);
+        scr_net_ls_drop(&srv->inert_ls);
         scr_net_server_unregister(srv);
       }
       if (scr_exc_pending()) {

@@ -45,6 +45,9 @@ typedef struct ScrWorkerView {
    * setupPortReferencing). Both keep the loop alive. */
   bool message_port_ref;
   bool started;
+  /* Whether a 'message' listener was present at the last liveness update:
+   * Node changes the port's reference only on the 0→1 and 1→0 transitions. */
+  bool message_listeners;
   bool closing;
   ScrMailEvent *queued_head;
   ScrMailEvent *queued_tail;
@@ -289,8 +292,19 @@ static void scr_port_message_refs(ScrWorkerView *view) {
   listeners += scr_emitter_listener_count(view->events, name);
   scr_str_release(name);
   bool present = listeners > 0;
-  view->started = present || view->started;
-  view->referenced = present;
+  /* Node's setupPortReferencing: only the transitions change the reference —
+   * the first 'message' listener refs the port and starts it, the last one
+   * leaving unrefs it. An explicit port.ref()/port.unref() between them
+   * stands (removing one of several listeners changes nothing), and
+   * non-'message' listeners never touch it. */
+  if (present == view->message_listeners) return;
+  view->message_listeners = present;
+  if (present) {
+    view->started = true;
+    view->referenced = true;
+  } else {
+    view->referenced = false;
+  }
 }
 
 static void scr_worker_message_listeners(void *ptr, const ScrStr *name, bool present) {
@@ -989,13 +1003,26 @@ static ScrDyn *scr_worker_symbol_get(void *ptr, const ScrDyn *key) {
   return scr_dyn_new_func(closure, &scr_worker_async_dispose_call, 0, "()", "[Symbol.asyncDispose]");
 }
 
+/* A listener left the core however it left — removeEventListener, a
+ * `{ once: true }` listener firing, or an AbortSignal removing it. Only a
+ * 'message' listener moves the port's loop reference, as Node's
+ * setupPortReferencing hooks only that event. */
+static void scr_port_listeners_changed(void *ctx, const ScrStr *type) {
+  if (type == NULL || type->len != 7 || memcmp(type->data, "message", 7) != 0) return;
+  scr_port_message_refs((ScrWorkerView *)ctx);
+}
+
 /* A port's EventTarget core, created on first use (Node's MessagePort is an
  * EventTarget beside its EventEmitter surface). */
 static ScrEventTargetCore *scr_port_core(ScrWorkerView *view) {
   /* A program that never names BroadcastChannel or MessageChannel does not
    * link the EventTarget unit; its ports keep the emitter surface only. */
   if (!scr_et_broadcast_ops) return NULL;
-  if (!view->et) view->et = scr_et_broadcast_ops->core_new("MessagePort");
+  if (!view->et) {
+    view->et = scr_et_broadcast_ops->core_new("MessagePort");
+    if (view->et && scr_et_broadcast_ops->watch)
+      scr_et_broadcast_ops->watch(view->et, view, scr_port_listeners_changed);
+  }
   return view->et;
 }
 
@@ -1215,9 +1242,13 @@ static bool scr_channel_dispatch(void) {
       scr_emitter_emit_message_out(view->events, name, event->message, scr_message_decode, &argument);
       scr_dyn_this_pop();
       scr_str_release(name);
-      if (view->port && !argument && !scr_exc_pending()) argument = scr_message_decode(event->message);
+      /* A typed emitter listener reads the message without decoding it, so
+       * a port only builds the EventTarget value when it has an
+       * EventTarget core (the program named the EventTarget surface). */
+      if (view->et && !argument && !scr_exc_pending())
+        argument = scr_message_decode(event->message);
       if (argument && !scr_exc_pending()) {
-        scr_port_dispatch_message(view, argument);
+        if (view->et) scr_port_dispatch_message(view, argument);
         scr_dyn_release(argument);
       } else if (argument) {
         scr_dyn_release(argument);
@@ -1505,7 +1536,7 @@ static void scr_worker_dispatch(void) {
     /* A message the typed entry cannot read (cyclic, aliased, transferred
      * ports) still reaches the port's EventTarget listeners, with the same
      * decoded value the emitter listeners got. */
-    if (event->kind == SCR_WORKER_MESSAGE && view->port && argument)
+    if (event->kind == SCR_WORKER_MESSAGE && view->port && view->et && argument)
       scr_port_dispatch_message(view, argument);
   }
   /* Node ends worker.stdout and worker.stderr as the worker exits: their

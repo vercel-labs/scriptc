@@ -49,6 +49,7 @@ import {
   cjsExportDeclaratorOf,
   cjsExportDiscardReason,
   cjsExportTargetLiteral,
+  cjsReexportedModules,
   entryPackageFilePredicate,
   isCjsJsFile,
   isJsSourceFile,
@@ -681,8 +682,10 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
     collectJsonRequires(lowerer, parts);
   }
   // Every module's globals exist now, so a conditional whole export can name
-  // the table globals its writes have to forward to.
+  // the table globals its writes have to forward to, and namespace snapshots
+  // can name the export member globals they copy.
   collectCjsConditionalExportMirrors(lowerer, parts);
+  registerCjsNamespaceSnapshotGlobals(lowerer, parts);
   for (const decl of computed) {
     const symbol = declSymbolOf(lowerer, decl);
     const wasCollecting: boolean = lowerer.collecting;
@@ -2603,6 +2606,84 @@ export function widenCjsExportsOfWidenedBindings(
   }
 }
 
+/** Register a snapshot slot for every export member that a namespace-imported
+ * CommonJS module assigns from inside a function. Node builds a CommonJS
+ * module's namespace object at the first ESM import of it, and those property
+ * values never change afterwards; the module's own `module.exports` object
+ * keeps changing when an exported function assigns a member. Reads through
+ * the namespace therefore observe the snapshot, while same-module `exports.f`
+ * access and requirers keep the live member global. Registered here, before
+ * any init lowers; the first importing module's init fills the slots
+ * (cjsNamespaceSnapshotImportStmts), and a flag keeps that first snapshot
+ * when several modules import the same dependency. */
+function registerCjsNamespaceSnapshotGlobals(lowerer: Lowerer, parts: FileParts[]): void {
+  const deps = new Set<ts.SourceFile>();
+  for (const fp of parts) {
+    const sf = fp.sf;
+    if (sf.isDeclarationFile) continue;
+    ts.forEachChild(sf, (node) => {
+      if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) return;
+      const bindings = node.importClause?.namedBindings;
+      if (bindings === undefined || !ts.isNamespaceImport(bindings)) return;
+      const dep = lowerer.facts.importedModule(sf, node.moduleSpecifier.text);
+      if (
+        dep !== null &&
+        !dep.isDeclarationFile &&
+        lowerer.fileTag.has(dep) &&
+        isCjsJsFile(dep, lowerer.program)
+      )
+        deps.add(dep);
+    });
+  }
+  for (const dep of deps) {
+    if (lowerer.cjsNamespaceMemberSnapshots.has(dep)) continue;
+    const { names, assignedLater } = lowerer.cjsNamespaceOf(dep);
+    if (assignedLater !== "all" && assignedLater.size === 0) continue;
+    // A name the module re-exports belongs to the module that assigns it
+    // (`module.exports = require("./impl.cjs")`); its storage is that
+    // module's, and a module that chooses its whole export at run time keeps
+    // it in its own selection slots rather than a member global.
+    const sources = cjsReexportedModules(lowerer.program, dep);
+    const rawTag = lowerer.fileTag.get(dep) ?? "";
+    const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
+    const slots = new Map<string, { snapshot: IrGlobal; source: IrGlobal }>();
+    /** The storage a name has in `mod`: its run-time selection slot when it
+     * chooses its whole export at run time (copying the table's own member
+     * global can name the arm that did not run, which is uninitialized),
+     * else its own member global. */
+    const sourceIn = (mod: ts.SourceFile, name: string): IrGlobal | undefined =>
+      lowerer.cjsConditionalWholeExportGlobals.get(mod)?.get(name) ??
+      lowerer.cjsInFileExportMemberGlobals.get(mod)?.get(name);
+    for (const name of names) {
+      if (assignedLater !== "all" && !assignedLater.has(name)) continue;
+      let source: IrGlobal | undefined;
+      for (const mod of sources) {
+        source = sourceIn(mod, name);
+        if (source !== undefined) break;
+      }
+      if (source === undefined) continue;
+      const snapshot: IrGlobal = {
+        id: `%g.${tag}%ns.${name}`,
+        name: `%ns.${name}`,
+        type: source.type,
+        mutable: false,
+      };
+      slots.set(name, { snapshot, source });
+      lowerer.globalsList.push(snapshot);
+    }
+    if (slots.size === 0) continue;
+    lowerer.cjsNamespaceMemberSnapshots.set(dep, slots);
+    const taken: IrGlobal = {
+      id: `%g.${tag}%nsTaken`,
+      name: "%nsTaken",
+      type: F64,
+      mutable: true,
+    };
+    lowerer.cjsNamespaceSnapshotTakenGlobals.set(dep, taken);
+    lowerer.globalsList.push(taken);
+  }
+}
+
 export function collectGlobals(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -2617,6 +2698,36 @@ export function collectGlobals(
   // register their module globals first — reads inside function bodies
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
+  // A split require binding (`var m; m = require("./x")`) of a partial
+  // cycle module keeps the exports object its require answered, like the
+  // const form.
+  for (const stmt of topStmts) {
+    if (!ts.isExpressionStatement(stmt)) continue;
+    const e = stmt.expression;
+    if (
+      !ts.isBinaryExpression(e) ||
+      e.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      !ts.isIdentifier(e.left)
+    )
+      continue;
+    const split = splitRequireBindingOfIdent(lowerer, e.left);
+    if (split === null || split.assign !== e) continue;
+    if (!lowerer.program.analysis.partialCjsCycleMembers.has(split.dep)) continue;
+    const symbol =
+      lowerer.checker.getSymbolAtLocation(e.left) ??
+      lowerer.resolveValueSymbol(e.left) ??
+      undefined;
+    if (symbol === undefined) continue;
+    const id = `%g.${tag}%splitRequiredObject.${e.left.text}.${positionTag(lowerer, stmt)}`;
+    const object: IrGlobal = {
+      id,
+      name: `%splitRequiredObject.${e.left.text}`,
+      type: DYN,
+      mutable: true,
+    };
+    if (!lowerer.globalsList.some((g) => g.id === id)) lowerer.globalsList.push(object);
+    lowerer.cjsPartialRequireObjects.set(symbol, { object, dep: split.dep });
+  }
   for (const stmt of topStmts) {
     if (ts.isEnumDeclaration(stmt)) {
       registerEnumObjectGlobals(lowerer, stmt, tag);
@@ -4289,10 +4400,19 @@ function registerRequireDeclBindings(
   if (snapshots !== null) {
     for (const binding of snapshots.bindings.values()) names.push(binding.name);
   }
+  // A partial require() cycle's destructured binding holds the live
+  // exports object's member (checked-dynamic), not the exporter's static
+  // storage.
+  const partialSnapshotNames =
+    snapshots !== null && lowerer.program.analysis.partialCjsCycleMembers.has(snapshots.dep)
+      ? new Set([...snapshots.bindings.values()].map((binding) => binding.name.text))
+      : null;
   for (const nameNode of names) {
     const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
     if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
-    const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
+    const mapped = partialSnapshotNames?.has(nameNode.text)
+      ? DYN
+      : lowerer.mapTypeOf(lowerer.typeOf(nameNode));
     const type = mapped && mapped.kind !== "void" ? mapped : DYN;
     const g: IrGlobal = {
       id: `%g.${tag}${nameNode.text}`,
@@ -4305,8 +4425,37 @@ function registerRequireDeclBindings(
         : {}),
     };
     lowerer.globalsBySymbol.set(symbol, g);
+    // The checker's narrowing does not describe a partial cycle's live
+    // member, which can be undefined: reads stay checked-dynamic.
+    if (partialSnapshotNames?.has(nameNode.text)) lowerer.jsWidenedBindings.add(symbol);
     lowerer.globalsList.push(g);
     if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+  }
+  // A `const m = require("./x")` binding over a partial cycle module keeps
+  // the exports object its require answered, so a member a LATER
+  // `module.exports = { … }` in the target adds is not visible through it
+  // (Node's object identity).
+  if (ts.isIdentifier(decl.name)) {
+    const dep = lowerer.cjsModuleRefDepOf(decl.initializer!);
+    const symbol =
+      lowerer.checker.getSymbolAtLocation(decl.name) ??
+      lowerer.resolveValueSymbol(decl.name) ??
+      undefined;
+    if (
+      dep !== null &&
+      lowerer.program.analysis.partialCjsCycleMembers.has(dep) &&
+      symbol !== undefined
+    ) {
+      const id = `%g.${tag}%requiredObject.${decl.name.text}`;
+      const object: IrGlobal = {
+        id,
+        name: `%requiredObject.${decl.name.text}`,
+        type: DYN,
+        mutable: true,
+      };
+      if (!lowerer.globalsList.some((g) => g.id === id)) lowerer.globalsList.push(object);
+      lowerer.cjsPartialRequireObjects.set(symbol, { object, dep });
+    }
   }
 }
 
@@ -4548,6 +4697,17 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
+    // Modules Node can revisit mid-evaluation (a require(esm) cycle test)
+    // mark their evaluation window before their dependencies run.
+    const evaluatingId = lowerer.moduleEvaluatingOf.get(sf);
+    if (evaluatingId !== undefined) {
+      header.push({
+        kind: "assign",
+        localId: evaluatingId,
+        value: { kind: "boolLit", value: true, type: BOOL, loc: loc0 },
+        loc: loc0,
+      });
+    }
     if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
     // Modules shared with Node islands register before any module runs
     // (NI-6); the plan also creates their declarations' TDZ flags.
@@ -4680,13 +4840,16 @@ export function lowerFileInit(
           } else {
             header.push({ kind: "exprStmt", expr: call, loc });
             // An ES-module importer links a CommonJS dependency: Node
-            // copies its lexer-visible exports here.
+            // copies its lexer-visible exports here, and builds the
+            // module's namespace object at this first link.
             if (
               (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) &&
               !isCjsJsFile(sf, lowerer.program) &&
               isCjsJsFile(dep, lowerer.program)
-            )
+            ) {
               header.push(...cjsAccessorSnapshotStores(lowerer, dep, stmt));
+              header.push(...lowerer.cjsNamespaceSnapshotLinkStmts(dep, locOf(stmt)));
+            }
           }
         }
       }
@@ -4964,9 +5127,20 @@ export function lowerFileInit(
         loc: loc0,
       };
     }
+    // The evaluation window closes when the body returns; a cache-hit
+    // revisit returned above without touching it.
+    if (evaluatingId !== undefined) {
+      body.push({
+        kind: "assign",
+        localId: evaluatingId,
+        value: { kind: "boolLit", value: false, type: BOOL, loc: loc0 },
+        loc: loc0,
+      });
+    }
     const moduleRef = cjsModuleRef(lowerer, sf);
     if (moduleRef !== null) {
-      const guardedBody = body.splice(guardId !== undefined ? 2 : 0);
+      const preamble = (guardId !== undefined ? 2 : 0) + (evaluatingId !== undefined ? 1 : 0);
+      const guardedBody = body.splice(preamble);
       const catchLocal = lowerer.declareHiddenLocal("%moduleError", { kind: "caught" });
       guardedBody.unshift({
         kind: "exprStmt",

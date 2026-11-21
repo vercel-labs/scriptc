@@ -1,0 +1,163 @@
+name: Release dry run
+
+# Everything a release run does before it uploads to npm, without uploading:
+# it builds every native package on its matching host (release-build.yml,
+# the same workflow release.yml calls), restores the libnode packs, assembles
+# the packages the way the publish job does, checks their versions, packs
+# each one, and packages the standalone compilers the GitHub release
+# attaches. A package that no longer builds or packs on one platform then
+# fails here, nightly or on the pull request that caused it, and not in the
+# release run.
+#
+# The native CLIs build with the committed profile and layout (release.yml's
+# cli-profile job collects a fresh one for about two hours; the dry run does
+# not need it), which is what a release falls back to when that job fails.
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    # A release-prep pull request bumps packages/cli/package.json; the other
+    # paths are how the release builds and packs.
+    paths:
+      - "packages/cli/package.json"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-build.yml"
+      - ".github/workflows/release-dry-run.yml"
+      - ".github/actions/mobile-runtime-pack/**"
+      - "packages/runtime-*/package.json"
+      - "packages/runtime-*/scripts/**"
+      - "packages/runtime-*/*.mjs"
+      - "packages/llvm-*/package.json"
+      - "packages/llvm-*/scripts/**"
+      - "packages/cli-*/package.json"
+      - "packages/cli-*/scripts/**"
+      - "native/**"
+      - "scripts/sync-versions.mjs"
+      - "scripts/verify-native-cli.mjs"
+      - "scripts/package-native-cli.mjs"
+      - "scripts/verify-llvm-package.mjs"
+      - "scripts/verify-llvm-package-mode.mjs"
+      - "scripts/smoke-native-install.mjs"
+
+concurrency:
+  group: release-dry-run-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    uses: ./.github/workflows/release-build.yml
+
+  libnode:
+    name: libnode
+    uses: ./.github/workflows/libnode-packs.yml
+
+  # The publish job's preparation, up to the upload: the same assembly,
+  # build and version check, then a pack of every package it publishes.
+  assemble:
+    name: Assemble and pack every package
+    needs: [build, libnode]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-*
+          path: native-artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: libnode-*
+          path: libnode-artifacts
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      # The SHA-256 of every file the native and libnode artifacts carry, so two
+      # dry runs (two pipelines on one commit, or one pipeline twice) can be
+      # compared file by file: diff their release-content-sha256 artifacts.
+      - name: Record the artifacts' contents
+        run: |
+          (cd native-artifacts && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/release-content-sha256.txt"
+          (cd libnode-artifacts && find . -type f -print0 | sort -z | xargs -0 sha256sum | sed 's#  \./#  libnode/#') >> "$RUNNER_TEMP/release-content-sha256.txt"
+          wc -l < "$RUNNER_TEMP/release-content-sha256.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-content-sha256
+          path: ${{ runner.temp }}/release-content-sha256.txt
+          retention-days: 30
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          cp -R native-artifacts/. packages/
+          for platform in linux-x64-gnu linux-arm64-gnu darwin-arm64 darwin-x64; do
+            test -f "libnode-artifacts/libnode-$platform/manifest.json"
+            cp -R "libnode-artifacts/libnode-$platform/." "packages/libnode-$platform/"
+          done
+          find packages -type f \( -path '*/bin/scriptc-llvm-codegen' -o -path '*/bin/scriptc-comptime' \) -exec chmod 755 {} +
+          find packages -type f \( -path '*/dist/bin/scriptc' -o -path '*/dist/lib/typescript/lib/tsc' \) -exec chmod 755 {} +
+          pnpm -r build
+      - name: Check version sync
+        run: |
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          for pkg in packages/runtime packages/runtime-* packages/llvm-* packages/compiler packages/experimental packages/node packages/threads packages/types packages/cli packages/cli-* packages/libnode-*; do
+            if [ "$(node -p "require('./$pkg/package.json').private === true")" = "true" ]; then
+              continue
+            fi
+            V=$(node -p "require('./$pkg/package.json').version")
+            if [ "$V" != "$VERSION" ]; then
+              echo "::error::Version mismatch: $pkg is $V, expected $VERSION. Run 'node scripts/sync-versions.mjs' and commit."
+              exit 1
+            fi
+          done
+      # Every package the publish job uploads, packed the way it packs them
+      # (pnpm pack runs each package's prepack verification), and the LLVM
+      # helpers' file modes checked as it checks them before upload.
+      - name: Pack every package
+        run: |
+          mkdir -p "$RUNNER_TEMP/packed"
+          failed=0
+          for pkg in packages/runtime packages/runtime-* packages/llvm-* packages/libnode-* packages/cli-* packages/compiler packages/experimental packages/node packages/threads packages/types packages/cli; do
+            if [ "$(node -p "require('./$pkg/package.json').private === true")" = "true" ]; then
+              continue
+            fi
+            name=$(node -p "require('./$pkg/package.json').name")
+            # pnpm's exit status decides, not the last line of its output: a
+            # pipe into tail would report tail's status and hide a failed pack.
+            if ! packed=$(cd "$pkg" && pnpm pack --pack-destination "$RUNNER_TEMP/packed" --silent); then
+              echo "::error::$name did not pack"
+              failed=1
+              continue
+            fi
+            tarball=$(printf '%s\n' "$packed" | tail -1)
+            if [ -z "$tarball" ]; then
+              echo "::error::$name did not report a tarball"
+              failed=1
+              continue
+            fi
+            tarball="$RUNNER_TEMP/packed/$(basename "$tarball")"
+            if [ ! -f "$tarball" ]; then
+              echo "::error::$name: pnpm pack reported $tarball, which does not exist"
+              failed=1
+              continue
+            fi
+            case "$pkg" in
+              packages/llvm-darwin-*|packages/llvm-linux-*)
+                node scripts/verify-llvm-package-mode.mjs "$tarball" "$name" || { echo "::error::$name failed its file mode check"; failed=1; }
+                ;;
+            esac
+            echo "$name: $(basename "$tarball")"
+          done
+          exit "$failed"
+      - name: Package standalone compilers
+        run: node scripts/package-native-cli.mjs packages "$RUNNER_TEMP/release-assets"
+      - name: Check the surface manifest
+        run: pnpm manifest --check

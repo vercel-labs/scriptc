@@ -36,7 +36,7 @@ import {
   typeKey,
   unionContainerArmsOk,
 } from "../../../ir/ir.js";
-import { importMetaField, isImportMeta } from "../import-meta.js";
+import { importMetaField, importMetaValue, isImportMeta } from "../import-meta.js";
 import { boxedHandleReceiver, lowerHandlePropertyWrite } from "../handle-properties.js";
 import { heldEnvValueType } from "../builtins/environment.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./optional-chains.js";
@@ -190,13 +190,15 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   }
   if (isImportMeta(expr.expression)) {
     const name = lowerer.foldedStringKeyOf(expr.argumentExpression);
-    if (name === null)
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "import.meta with a runtime-computed key (use a statically-known metadata field)",
-      );
-    return importMetaField(lowerer, expr, name);
+    if (name !== null) return importMetaField(lowerer, expr, name);
+    /* A runtime key reads the metadata object, as Node's object does. */
+    return {
+      kind: "dynKeyGet",
+      value: importMetaValue(lowerer, expr),
+      key: lowerer.lowerExprExpecting(expr.argumentExpression, DYN),
+      type: DYN,
+      loc: locOf(expr),
+    };
   }
 
   // `a?.[i]`: the guard lowers as an optional-chain step around the

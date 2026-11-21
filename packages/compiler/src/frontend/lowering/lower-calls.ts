@@ -1,3 +1,4 @@
+import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
@@ -248,6 +249,7 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
+import { lowerSlidingWindowMethodCall } from "./builtins/sliding-histogram.js";
 import { fenceX509KeyWalk, isX509Type } from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
@@ -297,6 +299,7 @@ import {
   lowerCompatReqStreamOptionalCall,
   lowerHttpClientFnCall,
   lowerHttpClientFnRefCall,
+  lowerNetConnectCall,
   lowerNetServerAsyncDisposeCall,
 } from "./lower-server.js";
 import {
@@ -350,6 +353,7 @@ import {
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
   contextualUndefReadType,
+  cjsNamespaceMemberSnapshotOf,
   fenceEarlyAliasUse,
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
@@ -1173,6 +1177,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
             consoleMember === "log" || consoleMember === "info" || consoleMember === "debug",
             `console.${consoleMember}`,
             loc,
+            undefined,
+            lowerer.usesDiagnosticsChannel() ? consoleMember : undefined,
           )
         : lowerConsoleMethodCall(lowerer, expr, consoleMethod!, loc);
     return receiver === null
@@ -2183,8 +2189,10 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // .bind(performance) function value over the runtime's
       // process-start-anchored monotonic clock.
       lowerPerfHooksCall(lowerer, expr, expr.expression) ??
+      lowerHistogramStatsMethodCall(lowerer, expr, expr.expression) ??
       lowerHistogramMethodCall(lowerer, expr, expr.expression) ??
       lowerRecordableHistogramMethodCall(lowerer, expr, expr.expression) ??
+      lowerSlidingWindowMethodCall(lowerer, expr, expr.expression) ??
       // The composed crypto pattern (randomBytes(n).toString(enc))
       // — its receiver is a Buffer-typed CALL no other lowering claims.
       lowerer.lowerCryptoComposedCall(expr, expr.expression) ??
@@ -2439,6 +2447,32 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     {
       const tableCall = lowerCallableMemberCall(lowerer, expr);
       if (tableCall) return tableCall;
+    }
+    // `Error.prepareStackTrace(...)`: the member is program state (a
+    // checked-dynamic value, see fieldTarget), and a call is the call of
+    // whatever the program stored there — the default value's call throws
+    // its named refusal.
+    {
+      const target =
+        ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken
+          ? lowerer.fieldTarget(expr.expression)
+          : null;
+      if (
+        target !== null &&
+        target.container === "errorPrepareStackTrace" &&
+        !expr.arguments.nodes.some((arg) => ts.isSpreadElement(arg))
+      ) {
+        const callee = lowerer.fieldGetExpr(target, locOf(expr.expression), expr.expression);
+        const args = expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+        return {
+          kind: "dynCall",
+          callee,
+          calleeName: v8CalleeText(expr.expression),
+          args,
+          type: DYN,
+          loc: locOf(expr),
+        };
+      }
     }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member
@@ -3023,6 +3057,19 @@ function lowerNsMemberCall(
   const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
   if (memberSym && !receiverEvaluated) fenceEarlyNsMemberRef(lowerer, access, memberSym);
   refuseModuleMemberThis(lowerer, expr, nsMember);
+  // A CommonJS namespace member its module's functions reassign: the call
+  // runs the value Node's namespace snapshot holds (the module's
+  // end-of-evaluation value), through the ordinary function-value path.
+  const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, access);
+  if (snapshot) {
+    const callee: IrExpr = { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+    const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+    if (checked) return checked;
+    // The slot holds the namespace's value, which may be an optional union
+    // (a module that may finish without assigning the member): the ordinary
+    // call-through-value path answers Node's TypeError for undefined.
+    return lowerCallThroughValue(lowerer, expr, callee, loc);
+  }
   // A member of a function+namespace merge is an own property of the
   // function object (lower-fundule.ts), and the qualified call reads
   // that property as Node does: after `Object.assign(fmt, { helper })`
@@ -5247,6 +5294,25 @@ function unionArmsDispatchMember(
  * the dyn array and validated-extracts the survivors into the element type
  * the checker committed the result to. Null when the receiver isn't a dyn
  * value or the method isn't claimable (the method-call fence stays). */
+/** A receiver whose checker type is the `Agent` class declared by node:http
+ * (the fallback ambient or the real @types/node both name the file
+ * http.d.ts). An `https.Agent` is deliberately NOT matched: its default
+ * dialer is tls.connect, and the rewritten net dial builds a plaintext
+ * socket, so a secure agent keeps the dyn dispatch, whose dialer refuses.
+ * `any` receivers keep the dyn dispatch too. */
+function isHttpAgentReceiver(lowerer: Lowerer, expr: ts.Expression): boolean {
+  const t = lowerer.typeOf(expr);
+  if ((t.flags & ts.TypeFlags.Any) !== 0) return false;
+  const sym = t.getSymbol();
+  if (!sym || ts.symbolName(sym) !== "Agent") return false;
+  return (
+    sym.declarations?.some((d) => {
+      const file = ts.getSourceFileOfNode(d).fileName.replace(/\\/g, "/");
+      return file.endsWith("/http.d.ts");
+    }) ?? false
+  );
+}
+
 function lowerDynReceiverMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -5254,6 +5320,48 @@ function lowerDynReceiverMethodCall(
   boxTypedTemporary = false,
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
+  // agent.createConnection(...) is Node's default dialer, which IS
+  // net.createConnection — and a compiled program cannot install an Agent
+  // override (subclassing is refused; an instance assignment hits the
+  // Agent setter's fence), so the two calls lower identically. The receiver
+  // is evaluated first, as Node evaluates it before the arguments.
+  // lowerNetConnectCall carries the note about switching to the
+  // instance-dispatching form if hook overrides ever become reachable.
+  if (access.name.text === "createConnection" && isHttpAgentReceiver(lowerer, access.expression)) {
+    const callsLoc = locOf(call);
+    const recvLoc = locOf(access.expression);
+    const receiver = lowerer.lowerExpr(access.expression);
+    const recvDyn: IrExpr =
+      receiver.type.kind === "dyn"
+        ? receiver
+        : { kind: "dynFrom", value: receiver, type: DYN, loc: recvLoc };
+    const local = lowerer.declareHiddenLocal("%connAgent", DYN);
+    const agentRef: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc: recvLoc };
+    const net = lowerNetConnectCall(lowerer, call, "createConnection", callsLoc);
+    // An https.Agent can flow here typed as http.Agent: its default dialer
+    // needs TLS, which the net lowering does not build, so the runtime
+    // refuses the plaintext dial for a secure agent instead.
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: local.id, init: recvDyn, loc: recvLoc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "http.agentCreateConnectionCheck",
+            args: [agentRef],
+            type: VOID,
+            loc: recvLoc,
+          },
+          loc: recvLoc,
+        },
+      ],
+      result: net,
+      type: net.type,
+      loc: callsLoc,
+    };
+  }
   if (stdlibGlobalNameOf(lowerer, access.expression) !== null) {
     // A named builtin import can resolve to its ambient declaration, too.
     // parentPort is an instance value whose methods use the native handle;
@@ -6249,6 +6357,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "values",
   "entries",
   "next",
+  "return",
   "writeContinue",
   "writeEarlyHints",
   "cork",
@@ -11574,7 +11683,16 @@ function lowerObjectStaticCall(
         loc: locOf(call),
       };
     }
-    return null;
+    // A union of this record and a unit is the indexed read's lowering under
+    // noUncheckedIndexedAccess (the checker's own type drops the undefined
+    // the storage holds). objectEnumerationReceiver throws for the unit arm
+    // and enumerates the record arm, so keep the lowering this call had.
+    const arms =
+      represented.type.kind === "union"
+        ? lowerer.unions.get(represented.type.unionId)?.arms
+        : undefined;
+    if (arms === undefined || !arms.every((arm) => isUnitType(arm) || typeEquals(arm, argIr)))
+      return null;
   }
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence

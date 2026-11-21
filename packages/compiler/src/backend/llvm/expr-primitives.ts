@@ -1133,7 +1133,7 @@ export function emitStringExpr(
       let inst = host.templateStringsInstances.get(e.key);
       if (!inst) {
         inst = {
-          sym: `sc_tsa_${host.templateStringsInstances.size}`,
+          sym: host.contentSymbol("sc_tsa_", e.key),
           slots: e.cooked.map((s) => host.internLiteral(s)),
         };
         host.templateStringsInstances.set(e.key, inst);

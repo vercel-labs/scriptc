@@ -25,6 +25,7 @@ declare module "node:module" {
   ): EnableCompileCacheResult;
   export function flushCompileCache(): void;
   export function getCompileCacheDir(): string | undefined;
+  export function findPackageJSON(specifier: string | URL, base?: string | URL): string | undefined;
 }
 
 declare module "module" {

@@ -1325,8 +1325,13 @@ static bool scr_histo_pair(ScrDyn *handle, ScrDyn *other_handle, ScrHisto *self_
   *self = scr_histo_lookup(handle, self_tmp);
   *other = scr_histo_lookup(other_handle, other_tmp);
   if (*self != NULL && *other != NULL) return true;
-  static const char msg[] = "The \"other\" argument must be an instance of Histogram";
-  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+  if (*other == NULL)
+    scr_dyn_arg_type_fail("other", "an instance of Histogram",
+                          other_handle == NULL ? scr_dyn_undefined() : other_handle);
+  else {
+    static const char msg[] = "The \"other\" argument must be an instance of Histogram";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+  }
   return false;
 }
 
@@ -1793,4 +1798,271 @@ double scr_histo_buckets_key(double index) {
 double scr_histo_buckets_value(double index) {
   size_t i = (size_t)index;
   return i < scr_buckets_view.len ? (double)scr_buckets_view.count[i] : 0;
+}
+
+/* ── Histogram confidence intervals and Welch's t-test ────────────────
+ * Node's Histogram::MeanCI, PercentileCI and WelchTest over the same
+ * HdrHistogram readings (hdr_mean/hdr_stddev with Bessel's correction), the
+ * Student t distribution through the regularized incomplete beta function,
+ * and the exact binomial method for the percentile interval. The readings
+ * are selectors so one result record's fields come from the same inputs. */
+
+/* Regularized incomplete beta function I_x(a, b), Numerical Recipes'
+ * continued fraction (Node's BetaContinuedFraction). */
+static double scr_histo_beta_cf(double a, double b, double x) {
+  const double fpm_in = 1e-30, eps = 3e-12;
+  double qab = a + b, qap = a + 1.0, qam = a - 1.0, c = 1.0;
+  double d = 1.0 - qab * x / qap;
+  if (fabs(d) < fpm_in) d = fpm_in;
+  d = 1.0 / d;
+  double h = d;
+  for (int m = 1; m <= 200; m++) {
+    int m2 = 2 * m;
+    double aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+    d = 1.0 + aa * d;
+    if (fabs(d) < fpm_in) d = fpm_in;
+    c = 1.0 + aa / c;
+    if (fabs(c) < fpm_in) c = fpm_in;
+    d = 1.0 / d;
+    h *= d * c;
+    aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+    d = 1.0 + aa * d;
+    if (fabs(d) < fpm_in) d = fpm_in;
+    c = 1.0 + aa / c;
+    if (fabs(c) < fpm_in) c = fpm_in;
+    d = 1.0 / d;
+    {
+      double del = d * c;
+      h *= del;
+      if (fabs(del - 1.0) <= eps) break;
+    }
+  }
+  return h;
+}
+
+static double scr_histo_incomplete_beta(double a, double b, double x) {
+  if (x <= 0.0) return 0.0;
+  if (x >= 1.0) return 1.0;
+  {
+    double sum = a + b;
+    double log_norm = lgamma(sum) - lgamma(a) - lgamma(b);
+    double front = exp(log_norm + a * log(x) + b * log(1.0 - x));
+    double symmetry_point = (a + 1.0) / (sum + 2.0);
+    if (x < symmetry_point) return front * scr_histo_beta_cf(a, b, x) / a;
+    return 1.0 - front * scr_histo_beta_cf(b, a, 1.0 - x) / b;
+  }
+}
+
+/* P(T <= t) for Student's t with df degrees of freedom. */
+static double scr_histo_student_t_cdf(double t, double df) {
+  double squared = t * t;
+  double denominator = df + squared;
+  if (squared < df) {
+    double x = squared / denominator;
+    double ibeta = scr_histo_incomplete_beta(0.5, df / 2.0, x);
+    return t >= 0.0 ? 0.5 + 0.5 * ibeta : 0.5 - 0.5 * ibeta;
+  }
+  {
+    double x = df / denominator;
+    double ibeta = scr_histo_incomplete_beta(df / 2.0, 0.5, x);
+    return t >= 0.0 ? 1.0 - 0.5 * ibeta : 0.5 * ibeta;
+  }
+}
+
+/* The positive t quantile for an upper-tail probability, by Node's 100-step
+ * bisection on the lower tail. */
+static double scr_histo_student_t_upper_quantile(double p, double df) {
+  double lo = 0.0, hi = 1.0;
+  while (scr_histo_student_t_cdf(-hi, df) > p) hi *= 2.0;
+  for (int i = 0; i < 100; i++) {
+    double mid = (lo + hi) / 2.0;
+    if (scr_histo_student_t_cdf(-mid, df) > p)
+      lo = mid;
+    else
+      hi = mid;
+  }
+  return (lo + hi) / 2.0;
+}
+
+/* P(X <= k) for X ~ Binomial(n, p) through the incomplete beta identity. */
+static double scr_histo_binomial_cdf(int64_t k, int64_t n, double p) {
+  if (k < 0) return 0.0;
+  if (k >= n) return 1.0;
+  return scr_histo_incomplete_beta((double)(n - k), (double)(k + 1), 1.0 - p);
+}
+
+/* The confidence option (default 0.95) with Node's validation. */
+double scr_histo_confidence(ScrDyn *options) {
+  ScrDyn *plain = NULL;
+  double confidence = 0.95;
+  if (options == NULL || options->kind == SCR_DYN_UNDEF) return confidence;
+  if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_TYPED_REF) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return confidence;
+  }
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    plain = scr_dyn_typed_ref_materialize(options);
+    if (plain == NULL) return confidence;
+  }
+  {
+    const ScrDyn *opts = plain != NULL ? plain : options;
+    const ScrDyn *value = scr_dyn_obj_get(opts, "confidence", 10);
+    if (value != NULL && value->kind != SCR_DYN_UNDEF) {
+      if (value->kind != SCR_DYN_NUM) {
+        scr_dyn_prop_type_fail("options.confidence", "of type number", value);
+      } else {
+        double candidate = value->v.num;
+        if (isnan(candidate) || candidate <= 0 || candidate >= 1) {
+          char received[48];
+          scr_num_received(candidate, received);
+          char msg[192];
+          int len = snprintf(msg, sizeof msg,
+                             "The value of \"options.confidence\" is out of range. It must be "
+                             "> 0 && < 1. Received %s",
+                             received);
+          scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+        } else {
+          confidence = candidate;
+        }
+      }
+    }
+  }
+  scr_dyn_release(plain);
+  return confidence;
+}
+
+/* The percentile argument with Node's 0 < p <= 100 validation. */
+double scr_histo_percentile_arg(ScrDyn *value) {
+  if (value == NULL || value->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("percentile", "of type number", value);
+    return 0.0;
+  }
+  {
+    double percentile = value->v.num;
+    if (isnan(percentile) || percentile <= 0 || percentile > 100) {
+      char received[48];
+      scr_num_received(percentile, received);
+      char msg[192];
+      int len = snprintf(msg, sizeof msg,
+                         "The value of \"percentile\" is out of range. It must be > 0 && <= 100. "
+                         "Received %s",
+                         received);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      return 0.0;
+    }
+    return percentile;
+  }
+}
+
+/* The other histogram argument: Node's ERR_INVALID_ARG_TYPE otherwise. The
+ * call validates and the lowering keeps using its own reference. */
+void scr_histo_other_check(ScrDyn *other) {
+  ScrHisto tmp;
+  if (other == NULL || scr_histo_lookup(other, &tmp) == NULL)
+    scr_dyn_arg_type_fail("other", "an instance of Histogram",
+                          other == NULL ? scr_dyn_undefined() : other);
+}
+
+/* meanCI selectors: 0 mean, 1 lower, 2 upper. */
+double scr_histo_mean_ci(ScrDyn *handle, double confidence, double which) {
+  ScrHisto tmp;
+  ScrHisto *h = scr_histo_lookup(handle, &tmp);
+  if (h == NULL) return NAN;
+  {
+    int64_t count = h->total;
+    double mean = scr_histo_mean_of(h);
+    double stddev, variance, standard_error, t_crit, margin;
+    if (count < 2) return which == 0 ? mean : NAN;
+    stddev = scr_histo_stddev_of(h, mean);
+    if (stddev == 0.0) return mean;
+    variance = stddev * stddev * (double)count / (double)(count - 1);
+    standard_error = sqrt(variance / (double)count);
+    t_crit = scr_histo_student_t_upper_quantile((1.0 - confidence) / 2.0, (double)(count - 1));
+    margin = t_crit * standard_error;
+    return which == 0 ? mean : which == 1 ? mean - margin : mean + margin;
+  }
+}
+
+/* welchTest selectors: 0 t, 1 degrees of freedom, 2 p, 3 lower, 4 upper. */
+double scr_histo_welch(ScrDyn *handle, ScrDyn *other_handle, double confidence, double which) {
+  ScrHisto self_tmp, other_tmp, *self, *other;
+  if (handle == other_handle) return which == 2 ? 1.0 : 0.0;
+  self = scr_histo_lookup(handle, &self_tmp);
+  other = scr_histo_lookup(other_handle, &other_tmp);
+  if (self == NULL || other == NULL || self == other) return which == 2 ? 1.0 : 0.0;
+  {
+    int64_t n1 = self->total, n2 = other->total;
+    double mean1, mean2, sd1, sd2, var1, var2, se1, se2, se_sum, t, df, p, t_crit, margin, diff;
+    if (n1 < 2 || n2 < 2) return which == 2 ? 1.0 : 0.0;
+    mean1 = scr_histo_mean_of(self);
+    mean2 = scr_histo_mean_of(other);
+    sd1 = scr_histo_stddev_of(self, mean1);
+    sd2 = scr_histo_stddev_of(other, mean2);
+    var1 = sd1 * sd1 * (double)n1 / (double)(n1 - 1);
+    var2 = sd2 * sd2 * (double)n2 / (double)(n2 - 1);
+    se1 = var1 / (double)n1;
+    se2 = var2 / (double)n2;
+    se_sum = se1 + se2;
+    if (se_sum == 0.0) return which == 2 ? 1.0 : 0.0;
+    t = (mean1 - mean2) / sqrt(se_sum);
+    df = (se_sum * se_sum) /
+         (se1 * se1 / (double)(n1 - 1) + se2 * se2 / (double)(n2 - 1));
+    p = 2.0 * scr_histo_student_t_cdf(-fabs(t), df);
+    t_crit = scr_histo_student_t_upper_quantile((1.0 - confidence) / 2.0, df);
+    margin = t_crit * sqrt(se_sum);
+    diff = mean1 - mean2;
+    switch ((int)which) {
+      case 0: return t;
+      case 1: return df;
+      case 2: return p;
+      case 3: return diff - margin;
+      default: return diff + margin;
+    }
+  }
+}
+
+/* percentileCI selectors: 0 value, 1 lower, 2 upper. */
+double scr_histo_percentile_ci(ScrDyn *handle, double percentile, double confidence, double which) {
+  ScrHisto tmp;
+  ScrHisto *h = scr_histo_lookup(handle, &tmp);
+  if (h == NULL) return 0.0;
+  {
+    /* The interval histogram answers its empty-histogram percentile (511),
+     * which the generic hdr scan does not; its readings come from the
+     * event-loop histogram's own percentile. */
+    const ScrEld *eld = scr_eld_of(handle);
+    int64_t value = eld != NULL ? scr_eld_percentile_i64(eld, percentile)
+                                : scr_histo_percentile_i64(h, percentile);
+    int64_t n = h->total;
+    double p, alpha, lower_pct, upper_pct;
+    int64_t lo, hi, lower_value, upper_value;
+    if (n < 2) return (double)value;
+    p = percentile / 100.0;
+    alpha = 1.0 - confidence;
+    lo = 0;
+    hi = n;
+    while (lo < hi) {
+      int64_t mid = lo + (hi - lo + 1) / 2;
+      if (scr_histo_binomial_cdf(mid - 1, n, p) <= alpha / 2.0)
+        lo = mid;
+      else
+        hi = mid - 1;
+    }
+    lower_pct = (double)lo / (double)n * 100.0;
+    lo = 0;
+    hi = n;
+    while (lo < hi) {
+      int64_t mid = lo + (hi - lo) / 2;
+      if (scr_histo_binomial_cdf(mid - 1, n, p) >= 1.0 - alpha / 2.0)
+        hi = mid;
+      else
+        lo = mid + 1;
+    }
+    upper_pct = (double)lo / (double)n * 100.0;
+    lower_value = eld != NULL ? scr_eld_percentile_i64(eld, lower_pct)
+                              : scr_histo_percentile_i64(h, lower_pct);
+    upper_value = eld != NULL ? scr_eld_percentile_i64(eld, upper_pct)
+                              : scr_histo_percentile_i64(h, upper_pct);
+    return which == 0 ? (double)value : which == 1 ? (double)lower_value : (double)upper_value;
+  }
 }

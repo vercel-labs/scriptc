@@ -4286,7 +4286,11 @@ static bool scr_tls_ident_alt_split(const char *alt, size_t len,
       emit(cur.p != NULL ? cur.p : "", cur.n, ctx);
       cur.n = 0;
       if (cur.p != NULL) cur.p[0] = 0;
-      offset = (size_t)(sep - alt) + 2;
+      /* the separator skips the comma and the byte after it; a trailing
+       * comma has no such byte, so the cursor stops at the end */
+      size_t next = (size_t)(sep - alt) + 2;
+      if (next > len) next = len;
+      offset = next;
     } else {
       scr_tls_ident_buf_put(&cur, base, remain);
       offset = len;
@@ -4399,15 +4403,28 @@ struct ScrTlsIdentCtx {
 
 static void scr_tls_ident_token(const char *tok, size_t n, void *ctx) {
   struct ScrTlsIdentCtx *c = ctx;
+  /* an embedded NUL cannot appear in a name Node's matching accepts (its
+   * label check rejects bytes below 0x21) and would truncate a C-string
+   * comparison: the entry is kept — Node still counts it — with every NUL
+   * turned into a byte no label check accepts */
+  char stack[256];
+  char *copy = NULL;
+  if (memchr(tok, '\0', n) != NULL) {
+    copy = n <= sizeof stack ? stack : malloc(n);
+    if (copy == NULL) return;
+    memcpy(copy, tok, n);
+    for (size_t i = 0; i < n; i++)
+      if (copy[i] == '\0') copy[i] = 0x01;
+    tok = copy;
+  }
   if (n >= 4 && memcmp(tok, "DNS:", 4) == 0) {
     scr_tls_ident_list_push(&c->dns, tok + 4, n - 4);
-    return;
-  }
-  if (n >= 11 && memcmp(tok, "IP Address:", 11) == 0) {
+  } else if (n >= 11 && memcmp(tok, "IP Address:", 11) == 0) {
     char canon[INET6_ADDRSTRLEN + 8];
     scr_tls_ident_canon_ip(tok + 11, n - 11, canon, sizeof canon);
     scr_tls_ident_list_push(&c->ips, canon, strlen(canon));
   }
+  if (copy != NULL && copy != stack) free(copy);
 }
 
 /* The failure object: Node's ERR_TLS_CERT_ALTNAME_INVALID with `host` and
@@ -4491,9 +4508,12 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
   if (hlen != 0) memcpy(hostbuf, host, hlen);
   hostbuf[hlen] = 0;
   if (hlen > 0 && hostbuf[hlen - 1] == '.') hostbuf[--hlen] = 0;
+  /* an embedded NUL makes the host un-matchable (Node's checks reject such
+   * bytes) and would truncate every C-string comparison below */
+  bool host_has_nul = memchr(hostbuf, '\0', hlen) != NULL;
 
   ScrDyn *result = NULL;
-  if (scr_tls_ident_is_ip(hostbuf)) {
+  if (!host_has_nul && scr_tls_ident_is_ip(hostbuf)) {
     char canon[INET6_ADDRSTRLEN + 8];
     scr_tls_ident_canon_ip(hostbuf, strlen(hostbuf), canon, sizeof canon);
     bool valid = false;
@@ -4506,7 +4526,7 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
     if (!valid) {
       ScrTlsIdentBuf reason = {0};
       scr_tls_ident_buf_put(&reason, "IP: ", 4);
-      scr_tls_ident_buf_put(&reason, hostbuf, strlen(hostbuf));
+      scr_tls_ident_buf_put(&reason, hostbuf, hlen);
       scr_tls_ident_buf_put(&reason, " is not in the cert's list: ", 28);
       for (size_t i = 0; i < ctx.ips.n; i++) {
         if (i != 0) scr_tls_ident_buf_put(&reason, ", ", 2);
@@ -4517,31 +4537,35 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
     }
   } else if (ctx.dns.n > 0 || cn != NULL) {
     char host_lc[512];
-    scr_tls_ident_normalize(hostbuf, strlen(hostbuf), host_lc, sizeof host_lc);
+    scr_tls_ident_normalize(hostbuf, hlen, host_lc, sizeof host_lc);
     bool valid = false;
-    if (ctx.dns.n > 0) {
-      for (size_t i = 0; i < ctx.dns.n && !valid; i++)
-        valid = scr_tls_ident_check(host_lc, ctx.dns.v[i], true);
-    } else if (cn->kind == SCR_DYN_ARR) {
-      for (size_t i = 0; i < scr_dyn_arr_len(cn) && !valid; i++) {
-        const ScrDyn *item = cn->v.arr.items[i];
-        if (item != NULL && item->kind == SCR_DYN_STR) {
-          char *item_owned = NULL;
-          const char *text = scr_str_utf8(item->v.str, &item_owned);
-          valid = scr_tls_ident_check(host_lc, text, true);
-          scr_str_utf8_end(item_owned);
+    if (!host_has_nul) {
+      if (ctx.dns.n > 0) {
+        for (size_t i = 0; i < ctx.dns.n && !valid; i++)
+          valid = scr_tls_ident_check(host_lc, ctx.dns.v[i], true);
+      } else if (cn->kind == SCR_DYN_ARR) {
+        for (size_t i = 0; i < scr_dyn_arr_len(cn) && !valid; i++) {
+          const ScrDyn *item = cn->v.arr.items[i];
+          if (item != NULL && item->kind == SCR_DYN_STR &&
+              memchr(item->v.str->data, '\0', item->v.str->len) == NULL) {
+            char *item_owned = NULL;
+            const char *text = scr_str_utf8(item->v.str, &item_owned);
+            valid = scr_tls_ident_check(host_lc, text, true);
+            scr_str_utf8_end(item_owned);
+          }
         }
+      } else if (cn->kind == SCR_DYN_STR &&
+                 memchr(cn->v.str->data, '\0', cn->v.str->len) == NULL) {
+        char *cn_owned = NULL;
+        const char *text = scr_str_utf8(cn->v.str, &cn_owned);
+        valid = scr_tls_ident_check(host_lc, text, true);
+        scr_str_utf8_end(cn_owned);
       }
-    } else if (cn->kind == SCR_DYN_STR) {
-      char *cn_owned = NULL;
-      const char *text = scr_str_utf8(cn->v.str, &cn_owned);
-      valid = scr_tls_ident_check(host_lc, text, true);
-      scr_str_utf8_end(cn_owned);
     }
     if (!valid) {
       ScrTlsIdentBuf reason = {0};
       scr_tls_ident_buf_put(&reason, "Host: ", 6);
-      scr_tls_ident_buf_put(&reason, hostbuf, strlen(hostbuf));
+      scr_tls_ident_buf_put(&reason, hostbuf, hlen);
       if (ctx.dns.n > 0) {
         scr_tls_ident_buf_put(&reason, ". is not in the cert's altnames: ", 33);
         scr_tls_ident_buf_put(&reason, alt_text != NULL ? alt_text : "", alt_len);

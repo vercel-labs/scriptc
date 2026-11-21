@@ -103417,6 +103417,7 @@
           "tests/corpus/7454-tls-peer-embedded-pem.ts",
           "tests/corpus/8176-tls-empty-context-ca.ts",
           "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-check-server-identity-malformed.ts",
           "tests/corpus/tls-check-server-identity.ts",
           "tests/corpus/tls-connect-forms.ts",
           "tests/corpus/tls-export-keying-material-context-types.ts",
@@ -105605,7 +105606,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.tls.checkServerIdentity",
         "tests": [
-          "tests/corpus/tls-check-server-identity.ts"
+          "tests/corpus/tls-check-server-identity.ts",
+          "tests/corpus/tls-check-server-identity-malformed.ts"
         ]
       },
       "anchorSource": "exact"

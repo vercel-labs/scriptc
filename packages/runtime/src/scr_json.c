@@ -3200,6 +3200,13 @@ static const char *const scr_error_ctor_names[] = {
 #define SCR_ERROR_CTORS (sizeof scr_error_ctor_names / sizeof scr_error_ctor_names[0])
 static SCR_TL ScrDyn *scr_error_ctor_values[SCR_ERROR_CTORS];
 static SCR_TL bool scr_error_ctors_registered;
+/* SystemError's NodeError class as a value (its `constructor`). */
+static SCR_TL ScrDyn *scr_node_error_ctor;
+static void scr_node_error_ctor_cleanup(void) {
+  ScrDyn *ctor = scr_node_error_ctor;
+  scr_node_error_ctor = NULL;
+  scr_dyn_release(ctor);
+}
 
 static void scr_error_ctors_cleanup(void) {
   for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
@@ -12990,12 +12997,26 @@ static ScrStr *scr_dyn_string_tag(const ScrDyn *d) {
     scr_str_release(getter_tag);
     return out;
   }
-  if (scr_exc_pending() || !scr_to_string_tag_symbol) return NULL;
-  ScrDyn *tag = scr_dyn_symbol_key_get(d, scr_to_string_tag_symbol, true);
-  if (!tag) return NULL;
-  ScrStr *out = tag->kind == SCR_DYN_STR ? scr_dyn_tag_string(tag->v.str) : NULL;
-  scr_dyn_release(tag);
-  return out;
+  if (!scr_exc_pending() && scr_to_string_tag_symbol) {
+    ScrDyn *tag = scr_dyn_symbol_key_get(d, scr_to_string_tag_symbol, true);
+    if (tag) {
+      ScrStr *out = tag->kind == SCR_DYN_STR ? scr_dyn_tag_string(tag->v.str) : NULL;
+      scr_dyn_release(tag);
+      return out;
+    }
+  }
+  if (scr_exc_pending()) return NULL;
+  /* A DOMException view's class tag is fixed and needs no symbol entry:
+   * the well-known Symbol.toStringTag is not interned in every program. */
+  if (d->kind == SCR_DYN_OBJ) {
+    ScrError *e = scr_errdyn_err_of(d);
+    if (e) {
+      bool domex = e->vt == &scr_error_vts[SCR_ERR_DOMEX];
+      scr_error_release(e);
+      if (domex) return scr_str_new("DOMException", 12);
+    }
+  }
+  return NULL;
 }
 
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
@@ -13026,7 +13047,21 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
     if (tag || scr_exc_pending()) return tag;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
-    if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
+    if (scr_dyn_ref_is_error(d)) {
+      /* A DOMException's class tag is DOMException, not Error (its view is
+       * the materialization the error registry knows). */
+      ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+      if (!materialized) return NULL;
+      ScrError *e = scr_errdyn_err_of(materialized);
+      bool domex = e != NULL && e->vt == &scr_error_vts[SCR_ERR_DOMEX];
+      if (e) scr_error_release(e);
+      scr_dyn_release(materialized);
+      if (domex) {
+        static const char domex_tag[] = "[object DOMException]";
+        return scr_str_new(domex_tag, sizeof domex_tag - 1);
+      }
+      return scr_str_new("[object Error]", 14);
+    }
     if (scr_dyn_generator(d)) {
       const char *gen_tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(d->v.typed_ref.ptr);
       if (gen_tag[0] == '!') {
@@ -13694,6 +13729,21 @@ static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
          ent->err->vt == &scr_error_vts[SCR_ERR_ERROR];
 }
 
+/* DOMException's legacy numeric `code` is on its prototype in Node, not an
+ * own property: the view's prototype answers it from the error the view
+ * belongs to. */
+static ScrDyn *scr_domex_view_code_get(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrError *e = scr_errdyn_err_of(self);
+  scr_dyn_release(self);
+  if (!e) return scr_dyn_retain(scr_dyn_undefined());
+  double code = e->vt == &scr_error_vts[SCR_ERR_DOMEX] ? scr_domex_code(e) : 0;
+  scr_error_release(e);
+  return scr_dyn_new_num(code);
+}
 /* A pending extra property for the next error view (scr_error_seed_own_prop):
  * AssertionError's generatedMessage, which Node assigns before the class
  * name and the view appends at a fixed place. */
@@ -13732,15 +13782,35 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = false;
   /* Node lists `stack` first among an error's own properties. */
   scr_error_dyn_add_stack(d);
-  if (!e->name_present || !e->message_present) {
+  bool domex = e->vt == &scr_error_vts[SCR_ERR_DOMEX];
+  if (!e->name_present || !e->message_present || domex) {
     ScrDyn *prototype = scr_dyn_new_obj();
     if (!e->name_present) {
       scr_dyn_obj_set(prototype, "name", 4, scr_dyn_new_str(e->name));
-      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = false;
+      /* A DOMException's name, message and code are enumerable accessors on
+       * the class prototype in Node, so `for...in` visits them; an ordinary
+       * error's prototype fields are not enumerable. */
+      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = domex;
     }
     if (!e->message_present) {
       scr_dyn_obj_set(prototype, "message", 7, scr_dyn_new_str(e->message));
-      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = false;
+      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = domex;
+    }
+    if (domex) {
+      /* WebIDL's DOMException: `code` is a prototype accessor and the class
+       * answers Error.prototype's toString. Own names are `stack` (and
+       * `cause` when present); Object.prototype.toString reads the
+       * DOMException tag without a symbol entry (scr_dyn_string_tag). */
+      ScrDyn *getter = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_domex_view_code_get, 0,
+                                        "native:DOMException", "get code");
+      scr_dyn_obj_set_accessor(prototype, "code", 4, getter, NULL);
+      ScrDynEntry *entry = scr_dyn_find_entry(prototype, "code", 4);
+      if (entry) entry->enumerable = true;
+      ScrDyn *to_string = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_error_prototype_to_string,
+                                          0, "native:Error", "toString");
+      scr_dyn_obj_set(prototype, "toString", 8, to_string);
+      entry = scr_dyn_find_entry(prototype, "toString", 8);
+      if (entry) entry->enumerable = false;
     }
     scr_dyn_release(scr_dyn_set_prototype(d, prototype));
     scr_dyn_release(prototype);
@@ -13816,7 +13886,6 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   /* DOMException: `code` is the WebIDL legacy NUMBER (never the errno
    * string slot), and the options form's cause crosses as itself. */
   if (e->vt == &scr_error_vts[SCR_ERR_DOMEX]) {
-    scr_dyn_obj_set(d, "code", 4, scr_dyn_new_num(scr_domex_code(( ScrError *)e)));
     if (scr_domex_has_cause((ScrError *)e)) {
       scr_dyn_obj_set(d, "cause", 5, scr_domex_cause((ScrError *)e));
       /* Node defines the options form's cause non-enumerable, as Error's. */
@@ -20280,6 +20349,18 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       scr_str_release(domex_name);
       if (ctor != NULL) return ctor;
     }
+    /* A SystemError's class is Node's internal NodeError: not constructible
+     * from a program, but its `constructor.name` is observable. */
+    if (vt == &scr_error_vts[SCR_ERR_ERROR] && hit != SIZE_MAX &&
+        scr_errdyn_cache[hit].err->system_message != NULL) {
+      if (!scr_node_error_ctor) {
+        scr_node_error_ctor = scr_dyn_new_func(scr_closure_new((void *)"NodeError", 0),
+                                               scr_error_ctor_call, 1, "native:constructor",
+                                               "NodeError");
+        scr_atexit(scr_node_error_ctor_cleanup);
+      }
+      return scr_dyn_retain(scr_node_error_ctor);
+    }
     /* Every other error's constructor: the interned function value its
      * global reads as (scr_dyn_error_constructor). */
     static const char *const names[] = {
@@ -25954,6 +26035,10 @@ void scr_error_accessor_set(ScrError *e, const ScrStr *key, ScrDyn *value) {
 }
 
 bool scr_error_has_key(ScrError *e, const ScrStr *key) {
+  /* DOMException's legacy `code` is inherited from its prototype. */
+  if (e->vt == &scr_error_vts[SCR_ERR_DOMEX] && key->len == 4 &&
+      memcmp(key->data, "code", 4) == 0)
+    return true;
   ScrDyn *view = scr_errdyn_view_of(e);
   if (view != NULL) {
     /* A checked view of a compiled class is a live capsule the view's own

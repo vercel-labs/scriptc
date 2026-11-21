@@ -1,6 +1,6 @@
 // The mutation runs before the namespace import below creates the ESM
-// namespace object for the package.
-import "./mutate.mjs"
-import * as ns from "late-pkg"
+// namespace object for the module.
+import "./mutate.cjs"
+import * as ns from "./pkg.cjs"
 
 console.log(ns.label())

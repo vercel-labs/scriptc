@@ -1,5 +1,5 @@
 // The member an exported function assigns needs a namespace snapshot. The
-// exported `rename` replaces it again, through a static write of the export:
+// exported `rename` replaces it again through a static write of the export:
 // a module that requires the package can call it before the first ESM
 // import, and Node's namespace copies the value module.exports holds at that
 // import.

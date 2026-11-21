@@ -942,18 +942,6 @@
   "code": "SC2020"
  },
  {
-  "file": "scr_inspect.c",
-  "function": "insp_table_cell",
-  "message": "console.table cells holding Error values have no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_table_cell",
-  "message": "console.table cells holding accessor properties have no lowering",
-  "code": "SC2020"
- },
- {
   "file": "scr_intl.c",
   "function": "scr_icu_word_segmenter_invoke",
   "message": "Intl.Segmenter locale negotiation is not supported yet",

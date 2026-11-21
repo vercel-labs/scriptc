@@ -6,6 +6,7 @@ import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { isRebindableFunction } from "./rebindable-functions.js";
+import { isNodeModuleType } from "./lower-node-module.js";
 import {
   BOOL,
   DYN,
@@ -323,6 +324,23 @@ function declaredReturnTypeInner(
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
   let retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
+  // A JavaScript function that answers the CommonJS Module object — `module`,
+  // `require.main`, `module.parent`, a child view, or a binding of one — has
+  // the checker's module type as its result, and that type is the numeric
+  // handle: the slot cannot hold the object the body returns, so the result
+  // is checked-dynamic, the way Node answers the object. An async function
+  // resolves that value.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    decl.asteriskToken === undefined &&
+    isNodeModuleType(
+      lowerer,
+      lowerer.checker.getNonNullableType(lowerer.checker.getAwaitedType(retTsType) ?? retTsType),
+    )
+  )
+    return decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
   // An ASYNC object-literal method with no return annotation and a
   // contextual signature takes its return from that signature, as an async
   // arrow does: the body's `return` builds at the contextually typed

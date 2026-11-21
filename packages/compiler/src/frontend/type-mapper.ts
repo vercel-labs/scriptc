@@ -5457,6 +5457,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       if (!elem) return null;
       return genResultRecord(elem, VOID, ctx.shapes, ctx.unions);
     }
+    // node:sqlite's row value type: what a statement answers for a cell at run
+    // time is checked-dynamic (a number, bigint, string or Uint8Array, or an
+    // array of them under returnArrays), which the declared union does not
+    // spell.
+    {
+      const alias = widened.getAliasSymbol();
+      if (
+        alias !== undefined &&
+        ts.symbolName(alias) === "SQLOutputValue" &&
+        alias.declarations.some(
+          (d) => ts.isTypeAliasDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+        )
+      )
+        return DYN;
+    }
   }
   if (
     psym &&
@@ -5489,8 +5504,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       (psym !== undefined && psymName === "Session") ||
       (psym !== undefined && psymName === "SQLTagStore") ||
       (psym !== undefined && psymName === "DatabaseSyncLimits") ||
-      // sqlite.backup's progress record, read through the callback's
-      // checked-dynamic parameter.
+      // The records node:sqlite answers as values: a statement's resulting
+      // changes, its column metadata, and sqlite.backup's progress record
+      // (read through the callback's checked-dynamic parameter).
+      (psym !== undefined && psymName === "StatementResultingChanges") ||
+      (psym !== undefined && psymName === "StatementColumnMetadata") ||
       (psym !== undefined && psymName === "BackupProgressInfo")) &&
     psym.declarations.some(
       (d) =>
@@ -5873,6 +5891,17 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "bigintStats" };
   }
+  // `import.meta` read as a value is the checked-dynamic metadata object the
+  // compiler builds for the module (import-meta.ts); its members read through
+  // it like any other checked-dynamic record.
+  if (
+    psym !== undefined &&
+    psymName === "ImportMeta" &&
+    psym.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  )
+    return DYN;
   // module.enableCompileCache()'s result and its options argument
   // (@types/node's EnableCompileCacheResult and EnableCompileCacheOptions,
   // and the fallback's twins) are the plain objects Node passes: a result

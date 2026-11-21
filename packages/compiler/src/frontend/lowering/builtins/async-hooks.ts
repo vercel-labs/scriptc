@@ -120,6 +120,8 @@ export function lowerAsyncHooksCall(
     return { kind: "libCall", fn: "ah.executionId", args: [], type: F64, loc };
   if (bi.member === "triggerAsyncId")
     return { kind: "libCall", fn: "ah.triggerId", args: [], type: F64, loc };
+  if (bi.member === "executionAsyncResource")
+    return { kind: "libCall", fn: "ah.executionResource", args: [], type: DYN, loc };
   if (bi.member === "createHook" && expr.arguments.nodes.length <= 1) {
     const node = expr.arguments.nodes[0];
     if (node !== undefined) {

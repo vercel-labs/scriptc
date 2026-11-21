@@ -46,3 +46,18 @@ show("eld self", [eld.ksTest(eld), eld.cohensD(eld), eld.cliffsD(eld)]);
 const eldMw = eld.mannWhitneyTest(eld);
 show("eld self mw", [eldMw.uStatistic, eldMw.zScore, eldMw.pValue]);
 eld.disable();
+
+// A non-histogram `other` is Node's ERR_INVALID_ARG_TYPE naming the value.
+function showError(label: string, fn: () => void): void {
+  try {
+    fn();
+    console.log(label, "ok");
+  } catch (error) {
+    const e = error as { name: string; code?: string; message: string };
+    console.log(label, e.name, e.code ?? "", JSON.stringify(e.message));
+  }
+}
+showError("ks number", () => a.ksTest(5 as any));
+showError("cohen null", () => a.cohensD(null as any));
+showError("cliff string", () => a.cliffsD("x" as any));
+showError("mw number", () => a.mannWhitneyTest(5 as any));

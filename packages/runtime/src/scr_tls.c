@@ -887,6 +887,10 @@ typedef struct ScrTlsSock {
   bool renego_progress;
   /* asked for before the first handshake finished: started at 'secure' */
   bool renego_requested;
+  /* disableRenegotiation(): a peer-initiated renegotiation is reported
+   * (once per attempt) and never re-fires 'secure' */
+  bool no_renego;
+  bool renego_denied;
   /* the negotiated version is TLS 1.3: no renegotiation exists on it */
   bool is_tls13;
   bool settled; /* the socket closed: listeners added later never fire */
@@ -1083,6 +1087,17 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * a mismatch. */
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
+  if (depth == 0 && t->vrfy_top == NULL) {
+    /* a new handshake's leaf — the initial one, or a renegotiation whose
+     * previous verdict and borrowed leaf were cleared: start fresh */
+    t->vrfy_seen = false;
+    t->vrfy_blocked = false;
+    t->vrfy_leaf_self = false;
+    t->vrfy_chain_self = false;
+    t->vrfy_expired = false;
+    t->vrfy_cn_mismatch = false;
+    t->vrfy_flags = 0;
+  }
   t->vrfy_seen = true;
   if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
     const char *name = t->cli->verify_name;
@@ -1270,6 +1285,14 @@ static void scr_tls_fire_session(ScrTlsSock *t);
 static void scr_tls_renego_settle(ScrTlsSock *t) {
   if (!mbedtls_ssl_is_handshake_over(&t->ssl)) {
     if (t->established && !t->is_tls13) {
+      if (!t->renegotiating && t->no_renego && !t->renego_denied) {
+        /* disableRenegotiation(): Node's socket reports the refusal and
+         * keeps the connection (OpenSSL's NO_RENEGOTIATION stance) */
+        t->renego_denied = true;
+        scr_net_sock_transport_report(t->sock,
+                                      "TLS session renegotiation disabled for this socket",
+                                      "ERR_TLS_RENEGOTIATION_DISABLED");
+      }
       t->renegotiating = true;
       t->renego_progress = true;
     }
@@ -1278,6 +1301,18 @@ static void scr_tls_renego_settle(ScrTlsSock *t) {
   if (!t->renegotiating || !t->renego_progress) return; /* requested but unanswered */
   t->renegotiating = false;
   t->renego_progress = false;
+  bool denied = t->renego_denied;
+  t->renego_denied = false;
+  if (t->srv != NULL && t->srv->request_cert && t->srv->reject_unauthorized &&
+      !t->srv->standalone && mbedtls_ssl_get_verify_result(&t->ssl) != 0) {
+    /* the renegotiated identity failed verification: the connection is
+     * destroyed rather than carry application data under a certificate
+     * that fails the server's required-client-auth policy */
+    scr_net_sock_transport_error(t->sock, NULL);
+    t->hang_up_pending = true;
+    return;
+  }
+  if (denied) return; /* the renegotiation was refused: no 'secure' */
   if (!scr_exc_pending()) scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
 }
 
@@ -1900,6 +1935,10 @@ static void scr_tls_on_established(void *tctx) {
     const char *ver = mbedtls_ssl_get_version(&t->ssl);
     t->is_tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
   }
+  /* the verified leaf is borrowed from the handshake's chain, which the
+   * engine frees: clearing it leaves no dangling pointer across a later
+   * renegotiation (the next handshake's verdict starts from it) */
+  t->vrfy_top = NULL;
   if (t->srv != NULL) {
     /* Node emits a server socket's 'secure' as its handshake completes —
      * before the server's 'secureConnection' listeners run, so a listener
@@ -4940,7 +4979,11 @@ ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {
 
 /* tlsSocket.disableRenegotiation(): TLS renegotiation is off in this
  * provider by default (mbedTLS 3.x), which is what the call asks for. */
-void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }
+void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || t->settled) return;
+  t->no_renego = true;
+}
 
 /* `x instanceof tls.Server` over a checked-dynamic value: false for every
  * non-server value (a null, another handle, a plain object). */

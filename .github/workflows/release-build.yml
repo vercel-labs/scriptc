@@ -185,16 +185,20 @@ jobs:
       - name: Build host helper for cross-libc bootstrap
         if: matrix.seed_helper != ''
         run: pnpm --filter @scriptc/${{ matrix.seed_helper }} build:native
+      # The archive is written inside the checkout, by a relative path: GNU tar
+      # (Git Bash's, on Windows) reads an archive name with a colon, such as
+      # D:\a\_temp\packs.tar.gz, as host:path and tries to reach host "D".
+      # (No leading dot: upload-artifact leaves hidden files out.)
       - name: Archive the helper and runtime pack
         shell: bash
         run: >-
-          tar -czf "$RUNNER_TEMP/packs.tar.gz"
+          tar -czf release-packs.tar.gz
           packages/${{ matrix.helper }} packages/${{ matrix.runtime }}
           ${{ matrix.seed_helper != '' && format('packages/{0}', matrix.seed_helper) || '' }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: packs-${{ matrix.platform }}
-          path: ${{ runner.temp }}/packs.tar.gz
+          path: release-packs.tar.gz
           retention-days: 1
           if-no-files-found: error
 
@@ -240,10 +244,13 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: packs-${{ matrix.platform }}
-          path: ${{ runner.temp }}
+      # Read by a relative path for the same reason as in packs, and removed so
+      # nothing else in the checkout changes.
       - name: Restore the helper and runtime pack
         shell: bash
-        run: tar -xzf "$RUNNER_TEMP/packs.tar.gz"
+        run: |
+          tar -xzf release-packs.tar.gz
+          rm release-packs.tar.gz
       - name: Download the profile collected on this commit
         id: cli-profile
         if: matrix.cli != '' && inputs.collect-profile

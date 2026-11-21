@@ -301,6 +301,12 @@
  },
  {
   "file": "scr_console_native.c",
+  "function": "scr_console_inst_require",
+  "message": "Calling %s on this value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
   "function": "scr_console_dir_dyn",
   "message": "console.dir of a Buffer has no lowering",
   "code": "SC2020"
@@ -345,30 +351,6 @@
   "file": "scr_crypto_args.h",
   "function": "ca_throw_formatted",
   "message": " that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_create_chk",
-  "message": "abort-driven close is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_create_chk",
-  "message": "a custom lookup function is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_bind_opts",
-  "message": "opening an existing descriptor is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_bind_sync_chk",
-  "message": "opening an existing descriptor is not supported yet",
   "code": "SC2020"
  },
  {
@@ -823,6 +805,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection_check",
+  "message": "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
   "code": "SC2020"
@@ -951,18 +939,6 @@
   "file": "scr_inspect.c",
   "function": "scr_insp_inspect",
   "message": "with a depth argument that is not a number or null has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_table_cell",
-  "message": "console.table cells holding Error values have no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_table_cell",
-  "message": "console.table cells holding accessor properties have no lowering",
   "code": "SC2020"
  },
  {
@@ -2271,6 +2247,12 @@
   "file": "scr_ecdh.c",
   "function": "se_unsupported_curve",
   "message": "' has no native implementation; the supported curves are prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_exception.c",
+  "function": "scr_prepare_stack_trace_thunk",
+  "message": "Error.prepareStackTrace is a Node value that native code does not provide as a value",
   "code": "SC2020"
  },
  {

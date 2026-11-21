@@ -275,6 +275,12 @@ uint32_t scr_ni_export_flags(const ScrDyn *v) {
   switch (v->kind) {
   case SCR_DYN_FUNC:
     return v->v.fn.class_obj != NULL ? SCR_NVF_FUNCTION | SCR_NVF_CONSTRUCTOR : SCR_NVF_FUNCTION;
+  case SCR_DYN_PROXY: {
+    /* A Proxy over a function is callable in its island: the call runs the
+     * Proxy's apply trap. Anything else crosses as the plain object it is. */
+    const ScrDyn *target = v->v.proxy.target;
+    return target != NULL && target->kind == SCR_DYN_FUNC ? SCR_NVF_FUNCTION : 0;
+  }
   case SCR_DYN_PROMISE:
     return SCR_NVF_PROMISE;
   case SCR_DYN_ARR:
@@ -435,6 +441,10 @@ bool scr_ni_exportable(const ScrDyn *v) {
   case SCR_DYN_OBJ:
   case SCR_DYN_ARR: /* a Proxy over an Array in V8 (NI-5b) */
   case SCR_DYN_TYPED_REF:
+  /* A Proxy object answers its properties, writes and methods through its
+   * traps, which the bridge's get, set and call route back into: a live view
+   * such as `element.style` is a Proxy over the declaration. */
+  case SCR_DYN_PROXY:
     return true;
   case SCR_DYN_HANDLE: /* Maps and Sets (NI-5b), and twins */
     return v->v.handle.tag == SCR_DYNH_MAP || v->v.handle.tag == SCR_DYNH_SET ||
@@ -1166,6 +1176,20 @@ static bool ni_inherited_name(const ScrDyn *target, const ScrDyn *key) {
  * pending). */
 static ScrDyn *ni_symbol_get(ScrDyn *target, ScrDyn *key, bool *threw) {
   *threw = false;
+  /* A Proxy answers a symbol read through its get trap; asking for its own symbols would answer
+   * the island representative's value instead of running the trap. */
+  if (target->kind == SCR_DYN_PROXY) {
+    ScrDyn *value = scr_dyn_reflect_get(target, key, target);
+    if (value == NULL) {
+      if (scr_exc_pending()) *threw = true;
+      return NULL;
+    }
+    if (value->kind == SCR_DYN_UNDEF) {
+      scr_dyn_release(value);
+      return NULL;
+    }
+    return value;
+  }
   /* A checked-dynamic object, or the view of a record or class instance
    * (generators, arrays and collections have other representatives). */
   if (target->kind != SCR_DYN_OBJ &&
@@ -1247,9 +1271,13 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
     }
     return member != NULL ? ni_returned(member, out) : 2;
   }
+  /* A Proxy answers a read through its get trap. Asking `has` first would run a
+   * different trap on an ordinary read, and a property only the get trap answers
+   * (an absent-but-computed name) would be missed. */
+  const bool proxy = target->kind == SCR_DYN_PROXY;
   int present = 0;
-  if (pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
-  if (!present && !scr_exc_pending()) {
+  if (!proxy && pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
+  if (!proxy && !present && !scr_exc_pending()) {
     /* A prototype getter of a class instance (its table) runs on the
      * instance, as Node runs a prototype accessor on the receiver. */
     ScrDyn *getter = ni_class_accessor(target, pk, 'g');
@@ -1307,7 +1335,7 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
     if (method != NULL) {
       scr_dyn_release(result);
       result = method;
-    } else if (ni_inherited_name(target, pk)) {
+    } else if (!proxy && ni_inherited_name(target, pk)) {
       scr_dyn_release(result);
       scr_dyn_release(pk);
       scr_dyn_release(k);
@@ -1329,7 +1357,7 @@ int scr_ni_host_export_set(uint32_t id, const ScrNodeValue *key, const ScrNodeVa
   ScrDyn *target = scr_ni_export_value(id);
   if (target == NULL) return 2;
   ScrDyn *k = scr_ni_value_in(key);
-  if (k->kind == SCR_DYN_SYMBOL && target->kind != SCR_DYN_OBJ) {
+  if (k->kind == SCR_DYN_SYMBOL && target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_PROXY) {
     /* Only a checked-dynamic object stores a property under a symbol. */
     scr_dyn_release(k);
     return 2;
@@ -1337,7 +1365,9 @@ int scr_ni_host_export_set(uint32_t id, const ScrNodeValue *key, const ScrNodeVa
   ScrDyn *v = scr_ni_value_in(value);
   bool ok = true;
   if (k->kind == SCR_DYN_SYMBOL) {
-    scr_dyn_symbol_key_set(target, k, v);
+    /* A Proxy's symbol write runs its set trap, as any other write does. */
+    if (target->kind == SCR_DYN_PROXY) ok = scr_dyn_reflect_set(target, k, v, target);
+    else scr_dyn_symbol_key_set(target, k, v);
   } else if (ni_export_is_error(id) && k->kind == SCR_DYN_STR) {
     /* A native error: the dynamic write, which also stores name, message,
      * stack, cause and code in the slots typed code reads. */

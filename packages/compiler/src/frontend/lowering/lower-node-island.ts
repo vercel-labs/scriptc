@@ -27,6 +27,7 @@ import { extendsElementOf } from "../heritage-elements.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
+import { genericOverrideBelow } from "./lower-classes.js";
 import { isOptionalChainTail } from "./expressions/optional-chains.js";
 import {
   BOOL,
@@ -2088,7 +2089,10 @@ function classMethodsBuilderOf(
     c !== undefined;
     c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
   ) {
-    for (const m of c.def.methods ?? [])
+    // Generic methods never enter `def.methods` (they have no single ABI
+    // signature and no vtable slot), but their erased instance is a method
+    // value the island calls like any other (`document.querySelectorAll`).
+    for (const m of [...(c.def.methods ?? []), ...(c.genericMethods?.keys() ?? [])])
       if (!names.includes(m) && (islandMethodName(m) || islandAccessorName(m))) names.push(m);
   }
   if (names.length === 0) return null;
@@ -2097,6 +2101,11 @@ function classMethodsBuilderOf(
     lowerer.classMethodValueHelpers.add(builder);
     const fields: { key: IrExpr; value: IrExpr }[] = [];
     for (const m of names) {
+      // A generic method a subclass overrides has no value this table can
+      // hold — the island dispatches by static class, so the overriding
+      // class decides — and the lowering refuses the value: the table leaves
+      // the member out instead of failing the build that shares the class.
+      if (genericOverrideBelow(info, m)) continue;
       const method = classMethodValue(lowerer, blame, info, m, loc);
       if (method === null) continue;
       fields.push({

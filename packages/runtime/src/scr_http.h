@@ -385,6 +385,8 @@ bool scr_http_client_writable_ended(ScrHttpClientReq *c);
 bool scr_http_client_writable_finished(ScrHttpClientReq *c);
 ScrNetSocket *scr_http_client_socket(ScrHttpClientReq *c); /* +1 */
 bool scr_http_client_reused_socket(ScrHttpClientReq *c);
+/* The typed createConnection rewrite's secure-agent check (throws). */
+void scr_http_agent_create_connection_check(const ScrDyn *agent /*borrowed*/);
 void scr_http_client_set_nodelay(ScrHttpClientReq *c, bool enable);
 void scr_http_client_set_socket_keepalive(ScrHttpClientReq *c, bool enable, double delay_ms);
 void scr_http_client_set_timeout_cb(ScrHttpClientReq *c, double ms, ScrClosure *cb /*moves*/);

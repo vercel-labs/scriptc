@@ -331,7 +331,14 @@ __attribute__((weak)) void scr_abort_signal_abort(ScrDyn *controller) { (void)co
 __attribute__((weak)) void scr_abort_signal_drop_listeners(ScrDyn *controller) {
   (void)controller;
 }
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
 static bool scr_http_abort_available(void) { return scr_dyn_abort_unit_linked != 0; }
+static bool scr_http_events_available(void) { return scr_dyn_event_target_unit_linked != 0; }
 #else
 extern ScrDyn *scr_abort_signal_controller_new(void) __attribute__((weak));
 extern ScrDyn *scr_abort_signal_signal(ScrDyn *controller) __attribute__((weak));
@@ -341,6 +348,9 @@ static bool scr_http_abort_available(void) {
   return scr_abort_signal_controller_new != NULL && scr_abort_signal_signal != NULL &&
          scr_abort_signal_abort != NULL && scr_abort_signal_drop_listeners != NULL;
 }
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
+    __attribute__((weak));
+static bool scr_http_events_available(void) { return scr_events_add_abort_listener != NULL; }
 #endif
 
 static void scr_http_req_abort_signal(ScrHttpReq *r) {
@@ -6203,6 +6213,8 @@ struct ScrHttpClientReq {
   ScrStr *proxy_forward; /* proxied: the absolute URI for the request line (+1) */
   ScrStr *proxy_auth;    /* proxied: the proxy-authorization value (+1) or NULL */
   bool tunnel_pending;   /* https: the proxy's CONNECT reply is not in yet */
+  bool chunk_end_owed;   /* the message ended while the tunnel was pending:
+                          * its terminating chunk and trailers still follow */
   int port;
   int default_port; /* the Host header omits it (80 http, 443 https) */
   ScrStr **hnames; /* user headers, verbatim case */
@@ -7209,6 +7221,7 @@ static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_
       scr_http_client_cork_flush(c);
       if (scr_exc_pending()) return;
       if (c->sock && !c->tunnel_pending) scr_http_send_chunk_end(c->sock, &c->trailers);
+      else if (c->tunnel_pending) c->chunk_end_owed = true;
     } else if (c->held_head != NULL && c->tunnel_pending) {
       /* the head waits for the tunnel; this body joins it */
       if (len > 0) {
@@ -7241,6 +7254,8 @@ static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_
     if (scr_exc_pending()) return;
     if (c->chunked && c->sock && !c->tunnel_pending)
       scr_http_send_chunk_end(c->sock, &c->trailers);
+    else if (c->chunked && c->tunnel_pending)
+      c->chunk_end_owed = true;
   }
   c->ended = true;
   scr_http_client_queue_finish(c);
@@ -8044,6 +8059,13 @@ static void scr_http_client_sock_established(void *ctx) {
    * transport that establishes on its own) still flushes what the message
    * held for it */
   if (c->cork_len != 0 || c->held_head != NULL) scr_http_client_cork_flush(c);
+  /* the message ended while the tunnel was pending: the terminating chunk
+   * and the trailers follow the body the flush just released */
+  if (c->chunk_end_owed) {
+    c->chunk_end_owed = false;
+    if (c->sock != NULL && !c->destroyed && !c->close_emitted && !scr_exc_pending())
+      scr_http_send_chunk_end(c->sock, &c->trailers);
+  }
   scr_http_client_queue_finish(c);
 }
 
@@ -10430,14 +10452,22 @@ static bool scr_http_dynh_res_pipe_from(void *dst, const ScrDyn *src) {
   return false;
 }
 
+/* IncomingMessage's methods as values: the class exposes destroy as a
+ * member function, so `req.destroy` reads as a function like Node's (and
+ * the same value on every read); the call already reached the invoke arm. */
+static const ScrDynHandleMethod scr_http_req_methods[] = {
+  {"destroy", 7, false, NULL, NULL},
+  {NULL, 0, false, NULL, NULL},
+};
+
 static const ScrDynHandleOps scr_http_dynh_req_ops = {
-  "IncomingMessage",
-  &scr_http_req_retain_v,
-  &scr_http_req_release_v,
-  &scr_http_dynh_req_invoke,
-  &scr_http_dynh_req_get,
-  &scr_http_dynh_req_set,
-  NULL,
+  .cls = "IncomingMessage",
+  .retain = &scr_http_req_retain_v,
+  .release = &scr_http_req_release_v,
+  .invoke = &scr_http_dynh_req_invoke,
+  .get = &scr_http_dynh_req_get,
+  .set = &scr_http_dynh_req_set,
+  .methods = scr_http_req_methods,
 };
 
 static const ScrDynHandleOps scr_http_dynh_res_ops = {
@@ -10698,16 +10728,23 @@ static ScrDyn *scr_http_dynh_client_invoke(void *h, ScrDyn *self, const char *me
   if (strcmp(method, "getHeaderNames") == 0) {
     ScrArr *names = scr_http_client_get_header_names(c);
     ScrDyn *out = scr_dyn_new_arr();
-    for (size_t i = 0; i < scr_arr_len(names); i++)
-      scr_dyn_arr_push(out, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(names, (double)i)));
+    for (size_t i = 0; i < scr_arr_len(names); i++) {
+      /* get_ref answers +1; scr_dyn_new_str retains its own reference. */
+      ScrStr *n = (ScrStr *)scr_arr_get_ref(names, (double)i);
+      scr_dyn_arr_push(out, scr_dyn_new_str(n));
+      scr_str_release(n);
+    }
     scr_arr_release(names);
     return out;
   }
   if (strcmp(method, "getRawHeaderNames") == 0) {
     ScrArr *names = scr_http_client_get_raw_header_names(c);
     ScrDyn *out = scr_dyn_new_arr();
-    for (size_t i = 0; i < scr_arr_len(names); i++)
-      scr_dyn_arr_push(out, scr_dyn_new_str((ScrStr *)scr_arr_get_ref(names, (double)i)));
+    for (size_t i = 0; i < scr_arr_len(names); i++) {
+      ScrStr *n = (ScrStr *)scr_arr_get_ref(names, (double)i);
+      scr_dyn_arr_push(out, scr_dyn_new_str(n));
+      scr_str_release(n);
+    }
     scr_arr_release(names);
     return out;
   }
@@ -10910,12 +10947,26 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
   ScrNetSocket *sock = scr_net_connect_dyn(
       argc > 0 ? args[0] : scr_dyn_undefined(), argc > 1 ? args[1] : NULL,
       argc > 2 ? args[2] : NULL, NULL,
-      scr_events_add_abort_listener != NULL ? scr_events_add_abort_listener : NULL, fence);
+      scr_http_events_available() ? scr_events_add_abort_listener : NULL, fence);
   scr_str_release(fence);
   if (sock == NULL) return NULL; /* an exception is pending */
   ScrDyn *out = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);
   scr_net_sock_release(sock);
   return out;
+}
+
+/* The typed rewrite's receiver check: the net dialer it lowers to builds a
+ * plaintext socket, so an Agent value whose class is secure (an https.Agent,
+ * however it is typed at the call site) must refuse instead of dialing. */
+void scr_http_agent_create_connection_check(const ScrDyn *agent /*borrowed*/) {
+  if (agent == NULL || agent->kind != SCR_DYN_HANDLE ||
+      agent->v.handle.tag != SCR_DYNH_HTTP_AGENT)
+    return;
+  ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
+  if (a == NULL || !a->secure) return;
+  static const char secure_text[] =
+      "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
 }
 
 /* The dialer as a value, held like the other hooks. */

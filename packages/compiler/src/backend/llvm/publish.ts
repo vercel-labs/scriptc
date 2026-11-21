@@ -30,6 +30,8 @@ import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
 export interface PublishHost {
+  /** See LlEmitter.contentSymbol. */
+  contentSymbol(prefix: string, text: string): string;
   /** The window base compressed references decode with (classes.ts
    * compactRefBaseOf). */
   readonly compactRefBase: bigint;
@@ -177,7 +179,7 @@ export class PublishWalkers {
     const key = typeKey(t);
     const known = this.walkers.get(key);
     if (known !== undefined) return known;
-    const sym = `@sc_pub_${this.counter++}`;
+    const sym = `@${this.host.contentSymbol("sc_pub_", `walker:${key}`)}`;
     this.walkers.set(key, sym);
     this.host.journalOpened?.("publish.walker");
     const body = this.body(t, sym, path, loc);
@@ -195,7 +197,7 @@ export class PublishWalkers {
     const key = `${message}\0${detail}`;
     const known = this.refusals.get(key);
     if (known !== undefined) return known;
-    const sym = `@sc_pub_${this.counter++}`;
+    const sym = `@${this.host.contentSymbol("sc_pub_", `refuse:${key}`)}`;
     this.refusals.set(key, sym);
     this.host.journalOpened?.("publish.refusal");
     this.host.declare(`declare void @scr_pub_refuse_at(ptr, ptr, ptr)`);
@@ -350,7 +352,7 @@ export class PublishWalkers {
     const members = this.host.classesInInterval(info.pre, info.post);
     const cases = members.map((name) => {
       const sub = this.host.classInfo(name);
-      const sym = `@sc_pub_${this.counter++}`;
+      const sym = `@${this.host.contentSymbol("sc_pub_", `class:${name}`)}`;
       const subHead = `define internal void ${sym}(ptr %o, ptr %ctx) ${FN_ATTRS} { ; publish class ${llvmComment(name)}`;
       this.defsOut.push(...this.concreteClassBody(sub, subHead, `${path} (a ${name})`, loc), ``);
       return { pre: sub.pre, sym, name };

@@ -1,6 +1,0 @@
-compat-absent-http-members.ts:15:26 - error SC0001: Property 'createConnection' does not exist on type 'Agent'.
-
-  14 | const agent = new http.Agent({ keepAlive: true });
-  15 | console.log(typeof agent.createConnection);
-     |                          ^~~~~~~~~~~~~~~~
-  16 | agent.destroy();

@@ -5,8 +5,17 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      require_green_ci:
+        description: Publish only when the CI run on this commit succeeded
+        type: boolean
+        default: true
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# No workflow-wide concurrency group. One used to serialize every run, so a run
+# left waiting for the Release environment's approval blocked every later run
+# without saying so. Instead, each run's supersede job cancels older runs that
+# have not started publishing, and the publish job keeps its own group, so two
+# runs never upload at once.
 
 # The token of a job that declares no permissions of its own (the native and mobile package builds) can read the
 # repository and nothing else. The jobs that read other runs' artifacts, publish to npm or write the GitHub release
@@ -15,6 +24,30 @@ permissions:
   contents: read
 
 jobs:
+  # Cancels older runs of this branch that are still building or waiting for
+  # approval to publish (scripts/release-supersede.mjs); this run releases the
+  # same or a later commit. A run that has started publishing is left to finish.
+  supersede:
+    name: Supersede older release runs
+    if: github.repository == 'vercel-labs/scriptc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # A failure here must not stop the release; the publish group still keeps
+    # two uploads apart.
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: Cancel stale release runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release-supersede.mjs
+
   check-release:
     name: Check for new version
     # The private mirror carries this file too; only the public repo
@@ -60,6 +93,25 @@ jobs:
           fi
           echo "version=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
 
+      # What would otherwise fail only after the builds: package versions out
+      # of sync (the publish job's check), no marked changelog entry (the
+      # GitHub release's body) and a stale surface manifest (its asset).
+      - name: Check the release can publish
+        if: steps.check.outputs.should_release == 'true'
+        run: node scripts/release-preflight.mjs
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        if: steps.check.outputs.should_release == 'true'
+        with:
+          version: 11.1.3
+      - name: Check the surface manifest
+        if: steps.check.outputs.should_release == 'true'
+        run: |
+          pnpm install --frozen-lockfile
+          if ! pnpm manifest --check; then
+            echo "::error::packages/compiler/surface-manifest.json does not match the tree. Run 'pnpm manifest' and commit; the GitHub release attaches this file."
+            exit 1
+          fi
+
       - name: Find reusable builds and accepted upload receipts
         id: reuse
         if: steps.check.outputs.should_release == 'true'
@@ -96,6 +148,9 @@ jobs:
                   ':(exclude).github/workflows/release.yml', ':(exclude)scripts/verify-native-cli.mjs',
                   ':(exclude)scripts/package-native-cli.mjs', ':(exclude)tests/harness/native-cli-packaging.test.ts',
                   ':(exclude)scripts/wait-npm-available.mjs', ':(exclude)tests/harness/npm-available.test.ts',
+                  ':(exclude)scripts/release-supersede.mjs', ':(exclude)scripts/release-preflight.mjs',
+                  ':(exclude)scripts/release-ci-gate.mjs',
+                  ':(exclude)tests/harness/release-guards.test.ts',
                 ]).status !== 0) continue;
             const artifacts = api(`repos/${repo}/actions/runs/${run.id}/artifacts?per_page=100`).artifacts
               .filter((artifact) => !artifact.expired && artifact.size_in_bytes > 0);
@@ -113,346 +168,20 @@ jobs:
           if (receiptRun) appendFileSync(process.env.GITHUB_OUTPUT, `receipt_run=${receiptRun}\n`);
           NODE
 
-  # Collects the native compiler's function layout and profile on this commit
-  # (scripts/refresh-cli-layout.mjs, scripts/refresh-cli-profile.mjs), so every
-  # platform's CLI build optimizes and lays out the code it compiles. The
-  # committed ones fall behind main within a day or two. If this job fails,
-  # the CLI builds use the committed profile and layout.
-  cli-profile:
-    name: Collect the native compiler profile
-    needs: check-release
-    if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
-    runs-on: ubuntu-24.04
-    # The layout and the profile's two phases each build an instrumented compiler.
-    timeout-minutes: 120
-    continue-on-error: true
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 11.1.3
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "24"
-          cache: pnpm
-      - uses: ./.github/actions/llvm-linux
-      - run: pnpm install --frozen-lockfile
-      - uses: ./.github/actions/zig
-      - uses: ./.github/actions/native-packages
-        with:
-          target: linux-x64-gnu
-      - run: pnpm --filter @scriptc/compiler --filter scriptc build
-      - name: Check out tsc-ts
-        run: |
-          git clone --quiet --depth 1 https://github.com/vercel-labs/tsc-ts "$RUNNER_TEMP/tsc-ts"
-          echo "tsc-ts $(git -C "$RUNNER_TEMP/tsc-ts" rev-parse HEAD)"
-          npm ci --prefix "$RUNNER_TEMP/tsc-ts"
-      # The layout comes first: the profile matches the functions of builds
-      # with the layout its instrumented compiler was built with, so the
-      # profile is collected with a second instrumented compiler built with
-      # this layout.
-      - name: Collect the function layout
-        run: >-
-          node scripts/refresh-cli-layout.mjs --jobs 4
-          --output "$RUNNER_TEMP/cli-profile/cli.layout.gz" --work "$RUNNER_TEMP/cli-layout-work"
-      - name: Collect the profile
-        env:
-          SCRIPTC_NATIVE_LAYOUT: ${{ runner.temp }}/cli-profile/cli.layout.gz
-        run: >-
-          node scripts/refresh-cli-profile.mjs --tsc-ts "$RUNNER_TEMP/tsc-ts" --jobs 4 --context-sensitive
-          --output "$RUNNER_TEMP/cli-profile/cli.profdata.gz" --work "$RUNNER_TEMP/cli-profile-work"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: cli-profile
-          path: |
-            ${{ runner.temp }}/cli-profile/cli.profdata.gz
-            ${{ runner.temp }}/cli-profile/cli.layout.gz
-          retention-days: 7
-          if-no-files-found: error
-
+  # Every native package and mobile runtime pack, each on its matching host,
+  # and the native compiler profile their CLIs build with (release-build.yml). release-dry-run.yml runs the same workflow nightly
+  # and on release-prep pull requests, without publishing.
   build-native-packages:
-    name: Build native package (${{ matrix.platform }})
-    needs: [check-release, cli-profile]
-    # Runs when the profile job fails; the CLI builds then use the committed profile.
-    if: >-
-      !cancelled() && needs.check-release.outputs.should_release == 'true' &&
-      needs.check-release.outputs.reuse_artifacts != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: darwin-arm64
-            runner: macos-15
-            helper: llvm-darwin-arm64
-            runtime: runtime-darwin-arm64
-            cli: cli-darwin-arm64
-          - platform: darwin-x64
-            runner: macos-15-intel
-            helper: llvm-darwin-x64
-            runtime: runtime-darwin-x64
-            cli: cli-darwin-x64
-          - platform: linux-x64
-            runner: ubuntu-24.04
-            helper: llvm-linux-x64-gnu
-            runtime: runtime-linux-x64-gnu
-            cli: cli-linux-x64-gnu
-            llvm_asset: LLVM-22.1.8-Linux-X64
-            llvm_dist: x64
-            use_zig: true
-          - platform: linux-arm64
-            runner: ubuntu-24.04-arm
-            helper: llvm-linux-arm64-gnu
-            runtime: runtime-linux-arm64-gnu
-            cli: cli-linux-arm64-gnu
-            llvm_asset: LLVM-22.1.8-Linux-ARM64
-            llvm_dist: arm64
-            use_zig: true
-          - platform: windows-x64
-            runner: windows-2022
-            helper: llvm-win32-x64-msvc
-            runtime: runtime-win32-x64-msvc
-            cli: cli-win32-x64-msvc
-            use_zig: true
-          - platform: linux-x64-musl
-            runner: ubuntu-24.04
-            helper: llvm-linux-x64-musl
-            runtime: runtime-linux-x64-musl
-            cli: cli-linux-x64-musl
-            seed_helper: llvm-linux-x64-gnu
-            cli_target: x86_64-linux-musl
-            llvm_asset: LLVM-22.1.8-Linux-X64
-            llvm_dist: x64
-            use_zig: true
-          - platform: linux-arm64-musl
-            runner: ubuntu-24.04-arm
-            helper: llvm-linux-arm64-musl
-            runtime: runtime-linux-arm64-musl
-            cli: cli-linux-arm64-musl
-            seed_helper: llvm-linux-arm64-gnu
-            cli_target: aarch64-linux-musl
-            llvm_asset: LLVM-22.1.8-Linux-ARM64
-            llvm_dist: arm64
-            use_zig: true
-          - platform: wasm32-wasi
-            runner: ubuntu-24.04
-            helper: llvm-linux-x64-gnu
-            runtime: runtime-wasm32-wasi
-            llvm_asset: LLVM-22.1.8-Linux-X64
-            llvm_dist: x64
-            use_zig: true
-    runs-on: ${{ matrix.runner }}
-    # The Intel macOS build took 24 minutes for 0.3.2, 40 for 0.4.5, and passed 45 for 0.4.6.
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 11.1.3
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "24"
-          cache: pnpm
-      - name: Install toolchain (macOS)
-        if: startsWith(matrix.platform, 'darwin')
-        run: |
-          brew install llvm@22
-          llvm_prefix=$(brew --prefix llvm@22)
-          echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
-          echo "LLVM_DIR=$llvm_prefix/lib/cmake/llvm" >> "$GITHUB_ENV"
-      - name: Install pinned LLVM development distribution (Linux)
-        if: startsWith(matrix.platform, 'linux') || matrix.platform == 'wasm32-wasi'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes g++ zlib1g-dev libzstd-dev
-          curl -fL --retry 4 --retry-delay 30 -o "$RUNNER_TEMP/llvm.tar.xz" "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/${{ matrix.llvm_asset }}.tar.xz"
-          sh scripts/verify-toolchain.sh "$RUNNER_TEMP/llvm.tar.xz" "${{ matrix.llvm_asset }}.tar.xz"
-          tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
-          mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
-          echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
-          echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
-      # The Linux helpers link LLVM built with ThinLTO and a profile of the
-      # helper's code generation (native/llvm-codegen/llvm-dist.mjs), from a
-      # release of this repository. Without that archive they link LLVM's
-      # release archive, which gives the same objects more slowly. The
-      # wasm32-wasi job also uploads the x64 GNU helper, so it selects the same.
-      - name: Select the profiled LLVM distribution (Linux)
-        if: matrix.llvm_dist != ''
-        env:
-          ARCH: ${{ matrix.llvm_dist }}
-        run: |
-          tag=$(node --input-type=module -e "import { LLVM_DIST_TAG } from './native/llvm-codegen/llvm-dist.mjs'; console.log(LLVM_DIST_TAG)")
-          asset=$(node --input-type=module -e "import { llvmDistAsset } from './native/llvm-codegen/llvm-dist.mjs'; console.log(llvmDistAsset(process.env.ARCH))")
-          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag"
-          if curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base/$asset" &&
-            curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset.sha256" "$base/$asset.sha256" &&
-            (cd "$RUNNER_TEMP" && sha256sum --check "$asset.sha256"); then
-            tar -xJf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP"
-            echo "SCRIPTC_HELPER_LLVM_DIR=$RUNNER_TEMP/${asset%.tar.xz}/lib/cmake/llvm" >> "$GITHUB_ENV"
-            echo "The helper links $asset from release $tag"
-          else
-            echo "::warning::$asset is not available from release $tag; the helper links LLVM's release archive"
-          fi
-      - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
-        if: matrix.use_zig == true
-        with:
-          version: 0.16.0
-      # The archive is checked against its pinned digest (scripts/toolchain.sha256) before anything unpacks it.
-      - name: Download pinned LLVM development distribution (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: bash
-        run: |
-          archive="$RUNNER_TEMP/clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
-          curl -fL --retry 4 --retry-delay 30 -o "$archive" https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/clang%2Bllvm-22.1.8-x86_64-pc-windows-msvc.tar.xz
-          sh scripts/verify-toolchain.sh "$archive"
-      - name: Install pinned LLVM development distribution (Windows)
-        if: matrix.platform == 'windows-x64'
-        shell: pwsh
-        run: |
-          # The complete archive supplies LLVM's exported CMake targets and
-          # static libraries. windows-2022 includes CMake, Ninja, VS 2022,
-          # and 7-Zip; unlike tar.exe, 7-Zip expands this archive quickly.
-          $archive = "$env:RUNNER_TEMP\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar.xz"
-          $llvm = "$env:RUNNER_TEMP\llvm-22.1.8"
-          $expanded = "$env:RUNNER_TEMP\llvm-expanded"
-          $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe"
-          if (-not (Test-Path $sevenZip)) {
-            choco install 7zip --no-progress -y
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          if (-not (Test-Path $sevenZip)) { throw "7-Zip is unavailable" }
-          & $sevenZip x -y "-o$expanded" $archive
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $sevenZip x -y "-o$expanded" "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc.tar"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Move-Item "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
-          echo "LLVM_DIR=$llvm\lib\cmake\llvm" >> $env:GITHUB_ENV
-          echo "$llvm\bin" >> $env:GITHUB_PATH
-      # A musl CLI ships tsc-ts's musl executable, and these jobs run on glibc
-      # runners, where pnpm installs only the glibc platform packages.
-      - name: Let pnpm install musl platform packages
-        if: endsWith(matrix.cli_target, '-musl')
-        run: |
-          printf 'supportedArchitectures:\n  libc: [current, musl]\n' >> pnpm-workspace.yaml
-      - run: pnpm install --frozen-lockfile
-      - name: Build native packages (POSIX)
-        if: matrix.platform != 'windows-x64'
-        run: |
-          if [ -n "${SCRIPTC_HELPER_LLVM_DIR:-}" ]; then
-            LLVM_DIR="$SCRIPTC_HELPER_LLVM_DIR" SCRIPTC_LLVM_THINLTO=1 pnpm --filter @scriptc/${{ matrix.helper }} build:native || {
-              echo "::warning::the helper did not build against the profiled LLVM; it links LLVM's release archive"
-              rm -rf node_modules/.cache/scriptc-${{ matrix.helper }}
-              pnpm --filter @scriptc/${{ matrix.helper }} build:native
-            }
-          else
-            pnpm --filter @scriptc/${{ matrix.helper }} build:native
-          fi
-          if [ "${{ matrix.use_zig }}" = true ]; then
-            CC=zig AR=zig pnpm --filter @scriptc/${{ matrix.runtime }} build:native
-          else
-            CC=clang AR=llvm-ar pnpm --filter @scriptc/${{ matrix.runtime }} build:native
-          fi
-      - name: Build native packages (Windows)
-        if: matrix.platform == 'windows-x64'
-        run: |
-          pnpm --filter @scriptc/${{ matrix.helper }} build:native
-          pnpm --filter @scriptc/${{ matrix.runtime }} build:native
-      - name: Build host helper for cross-libc bootstrap
-        if: matrix.seed_helper != ''
-        run: pnpm --filter @scriptc/${{ matrix.seed_helper }} build:native
-      - name: Download the profile collected on this commit
-        id: cli-profile
-        if: matrix.cli != ''
-        continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: cli-profile
-          path: ${{ runner.temp }}/cli-profile
-      # Without the artifact, SCRIPTC_NATIVE_PROFILE_USE and SCRIPTC_NATIVE_LAYOUT
-      # stay unset and build-native-cli.mts uses the committed profile and layout.
-      - name: Select the native compiler profile
-        if: matrix.cli != ''
-        shell: bash
-        env:
-          COLLECTED: ${{ steps.cli-profile.outcome == 'success' && format('{0}/cli-profile/cli.profdata.gz', runner.temp) || '' }}
-        run: |
-          if [ -n "$COLLECTED" ]; then
-            echo "SCRIPTC_NATIVE_PROFILE_USE=$COLLECTED" >> "$GITHUB_ENV"
-            echo "The native CLI builds with the profile collected on $GITHUB_SHA"
-            layout="$(dirname "$COLLECTED")/cli.layout.gz"
-            if [ -f "$layout" ]; then
-              echo "SCRIPTC_NATIVE_LAYOUT=$layout" >> "$GITHUB_ENV"
-              echo "The native CLI builds with the function layout collected on $GITHUB_SHA"
-            fi
-          else
-            echo "::warning::No profile was collected on this commit; the native CLI builds with the committed profile"
-          fi
-      - name: Build native CLI distribution
-        if: matrix.cli != ''
-        env:
-          SCRIPTC_TARGET: ${{ matrix.cli_target }}
-        run: |
-          pnpm --filter @scriptc/compiler --filter scriptc build
-          pnpm --filter @scriptc/${{ matrix.cli }} build:native
-          node scripts/verify-native-cli.mjs packages/${{ matrix.cli }} --run
-      - name: Verify GNU npm distribution on glibc 2.34
-        if: matrix.platform == 'linux-x64' || matrix.platform == 'linux-arm64'
-        run: |
-          NODE_ROOT=$(dirname "$(dirname "$(command -v node)")")
-          docker run --rm --volume "$GITHUB_WORKSPACE:/work:ro" --volume "$NODE_ROOT:/node:ro" \
-            --env PATH=/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin \
-            --workdir /work amazonlinux:2023 sh -c '
-              set -eu
-              dnf install --assumeyes clang tar gzip
-              test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.34"
-              node scripts/smoke-native-install.mjs packages/${{ matrix.cli }}
-            '
-      - name: Verify packed Darwin helper on its build host
-        if: matrix.platform == 'darwin-arm64'
-        run: |
-          TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
-          node scripts/verify-llvm-package.mjs "$RUNNER_TEMP/$(basename "$TARBALL")"
-      - name: Upload native packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: native-${{ matrix.platform }}
-          path: |
-            packages/${{ matrix.helper }}
-            packages/${{ matrix.runtime }}
-            ${{ matrix.cli != '' && format('packages/{0}/dist', matrix.cli) || '' }}
-          retention-days: 7
-
-  build-mobile-runtime-packs:
-    name: Build ${{ matrix.runtime }}
+    name: Build native packages
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runtime: runtime-ios-arm64
-            runner: macos-15
-          - runtime: runtime-ios-simulator-arm64
-            runner: macos-15
-          - runtime: runtime-android-arm64
-            runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: ./.github/actions/mobile-runtime-pack
-        with:
-          runtime: ${{ matrix.runtime }}
-      - name: Stage mobile runtime pack
-        run: |
-          mkdir -p "$RUNNER_TEMP/mobile-pack/${{ matrix.runtime }}"
-          cp -R packages/${{ matrix.runtime }}/. "$RUNNER_TEMP/mobile-pack/${{ matrix.runtime }}/"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: native-${{ matrix.runtime }}
-          path: ${{ runner.temp }}/mobile-pack
-          retention-days: 7
+    uses: ./.github/workflows/release-build.yml
+    with:
+      # Collects the native compiler's profile and layout on this commit, so
+      # every platform's CLI build optimizes and lays out the code it
+      # compiles (release-build.yml's cli-profile job).
+      collect-profile: true
+
 
   # The four @scriptc/libnode-<platform> packs ship with the release as
   # opt-in packages: scriptc does not depend on them, and a program that
@@ -465,14 +194,48 @@ jobs:
     if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
     uses: ./.github/workflows/libnode-packs.yml
 
+  # Releases require a green CI run on their commit. This waits for the CI
+  # run on this commit beside the builds, and fails with its link when it did
+  # not succeed, before anyone is asked to approve the upload. CI on main keeps
+  # only the newest pending push run, so when this commit's run was dropped,
+  # scripts/release-ci-gate.mjs dispatches a complete CI run on it and waits
+  # for that.
+  ci-green:
+    name: Require green CI on this commit
+    needs: check-release
+    if: >-
+      needs.check-release.outputs.should_release == 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.require_green_ci)
+    runs-on: ubuntu-latest
+    # CI on main takes about 75 minutes; a dispatched run, with the complete
+    # macOS suite, about two and a half hours.
+    timeout-minutes: 240
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: Wait for CI on ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release-ci-gate.mjs
+
   publish:
     name: Publish to npm
-    needs: [check-release, build-native-packages, build-mobile-runtime-packs, build-libnode-packs]
+    needs: [check-release, build-native-packages, build-libnode-packs, ci-green]
+    # Two runs never upload at once. A newer run's publish waits here for an
+    # older one that has started; supersede cancels older runs that have not.
+    concurrency:
+      group: release-publish-${{ github.ref }}
+      cancel-in-progress: false
     if: >-
       !cancelled() && needs.check-release.outputs.should_release == 'true' &&
+      (needs.ci-green.result == 'success' || needs.ci-green.result == 'skipped') &&
       (needs.check-release.outputs.reuse_artifacts == 'true' ||
-      (needs.build-native-packages.result == 'success' && needs.build-mobile-runtime-packs.result == 'success' &&
-      needs.build-libnode-packs.result == 'success'))
+      (needs.build-native-packages.result == 'success' && needs.build-libnode-packs.result == 'success'))
     runs-on: ubuntu-latest
     # Two waits for npm availability of at most 25 minutes each.
     timeout-minutes: 70

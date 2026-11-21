@@ -81,6 +81,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/stat.h> /* bind({ fd }): the descriptor kind Node guesses */
 #endif
 
 #include "scr_system_error_event.h"
@@ -429,6 +430,8 @@ void scr_dgram_release(ScrDgramSocket *s) {
     scr_str_release(s->pending_err);
     scr_dyn_release(s->send_block_list);
     scr_dyn_release(s->recv_block_list);
+    scr_dyn_release(s->abort_dispose);
+    scr_dyn_release(s->lookup);
     if (s->fd >= 0) scr_dgram_close_fd_raw(s->fd);
 #ifdef SCR_RC_AUDIT
     scr_dgram_live--;
@@ -750,6 +753,280 @@ static void scr_dgram_defer_err(ScrDgramSocket *s, const char *msg) {
   scr_dgram_wake();
 }
 
+/* A settled socket drops the program's resolver, as Node's handle does when
+ * it is destroyed: a resolver that captures the socket (or the transport
+ * owning it) must not keep the closed socket and its captured data alive. */
+static void scr_dgram_drop_lookup(ScrDgramSocket *s) {
+  scr_dyn_release(s->lookup);
+  s->lookup = NULL;
+}
+
+/* ── createSocket({ lookup }): a program's own resolver ────────────────
+ * Node's internal dgram handle carries a `lookup(address, family, cb)` and
+ * calls it from bind, connect and every unconnected send — its default
+ * short-circuits IP literals and defers through dns.lookup. A custom
+ * resolver answers `cb(err, ip)`; the operation continues from that answer,
+ * synchronously when the resolver called back synchronously, as Node's
+ * does. The family argument is 4 or 6 for the socket's family. A connect or
+ * send on an unbound socket resolves the implicit bind's address first
+ * ("0.0.0.0"/"::"), as Node's bind({ port: 0 }) does, then the target. */
+
+static void scr_dns_call_later(const ScrDyn *callback, ScrDyn **args, size_t argc, bool tick);
+static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, double port,
+                               ScrStr *host);
+static void scr_dgram_send_out(ScrDgramSocket *s, const char *data, size_t len, double port,
+                               const ScrStr *host, const ScrDyn *callback);
+static ScrDyn *scr_dgram_send_error(const char *msg);
+static bool scr_dgram_connect_has_dyn(const ScrDyn *dyn_cb);
+static void scr_dgram_connect_fail_dyn(const ScrDyn *dyn_cb, ScrDyn *err);
+static void scr_dgram_connect_impl(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb,
+                                   const ScrDyn *dyn_cb);
+
+typedef enum {
+  SCR_DGRAM_LK_BIND,
+  SCR_DGRAM_LK_CONNECT,
+  SCR_DGRAM_LK_SEND_RAW,
+  SCR_DGRAM_LK_SEND_DYN
+} ScrDgramLkOp;
+
+typedef struct ScrDgramLkJob {
+  size_t rc;          /* the callback box's reference */
+  ScrDgramSocket *s;  /* +1 */
+  ScrDgramLkOp op;
+  char *address;      /* the text the current stage hands the resolver */
+  char *target;       /* the operation's own address, parked during the
+                       * implicit-bind stage (malloc) */
+  int stage;          /* 1 = the implicit bind's address, 0 = the target */
+  double port;
+  ScrClosure *cb;     /* +1: bind's listening / connect's connect callback */
+  char *data;         /* SEND_*: the payload */
+  size_t len;
+  ScrDyn *send_cb;    /* +1: the send completion (SEND_DYN) */
+  ScrDyn *dyn_cb;     /* +1: connect's checked-dynamic completion */
+  ScrDyn *fn;         /* +1: the resolver itself */
+  bool done;          /* the current stage's first answer wins */
+} ScrDgramLkJob;
+
+static void scr_dgram_lk_job_destroy(ScrDgramLkJob *job) {
+  scr_dgram_release(job->s);
+  scr_closure_release(job->cb);
+  scr_dyn_release(job->send_cb);
+  scr_dyn_release(job->dyn_cb);
+  scr_dyn_release(job->fn);
+  free(job->address);
+  free(job->target);
+  free(job->data);
+  free(job);
+}
+
+static void *scr_dgram_lk_job_retain(void *p) {
+  ScrDgramLkJob *job = p;
+  job->rc++;
+  return job;
+}
+
+static void scr_dgram_lk_job_release(void *p) {
+  ScrDgramLkJob *job = p;
+  if (--job->rc == 0) scr_dgram_lk_job_destroy(job);
+}
+
+/* The failure text a lookup error carries: its `message` when it is an
+ * Error-like value, else the value's string form (Node hands the program's
+ * own error through; this re-raises an equivalent Error, see the row). */
+static void scr_dgram_lk_error_message(const ScrDyn *err, char *out, size_t cap) {
+  out[0] = 0;
+  if (err == NULL) return;
+  if (err->kind == SCR_DYN_STR) {
+    size_t n = err->v.str->len < cap - 1 ? err->v.str->len : cap - 1;
+    memcpy(out, err->v.str->data, n);
+    out[n] = 0;
+    return;
+  }
+  const ScrDyn *msg = NULL;
+  if (err->kind == SCR_DYN_OBJ) msg = scr_dyn_obj_get(err, "message", 7);
+  if (msg != NULL && msg->kind == SCR_DYN_STR) {
+    size_t n = msg->v.str->len < cap - 1 ? msg->v.str->len : cap - 1;
+    memcpy(out, msg->v.str->data, n);
+    out[n] = 0;
+    return;
+  }
+  snprintf(out, cap, "getaddrinfo failed");
+}
+
+/* The implicit bind a connect/send on an unbound socket performs, at the
+ * address the resolver answered for Node's bind({ port: 0 }) call. Answers
+ * false with the failure already reported. */
+static bool scr_dgram_lk_bind_implicit(ScrDgramSocket *s, ScrStr *host) {
+  struct sockaddr_storage sa;
+  socklen_t salen = sizeof sa;
+  if (!scr_dgram_host_addr(s, host->data, 0, &sa, &salen)) {
+    char msg[192];
+    snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", host->data);
+    scr_dgram_defer_err(s, msg);
+    return false;
+  }
+  scr_dgram_ensure_fd(s);
+  if (bind(s->fd, (struct sockaddr *)&sa, salen) != 0) {
+    char ip[64] = "";
+    scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
+    char msg[128];
+    snprintf(msg, sizeof msg, "bind %s %s", scr_dgram_errname(errno), ip);
+    scr_dgram_defer_err(s, msg);
+    return false;
+  }
+  s->bound = true;
+  s->emit_listening = true;
+  scr_dgram_apply_init_buffers(s);
+  scr_dgram_register(s);
+  scr_dgram_update_read(s);
+  return true;
+}
+
+static void scr_dgram_lk_invoke(ScrDgramSocket *s, ScrDgramLkJob *job);
+
+/* The resolver's answer: continue the operation the job was started for. */
+static ScrDyn *scr_dgram_lk_cb(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  ScrDgramLkJob *job = scr_box_get_ref(clo->caps[0]); /* +1 */
+  if (job == NULL) return scr_dyn_retain(scr_dyn_undefined());
+  if (!job->done) {
+    job->done = true;
+    ScrDgramSocket *s = job->s;
+    /* closed while the resolver was pending: Node's handle is gone, so the
+     * answer runs no completion and creates no descriptor */
+    if (s->closing || s->close_emitted) {
+      scr_dgram_lk_job_release(job);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    const ScrDyn *err = argc > 0 ? args[0] : NULL;
+    const ScrDyn *ip = argc > 1 ? args[1] : NULL;
+    bool failed = err != NULL && err->kind != SCR_DYN_UNDEF && err->kind != SCR_DYN_NULL;
+    if (failed && err->kind == SCR_DYN_BOOL && !err->v.b) failed = false;
+    if (!failed && (ip == NULL || ip->kind != SCR_DYN_STR || ip->v.str->len == 0))
+      failed = true;
+    if (failed) {
+      char msg[256];
+      if (err != NULL && err->kind != SCR_DYN_UNDEF && err->kind != SCR_DYN_NULL) {
+        scr_dgram_lk_error_message(err, msg, sizeof msg);
+      } else {
+        snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", job->address);
+      }
+      if (job->stage == 1) {
+        /* the implicit bind's own resolution failed: Node answers on the
+         * socket's 'error' event and abandons the operation — the send or
+         * connect completion never runs */
+        scr_dgram_defer_err(s, msg);
+      } else if (job->op == SCR_DGRAM_LK_SEND_DYN && job->send_cb != NULL) {
+        ScrDyn *eargs[1] = { scr_dgram_send_error(msg) };
+        scr_dns_call_later(job->send_cb, eargs, 1, false);
+        scr_closure_release(job->cb);
+        job->cb = NULL;
+      } else if (job->op == SCR_DGRAM_LK_CONNECT && job->dyn_cb != NULL) {
+        /* a dynamic completion receives the error object, as the
+         * resolution-failure arm does; a typed one is answered on the next
+         * tick with no arguments */
+        scr_dgram_connect_fail_dyn(job->dyn_cb, scr_dgram_send_error(msg));
+      } else if (job->op == SCR_DGRAM_LK_CONNECT && job->cb != NULL) {
+        scr_next_tick(job->cb);
+        job->cb = NULL;
+      } else {
+        scr_dgram_defer_err(s, msg);
+        scr_closure_release(job->cb);
+        job->cb = NULL;
+      }
+      scr_dgram_lk_job_release(job);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    ScrStr *host = scr_str_new(ip->v.str->data, ip->v.str->len);
+    if (job->stage == 1) {
+      /* the implicit bind Node's connect/send performs first: bind at the
+       * answered address, then resolve the operation's own target. A send
+       * that raced an earlier implicit bind finds the socket bound. */
+      if (!s->bound && !scr_dgram_lk_bind_implicit(s, host)) {
+        scr_str_release(host);
+        scr_closure_release(job->cb);
+        job->cb = NULL;
+        scr_dgram_lk_job_release(job);
+        return scr_dyn_retain(scr_dyn_undefined());
+      }
+      free(job->address);
+      job->address = job->target;
+      job->target = NULL;
+      job->stage = 0;
+      job->done = false;
+      scr_str_release(host);
+      scr_dgram_lk_invoke(s, job);
+      scr_dgram_lk_job_release(job);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    s->lookup_ready = true;
+    switch (job->op) {
+      case SCR_DGRAM_LK_BIND:
+        scr_dgram_bind(s, job->port, host, job->cb);
+        job->cb = NULL;
+        break;
+      case SCR_DGRAM_LK_CONNECT:
+        scr_dgram_connect_impl(s, job->port, host, job->cb, job->dyn_cb);
+        job->cb = NULL;
+        scr_dyn_release(job->dyn_cb);
+        job->dyn_cb = NULL;
+        break;
+      case SCR_DGRAM_LK_SEND_RAW:
+        scr_dgram_send_raw(s, job->data, job->len, job->port, host);
+        break;
+      case SCR_DGRAM_LK_SEND_DYN:
+        scr_dgram_send_out(s, job->data, job->len, job->port, host, job->send_cb);
+        break;
+    }
+    s->lookup_ready = false;
+    scr_str_release(host);
+  }
+  scr_dgram_lk_job_release(job);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* Call the resolver for the job's current address. */
+static void scr_dgram_lk_invoke(ScrDgramSocket *s, ScrDgramLkJob *job) {
+  ScrClosure *clo = scr_closure_new(NULL, 1);
+  clo->caps[0] = scr_box_new_obj(&scr_dgram_lk_job_retain, &scr_dgram_lk_job_release, NULL);
+  scr_box_set_ref(clo->caps[0], scr_dgram_lk_job_retain(job));
+  ScrDyn *cb = scr_dyn_new_func(clo, &scr_dgram_lk_cb, 2, "(err, ip)", "lookupCallback");
+  ScrStr *text = scr_str_new(job->address, strlen(job->address));
+  ScrDyn *args[3] = { scr_dyn_new_str(text), scr_dyn_new_num(s->v6 ? 6 : 4), cb };
+  ScrDyn *r = scr_dyn_call(job->fn, args, 3, "lookup");
+  scr_dyn_release(r);
+  for (size_t i = 0; i < 3; i++) scr_dyn_release(args[i]);
+  scr_str_release(text);
+}
+
+/* Start the resolution for a new operation: an unbound connect/send asks
+ * for the implicit bind's address first (Node's bind({ port: 0 })). */
+static void scr_dgram_lk_start(ScrDgramSocket *s, ScrDgramLkJob *job) {
+  job->rc = 1;
+  job->s = scr_dgram_retain(s);
+  job->fn = scr_dyn_retain(s->lookup);
+  job->stage = 0;
+  scr_dgram_register(s); /* a pending lookup holds the loop, like Node */
+  if (!s->bound && (job->op == SCR_DGRAM_LK_CONNECT || job->op == SCR_DGRAM_LK_SEND_RAW ||
+                    job->op == SCR_DGRAM_LK_SEND_DYN)) {
+    job->stage = 1;
+    job->target = job->address;
+    job->address = strdup(s->v6 ? "::" : "0.0.0.0");
+    if (!job->address) scr_dgram_oom();
+  }
+  scr_dgram_lk_invoke(s, job);
+  /* the resolver callback's box owns the job from here: drop the starting
+   * reference (a resolver that answered synchronously already released the
+   * box's own). */
+  scr_dgram_lk_job_release(job);
+}
+
+/* The defaulted address text Node hands its lookup per operation. */
+static const char *scr_dgram_lk_address(const ScrDgramSocket *s, const ScrStr *host, bool bind) {
+  if (host != NULL && host->len > 0) return host->data;
+  if (bind) return s->v6 ? "::" : "0.0.0.0";
+  return s->v6 ? "::1" : "127.0.0.1";
+}
+
 /* bind(port, host): binds NOW; 'listening' (and the bind callback) defer
  * to the next dispatch pass. State errors throw synchronously, runtime
  * failures defer to 'error' — both Node's split. */
@@ -762,6 +1039,19 @@ void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host, ScrClosure *cb
   if (s->bound) {
     scr_closure_release(cb);
     scr_dgram_throw("Socket is already bound");
+    return;
+  }
+  if (s->lookup != NULL && !s->lookup_ready) {
+    /* Node resolves the bind address through its handle's lookup before
+     * binding; the answer continues this bind. */
+    ScrDgramLkJob *job = calloc(1, sizeof *job);
+    if (!job) scr_dgram_oom();
+    job->op = SCR_DGRAM_LK_BIND;
+    job->address = strdup(scr_dgram_lk_address(s, host, true));
+    if (!job->address) scr_dgram_oom();
+    job->port = port;
+    job->cb = cb;
+    scr_dgram_lk_start(s, job);
     return;
   }
   if (cb) scr_dgram_ls_add(&s->listening_ls, cb, NULL, true);
@@ -895,6 +1185,20 @@ static void scr_dgram_connect_impl(ScrDgramSocket *s, double port, ScrStr *host,
   if (scr_dgram_connect_has_dyn(dyn_cb) && !scr_dyn_is_callable(dyn_cb)) {
     scr_closure_release(cb);
     scr_dyn_arg_type_fail("listener", "of type function", dyn_cb);
+    return;
+  }
+  if (s->lookup != NULL && !s->lookup_ready) {
+    /* Node resolves the connect address through its handle's lookup (after
+     * the implicit bind's own lookup) and continues from the answer. */
+    ScrDgramLkJob *job = calloc(1, sizeof *job);
+    if (!job) scr_dgram_oom();
+    job->op = SCR_DGRAM_LK_CONNECT;
+    job->address = strdup(scr_dgram_lk_address(s, host, false));
+    if (!job->address) scr_dgram_oom();
+    job->port = port;
+    job->cb = cb;
+    if (scr_dgram_connect_has_dyn(dyn_cb)) job->dyn_cb = scr_dyn_retain((ScrDyn *)dyn_cb);
+    scr_dgram_lk_start(s, job);
     return;
   }
   if (cb) scr_dgram_ls_add(&s->conn_ls, cb, NULL, true);
@@ -1203,12 +1507,92 @@ static bool scr_dgram_opt_read(const ScrDyn *obj, const char *name, size_t len, 
   return true;
 }
 
+/* The abort listener Node's constructor installs for options.signal: it
+ * closes the socket (close(), not destroy — 'close' emits at the next
+ * sweep) and nothing else. */
+static ScrDyn *scr_dgram_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrDgramSocket *s = scr_box_get_ref(clo->caps[0]); /* +1 */
+  if (s != NULL) {
+    if (!s->closing && !s->close_emitted) scr_dgram_close(s, NULL);
+    scr_dgram_release(s);
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrClosure *scr_dgram_abort_job(ScrDgramSocket *s) {
+  ScrClosure *job = scr_closure_new((void *)&scr_dgram_abort_thunk, 1);
+  job->caps[0] = scr_box_new_obj(&scr_dgram_retain_v, &scr_dgram_release_v, NULL);
+  scr_box_set_ref(job->caps[0], scr_dgram_retain(s));
+  return job;
+}
+
+/* Node's validateAbortSignal test, `'aborted' in signal`: a native
+ * AbortSignal handle carries the tag, a plain object answers its own member
+ * and a record reference through its materialized members. */
+static bool scr_dgram_signal_value(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_HANDLE) return v->v.handle.tag == SCR_DYNH_ABORT_SIGNAL;
+  if (v->kind == SCR_DYN_OBJ) return scr_dyn_obj_get(v, "aborted", 7) != NULL;
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *owned = scr_dyn_typed_ref_materialize(v);
+    if (owned == NULL) return false;
+    bool has = scr_dyn_obj_get(owned, "aborted", 7) != NULL;
+    scr_dyn_release(owned);
+    return has;
+  }
+  return false;
+}
+
+/* The value of the signal's `aborted` member, as the constructor reads it
+ * (a real signal's accessor, a duck-typed object's own field). */
+static bool scr_dgram_signal_aborted(const ScrDyn *v) {
+  const ScrDyn *obj = v;
+  ScrDyn *owned = NULL;
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    owned = scr_dyn_typed_ref_materialize(v);
+    if (owned == NULL) return false;
+    obj = owned;
+  }
+  ScrDyn *member = scr_dyn_obj_read(obj, "aborted", 7);
+  bool aborted = member != NULL && scr_dgram_dyn_truthy(member);
+  if (member != NULL) scr_dyn_release(member);
+  if (owned != NULL) scr_dyn_release(owned);
+  return aborted;
+}
+
+/* Arms options.signal: the socket closes when the signal aborts. Node's
+ * constructor closes an already-aborted socket at once (onAborted runs
+ * inside it) and installs the listener through events.addAbortListener
+ * otherwise (`add_abort`, NULL only for a program that never links the
+ * event-target unit). */
+static void scr_dgram_arm_abort(ScrDgramSocket *s, const ScrDyn *signal,
+                                ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *)) {
+  if (scr_dgram_signal_aborted(signal)) {
+    if (!s->closing && !s->close_emitted) scr_dgram_close(s, NULL);
+    return;
+  }
+  if (add_abort == NULL) return;
+  ScrClosure *listener = scr_dgram_abort_job(s);
+  ScrDyn *fn = scr_dyn_new_func(listener, scr_dgram_abort_thunk, 0, "()", "onAbort");
+  s->abort_dispose = add_abort((ScrDyn *)signal, fn);
+  scr_dyn_release(fn);
+  if (s->abort_dispose == NULL) {
+    /* Node's validateAbortSignal is duck-typed, and installing the listener
+     * calls signal.addEventListener: a value that only looks like a signal
+     * fails with that TypeError. */
+    scr_exc_clear();
+    scr_throw_error_msg(SCR_ERR_TYPE, "signal.addEventListener is not a function", 41);
+  }
+}
+
 /* createSocket(type | options[, listener]) — Node's Socket constructor.
  * The listener (nullable, moves) registers as on('message'). NULL with the
  * exception pending (ERR_SOCKET_BAD_TYPE, ERR_OUT_OF_RANGE, the
  * ERR_INVALID_ARG_TYPE ladder) or an SC2020 for an option with no native
  * behavior yet. */
-ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgramMsgFn fn) {
+ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgramMsgFn fn,
+                                     ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *)) {
   ScrDyn *owned = NULL;
   const ScrDyn *v = scr_dgram_options_view(arg, &owned);
   if (v == NULL) {
@@ -1219,6 +1603,8 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
   bool v6 = false, reuse = false, ipv6_only = false, reuse_port = false;
   double recv = 0, send = 0;
   ScrDyn *recv_list = NULL, *send_list = NULL; /* retained, move onto the socket */
+  ScrDyn *signal_member = NULL;                /* retained, armed below */
+  ScrDyn *lookup = NULL; /* createSocket({ lookup }), transferred to the socket */
   if (v->kind == SCR_DYN_OBJ) {
     ScrDyn *m = NULL;
     bool ok = true;
@@ -1256,27 +1642,24 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
     if (ok && scr_dgram_opt_read(v, "signal", 6, &m)) {
       /* Node's validateAbortSignal is the loose `'aborted' in signal` test;
        * a native AbortSignal handle carries the tag. */
-      bool signal = (m->kind == SCR_DYN_HANDLE &&
-                     m->v.handle.tag == SCR_DYNH_ABORT_SIGNAL) ||
-                    (m->kind == SCR_DYN_OBJ && scr_dyn_obj_get(m, "aborted", 7) != NULL);
+      bool signal = scr_dgram_signal_value(m);
       if (!signal) {
         scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", m);
+        scr_dyn_release(m);
+        ok = false;
       } else {
-        static const char msg[] = "abort-driven close is not supported yet";
-        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+        signal_member = m; /* retained: armed once the socket exists */
       }
-      scr_dyn_release(m);
-      ok = false;
     }
     if (ok && scr_dgram_opt_read(v, "lookup", 6, &m)) {
       if (m->kind != SCR_DYN_FUNC) {
         scr_dyn_arg_type_fail("lookup", "of type function", m);
+        ok = false;
       } else {
-        static const char msg[] = "a custom lookup function is not supported yet";
-        scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+        /* held for the socket: bind/connect/send resolve through it */
+        lookup = scr_dyn_retain(m);
       }
       scr_dyn_release(m);
-      ok = false;
     }
     if (ok && scr_dgram_opt_read(v, "receiveBlockList", 16, &m)) {
       /* Node stores the option only when it is truthy, then checks the
@@ -1308,7 +1691,9 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
     if (!ok) {
       scr_dyn_release(recv_list);
       scr_dyn_release(send_list);
+      scr_dyn_release(signal_member);
       scr_dyn_release(type_member);
+      scr_dyn_release(lookup);
       scr_dyn_release(owned);
       scr_closure_release(cb);
       return NULL;
@@ -1321,6 +1706,8 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
     scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_SOCKET_BAD_TYPE");
     scr_dyn_release(recv_list);
     scr_dyn_release(send_list);
+    scr_dyn_release(signal_member);
+    scr_dyn_release(lookup);
     scr_dyn_release(owned);
     scr_closure_release(cb);
     return NULL;
@@ -1330,6 +1717,19 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
   ScrDgramSocket *s = scr_dgram_create(v6, reuse, ipv6_only, reuse_port, recv, send);
   s->recv_block_list = recv_list;
   s->send_block_list = send_list;
+  s->lookup = lookup;
+  if (signal_member != NULL) {
+    /* The constructor's addAbortListener: an unreadable signal fails the
+     * construction, as Node's does, and the socket goes with it. */
+    scr_dgram_arm_abort(s, signal_member, add_abort);
+    scr_dyn_release(signal_member);
+    if (scr_exc_pending()) {
+      scr_dgram_release(s);
+      scr_dyn_release(owned);
+      scr_closure_release(cb);
+      return NULL;
+    }
+  }
   scr_dyn_release(owned);
   if (cb) scr_dgram_on_message(s, cb, fn, false);
   return s;
@@ -1338,6 +1738,60 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
 /* bind(options[, callback]) — Node's normalization over an untyped options
  * object: { port, address, exclusive }, with an open-fd request and the
  * option kinds with no native behavior yet refused explicitly. */
+/* Node's bind(): `isInt32(port.fd) && port.fd > 0` selects the
+ * descriptor-adopting form; any other fd falls through to the port bind. */
+static bool scr_dgram_fd_option(const ScrDyn *v, int *out) {
+  if (v->kind != SCR_DYN_NUM) return false;
+  double d = v->v.num;
+  if (!(d > 0) || d != floor(d) || d > 2147483647.0) return false;
+  *out = (int)d;
+  return true;
+}
+
+/* bind({ fd }): Node guesses the descriptor's kind (uv_guess_handle) and
+ * refuses anything but a datagram socket with ERR_INVALID_FD_TYPE, then
+ * hands it to the handle (uv_udp_open takes the descriptor over, sets it
+ * non-blocking and starts receiving; 'listening' defers). False with the
+ * exception pending. */
+static bool scr_dgram_adopt_fd(ScrDgramSocket *s, int fd) {
+  const char *kind = "UNKNOWN";
+  int type = 0;
+  socklen_t type_len = sizeof type;
+#if !defined(_WIN32)
+  struct stat st;
+  if (fstat(fd, &st) == 0) {
+    if (S_ISFIFO(st.st_mode)) kind = "PIPE";
+    else if (S_ISDIR(st.st_mode)) kind = "DIRECTORY";
+    else if (S_ISREG(st.st_mode)) kind = "FILE";
+  }
+#endif
+  if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (void *)&type, &type_len) == 0) {
+    if (type == SOCK_STREAM) kind = "TCP";
+    else if (type == SOCK_DGRAM) kind = "UDP";
+  }
+  if (strcmp(kind, "UDP") != 0) {
+    char msg[64];
+    int n = snprintf(msg, sizeof msg, "Unsupported fd type: %s", kind);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_FD_TYPE");
+    return false;
+  }
+  /* The poller owns the loop's read watch (and, on Windows, the winsock
+   * startup this descriptor's socket needs): the adopted socket arms its
+   * watcher through it like a created one. */
+  if (!scr_dgram_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  scr_dgram_nonblock(fd);
+  s->fd = fd;
+  s->bound = true;
+  s->emit_listening = true;
+  scr_dgram_apply_init_buffers(s);
+  scr_dgram_register(s);
+  scr_dgram_update_read(s);
+  return true;
+}
+
 void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *cb) {
   ScrDyn *owned = NULL;
   const ScrDyn *v = scr_dgram_options_view(options, &owned);
@@ -1365,12 +1819,32 @@ void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *c
   }
   ScrDyn *member = NULL;
   if (!empty && scr_dgram_opt_read(v, "fd", 2, &member)) {
-    static const char msg[] = "opening an existing descriptor is not supported yet";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    int fd = -1;
+    bool fd_form = scr_dgram_fd_option(member, &fd);
     scr_dyn_release(member);
-    scr_dyn_release(owned);
-    scr_closure_release(cb);
-    return;
+    if (fd_form) {
+      /* Node's bind() ignores port and address in this form; the socket
+       * must still be unbound and running. */
+      if (s->closing || s->close_emitted) {
+        scr_dyn_release(owned);
+        scr_closure_release(cb);
+        scr_dgram_throw("Not running");
+        return;
+      }
+      if (s->bound) {
+        scr_dyn_release(owned);
+        scr_closure_release(cb);
+        scr_dgram_throw("Socket is already bound");
+        return;
+      }
+      /* The callback is Node's once('listening'): it runs when the adopted
+       * socket starts listening, or not at all when the descriptor is
+       * refused. */
+      if (cb) scr_dgram_ls_add(&s->listening_ls, cb, NULL, true);
+      scr_dyn_release(owned);
+      scr_dgram_adopt_fd(s, fd);
+      return;
+    }
   }
   if (!empty && scr_exc_pending()) {
     scr_dyn_release(owned);
@@ -1431,13 +1905,9 @@ void scr_dgram_bind_sync_chk(ScrDgramSocket *s, const ScrDyn *options) {
     return;
   }
   ScrDyn *member = NULL;
-  if (!empty && scr_dgram_opt_read(v, "fd", 2, &member)) {
-    static const char msg[] = "opening an existing descriptor is not supported yet";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
-    scr_dyn_release(member);
-    scr_dyn_release(owned);
-    return;
-  }
+  /* Node's bindSync reads only port, address and exclusive: an fd member is
+   * ignored and the port bind runs as usual. */
+  if (!empty && scr_dgram_opt_read(v, "fd", 2, &member)) scr_dyn_release(member);
   if (!empty && scr_exc_pending()) {
     scr_dyn_release(owned);
     return;
@@ -1513,6 +1983,20 @@ static void scr_dgram_send_raw(ScrDgramSocket *s, const char *data, size_t len, 
   socklen_t salen = sizeof sa;
   /* An empty host is the family's loopback, Node's lookup answer for "". */
   const char *h = host->len > 0 ? host->data : (s->v6 ? "::1" : "127.0.0.1");
+  if (s->lookup != NULL && !s->lookup_ready) {
+    ScrDgramLkJob *job = calloc(1, sizeof *job);
+    if (!job) scr_dgram_oom();
+    job->op = SCR_DGRAM_LK_SEND_RAW;
+    job->address = strdup(h);
+    if (!job->address) scr_dgram_oom();
+    job->port = port;
+    job->data = malloc(len == 0 ? 1 : len);
+    if (!job->data) scr_dgram_oom();
+    if (len != 0) memcpy(job->data, data, len);
+    job->len = len;
+    scr_dgram_lk_start(s, job);
+    return;
+  }
   if (!scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     char msg[160];
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
@@ -2860,6 +3344,20 @@ void scr_dns_thunk0(ScrClosure *cb, ScrStr *errmsg, ScrStr *addr, double family)
 
 /* ── the sweep: deferred emits ───────────────────────────────────────── */
 
+/* 'close' disposes the signal's listener (Node registers the removable as
+ * a once('close') handler). */
+static void scr_dgram_clear_abort(ScrDgramSocket *s) {
+  if (s->abort_dispose == NULL) return;
+  ScrDyn *dispose = s->abort_dispose;
+  s->abort_dispose = NULL;
+  /* Calling the removable removes the abort listener, as Node's
+   * once('close', dispose) does: a signal outliving the socket keeps no
+   * reference to it. */
+  ScrDyn *result = scr_dyn_call(dispose, NULL, 0, "[Symbol.dispose]");
+  scr_dyn_release(result);
+  scr_dyn_release(dispose);
+}
+
 /* Work the next dispatch delivers now: the deferred emits and the dns
  * deliveries already queued. A query still in flight waits on the poller's
  * own keys and must not arm the wake timer, or the loop would spin for the
@@ -2916,23 +3414,41 @@ static void scr_dgram_sweep(void) {
        * inert: if nothing keeps it live (not bound, not closing), settle
        * it off the registry so the loop can drain — pre-failure
        * listeners drop, the net failed-listen stance. */
-      if (s->fd < 0 && !s->closing && !s->close_emitted) {
-        s->close_emitted = true;
-        scr_dgram_ls_drop(&s->msg_ls);
-        scr_dgram_ls_drop(&s->err_ls);
-        scr_dgram_ls_drop(&s->listening_ls);
-        scr_dgram_ls_drop(&s->close_ls);
-        scr_dgram_ls_drop(&s->conn_ls);
-        scr_dgram_unregister(s);
-        if (scr_exc_pending()) {
-          scr_dgram_release(s);
-          return;
+      if (!s->closing && !s->close_emitted) {
+        if (s->fd < 0) {
+          s->close_emitted = true;
+          scr_dgram_clear_abort(s);
+          scr_dgram_drop_lookup(s);
+          scr_dgram_ls_drop(&s->msg_ls);
+          scr_dgram_ls_drop(&s->err_ls);
+          scr_dgram_ls_drop(&s->listening_ls);
+          scr_dgram_ls_drop(&s->close_ls);
+          scr_dgram_ls_drop(&s->conn_ls);
+          scr_dgram_unregister(s);
+          if (scr_exc_pending()) {
+            scr_dgram_release(s);
+            return;
+          }
+        } else if (!s->bound && !s->read_armed) {
+          /* a failed implicit bind leaves an unbound descriptor behind:
+           * Node's never-started handle holds no loop reference, so drop
+           * the descriptor and the registry slot. The socket stays usable —
+           * a later operation binds afresh — and close() still works. */
+          scr_dgram_close_fd_raw(s->fd);
+          s->fd = -1;
+          scr_dgram_unregister(s);
+          if (scr_exc_pending()) {
+            scr_dgram_release(s);
+            return;
+          }
         }
       }
     }
     if (s->closing && !s->close_emitted) {
       s->close_emitted = true;
       scr_dgram_fire0(&s->close_ls);
+      scr_dgram_clear_abort(s);
+      scr_dgram_drop_lookup(s);
       /* settle: listeners drop (the cycle story), off the registry */
       scr_dgram_ls_drop(&s->msg_ls);
       scr_dgram_ls_drop(&s->err_ls);
@@ -3154,13 +3670,28 @@ static void scr_dgram_send_out(ScrDgramSocket *s, const char *data, size_t len, 
     scr_dgram_throw("Not running");
     return;
   }
-  bool has_cb = callback->kind == SCR_DYN_FUNC;
+  bool has_cb = callback != NULL && callback->kind == SCR_DYN_FUNC;
   char msg[192];
   msg[0] = '\0';
   struct sockaddr_storage sa;
   socklen_t salen = sizeof sa;
   const char *h =
       host == NULL ? NULL : host->len > 0 ? host->data : (s->v6 ? "::1" : "127.0.0.1");
+  if (h != NULL && s->lookup != NULL && !s->lookup_ready) {
+    ScrDgramLkJob *job = calloc(1, sizeof *job);
+    if (!job) scr_dgram_oom();
+    job->op = SCR_DGRAM_LK_SEND_DYN;
+    job->address = strdup(h);
+    if (!job->address) scr_dgram_oom();
+    job->port = port;
+    job->data = malloc(len == 0 ? 1 : len);
+    if (!job->data) scr_dgram_oom();
+    if (len != 0) memcpy(job->data, data, len);
+    job->len = len;
+    if (has_cb) job->send_cb = scr_dyn_retain((ScrDyn *)callback);
+    scr_dgram_lk_start(s, job);
+    return;
+  }
   if (h != NULL && !scr_dgram_host_addr(s, h, (uint16_t)(int)port, &sa, &salen)) {
     snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
   } else {

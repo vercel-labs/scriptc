@@ -26,6 +26,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoEwma",
   "perf.histoPercentile",
   "perf.histoPercentileBig",
+  "perf.histoMeanCI",
+  "perf.histoWelch",
+  "perf.histoPercentileCI",
   "perf.histoCountAt",
   "perf.histoCdf",
   "perf.histoCcdf",
@@ -36,6 +39,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoPercentilesValue",
   "perf.histoPercentilesValueBig",
   "perf.histoDispose",
+  "perf.slidingReset",
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",
@@ -47,6 +51,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Console instance state that answers text: the timer labels are already
   // strings, the stores are the instance's own tables, and no program code
   // runs. (The counters and the table can throw, so they are not here.)
+  "console.channelActive",
+  "console.publishArgs",
   "console.instTime",
   "console.instTimeEnd",
   "console.instTimeLog",
@@ -120,6 +126,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "ah.enable",
   "ah.providers",
   "ah.executionId",
+  "ah.executionResource",
   "ah.triggerId",
   // scr_als_with_scope reads the effective store, enters the new one and
   // boxes the RunScope; no program code runs and nothing raises.
@@ -247,6 +254,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Reads the fork channel registry and answers undefined, null or the
   // retained Control object; a plain process has no channel.
   "process.channel",
+  // The Module view of a record: a cache lookup, a retain, and the object
+  // built on first use from fields the registry already holds.
+  "module.dynObject",
+  "module.dynChildren",
+  "module.dynParent",
+  "module.dynObjectOrAbsent",
+  "module.dynOf",
+  "module.setExportsDyn",
   // The stream object a descriptor the program already holds names: a cache
   // lookup and a retain, with no allocation, coercion or program code. The
   // cursor methods use it to reach the same object process.stdio answers.

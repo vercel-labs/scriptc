@@ -5699,6 +5699,9 @@ export function lowerRuntimeFormat(
   loc: SrcLoc,
   options?: ts.Expression | null,
   literalPrefix = "",
+  /** The console output member whose diagnostics channel receives the
+   * argument pack before the line is formatted (console.<member>). */
+  channelMember?: number,
 ): IrExpr {
   const stmts: IrStmt[] = [];
   let optionsRef: IrExpr | null = null;
@@ -5724,9 +5727,27 @@ export function lowerRuntimeFormat(
     blame: argNodes[0] ?? options ?? undefined,
   });
   stmts.push(...pack.stmts);
+  if (channelMember !== undefined)
+    stmts.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "console.publishArgs",
+        args: [numLit(channelMember, loc), pack.pack()],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
   const result: IrExpr =
     optionsRef === null
-      ? { kind: "libCall", fn: "insp.format", args: [pack.pack()], type: STRING, loc }
+      ? {
+          kind: "libCall",
+          fn: channelMember === undefined ? "insp.format" : "insp.formatSnapshot",
+          args: [pack.pack()],
+          type: STRING,
+          loc,
+        }
       : {
           kind: "libCall",
           fn: "insp.formatWithOptions",

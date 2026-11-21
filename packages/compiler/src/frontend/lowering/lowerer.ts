@@ -5487,8 +5487,9 @@ export class Lowerer {
   /** `module.builtinModules` as a value: one frozen string[] global per
    * program (builtinModulesValue), so every read — the named binding, the
    * namespace member, the boxed namespace and a dynamic import — answers
-   * the same array, as Node answers one frozen array. */
-  builtinModulesEntry: { global: IrGlobal; loadedId: string } | null = null;
+   * the same array, as Node answers one frozen array. A journaled table, so
+   * a replayed unit keeps the same global. */
+  readonly builtinModulesEntry = new Map<string, { global: IrGlobal; loadedId: string }>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). A program module
@@ -6488,7 +6489,7 @@ export class Lowerer {
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
       checkedTable("importMetaObjects", () => this.importMetaObjects.size),
-      checkedTable("builtinModulesEntry", () => (this.builtinModulesEntry === null ? 0 : 1)),
+      checkedTable("builtinModulesEntry", () => this.builtinModulesEntry.size),
       checkedTable("dynImports", () => this.dynImports.size),
       checkedTable("createRequireImports", () => this.createRequireImports.size),
       checkedTable("dynNsBuilders", () => this.dynNsBuilders.size),
@@ -25689,8 +25690,9 @@ export class Lowerer {
    * it; every later read — the named binding, the namespace member read, the
    * boxed namespace, and a dynamic import's member — answers that array. */
   builtinModulesValue(loc: SrcLoc): IrExpr {
-    let entry = this.builtinModulesEntry;
-    if (entry === null) {
+    const entryKey = "%g.builtinModules";
+    let entry = this.builtinModulesEntry.get(entryKey);
+    if (entry === undefined) {
       const id = "%g.builtinModules";
       const loadedId = "%g.builtinModules%loaded";
       const global: IrGlobal = {
@@ -25701,7 +25703,7 @@ export class Lowerer {
       };
       this.globalsList.push(global, { id: loadedId, name: "%loaded", type: BOOL, mutable: true });
       entry = { global, loadedId };
-      this.builtinModulesEntry = entry;
+      this.builtinModulesEntry.set(entryKey, entry);
     }
     const arrayType = arrayOf(STRING);
     const slot = this.declareHiddenLocal("%builtinModules", arrayType);

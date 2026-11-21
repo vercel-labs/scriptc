@@ -14,6 +14,9 @@ const runtimeSources = [
   "scr_bytes.c",
   "scr_bytes.test.c",
   "scr_bytes_io.c",
+  // scr_bytes_io.c's Buffer.from object walk checks the compiled frames'
+  // stack guard, whose overflow report scr_context.c defines.
+  "scr_context.c",
   "scr_fs_cp.c",
   "scr_zlib.c",
   "scr_lib.c",

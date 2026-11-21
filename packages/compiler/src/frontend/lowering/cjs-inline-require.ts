@@ -1805,9 +1805,17 @@ export function cjsRequireSnapshotBindingsOf(
   const dep = lowerer.cjsModuleRefDepOf(decl.initializer);
   if (dep === null) return null;
   const bindings = new Map<ts.BindingElement, { name: ts.Identifier; key: string }>();
+  // A partial require() cycle: every plain binding snapshots the live
+  // exports object's member at this statement — the value Node
+  // destructures, undefined included.
+  const partial = lowerer.program.analysis.partialCjsCycleMembers.has(dep);
   for (const element of decl.name.elements.nodes) {
     const binding = cjsNamedBindingOf(lowerer, element);
     if (binding === null) continue;
+    if (partial) {
+      bindings.set(element, binding);
+      continue;
+    }
     let symbol = lowerer.cjsModuleExportSymbol(dep, binding.key);
     if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias)
       symbol = lowerer.checker.getAliasedSymbol(symbol);

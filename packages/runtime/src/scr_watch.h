@@ -35,7 +35,7 @@ void scr_watcher_release_v(void *p);
  * (Node's default true) is the watcher's initial loop liveness: a false
  * one does not keep the process alive, and ref()/unref() move it. +1. */
 ScrWatcher *scr_fs_watch(ScrStr *path, ScrClosure *cb, ScrWatchFn fn, bool wants_name,
-                         bool persistent);
+                         bool persistent, bool recursive);
 void scr_watcher_close(ScrWatcher *w); /* idempotent */
 /* watcher.ref()/watcher.unref(): loop-liveness toggles on an open watcher
  * (no-ops on a closed one, as Node's handle-less methods are). */

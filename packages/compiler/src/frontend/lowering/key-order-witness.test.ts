@@ -15,6 +15,7 @@ import {
   type KeyOrderSegment,
 } from "./key-order-witness.js";
 import type { Lowerer } from "./lowerer.js";
+import { decodeUnitFunction, encodeUnitFunction } from "./unit-journal.js";
 import * as ts from "../ts7/adapter.js";
 
 const loc = { file: "order.ts", start: 0, end: 1 };
@@ -1003,4 +1004,43 @@ test("a spread of a converted value into a wider shape orders the wider shape", 
   f.run([observe(f.literal(ab, ["b", "a"])), observe(wide)]);
   expect(f.order(ab)).toEqual(["b", "a"]);
   expect(f.order(abc)).toEqual(["b", "a", "c"]);
+});
+
+test("a unit's notes are recorded by function and node, and attach to the function a record carries", () => {
+  const f = fixture();
+  const ab = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  f.notes.beginUnit();
+  const literal = f.literal(ab, ["b", "a"]);
+  f.notes.observe(ab);
+  const fn: IrFunction = {
+    name: "%unit",
+    params: [],
+    returnType: F64,
+    locals: [],
+    body: [observe(literal)],
+    loc,
+  };
+  f.notes.noteUnit("%unit", [fn]);
+  // The record carries the function, decoded again by the build that
+  // applies it.
+  const carriedText = encodeUnitFunction(fn)!;
+  expect(carriedText).not.toBeNull();
+  const carried = decodeUnitFunction(carriedText);
+  const carriedLiteral = (carried.body[0] as IrStmt & { expr: { value: IrExpr } }).expr.value;
+  const table = f.notes.journalTable((name) => (name === "%unit" ? carried : undefined));
+  const entries = table.entries!(0)!;
+  expect(entries.length).toBe(2);
+  expect(f.notes.literalOf(carriedLiteral)).toBeUndefined();
+  table.apply!(entries);
+  table.attach!();
+  // The decoded node carries the note the lowered one had, and the shape the
+  // unit observed is observed again.
+  expect(f.notes.literalOf(carriedLiteral)).toEqual(f.notes.literalOf(literal));
+  expect(f.notes.observed.has(ab.shapeId)).toBe(true);
 });

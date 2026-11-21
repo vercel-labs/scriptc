@@ -55,7 +55,7 @@ import { inlineUnionCopyLines } from "./inline-unions.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { emitPerKeyOrder } from "./key-orders.js";
 import { emitLinkedRecordBranches } from "./walkers.js";
-import { registerReplay } from "./emit-journal.js";
+import { registerContentReplay, registerReplay } from "./emit-journal.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
@@ -101,7 +101,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   const key = typeKey(inner);
   const existing = host.dynPromiseAdapters.get(key);
   if (existing) return existing;
-  const sym = `sc_dpa_${host.dynPromiseAdapters.size}`;
+  const sym = host.contentSymbol("sc_dpa_", key);
   host.dynPromiseAdapters.set(key, sym);
   host.journal?.allocated(sym, "dynPromiseAdapter", [inner]);
   host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
@@ -664,7 +664,7 @@ export function liveDynUnionRefAdapter(
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
   }
 
-  const sym = `sc_ldu_${host.liveDynUnionRefAdapters.size}`;
+  const sym = host.contentSymbol("sc_ldu_", key);
   host.liveDynUnionRefAdapters.set(key, sym);
   host.journal?.allocated(sym, "liveDynUnionRefAdapter", [t]);
 
@@ -871,7 +871,7 @@ export function streamTypedRefMaterializeAdapter(
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
-  const numbered = `sc_ldr_${host.liveDynRefAdapters.size}`;
+  const numbered = host.contentSymbol("sc_ldr_", adapterKey);
   const snapshot = `${numbered}_materialize`;
   const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null", numbered };
   host.liveDynRefAdapters.set(adapterKey, adapter);
@@ -2135,7 +2135,7 @@ export function streamFromArrayAdapter(
   const key = typeKey(elem);
   const existing = host.streamFromArrayAdapters.get(key);
   if (existing) return existing;
-  const sym = `sc_sfa_${host.streamFromArrayAdapters.size}`;
+  const sym = host.contentSymbol("sc_sfa_", key);
   host.streamFromArrayAdapters.set(key, sym);
   host.journal?.allocated(sym, "streamFromArrayAdapter", [t]);
   const B = new BlockBuilder();
@@ -2268,21 +2268,23 @@ export function streamFromArrayAdapter(
   return sym;
 }
 
-registerReplay("dynPromiseAdapter", (host, args) => dynPromiseAdapter(host, args[0] as IrType));
+registerContentReplay("dynPromiseAdapter", (host, args) =>
+  dynPromiseAdapter(host, args[0] as IrType),
+);
 registerReplay("streamTypedDesc", (host, args) =>
   (streamTypedDesc(host, args[0] as IrType) ?? "").slice(1),
 );
-registerReplay("liveDynUnionRefAdapter", (host, args) =>
+registerContentReplay("liveDynUnionRefAdapter", (host, args) =>
   liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
 );
 // The numbered name, not the snapshot: a snapshot that is a runtime function
 // (scr_stream_ref_view, scr_dyn_class_view_unavailable) is no name of this
 // module, and a range's text spells the adapter's other symbols (its commit,
 // its ops tables) from the number.
-registerReplay(
+registerContentReplay(
   "streamTypedRefMaterializeAdapter",
   (host, args) => streamTypedRefMaterializeAdapter(host, args[0] as IrType).numbered,
 );
-registerReplay("streamFromArrayAdapter", (host, args) =>
+registerContentReplay("streamFromArrayAdapter", (host, args) =>
   streamFromArrayAdapter(host, args[0] as IrType & { kind: "array" }),
 );

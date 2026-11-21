@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-require-esm-cycle/b.cjs",
+  "<repo>/tests/corpus/cjs-require-esm-cycle/main.mjs"
+ ],
+ "diags": []
+}

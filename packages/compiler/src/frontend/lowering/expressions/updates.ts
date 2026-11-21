@@ -1003,6 +1003,19 @@ export function fieldSetStmt(
       loc,
     };
   }
+  if (target.container === "errorPrepareStackTrace") {
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "error.prepareStackTraceSet",
+        args: [lowerer.coerceToExpected(value, DYN)],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
   if (target.container === "errorCause") {
     return {
       kind: "exprStmt",

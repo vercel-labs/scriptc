@@ -283,6 +283,95 @@ static void async_resource_handles_own_their_payload(void) {
   printf("async resource handles own their payload\n");
 }
 
+/* executionAsyncResource() answers a handle box for a resource the scope
+ * borrows; the box owns its own reference, so dropping it leaves the
+ * original handle's payload alive (the regression was one shared reference,
+ * which freed the payload and double-released it). */
+static ScrDyn *ar_test_execution_resource(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  return scr_ar_execution_resource();
+}
+
+static void async_resource_execution_resource_owns_its_reference(void) {
+  const size_t before = scr_ar_live_resources();
+  ScrStr *name = scr_str_new("SCOPED", 6);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *resource = scr_ar_new(type, NULL);
+  scr_dyn_release(type);
+  assert(resource != NULL);
+  ScrDyn *target =
+      scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_execution_resource, 0, "()", "target");
+  ScrDyn *args = scr_dyn_new_arr();
+  ScrDyn *boxed = scr_ar_run_in_scope(resource, target, scr_dyn_undefined(), args);
+  scr_dyn_release(args);
+  assert(boxed != NULL);
+  assert(scr_dyn_strict_eq(boxed, resource));
+  scr_dyn_release(boxed);
+  assert(scr_ar_async_id(resource) >= 1.0);
+  assert(scr_ar_live_resources() == before + 1);
+  scr_dyn_release(target);
+  scr_dyn_release(resource);
+  assert(scr_ar_live_resources() == before);
+  printf("async resource execution resource owns its reference\n");
+}
+
+static int test_destroy_calls;
+
+static ScrDyn *ar_test_destroy(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  test_destroy_calls++;
+  return scr_dyn_undefined();
+}
+
+/* Node registers a GC destroy hook for a resource built while destroy hooks
+ * exist unless requireManualDestroy asked otherwise; dropping the last
+ * reference is the runtime's disposal point, so the destroy is emitted from
+ * there. An explicit emitDestroy queues its destroy once, and the release
+ * that follows does not queue a second. */
+static void async_resource_disposal_queues_its_destroy(void) {
+  ScrDyn *destroy = scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_destroy, 1, "(asyncId)",
+                                     "destroy");
+  double hook = scr_ah_parts(NULL, NULL, NULL, destroy, NULL);
+  scr_dyn_release(destroy);
+  scr_ah_enable(hook);
+
+  ScrStr *name = scr_str_new("AUTO", 4);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+
+  ScrDyn *resource = scr_ar_new(type, NULL);
+  assert(resource != NULL);
+  assert(test_destroy_calls == 0);
+  scr_dyn_release(resource);
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == 1);
+
+  ScrDyn *options = scr_dyn_new_obj();
+  scr_dyn_obj_set(options, "requireManualDestroy", 20, scr_dyn_new_bool(true));
+  ScrDyn *manual = scr_ar_new(type, options);
+  scr_dyn_release(options);
+  assert(manual != NULL);
+  scr_dyn_release(manual);
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == 1);
+
+  ScrDyn *destroyed = scr_ar_new(type, NULL);
+  assert(destroyed != NULL);
+  scr_dyn_release(scr_ar_emit_destroy(destroyed));
+  scr_dyn_release(destroyed);
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == 2);
+
+  scr_dyn_release(type);
+  scr_ah_disable(hook);
+  printf("async resource disposal queues its destroy\n");
+}
+
 static ScrDyn *ar_test_target(ScrClosure *self, ScrDyn *const *args, size_t argc) {
   (void)self;
   (void)args;
@@ -322,6 +411,82 @@ static void async_resource_bindings_own_and_release_their_payload(void) {
   assert(scr_ar_live_resources() == before);
   printf("async resource bindings own and release their payload\n");
 }
+
+/* A resource a bound function keeps alive is disposed with the bound
+ * function's last reference: the instance form and the static form both
+ * queue the registered destroy. */
+static void async_resource_binding_disposal_queues_its_destroy(void) {
+  const int before = test_destroy_calls;
+  ScrDyn *destroy = scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_destroy, 1, "(asyncId)",
+                                     "destroy");
+  double hook = scr_ah_parts(NULL, NULL, NULL, destroy, NULL);
+  scr_dyn_release(destroy);
+  scr_ah_enable(hook);
+  ScrStr *name = scr_str_new("BINDAUTO", 8);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *fn = scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_target, 0, "()", "fn");
+
+  ScrDyn *resource = scr_ar_new(type, NULL);
+  assert(resource != NULL);
+  ScrDyn *bound = scr_ar_bind(resource, fn, scr_dyn_undefined());
+  assert(bound != NULL);
+  scr_dyn_release(resource);
+  assert(test_destroy_calls == before);
+  scr_dyn_release(bound); /* the payload's last reference */
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == before + 1);
+
+  ScrDyn *static_bound = scr_ar_bind_static(fn, scr_dyn_undefined(), scr_dyn_undefined());
+  assert(static_bound != NULL);
+  scr_dyn_release(static_bound);
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == before + 2);
+
+  scr_dyn_release(fn);
+  scr_dyn_release(type);
+  scr_ah_disable(hook);
+  printf("async resource bindings queue their destroy\n");
+}
+
+/* A cycle the collector reclaims disposes its resources like refcounted
+ * ones: each registered destroy is queued from the pass. */
+static void async_resource_collected_cycle_queues_its_destroy(void) {
+  enum { CYCLES = 32 };
+  const int before = test_destroy_calls;
+  ScrDyn *destroy = scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_destroy, 1, "(asyncId)",
+                                     "destroy");
+  double hook = scr_ah_parts(NULL, NULL, NULL, destroy, NULL);
+  scr_dyn_release(destroy);
+  scr_ah_enable(hook);
+  const double store_id = scr_als_new();
+  ScrStr *name = scr_str_new("CYCLEDESTROY", 12);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < CYCLES; i++) {
+    ScrDyn *store_value = scr_dyn_new_obj();
+    ScrAlsCtx *prev = scr_als_enter(store_id, store_value);
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    ScrDyn *target =
+        scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_target, 0, "()", "target");
+    ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
+    assert(bound != NULL);
+    scr_dyn_obj_set(store_value, "cb", 2, scr_dyn_retain(bound));
+    scr_als_restore(prev);
+    scr_dyn_release(resource);
+    scr_dyn_release(bound);
+    scr_dyn_release(target);
+    scr_dyn_release(store_value);
+  }
+  scr_dyn_release(type);
+  scr_collect_cycles();
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == before + CYCLES);
+  scr_ah_disable(hook);
+  printf("collected async resources queue their destroy\n");
+}
+
 
 /* Node keeps a resource's captured store context after emitDestroy — a later
  * runInAsyncScope call or bound callback still runs inside that store — so the
@@ -502,6 +667,22 @@ int main(int argc, char **argv) {
   }
   if (argc > 1 && strcmp(argv[1], "resources") == 0) {
     async_resource_handles_own_their_payload();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "execres") == 0) {
+    async_resource_execution_resource_owns_its_reference();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "autodestroy") == 0) {
+    async_resource_disposal_queues_its_destroy();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "binddestroy") == 0) {
+    async_resource_binding_disposal_queues_its_destroy();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "cycledestroy") == 0) {
+    async_resource_collected_cycle_queues_its_destroy();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "immediates") == 0) {

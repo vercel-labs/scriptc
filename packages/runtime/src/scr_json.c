@@ -13872,6 +13872,38 @@ static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
          ent->err->vt == &scr_error_vts[SCR_ERR_ERROR];
 }
 
+/* A pending extra property for the next error view (scr_error_seed_own_prop):
+ * AssertionError's generatedMessage, which Node assigns before the class
+ * name and the view appends at a fixed place. */
+static SCR_TL const char *scr_error_seed_key;
+static SCR_TL size_t scr_error_seed_key_len;
+static SCR_TL ScrDyn *scr_error_seed_value;
+/* One cleanup registration per thread, not one per assertion: a caught
+ * assertion seeds and consumes its property repeatedly, and worker
+ * executables allocate an exit-list entry per registration. */
+static SCR_TL bool scr_error_seed_exit_registered;
+static SCR_TL size_t scr_error_seed_exit_registrations;
+size_t scr_error_seed_registration_count(void) { return scr_error_seed_exit_registrations; }
+static void scr_error_seed_cleanup(void) {
+  scr_dyn_release(scr_error_seed_value);
+  scr_error_seed_value = NULL;
+}
+void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value) {
+  if (!scr_error_seed_exit_registered && scr_atexit(scr_error_seed_cleanup) == 0) {
+    scr_error_seed_exit_registered = true;
+    scr_error_seed_exit_registrations++;
+  }
+  scr_dyn_release(scr_error_seed_value);
+  scr_error_seed_key = key;
+  scr_error_seed_key_len = key_len;
+  scr_error_seed_value = value;
+}
+ScrDyn *scr_error_take_seed(void) {
+  ScrDyn *value = scr_error_seed_value;
+  scr_error_seed_value = NULL;
+  return value;
+}
+
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   ScrDyn *d = scr_dyn_new_obj();
   scr_dyn_obj_set(d, "%error", 6, scr_dyn_new_bool(true)); /* the checked-dynamic tree's error marker */
@@ -13896,6 +13928,12 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   if (e->message_present && !system) {
     scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->message_enumerable;
+  }
+  /* The seeded property sits where its assignment put it in Node's
+   * constructor order — after the message, before the class name. */
+  if (scr_error_seed_value != NULL) {
+    scr_dyn_obj_set(d, scr_error_seed_key, scr_error_seed_key_len, scr_error_seed_value);
+    scr_error_seed_value = NULL;
   }
   if (e->system_message) {
     /* SystemError: code, name, message, then the read-only `info` context
@@ -22436,6 +22474,13 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
         (scr_typed_ref_is_length(key) || scr_typed_ref_canonical_index(key->data, key->len, &index)))
       return scr_typed_ref_array_has_own(v, key);
     ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+    /* A capsule with no view answers materialization with undefined and a
+     * pending refusal (an untyped generator: SC1071). Asking the undefined
+     * view would raise a property-read TypeError over that refusal. */
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return false;
+    }
     if (!view) return false;
     bool result = scr_dyn_has_own(view, key);
     scr_dyn_release(view);
@@ -23841,6 +23886,13 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
  * entry of the native table has it. */
 #define SCR_WEAK_ISLAND_KIND (~0u)
 
+/* A target or token the registry cannot key weakly: it is accepted, keeps
+ * no entry, and unregister answers false for it. Distinct from every kind
+ * scr_weak_key answers (0 is a plain object, 4+tag are handles, 32 a typed
+ * reference, 0x10000 a promise, ~0 an island) and never reaches the weak
+ * tables. */
+#define SCR_WEAK_UNTRACKED_KIND 0x20000u
+
 /* Whether the island's collection holds the entries of `key`: an island
  * object, and, in a program with Node islands, a symbol. An island symbol
  * is a native symbol paired with it (scr_node_island_handle.c), so a symbol
@@ -24627,11 +24679,17 @@ size_t scr_weak_collect_entries(void) { return scr_weak_judge_all(); }
  * bookkeeping as Node does; the cleanup callback never runs, which
  * ECMAScript allows (an implementation need not collect a target or call
  * its cleanup), so the registry keeps neither the callback nor the held
- * values. The unregister tokens are keys of an internal WeakMap counting
- * each token's registrations, so the registry keeps no token alive. */
+ * values. A token with a weak lifetime is a key of an internal WeakMap
+ * counting its registrations, so it is not kept alive. A token the weak
+ * tables cannot key (a handle kind without a weak entry, a copied native
+ * value) is held here instead, compared by value, so unregister still
+ * answers for the registration the program made; the registry releases
+ * those tokens with itself. */
 typedef struct {
   size_t rc;
   ScrDyn *tokens; /* WeakMap: token -> registration count */
+  ScrDyn **held_tokens; /* tokens with no weak lifetime, compared by value */
+  size_t held_len, held_cap;
 } ScrFinalizationRegistry;
 
 static void *scr_finalization_registry_retain(void *ptr) {
@@ -24645,7 +24703,36 @@ static void scr_finalization_registry_release(void *ptr) {
   /* Weak collections keyed by the registry drop their entries. */
   scr_weak_dispose(registry);
   scr_dyn_release(registry->tokens);
+  for (size_t i = 0; i < registry->held_len; i++) scr_dyn_release(registry->held_tokens[i]);
+  /* The token array grows through scr_mem_realloc, whose block belongs to
+   * the small-object allocator: it goes back through scr_mem_free (which
+   * also takes a system block), never through the C library's free. */
+  scr_mem_free(registry->held_tokens);
   free(registry);
+}
+
+/* The position of a token the weak tables cannot key, compared the way
+ * JavaScript compares the token it is handed back (a handle's own identity,
+ * a copied value's own), or -1. */
+static long scr_finalization_held_index(const ScrFinalizationRegistry *registry,
+                                        const ScrDyn *token) {
+  for (size_t i = 0; i < registry->held_len; i++)
+    if (scr_dyn_strict_eq(registry->held_tokens[i], token)) return (long)i;
+  return -1;
+}
+
+/* Keep a token with no weak lifetime, once (one entry answers every
+ * registration with it, as the count does for a weak key). */
+static void scr_finalization_hold(ScrFinalizationRegistry *registry, ScrDyn *token) {
+  if (scr_finalization_held_index(registry, token) >= 0) return;
+  if (registry->held_len == registry->held_cap) {
+    size_t cap = registry->held_cap ? registry->held_cap * 2 : 4;
+    ScrDyn **grown = scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    registry->held_tokens = grown;
+    registry->held_cap = cap;
+  }
+  registry->held_tokens[registry->held_len++] = scr_dyn_retain(token);
 }
 
 static void scr_finalization_type_error(const char *message) {
@@ -24679,20 +24766,18 @@ static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind
   }
   int supported = scr_weak_key(value, ptr, kind);
   if (supported < 0) {
-    /* A TARGET whose reference kind has no weak lifetime lowering: the
-     * registry keeps no per-target entry (it counts unregister tokens only),
-     * and ECMAScript lets an implementation never collect a target or call
-     * its cleanup, so the registration is accepted and simply never
-     * collected. A TOKEN of such a kind still refuses: its count is the one
-     * thing the registry reads back. */
-    if (invalid) {
-      *ptr = NULL;
-      *kind = 0;
-      return true;
-    }
-    static const char message[] = "FinalizationRegistry unregister tokens of this native reference type have no weak lifetime lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return false;
+    /* A target or token whose reference kind has no weak lifetime lowering
+     * (a copied native value, a handle kind without a weak entry): the
+     * registry keeps no entry for it. ECMAScript lets an implementation
+     * never collect a target or call its cleanup, so a registration with
+     * such a target is accepted and never collected; with such a token the
+     * count the registry would read back does not exist, so the
+     * registration is accepted without counting it and unregister answers
+     * false for the token. Anything that can be told apart from 'no entry'
+     * is SCR_WEAK_UNTRACKED_KIND. */
+    *ptr = NULL;
+    *kind = SCR_WEAK_UNTRACKED_KIND;
+    return true;
   }
   if (!supported) {
     if (invalid) {
@@ -24742,6 +24827,12 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
         scr_dyn_release(registered);
         return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
       }
+      /* A token with no weak lifetime cannot be counted in the weak map:
+       * it is held by value instead, so unregister answers for it. */
+      if (kind == SCR_WEAK_UNTRACKED_KIND) {
+        scr_finalization_hold(registry, token);
+        return scr_dyn_retain(scr_dyn_undefined());
+      }
       ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
       double count = entry && entry->value->kind == SCR_DYN_NUM ? entry->value->v.num : 0;
       ScrDyn *next = scr_dyn_new_num(count + 1);
@@ -24756,6 +24847,15 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
     if (kind == SCR_WEAK_ISLAND_KIND) {
       int found = scr_ni_dyn_ops->weak_test(tokens->island, false, first, true);
       return found < 0 ? NULL : scr_dyn_new_bool(found);
+    }
+    if (kind == SCR_WEAK_UNTRACKED_KIND) {
+      long at = scr_finalization_held_index(registry, first);
+      if (at < 0) return scr_dyn_new_bool(false);
+      ScrDyn *held = registry->held_tokens[at];
+      registry->held_len--;
+      registry->held_tokens[at] = registry->held_tokens[registry->held_len];
+      scr_dyn_release(held);
+      return scr_dyn_new_bool(true);
     }
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
     if (entry) scr_weak_remove(entry);

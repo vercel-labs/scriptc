@@ -112,9 +112,9 @@ test("an identity retype retains the input box instead of allocating", () => {
   expect(retag).toMatch(/call ptr @scr_union_retain/);
   expect(retag).toMatch(/retype\.share\d+:\n {2}store ptr/);
   // No cast caches these boxes: the flag is never set and folds to false.
-  expect(ir).toMatch(/^@sc_retype_guard_0 = internal global i8 0/m);
-  expect(retag).toContain("load i8, ptr @sc_retype_guard_0");
-  expect(ir).not.toMatch(/store i8 1, ptr @sc_retype_guard_0/);
+  const guard = /^@(sc_retype_guard_\d+) = internal global i8 0/m.exec(ir)![1];
+  expect(retag).toContain(`load i8, ptr @${guard}`);
+  expect(ir).not.toMatch(new RegExp(`store i8 1, ptr @${guard}`));
   // Only the rebuild path behind the flag can allocate.
   const share = /retype\.share\d+:\n([^]*?)\n {2}br label/.exec(retag);
   expect(share?.[1]).not.toMatch(/@scr_union_new/);

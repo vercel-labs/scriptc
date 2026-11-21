@@ -276,6 +276,7 @@ typedef enum {
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
+  Y(SLIDING_HISTOGRAM) /* perf_hooks SlidingWindowHistogram (scr_perf_loop.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
@@ -2328,6 +2329,17 @@ void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */
 void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+/* The next error view built on this thread takes this own property before
+ * its class name. AssertionError's constructor assigns generatedMessage
+ * before name, and the view's shape is still being laid out when the first
+ * extra property is attached. Moves value; a pending seed is dropped when
+ * replaced. */
+void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value);
+/* The seed if no view consumed it (+1), else NULL. */
+ScrDyn *scr_error_take_seed(void);
+/* Exit-cleanup registrations the seed made on this thread: one, however
+ * many assertions seed (the runtime tests pin it). */
+size_t scr_error_seed_registration_count(void);
 /* scr_throw_node_coded with an own `url` property (error.nodeThrow's
  * fourth argument). Borrows the strings; always throws. */
 SCR_COLD void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg,

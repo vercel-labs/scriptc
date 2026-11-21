@@ -1124,14 +1124,7 @@ export function lowerNetConnectCall(
   // Unix socket, or a localhost port when it reads as a non-negative
   // number (Node's isPipeName, decided at run time).
   if (firstT.kind === "string") {
-    return lowerNetConnectPath(
-      lowerer,
-      expr,
-      member,
-      lowerer.lowerExpr(args[0]!),
-      true,
-      args[1],
-    );
+    return lowerNetConnectPath(lowerer, expr, member, lowerer.lowerExpr(args[0]!), true, args[1]);
   }
   const port = lowerer.lowerExprExpecting(args[0]!, F64);
   // The optional middle host: a 2-arg call's second argument is the

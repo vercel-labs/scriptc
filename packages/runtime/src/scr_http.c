@@ -6202,6 +6202,7 @@ struct ScrHttpClientReq {
   ScrStr *host, *path, *method;
   ScrStr *proxy_forward; /* proxied: the absolute URI for the request line (+1) */
   ScrStr *proxy_auth;    /* proxied: the proxy-authorization value (+1) or NULL */
+  bool tunnel_pending;   /* https: the proxy's CONNECT reply is not in yet */
   int port;
   int default_port; /* the Host header omits it (80 http, 443 https) */
   ScrStr **hnames; /* user headers, verbatim case */
@@ -6927,7 +6928,7 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
   }
   scr_http_buf_str(&b, "\r\n");
   c->head_sent = true;
-  if (c->hold_head) {
+  if (c->hold_head || c->tunnel_pending) {
     c->held_head = b.data;
     c->held_head_len = b.len;
     c->held_head_cap = b.cap;
@@ -6949,7 +6950,8 @@ static void scr_http_client_send_held_head(ScrHttpClientReq *c) {
 
 static void scr_http_client_write_raw(ScrHttpClientReq *c, const char *data, size_t len) {
   if (c->ended || c->destroyed || c->close_emitted) return; /* write-after-end drops (divergence 48's stance) */
-  if (!c->socket_emitted && !c->pre_flushing && c->corked == 0 && len > 0) {
+  if ((!c->socket_emitted || c->tunnel_pending) && !c->pre_flushing && c->corked == 0 &&
+      len > 0) {
     /* Node's message buffers its writes in outputData until its socket is
      * assigned: they wait in this message's buffer — the buffer
      * writableLength reports — instead of reaching the socket early, where
@@ -7051,7 +7053,18 @@ bool scr_http_client_write_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*
 }
 
 static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
+  /* nothing reaches the wire before the proxy's CONNECT reply */
+  if (c->tunnel_pending) return;
   if (c->cork_len == 0 && c->held_head == NULL) return;
+  /* The head and body queued before the tunnel belong to a message whose
+   * end() already ran: the end stopped NEW writes, not these, so they go out
+   * now, the held head first. */
+  bool was_ended = c->ended;
+  c->ended = false;
+  if (c->held_head != NULL) {
+    scr_http_client_send_held_head(c);
+    c->head_sent = true;
+  }
   char *held = c->cork_buf;
   size_t held_len = c->cork_len;
   size_t *sizes = c->pre_sizes;
@@ -7079,6 +7092,7 @@ static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
   c->pre_flushing = was_pre;
   free(sizes);
   free(held);
+  c->ended = was_ended;
   scr_http_client_maybe_drain(c);
 }
 
@@ -7194,7 +7208,17 @@ static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_
        * wire: a body the message still holds goes out first */
       scr_http_client_cork_flush(c);
       if (scr_exc_pending()) return;
-      if (c->sock) scr_http_send_chunk_end(c->sock, &c->trailers);
+      if (c->sock && !c->tunnel_pending) scr_http_send_chunk_end(c->sock, &c->trailers);
+    } else if (c->held_head != NULL && c->tunnel_pending) {
+      /* the head waits for the tunnel; this body joins it */
+      if (len > 0) {
+        char *joined = realloc(c->held_head, c->held_head_len + len);
+        if (!joined) scr_http_oom();
+        memcpy(joined + c->held_head_len, data, len);
+        c->held_head = joined;
+        c->held_head_len += len;
+        c->held_head_cap = c->held_head_len;
+      }
     } else if (c->held_head != NULL) {
       char *head = c->held_head;
       size_t head_len = c->held_head_len;
@@ -7215,7 +7239,8 @@ static void scr_http_client_end_raw(ScrHttpClientReq *c, const char *data, size_
     scr_http_client_write_raw(c, data, len);
     scr_http_client_cork_flush(c);
     if (scr_exc_pending()) return;
-    if (c->chunked && c->sock) scr_http_send_chunk_end(c->sock, &c->trailers);
+    if (c->chunked && c->sock && !c->tunnel_pending)
+      scr_http_send_chunk_end(c->sock, &c->trailers);
   }
   c->ended = true;
   scr_http_client_queue_finish(c);
@@ -8013,6 +8038,7 @@ static void scr_http_client_sock_established(void *ctx) {
   ScrHttpConn *conn = (ScrHttpConn *)ctx;
   ScrHttpClientReq *c = conn->client;
   if (!c) return;
+  c->tunnel_pending = false; /* the CONNECT reply is in: bytes flow now */
   c->sock_ready = true;
   /* a dial that never runs the 'socket' emit (a socket-path connect, a
    * transport that establishes on its own) still flushes what the message
@@ -8227,15 +8253,6 @@ static bool scr_http_no_proxy_matches(const ScrStr *list, const ScrStr *host, do
   return false;
 }
 
-/* Whether the module's proxy covers a target for the given scheme: the
- * matching variable is set and NO_PROXY does not bypass it. */
-static bool scr_http_proxy_covers(const ScrStr *host, double port, bool secure) {
-  if (!scr_http_proxy_env.enabled) return false;
-  const ScrStr *spec = secure ? scr_http_proxy_env.https_proxy : scr_http_proxy_env.http_proxy;
-  if (spec == NULL || spec->len == 0) return false;
-  return !scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port);
-}
-
 /* Node's URL parsing decodes the proxy's userinfo before Basic auth. */
 static ScrStr *scr_http_pct_decode(const char *p, size_t n) {
   char *out = malloc(n ? n : 1);
@@ -8276,10 +8293,11 @@ static bool scr_http_proxy_spec_invalid(const ScrStr *spec) {
 
 /* The proxy a plain-http target goes through, parsed from HTTP_PROXY: an
  * `http://` URL with optional credentials. */
-static bool scr_http_proxy_resolve(const ScrStr *host, double port, ScrHttpProxyTarget *out) {
+static bool scr_http_proxy_resolve(const ScrStr *host, double port, bool secure,
+                                   ScrHttpProxyTarget *out) {
   memset(out, 0, sizeof *out);
   if (!scr_http_proxy_env.enabled) return false;
-  const ScrStr *spec = scr_http_proxy_env.http_proxy;
+  const ScrStr *spec = secure ? scr_http_proxy_env.https_proxy : scr_http_proxy_env.http_proxy;
   if (spec == NULL || spec->len < 8 || memcmp(spec->data, "http://", 7) != 0) return false;
   if (scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port)) return false;
   const char *p = spec->data + 7;
@@ -8351,6 +8369,27 @@ fail:
   return false;
 }
 
+/* Node's http tunnel refusal: "Failed to establish tunnel to host:port via
+ * <proxy>: <status line>", code ERR_PROXY_TUNNEL. */
+static void scr_http_tunnel_message(void *ctx, int status, const char *head, size_t head_len,
+                                    char *out, size_t cap) {
+  (void)status;
+  ScrHttpClientReq *c = (ScrHttpClientReq *)ctx;
+  size_t line_len = 0;
+  while (line_len + 1 < head_len && !(head[line_len] == '\r' && head[line_len + 1] == '\n'))
+    line_len++;
+  const ScrStr *spec = scr_http_proxy_env.https_proxy;
+  snprintf(out, cap, "Failed to establish tunnel to %.*s:%d via %.*s: %.*s",
+           (int)c->host->len, c->host->data, c->port, (int)(spec != NULL ? spec->len : 0),
+           spec != NULL ? spec->data : "", (int)line_len, head);
+  ScrStr *text = scr_str_new(out, strlen(out));
+  ScrError *err = scr_error_new(SCR_ERR_ERROR, text);
+  scr_error_set_code(err, "ERR_PROXY_TUNNEL");
+  scr_str_release(text);
+  if (c->destroy_error != NULL) scr_error_release(c->destroy_error);
+  c->destroy_error = err;
+}
+
 static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double port,
                                                 ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                                 double timeout_ms, ScrArr *header_pairs /*borrowed*/,
@@ -8377,17 +8416,6 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
       scr_throw_error_msg_code(SCR_ERR_TYPE, spec->data, spec->len, "ERR_PROXY_INVALID_CONFIG");
       return NULL;
     }
-  }
-  if (env_proxy && wrap != NULL && scr_http_proxy_covers(host, port, true)) {
-    /* the target is https and the module's proxy covers it: that needs a
-     * CONNECT tunnel, which this runtime does not model yet — refuse rather
-     * than send the request around the proxy the program asked for */
-    if (cb) scr_closure_release(cb);
-    if (presock) scr_net_sock_release(presock);
-    static const char msg[] =
-        "https requests through the environment proxy (CONNECT tunnelling) are not supported yet";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
-    return NULL;
   }
   scr_http_install();
   ScrHttpClientReq *c = calloc(1, sizeof *c);
@@ -8446,8 +8474,40 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   } else {
     ScrHttpProxyTarget proxy;
     bool proxied =
-        env_proxy && wrap == NULL && scr_http_proxy_resolve(c->host, (double)c->port, &proxy);
-    if (proxied) {
+        env_proxy && scr_http_proxy_resolve(c->host, (double)c->port, wrap != NULL, &proxy);
+    if (proxied && wrap != NULL) {
+      /* https through the proxy: the net unit's CONNECT tunnel; the TLS
+       * handshake starts when the proxy answers 200 */
+      ScrStr *dial = scr_net_blocking_lookup(proxy.host);
+      c->sock = scr_net_connect(proxy.port, dial, NULL);
+      scr_str_release(dial);
+      ScrHttpBuf head = {NULL, 0, 0};
+      bool v6 = memchr(c->host->data, ':', c->host->len) != NULL;
+      char abuf[48];
+      scr_http_buf_str(&head, "CONNECT ");
+      if (v6) scr_http_buf_str(&head, "[");
+      scr_http_buf_append(&head, c->host->data, c->host->len);
+      if (v6) scr_http_buf_str(&head, "]");
+      snprintf(abuf, sizeof abuf, ":%d HTTP/1.1\r\n", c->port);
+      scr_http_buf_str(&head, abuf);
+      if (proxy.auth != NULL) {
+        scr_http_buf_str(&head, "proxy-authorization: ");
+        scr_http_buf_append(&head, proxy.auth->data, proxy.auth->len);
+        scr_http_buf_str(&head, "\r\n");
+      }
+      scr_http_buf_str(&head, "proxy-connection: keep-alive\r\n");
+      scr_http_buf_str(&head, "host: ");
+      if (v6) scr_http_buf_str(&head, "[");
+      scr_http_buf_append(&head, c->host->data, c->host->len);
+      if (v6) scr_http_buf_str(&head, "]");
+      snprintf(abuf, sizeof abuf, ":%d\r\n\r\n", c->port);
+      scr_http_buf_str(&head, abuf);
+      c->tunnel_pending = true;
+      scr_net_sock_set_tunnel_ex(c->sock, head.data, head.len, &scr_http_tunnel_message, c);
+      free(head.data);
+      scr_str_release(proxy.auth);
+      scr_str_release(proxy.host);
+    } else if (proxied) {
       /* the request line carries the absolute URI, as Node's proxy form does */
       ScrHttpBuf forward = {NULL, 0, 0};
       bool v6 = memchr(c->host->data, ':', c->host->len) != NULL;

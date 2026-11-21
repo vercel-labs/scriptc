@@ -61,6 +61,8 @@ export interface NativeLinkFeatures {
   fsExistsValue?: boolean;
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache?: boolean;
+  /** node:module's SourceMap class: scr_source_map.c. */
+  sourceMap?: boolean;
   /** The program writes, defines or deletes a function's inherited member
    * name (`fn.call = f`): links the SCR_FN_MEMBER_PROPS builds of scr_json.c
    * and scr_dyn_invoke.c. Absent for every other program, so their objects

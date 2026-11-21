@@ -6432,6 +6432,10 @@ export function lowerNetSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
   let node: ts.Expression | undefined = args[0];
   while (node !== undefined && ts.isParenthesizedExpression(node)) node = node.expression;
   let options: IrExpr = dynUndefinedExpr(loc);
+  /* whether a signal can reach the construction: a bare call or a literal
+   * without a signal member cannot carry one, so the emitted call need not
+   * reference the abort-listener helper (and its runtime unit) */
+  let hasSignal = node !== undefined;
   if (node !== undefined) {
     if (ts.isNumericLiteral(node)) {
       lowerer.noLowering(
@@ -6445,6 +6449,7 @@ export function lowerNetSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
         (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
           ? p.name.text
           : null;
+      hasSignal = node.properties.nodes.some((p) => nameOf(p) === "signal");
       for (const p of node.properties.nodes) {
         const name = nameOf(p);
         if (name !== null && name !== "allowHalfOpen" && name !== "signal") {
@@ -6475,7 +6480,13 @@ export function lowerNetSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
     }
   }
   const fence = ladderFenceExpr(lowerer, "new net.Socket options", expr, HINT);
-  return { kind: "libCall", fn: "net.socketNew", args: [options, fence], type: NETSOCKET_T, loc };
+  return {
+    kind: "libCall",
+    fn: "net.socketNew",
+    args: [options, fence, boolLit(hasSignal, loc)],
+    type: NETSOCKET_T,
+    loc,
+  };
 }
 
 export function lowerTlsSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {

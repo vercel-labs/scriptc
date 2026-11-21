@@ -539,14 +539,18 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
   }
   if (e.fn === "net.socketNew") {
     // new net.Socket([options]): the unconnected socket handle; a signal
-    // attaches through events.addAbortListener (event-target unit), and
-    // the modelled-gap fence is the lowering's.
+    // attaches through events.addAbortListener (event-target unit) only when
+    // the options can carry one, and the modelled-gap fence is the
+    // lowering's.
     const args = e.args.map((a) => host.emitExpr(a));
+    const signalArg = e.args[2];
+    const hasSignal =
+      signalArg === undefined || !(signalArg.kind === "boolLit" && signalArg.value === false);
     host.declare(`declare ptr @scr_net_sock_construct(ptr, ptr, ptr)`);
-    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    if (hasSignal) host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_net_sock_construct(ptr ${args[0]!.name}, ptr @scr_events_add_abort_listener, ptr ${args[1]!.name})`,
+      `${t} = call ptr @scr_net_sock_construct(ptr ${args[0]!.name}, ptr ${hasSignal ? "@scr_events_add_abort_listener" : "null"}, ptr ${args[1]!.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();

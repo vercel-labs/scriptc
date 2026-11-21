@@ -4114,9 +4114,10 @@ static bool scr_net_fd_check_dyn(const ScrDyn *v, int *out) {
  * NULL when the program never links the events unit). */
 static void scr_net_sock_abort_now(ScrNetSocket *s) {
   if (s->close_emitted || s->had_error) return;
-  if (s->fd < 0 && !s->connecting) {
-    /* an idle socket (constructed, never dialed): Node's abort destroys it
-     * without handing an AbortError to a listener */
+  if (s->fd < 0 && !s->connecting && s->err_ls.n == 0) {
+    /* an idle socket with no 'error' listener: Node's abort destroys it
+     * without emitting the AbortError (a registered listener receives
+     * ABORT_ERR through the pending-error sweep below) */
     scr_net_sock_destroy(s);
     return;
   }

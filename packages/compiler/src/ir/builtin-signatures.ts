@@ -2438,7 +2438,7 @@ function buildLibFnSignatures() {
      * fence]; allowHalfOpen and signal lower, a descriptor (a number
      * argument or options.fd) and the readable/writable sides throw the
      * caller-rendered fence. May-throw seed. */
-    "net.socketNew": { argTypes: [DYN, STRING], result: NETSOCKET_T },
+    "net.socketNew": { argTypes: [DYN, STRING, BOOL], result: NETSOCKET_T },
     /** net.connect/createConnection over dynamic arguments (a runtime
      * option bag, or positional values whose kinds only the run decides):
      * args [arg0, arg1, arg2, fence]. The runtime runs Node's normalizeArgs

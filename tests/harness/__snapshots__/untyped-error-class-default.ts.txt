@@ -1,0 +1,15 @@
+untyped-error-class-default.ts:2:18 - error SC1090: a runtime-provided class value ('Error') as an untyped value is not supported yet
+
+  1 | function makeErrorClass(): unknown {
+  2 |   const { base = Error }: { base?: new (message?: string) => Error } = {};
+    |                  ^~~~~
+  3 |   const Base = base as new (message?: string) => Error;
+
+untyped-error-class-default.ts:3:16 - error SC2004: uses of 'base' inherit the blocker on its declaration
+
+  2 |   const { base = Error }: { base?: new (message?: string) => Error } = {};
+  3 |   const Base = base as new (message?: string) => Error;
+    |                ^~~~
+  4 |   return class extends Base {};
+
+  hint: the declaration of 'base' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -224,6 +224,39 @@ export function buildSanitizedRuntime(
       archives.push(join(selection.root, archive.path));
       continue;
     }
+    if (name === "mlkem") {
+      // ML-KEM is one source compiled once per parameter set, the way the
+      // pack builds it (packages/runtime-pack-common's mlkemArchive), so it
+      // cannot ride the loop below's one args list per archive.
+      const directory = join(vendor, "mlkem-native");
+      const levels = [
+        [512, "mlkem512", "MLK_CONFIG_MULTILEVEL_NO_SHARED"],
+        [768, "mlkem768", "MLK_CONFIG_MULTILEVEL_WITH_SHARED"],
+        [1024, "mlkem1024", "MLK_CONFIG_MULTILEVEL_NO_SHARED"],
+      ] as const;
+      const objects = levels.map(([set, level, shared]) =>
+        compile(join(directory, "mlkem_native.c"), `mlkem-${level}.o`, [
+          "-std=c11",
+          "-I",
+          directory,
+          "-I",
+          join(directory, "src"),
+          `-DMLK_CONFIG_PARAMETER_SET=${set}`,
+          "-DMLK_CONFIG_MULTILEVEL_BUILD",
+          `-D${shared}`,
+        ]),
+      );
+      const output = join(stage, "libscriptc-mlkem.a");
+      runNativeTool(
+        toolchain.archiver ?? "ar",
+        [...(toolchain.archiverArgs ?? []), "rcs", output, ...objects],
+        undefined,
+        { ...process.env, ZERO_AR_DATE: "1" },
+      );
+      requireNativeArtifact(output);
+      archives.push(output);
+      continue;
+    }
     let sources: readonly string[];
     let directory: string;
     let args: string[];

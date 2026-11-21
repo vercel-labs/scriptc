@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-class-value-worker-isolation.mjs"
+ ],
+ "diags": []
+}

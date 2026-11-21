@@ -170,3 +170,31 @@ try {
   console.log("call without new", error.name, JSON.stringify(error.message));
 }
 console.log("dom constructor", new DOMException("x").constructor.name);
+
+// DOMException's name, message and code are enumerable prototype members, so
+// for...in visits them; an ordinary error's prototype members are not, and
+// the error's own `stack` is not enumerable either way.
+function enumeratedKeys(value) {
+  const keys = [];
+  for (const key in value) keys.push(key);
+  return keys;
+}
+const domexKeys = enumeratedKeys(new DOMException("m", "AbortError"));
+console.log(
+  "dom for-in",
+  ["name", "message", "code", "stack"].filter((key) => domexKeys.includes(key)).join(","),
+);
+console.log("error for-in", enumeratedKeys(new Error("m")).length);
+
+// The DOMException class carries the WebIDL legacy code constants, and the
+// options form reads `name` (String of an absent member is "undefined", as
+// in Node) and records `cause` only when the member is present.
+console.log("dom statics", DOMException.INDEX_SIZE_ERR, DOMException.ABORT_ERR, DOMException.DATA_CLONE_ERR);
+const viaOptions = new DOMException("message", { name: "NotSupportedError", cause: "why" });
+console.log("dom options", viaOptions.name, viaOptions.code, viaOptions.cause, "cause" in viaOptions);
+const unknownName = new DOMException("message", "NoSuchError");
+console.log("dom unknown", unknownName.name, unknownName.code);
+const nullName = new DOMException("message", null);
+console.log("dom null name", nullName.name, nullName.code);
+const missingName = new DOMException("message", {});
+console.log("dom missing name", missingName.name, missingName.code);

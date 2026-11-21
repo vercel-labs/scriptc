@@ -13,6 +13,7 @@ import {
   programDeclaresDateClass,
 } from "./builtins/date-classes.js";
 import { dateValueMethod } from "./builtins/dates.js";
+import { arrayClassView } from "./builtins/array-classes.js";
 import {
   BOOL,
   DATE_T,
@@ -21,6 +22,7 @@ import {
   DYN_CLASS_PROPERTIES as PROPERTY_BAG,
   STRING,
   VOID,
+  arrayOf,
   canConvertToDyn,
   canDynCheckTo,
   isClassOwnEnumerableFieldName,
@@ -436,6 +438,39 @@ interface PropertyReceiver {
   info: ClassInfo;
   capsule: ClassInfo;
   key: string;
+  /** A class declared `extends Array`: its instances are native arrays,
+   * which reach dynamic code as arrays rather than class capsules
+   * (DynamicClassDispatch.arrayReceivers). */
+  array?: true;
+}
+
+/** Whether a class declared `extends Array` answers the string key `name`
+ * itself: a public field, or a method or accessor with a body. An abstract
+ * re-declaration emits no prototype member, so the key reaches the Array
+ * member above it, as in Node; a private or compiler-owned name is no
+ * property of the instance. */
+function arrayClassAnswers(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
+  if (!isClassOwnEnumerableFieldName(name)) return false;
+  // The class's member table spells an accessor as get:<key> / set:<key>, so
+  // a string key that begins with one of those prefixes names no property of
+  // the instance: it must not match the accessor's internal entry (a private
+  // getter's key included).
+  if (name.startsWith("get:") || name.startsWith("set:")) return false;
+  if (info.fields.has(name)) return true;
+  return [name, `get:${name}`, `set:${name}`].some((member) => {
+    const found = findMethodOn(lowerer, info, member);
+    return found !== null && found !== undefined && found.sig.abstract !== true;
+  });
+}
+
+/** `statements` with each class field write marked as sloppy-mode code
+ * (a write to a frozen instance is skipped, frozen-records.ts). */
+function markSloppyFieldWrites(statements: IrStmt[]): IrStmt[] {
+  return transformStmtList(statements, {
+    expr: (expr) => expr,
+    stmt: (statement) =>
+      statement.kind === "fieldSet" ? { ...statement, sloppy: true as const } : statement,
+  });
 }
 
 interface PropertyDispatch {
@@ -444,6 +479,9 @@ interface PropertyDispatch {
   fn: IrFunction;
   classes: Set<string>;
   reflect?: boolean;
+  /** A write whose sites are in sloppy-mode code: a field write to a frozen
+   * Array subclass instance is then skipped instead of throwing. */
+  sloppy?: boolean;
   /** The helper's fallthrough statements as created, and the same access
    * applied to the receiver itself: what the fallthrough reduces to for a
    * value that is neither a class capsule nor a function, whose bag is the
@@ -1774,6 +1812,11 @@ export class ClassDynamicDispatch {
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
+  /** The element types (typeKey) of the arrays the program makes dynamic
+   * values. An instance of a class declared `extends Array` is such an
+   * array, so the classes over these elements answer dynamic member access
+   * (arrayReceivers). */
+  private readonly boxedArrayElems = new Set<string>();
   /** The classes whose instances the program makes dynamic values, as this
    * pass found them (dynamic-class-report.ts reads them). */
   boxedClasses(): ReadonlySet<string> {
@@ -2805,8 +2848,10 @@ export class ClassDynamicDispatch {
         this.boxedStatic.add(type.className);
         if (isDynTypedRefType(type)) this.boxed.add(type.className);
       } else if (type.kind === "classval") this.boxedConstructors.add(type.className);
-      else if (type.kind === "array") discover(type.elem);
-      else if (type.kind === "record") {
+      else if (type.kind === "array") {
+        this.boxedArrayElems.add(typeKey(type.elem));
+        discover(type.elem);
+      } else if (type.kind === "record") {
         const shape = lowerer.shapes.get(type.shapeId);
         shape?.fields.forEach((field) => discover(field.type));
         if (shape?.indexValue) discover(shape.indexValue);
@@ -3375,9 +3420,12 @@ export class ClassDynamicDispatch {
     const candidates = (method: string): ClassInfo[] => {
       const found = byMethod.get(method);
       if (found) return found;
-      const plans = this.propertyReceivers(lowerer, true);
-      const test = ({ info }: PropertyReceiver): ClassInfo[] => {
+      const plans = this.propertyReceivers(lowerer, true, true, true);
+      const test = ({ info, array }: PropertyReceiver): ClassInfo[] => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
+        // An Array subclass answers only the methods it implements: a private,
+        // compiler-owned or abstract one is not its own (arrayClassAnswers).
+        if (array && !arrayClassAnswers(lowerer, info, method)) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
         if (
           emitterRooted(lowerer, info) &&
@@ -4415,6 +4463,7 @@ export class ClassDynamicDispatch {
               numericKey,
               instances: receiverIsInstance,
               probe,
+              ...(sloppyWrite ? { sloppy: true } : {}),
               operation: computedTableOperation({
                 write: !!computedWrite,
                 reflect,
@@ -4460,7 +4509,21 @@ export class ClassDynamicDispatch {
               ? write.args[1].value
               : null;
         if (name !== null) {
-          const key = JSON.stringify([name, !!write, read?.optional ?? false]);
+          // A write to a name an Array subclass answers keeps sloppy-mode
+          // sites apart: a frozen instance skips their field write and throws
+          // for strict-mode ones.
+          const sloppy =
+            !!write &&
+            isSloppyAt(lowerer, write.loc) &&
+            [...lowerer.classes.values()].some(
+              (info) => info.extendsArray !== undefined && arrayClassAnswers(lowerer, info, name),
+            );
+          const key = JSON.stringify([
+            name,
+            !!write,
+            read?.optional ?? false,
+            ...(sloppy ? [1] : []),
+          ]);
           let dispatch = this.properties.get(key);
           if (!dispatch) {
             const loc = expr.loc;
@@ -4621,6 +4684,7 @@ export class ClassDynamicDispatch {
               write: !!write,
               fn: helper,
               classes: new Set(),
+              ...(sloppy ? { sloppy: true } : {}),
               ...(name !== "constructor" && name !== "toString"
                 ? { plain: { tail: [...helper.body], access: receiverAccess } }
                 : {}),
@@ -4996,7 +5060,7 @@ export class ClassDynamicDispatch {
       }
       // Compute the candidates where the first plan would have, so the
       // memoized set is the same whichever plans are already answered.
-      const plans = this.propertyReceivers(lowerer, true);
+      const plans = this.propertyReceivers(lowerer, true, true, true);
       const matching = plans.length ? candidateSet(dispatch.source.method) : null;
       for (const plan of plans) {
         const { info } = plan;
@@ -5004,7 +5068,9 @@ export class ClassDynamicDispatch {
         dispatch.classes.add(plan.key);
         const loc = dispatch.source.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
-        if (isClassCallback(lowerer, info, dispatch.source.method)) {
+        // An Array subclass's instance keeps no property bag or prototype
+        // data: its members answer from the class alone.
+        if (!plan.array && isClassCallback(lowerer, info, dispatch.source.method)) {
           const prototypeMethod = observedPrototypeMethod(
             lowerer,
             info,
@@ -5334,7 +5400,7 @@ export class ClassDynamicDispatch {
       // ones, can pass the test, except for names it decides on every
       // receiver. Fields added while bodies lower (the property bag and the
       // attribute words) have compiler names, which take every receiver.
-      const plans = this.propertyReceivers(lowerer, true);
+      const plans = this.propertyReceivers(lowerer, true, true, true);
       // The own properties an Error keeps in native slots: `stack`, and
       // `cause` for a read.
       const errorSlot = dispatch.name === "stack" || (dispatch.name === "cause" && !dispatch.write);
@@ -5367,6 +5433,12 @@ export class ClassDynamicDispatch {
         // Classes answered in an earlier pass skip the member lookups.
         if (dispatch.classes.has(plan.key)) continue;
         if (skips(plan)) continue;
+        if (
+          plan.array &&
+          dispatch.name !== "constructor" &&
+          !arrayClassAnswers(lowerer, info, dispatch.name)
+        )
+          continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
@@ -5383,6 +5455,7 @@ export class ClassDynamicDispatch {
         let branch: IrStmt[];
         try {
           branch = this.propertyBody(lowerer, dispatch, info, varRef(local, receiver.type, loc));
+          if (plan.array && dispatch.sloppy) branch = markSloppyFieldWrites(branch);
         } catch (error) {
           if (!(error instanceof PoisonError) || !info.decl) throw error;
           const fence = lowerer.deferToRuntimeFence(before, info.decl, { kind: "statement" });
@@ -5401,7 +5474,9 @@ export class ClassDynamicDispatch {
     }
     for (const dispatch of this.computed.values()) {
       if (!dispatch.instances) continue;
-      const plans = this.propertyReceivers(lowerer, true);
+      // Array subclasses are in the plans too (an Array subclass instance
+      // keeps no property bag of its own; the PR's branch below handles it).
+      const plans = this.propertyReceivers(lowerer, true, true, true);
       // The classes that get a table of their own for this dispatch, which a
       // class may delegate to.
       const tableClasses = new Set(plans.map((plan) => plan.info.def.name));
@@ -5411,6 +5486,60 @@ export class ClassDynamicDispatch {
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const selected = this.propertyReceiver(plan, loc);
+        if (plan.array) {
+          // A class declared `extends Array` keeps no property bag: a key
+          // naming one of its own members (a field, getter or method for a
+          // read; a field or setter for a write) answers that member, and
+          // every other key (an element, a builtin array member) falls
+          // through to the access on the array itself.
+          if (dispatch.reflect || dispatch.probe || dispatch.numericKey) continue;
+          // Only the names a string key can reach: private (`#`) and
+          // compiler-owned (`%`) members are not properties of the instance.
+          const names = new Set<string>();
+          for (const field of info.fields.keys())
+            if (isClassOwnEnumerableFieldName(field)) names.add(field);
+          for (const method of info.methods.keys()) {
+            const setter = method.startsWith("set:");
+            const name = setter || method.startsWith("get:") ? method.slice(4) : method;
+            if (setter !== dispatch.write && !(dispatch.write && info.fields.has(name))) continue;
+            if (!name.startsWith("sym:") && arrayClassAnswers(lowerer, info, name)) names.add(name);
+          }
+          if (names.size === 0) continue;
+          const local = `receiver.${dispatch.fn.locals.length}`;
+          dispatch.fn.locals.push({
+            id: local,
+            name: "receiver",
+            type: selected.receiver.type,
+            mutable: false,
+          });
+          const receiver = varRef(local, selected.receiver.type, loc);
+          const members: IrStmt[] = [...names].map((name) => {
+            const body = this.propertyBody(lowerer, { ...dispatch, name }, info, receiver);
+            return {
+              kind: "if",
+              cond: {
+                kind: "strEq",
+                negated: false,
+                left: varRef(dispatch.keyLocal, STRING, loc),
+                right: { kind: "strLit", value: name, type: STRING, loc },
+                type: BOOL,
+                loc,
+              },
+              then: dispatch.sloppy ? markSloppyFieldWrites(body) : body,
+              else_: null,
+              loc,
+            };
+          });
+          dispatch.fn.body.splice(dispatch.branchIndex, 0, {
+            kind: "if",
+            cond: selected.condition,
+            then: [{ kind: "varDecl", localId: local, init: selected.receiver, loc }, ...members],
+            else_: null,
+            loc,
+          });
+          changed = true;
+          continue;
+        }
         const receiverType: IrType = { kind: "object", className: info.def.name };
         const receiver = varRef("p.receiver", receiverType, loc);
         const helperKey = JSON.stringify([dispatch.operation, info.def.name]);
@@ -7805,9 +7934,10 @@ export class ClassDynamicDispatch {
     lowerer: Lowerer,
     streams = false,
     normalize = true,
+    arrays = false,
   ): readonly PropertyReceiver[] {
-    const mode = `${streams}:${normalize}`;
-    const revision = `${this.boxed.size}:${lowerer.classes.size}:${lowerer.subclassLinks}:${lowerer.constructedClassCount()}`;
+    const mode = `${streams}:${normalize}:${arrays}`;
+    const revision = `${this.boxed.size}:${this.boxedArrayElems.size}:${lowerer.classes.size}:${lowerer.subclassLinks}:${lowerer.constructedClassCount()}`;
     const cached = this.receiverPlans.get(mode);
     if (cached?.revision === revision) {
       let i = 0;
@@ -7845,7 +7975,26 @@ export class ClassDynamicDispatch {
       };
       visit(capsule);
     }
+    if (arrays) plans.push(...this.arrayReceivers(lowerer));
     this.receiverPlans.set(mode, { revision, capsules, plans });
+    return plans;
+  }
+
+  /** The classes declared `extends Array` whose instances can be dynamic
+   * values: a constructed class over the elements of an array the program
+   * makes a dynamic value. Such an instance reaches dynamic code as the
+   * array itself (a live reference to it), so a member access there tests
+   * the array's class and views it as the class object. Only one level of
+   * Array subclass compiles, so each has no subclasses to test first. */
+  private arrayReceivers(lowerer: Lowerer): PropertyReceiver[] {
+    if (this.boxedArrayElems.size === 0) return [];
+    const plans: PropertyReceiver[] = [];
+    for (const info of lowerer.classes.values()) {
+      const elem = info.extendsArray?.elem;
+      if (elem === undefined || !this.boxedArrayElems.has(typeKey(elem))) continue;
+      if (!lowerer.classCanBeConstructed(info)) continue;
+      plans.push({ info, capsule: info, key: `array:${info.def.name}`, array: true });
+    }
     return plans;
   }
 
@@ -7854,6 +8003,36 @@ export class ClassDynamicDispatch {
     loc: SrcLoc,
   ): { receiver: IrExpr; condition: IrExpr } {
     const value = varRef("p.0", DYN, loc);
+    if (plan.array) {
+      // The runtime names the class of a live array and of a snapshot that
+      // records it; only the live array is an instance, with the class's
+      // fields after its header, so the branch tests the array it converts
+      // to as well.
+      const array: IrExpr = {
+        kind: "dynCheck",
+        value,
+        type: arrayOf(plan.info.extendsArray!.elem),
+        loc,
+      };
+      const className = plan.info.def.name;
+      return {
+        receiver: arrayClassView(plan.info, array, loc),
+        condition: {
+          kind: "ternary",
+          cond: {
+            kind: "libCall",
+            fn: "array.dynIsClass",
+            args: [value, { kind: "strLit", value: className, type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          then: { kind: "instanceOf", value: array, className, type: BOOL, loc },
+          else_: { kind: "boolLit", value: false, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        },
+      };
+    }
     const type: IrType = { kind: "object", className: plan.capsule.def.name };
     const checked: IrExpr = { kind: "dynCheck", value, type, loc };
     const matches: IrExpr = {
@@ -8477,7 +8656,12 @@ export class ClassDynamicDispatch {
           );
           const body: IrStmt[] = [];
           const symbol = symbolMemberKey(lowerer, info, name, loc);
-          if (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:"))) {
+          // An Array subclass instance keeps no property bag and no prototype
+          // data behind one: its method is the class's.
+          if (
+            info.extendsArray === undefined &&
+            (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")))
+          ) {
             const prototypeMethod = observedPrototypeMethod(lowerer, info, name, loc, receiver);
             // Selecting the method must not give the object own storage.
             const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);

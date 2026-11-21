@@ -432,7 +432,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { npmStaticAccessorExport, npmStaticPackageOfPath } from "../npm-static.js";
 import { constructorStaticValue } from "./builtin-statics.js";
 import { packageBuiltWithoutMember } from "./package-built-values.js";
-import { fenceNodeModuleMutation } from "./lower-node-module.js";
+import { fenceNodeModuleMutation, isNodeModuleHandle } from "./lower-node-module.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
@@ -1634,6 +1634,10 @@ function jsBindingKeepsCheckedObject(
   if (!isJsSourceFile(ts.getSourceFileOfNode(nameNode))) return false;
   const host = hostVariableDeclarationOf(nameNode);
   if (!host || host.type || hasJsTypeAnnotation(host)) return false;
+  /* A Module handle is a number in typed storage, but JavaScript reads the
+   * object: a binding of `module`, `require.main`, `module.parent` or a
+   * `module.children[i]` keeps the checked-dynamic view. */
+  if (isNodeModuleHandle(lowerer, nameNode)) return true;
   const arms = type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [type];
   return (
     arms.some((arm) => arm.kind === "record" || arm.kind === "array") &&
@@ -2485,17 +2489,18 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
   // ESM default import binds this value.
   const snapshot = lowerer.cjsRuntimeExportSnapshotOf(sf);
   const exportSlot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
-  const store: IrStmt[] =
-    snapshot !== null && exportSlot !== null
+  const store: IrStmt[] = [
+    ...(snapshot !== null && exportSlot !== null
       ? [
           {
-            kind: "assign",
+            kind: "assign" as const,
             localId: snapshot.id,
-            value: { kind: "varRef", localId: exportSlot.id, type: DYN, loc },
+            value: { kind: "varRef" as const, localId: exportSlot.id, type: DYN, loc },
             loc,
           },
         ]
-      : [];
+      : []),
+  ];
   if (!stmt.expression)
     return store.length === 0 ? ret : { kind: "block", body: [...store, ret], loc };
   return {
@@ -8152,6 +8157,22 @@ export function lowerVarDecl(
       g.type = raw.type;
       lowerer.runtimeOptionalArithmeticGlobals.add(g);
     }
+    // A JavaScript module binding holds the checked-dynamic view
+    // (`/* @type {ScriptcModule | undefined} */ const parent = module.parent`
+    // included): the handle the declaration names cannot hold it.
+    if (g.type.kind !== "dyn" && isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+      let view = raw;
+      while (view.kind === "seqExpr") view = view.result;
+      if (view.kind === "dynFrom") view = view.value;
+      if (view.kind === "dynCheck" && view.value.type.kind === "dyn") view = view.value;
+      if (
+        view.type.kind === "dyn" &&
+        (view.kind === "libCall"
+          ? view.fn.startsWith("module.dyn")
+          : isNodeModuleHandle(lowerer, decl.name))
+      )
+        g.type = DYN;
+    }
     const init = lowerer.coerceInto(decl.initializer, raw, g.type);
     refuseAssertionViewWrite(lowerer, decl);
     return {
@@ -8902,6 +8923,26 @@ export function lowerVarDecl(
     notePreservedLayout(lowerer, decl);
   } else if (!runtimeOptional && !runtimeStringArithmetic && annotatedKeepsLayoutTarget(decl)) {
     refuseWidenedDeclaration(lowerer, decl, init.type, settledType);
+  }
+  // A checked-dynamic Module view (what JavaScript `module`, `require.main`,
+  // `module.parent` and a `module.children[i]` answer) is Node's object, not
+  // the numeric handle the checker declares for the module type: the binding
+  // keeps the dynamic type, so `const m = require.main` holds the view.
+  {
+    let view = init;
+    while (view.kind === "seqExpr") view = view.result;
+    if (view.kind === "dynFrom") view = view.value;
+    // An ANNOTATED module binding (`/** @type {ScriptcModule | undefined} */`)
+    // arrives wrapped in the declared union: the view inside is still the
+    // value the binding holds.
+    if (view.kind === "dynCheck" && view.value.type.kind === "dyn") view = view.value;
+    const moduleView = view.kind === "libCall" && view.fn.startsWith("module.dyn");
+    if (
+      view.type.kind === "dyn" &&
+      settledType.kind !== "dyn" &&
+      (moduleView || isNodeModuleHandle(lowerer, decl.name))
+    )
+      settledType = DYN;
   }
   // Slot coercion: `const r: A | B = bValue;` wraps implicitly; width
   // subtyping (`const p: {a: number} = wider;`) is rejected, not coerced.

@@ -17,6 +17,10 @@ function traced(tag: string): PassThrough {
   return byteReadable();
 }
 
+function throwingType(): "bytes" {
+  throw new Error("type boom");
+}
+
 async function main(): Promise<void> {
   const web = Readable.toWeb(byteReadable(), { type: "bytes" });
   const reader = web.getReader({ mode: "byob" });
@@ -67,6 +71,24 @@ async function main(): Promise<void> {
   }
   log.push(`small ${bytes.join("")}`);
   await smallReader.cancel();
+
+  // A type initializer the lowering answers from its static value still
+  // runs, after the stream argument: the call happens, and a throw from it
+  // is the call's outcome.
+  let typeCalls = 0;
+  const viaCall = Readable.toWeb(byteReadable(), { type: (typeCalls++, "bytes") as "bytes" });
+  const viaCallReader = viaCall.getReader({ mode: "byob" });
+  const viaCallChunk = await viaCallReader.read(new Uint8Array(2));
+  log.push(
+    `type call ${typeCalls} ${Buffer.from(viaCallChunk.value ?? new Uint8Array()).toString()}`,
+  );
+  await viaCallReader.cancel();
+
+  try {
+    Readable.toWeb(traced("throwing type"), { type: throwingType() });
+  } catch (error) {
+    log.push(`type throw ${(error as Error).message}`);
+  }
 }
 
 async function refusals(): Promise<void> {

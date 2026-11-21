@@ -1,7 +1,7 @@
 import { refuseCallbackThis } from "./callback-arg.js";
 import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr, boolLit, numLit, strLit } from "../../ir/build.js";
-import { throwAfterEach } from "./primitive-throws.js";
+import { throwAfterEach, effectStmts } from "./primitive-throws.js";
 import {
   isValueStream,
   isWritableValueStream,
@@ -7286,6 +7286,9 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
   }
   const options = args[1];
   let flags = 0;
+  // A type initializer the lowering answers from its static value still
+  // runs, after the stream argument, as the call evaluates the object.
+  const typeEffects: IrExpr[] = [];
   if (options !== undefined) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
@@ -7304,6 +7307,7 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
         const t = lowerer.typeOf(member.initializer);
         if (t.isStringLiteralType()) {
           if (t.value === "bytes") {
+            typeEffects.push(lowerer.lowerExpr(member.initializer));
             flags |= 1;
             continue;
           }
@@ -7366,25 +7370,38 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
   // The readable is lowered once: a checked-dynamic value takes the dyn
   // entry point, which unwraps a boxed native stream and refuses anything
   // else at run time; a typed stream goes through the stream argument rules.
+  // When the type initializer has effects of its own, the readable is kept
+  // in a local so those effects still run after it, in the call's order.
   const value = lowerer.lowerExpr(args[0]!);
+  const typeStmts = typeEffects.flatMap((effect) => effectStmts(effect, loc));
+  let source = value;
+  let stmts: IrStmt[] = [];
+  if (typeStmts.length > 0) {
+    const fresh = lowerer.declareHiddenLocal("%readable", value.type);
+    source = varRef(fresh.id, value.type, loc);
+    stmts = [{ kind: "varDecl", localId: fresh.id, init: value, loc }, ...typeStmts];
+  }
   let readable: IrExpr;
-  if (value.type.kind === "dyn") {
-    readable = value;
+  if (source.type.kind === "dyn") {
+    readable = source;
   } else {
     try {
-      readable = streamArgOf(lowerer, args[0]!, value, "toWeb");
+      readable = streamArgOf(lowerer, args[0]!, source, "toWeb");
     } catch (e) {
       if (e instanceof StreamArgTypeThrow) return e.expr;
       throw e;
     }
   }
-  return {
+  const built: IrExpr = {
     kind: "libCall",
     fn: readable.type.kind === "dyn" ? "webstream.toWebReadableDyn" : "webstream.toWebReadable",
     args: [readable, numLit(flags, loc)],
     type: DYN,
     loc,
   };
+  return stmts.length === 0
+    ? built
+    : { kind: "seqExpr", stmts, result: built, type: DYN, loc };
 }
 
 export function lowerStreamMethodCall(

@@ -252,6 +252,9 @@ declare module "http" {
       socketPath?: string;
       [option: string]: unknown;
     }): string;
+    /* 'lifo' by default; a plain property, so an assignment is kept as
+     * given (the constructor validates its own option). */
+    scheduling: "fifo" | "lifo";
     /* The keep-alive hooks the agent's pool runs: the socket is kept alive
      * with the agent's keepAliveMsecs and unref'd (answering true), then
      * referenced again for the next request. The dial hook,

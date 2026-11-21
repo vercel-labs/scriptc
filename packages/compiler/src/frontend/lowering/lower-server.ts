@@ -3418,6 +3418,71 @@ function lowerNetSocketMethodCall(
   const name = access.name.text;
   const loc = locOf(call);
   const args = call.arguments.nodes;
+  if (name === "connect") {
+    // socket.connect(port[, host][, connectListener]): an idle socket
+    // starts the dial net.connect's port form performs. The path and
+    // options forms have no lowering yet.
+    if (args.length === 0) {
+      lowerer.noLowering(
+        "connect() with no arguments",
+        call,
+        "the form is connect(port[, host][, connectListener])",
+      );
+    } else if (args.length > 3) {
+      lowerer.noLowering(
+        `connect with ${args.length} arguments`,
+        call,
+        "the form is connect(port[, host][, connectListener])",
+      );
+    }
+    const firstT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    if (firstT === null || firstT.kind !== "f64") {
+      lowerer.noLowering(
+        `connect(${firstT === null ? "a dynamic value" : lowerer.fmt(firstT)})`,
+        call,
+        "this surface lowers connect(port[, host][, connectListener]); the path and options forms have no lowering yet",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const port = lowerer.lowerExprExpecting(args[0]!, F64);
+    let hostNode: ts.Expression | undefined;
+    let cbNode: ts.Expression | undefined;
+    if (args.length === 2) {
+      if (lowerer.mapTypeOf(lowerer.typeOf(args[1]!))?.kind === "string") hostNode = args[1];
+      else cbNode = args[1];
+    } else if (args.length === 3) {
+      hostNode = args[1];
+      cbNode = args[2];
+    }
+    const host: IrExpr = hostNode
+      ? lowerer.lowerExprExpecting(hostNode, STRING)
+      : { kind: "strLit", value: "localhost", type: STRING, loc };
+    if (!cbNode) {
+      return receiverReturningCall(
+        lowerer,
+        "net.sockConnect",
+        [receiver, port, host],
+        NETSOCKET_T,
+        loc,
+      );
+    }
+    const { cb } = lowerCallbackArg(
+      lowerer,
+      cbNode,
+      "connect listeners",
+      0,
+      () => false,
+      "use ()",
+      [],
+    );
+    return receiverReturningCall(
+      lowerer,
+      "net.sockConnectCb",
+      [receiver, port, host, cb],
+      NETSOCKET_T,
+      loc,
+    );
+  }
   if ((name === "ref" || name === "unref") && args.length === 0) {
     // Whether the socket keeps the event loop alive; answers the socket,
     // Node's chaining.
@@ -5405,7 +5470,11 @@ export function lowerServerProperty(
             ? { fn: "net.sockPending", type: BOOL }
             : name === "readyState"
               ? { fn: "net.sockReadyState", type: STRING }
-              : null;
+              : name === "timeout"
+                ? { fn: "net.sockTimeoutGet", type: DYN }
+                : name === "allowHalfOpen"
+                  ? { fn: "net.sockAllowHalfOpen", type: BOOL }
+                  : null;
     if (scalar !== null) {
       const receiver = coerceToHandle(lowerer, expr.expression, NETSOCKET_T);
       return { kind: "libCall", fn: scalar.fn, args: [receiver], type: scalar.type, loc };
@@ -6336,6 +6405,79 @@ export function lowerHttpServerNew(lowerer: Lowerer, expr: ts.NewExpression): Ir
  * effects, because it is read after them. Node never starts the handshake
  * of a client-mode TLSSocket, so a literal without isServer: true fences
  * here. */
+/** `new net.Socket([options])`: an unconnected socket. allowHalfOpen and
+ * signal lower (the signal destroys the socket on abort, as Node's
+ * addAbortSignal does); the descriptor form (a number argument or
+ * options.fd) and the readable/writable sides need the stream-side
+ * plumbing this surface does not model, so they fence by name. */
+export function lowerNetSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  const callee = expr.expression;
+  const isNetSocket =
+    (ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "Socket" &&
+      (lowerer.builtinMemberOf(callee)?.module === "net" ||
+        lowerer.builtinNamespaceModuleOf(callee.expression) === "net")) ||
+    (ts.isIdentifier(callee) &&
+      (() => {
+        const bi = lowerer.builtinImportOf(callee);
+        return bi?.module === "net" && bi.member === "Socket";
+      })());
+  if (!isNetSocket) return null;
+  const loc = locOf(expr);
+  const HINT = "the modelled form is new net.Socket([options]) with allowHalfOpen and signal";
+  const args = expr.arguments?.nodes ?? [];
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`new net.Socket with ${args.length} argument(s)`, expr, HINT);
+  }
+  let node: ts.Expression | undefined = args[0];
+  while (node !== undefined && ts.isParenthesizedExpression(node)) node = node.expression;
+  let options: IrExpr = dynUndefinedExpr(loc);
+  if (node !== undefined) {
+    if (ts.isNumericLiteral(node)) {
+      lowerer.noLowering(
+        "new net.Socket(fd)",
+        node,
+        "this surface models no descriptor adoption; the modelled form is new net.Socket([options])",
+      );
+    } else if (ts.isObjectLiteralExpression(node)) {
+      const nameOf = (p: ts.ObjectLiteralElementLike): string | null =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
+          ? p.name.text
+          : null;
+      for (const p of node.properties.nodes) {
+        const name = nameOf(p);
+        if (name !== null && name !== "allowHalfOpen" && name !== "signal") {
+          lowerer.noLowering(
+            `new net.Socket with the '${name}' option`,
+            p,
+            "this surface models allowHalfOpen and signal; fd, readable and writable need the socket's stream-side plumbing",
+          );
+        }
+      }
+      options = lowerDynObjectLiteral(lowerer, node);
+    } else {
+      const o = lowerer.lowerExpr(node);
+      options =
+        o.type.kind === "dyn"
+          ? o
+          : canConvertToDyn(
+                o.type,
+                (id) => lowerer.shapes.get(id),
+                (id) => lowerer.unions.get(id),
+              )
+            ? { kind: "dynFrom", value: o, type: DYN, loc }
+            : lowerer.noLowering(
+                `new net.Socket with a '${lowerer.fmt(o.type)}' options value`,
+                node,
+                HINT,
+              );
+    }
+  }
+  const fence = ladderFenceExpr(lowerer, "new net.Socket options", expr, HINT);
+  return { kind: "libCall", fn: "net.socketNew", args: [options, fence], type: NETSOCKET_T, loc };
+}
+
 export function lowerTlsSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   const callee = expr.expression;
   const isTlsSocket =

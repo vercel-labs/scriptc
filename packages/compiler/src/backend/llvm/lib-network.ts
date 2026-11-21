@@ -521,6 +521,37 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "net.sockConnect" || e.fn === "net.sockConnectCb") {
+    // socket.connect(port[, host][, cb]): the idle socket dials; the
+    // connect listener hoists like net.connect's.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.sockConnectCb") {
+      host.toHeap(args[3]!);
+      cb = args[3]!.name;
+    }
+    host.declare(`declare void @scr_net_sock_connect_port(ptr, double, ptr, ptr)`);
+    B.line(
+      `call void @scr_net_sock_connect_port(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${cb})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.socketNew") {
+    // new net.Socket([options]): the unconnected socket handle; a signal
+    // attaches through events.addAbortListener (event-target unit), and
+    // the modelled-gap fence is the lowering's.
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.declare(`declare ptr @scr_net_sock_construct(ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_net_sock_construct(ptr ${args[0]!.name}, ptr @scr_events_add_abort_listener, ptr ${args[1]!.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "net.connectDyn" || e.fn === "net.connectDynCb") {
     // connect over dynamic arguments: the runtime runs Node's normalizeArgs
     // and lookupAndConnect ladder, dials with the options it models, and

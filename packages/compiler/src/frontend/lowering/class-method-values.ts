@@ -3,6 +3,7 @@ import {
   BOOL,
   DYN,
   STRING,
+  isUnitType,
   RUNTIME_ERROR_CLASSES,
   typeEquals,
   typeKey,
@@ -31,6 +32,7 @@ import { methodJsName } from "./function-names.js";
 import { noteFunctionSourceNode } from "./function-source-text.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
+import { exactClassCrossing } from "./exact-class.js";
 
 /** The name prefix of the helper that checks the receiver a class's method
  * value was called with into the class (`%method.receiver:C`). */
@@ -250,6 +252,7 @@ export function classMethodValue(
   info: ClassInfo,
   method: string,
   loc: SrcLoc,
+  options?: { exactReturn?: boolean },
 ): IrExpr | null {
   const found = findMethodOn(lowerer, info, method);
   const generic = found ? null : findGenericMethodOn(lowerer, info, method);
@@ -300,7 +303,14 @@ export function classMethodValue(
     lowerer.unsupported("SC1090", blame, "values of builtin or unspecialized generic methods");
   }
   const type = funcTypeFromParamShapes(params, ret);
-  const name = `%method.value:${callee}`;
+  // A method value an island calls returns its class-typed result with the class it has at run
+  // time (exact-class only used by the island's tables, so native method values keep their type).
+  // A class-typed result (also through `C | null`, as DOM lookups return) crosses with the class
+  // it has at run time.
+  const exactReturn =
+    options?.exactReturn === true &&
+    (ret.kind === "object" || (ret.kind === "union" && classArmOf(lowerer, ret) !== null));
+  const name = `%method.value:${callee}${exactReturn ? ".exact" : ""}`;
   const member = classMethodMember(lowerer, owner, method, false);
   // The value is the method the class declares, so its `length` is that
   // declaration's. The type counts the slot's parameters: an override that
@@ -366,23 +376,99 @@ export function classMethodValue(
       const jsName = member?.name !== undefined ? methodJsName(member.name) : method;
       if (jsName !== null) lowerer.objectMethodNames.set(name, jsName);
     }
+    // A method value an island calls returns its class-typed result with the class it has at run
+    // time: the crossing binds the result once and tests its class, and the thunk carries the
+    // locals that binding adds.
+    let returnValue: IrExpr | null = call;
+    let crossingLocals: ReturnType<typeof newFnCtx>["locals"] = [];
+    if (exactReturn) {
+      const ctx = newFnCtx(false, null, null, DYN);
+      lowerer.fnStack.push(ctx);
+      try {
+        const union = ret.kind === "union" ? classArmOf(lowerer, ret) : null;
+        if (union !== null) {
+          // One call, one result: the tag test and the narrowing that reads the class arm both
+          // read the bound value. Evaluating the call in both places would run the method twice,
+          // and a method whose answer changes between calls (a consuming lookup that answers an
+          // object once, then null) would have its second answer narrowed as if it were the
+          // first, trapping.
+          const result = lowerer.declareHiddenLocal("%crossResult", ret);
+          const resultRef = (): IrExpr => varRef(result.id, ret, loc);
+          const narrowed: IrExpr = {
+            kind: "unionNarrow",
+            unionId: union.unionId,
+            tag: union.tag,
+            value: resultRef(),
+            type: union.arm,
+            loc,
+          };
+          let chain =
+            exactClassCrossing(lowerer, narrowed, loc) ?? lowerer.coerceToExpected(narrowed, DYN);
+          for (const unit of union.unit) {
+            // A unit arm has no value to narrow from: the branch answers the unit itself.
+            const unitValue: IrExpr = {
+              kind: "dynFrom",
+              value: {
+                kind: "unitLit",
+                unit: unit.arm.kind === "nullT" ? "null" : "undefined",
+                type: unit.arm,
+                loc,
+              },
+              type: DYN,
+              loc,
+            };
+            chain = {
+              kind: "ternary",
+              cond: {
+                kind: "unionIsTag",
+                unionId: union.unionId,
+                tag: unit.tag,
+                negated: false,
+                value: resultRef(),
+                type: BOOL,
+                loc,
+              },
+              then: unitValue,
+              else_: chain,
+              type: DYN,
+              loc,
+            };
+          }
+          returnValue = {
+            kind: "seqExpr",
+            stmts: [{ kind: "varDecl", localId: result.id, init: call, loc }],
+            result: chain,
+            type: DYN,
+            loc,
+          };
+        } else
+          returnValue =
+            exactClassCrossing(lowerer, call, loc) ?? lowerer.coerceToExpected(call, DYN);
+      } finally {
+        lowerer.fnStack.pop();
+      }
+      crossingLocals = ctx.locals;
+    }
     const fn: IrFunction = {
       name,
       params: thunkParams,
-      returnType: ret,
-      locals: thunkParams.map((p) => ({
-        id: p.localId,
-        name: p.name,
-        type: p.type,
-        mutable: false,
-      })),
+      returnType: exactReturn ? DYN : ret,
+      locals: [
+        ...thunkParams.map((p) => ({
+          id: p.localId,
+          name: p.name,
+          type: p.type,
+          mutable: false,
+        })),
+        ...crossingLocals,
+      ],
       body:
         ret.kind === "void"
           ? [
               { kind: "exprStmt", expr: call, loc },
               { kind: "return", value: null, loc },
             ]
-          : [{ kind: "return", value: call, loc }],
+          : [{ kind: "return", value: returnValue, loc }],
       loc,
     };
     lowerer.liftedFns.push(fn);
@@ -396,8 +482,34 @@ export function classMethodValue(
     fnName: name,
     captures: [],
     ...(ownLength !== typeLength ? { length: ownLength } : {}),
-    type,
+    type: exactReturn ? funcTypeFromParamShapes(params, DYN) : type,
     loc,
+  };
+}
+
+/** The class arm of a union a method returns, when the union is exactly one class arm beside
+ *  null/undefined arms, with the unit arms and the union's id; null for any other union. */
+function classArmOf(
+  lowerer: Lowerer,
+  type: IrType & { kind: "union" },
+): {
+  arm: IrType & { kind: "object" };
+  tag: number;
+  unit: { arm: IrType; tag: number }[];
+  unionId: string;
+} | null {
+  const info = lowerer.unions.get(type.unionId);
+  if (info === undefined) return null;
+  const classes = info.arms
+    .map((arm, tag) => ({ arm, tag }))
+    .filter((a) => a.arm.kind === "object");
+  const units = info.arms.map((arm, tag) => ({ arm, tag })).filter((a) => isUnitType(a.arm));
+  if (classes.length !== 1 || classes.length + units.length !== info.arms.length) return null;
+  return {
+    arm: classes[0]!.arm as IrType & { kind: "object" },
+    tag: classes[0]!.tag,
+    unit: units,
+    unionId: info.id,
   };
 }
 

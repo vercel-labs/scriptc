@@ -1,7 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { load } from "js-yaml";
 import { afterEach, expect, test } from "vitest";
 import {
   LLVM_DIST_TAG,
@@ -11,10 +10,10 @@ import {
 } from "../../native/llvm-codegen/llvm-dist.mjs";
 
 type Entry = { platform: string; helper?: string; llvm_dist?: string };
-const release = load(
-  readFileSync(new URL("../../.github/workflows/release-build.yml", import.meta.url), "utf8"),
-) as { jobs: Record<string, { strategy?: { matrix?: { include?: Entry[] } } }> };
-const entries = release.jobs["native"]!.strategy!.matrix!.include!;
+// The release's platform builds (release-build.yml's packs and cli matrices).
+const entries = JSON.parse(
+  readFileSync(new URL("../../.github/release-platforms.json", import.meta.url), "utf8"),
+) as Entry[];
 
 const saved = { ...process.env };
 afterEach(() => {

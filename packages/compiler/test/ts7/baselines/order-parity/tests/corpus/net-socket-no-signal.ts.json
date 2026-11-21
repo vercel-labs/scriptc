@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/net-socket-no-signal.ts"
+ ],
+ "diags": []
+}

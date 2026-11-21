@@ -37,6 +37,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoPercentilesCount",
   "perf.histoPercentilesKey",
   "perf.histoPercentilesValue",
+  "perf.histoBucketsKey",
+  "perf.histoBucketsValue",
   "dyn.moduleClassValue",
   "perf.histoPercentilesValueBig",
   "perf.histoDispose",
@@ -426,4 +428,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // code and raising no catchable error.
   "error.prepareStackTraceGet",
   "error.prepareStackTraceSet",
+  // socket.timeout and socket.allowHalfOpen (scr_net.c): both getters read
+  // the socket's own state — the stored timeout and the constructor's
+  // half-open option — running no program code and raising nothing.
+  "net.sockTimeoutGet",
+  "net.sockAllowHalfOpen",
 ]);

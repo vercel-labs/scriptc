@@ -34,6 +34,7 @@
     "format": "oxfmt --write \"{packages,scripts,internal/compatibility/src,tests/harness}/**/*.{js,mjs,cjs,ts,mts,cts,tsx}\" vitest.config.ts .oxlintrc.jsonc .oxfmtrc.jsonc",
     "format:check": "oxfmt --check \"{packages,scripts,internal/compatibility/src,tests/harness}/**/*.{js,mjs,cjs,ts,mts,cts,tsx}\" vitest.config.ts .oxlintrc.jsonc .oxfmtrc.jsonc",
     "manifest": "tsx scripts/surface-manifest.mjs",
+    "preflight": "node scripts/preflight.mjs",
     "regen": "node scripts/regen-generated.mjs",
     "node-compat": "pnpm --filter @internal/compatibility run update",
     "node-compat:backlog": "pnpm --filter @internal/compatibility run backlog --",

@@ -2414,7 +2414,7 @@
       "kind": "node-builtin",
       "name": "perf_hooks.createHistogram",
       "status": "static",
-      "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
+      "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map, the linearBuckets/logBuckets maps and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
     },
     {
       "id": "node-builtin.perf_hooks.createSlidingWindowHistogram",

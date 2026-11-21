@@ -61,3 +61,5 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
     openssl x509 -req -in leafpl.csr -CA intpl.pem -CAkey intpl-key.pem -CAcreateserial -out leafpl.pem -days 3650 -extfile san.cnf -extensions ext
 
 (`rootpl.cnf` and `intpl.cnf` carry `basicConstraints=critical,CA:TRUE,pathlen:0` and `keyUsage=critical,keyCertSign,cRLSign`.)
+
+`long-san.pem`/`long-san-key.pem` is a self-signed localhost certificate with a very long URI subjectAltName (600 characters), minted with `openssl req -x509 ... -addext "subjectAltName=DNS:localhost,URI:https://example.com/<600 a's>"`. It exercises rendering and reporting of a SAN longer than any fixed stack buffer.

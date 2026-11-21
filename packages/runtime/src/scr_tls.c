@@ -1096,52 +1096,91 @@ static bool scr_tls_leaf_bad_sig(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
 static void scr_tls_record_altnames(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
   free(t->vrfy_altnames);
   t->vrfy_altnames = NULL;
-  char buf[1024];
+  /* Two passes over the SANs: size the exact rendering, then write it.
+   * Nothing is copied from a fixed-size temporary, so a SAN longer than a
+   * small stack buffer cannot turn a truncated snprintf result into an
+   * out-of-bounds read. Sizing and writing read the same mbedTLS sequence. */
+  size_t total = 0;
+  size_t items = 0;
+  for (const mbedtls_x509_sequence *cur = &leaf->subject_alt_names; cur != NULL; cur = cur->next) {
+    if (cur->buf.p == NULL) continue;
+    unsigned char tag = (unsigned char)cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK;
+    size_t prefix;
+    size_t value;
+    if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+      prefix = sizeof "DNS:" - 1;
+      value = cur->buf.len;
+    } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS) {
+      if (cur->buf.len != 4 && cur->buf.len != 16) continue;
+      prefix = sizeof "IP Address:" - 1;
+      value = 64; /* an IPv6 address in eight uncompressed groups at most */
+    } else if (tag == MBEDTLS_X509_SAN_RFC822_NAME) {
+      prefix = sizeof "email:" - 1;
+      value = cur->buf.len;
+    } else if (tag == MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) {
+      prefix = sizeof "URI:" - 1;
+      value = cur->buf.len;
+    } else {
+      continue;
+    }
+    if (value > SIZE_MAX - prefix || prefix + value > SIZE_MAX - total) scr_tls_oom();
+    total += prefix + value;
+    items++;
+  }
+  if (items > 1) {
+    if (items - 1 > SIZE_MAX / 2 || 2 * (items - 1) > SIZE_MAX - total) scr_tls_oom();
+    total += 2 * (items - 1);
+  }
+  if (total == SIZE_MAX) scr_tls_oom();
+  char *out = malloc(total + 1); /* the terminator sits after the content */
+  if (out == NULL) scr_tls_oom();
   size_t used = 0;
   bool first = true;
   for (const mbedtls_x509_sequence *cur = &leaf->subject_alt_names; cur != NULL; cur = cur->next) {
     if (cur->buf.p == NULL) continue;
     unsigned char tag = (unsigned char)cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK;
-    char item[300];
-    int n = 0;
+    const char *prefix;
+    char ip[64];
+    const unsigned char *payload = cur->buf.p;
+    size_t len = cur->buf.len;
     if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
-      n = snprintf(item, sizeof item, "DNS:%.*s", (int)cur->buf.len, (const char *)cur->buf.p);
+      prefix = "DNS:";
     } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS) {
-      char ip[64];
-      if (cur->buf.len == 4) {
-        n = snprintf(ip, sizeof ip, "%u.%u.%u.%u", cur->buf.p[0], cur->buf.p[1], cur->buf.p[2],
-                     cur->buf.p[3]);
-      } else if (cur->buf.len == 16) {
+      prefix = "IP Address:";
+      if (len == 4) {
+        snprintf(ip, sizeof ip, "%u.%u.%u.%u", payload[0], payload[1], payload[2], payload[3]);
+      } else if (len == 16) {
         /* OpenSSL prints an iPAddress SAN as eight uncompressed groups */
-        const unsigned char *b = cur->buf.p;
-        n = snprintf(ip, sizeof ip, "%x:%x:%x:%x:%x:%x:%x:%x", (b[0] << 8) | b[1],
-                     (b[2] << 8) | b[3], (b[4] << 8) | b[5], (b[6] << 8) | b[7],
-                     (b[8] << 8) | b[9], (b[10] << 8) | b[11], (b[12] << 8) | b[13],
-                     (b[14] << 8) | b[15]);
+        const unsigned char *b = payload;
+        snprintf(ip, sizeof ip, "%x:%x:%x:%x:%x:%x:%x:%x", (b[0] << 8) | b[1],
+                 (b[2] << 8) | b[3], (b[4] << 8) | b[5], (b[6] << 8) | b[7],
+                 (b[8] << 8) | b[9], (b[10] << 8) | b[11], (b[12] << 8) | b[13],
+                 (b[14] << 8) | b[15]);
       } else {
         continue;
       }
-      if (n < 0) continue;
-      n = snprintf(item, sizeof item, "IP Address:%.*s", n < (int)sizeof ip ? n : (int)sizeof ip, ip);
+      payload = (const unsigned char *)ip;
+      len = strlen(ip);
     } else if (tag == MBEDTLS_X509_SAN_RFC822_NAME) {
-      n = snprintf(item, sizeof item, "email:%.*s", (int)cur->buf.len, (const char *)cur->buf.p);
+      prefix = "email:";
     } else if (tag == MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) {
-      n = snprintf(item, sizeof item, "URI:%.*s", (int)cur->buf.len, (const char *)cur->buf.p);
+      prefix = "URI:";
     } else {
       continue;
     }
-    if (n < 0) continue;
-    if (used + (size_t)n + (first ? 0 : 2) >= sizeof buf) break;
     if (!first) {
-      buf[used++] = ',';
-      buf[used++] = ' ';
+      out[used++] = ',';
+      out[used++] = ' ';
     }
-    memcpy(buf + used, item, (size_t)n);
-    used += (size_t)n;
+    size_t prefix_len = strlen(prefix);
+    memcpy(out + used, prefix, prefix_len);
+    used += prefix_len;
+    memcpy(out + used, payload, len);
+    used += len;
     first = false;
   }
-  t->vrfy_altnames = strndup(buf, used);
-  if (t->vrfy_altnames == NULL) scr_tls_oom();
+  out[used] = '\0';
+  t->vrfy_altnames = out;
 }
 
 /* OpenSSL's path length check: a CA certificate's basicConstraints
@@ -1969,8 +2008,23 @@ static int scr_tls_handshake(void *tctx) {
     return -1;
   }
   char msg[512];
+  const char *err = msg;
+  char *heap_msg = NULL;
   if (r == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
-    scr_tls_verify_msg(t, msg, sizeof msg);
+    /* the altname rendering can be longer than the fixed buffer: size the
+     * message to it rather than truncating a certificate's SAN list */
+    size_t cap = sizeof msg;
+    if (t->vrfy_altnames != NULL) {
+      size_t alt = strlen(t->vrfy_altnames);
+      if (alt > SIZE_MAX - sizeof msg) scr_tls_oom();
+      cap = alt + sizeof msg;
+    }
+    if (cap > sizeof msg) {
+      heap_msg = malloc(cap);
+      if (heap_msg == NULL) scr_tls_oom();
+      err = heap_msg;
+    }
+    scr_tls_verify_msg(t, heap_msg != NULL ? heap_msg : msg, cap);
   } else if (r == MBEDTLS_ERR_SSL_CONN_EOF) {
     /* The peer closed the connection mid-handshake: Node's socket ends,
      * then fails with ECONNRESET, for tls.connect and https.request
@@ -2006,7 +2060,8 @@ static int scr_tls_handshake(void *tctx) {
      * string (SEMANTICS.md divergence 55) */
     snprintf(msg, sizeof msg, "client TLS handshake failed");
   }
-  scr_net_sock_transport_error(t->sock, msg);
+  scr_net_sock_transport_error(t->sock, err);
+  free(heap_msg);
   return -1;
 }
 

@@ -107,6 +107,10 @@ struct ScrSqliteDb {
   /* Properties JavaScript added to the database object, owned, NULL until
    * the first one (Node's DatabaseSync is an ordinary object). */
   ScrDyn *expandos;
+  /* The database's inspect view, built once and owned: the inspect walk's
+   * visited set recognises the same object when a getter leads back here,
+   * where a fresh view per visit would re-enter without end. */
+  ScrDyn *inspect_view;
 };
 
 struct ScrSqliteLimits {
@@ -2192,6 +2196,8 @@ static void scr_sqlite_db_release(void *h) {
   scr_dyn_release(db->authorizer);
   db->authorizer = NULL;
   scr_dyn_release(db->expandos);
+  scr_dyn_release(db->inspect_view);
+  db->inspect_view = NULL;
   scr_str_release(db->path);
   free(db->stmts);
   free(db->sessions);
@@ -4289,9 +4295,11 @@ static void scr_sqlite_db_add_brand(ScrDyn *view) {
 
 static ScrDyn *scr_sqlite_db_inspect_view(void *h) {
   ScrSqliteDb *db = h;
+  if (db->inspect_view != NULL) return scr_dyn_retain(db->inspect_view);
   ScrDyn *view = scr_sqlite_inspect_of(SCR_DYNH_SQLITE_DB, h, scr_sqlite_db_own,
                                        SCR_SQLITE_DB_OWN_COUNT, db->expandos);
   scr_sqlite_db_add_brand(view);
+  db->inspect_view = scr_dyn_retain(view);
   return view;
 }
 

@@ -5,6 +5,7 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { allOrderEntries, orderBaselinePath } from "./ts7-order-fixtures.mjs";
+import { REGEN_HINT } from "./generated-files.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -14,7 +15,8 @@ const missingBaselines = allOrderEntries(repoRoot)
 if (missingBaselines.length > 0) {
   console.error(`Missing TypeScript preflight/order baselines:\n${missingBaselines.join("\n")}`);
   console.error(
-    "Record the new fixtures with SCRIPTC_UPDATE_BASELINES=1 pnpm exec vitest run packages/compiler/test/ts7/order-parity.test.ts, review the diff, then run the affected parity batches before opening a PR.",
+    "Record the new fixtures with SCRIPTC_UPDATE_BASELINES=1 pnpm exec vitest run packages/compiler/test/ts7/order-parity.test.ts, review the diff, then run the affected parity batches before opening a PR.\n" +
+      `${REGEN_HINT}`,
   );
   process.exit(1);
 }

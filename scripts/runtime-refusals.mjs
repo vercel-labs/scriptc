@@ -17,6 +17,7 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { REGEN_HINT } from "./generated-files.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE_FLAG = "--source=";
@@ -409,6 +410,16 @@ function main() {
       message: site.message,
       code: site.code,
     }));
+    // Sorted so sites added in different functions or files land in different
+    // places: the baseline is a set, and its order carries no meaning.
+    const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    entries.sort(
+      (a, b) =>
+        compare(a.file, b.file) ||
+        compare(a.function ?? "", b.function ?? "") ||
+        compare(a.message, b.message) ||
+        compare(a.code ?? "", b.code ?? ""),
+    );
     writeFileSync(baselinePath, JSON.stringify(entries, null, 1) + "\n");
     process.stdout.write(`wrote ${entries.length} sites to ${baselinePath}\n`);
     return 0;
@@ -442,7 +453,8 @@ function main() {
   if (uncoded.length + unlisted.length > 0)
     process.stdout.write(
       "Raise a refusal with scr_throw_error_msg_code and the code of the nearest compile-time diagnostic, " +
-        "then run `node scripts/runtime-refusals.mjs --write`.\n",
+        "then run `node scripts/runtime-refusals.mjs --write`.\n" +
+        `${REGEN_HINT}\n`,
     );
   return args.has("--strict") && uncoded.length + unlisted.length > 0 ? 1 : 0;
 }

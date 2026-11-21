@@ -168,19 +168,26 @@ pnpm node-compat:backlog --tier=static --format=tsv
 
 ### Generated files
 
-Never hand-edit these files:
+Never hand-edit these files; `pnpm regen` rewrites them from the merged sources:
 
-- `packages/compiler/surface-manifest.json`
+- `packages/compiler/surface-manifest.json` (`pnpm manifest`)
+- `packages/compiler/src/frontend/ts7/*.generated.ts` (`pnpm generate:ts7-ast`)
+- `packages/compiler/src/ir/fields.generated.ts` (`pnpm generate:ir-fields`)
+- `packages/compiler/src/ir/codec.generated.ts` (`pnpm generate:ir-codec`)
+- `packages/compiler/src/frontend/lowering/builtin-module-members.generated.ts` and `builtin-object-members.generated.ts` (`node scripts/gen-builtin-module-members.mjs`, `node scripts/gen-builtin-object-members.mjs`)
 - `internal/compatibility/generated/node-v24-internal.json`
 - `internal/compatibility/generated/node-v24-refusals.json`
 - `packages/experimental/refusals.json`
-- `docs/src/generated/node-v24-compatibility.json`
+- `docs/src/generated/node-v24-compatibility.json` (`pnpm node-compat --local`, or `pnpm node-compat` when the Node pin changed)
+- `packages/runtime/refusal-sites.json` (`node scripts/runtime-refusals.mjs --write`)
+
+`tests/harness/corpus-costs.json` is refreshed from green CI logs by `node scripts/ci-corpus-costs.mjs`; a change records its program's cost in `tests/harness/corpus-costs/<program>.json` instead, as the README there describes. The other shard cost tables (`scripts/ci-test-costs.json` and `tests/harness/*-costs.json`) are recorded the same way by `scripts/ci-test-costs.mjs` and `scripts/ci-effect-costs.mjs`. `packages/compiler/test/ts7/baselines/order-parity/` records one file per fixture with `SCRIPTC_UPDATE_BASELINES=1 pnpm exec vitest run packages/compiler/test/ts7/order-parity.test.ts`. These tables and baselines are recorded from a run rather than derived from committed sources, so `pnpm regen` rewrites them only for the entries a merge left conflicted.
 
 The refusal table and its published copy are written by the compatibility generator.
 
-Change compiler decision sources or the implementation-owned compatibility manifests, then regenerate. Use `pnpm manifest` when compiler decision tables change and `pnpm node-compat` whenever the Node pin, compatibility manifests, compiler surface manifest, changes. `pnpm node-compat --local` reclassifies the committed ledger without fetching Node's docs; it writes the same files as `pnpm node-compat` while the Node pin is unchanged.
+Change compiler decision sources or the implementation-owned compatibility manifests, then regenerate. Use `pnpm manifest` when compiler decision tables change and `pnpm node-compat` whenever the Node pin, compatibility manifests, or compiler surface manifest change. `pnpm node-compat --local` reclassifies the committed ledger without fetching Node's docs; it writes the same files as `pnpm node-compat` while the Node pin is unchanged.
 
-Never resolve a merge conflict in these files by hand. Resolve the source conflicts, then run `node scripts/regen-generated.mjs`: it takes the merged-in branch's version of each conflicted generated file, regenerates all of them from the merged sources, and stages the ones that conflicted.
+Merge rule: on a merge conflict in a generated file, take either side and run `pnpm regen`. Resolve source conflicts first. `pnpm regen` takes one side of every conflicted generated file, regenerates each from the merged sources, re-records the TS7 order baselines the merge left conflicted, folds the per-program corpus costs when the table or an override conflicted, regenerates a conflicted shard cost table with its cost generator, and stages them; when a generator fails they stay unmerged. When neither side's compatibility ledger is for the merged Node pin, run `pnpm node-compat`, which fetches the pinned Node docs, instead.
 
 The public docs artifact must not expose repository test paths, internal source identifiers, engineering evidence bookkeeping, documentation/metadata headings, command-line or configuration-only entries, or rows that are N/A in the native tier. Those remain in the complete internal census under `internal/compatibility/generated/`.
 

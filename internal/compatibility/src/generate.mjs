@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildRefusals, renderRefusals } from "./refusals.mjs";
+import { stale } from "../../../scripts/generated-files.mjs";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const internalOutputPath = `${packageRoot}generated/node-v24-internal.json`;
@@ -1511,7 +1512,10 @@ function checkLocal() {
     ancestors[row.depth] = row;
     if (JSON.stringify(row.static) !== JSON.stringify(expectedStatic)) {
       throw new Error(
-        `generated classification is stale at ${row.id} (${row.signature}); run 'pnpm node-compat'`,
+        stale(
+          `generated classification is stale at ${row.id} (${row.signature})`,
+          "`pnpm node-compat --local`",
+        ),
       );
     }
   }
@@ -1526,12 +1530,14 @@ function checkLocal() {
     }
   }
   if (readFileSync(publicOutputPath, "utf8") !== render(publicSnapshot(snapshot))) {
-    throw new Error("the docs compatibility artifact is stale; run 'pnpm node-compat'");
+    throw new Error(
+      stale("the docs compatibility artifact is stale", "`pnpm node-compat --local`"),
+    );
   }
   const refusals = refusalsRendered(snapshot);
   for (const path of [refusalsOutputPath, publishedRefusalsPath]) {
     if (readFileSync(path, "utf8") !== refusals) {
-      throw new Error(`${path.slice(root.length)} is stale; run 'pnpm node-compat'`);
+      throw new Error(stale(`${path.slice(root.length)} is stale`, "`pnpm node-compat --local`"));
     }
   }
   const publicRows = publicSnapshot(snapshot).rows;
@@ -1543,7 +1549,9 @@ function checkLocal() {
     }
   }
   if (readFileSync(publicOutputPath, "utf8") !== render(publicSnapshot(snapshot))) {
-    throw new Error("the docs compatibility artifact is stale; run 'pnpm node-compat'");
+    throw new Error(
+      stale("the docs compatibility artifact is stale", "`pnpm node-compat --local`"),
+    );
   }
   for (const row of snapshot.rows) {
     for (const key of ["static"]) {
@@ -1619,13 +1627,13 @@ async function main() {
 
   if (args.has("--check")) {
     if (readFileSync(internalOutputPath, "utf8") !== internalRendered)
-      throw new Error("internal Node compatibility snapshot is stale; run 'pnpm node-compat'");
+      throw new Error(stale("internal Node compatibility snapshot is stale", "`pnpm node-compat`"));
     if (readFileSync(publicOutputPath, "utf8") !== publicRendered)
-      throw new Error("public Node compatibility snapshot is stale; run 'pnpm node-compat'");
+      throw new Error(stale("public Node compatibility snapshot is stale", "`pnpm node-compat`"));
     const refusals = refusalsRendered(snapshot);
     for (const path of [refusalsOutputPath, publishedRefusalsPath]) {
       if (readFileSync(path, "utf8") !== refusals)
-        throw new Error(`${path.slice(root.length)} is stale; run 'pnpm node-compat'`);
+        throw new Error(stale(`${path.slice(root.length)} is stale`, "`pnpm node-compat`"));
     }
     console.log(
       `Node compatibility snapshot matches ${pin.tag} (${snapshot.rows.length} API rows, commit ${pin.commit.slice(0, 12)})`,

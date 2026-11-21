@@ -11,6 +11,7 @@ import {
   resolveLibraryFences,
   type SurfaceManifest,
 } from "@scriptc/compiler";
+import { stale } from "../../scripts/generated-files.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const manifestPath = join(repoRoot, "packages/compiler/surface-manifest.json");
@@ -30,7 +31,7 @@ describe("surface manifest generation", () => {
   test("the committed manifest regenerates byte-identically (staleness guard)", () => {
     expect(
       renderSurfaceManifest(manifest),
-      "packages/compiler/surface-manifest.json is stale — run 'pnpm manifest' and commit the result",
+      stale("packages/compiler/surface-manifest.json is stale", "`pnpm manifest`"),
     ).toBe(committed);
   });
 

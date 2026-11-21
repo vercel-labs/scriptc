@@ -7,6 +7,18 @@ import { Readable } from "node:stream";
 const log: string[] = [];
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+class ThrowingSize {
+  get size(): (chunk: Uint8Array) => number {
+    throw new Error("size boom");
+  }
+}
+
+class ThrowingHighWaterMark {
+  get highWaterMark(): number {
+    throw new Error("hwm boom");
+  }
+}
+
 function makeSource(tag: string): Readable {
   let n = 0;
   return new Readable({
@@ -105,6 +117,8 @@ async function refusals(): Promise<void> {
     ["number", () => Readable.toWeb(makeSource("n"), { strategy: 5 as never })],
     ["negative", () => Readable.toWeb(makeSource("n"), { strategy: { highWaterMark: -1 } })],
     ["size", () => Readable.toWeb(makeSource("n"), { strategy: { size: 5 as never } })],
+    ["size getter", () => Readable.toWeb(makeSource("n"), { strategy: new ThrowingSize() })],
+    ["hwm getter", () => Readable.toWeb(makeSource("n"), { strategy: new ThrowingHighWaterMark() })],
   ];
   for (const [label, attempt] of cases) {
     try {
@@ -112,7 +126,7 @@ async function refusals(): Promise<void> {
       log.push(`refusal ${label} accepted`);
     } catch (error) {
       const typed = error as Error & { code?: string };
-      log.push(`refusal ${label} ${typed.name} ${typed.code} ${typed.message}`);
+      log.push(`refusal ${label} ${typed.name} ${typed.code ?? ""} ${typed.message}`);
     }
   }
 }

@@ -2477,21 +2477,26 @@ ScrDyn *scr_webstream_readable_over_opts(const ScrWebStreamSource *source, void 
   if (strategy != NULL && strategy->kind != SCR_DYN_UNDEF && strategy->kind != SCR_DYN_NULL) {
     if (!ws_validate_object(strategy, "strategy", true)) return NULL;
     ScrDyn *size_arg = ws_get(strategy, "size");
-    if (size_arg) {
-      if (size_arg->kind != SCR_DYN_UNDEF) {
-        if (!ws_validate_function(size_arg, "strategy.size")) {
-          scr_dyn_release(size_arg);
-          return NULL;
-        }
-        size = size_arg; /* +1, moved to the controller below */
-      } else {
+    /* NULL: reading the member threw (a getter), and the exception is
+     * pending. */
+    if (!size_arg) return NULL;
+    if (size_arg->kind != SCR_DYN_UNDEF) {
+      if (!ws_validate_function(size_arg, "strategy.size")) {
         scr_dyn_release(size_arg);
+        return NULL;
       }
+      size = size_arg; /* +1, moved to the controller below */
+    } else {
+      scr_dyn_release(size_arg);
     }
     value = ws_get(strategy, "highWaterMark");
+    if (!value) {
+      if (size) scr_dyn_release(size);
+      return NULL;
+    }
     if (!ws_extract_high_water_mark(value, 1, &high_water_mark)) {
       if (size) scr_dyn_release(size);
-      if (value) scr_dyn_release(value);
+      scr_dyn_release(value);
       return NULL;
     }
   }

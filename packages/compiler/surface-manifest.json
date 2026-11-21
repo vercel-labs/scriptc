@@ -2428,7 +2428,7 @@
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
       "status": "static",
-      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported"
+      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile, burnRate, the min, max, mean, stddev, count, exceeds, skewness, kurtosis and EWMA readings, and the distribution comparisons are supported"
     },
     {
       "id": "node-builtin.perf_hooks.performance.clearMarks",

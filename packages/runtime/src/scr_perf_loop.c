@@ -228,6 +228,8 @@ static void scr_histo_install(void);
 /* the checked-dynamic reads of both histogram classes (defined below) */
 static ScrDyn *scr_histo_get(void *ptr, const char *key, size_t length);
 static ScrDyn *scr_eld_get(void *ptr, const char *key, size_t length);
+/* the EWMA readings both histogram kinds share (defined below) */
+double scr_histo_ewma(ScrDyn *handle, double which);
 
 static SCR_TL ScrEld **scr_elds;
 static SCR_TL size_t scr_elds_len;
@@ -506,6 +508,15 @@ typedef struct {
   int32_t sub_bucket_count;
   int64_t sub_bucket_mask;
   uint64_t prev_ns; /* RecordDelta's previous sample; 0 = none */
+  /* Node's EWMA state, active when the halfLife option set an alpha. The
+   * readings smooth the recorded values; the error rate smooths the binary
+   * "value exceeded threshold" signal when the threshold option is set. */
+  double ewma_alpha;    /* 1 - 2^(-1/halfLife); 0 when EWMA is off */
+  double ewma_mean;
+  double ewma_variance;
+  double ewma_error_rate;
+  int64_t ewma_threshold; /* 0 when the error rate is off */
+  bool ewma_initialized;
   bool disposed;
   /* The percentiles view: hdr_iter_percentile's (percentile, value) ticks,
    * rebuilt by scr_histo_percentiles_count and read by the two accessors. */
@@ -542,13 +553,14 @@ static void scr_histo_release_v(void *p) {
 }
 
 /* A checked-dynamic read (`(h: any).count`, `h["mean"]`) answers the same
- * readings as the typed lowering: the six numeric properties and the four
- * BigInt ones. Any other name is not modeled (the caller answers undefined
- * for a miss, as for every handle). */
+ * readings as the typed lowering: the numeric properties (the shape moments
+ * and EWMA included) and the four BigInt ones. Any other name is not
+ * modeled (the caller answers undefined for a miss, as for every handle). */
 static ScrDyn *scr_histo_reading(ScrDynHandleTag tag, void *ptr, const char *key, size_t length) {
   static const char *const names[] = {"count",    "min",   "max",      "mean",
                                      "stddev",   "exceeds", "skewness", "kurtosis"};
   static const int which[] = {0, 1, 2, 3, 4, 5, 6, 7};
+  static const char *const ewma_names[] = {"ewmaMean", "ewmaStddev", "ewmaErrorRate"};
   static const char *const big_names[] = {"countBigInt", "minBigInt", "maxBigInt", "exceedsBigInt"};
   static const int big_which[] = {0, 1, 2, 5};
   ScrDyn probe;
@@ -559,6 +571,9 @@ static ScrDyn *scr_histo_reading(ScrDynHandleTag tag, void *ptr, const char *key
   for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
     if (strlen(names[i]) == length && memcmp(names[i], key, length) == 0)
       return scr_dyn_new_num(scr_histo_stat(&probe, (double)which[i]));
+  for (size_t i = 0; i < sizeof ewma_names / sizeof ewma_names[0]; i++)
+    if (strlen(ewma_names[i]) == length && memcmp(ewma_names[i], key, length) == 0)
+      return scr_dyn_new_num(scr_histo_ewma(&probe, (double)i));
   for (size_t i = 0; i < sizeof big_names / sizeof big_names[0]; i++) {
     if (strlen(big_names[i]) != length || memcmp(big_names[i], key, length) != 0) continue;
     ScrBigInt *reading = scr_histo_stat_big(&probe, (double)big_which[i]);
@@ -731,10 +746,38 @@ static void scr_histo_recount(ScrHisto *h) {
   h->max_value = max_value;
 }
 
+/* Node's Histogram::UpdateEwma: one exponential smoothing step per recorded
+ * value. The first value seeds the mean (and the error rate when a threshold
+ * is set); every later value moves both by alpha. */
+static void scr_histo_update_ewma(ScrHisto *h, double value) {
+  if (!(h->ewma_alpha > 0)) return;
+  if (!h->ewma_initialized) {
+    h->ewma_mean = value;
+    h->ewma_variance = 0;
+    h->ewma_initialized = true;
+    if (h->ewma_threshold > 0)
+      h->ewma_error_rate = value > (double)h->ewma_threshold ? 1.0 : 0.0;
+    return;
+  }
+  {
+    double diff = value - h->ewma_mean;
+    h->ewma_mean += h->ewma_alpha * diff;
+    h->ewma_variance =
+        (1.0 - h->ewma_alpha) * (h->ewma_variance + h->ewma_alpha * diff * diff);
+    if (h->ewma_threshold > 0) {
+      double exceeded = value > (double)h->ewma_threshold ? 1.0 : 0.0;
+      h->ewma_error_rate += h->ewma_alpha * (exceeded - h->ewma_error_rate);
+    }
+  }
+}
+
 /* Node's node::Histogram::Record: an out-of-range value counts as an
  * exceed and is not recorded. */
 static void scr_histo_record(ScrHisto *h, int64_t value) {
-  if (!scr_histo_record_value(h, value, 1)) h->exceeds++;
+  if (!scr_histo_record_value(h, value, 1))
+    h->exceeds++;
+  else
+    scr_histo_update_ewma(h, (double)value);
 }
 
 /* hdr_record_corrected_value. */
@@ -743,6 +786,9 @@ static void scr_histo_record_corrected(ScrHisto *h, int64_t value, int64_t expec
     h->exceeds++;
     return;
   }
+  /* Node updates the EWMA once, from the recorded value, before hdr
+   * backfills the intermediate samples. */
+  scr_histo_update_ewma(h, (double)value);
   if (expected_interval <= 0 || value <= expected_interval) return;
   int64_t missing = value - expected_interval;
   for (; missing >= expected_interval; missing -= expected_interval) {
@@ -753,7 +799,16 @@ static void scr_histo_record_corrected(ScrHisto *h, int64_t value, int64_t expec
   }
 }
 
-static void scr_histo_clear_view(ScrHisto *h) { h->view_len = 0; }
+static void scr_histo_clear_view(ScrHisto *h) {
+  /* The staging buffers are transient: free them rather than retaining the
+   * last export's capacity in a long-lived histogram. */
+  free(h->view_key);
+  free(h->view_value);
+  h->view_key = NULL;
+  h->view_value = NULL;
+  h->view_len = 0;
+  h->view_cap = 0;
+}
 
 /* Grow the two view buffers together: both new arrays are allocated and
  * filled before the old ones are released, so a failed allocation leaves
@@ -761,6 +816,15 @@ static void scr_histo_clear_view(ScrHisto *h) { h->view_len = 0; }
  * allocation-failure error instead of leaving the histogram with a freed
  * buffer. */
 static bool scr_histo_push_view(ScrHisto *h, double key, int64_t value) {
+  /* Every staging walk emits nondecreasing keys, and a Map keeps the last
+   * value for a repeated key at the first position, so an equal key only
+   * replaces the last staged pair. HDR quantization makes many reporting
+   * levels share one bucket key; collapsing them keeps the staging bounded
+   * by the histogram's distinct keys instead of the level count. */
+  if (h->view_len > 0 && h->view_key[h->view_len - 1] == key) {
+    h->view_value[h->view_len - 1] = value;
+    return true;
+  }
   if (h->view_len == h->view_cap) {
     size_t cap = h->view_cap ? h->view_cap * 2 : 16;
     if (cap > SIZE_MAX / sizeof(double) || cap > SIZE_MAX / sizeof(int64_t)) {
@@ -876,6 +940,7 @@ static bool scr_histo_option_int(const ScrDyn *value, const char *name, int64_t 
 ScrDyn *scr_histo_new(ScrDyn *options) {
   int64_t lowest = 1, highest = 9007199254740991LL;
   double figures = 3;
+  double half_life = 0, threshold = 0;
   ScrDyn *plain = NULL;
   bool ok = false;
   if (options == NULL || options->kind == SCR_DYN_UNDEF) {
@@ -910,25 +975,22 @@ ScrDyn *scr_histo_new(ScrDyn *options) {
     const ScrDyn *fig = scr_dyn_obj_get(opts, "figures", 7);
     if (fig != NULL && fig->kind != SCR_DYN_UNDEF) {
       if (fig->kind != SCR_DYN_NUM) {
-        static const char msg[] = "The \"options.figures\" argument must be of type number";
-        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_TYPE");
+        scr_dyn_prop_type_fail("options.figures", "of type number", fig);
         goto done;
       }
       if (!scr_histo_integer_ok(fig->v.num, "options.figures", 1, 5)) goto done;
       figures = fig->v.num;
     }
-    /* halfLife and threshold only feed the EWMA readings; they are
-     * validated as Node validates them, then kept unused. */
+    /* halfLife and threshold feed the EWMA readings; Node validates both
+     * as numbers of at least zero. */
     const char *ewma_keys[2] = {"halfLife", "threshold"};
     const char *ewma_names[2] = {"options.halfLife", "options.threshold"};
+    double ewma_values[2] = {0, 0};
     for (int i = 0; i < 2; i++) {
       const ScrDyn *value = scr_dyn_obj_get(opts, ewma_keys[i], strlen(ewma_keys[i]));
       if (value == NULL || value->kind == SCR_DYN_UNDEF) continue;
       if (value->kind != SCR_DYN_NUM) {
-        char msg[160];
-        int len = snprintf(msg, sizeof msg, "The \"%s\" argument must be of type number",
-                           ewma_names[i]);
-        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, scr_histo_message_len(len, sizeof msg), "ERR_INVALID_ARG_TYPE");
+        scr_dyn_prop_type_fail(ewma_names[i], "of type number", value);
         goto done;
       }
       if (value->v.num < 0) {
@@ -941,7 +1003,10 @@ ScrDyn *scr_histo_new(ScrDyn *options) {
         scr_throw_error_msg_code(SCR_ERR_RANGE, msg, scr_histo_message_len(len, sizeof msg), "ERR_OUT_OF_RANGE");
         goto done;
       }
+      ewma_values[i] = value->v.num;
     }
+    half_life = ewma_values[0];
+    threshold = ewma_values[1];
   }
   ok = true;
 done:
@@ -966,6 +1031,9 @@ create:;
     return NULL;
   }
   h->rc = 1;
+  if (half_life > 0) h->ewma_alpha = 1.0 - exp(-log(2.0) / half_life);
+  h->ewma_threshold =
+      (isfinite(threshold) && threshold < 9223372036854775807.0) ? (int64_t)threshold : 0;
   ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_HISTOGRAM);
   if (box == NULL) {
     scr_histo_free(h);
@@ -1032,6 +1100,10 @@ void scr_histo_reset(ScrDyn *handle) {
   h->max_value = 0;
   h->exceeds = 0;
   h->prev_ns = 0;
+  h->ewma_mean = 0;
+  h->ewma_variance = 0;
+  h->ewma_error_rate = 0;
+  h->ewma_initialized = false;
   scr_histo_clear_view(h);
 }
 
@@ -1223,6 +1295,47 @@ ScrBigInt *scr_histo_stat_big(ScrDyn *handle, double which) {
           h->max_value == 0 ? 0 : scr_histo_highest_equivalent(h, h->max_value));
     default:
       return scr_bigint_from_i64(h->exceeds);
+  }
+}
+
+/* EWMA readings (0 mean, 1 stddev, 2 error rate). An event-loop histogram is
+ * created without a halfLife, so its readings are always the zero they
+ * answer before the first sample. */
+double scr_histo_ewma(ScrDyn *handle, double which) {
+  if (scr_eld_of(handle) != NULL) return 0.0;
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL || !h->ewma_initialized) return 0.0;
+  switch ((int)which) {
+    case 0:
+      return h->ewma_mean;
+    case 1:
+      return sqrt(h->ewma_variance);
+    default:
+      return h->ewma_error_rate;
+  }
+}
+
+/* burnRate(sloTarget): the EWMA error rate over the SLO's error budget. Node
+ * validates the target as a number strictly between 0 and 1. */
+double scr_histo_burn_rate(ScrDyn *handle, ScrDyn *slo_arg) {
+  if (slo_arg->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("sloTarget", "of type number", slo_arg);
+    return 0.0;
+  }
+  {
+    double slo = slo_arg->v.num;
+    if (isnan(slo) || slo <= 0 || slo >= 1) {
+      char received[48];
+      scr_num_received(slo, received);
+      char msg[192];
+      int len = snprintf(msg, sizeof msg,
+                         "The value of \"sloTarget\" is out of range. It must be > 0 && < 1. "
+                         "Received %s",
+                         received);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      return 0.0;
+    }
+    return scr_histo_ewma(handle, 2) / (1.0 - slo);
   }
 }
 
@@ -1526,6 +1639,244 @@ double scr_histo_percentiles_value(ScrDyn *handle, double index) {
   ScrHisto *h = scr_histo_of(handle);
   if (h == NULL || index < 0 || (size_t)index >= h->view_len) return 0;
   return (double)h->view_value[(size_t)index];
+}
+
+ScrBigInt *scr_histo_percentiles_value_big(ScrDyn *handle, double index) {
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL || index < 0 || (size_t)index >= h->view_len) return scr_bigint_from_i64(0);
+  return scr_bigint_from_i64(h->view_value[(size_t)index]);
+}
+
+/* ── bucket views: linearBuckets, logBuckets and percentilesAt ─────────
+ * Node's Histogram::LinearBuckets/LogBuckets/PercentilesAt iterate the
+ * hdr_histogram buckets and answer (key, count) pairs; the C++ side then
+ * fills the Map the JS wrapper built. The runtime walks the same hdr
+ * iterators over its counts array and leaves the pairs in the histogram's
+ * view, which the compiler's Map helpers read back by index (the same view
+ * the percentiles getter uses). */
+
+/* hdr_iter_init's "no bucket read yet" state plus move_next. */
+typedef struct {
+  ScrHisto *h;
+  int64_t index;     /* counts_index; -1 before the first move */
+  int64_t count;     /* this bucket's count */
+  int64_t cumulative; /* counts through this bucket */
+  int64_t value;     /* hdr_value_at_index */
+  int64_t lowest;    /* lowest_equivalent_value(value) */
+} ScrHistoIter;
+
+static bool scr_histo_iter_move(ScrHistoIter *it) {
+  it->index++;
+  if (it->index >= it->h->counts_len) return false;
+  it->count = it->h->counts[it->index];
+  it->cumulative += it->count;
+  it->value = scr_histo_value_at_index(it->h, it->index);
+  it->lowest = scr_histo_lowest_equivalent(it->h, it->value);
+  return true;
+}
+
+/* next_value_greater_than_reporting_level_upper_bound: the next bucket's
+ * nominal value is past the reporting-level bound. */
+static bool scr_histo_iter_peek_past(const ScrHistoIter *it, int64_t bound) {
+  if (it->index >= it->h->counts_len) return false;
+  return scr_histo_value_at_index(it->h, it->index + 1) > bound;
+}
+
+/* hdr_iter_linear_init/hdr_iter_next with Node's step arithmetic. */
+double scr_histo_linear_view(ScrDyn *handle, ScrDyn *step_arg) {
+  if (step_arg == NULL || step_arg->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("stepSize", "of type number", step_arg);
+    return 0;
+  }
+  if (!scr_histo_integer_ok(step_arg->v.num, "stepSize", 1, 9007199254740991.0)) return 0;
+  int64_t step = (int64_t)step_arg->v.num;
+  ScrHisto *h = scr_histo_of(handle);
+  if (h == NULL) return 0;
+  scr_histo_clear_view(h);
+  ScrHistoIter it = {h, -1, 0, 0, 0, 0};
+  int64_t next = step;
+  int64_t next_lowest = scr_histo_lowest_equivalent(h, step);
+  for (;;) {
+    if (!(it.cumulative < h->total || scr_histo_iter_peek_past(&it, next_lowest))) break;
+    int64_t added = 0;
+    for (;;) {
+      if (it.value >= next_lowest) {
+        /* The key is the bucket's nominal value, as hdr_iter_next answers
+         * it (update_iterated_values does not replace iter->value). HDR
+         * quantization can make several reporting levels share a key, and
+         * Node's Map keeps the last count for it. */
+        if (!scr_histo_push_view(h, (double)it.value, added)) return 0;
+        if (next == INT64_MAX) return (double)h->view_len;
+        if (next > INT64_MAX - step) {
+          next = INT64_MAX;
+        } else {
+          next += step;
+        }
+        next_lowest = scr_histo_lowest_equivalent(h, next);
+        break;
+      }
+      if (!scr_histo_iter_move(&it)) {
+        if (!scr_histo_push_view(h, (double)it.value, added)) return 0;
+        return (double)h->view_len;
+      }
+      added += it.count;
+    }
+  }
+  return (double)h->view_len;
+}
+
+/* hdr_iter_log_init/hdr_iter_next. Node multiplies by the base truncated to
+ * an integer, so a fractional base grows by its integer part. */
+double scr_histo_log_view(ScrDyn *handle, ScrDyn *first_arg, ScrDyn *base_arg) {
+  if (first_arg == NULL || first_arg->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("firstBucket", "of type number", first_arg);
+    return 0;
+  }
+  if (!scr_histo_integer_ok(first_arg->v.num, "firstBucket", 1, 9007199254740991.0)) return 0;
+  if (base_arg == NULL || base_arg->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("base", "of type number", base_arg);
+    return 0;
+  }
+  {
+    double base = base_arg->v.num;
+    if (base <= 1.0) {
+      char received[48];
+      scr_num_received(base, received);
+      char msg[192];
+      int len = snprintf(msg, sizeof msg,
+                         "The value of \"base\" is out of range. It must be > 1. Received %s",
+                         received);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      return 0;
+    }
+    int64_t first = (int64_t)first_arg->v.num;
+    int64_t growth = (isfinite(base) && base < 9223372036854775807.0) ? (int64_t)base : 1;
+    ScrHisto *h = scr_histo_of(handle);
+    if (h == NULL) return 0;
+    scr_histo_clear_view(h);
+    if (growth <= 1) return 0;
+    ScrHistoIter it = {h, -1, 0, 0, 0, 0};
+    int64_t next = first;
+    int64_t next_lowest = scr_histo_lowest_equivalent(h, first);
+    for (;;) {
+      if (!(it.cumulative < h->total || scr_histo_iter_peek_past(&it, next_lowest))) break;
+      int64_t added = 0;
+      for (;;) {
+        if (it.value >= next_lowest) {
+          /* The bucket's nominal value, as in the linear iterator. */
+          if (!scr_histo_push_view(h, (double)it.value, added)) return 0;
+          if (next > INT64_MAX / growth) return (double)h->view_len;
+          next *= growth;
+          next_lowest = scr_histo_lowest_equivalent(h, next);
+          break;
+        }
+        if (!scr_histo_iter_move(&it)) {
+          if (!scr_histo_push_view(h, (double)it.value, added)) return 0;
+          return (double)h->view_len;
+        }
+        added += it.count;
+      }
+    }
+    return (double)h->view_len;
+  }
+}
+
+static int scr_histo_sort_double(const void *a, const void *b) {
+  double x = *(const double *)a, y = *(const double *)b;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/* hdr_value_at_percentiles: every requested percentile's bucket value from
+ * one pass. The map keys are the requested percentiles in ascending order;
+ * an empty histogram answers each target count (Node's iterator never
+ * overwrites them), which is 1 for every percentile. */
+double scr_histo_percentiles_at_view(ScrDyn *handle, ScrDyn *list) {
+  ScrHisto *h = scr_histo_of(handle);
+  ScrDyn *materialized = NULL; /* +1 when the argument is a typed reference */
+  const ScrDyn *array = list;
+  size_t length;
+  double *percentiles = NULL;
+  int64_t *targets = NULL;
+  double result = 0;
+  if (array->kind != SCR_DYN_ARR) {
+    if (!scr_dyn_ref_is_array(array)) {
+      scr_dyn_arg_type_fail("percentiles", "an instance of Array", array);
+      return 0;
+    }
+    materialized = scr_dyn_typed_ref_materialize(array);
+    if (materialized == NULL) return 0;
+    array = materialized;
+  }
+  length = (size_t)scr_dyn_arr_len(array);
+  if (length == 0) {
+    if (h != NULL) scr_histo_clear_view(h);
+    goto done;
+  }
+  percentiles = malloc(length * sizeof *percentiles);
+  targets = malloc(length * sizeof *targets);
+  if (percentiles == NULL || targets == NULL) {
+    static const char msg[] = "Memory allocation failed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    goto done;
+  }
+  for (size_t i = 0; i < length; i++) {
+    /* scr_dyn_arr_at answers an owned reference; every path releases it,
+     * including the validation failures. */
+    ScrDyn *value = scr_dyn_arr_at(array, (double)i);
+    char name[40];
+    snprintf(name, sizeof name, "percentiles[%zu]", i);
+    if (value->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail(name, "of type number", value);
+      scr_dyn_release(value);
+      goto done;
+    }
+    double percentile = value->v.num;
+    if (isnan(percentile) || percentile <= 0 || percentile > 100) {
+      char received[48];
+      scr_num_received(percentile, received);
+      char msg[192];
+      int len = snprintf(
+          msg, sizeof msg,
+          "The value of \"%s\" is out of range. It must be > 0 && <= 100. Received %s", name,
+          received);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+      scr_dyn_release(value);
+      goto done;
+    }
+    percentiles[i] = percentile;
+    scr_dyn_release(value);
+  }
+  qsort(percentiles, length, sizeof *percentiles, scr_histo_sort_double);
+  if (h == NULL) goto done;
+  for (size_t i = 0; i < length; i++) {
+    double requested = percentiles[i] < 100.0 ? percentiles[i] : 100.0;
+    int64_t target = (int64_t)((requested / 100.0) * (double)h->total + 0.5);
+    targets[i] = target > 1 ? target : 1;
+  }
+  scr_histo_clear_view(h);
+  if (h->total > 0) {
+    size_t at = 0;
+    int64_t cumulative = 0;
+    for (int64_t i = 0; i < h->counts_len && at < length; i++) {
+      cumulative += h->counts[i];
+      while (at < length && cumulative >= targets[at]) {
+        if (!scr_histo_push_view(h, percentiles[at],
+                                 scr_histo_highest_equivalent(h, scr_histo_value_at_index(h, i))))
+          goto done;
+        at++;
+      }
+    }
+  } else {
+    for (size_t i = 0; i < length; i++) {
+      if (!scr_histo_push_view(h, percentiles[i], targets[i])) goto done;
+    }
+  }
+  result = (double)h->view_len;
+done:
+  free(percentiles);
+  free(targets);
+  scr_dyn_release(materialized);
+  return result;
 }
 
 /* Symbol.dispose: Node's RecordableHistogram is not disposable, but the

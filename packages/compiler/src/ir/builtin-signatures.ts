@@ -807,6 +807,8 @@ function buildLibFnSignatures() {
     "perf.histoSubtract": { argTypes: [DYN, DYN], result: VOID },
     "perf.histoStat": { argTypes: [DYN, F64], result: F64 },
     "perf.histoStatBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoEwma": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoBurnRate": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoPercentile": { argTypes: [DYN, F64], result: F64 },
     "perf.histoPercentileBig": { argTypes: [DYN, F64], result: BIGINT_T },
     "perf.histoCountAt": { argTypes: [DYN, F64], result: F64 },
@@ -820,6 +822,10 @@ function buildLibFnSignatures() {
     "perf.histoPercentilesCount": { argTypes: [DYN], result: F64 },
     "perf.histoPercentilesKey": { argTypes: [DYN, F64], result: F64 },
     "perf.histoPercentilesValue": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentilesValueBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoLinearView": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoLogView": { argTypes: [DYN, DYN, DYN], result: F64 },
+    "perf.histoPercentilesAtView": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoDispose": { argTypes: [DYN], result: VOID },
     "perf.slidingNew": { argTypes: [DYN], result: DYN },
     "perf.slidingRecord": { argTypes: [DYN, F64], result: VOID },
@@ -1753,6 +1759,10 @@ function buildLibFnSignatures() {
     /** Duplex.fromWeb (scr_stream_duplex_from_web.c): the { readable,
      * writable } pair and the option flags; a Duplex. */
     "webstream.duplexFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Duplex.fromWeb with options (scr_stream_duplex_from_web.c): the pair,
+     * the option flags, the highWaterMark (-1 default), the signal (undefined
+     * when absent) and the encoding name ("" when absent); a Duplex. */
+    "webstream.duplexFromWebOpts": { argTypes: [DYN, F64, F64, DYN, STRING], result: VOID },
     /** Duplex.toWeb (scr_stream_to_web_pair.c): the duplex and the option
      * flags; the { writable, readable } pair. */
     "webstream.toWebDuplex": { argTypes: [null, F64], result: DYN },

@@ -730,6 +730,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -846,6 +847,14 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.histoMannWhitneyU",
   "perf.histoMannWhitneyZ",
   "perf.histoMannWhitneyP",
+  // burnRate validates its SLO target (Node's ERR_INVALID_ARG_TYPE /
+  // ERR_OUT_OF_RANGE).
+  "perf.histoBurnRate",
+  // The bucket views validate their arguments (stepSize, firstBucket, base
+  // and percentilesAt's array) before iterating.
+  "perf.histoLinearView",
+  "perf.histoLogView",
+  "perf.histoPercentilesAtView",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",

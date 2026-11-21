@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dgram-custom-lookup.ts"
+ ],
+ "diags": []
+}

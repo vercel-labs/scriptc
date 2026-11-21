@@ -378,6 +378,29 @@ test.for([1, 2, 4, 8])(
   },
 );
 
+test.for([2, 4, 8])(
+  "the corpus's workers take side tasks once the corpus ends, within a budget of %i workers",
+  async (workers) => {
+    const plan = ciTestPlan({ shard: "1/10", flavor: "plain", workers, platform: "linux" });
+    expect(plan.side.length).toBeGreaterThan(workers);
+    const started: string[] = [];
+    let active = 0;
+    let peak = 0;
+    // The corpus ends at once; each side task takes a few milliseconds.
+    await runCiTestPlan(plan, async (task) => {
+      const cost = Number(task.env.SCRIPTC_TEST_WORKERS);
+      active += cost;
+      peak = Math.max(peak, active);
+      started.push(task.name);
+      if (task !== plan.corpus) await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= cost;
+    });
+    // Without the corpus's workers, the side queue would hold one worker at a time.
+    expect(peak).toBe(workers);
+    expect(started.toSorted()).toEqual([plan.corpus, ...plan.side].map((task) => task.name).sort());
+  },
+);
+
 test("CI reports failures after running every scheduled suite", async () => {
   const plan = ciTestPlan({ shard: "1/10", flavor: "plain" });
   const seen: string[] = [];

@@ -27,9 +27,11 @@
  * Unrestricted names on plain emitters take the checked-dynamic receiver's
  * bridge. The remaining cases are fenced:
  * unrestricted names on streams, symbol names, conflicting literal tuples,
- * the meta-events' listener-function argument (meta listeners take at most
- * the event name; dyn meta listeners fence — Node
- * passes the listener function second, which has no dyn conversion), and
+ * the meta-events' listener-function argument for typed listeners (meta
+ * listeners take at most the event name; a listener registered through a
+ * checked-dynamic value receives both the affected name — the symbol
+ * itself for a symbol-keyed event — and the listener value, as Node passes
+ * them), and
  * listeners()/rawListeners() of an event with any dynamic
  * registration, or, once the program registers a listener under an
  * unrestricted name, of an event that literal names register with typed
@@ -1270,9 +1272,9 @@ function dynListenerFlavor(lowerer: Lowerer, node: ts.Expression): "dyn" | "func
  * identity, so off/removeListener and listenerCount(name, fn) match it.
  * The helper shape exists because cb must evaluate ONCE and feed both
  * roles. Fenced honestly: tuple positions that cannot box to dyn (class
- * payloads — 'error' events), and the meta events (Node passes the
- * listener FUNCTION second, which has no dyn conversion — a dyn listener
- * reading it would see undefined). */
+ * payloads — 'error' events). A meta event takes the route below: the
+ * runtime passes the affected name and the listener value as checked-
+ * dynamic arguments, as Node passes them. */
 function lowerDynListenerCall(
   lowerer: Lowerer,
   member: string,

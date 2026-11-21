@@ -634,6 +634,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.getUnpackedSettings",
   "http2.streamRespondWait",
   "http2.streamSendTrailers",
+  "http2.streamRespondWithFile",
+  "http2.streamRespondWithFD",
   "http2.streamAdditionalHeaders",
   "http2.responseWriteInformation",
   "http2.streamRespond",
@@ -832,6 +834,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // createHistogram's options and RecordableHistogram's record forms: Node's
   // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
   "perf.histoNew",
+  "perf.histoBucketArg",
+  "perf.histoLinearBucketsCount",
+  "perf.histoLogBucketsCount",
   "perf.histoRecord",
   "perf.histoRecordBig",
   "perf.histoRecordCorrected",
@@ -1462,6 +1467,9 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "net.connectAttempt",
   "net.connectDyn",
   "net.connectDynCb",
+  "net.socketNew",
+  "net.sockConnect",
+  "net.sockConnectCb",
   "net.setAutoSelTimeout",
   "net.setDefaultAutoSel",
   "error.argTypeThrow",

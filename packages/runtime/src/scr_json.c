@@ -83,6 +83,11 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 
 /* Set by scr_node_island_handle.c in programs that link the island units. */
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
+/* Set by the perf histogram unit the first time a thread builds a bucket
+ * map: frees that thread's view as a worker thread exits (scr_worker.c reads
+ * it). Defined here, in the unit every program links, so a program using
+ * histograms without the worker unit still links. */
+SCR_TL void (*scr_worker_bucket_exit)(void) = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
 /* Set by scr_module_namespace_dyn.c when this thread boxes a module

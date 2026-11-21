@@ -7399,10 +7399,11 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
   }
   const options = args[1];
   let flags = 0;
-  // A type initializer the lowering answers from its static value still
-  // runs, after the stream argument, as the call evaluates the object.
-  const typeEffects: IrExpr[] = [];
   let strategy: IrExpr | null = null;
+  // The option initializers in the order the object literal evaluates them:
+  // a `type` the lowering answers from its static value still runs where it
+  // is written, relative to a `strategy` beside it.
+  const optionValues: Array<{ kind: "type" | "strategy"; expr: IrExpr }> = [];
   if (options !== undefined) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
@@ -7421,7 +7422,7 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
         const t = lowerer.typeOf(member.initializer);
         if (t.isStringLiteralType()) {
           if (t.value === "bytes") {
-            typeEffects.push(lowerer.lowerExpr(member.initializer));
+            optionValues.push({ kind: "type", expr: lowerer.lowerExpr(member.initializer) });
             flags |= 1;
             continue;
           }
@@ -7474,6 +7475,7 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       }
       if (key === "strategy" && ts.isPropertyAssignment(member)) {
         strategy = lowerer.lowerExprExpecting(member.initializer, DYN);
+        optionValues.push({ kind: "strategy", expr: strategy });
         continue;
       }
       lowerer.noLowering(
@@ -7488,16 +7490,29 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
   // The readable is lowered once: a checked-dynamic value takes the dyn
   // entry point, which unwraps a boxed native stream and refuses anything
   // else at run time; a typed stream goes through the stream argument rules.
-  // When the type initializer has effects of its own, the readable is kept
-  // in a local so those effects still run after it, in the call's order.
+  // When an option initializer has effects of its own, the readable is kept
+  // in a local so those effects still run after it, and each initializer runs
+  // at its own position in the literal: a strategy with effects is kept in
+  // its own local there and the call reads that local.
   const value = lowerer.lowerExpr(args[0]!);
-  const typeStmts = typeEffects.flatMap((effect) => effectStmts(effect, loc));
+  const optionEffects = optionValues.flatMap((option) => effectStmts(option.expr, loc));
   let source = value;
+  let strategyArg = strategy;
   let stmts: IrStmt[] = [];
-  if (typeStmts.length > 0) {
+  if (optionEffects.length > 0) {
     const fresh = lowerer.declareHiddenLocal("%readable", value.type);
     source = varRef(fresh.id, value.type, loc);
-    stmts = [{ kind: "varDecl", localId: fresh.id, init: value, loc }, ...typeStmts];
+    stmts = [{ kind: "varDecl", localId: fresh.id, init: value, loc }];
+    for (const option of optionValues) {
+      const effects = effectStmts(option.expr, loc);
+      if (option.kind === "strategy" && effects.length > 0) {
+        const slot = lowerer.declareHiddenLocal("%strategy", option.expr.type);
+        stmts.push({ kind: "varDecl", localId: slot.id, init: option.expr, loc });
+        strategyArg = varRef(slot.id, option.expr.type, loc);
+      } else {
+        stmts.push(...effects);
+      }
+    }
   }
   let readable: IrExpr;
   if (source.type.kind === "dyn") {
@@ -7520,7 +7535,9 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       : dyn
         ? "webstream.toWebReadableDyn"
         : "webstream.toWebReadable",
-    args: strategy ? [readable, numLit(flags, loc), strategy] : [readable, numLit(flags, loc)],
+    args: strategyArg
+      ? [readable, numLit(flags, loc), strategyArg]
+      : [readable, numLit(flags, loc)],
     type: DYN,
     loc,
   };

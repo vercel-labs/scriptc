@@ -816,6 +816,11 @@ function buildLibFnSignatures() {
     "perf.histoPercentilesKey": { argTypes: [DYN, F64], result: F64 },
     "perf.histoPercentilesValue": { argTypes: [DYN, F64], result: F64 },
     "perf.histoDispose": { argTypes: [DYN], result: VOID },
+    "perf.slidingNew": { argTypes: [DYN], result: DYN },
+    "perf.slidingRecord": { argTypes: [DYN, F64], result: VOID },
+    "perf.slidingRecordBig": { argTypes: [DYN, BIGINT_T], result: VOID },
+    "perf.slidingReset": { argTypes: [DYN], result: VOID },
+    "perf.slidingSnapshot": { argTypes: [DYN], result: DYN },
     "perf.histoKsTest": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoCohensD": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoCliffsD": { argTypes: [DYN, DYN], result: F64 },
@@ -3489,6 +3494,11 @@ function buildLibFnSignatures() {
      * opaque SecureContext handle (secureCtx kind) for SNI callbacks to
      * answer with; cert/key are PEM strings or Buffers like createServer's. */
     "tls.createSecureContext": { argTypes: [null, null], result: SECURECTX_T },
+    /** tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+     * verification — undefined on a match, the ERR_TLS_CERT_ALTNAME_INVALID
+     * error otherwise (a malformed quoted alt-name string throws
+     * ERR_TLS_CERT_ALTNAME_FORMAT). */
+    "tls.checkServerIdentity": { argTypes: [STRING, DYN], result: DYN },
     /** createSecureContext over a RUNTIME options record (the checked-
      * dynamic lane): Node's typed option validations first (the ciphers/
      * passphrase/engine/version/timeout/ticketKeys ladders), then the pem
@@ -4857,6 +4867,7 @@ function buildLibFnSignatures() {
     "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
     "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+    "fsp.lchmod": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.truncate": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },

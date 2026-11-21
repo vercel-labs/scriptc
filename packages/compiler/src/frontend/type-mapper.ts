@@ -7443,7 +7443,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (
     isStdlibInterface("IntervalHistogram") ||
     isStdlibInterface("Histogram") ||
-    isStdlibInterface("RecordableHistogram")
+    isStdlibInterface("RecordableHistogram") ||
+    isStdlibInterface("SlidingWindowHistogram")
   )
     return DYN;
   if (isStdlibInterface("CursorPos")) {

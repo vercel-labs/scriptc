@@ -475,7 +475,7 @@ import {
   boxReleaseSym,
   computeCyclic,
   computeTraced,
-  prototypeOverrides,
+  prototypeShapeIds,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
   emitShapeUnionHelpers,
@@ -2896,7 +2896,14 @@ export class LlEmitter {
     this.stackCaptures = new StackCaptures(this.fnByName, this.callLifetimes, this.stackCallbacks);
     this.lazyCaptures = new LazyCaptures(this.fnByName, this.nodeIndex);
     this.valueCaptures = new ValueCaptures(this.fnByName, this.debug === null);
-    const traced = computeTraced(mod, dynamicStores, cycleMutability);
+    // The prototype-bearing shapes the analysis seeds before it starts: a
+    // receiver of Object.setPrototypeOf holds the prototype in a hidden slot
+    // the field walk does not see, so the analysis treats the shape as able
+    // to reference anything and every class or union that holds it inherits
+    // that answer. A checked-dynamic receiver can be any record, so every
+    // shape then carries the slot.
+    this.prototypeOverrideShapes = prototypeShapeIds(mod);
+    const traced = computeTraced(mod, dynamicStores, cycleMutability, this.prototypeOverrideShapes);
     // The shapes the collector must nominate and walk when weak-collection
     // keys give more of them the header (ShapeHost.weakOnly). A library
     // keeps every traced type the collector's: scr_weak_traces is the
@@ -2904,30 +2911,11 @@ export class LlEmitter {
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
     this.forcedCyclicArrayKinds = new Set(mod.prototypeOverrideArrayKinds ?? []);
-    const prototypeOverride = prototypeOverrides(mod);
-    // A receiver held as a checked-dynamic value can be a record of any
-    // shape: every shape carries the hidden prototype slot, so the pointer
-    // the runtime stores is the record's own edge whatever it is.
-    this.prototypeOverrideShapes = prototypeOverride.allRecords
-      ? new Set([...prototypeOverride.shapes, ...(mod.records ?? []).map((shape) => shape.id)])
-      : prototypeOverride.shapes;
-    // A receiver of Object.setPrototypeOf holds the prototype's reference in
-    // its own hidden slot: the object carries a collector header so the edge
-    // (and a prototype whose closure captures the receiver) is walked.
-    for (const shapeId of this.prototypeOverrideShapes) this.tracedShapes.add(`record:${shapeId}`);
     const weakCyclic =
-      mod.lib === undefined ? computeCyclic(mod, dynamicStores, cycleMutability) : null;
-    // The slot is an edge the field walk does not see, so a receiver can sit
-    // on a cycle even when no field of it reaches anything cycle-capable:
-    // such a shape is never weak-only, or the collector's descriptor would
-    // name no trace and the prototype edge would go unwalked.
-    const cyclic =
-      weakCyclic === null
-        ? null
-        : new Set([
-            ...weakCyclic,
-            ...[...this.prototypeOverrideShapes].map((shapeId) => `record:${shapeId}`),
-          ]);
+      mod.lib === undefined
+        ? computeCyclic(mod, dynamicStores, cycleMutability, this.prototypeOverrideShapes)
+        : null;
+    const cyclic = weakCyclic;
     // A shape union's value is whichever record it holds, and the collector
     // visits it as that record: when one arm carries a collector header,
     // every arm must (nullable-unions.ts). Unions that share an arm pass a

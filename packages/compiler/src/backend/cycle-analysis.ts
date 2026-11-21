@@ -80,13 +80,25 @@ export function prototypeOverrides(mod: IrModule): {
   return { shapes, arrays, allRecords };
 }
 
+/** The record shapes that carry the hidden prototype slot: the ones a call
+ * names, plus every shape when a checked-dynamic receiver can hold any of
+ * them at run time. */
+export function prototypeShapeIds(mod: IrModule): Set<string> {
+  const override = prototypeOverrides(mod);
+  return override.allRecords
+    ? new Set([...override.shapes, ...(mod.records ?? []).map((shape) => shape.id)])
+    : override.shapes;
+}
+
 export function computeTraced(
   mod: IrModule,
   stores?: DynamicFieldStores,
   /** computeCycleMutability's answer for this module, when the caller has it. */
   precomputed?: CycleMutability,
+  prototypeShapes?: ReadonlySet<string>,
 ): { shapes: Set<string>; unions: Set<string> } {
-  return analyzeCycles(mod, false, stores, precomputed);
+  const { shapes, unions } = analyzeCycles(mod, false, stores, precomputed, true, prototypeShapes);
+  return { shapes, unions };
 }
 
 /** The shapes that can be on a cycle of counted references in a program
@@ -113,9 +125,10 @@ export function computeCyclic(
   mod: IrModule,
   stores?: DynamicFieldStores,
   precomputed?: CycleMutability,
+  prototypeShapes?: ReadonlySet<string>,
 ): ReadonlySet<string> | null {
   if (mod.weakKeys === undefined) return null;
-  return analyzeCycles(mod, false, stores, precomputed, false).cyclic;
+  return analyzeCycles(mod, false, stores, precomputed, false, prototypeShapes).cyclic;
 }
 
 /** Values that can reference any object. */
@@ -180,6 +193,11 @@ function analyzeCycles(
   /** Whether weak-collection keys are intrinsic (computeCyclic asks for the
    * answer without them). */
   weakMarks = true,
+  /** Record shapes that can receive a prototype (prototypeOverrides): their
+   * hidden slot holds a checked-dynamic value, which can reference any
+   * object, so the shape is intrinsic from the start — and every shape that
+   * holds it is traced with it. */
+  prototypeShapes?: ReadonlySet<string>,
 ): {
   shapes: Set<string>;
   /** The shapes that are traced themselves, before a hierarchy shares the
@@ -439,6 +457,22 @@ function analyzeCycles(
   for (const u of mod.unions ?? [])
     for (const arm of u.arms)
       addType(unions.get(u.id)!, arm, mutability.all, labels ? { kind: "arm" } : null);
+  // A record that can receive a prototype holds it in a hidden slot that is
+  // not a declared field: the prototype is a checked-dynamic value, so the
+  // record can reference any object and is intrinsic. Seeding it before the
+  // analysis (not after) lets everything that holds the record inherit that
+  // answer, so a cycle through a class that owns such a record is walked.
+  if (prototypeShapes !== undefined)
+    for (const shapeId of prototypeShapes) {
+      const n = shapes.get(`record:${shapeId}`);
+      if (n !== undefined)
+        addType(
+          n,
+          { kind: "dyn" },
+          true,
+          labels ? { kind: "field", field: "<prototype>", mutable: true } : null,
+        );
+    }
 
   // Tarjan's strongly connected components, iteratively (shape chains can
   // be thousands deep).

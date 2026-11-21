@@ -290,7 +290,12 @@ export interface RegionHooks {
  * emit-module.ts functionAttributes). */
 export const FN_ATTRS = "#0";
 
-export { computeCyclic, computeTraced, prototypeOverrides } from "../cycle-analysis.js";
+export {
+  computeCyclic,
+  computeTraced,
+  prototypeOverrides,
+  prototypeShapeIds,
+} from "../cycle-analysis.js";
 
 /* ── RC dispatch ──────────────────────────────────────────────────────── */
 

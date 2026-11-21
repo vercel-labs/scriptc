@@ -1231,6 +1231,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.chmod": "scr_fsp_chmod",
   "fsp.chown": "scr_fsp_chown",
   "fsp.lchown": "scr_fsp_lchown",
+  "fsp.lchmod": "scr_fsp_lchmod_chk",
   "fsp.access": "scr_fsp_access",
   "fsp.truncate": "scr_fsp_truncate",
   "fsp.appendFile": "scr_fsp_append_file",

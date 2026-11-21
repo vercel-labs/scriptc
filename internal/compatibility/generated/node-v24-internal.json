@@ -47219,6 +47219,8 @@
           "tests/corpus/fs-filehandle-data-options.ts",
           "tests/corpus/fs-filehandle-lines.ts",
           "tests/corpus/fs-filehandle-web-stream.ts",
+          "tests/corpus/fs-lchmod-typed.ts",
+          "tests/corpus/fs-lchmod.cjs",
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
@@ -47610,8 +47612,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.pull"
       },
       "anchorSource": "exact"
     },
@@ -47633,8 +47635,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.pullSync"
       },
       "anchorSource": "exact"
     },
@@ -48098,8 +48100,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.writer"
       },
       "anchorSource": "exact"
     },
@@ -48405,8 +48407,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.lchmod",
+        "tests": [
+          "tests/corpus/fs-lchmod.cjs",
+          "tests/corpus/fs-lchmod-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49738,8 +49744,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.fs.lchmod"
       },
       "anchorSource": "exact"
     },
@@ -51421,8 +51427,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.fs.lchmodSync"
       },
       "anchorSource": "exact"
     },

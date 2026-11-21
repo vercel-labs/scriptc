@@ -9031,7 +9031,8 @@ static void scr_stream_child_flush(ScrStream *s) { scr_stream_release(scr_stream
  * the stdio stream's close). */
 static void scr_stream_child_on_close(ScrStream *s, ScrClosure *cb /*moves*/) {
   ScrStr *name = scr_str_new("close", 5);
-  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, cb, scr_ee_inv_fixed0, false, false));
+  /* One shot: the listener holds the child only until the stream closes. */
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, cb, scr_ee_inv_fixed0, true, false));
   scr_str_release(name);
 }
 

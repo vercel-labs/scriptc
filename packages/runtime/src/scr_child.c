@@ -3721,7 +3721,10 @@ static void scr_child_settle_in(ScrChild *c) {
     scr_child_flow_exit(c->err_stream);
   }
 #endif
-  if (!scr_exc_pending() && c->state == SCR_CHILD_EXITED) {
+  /* A spawn failure has no output to drain, but its views still have to
+   * reach EOF so the child's 'close' can fire. */
+  if (!scr_exc_pending() &&
+      (c->state == SCR_CHILD_EXITED || c->state == SCR_CHILD_SPAWN_FAILED)) {
     scr_child_bridge_flush(c->out_stream);
     scr_child_bridge_flush(c->err_stream);
   }
@@ -7879,7 +7882,10 @@ static void scr_child_settle_in(ScrChild *c) {
     scr_child_flow_exit(c->err_stream);
   }
 #endif
-  if (!scr_exc_pending() && c->state == SCR_CHILD_EXITED) {
+  /* A spawn failure has no output to drain, but its views still have to
+   * reach EOF so the child's 'close' can fire. */
+  if (!scr_exc_pending() &&
+      (c->state == SCR_CHILD_EXITED || c->state == SCR_CHILD_SPAWN_FAILED)) {
     scr_child_bridge_flush(c->out_stream);
     scr_child_bridge_flush(c->err_stream);
   }

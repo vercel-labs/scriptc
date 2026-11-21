@@ -115,6 +115,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseResolve",
   // A promise boxed as a weak collection's key (scr_dyn_new_promise).
   "weakMap.promiseKey",
+  // Formatting a checked-dynamic value from a retained snapshot boxes any
+  // promise it holds (scr_dyn_new_promise, scr_dyn_promise_resolve).
+  "insp.formatSnapshot",
   // sqlite.backup answers a promise minted by the dyn-async unit.
   "sqlite.backup",
   // The generic Promise statics build and settle their capability's promise
@@ -376,6 +379,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
@@ -383,6 +388,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebDuplexDyn",
   "readable.iterator",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -472,6 +478,8 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
@@ -479,6 +487,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebDuplexDyn",
   "readable.iterator",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -2019,10 +2028,13 @@ const RUNTIME_FEATURE_RULES = {
       // sink members through scr_dyn_invoke.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
       "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
@@ -2397,10 +2409,13 @@ const RUNTIME_FEATURE_RULES = {
       // non-iterable source (and a thrown member) through inspect.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
       "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.

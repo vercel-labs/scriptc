@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.4.15",
+  "compilerVersion": "0.4.16",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -1503,6 +1503,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.promises.lchmod",
+      "kind": "node-builtin",
+      "name": "fs/promises.lchmod",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.lchown",
       "kind": "node-builtin",
       "name": "fs/promises.lchown",
@@ -2411,11 +2417,18 @@
       "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
     },
     {
+      "id": "node-builtin.perf_hooks.createSlidingWindowHistogram",
+      "kind": "node-builtin",
+      "name": "perf_hooks.createSlidingWindowHistogram",
+      "status": "static",
+      "note": "a SlidingWindowHistogram rotated by chunkDuration (milliseconds) or recordsPerChunk; record, reset and snapshot, whose Histogram answers the same readings as createHistogram's"
+    },
+    {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
       "status": "static",
-      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported"
+      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile, burnRate, the min, max, mean, stddev, count, exceeds, skewness, kurtosis and EWMA readings, and the distribution comparisons are supported"
     },
     {
       "id": "node-builtin.perf_hooks.performance.clearMarks",

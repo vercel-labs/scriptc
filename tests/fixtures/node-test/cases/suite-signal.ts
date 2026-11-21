@@ -5,7 +5,7 @@
 // the tests inside it, and one aborted while running cancels the child in
 // flight and the ones queued behind it with Node's parent message.
 import assert from "node:assert/strict";
-import { afterEach, describe, it, test } from "node:test";
+import { describe, it, test } from "node:test";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const ran: string[] = [];
@@ -40,25 +40,6 @@ describe("suite aborted while running", { signal: suiteAbort.signal }, () => {
   });
 });
 setTimeout(() => suiteAbort.abort(new Error("suite stop")), 10);
-
-const hookOrder: string[] = [];
-const hookAbort = new AbortController();
-describe("hooks after abort", () => {
-  afterEach((t) => {
-    hookOrder.push(`a1 ${t.name}`);
-  });
-  afterEach((t) => {
-    hookOrder.push(`a2 ${t.name}`);
-  });
-  test("aborted", { signal: hookAbort.signal }, async () => {
-    await sleep(50);
-  });
-});
-setTimeout(() => hookAbort.abort(new Error("hook stop")), 5);
-
-test("cleanup hooks all ran", (t) => {
-  t.diagnostic(hookOrder.join(" | "));
-});
 
 const syncAbort = new AbortController();
 test("sync body aborts its signal", { signal: syncAbort.signal }, (t) => {

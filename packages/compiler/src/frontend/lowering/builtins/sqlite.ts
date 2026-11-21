@@ -4,6 +4,7 @@ import { locOf } from "../../program.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { BOOL, DYN, type IrExpr } from "../../../ir/ir.js";
 import { builtinImportOf } from "./module-bindings.js";
+import { readsReboundRequireValue } from "../rebindable-requires.js";
 
 /* node:sqlite's DatabaseSync and StatementSync are native checked-dynamic
  * handles (scr_sqlite.c): both types map to dyn, their getters read through
@@ -12,13 +13,56 @@ import { builtinImportOf } from "./module-bindings.js";
 
 type SqliteClass = "DatabaseSync" | "StatementSync" | "Session";
 
+const SQLITE_CLASSES: ReadonlySet<string> = new Set(["DatabaseSync", "StatementSync", "Session"]);
+
+/** An access's member as a builtin import binding: a facade's re-export
+ * (`export { backup as snapshotBackup } from "node:sqlite"`, read as
+ * `facade.snapshotBackup`) names the member by the member identifier's own
+ * symbol, which builtinImportOf follows to the builtin's module and member.
+ * The symbol is prefetched with its file, so this answers without a checker
+ * round trip, where resolving the access's RECEIVER is one. Null for an
+ * ordinary member (nothing import-shaped declares it), and for a receiver
+ * that reads a require binding the file reassigns: that storage holds
+ * whatever the program stored, so the member is not the module's export. */
+function facadeExportOf(
+  lowerer: Lowerer,
+  name: ts.MemberName,
+  receiver: ts.Expression,
+): { module: string; member: string } | null {
+  if (readsReboundRequireValue(lowerer, receiver)) return null;
+  return ts.isIdentifier(name) ? builtinImportOf(lowerer, name) : null;
+}
+
+/** Whether the access's receiver is a namespace expression whose evaluation
+ * has nothing to preserve: an identifier or a member chain of identifiers
+ * (through parentheses). A comma, conditional, call or assignment receiver
+ * evaluates something of its own: a class lookup (`new`, `instanceof`, a
+ * static read) takes no facade shortcut on one and keeps its ordinary
+ * lowering, while a call lowers the receiver ahead of its arguments. */
+function plainNamespaceReceiver(receiver: ts.Expression): boolean {
+  let current: ts.Expression = receiver;
+  for (;;) {
+    while (ts.isParenthesizedExpression(current)) current = current.expression;
+    if (ts.isIdentifier(current)) return true;
+    if (!ts.isPropertyAccessExpression(current) || current.questionDotToken) return false;
+    current = current.expression;
+  }
+}
+
 /** The sqlite class `node` names, in any module spelling. */
 export function sqliteClassOf(lowerer: Lowerer, node: ts.Expression): SqliteClass | null {
-  const builtin = ts.isIdentifier(node)
-    ? builtinImportOf(lowerer, node)
-    : ts.isPropertyAccessExpression(node) && !node.questionDotToken
-      ? lowerer.builtinMemberOf(node)
-      : null;
+  let builtin = ts.isIdentifier(node) ? builtinImportOf(lowerer, node) : null;
+  if (builtin === null && ts.isPropertyAccessExpression(node) && !node.questionDotToken) {
+    // A facade's re-export answers from the member's own symbol. Otherwise a
+    // direct sqlite namespace member is spelled by the access itself
+    // (builtinMemberOf composes a member only for another module's
+    // sub-object), so an access to any other name answers without resolving
+    // its receiver's symbol.
+    if (plainNamespaceReceiver(node.expression))
+      builtin = facadeExportOf(lowerer, node.name, node.expression);
+    if (builtin === null && SQLITE_CLASSES.has(node.name.text))
+      builtin = lowerer.builtinMemberOf(node);
+  }
   if (builtin?.module !== "sqlite") return null;
   return builtin.member === "DatabaseSync" ||
     builtin.member === "StatementSync" ||
@@ -74,12 +118,24 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
   if (call.questionDotToken) return null;
   const callee = call.expression;
   let isBackup = false;
+  let receiverEffect: IrExpr | null = null;
   if (ts.isIdentifier(callee)) {
     const builtin = builtinImportOf(lowerer, callee);
     isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
   } else if (ts.isPropertyAccessExpression(callee) && !callee.questionDotToken) {
-    const builtin = lowerer.builtinMemberOf(callee);
+    // A facade's re-export answers from the member's own symbol; a direct
+    // sqlite namespace member spells `backup`. Any other member needs no
+    // receiver resolution.
+    const builtin =
+      facadeExportOf(lowerer, callee.name, callee.expression) ??
+      (callee.name.text === "backup" ? lowerer.builtinMemberOf(callee) : null);
     isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
+    // The member's symbol identifies a facade re-export whatever its
+    // receiver evaluates to, and Node evaluates that receiver once, in order,
+    // before the arguments (`(mark(), facade).snapshotBackup(...)`), so a
+    // receiver with evaluation of its own is lowered ahead of the call.
+    if (isBackup && !plainNamespaceReceiver(callee.expression))
+      receiverEffect = lowerer.lowerExprExpecting(callee.expression, DYN);
   }
   if (!isBackup) return null;
   if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
@@ -95,10 +151,18 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
   // source order, then the call reads the three it keeps.
   const surplus = nodes.slice(3).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
   if (surplus.length === 0) {
-    return {
+    const backup: IrExpr = {
       kind: "libCall",
       fn: "sqlite.backup",
       args: [source, path, options],
+      type: DYN,
+      loc,
+    };
+    if (receiverEffect === null) return backup;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: receiverEffect, loc: locOf(callee) }],
+      result: backup,
       type: DYN,
       loc,
     };
@@ -109,6 +173,9 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
   return {
     kind: "seqExpr",
     stmts: [
+      ...(receiverEffect === null
+        ? []
+        : [{ kind: "exprStmt" as const, expr: receiverEffect, loc: locOf(callee) }]),
       { kind: "varDecl", localId: sourceLocal.id, init: source, loc },
       { kind: "varDecl", localId: pathLocal.id, init: path, loc },
       { kind: "varDecl", localId: optionsLocal.id, init: options, loc },

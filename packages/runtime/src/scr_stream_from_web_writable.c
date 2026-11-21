@@ -290,8 +290,22 @@ static void sfww_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
  * listener's stopImmediatePropagation does not skip it
  * (kResistStopPropagation); this entry is that registration. A program that
  * cannot pass a signal links no such unit. */
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak reference; this weak definition stands in
+ * until the events unit's strong one is linked, and the linked flag is the
+ * capability test. */
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
+static bool sfww_events_available(void) { return scr_dyn_event_target_unit_linked != 0; }
+#else
 extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
     __attribute__((weak));
+static bool sfww_events_available(void) { return scr_events_add_abort_listener != NULL; }
+#endif
 
 /* Destroy the writable now with Node's AbortError whose cause is the
  * signal's reason. A write issued after an already-aborted signal therefore
@@ -323,7 +337,7 @@ static ScrDyn *sfww_on_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
 /* The option's signal: the runtime's addAbortSignal when the events unit is
  * linked, the signal's own listener otherwise. */
 static void sfww_attach_signal(SfwwCtx *c, ScrDyn *signal) {
-  if (scr_events_add_abort_listener != NULL) {
+  if (sfww_events_available()) {
     ScrStream *attached =
         scr_stream_add_abort_signal(c->writable, signal, true, scr_events_add_abort_listener);
     if (attached) scr_stream_release(attached);

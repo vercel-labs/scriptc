@@ -24271,7 +24271,10 @@ static void scr_finalization_registry_release(void *ptr) {
   scr_weak_dispose(registry);
   scr_dyn_release(registry->tokens);
   for (size_t i = 0; i < registry->held_len; i++) scr_dyn_release(registry->held_tokens[i]);
-  free(registry->held_tokens);
+  /* The token array grows through scr_mem_realloc, whose block belongs to
+   * the small-object allocator: it goes back through scr_mem_free (which
+   * also takes a system block), never through the C library's free. */
+  scr_mem_free(registry->held_tokens);
   free(registry);
 }
 

@@ -1,6 +1,7 @@
 import { refuseCallbackThis } from "./callback-arg.js";
 import { keyedHelperName } from "./stable-names.js";
 import { nodeThrowExpr, boolLit, numLit, strLit } from "../../ir/build.js";
+import { throwAfterEach } from "./primitive-throws.js";
 import {
   isValueStream,
   isWritableValueStream,
@@ -2184,6 +2185,33 @@ export function lowerStreamUnderscoreAssign(
 
 /* ── the static surface (Readable.from) ───────────────────────────────── */
 
+/** `thrown`, preceded by the evaluation of the call's arguments in Node's
+ * order: the stream argument, then the options object's property
+ * initializers. A `type` the lowering answers from its static value still
+ * throws at run time, after everything the call evaluates. */
+function throwAfterCallArguments(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  thrown: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const values: IrExpr[] = [];
+  const nodes = call.arguments.nodes;
+  for (let i = 0; i < nodes.length; i++) {
+    const arg = nodes[i]!;
+    if (i === 1 && ts.isObjectLiteralExpression(arg)) {
+      for (const p of arg.properties.nodes) {
+        if (ts.isPropertyAssignment(p)) values.push(lowerer.lowerExpr(p.initializer));
+        // A shorthand member reads a local binding: no observable effect.
+        else if (ts.isSpreadAssignment(p)) values.push(lowerer.lowerExpr(p.expression));
+      }
+      continue;
+    }
+    values.push(lowerer.lowerExpr(ts.isSpreadElement(arg) ? arg.expression : arg));
+  }
+  return throwAfterEach(values, thrown, loc);
+}
+
 /** `Readable.from(iterable, options)`: string[] / Buffer[] sources
  * become a readable that pushes one element per _read (whole entries in
  * object mode, hwm 1), and a single string/Buffer argument is a
@@ -2231,12 +2259,16 @@ export function lowerStreamStaticCall(
       if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "type") {
         const t = lowerer.typeOf(p.initializer);
         if (t.isStringLiteralType() && t.value !== "bytes") {
-          lowerer.lowerExpr(call.arguments.nodes[0]!); // evaluation order (the stream argument)
-          return nodeThrowExpr(
-            1,
-            "ERR_INVALID_ARG_VALUE",
-            `The property 'options.type' must be one of: 'bytes', undefined. Received '${t.value}'`,
-            lowerer.mapTypeOf(lowerer.typeOf(call)) ?? DYN,
+          return throwAfterCallArguments(
+            lowerer,
+            call,
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              `The property 'options.type' must be one of: 'bytes', undefined. Received '${t.value}'`,
+              lowerer.mapTypeOf(lowerer.typeOf(call)) ?? DYN,
+              loc,
+            ),
             loc,
           );
         }
@@ -7275,29 +7307,44 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
             flags |= 1;
             continue;
           }
-          return nodeThrowExpr(
-            1,
-            "ERR_INVALID_ARG_VALUE",
-            `The property 'options.type' must be one of: 'bytes', undefined. Received '${t.value}'`,
-            DYN,
+          return throwAfterCallArguments(
+            lowerer,
+            call,
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              `The property 'options.type' must be one of: 'bytes', undefined. Received '${t.value}'`,
+              DYN,
+              loc,
+            ),
             loc,
           );
         }
         if (member.initializer.kind === ts.SyntaxKind.NullKeyword) {
-          return nodeThrowExpr(
-            1,
-            "ERR_INVALID_ARG_VALUE",
-            "The property 'options.type' must be one of: 'bytes', undefined. Received null",
-            DYN,
+          return throwAfterCallArguments(
+            lowerer,
+            call,
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              "The property 'options.type' must be one of: 'bytes', undefined. Received null",
+              DYN,
+              loc,
+            ),
             loc,
           );
         }
         if (member.initializer.kind === ts.SyntaxKind.NumericLiteral) {
-          return nodeThrowExpr(
-            1,
-            "ERR_INVALID_ARG_VALUE",
-            `The property 'options.type' must be one of: 'bytes', undefined. Received ${(member.initializer as ts.NumericLiteral).text}`,
-            DYN,
+          return throwAfterCallArguments(
+            lowerer,
+            call,
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              `The property 'options.type' must be one of: 'bytes', undefined. Received ${(member.initializer as ts.NumericLiteral).text}`,
+              DYN,
+              loc,
+            ),
             loc,
           );
         }

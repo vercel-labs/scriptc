@@ -21,7 +21,8 @@ struct StwCtx {
    * keeps its tail here for the next read. */
   bool byte_mode;
   size_t read_limit;
-  ScrBytes *remainder; /* +1 */
+  ScrBytes *remainder; /* +1: the tail, as a Uint8Array copy */
+  size_t remainder_off; /* bytes of it already delivered */
 };
 
 static StwCtx *stw_ref(StwCtx *c) {
@@ -100,6 +101,42 @@ static ScrDyn *stw_detach_chunk(StwCtx *c, ScrDyn *value) {
   return out;
 }
 
+/* A Uint8Array copy of `count` bytes of `src` at `off` (+1). A byte stream
+ * hands its own copies to the controller — the view it fills can take the
+ * copy's buffer — while a remainder stays ours. */
+static ScrBytes *stw_copy_bytes(const ScrBytes *src, size_t off, size_t count) {
+  ScrBytes *copy = scr_bytes_new(SCR_BYTES_U8, (double)count);
+  if (count > 0) memcpy(copy->data, src->data + off, count);
+  copy->is_buffer = false;
+  copy->is_data_view = false;
+  return copy;
+}
+
+/* The bytes a type: "bytes" stream takes from a chunk: a Uint8Array copy of
+ * a view's raw bytes (any typed array or DataView, its whole byte range by
+ * its byte offset), or NULL for a value that is not a view at all — Node's
+ * byte controller refuses that with ERR_INVALID_ARG_TYPE. */
+static ScrBytes *stw_byte_chunk_copy(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_BYTES || value->v.bytes == NULL) return NULL;
+  ScrBytes *raw = scr_bytes_raw_view(value->v.bytes); /* +1 */
+  ScrBytes *copy = stw_copy_bytes(raw, 0, (size_t)scr_bytes_byte_len(raw));
+  scr_bytes_release(raw);
+  return copy;
+}
+
+/* A chunk the byte stream cannot take (a string or an object from an
+ * object-mode readable): Node's controller throws ERR_INVALID_ARG_TYPE there.
+ * The adapter errors the stream with the same error instead of dropping the
+ * chunk, so the read rejects. */
+static void stw_byte_chunk_refuse(StwRead *r, ScrDyn *value) {
+  scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", value);
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *reason = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  r->sink->error(r->sink_ctx, reason);
+  scr_dyn_release(reason);
+}
+
 /* The read settled: the chunk, or the end marker; the sink answers the
  * pull either way. */
 static ScrDyn *stw_on_chunk(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
@@ -108,32 +145,33 @@ static ScrDyn *stw_on_chunk(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   ScrDyn *end = scr_stream_from_done();
   if (value == end) {
     r->sink->close(r->sink_ctx);
-  } else {
-    ScrDyn *chunk = stw_detach_chunk(r->ctx, value);
-    bool split = false;
-    if (r->ctx->byte_mode && chunk->kind == SCR_DYN_BYTES && chunk->v.bytes != NULL) {
-      /* A byte stream's view may be smaller than the chunk: deliver what it
-       * holds and keep the tail for the next read. */
-      ScrBytes *bytes = chunk->v.bytes;
+  } else if (r->ctx->byte_mode) {
+    ScrBytes *bytes = stw_byte_chunk_copy(value);
+    if (bytes == NULL) {
+      stw_byte_chunk_refuse(r, value);
+    } else {
+      /* The pending read's view bounds this delivery. What the view cannot
+       * hold stays here; the next read serves it by offset, so a long chunk
+       * is copied once and each read copies only the bytes it delivers. */
       size_t limit = r->ctx->read_limit;
       r->ctx->read_limit = 0;
-      if (limit > 0 && bytes->len > limit) {
-        /* The delivered head's buffer may be transferred into the view, so
-         * the tail is a copy of its own, not a view of that buffer. */
-        ScrBytes *tail = scr_bytes_new(SCR_BYTES_U8, (double)(bytes->len - limit));
-        memcpy(tail->data, bytes->data + limit, bytes->len - limit);
-        tail->is_buffer = false;
-        ScrBytes *head = scr_bytes_subarray(bytes, 0, (double)limit);
+      ScrBytes *head = NULL;
+      if (limit > 0 && (size_t)scr_bytes_byte_len(bytes) > limit) {
+        head = stw_copy_bytes(bytes, 0, limit);
         if (r->ctx->remainder) scr_bytes_release(r->ctx->remainder);
-        r->ctx->remainder = tail;
-        ScrDyn *head_dyn = scr_dyn_new_bytes(head);
-        r->sink->chunk(r->sink_ctx, head_dyn);
-        scr_dyn_release(head_dyn);
-        scr_bytes_release(head);
-        split = true;
+        r->ctx->remainder = bytes; /* +1 moves */
+        r->ctx->remainder_off = limit;
+        bytes = NULL;
       }
+      ScrDyn *chunk = scr_dyn_new_bytes(bytes != NULL ? bytes : head);
+      r->sink->chunk(r->sink_ctx, chunk);
+      scr_dyn_release(chunk);
+      if (bytes != NULL) scr_bytes_release(bytes);
+      else scr_bytes_release(head);
     }
-    if (!split) r->sink->chunk(r->sink_ctx, chunk);
+  } else {
+    ScrDyn *chunk = stw_detach_chunk(r->ctx, value);
+    r->sink->chunk(r->sink_ctx, chunk);
     if (chunk != value) scr_dyn_release(chunk);
   }
   scr_dyn_release(end);
@@ -157,18 +195,16 @@ static ScrDyn *stw_on_error(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
  * adapter enqueues each 'data' chunk), answered through the sink. */
 static bool stw_read_into(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx) {
   StwCtx *c = ctx;
-  if (c->byte_mode && c->remainder != NULL && c->remainder->len > 0) {
-    size_t want = c->read_limit > 0 && c->read_limit < c->remainder->len ? c->read_limit
-                                                                       : c->remainder->len;
-    ScrBytes *tail = NULL;
-    if (want < c->remainder->len) {
-      tail = scr_bytes_new(SCR_BYTES_U8, (double)(c->remainder->len - want));
-      memcpy(tail->data, c->remainder->data + want, c->remainder->len - want);
-      tail->is_buffer = false;
+  if (c->byte_mode && c->remainder != NULL) {
+    size_t left = (size_t)scr_bytes_byte_len(c->remainder) - c->remainder_off;
+    size_t want = c->read_limit > 0 && c->read_limit < left ? c->read_limit : left;
+    ScrBytes *head = stw_copy_bytes(c->remainder, c->remainder_off, want);
+    c->remainder_off += want;
+    if (c->remainder_off >= (size_t)scr_bytes_byte_len(c->remainder)) {
+      scr_bytes_release(c->remainder);
+      c->remainder = NULL;
+      c->remainder_off = 0;
     }
-    ScrBytes *head = scr_bytes_subarray(c->remainder, 0, (double)want);
-    scr_bytes_release(c->remainder);
-    c->remainder = tail;
     c->read_limit = 0;
     ScrDyn *chunk = scr_dyn_new_bytes(head);
     sink->chunk(sink_ctx, chunk);

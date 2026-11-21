@@ -56,6 +56,12 @@ struct ScrDgramSocket {
   /* options.signal: the events.addAbortListener disposable (+1), released
    * at 'close' — the listener closes the socket when the signal aborts. */
   ScrDyn *abort_dispose;
+  /* createSocket({ lookup }): Node's custom resolver, called as
+   * lookup(address, family, callback(err, ip)) from bind, connect and the
+   * unconnected sends; the operation continues from the answer (+1,
+   * NULL = the literal resolver). */
+  ScrDyn *lookup;
+  bool lookup_ready; /* the continuation's re-entry guard */
   ScrDgramLs msg_ls, err_ls, listening_ls, close_ls, conn_ls;
   bool in_registry;
   struct ScrDgramSocket *next;

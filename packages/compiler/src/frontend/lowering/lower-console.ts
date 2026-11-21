@@ -441,6 +441,28 @@ function lowerConsoleInstanceMemberCall(
     loc: at,
   });
 
+  /* A program that imports diagnostics_channel publishes the instance's
+   * output members' arguments, so those calls go through the run-time
+   * argument pack the console write already formats (and snapshots before
+   * formatting when a subscriber exists). */
+  if (
+    lowerer.usesDiagnosticsChannel() &&
+    OUTPUT_MEMBERS.has(member) &&
+    (member === "log" ||
+      member === "info" ||
+      member === "debug" ||
+      member === "warn" ||
+      member === "error")
+  ) {
+    const index = ["log", "info", "debug", "warn", "error"].indexOf(member);
+    const p = dynArgumentPack(lowerer, call.arguments.nodes, loc, { blame: call });
+    return seq(
+      [...stmts, ...p.stmts],
+      call_("console.instWriteArgs", [handle(), numLit(index, loc), p.pack()], VOID, loc),
+      loc,
+    );
+  }
+
   /* A program that constructs any Console with inspectOptions or colorMode
    * formats the instance methods' arguments in the runtime, where the
    * instance's options and colorMode apply per call (scr_inspect.c's

@@ -831,6 +831,7 @@ typedef struct ScrTlsSock {
   bool vrfy_expired;
   bool vrfy_future;
   bool vrfy_bad_sig;
+  bool vrfy_pathlen;
   bool vrfy_cn_mismatch;
   /* the leaf's subjectAltName rendered the way OpenSSL prints it, recorded
    * while the peer chain is alive for Node's altname-failure message */
@@ -1182,6 +1183,33 @@ static void scr_tls_record_altnames(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
   t->vrfy_altnames = out;
 }
 
+/* OpenSSL's path length check: a CA certificate's basicConstraints
+ * pathlen caps the number of non-self-issued CA certificates below it.
+ * mbedTLS refuses the over-long parent as a candidate and reports the
+ * chain as untrusted, and its callback runs top-down, so the constraint is
+ * checked per certificate against the depth mbedTLS reports (stored
+ * pathlen is one higher than the limit; the trust anchor sits one level
+ * above the topmost presented certificate). */
+static bool scr_tls_pathlen_exceeded(ScrTlsSock *t, mbedtls_x509_crt *crt, int depth) {
+  const mbedtls_x509_crt *anchor = NULL;
+  if (crt->next == NULL && t->vrfy_trust != NULL && crt->issuer_raw.len > 0) {
+    for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+      if (ca->subject_raw.len == crt->issuer_raw.len &&
+          memcmp(ca->subject_raw.p, crt->issuer_raw.p, crt->issuer_raw.len) == 0) {
+        anchor = ca;
+        break;
+      }
+    }
+  }
+  if (crt->MBEDTLS_PRIVATE(ca_istrue) && crt->MBEDTLS_PRIVATE(max_pathlen) > 0 &&
+      depth > crt->MBEDTLS_PRIVATE(max_pathlen))
+    return true;
+  if (anchor != NULL && anchor->MBEDTLS_PRIVATE(max_pathlen) > 0 &&
+      depth + 1 > anchor->MBEDTLS_PRIVATE(max_pathlen))
+    return true;
+  return false;
+}
+
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   t->vrfy_seen = true;
@@ -1251,6 +1279,9 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     if (depth == 0 && self) t->vrfy_leaf_self = true;
     if (depth > 0 && self) t->vrfy_chain_self = true;
     if (depth == 0 && !self && scr_tls_leaf_bad_sig(t, crt)) t->vrfy_bad_sig = true;
+    if ((*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) != 0 && !self &&
+      scr_tls_pathlen_exceeded(t, crt, depth))
+    t->vrfy_pathlen = true;
   }
   return 0;
 }
@@ -1434,6 +1465,10 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
   }
   if (t->vrfy_bad_sig) {
     snprintf(out, n, "certificate signature failure");
+    return;
+  }
+  if (t->vrfy_pathlen) {
+    snprintf(out, n, "path length constraint exceeded");
     return;
   }
   /* Node appends the --use-system-ca hint for exactly these two codes
@@ -4316,6 +4351,482 @@ void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/,
   scr_tls_cli_wrap(sock, cli);
 }
 
+/* ── tls.checkServerIdentity: Node's standalone hostname verification ──
+ * lib/tls.js's checkServerIdentity over a legacy certificate object
+ * (subjectaltname and subject.CN): SAN DNS names match with RFC 6125
+ * wildcard rules, IP SANs compare canonicalized, and the CN is the
+ * fallback only when the certificate carries no DNS SAN. A failure is
+ * ERR_TLS_CERT_ALTNAME_INVALID carrying Node's reason text, `host` and
+ * `cert`; a malformed quoted alt-name string throws
+ * ERR_TLS_CERT_ALTNAME_FORMAT as Node's splitEscapedAltNames does. */
+
+typedef struct {
+  char **v;
+  size_t n, cap;
+} ScrTlsIdentList;
+
+typedef struct {
+  char *p;
+  size_t n, cap;
+} ScrTlsIdentBuf;
+
+static void scr_tls_ident_buf_put(ScrTlsIdentBuf *b, const char *s, size_t n) {
+  if (b->n + n + 1 > b->cap) {
+    size_t cap = b->cap == 0 ? 64 : b->cap;
+    while (b->n + n + 1 > cap) cap *= 2;
+    char *p = realloc(b->p, cap);
+    if (!p) scr_tls_oom();
+    b->p = p;
+    b->cap = cap;
+  }
+  if (n != 0) memcpy(b->p + b->n, s, n);
+  b->n += n;
+  b->p[b->n] = 0;
+}
+
+static void scr_tls_ident_list_push(ScrTlsIdentList *l, const char *s, size_t n) {
+  if (l->n == l->cap) {
+    size_t cap = l->cap == 0 ? 8 : l->cap * 2;
+    char **v = realloc(l->v, cap * sizeof *v);
+    if (!v) scr_tls_oom();
+    l->v = v;
+    l->cap = cap;
+  }
+  char *copy = malloc(n + 1);
+  if (!copy) scr_tls_oom();
+  if (n != 0) memcpy(copy, s, n);
+  copy[n] = 0;
+  l->v[l->n++] = copy;
+}
+
+static void scr_tls_ident_list_free(ScrTlsIdentList *l) {
+  for (size_t i = 0; i < l->n; i++) free(l->v[i]);
+  free(l->v);
+  l->v = NULL;
+  l->n = l->cap = 0;
+}
+
+/* One JSON string literal at s[0] (a quote), decoded into `out` as a JS
+ * JSON.parse would: the standard escapes, \uXXXX as UTF-8. Answers the
+ * bytes consumed, or (size_t)-1 for a malformed literal. */
+static size_t scr_tls_ident_json_string(const char *s, size_t n, ScrTlsIdentBuf *out) {
+  if (n < 1 || s[0] != '"') return (size_t)-1;
+  size_t i = 1;
+  while (i < n) {
+    unsigned char c = (unsigned char)s[i];
+    if (c == '"') return i + 1;
+    if (c < 0x20) return (size_t)-1;
+    if (c != '\\') {
+      scr_tls_ident_buf_put(out, s + i, 1);
+      i++;
+      continue;
+    }
+    if (++i >= n) return (size_t)-1;
+    switch (s[i]) {
+      case '"': scr_tls_ident_buf_put(out, "\"", 1); break;
+      case '\\': scr_tls_ident_buf_put(out, "\\", 1); break;
+      case '/': scr_tls_ident_buf_put(out, "/", 1); break;
+      case 'b': scr_tls_ident_buf_put(out, "\b", 1); break;
+      case 'f': scr_tls_ident_buf_put(out, "\f", 1); break;
+      case 'n': scr_tls_ident_buf_put(out, "\n", 1); break;
+      case 'r': scr_tls_ident_buf_put(out, "\r", 1); break;
+      case 't': scr_tls_ident_buf_put(out, "\t", 1); break;
+      case 'u': {
+        if (i + 4 >= n) return (size_t)-1;
+        unsigned cp = 0;
+        for (int k = 1; k <= 4; k++) {
+          char h = s[i + (size_t)k];
+          unsigned d;
+          if (h >= '0' && h <= '9') d = (unsigned)(h - '0');
+          else if (h >= 'a' && h <= 'f') d = (unsigned)(h - 'a' + 10);
+          else if (h >= 'A' && h <= 'F') d = (unsigned)(h - 'A' + 10);
+          else return (size_t)-1;
+          cp = (cp << 4) | d;
+        }
+        i += 4;
+        char utf8[3];
+        size_t m;
+        if (cp < 0x80) {
+          utf8[0] = (char)cp;
+          m = 1;
+        } else if (cp < 0x800) {
+          utf8[0] = (char)(0xC0u | (cp >> 6));
+          utf8[1] = (char)(0x80u | (cp & 0x3Fu));
+          m = 2;
+        } else {
+          utf8[0] = (char)(0xE0u | (cp >> 12));
+          utf8[1] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+          utf8[2] = (char)(0x80u | (cp & 0x3Fu));
+          m = 3;
+        }
+        scr_tls_ident_buf_put(out, utf8, m);
+        break;
+      }
+      default: return (size_t)-1;
+    }
+    i++;
+  }
+  return (size_t)-1;
+}
+
+/* Node's split(", ") / splitEscapedAltNames splitter: the quoted form is
+ * taken when the string holds a quote; malformed JSON answers false (the
+ * caller throws ERR_TLS_CERT_ALTNAME_FORMAT). */
+static bool scr_tls_ident_alt_split(const char *alt, size_t len,
+                                    void (*emit)(const char *, size_t, void *), void *ctx) {
+  if (memchr(alt, '"', len) == NULL) {
+    size_t start = 0;
+    for (size_t i = 0; i <= len; i++) {
+      if (i == len || (alt[i] == ',' && i + 1 < len && alt[i + 1] == ' ')) {
+        emit(alt + start, i - start, ctx);
+        start = i + 2;
+        i++;
+      }
+    }
+    return true;
+  }
+  ScrTlsIdentBuf cur = {0};
+  size_t offset = 0;
+  while (offset != len) {
+    const char *base = alt + offset;
+    size_t remain = len - offset;
+    const char *sep = memchr(base, ',', remain);
+    const char *quote = memchr(base, '"', remain);
+    if (quote != NULL && (sep == NULL || quote < sep)) {
+      scr_tls_ident_buf_put(&cur, base, (size_t)(quote - base));
+      size_t used = scr_tls_ident_json_string(quote, remain - (size_t)(quote - base), &cur);
+      if (used == (size_t)-1) {
+        free(cur.p);
+        return false;
+      }
+      offset = (size_t)(quote - alt) + used;
+    } else if (sep != NULL) {
+      scr_tls_ident_buf_put(&cur, base, (size_t)(sep - base));
+      emit(cur.p != NULL ? cur.p : "", cur.n, ctx);
+      cur.n = 0;
+      if (cur.p != NULL) cur.p[0] = 0;
+      /* the separator skips the comma and the byte after it; a trailing
+       * comma has no such byte, so the cursor stops at the end */
+      size_t next = (size_t)(sep - alt) + 2;
+      if (next > len) next = len;
+      offset = next;
+    } else {
+      scr_tls_ident_buf_put(&cur, base, remain);
+      offset = len;
+    }
+  }
+  emit(cur.p != NULL ? cur.p : "", cur.n, ctx);
+  free(cur.p);
+  return true;
+}
+
+/* Node's canonicalizeIP: inet_ntop's canonical spelling for an IP literal
+ * (anything else crosses as written). */
+static void scr_tls_ident_canon_ip(const char *s, size_t n, char *out, size_t cap) {
+  char tmp[128];
+  if (n >= sizeof tmp) n = sizeof tmp - 1;
+  if (n != 0) memcpy(tmp, s, n);
+  tmp[n] = 0;
+  unsigned char addr[16];
+  if (inet_pton(AF_INET, tmp, addr) == 1) {
+    inet_ntop(AF_INET, addr, out, (socklen_t)cap);
+    return;
+  }
+  if (inet_pton(AF_INET6, tmp, addr) == 1) {
+    inet_ntop(AF_INET6, addr, out, (socklen_t)cap);
+    return;
+  }
+  snprintf(out, cap, "%s", tmp);
+}
+
+static bool scr_tls_ident_is_ip(const char *s) {
+  unsigned char addr[16];
+  return inet_pton(AF_INET, s, addr) == 1 || inet_pton(AF_INET6, s, addr) == 1;
+}
+
+/* Node's splitHost: A-Z lowercased, one trailing dot dropped. */
+static void scr_tls_ident_normalize(const char *s, size_t n, char *out, size_t cap) {
+  if (n > 0 && s[n - 1] == '.') n--;
+  size_t k = 0;
+  for (size_t i = 0; i < n && k + 1 < cap; i++) {
+    char c = s[i];
+    if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+    out[k++] = c;
+  }
+  out[k] = 0;
+}
+
+/* lib/tls.js's check(hostParts, pattern, wildcards). */
+static bool scr_tls_ident_check(const char *host_lc, const char *pattern, bool wildcards) {
+  if (pattern == NULL || pattern[0] == 0) return false;
+  char hbuf[512], pbuf[512];
+  scr_tls_ident_normalize(host_lc, strlen(host_lc), hbuf, sizeof hbuf);
+  scr_tls_ident_normalize(pattern, strlen(pattern), pbuf, sizeof pbuf);
+  char *hp[64], *pp[64];
+  size_t hn = 0, pn = 0;
+  hp[hn++] = hbuf;
+  for (char *c = hbuf; *c != 0; c++) {
+    if (*c != '.') continue;
+    *c = 0;
+    if (hn == 64) return false;
+    hp[hn++] = c + 1;
+  }
+  pp[pn++] = pbuf;
+  for (char *c = pbuf; *c != 0; c++) {
+    if (*c != '.') continue;
+    *c = 0;
+    if (pn == 64) return false;
+    pp[pn++] = c + 1;
+  }
+  if (hn != pn) return false;
+  for (size_t i = 0; i < pn; i++) {
+    if (pp[i][0] == 0) return false; /* "bad..example.com" */
+    for (const unsigned char *c = (const unsigned char *)pp[i]; *c != 0; c++)
+      if (*c < 0x21 || *c > 0x7f) return false; /* IDNA U-labels, blanks, controls */
+  }
+  for (size_t i = hn - 1; i > 0; i--)
+    if (strcmp(hp[i], pp[i]) != 0) return false;
+  const char *hsub = hp[0];
+  const char *psub = pp[0];
+  const char *star = strchr(psub, '*');
+  if (star == NULL || strstr(psub, "xn--") != NULL) return strcmp(hsub, psub) == 0;
+  if (!wildcards) return false;
+  if (strchr(star + 1, '*') != NULL) return false; /* more than one wildcard */
+  if (pn <= 2) return false;                       /* "*.tld" is not allowed */
+  size_t plen = strlen(psub), hlen = strlen(hsub);
+  size_t pre = (size_t)(star - psub), suf = plen - pre - 1;
+  if (pre + suf > hlen) return false;
+  if (pre != 0 && strncmp(hsub, psub, pre) != 0) return false;
+  if (suf != 0 && strcmp(hsub + hlen - suf, star + 1) != 0) return false;
+  return true;
+}
+
+/* A field that crossed as a typed record keeps its checked-dynamic ref
+ * until something reads it: materialize it into the plain object shape. */
+static const ScrDyn *scr_tls_ident_plain(const ScrDyn *v, ScrDyn **owned) {
+  if (v != NULL && v->kind == SCR_DYN_TYPED_REF) {
+    *owned = scr_dyn_typed_ref_materialize(v);
+    if (scr_exc_pending()) {
+      scr_dyn_release(*owned);
+      *owned = NULL;
+      return NULL;
+    }
+    return *owned;
+  }
+  return v;
+}
+
+struct ScrTlsIdentCtx {
+  ScrTlsIdentList dns, ips;
+};
+
+static void scr_tls_ident_token(const char *tok, size_t n, void *ctx) {
+  struct ScrTlsIdentCtx *c = ctx;
+  /* an embedded NUL cannot appear in a name Node's matching accepts (its
+   * label check rejects bytes below 0x21) and would truncate a C-string
+   * comparison: the entry is kept — Node still counts it — with every NUL
+   * turned into a byte no label check accepts */
+  char stack[256];
+  char *copy = NULL;
+  if (memchr(tok, '\0', n) != NULL) {
+    copy = n <= sizeof stack ? stack : malloc(n);
+    if (copy == NULL) return;
+    memcpy(copy, tok, n);
+    for (size_t i = 0; i < n; i++)
+      if (copy[i] == '\0') copy[i] = 0x01;
+    tok = copy;
+  }
+  if (n >= 4 && memcmp(tok, "DNS:", 4) == 0) {
+    scr_tls_ident_list_push(&c->dns, tok + 4, n - 4);
+  } else if (n >= 11 && memcmp(tok, "IP Address:", 11) == 0) {
+    char canon[INET6_ADDRSTRLEN + 8];
+    scr_tls_ident_canon_ip(tok + 11, n - 11, canon, sizeof canon);
+    scr_tls_ident_list_push(&c->ips, canon, strlen(canon));
+  }
+  if (copy != NULL && copy != stack) free(copy);
+}
+
+/* The failure object: Node's ERR_TLS_CERT_ALTNAME_INVALID with `host` and
+ * `cert` own properties and the "Hostname/IP does not match certificate's
+ * altnames: <reason>" message. */
+static ScrDyn *scr_tls_ident_fail(const char *reason, size_t reason_n, const ScrStr *host,
+                                  const ScrDyn *cert) {
+  static const char prefix[] = "Hostname/IP does not match certificate's altnames: ";
+  size_t plen = sizeof prefix - 1;
+  char *text = malloc(plen + reason_n + 1);
+  if (!text) scr_tls_oom();
+  memcpy(text, prefix, plen);
+  memcpy(text + plen, reason, reason_n);
+  text[plen + reason_n] = 0;
+  ScrStr *msg = scr_str_new(text, plen + reason_n);
+  free(text);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_error_set_code(e, "ERR_TLS_CERT_ALTNAME_INVALID");
+  ScrDyn *view = scr_dyn_from_error(e);
+  scr_dyn_obj_set(view, "host", 4, scr_dyn_new_str((ScrStr *)host));
+  scr_dyn_obj_set(view, "cert", 4, scr_dyn_retain((ScrDyn *)cert));
+  scr_error_release(e);
+  return view;
+}
+
+ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDyn *cert /*borrowed*/) {
+  ScrDyn *owned = NULL;
+  if (cert != NULL && cert->kind == SCR_DYN_TYPED_REF) {
+    owned = scr_dyn_typed_ref_materialize(cert);
+    if (scr_exc_pending()) {
+      scr_dyn_release(owned);
+      /* the caller boxes the answer before its pending check: answer a
+       * valid value, not NULL */
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    cert = owned;
+  }
+  const ScrDyn *alt = NULL;
+  const ScrDyn *subject = NULL;
+  const ScrDyn *cn = NULL;
+  ScrDyn *owned_alt = NULL, *owned_subject = NULL, *owned_cn = NULL;
+  if (cert != NULL && cert->kind == SCR_DYN_OBJ) {
+    alt = scr_tls_ident_plain(scr_dyn_obj_get(cert, "subjectaltname", 14), &owned_alt);
+    subject = scr_tls_ident_plain(scr_dyn_obj_get(cert, "subject", 7), &owned_subject);
+    if (subject != NULL && subject->kind == SCR_DYN_OBJ)
+      cn = scr_tls_ident_plain(scr_dyn_obj_get(subject, "CN", 2), &owned_cn);
+  }
+  if (scr_exc_pending()) {
+    scr_dyn_release(owned_alt);
+    scr_dyn_release(owned_subject);
+    scr_dyn_release(owned_cn);
+    scr_dyn_release(owned);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  struct ScrTlsIdentCtx ctx = {{0}, {0}};
+  char *alt_owned = NULL;
+  const char *alt_text = NULL;
+  size_t alt_len = 0;
+  if (alt != NULL && alt->kind == SCR_DYN_STR) {
+    alt_text = scr_str_utf8(alt->v.str, &alt_owned);
+    alt_len = alt->v.str->len;
+    if (!scr_tls_ident_alt_split(alt_text, alt_len, scr_tls_ident_token, &ctx)) {
+      static const char msg[] = "Invalid subject alternative name string";
+      scr_str_utf8_end(alt_owned);
+      scr_tls_ident_list_free(&ctx.dns);
+      scr_tls_ident_list_free(&ctx.ips);
+      scr_dyn_release(owned);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_CERT_ALTNAME_FORMAT");
+      /* the caller boxes the answer before its pending check: a valid
+       * value keeps that boxing from dereferencing NULL */
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+  }
+  char *host_owned = NULL;
+  const char *host = scr_str_utf8(hostname, &host_owned);
+  /* Node's unfqdn for matching and for the reason text. */
+  char hostbuf[512];
+  size_t hlen = hostname->len;
+  if (hlen >= sizeof hostbuf) hlen = sizeof hostbuf - 1;
+  if (hlen != 0) memcpy(hostbuf, host, hlen);
+  hostbuf[hlen] = 0;
+  if (hlen > 0 && hostbuf[hlen - 1] == '.') hostbuf[--hlen] = 0;
+  /* an embedded NUL makes the host un-matchable (Node's checks reject such
+   * bytes) and would truncate every C-string comparison below */
+  bool host_has_nul = memchr(hostbuf, '\0', hlen) != NULL;
+
+  ScrDyn *result = NULL;
+  if (!host_has_nul && scr_tls_ident_is_ip(hostbuf)) {
+    char canon[INET6_ADDRSTRLEN + 8];
+    scr_tls_ident_canon_ip(hostbuf, strlen(hostbuf), canon, sizeof canon);
+    bool valid = false;
+    for (size_t i = 0; i < ctx.ips.n; i++) {
+      if (strcmp(ctx.ips.v[i], canon) == 0) {
+        valid = true;
+        break;
+      }
+    }
+    if (!valid) {
+      ScrTlsIdentBuf reason = {0};
+      scr_tls_ident_buf_put(&reason, "IP: ", 4);
+      scr_tls_ident_buf_put(&reason, hostbuf, hlen);
+      scr_tls_ident_buf_put(&reason, " is not in the cert's list: ", 28);
+      for (size_t i = 0; i < ctx.ips.n; i++) {
+        if (i != 0) scr_tls_ident_buf_put(&reason, ", ", 2);
+        scr_tls_ident_buf_put(&reason, ctx.ips.v[i], strlen(ctx.ips.v[i]));
+      }
+      result = scr_tls_ident_fail(reason.p != NULL ? reason.p : "", reason.n, hostname, cert);
+      free(reason.p);
+    }
+  } else if (ctx.dns.n > 0 || cn != NULL) {
+    char host_lc[512];
+    scr_tls_ident_normalize(hostbuf, hlen, host_lc, sizeof host_lc);
+    bool valid = false;
+    if (!host_has_nul) {
+      if (ctx.dns.n > 0) {
+        for (size_t i = 0; i < ctx.dns.n && !valid; i++)
+          valid = scr_tls_ident_check(host_lc, ctx.dns.v[i], true);
+      } else if (cn->kind == SCR_DYN_ARR) {
+        for (size_t i = 0; i < scr_dyn_arr_len(cn) && !valid; i++) {
+          const ScrDyn *item = cn->v.arr.items[i];
+          if (item != NULL && item->kind == SCR_DYN_STR &&
+              memchr(item->v.str->data, '\0', item->v.str->len) == NULL) {
+            char *item_owned = NULL;
+            const char *text = scr_str_utf8(item->v.str, &item_owned);
+            valid = scr_tls_ident_check(host_lc, text, true);
+            scr_str_utf8_end(item_owned);
+          }
+        }
+      } else if (cn->kind == SCR_DYN_STR &&
+                 memchr(cn->v.str->data, '\0', cn->v.str->len) == NULL) {
+        char *cn_owned = NULL;
+        const char *text = scr_str_utf8(cn->v.str, &cn_owned);
+        valid = scr_tls_ident_check(host_lc, text, true);
+        scr_str_utf8_end(cn_owned);
+      }
+    }
+    if (!valid) {
+      ScrTlsIdentBuf reason = {0};
+      scr_tls_ident_buf_put(&reason, "Host: ", 6);
+      scr_tls_ident_buf_put(&reason, hostbuf, hlen);
+      if (ctx.dns.n > 0) {
+        scr_tls_ident_buf_put(&reason, ". is not in the cert's altnames: ", 33);
+        scr_tls_ident_buf_put(&reason, alt_text != NULL ? alt_text : "", alt_len);
+      } else {
+        scr_tls_ident_buf_put(&reason, ". is not cert's CN: ", 20);
+        if (cn->kind == SCR_DYN_ARR) {
+          for (size_t i = 0; i < scr_dyn_arr_len(cn); i++) {
+            const ScrDyn *item = cn->v.arr.items[i];
+            if (i != 0) scr_tls_ident_buf_put(&reason, ",", 1);
+            if (item != NULL && item->kind == SCR_DYN_STR) {
+              char *item_owned = NULL;
+              const char *text = scr_str_utf8(item->v.str, &item_owned);
+              scr_tls_ident_buf_put(&reason, text, item->v.str->len);
+              scr_str_utf8_end(item_owned);
+            }
+          }
+        } else if (cn->kind == SCR_DYN_STR) {
+          char *cn_owned = NULL;
+          const char *text = scr_str_utf8(cn->v.str, &cn_owned);
+          scr_tls_ident_buf_put(&reason, text, cn->v.str->len);
+          scr_str_utf8_end(cn_owned);
+        }
+      }
+      result = scr_tls_ident_fail(reason.p != NULL ? reason.p : "", reason.n, hostname, cert);
+      free(reason.p);
+    }
+  } else {
+    static const char none[] = "Cert does not contain a DNS name";
+    result = scr_tls_ident_fail(none, sizeof none - 1, hostname, cert);
+  }
+  scr_str_utf8_end(host_owned);
+  scr_str_utf8_end(alt_owned);
+  scr_tls_ident_list_free(&ctx.dns);
+  scr_tls_ident_list_free(&ctx.ips);
+  scr_dyn_release(owned_alt);
+  scr_dyn_release(owned_subject);
+  scr_dyn_release(owned_cn);
+  if (result == NULL) result = scr_dyn_retain(scr_dyn_undefined());
+  scr_dyn_release(owned);
+  return result;
+}
+
 /* ── the checked-dynamic TLSSocket members (scr_net.c's hook table) ──── */
 
 /* Node's authorizationError: the verify-failure CODE string (null when
@@ -4328,6 +4839,7 @@ static const char *scr_tls_auth_code(ScrTlsSock *t) {
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
   if (t->vrfy_future) return "CERT_NOT_YET_VALID";
   if (t->vrfy_bad_sig) return "CERT_SIGNATURE_FAILURE";
+  if (t->vrfy_pathlen) return "PATH_LENGTH_EXCEEDED";
   if (t->vrfy_leaf_self) return "DEPTH_ZERO_SELF_SIGNED_CERT";
   if (t->vrfy_chain_self) return "SELF_SIGNED_CERT_IN_CHAIN";
   if (vr & MBEDTLS_X509_BADCERT_NOT_TRUSTED) return "UNABLE_TO_VERIFY_LEAF_SIGNATURE";

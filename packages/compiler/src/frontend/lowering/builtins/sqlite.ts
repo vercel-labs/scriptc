@@ -4,6 +4,7 @@ import { locOf } from "../../program.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { BOOL, DYN, type IrExpr } from "../../../ir/ir.js";
 import { builtinImportOf } from "./module-bindings.js";
+import { readsReboundRequireValue } from "../rebindable-requires.js";
 
 /* node:sqlite's DatabaseSync and StatementSync are native checked-dynamic
  * handles (scr_sqlite.c): both types map to dyn, their getters read through
@@ -20,11 +21,15 @@ const SQLITE_CLASSES: ReadonlySet<string> = new Set(["DatabaseSync", "StatementS
  * symbol, which builtinImportOf follows to the builtin's module and member.
  * The symbol is prefetched with its file, so this answers without a checker
  * round trip, where resolving the access's RECEIVER is one. Null for an
- * ordinary member (nothing import-shaped declares it). */
+ * ordinary member (nothing import-shaped declares it), and for a receiver
+ * that reads a require binding the file reassigns: that storage holds
+ * whatever the program stored, so the member is not the module's export. */
 function facadeExportOf(
   lowerer: Lowerer,
   name: ts.MemberName,
+  receiver: ts.Expression,
 ): { module: string; member: string } | null {
+  if (readsReboundRequireValue(lowerer, receiver)) return null;
   return ts.isIdentifier(name) ? builtinImportOf(lowerer, name) : null;
 }
 
@@ -53,7 +58,8 @@ export function sqliteClassOf(lowerer: Lowerer, node: ts.Expression): SqliteClas
     // (builtinMemberOf composes a member only for another module's
     // sub-object), so an access to any other name answers without resolving
     // its receiver's symbol.
-    if (plainNamespaceReceiver(node.expression)) builtin = facadeExportOf(lowerer, node.name);
+    if (plainNamespaceReceiver(node.expression))
+      builtin = facadeExportOf(lowerer, node.name, node.expression);
     if (builtin === null && SQLITE_CLASSES.has(node.name.text))
       builtin = lowerer.builtinMemberOf(node);
   }
@@ -121,7 +127,7 @@ export function lowerSqliteCall(lowerer: Lowerer, call: ts.CallExpression): IrEx
     // sqlite namespace member spells `backup`. Any other member needs no
     // receiver resolution.
     const builtin =
-      facadeExportOf(lowerer, callee.name) ??
+      facadeExportOf(lowerer, callee.name, callee.expression) ??
       (callee.name.text === "backup" ? lowerer.builtinMemberOf(callee) : null);
     isBackup = builtin?.module === "sqlite" && builtin.member === "backup";
     // The member's symbol identifies a facade re-export whatever its

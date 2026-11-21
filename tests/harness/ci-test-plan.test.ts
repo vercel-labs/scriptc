@@ -84,7 +84,9 @@ test.for([1, 3, 5, 10, 20, 30])(
           expect(cache.env.SCRIPTC_CACHE_TEST_SHARD).toBe(plan.corpus.env.SCRIPTC_TEST_SHARD);
           expect(cache.env.SCRIPTC_TEST_STABLE_TOOLCHAIN).toBe("0");
         }
-        expect(plan.side.some((task) => task.name === "coverage sweep")).toBe(flavor === "plain");
+        expect(plan.side.some((task) => task.name === "coverage corpus sweep")).toBe(
+          flavor === "plain",
+        );
       }
     }
   },

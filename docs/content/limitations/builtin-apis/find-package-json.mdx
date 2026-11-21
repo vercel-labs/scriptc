@@ -1,0 +1,2 @@
+- **Package lookup:** `module.findPackageJSON()` resolves a string-literal specifier against a static base (`import.meta.url`, `__filename`, or a path or file: URL literal) at build time and answers Node.js's nearest package.json; a bare specifier answers its package's root package.json through a self-reference or the node_modules chain.
+  A runtime-computed specifier or base is refused, and so is a lookup Node.js would reject with an error, such as a missing package or file, an invalid package name, or a non-file URL.

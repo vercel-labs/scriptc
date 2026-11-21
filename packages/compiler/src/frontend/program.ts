@@ -7886,19 +7886,10 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
             // sources every use passes here: member reads lower through the
             // names Node's lexer detects, and the other reads refuse at
             // their site (lower-namespaces.ts, cjsNamespaceImportDep). Any
-            // OTHER use in TypeScript keeps the fence.
-            if (
-              !isJsSourceFileName(sf.fileName) &&
-              !nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)
-            ) {
-              diags.push(
-                unsupportedDiag(
-                  "SC1013",
-                  locOf7(clause.namedBindings),
-                  "namespace imports of CommonJS modules",
-                ),
-              );
-            }
+            // A member read lowers like the named import `import { name }`
+            // (nsMemberIdentOf), and a use the lexer does not serve - the
+            // namespace as a first-class value, `default`, a name Node's
+            // lexer does not detect - refuses at its own site.
           } else if (
             dep === null &&
             !(!isRelative && ambientModules.has(spec)) &&

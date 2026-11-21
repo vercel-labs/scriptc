@@ -12,14 +12,25 @@ export async function runCiTestPlan(plan, run) {
       failures.push({ name: task.name, error });
     }
   };
+  // The side queue runs one task at a time beside the corpus. Once the corpus ends, each of its workers takes
+  // side tasks too, from the same queue: in a plain shard the side queue usually outlasts the corpus, and its
+  // last tasks would otherwise run alone on an idle runner. Every task runs once, and no more tasks run at once
+  // than the shard's worker budget allows, each side task taking one worker.
+  const queue = [...plan.side];
   const side = async () => {
-    for (const task of plan.side) await execute(task);
+    while (queue.length > 0) await execute(queue.shift());
   };
+  const corpusWorkers = Number(plan.corpus.env.SCRIPTC_TEST_WORKERS);
   if (plan.sideWorkers === 0) {
     await execute(plan.corpus);
     await side();
   } else {
-    await Promise.all([execute(plan.corpus), side()]);
+    await Promise.all([
+      execute(plan.corpus).then(() =>
+        Promise.all(Array.from({ length: corpusWorkers }, () => side())),
+      ),
+      side(),
+    ]);
   }
   if (failures.length)
     throw new AggregateError(
@@ -43,7 +54,7 @@ async function main() {
         console.log(`[CI] Starting ${task.name} (${task.env.SCRIPTC_TEST_WORKERS} workers)`);
         const child = spawn("pnpm", task.args, {
           cwd: fileURLToPath(new URL("../", import.meta.url)),
-          env: { ...process.env, ...task.env },
+          env: { ...process.env, ...task.env, SCRIPTC_CI_TASK: task.name },
           stdio: "inherit",
         });
         child.once("error", reject);

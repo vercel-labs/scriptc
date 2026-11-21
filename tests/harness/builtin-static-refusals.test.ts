@@ -89,3 +89,38 @@ console.log(attempt(() => Object.prototype.toString.call(setTimeout)));
   );
   expect(stderr).toBe("");
 });
+
+// A module function with a direct-call lowering and no function value keeps
+// loading when it is only stored: reading util.getCallSites answers Node's
+// function (typeof, identity and length), and calling that value is the
+// deferred refusal.
+test("storing util.getCallSites answers a callable and refuses only when it is called", async () => {
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-builtin-static-refusals-"));
+  const entry = join(outDir, "main.ts");
+  writeFileSync(
+    entry,
+    `
+import { getCallSites } from "node:util";
+const stored = getCallSites;
+console.log(typeof stored, stored === getCallSites, stored.length);
+try {
+  stored();
+  console.log("no throw");
+} catch (error) {
+  const e = error as { code?: string };
+  console.log("caught", e.code);
+}
+`,
+  );
+  const result = await compile(entry, {
+    backend: "llvm",
+    sanitize: process.env["SCRIPTC_SAN"] === "1",
+    outDir,
+    outPath: join(outDir, "program"),
+  });
+  expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true);
+  if (!result.ok) return;
+  const { stdout, stderr } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+  expect(stdout).toBe("function true 0\ncaught SC2020\n");
+  expect(stderr).toBe("");
+});

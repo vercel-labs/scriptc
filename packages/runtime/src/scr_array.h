@@ -206,6 +206,10 @@ typedef struct ScrArrClass {
    * and flatMap, and Array.of / Array.from called on the class. NULL when
    * the class's constructor cannot take that argument. */
   ScrArr *(*species)(double length, bool with_length);
+  /* The names of the methods and accessors the class declares (immortal
+   * strings), which `in` answers on an instance as its prototype's. */
+  size_t member_count;
+  ScrStr *const *members;
 } ScrArrClass;
 /* The LLVM backend mirrors ScrArr as %ScrArr: its inline retain/release read
  * `cyc` (field 4, i8) to decide mark-live / candidate buffering exactly like

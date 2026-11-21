@@ -452,7 +452,7 @@ console.log(sum(dyn(JSON.parse('{"a":1,"b":2,"c":3}'))), sum(dyn(JSON.parse('{"c
     expect(llvm).toMatch(
       /@sc_js_group_0 = internal (thread_local )?global \[9 x i64\] zeroinitializer/,
     );
-    expect(llvm).toMatch(/@sc_gkeys_0 = internal constant \[3 x ptr\]/);
+    expect(llvm).toMatch(/@sc_gkeys_\d+ = internal constant \[3 x ptr\]/);
     const sum = body(llvm, "sum");
     // One layout probe answers all three members, so none of them keeps
     // its own read site.

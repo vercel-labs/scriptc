@@ -276,6 +276,7 @@ typedef enum {
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
+  Y(SLIDING_HISTOGRAM) /* perf_hooks SlidingWindowHistogram (scr_perf_loop.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
@@ -1560,6 +1561,12 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
 bool scr_dyn_data_view_is(const ScrDyn *value);
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
+/* A Node module class value (`http.IncomingMessage`, `http2.Http2ServerRequest`,
+ * …): one ordinary function with a prototype object per (module, name) per
+ * program, so `instanceof` and `constructor` identity compare one value.
+ * Answers +1; NULL with the exception pending when the allocation failed.
+ * scr_json.c. */
+ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, double arity);
 /* Installed by scr_dyn_invoke.c when it interns a builtin constructor value
  * (scr_dyn_global_constructor): false when `callee` is not one of them;
  * otherwise true with `new callee(...args)` in *result (+1, or NULL with

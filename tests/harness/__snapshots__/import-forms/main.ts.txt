@@ -14,13 +14,6 @@ import-forms/main.ts:10:8 - error SC1013: namespace imports of JSON modules are 
      |        ^~~~~~~~
   11 | import * as legacy from "./legacy.cjs";
 
-import-forms/main.ts:11:8 - error SC1013: namespace imports of CommonJS modules are not supported yet
-
-  10 | import * as cfg from "./cfg.json";
-  11 | import * as legacy from "./legacy.cjs";
-     |        ^~~~~~~~~~~
-  12 | 
-
 import-forms/main.ts:15:1 - error SC1014: re-exports from packages or builtin modules are not supported yet
 
   14 | // the STAR form still has no lowering — no namespace object to rebuild.

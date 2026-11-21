@@ -19708,6 +19708,7 @@
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/console-instance-bound-methods.cjs",
           "tests/corpus/console-instance-inspect-options.ts",
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
@@ -19851,6 +19852,7 @@
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
           "tests/corpus/console-instance-state.ts",
+          "tests/corpus/console-instance-bound-methods.cjs",
           "tests/corpus/console-instance-inspect-options.ts",
           "tests/corpus/console-instance-table-options.ts"
         ]
@@ -56017,6 +56019,7 @@
           "tests/corpus/9993-resource-timing-buffered.ts",
           "tests/corpus/9996-resource-timing.ts",
           "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/cjs-exports-binding/main.cjs",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
@@ -56025,6 +56028,7 @@
           "tests/corpus/compat-web-stream-members.ts",
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
+          "tests/corpus/globals-byob-classes.mjs",
           "tests/corpus/globals-navigator.ts",
           "tests/corpus/headers-static-accessors.ts",
           "tests/corpus/js-abort-portable.js",
@@ -56704,11 +56708,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:globals.EventSource",
-        "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.EventSource"
       },
       "anchorSource": "exact"
     },
@@ -57113,12 +57114,7 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.ReadableByteStreamController",
         "tests": [
-          "tests/corpus/webstream-byte-streams.ts",
-          "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byob-reader-js.mjs",
-          "tests/corpus/webstream-byte-stream.ts",
-          "tests/corpus/webstream-byte-stream-js.mjs",
-          "tests/corpus/webstream-byob-partial-elements-js.mjs"
+          "tests/corpus/globals-byob-classes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -57170,12 +57166,7 @@
         "status": "partial",
         "evidence": "compiler-feature:globals.ReadableStreamBYOBReader",
         "tests": [
-          "tests/corpus/webstream-byte-streams.ts",
-          "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byob-reader-js.mjs",
-          "tests/corpus/webstream-byte-stream.ts",
-          "tests/corpus/webstream-byte-stream-js.mjs",
-          "tests/corpus/webstream-byob-partial-elements-js.mjs"
+          "tests/corpus/globals-byob-classes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -57333,8 +57324,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.Storage"
       },
       "anchorSource": "exact"
     },
@@ -58234,8 +58225,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.exports",
+        "tests": [
+          "tests/corpus/cjs-exports-binding/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58355,8 +58349,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.localStorage"
       },
       "anchorSource": "exact"
     },
@@ -58647,8 +58641,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.sessionStorage"
       },
       "anchorSource": "exact"
     },
@@ -122382,6 +122376,7 @@
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/compat-web-stream-members.mjs",
           "tests/corpus/compat-web-stream-members.ts",
+          "tests/corpus/globals-byob-classes.mjs",
           "tests/corpus/stream-consumers.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
@@ -123081,12 +123076,7 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.ReadableStreamBYOBReader",
         "tests": [
-          "tests/corpus/webstream-byte-streams.ts",
-          "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byob-reader-js.mjs",
-          "tests/corpus/webstream-byte-stream.ts",
-          "tests/corpus/webstream-byte-stream-js.mjs",
-          "tests/corpus/webstream-byob-partial-elements-js.mjs"
+          "tests/corpus/globals-byob-classes.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -123373,12 +123363,7 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.ReadableByteStreamController",
         "tests": [
-          "tests/corpus/webstream-byte-streams.ts",
-          "tests/corpus/webstream-byob-reader.ts",
-          "tests/corpus/webstream-byob-reader-js.mjs",
-          "tests/corpus/webstream-byte-stream.ts",
-          "tests/corpus/webstream-byte-stream-js.mjs",
-          "tests/corpus/webstream-byob-partial-elements-js.mjs"
+          "tests/corpus/globals-byob-classes.mjs"
         ]
       },
       "anchorSource": "exact"

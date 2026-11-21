@@ -16,6 +16,15 @@ __attribute__((weak)) bool scr_tty_console_auto_colors(bool is_tty) {
   return false;
 }
 
+/* The console member and colorMode answers, defined below. */
+static int scr_console_member_index(const char *key, size_t len);
+static int scr_console_member_target(const char *key, size_t len);
+static int scr_console_target_colors_mode(int color_mode, bool is_tty);
+static int scr_console_inst_colors_mode(ScrConsoleInst *inst, int which);
+
+/* The colorMode answers, defined with the instance writers below. */
+static int scr_console_target_colors_mode(int color_mode, bool is_tty);
+static int scr_console_inst_colors_mode(ScrConsoleInst *inst, int which);
 /* The console object as a value. Its function-valued members are one
  * function object each per thread, so `console.log === console.log` holds
  * and a detached method needs no receiver (Node binds them the same way).
@@ -124,9 +133,13 @@ static ScrDyn *scr_console_method_call(ScrClosure *closure, ScrDyn *const *args,
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)len, "SC2020");
     return NULL;
   }
-  ScrInspFormatOptions options;
-  scr_insp_format_defaults(&options, member->surface);
-  ScrStr *line = scr_insp_format(args, argc, &options);
+  /* Node's stored global methods format through kFormatForStdout, so they
+   * read the stream's inspect options and the console's colorMode answer
+   * exactly as a direct call does. */
+  int which = member->target ? 1 : 0;
+  ScrStr *line = scr_insp_console_format_argv(
+      args, argc, NULL, member->surface,
+      scr_console_target_colors_mode(2, scr_process_is_tty(which ? 2 : 1)));
   if (!line) return NULL;
   ScrLogArg arg = {.tag = SCR_ARG_STR};
   arg.v.s = line;
@@ -196,13 +209,58 @@ static void *scr_console_inst_retain(void *ptr) {
 
 static void scr_console_state_clear(ScrConsoleState *state);
 
-static void scr_console_inst_release(void *ptr) {
+static void scr_console_bound_unlink(ScrConsoleInst *inst);
+
+/* A Console with a detached output method is a cycle: the instance holds
+ * its bound functions and each function holds the instance. The instance
+ * carries a cycle header so the collector can see the edges — the bound
+ * functions and the inspectOptions record — and free a request-scoped
+ * Console with its functions, its streams going through the teardown. */
+static void scr_console_inst_cycle_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   ScrConsoleInst *inst = ptr;
-  if (--inst->rc) return;
+  for (int i = 0; i < 5; i++) visit(inst->bound[i], ctx);
+  visit(inst->inspect_options, ctx);
+}
+
+/* The collector's teardown: the complement of the trace — the streams and
+ * their completion handlers, the counter and timer store — then the block. */
+static void scr_console_inst_gcfree(void *ptr) {
+  ScrConsoleInst *inst = ptr;
+  scr_console_bound_unlink(inst);
   scr_console_state_clear(&inst->state);
   if (inst->stream_drop) inst->stream_drop(inst);
-  scr_dyn_release(inst->inspect_options);
-  free(inst);
+  scr_obj_free_note();
+  scr_cyc_free(inst);
+}
+
+static void scr_console_inst_destroy(void *ptr) {
+  ScrConsoleInst *inst = ptr;
+  /* A cached bound function holds the instance through its capture box, so
+   * none can be live when the count reaches zero; the releases below are
+   * the defensive path, and a re-entrant capture release from a box being
+   * torn down here must not decrement the count again. */
+  inst->rc = SIZE_MAX;
+  for (int i = 0; i < 5; i++) {
+    ScrDyn *bound = inst->bound[i];
+    inst->bound[i] = NULL;
+    scr_dyn_release(bound);
+  }
+  ScrDyn *options = inst->inspect_options;
+  inst->inspect_options = NULL;
+  scr_dyn_release(options);
+  inst->rc = 0;
+  scr_console_inst_gcfree(inst);
+}
+
+static void scr_console_inst_release(void *ptr) {
+  ScrConsoleInst *inst = ptr;
+  if (inst->rc == SIZE_MAX) return; /* the teardown's own releases */
+  if (--inst->rc) {
+    scr_cyc_released(inst);
+    return;
+  }
+  scr_cyc_dead(inst);
+  scr_rc_destroy(inst, scr_console_inst_destroy);
 }
 
 /* kWriteToConsole's indentation: the indent before the line and after
@@ -283,23 +341,115 @@ static void scr_console_inst_print(ScrConsoleInst *inst, int which, ScrStr *text
   scr_str_release(indented);
 }
 
-/* 0 for the stdout members, 1 for the stderr members, -1 otherwise. */
-static int scr_console_member_target(const char *key, size_t len) {
-  const char *names[] = {"log", "info", "debug", "error", "warn"};
-  for (int i = 0; i < 5; i++)
-    if (strlen(names[i]) == len && memcmp(names[i], key, len) == 0) return i >= 3 ? 1 : 0;
-  return -1;
+/* The five output members, in the order the bound-function slots hold them
+ * (Node's constructor binding order, which the shared member index answers). */
+static const char *const scr_console_inst_member_names[] = {"log", "info", "debug", "warn",
+                                                            "error"};
+
+/* ── bound instance methods ────────────────────────────────────────────
+ * Node's Console constructor binds each method to the instance, so
+ * `const { log } = consoleInstance` answers a function that writes to that
+ * instance's target. Each output member's bound function is built once per
+ * instance (identity holds), captures the instance with an owned reference
+ * and calls the same invoke path the member's own call takes. The cycle
+ * (the instance holds its bound functions, the functions hold the instance)
+ * is broken at exit by scr_console_bound_cleanup, before the runtime's
+ * reference audit runs. */
+static SCR_TL ScrConsoleInst *scr_console_bound_list;
+
+/* The collector can free an instance before exit; the cleanup list must not
+ * keep the pointer. */
+static void scr_console_bound_unlink(ScrConsoleInst *inst) {
+  ScrConsoleInst **link = &scr_console_bound_list;
+  while (*link != NULL) {
+    if (*link == inst) {
+      *link = inst->bound_next;
+      inst->bound_next = NULL;
+      inst->bound_linked = false;
+      return;
+    }
+    link = &(*link)->bound_next;
+  }
 }
 
-/* Node binds each method to its instance (stable identity per instance);
- * reading one as a value stays an explicit boundary. */
-static ScrDyn *scr_console_inst_get(void *ptr, const char *key, size_t len) {
-  (void)ptr;
-  if (scr_console_member_target(key, len) >= 0) {
-    static const char message[] = "Stored Console instance methods have no lowering; call them on the instance";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return NULL;
+static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key,
+                                       ScrDyn *const *args, size_t argc, const char *what);
+static ScrDyn *scr_console_inst_bound_call(ScrClosure *closure, ScrDyn *const *args, size_t argc);
+
+static void scr_console_bound_cleanup(void) {
+  ScrConsoleInst *inst = scr_console_bound_list;
+  scr_console_bound_list = NULL;
+  /* The list's links are borrowed: releasing one instance's functions can
+   * release its streams, which can run the collector, which can free the
+   * NEXT instance. Hold our own reference on the node being processed and
+   * carry one to the next node across the release. */
+  ScrConsoleInst *held = inst;
+  if (held != NULL) scr_console_inst_retain(held);
+  while (inst != NULL) {
+    ScrConsoleInst *next = inst->bound_next;
+    if (next != NULL) scr_console_inst_retain(next);
+    inst->bound_next = NULL;
+    inst->bound_linked = false;
+    for (int i = 0; i < 5; i++) {
+      ScrDyn *function = inst->bound[i];
+      inst->bound[i] = NULL;
+      scr_dyn_release(function);
+    }
+    /* Drop our reference to the instance just processed; the collector may
+     * run here, and `next` is held so it survives. */
+    scr_console_inst_release(held);
+    inst = next;
+    held = next;
   }
+}
+
+/* The bound function's capture box traces the instance, so the cycle
+ * instance → function → box → instance is visible to the collector. */
+static void scr_console_inst_capture_trace(void *o, ScrTraceVisit visit, void *ctx) {
+  visit(o, ctx);
+}
+
+/** The instance's bound function for member `which` (+1), built on first
+ * read. */
+static ScrDyn *scr_console_inst_bound(ScrConsoleInst *inst, int which) {
+  ScrDyn *held = inst->bound[which];
+  if (held != NULL) return scr_dyn_retain(held);
+  static SCR_TL bool cleanup_registered;
+  if (!cleanup_registered) {
+    cleanup_registered = true;
+    scr_atexit(scr_console_bound_cleanup);
+  }
+  ScrClosure *closure = scr_closure_new(NULL, 2);
+  closure->caps[0] = scr_box_new_obj(scr_console_inst_retain, scr_console_inst_release,
+                                     scr_console_inst_capture_trace);
+  scr_box_set_ref(closure->caps[0], scr_console_inst_retain(inst));
+  closure->caps[1] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(closure->caps[1], (double)which);
+  ScrDyn *function = scr_dyn_new_func(closure, scr_console_inst_bound_call, 0, "",
+                                      scr_console_inst_member_names[which]);
+  if (function == NULL) return NULL;
+  inst->bound[which] = scr_dyn_retain(function);
+  if (!inst->bound_linked) {
+    inst->bound_linked = true;
+    inst->bound_next = scr_console_bound_list;
+    scr_console_bound_list = inst;
+  }
+  return function;
+}
+
+static ScrDyn *scr_console_inst_bound_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  ScrConsoleInst *inst = scr_box_get_ref(closure->caps[0]); /* +1 */
+  int which = (int)scr_box_get_f64(closure->caps[1]);
+  if (inst == NULL) return NULL;
+  ScrDyn *out = scr_console_inst_invoke(inst, NULL, scr_console_inst_member_names[which], args,
+                                        argc, "Console method");
+  scr_console_inst_release(inst);
+  return out;
+}
+
+static ScrDyn *scr_console_inst_get(void *ptr, const char *key, size_t len) {
+  int which = scr_console_member_index(key, len);
+  if (which >= 0) return scr_console_inst_bound(ptr, which);
   /* Node's Console instances carry no createTask: the global console
    * alone does, so a read here is undefined, not a boundary. */
   if (len == 10 && memcmp(key, "createTask", 10) == 0)
@@ -316,15 +466,35 @@ static bool scr_console_inst_set(void *ptr, const char *key, size_t len, const S
   return false;
 }
 
-/* Dynamic calls render like the stored global methods: every argument
- * through the dyn inspector (strings verbatim), space-joined. */
-static int scr_console_member_index(const char *key, size_t len);
+/* 0 for the stdout members, 1 for the stderr members, -1 otherwise. */
+static int scr_console_member_target(const char *key, size_t len) {
+  const char *names[] = {"log", "info", "debug", "error", "warn"};
+  for (int i = 0; i < 5; i++)
+    if (strlen(names[i]) == len && memcmp(names[i], key, len) == 0) return i >= 3 ? 1 : 0;
+  return -1;
+}
 
-static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key, ScrDyn *const *args,
-                                       size_t argc, const char *what) {
-  (void)self; (void)what;
+/* The output members' calls. A stored method (the bound function, which
+ * calls with a NULL receiver) is the same method: it formats with the
+ * instance's inspectOptions and colorMode answer. A dynamic call renders
+ * every argument through the dyn inspector (strings verbatim), space-joined,
+ * with format strings refused. */
+static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key,
+                                       ScrDyn *const *args, size_t argc, const char *what) {
+  (void)what;
   int which = scr_console_member_target(key, strlen(key));
   if (which < 0) return scr_console_inst_get(ptr, key, strlen(key));
+  if (self == NULL) {
+    /* the stored method: the instance's own formatting, as a direct call */
+    ScrConsoleInst *inst = ptr;
+    ScrStr *line = scr_insp_console_format_argv(
+        args, argc, inst->inspect_options, which ? "console.error" : "console.log",
+        scr_console_inst_colors_mode(inst, which));
+    if (line == NULL) return NULL;
+    scr_console_inst_print(inst, which, line);
+    scr_str_release(line);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
   if (argc > 1 && args[0]->kind == SCR_DYN_STR) {
     ScrStr *format = args[0]->v.str;
     for (size_t i = 0; i + 1 < format->len; i++) if (format->data[i] == '%' &&
@@ -458,9 +628,13 @@ ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors,
   }
   size_t width = 2;
   if (!scr_console_group_width(group_indentation, &width)) return NULL;
-  ScrConsoleInst *inst = calloc(1, sizeof *inst);
+  static ScrCycType cyc_type = {&scr_console_inst_cycle_trace, &scr_console_inst_gcfree,
+                                SCR_CYC_KIND_NONE, 0};
+  ScrConsoleInst *inst = scr_cyc_alloc(sizeof *inst, &cyc_type);
   if (!inst) scr_trap("scriptc: out of memory\n");
+  memset(inst, 0, sizeof *inst);
   inst->rc = 1;
+  scr_obj_alloc_note();
   inst->fd[0] = out_fd;
   inst->fd[1] = err_fd;
   inst->ignore_errors = ignore_errors;

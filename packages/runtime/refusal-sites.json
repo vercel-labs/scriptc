@@ -266,12 +266,6 @@
  {
   "file": "scr_console_native.c",
   "function": "scr_console_inst_get",
-  "message": "Stored Console instance methods have no lowering; call them on the instance",
-  "code": "SC2020"
- },
- {
-  "file": "scr_console_native.c",
-  "function": "scr_console_inst_get",
   "message": "This Console instance member has no lowering",
   "code": "SC2020"
  },
@@ -351,12 +345,6 @@
   "file": "scr_crypto_args.h",
   "function": "ca_throw_formatted",
   "message": " that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_create_chk",
-  "message": "a custom lookup function is not supported yet",
   "code": "SC2020"
  },
  {

@@ -98,3 +98,24 @@ const shorthandColor = streamOf();
 const shorthandColored = new Console({ stdout: shorthandColor.stream, colorMode: shorthandMode });
 shorthandColored.log({ a: 1 });
 console.log("shorthand color output", JSON.stringify(shorthandColor.sink.out));
+
+// A stored output method is the same method: it formats with the instance's
+// inspectOptions and colorMode, so detaching one changes nothing.
+const storedSink = streamOf();
+const storedConsole = new Console({
+  stdout: storedSink.stream,
+  inspectOptions: { depth: 0 },
+  colorMode: true,
+});
+storedConsole.log({ a: { b: 1 }, s: "x" });
+const directOutput = storedSink.sink.out;
+const storedLog = storedConsole.log;
+storedLog({ a: { b: 1 }, s: "x" });
+const storedOutput = storedSink.sink.out.slice(directOutput.length);
+console.log("stored output", JSON.stringify(storedOutput), storedOutput === directOutput);
+
+// The global console's stored methods read its own colorMode ('auto') too.
+process.env.FORCE_COLOR = "1";
+const globalLog = console.log;
+globalLog({ a: 1 });
+delete process.env.FORCE_COLOR;

@@ -1919,11 +1919,12 @@ static void scr_buckets_cleanup(void) {
 /* The view is per thread and program-lived: its arrays are freed at exit.
  * The cleanup registers on first use, so a program that never builds a
  * bucket map allocates nothing. */
-static bool scr_buckets_registered;
+static SCR_TL bool scr_buckets_registered;
 static void scr_buckets_ensure_cleanup(void) {
   if (scr_buckets_registered) return;
   scr_buckets_registered = true;
   scr_atexit(scr_buckets_cleanup);
+  scr_worker_bucket_exit = scr_buckets_cleanup;
 }
 
 static bool scr_buckets_push(double key, int64_t count) {

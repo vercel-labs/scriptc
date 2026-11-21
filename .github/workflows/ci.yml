@@ -1026,24 +1026,26 @@ jobs:
   llvm_artifacts_macos_arm64:
     needs: [validation_scope, lanes, native_macos]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
-    name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/5)
+    name: test (macOS arm64 LLVM artifacts, no clang, ${{ matrix.shard }}/10)
     runs-on: macos-15
     # Each LLVM differential slice takes 30 to 40 minutes on a hosted runner.
     # The package/install and link-parity contracts and the Node island
     # harness run in their own job (llvm_artifacts_macos_arm64_contracts), so
     # no slice carries them. A recent run measured 39 to 46 minutes per slice,
     # and a busy runner was cancelled inside shard 4/5 at the 50-minute limit.
-    # Keep a quarter hour of slack so a slow runner finishes its slice.
+    # Keep a quarter hour of slack so a slow runner finishes its slice. With
+    # every program linking, five slices ran 67 to 70+ minutes, so the lane
+    # uses ten.
     timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     env:
       # The helper differential uses the harness's stable per-case sharding,
       # keeping each macOS job below its timeout while the matrix union still
       # exercises every LLVM-tier program.
-      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/5
+      SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
@@ -1063,10 +1065,10 @@ jobs:
       # The corpus's Node island programs load Node from a libnode pack, and
       # fail rather than skip on macOS CI when none is configured.
       - uses: ./.github/actions/libnode
-      - name: LLVM release/dev differential (${{ matrix.shard }}/5)
+      - name: LLVM release/dev differential (${{ matrix.shard }}/10)
         env:
           SCRIPTC_TEST_WORKERS: "4"
-        run: pnpm test tests/harness/llvm-differential.test.ts
+        run: pnpm test tests/harness/llvm-differential.test.ts --reporter=verbose
 
   llvm_artifacts_macos_arm64_contracts:
     needs: [validation_scope, lanes, native_macos]

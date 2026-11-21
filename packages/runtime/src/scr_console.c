@@ -598,6 +598,15 @@ bool scr_console_channel_active(double member) {
   return scr_console_channel_probe != NULL && scr_console_channel_probe(member);
 }
 
+ScrDyn *scr_console_snapshot_pack(ScrDyn *pack) {
+  ScrDyn *copy = scr_dyn_new_arr();
+  if (pack != NULL && pack->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < pack->v.arr.len; i++)
+      scr_dyn_arr_push(copy, scr_dyn_retain(pack->v.arr.items[i]));
+  }
+  return copy;
+}
+
 void scr_console_publish_args(double member, ScrDyn *args) {
   if (scr_console_channel_publisher != NULL) scr_console_channel_publisher(member, args);
 }

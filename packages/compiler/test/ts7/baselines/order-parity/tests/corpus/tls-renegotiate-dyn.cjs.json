@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-renegotiate-dyn.cjs"
+ ],
+ "diags": []
+}

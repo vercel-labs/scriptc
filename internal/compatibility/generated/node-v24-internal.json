@@ -103540,6 +103540,8 @@
           "tests/corpus/tls-export-keying-material-context.ts",
           "tests/corpus/tls-export-keying-material.ts",
           "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-renegotiate-dyn.cjs",
+          "tests/corpus/tls-renegotiate.ts",
           "tests/corpus/tls-server-class.ts",
           "tests/corpus/tls-server-members.ts",
           "tests/corpus/tls-socket-audit.ts",
@@ -105060,8 +105062,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.renegotiate",
+        "tests": [
+          "tests/corpus/tls-renegotiate.ts",
+          "tests/corpus/tls-renegotiate-dyn.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

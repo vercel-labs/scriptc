@@ -3495,12 +3495,19 @@ static int scr_tls_f_cert(mbedtls_ssl_context *ssl) {
 }
 
 /* The TLS config of a tls or https server, or NULL with the fence thrown. */
-static ScrTlsSrv *scr_tls_srv_of_server(ScrNetServer *server, const char *what) {
+/* The TLS server behind a server handle, or NULL without throwing (a plain
+ * server registration stays inert, as Node's EventEmitter keeps it). */
+static ScrTlsSrv *scr_tls_srv_of_server_or_null(ScrNetServer *server) {
   ScrNetNativeConnFn fn = NULL;
   void *ctx = NULL;
   void (*ctx_free)(void *) = NULL;
   scr_net_server_get_native_conn(server, &fn, &ctx, &ctx_free);
-  if (fn == &scr_tls_srv_on_conn && ctx != NULL) return (ScrTlsSrv *)ctx;
+  return fn == &scr_tls_srv_on_conn && ctx != NULL ? (ScrTlsSrv *)ctx : NULL;
+}
+
+static ScrTlsSrv *scr_tls_srv_of_server(ScrNetServer *server, const char *what) {
+  ScrTlsSrv *found = scr_tls_srv_of_server_or_null(server);
+  if (found != NULL) return found;
   char msg[160];
   int n = snprintf(msg, sizeof msg, "%s on a server that is not a tls or https server is not supported yet", what);
   scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)(n < (int)sizeof msg ? n : (int)sizeof msg - 1), "SC2020");
@@ -4732,10 +4739,14 @@ static void scr_tls_keylog_fire(ScrTlsSock *t, ScrBytes *line) {
   if (t->srv != NULL && t->srv->keylog_ls.n > 0 && !scr_exc_pending()) {
     ScrNetL *snap;
     size_t n = scr_net_ls_snapshot(&t->srv->keylog_ls, &snap);
+    /* the server-level listener runs with `this` = the server, as Node's
+     * EventEmitter calls it */
+    if (t->server != NULL) scr_dyn_this_push(t->server, SCR_DYNH_NET_SERVER);
     for (size_t i = 0; i < n; i++) {
       if (!scr_exc_pending()) ((ScrNetDataFn)snap[i].fn)(snap[i].cb, line);
       scr_closure_release(snap[i].cb);
     }
+    if (t->server != NULL) scr_dyn_this_pop();
     free(snap);
   }
 }
@@ -5241,9 +5252,11 @@ void scr_tls_sock_on_keylog(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn,
 }
 
 void scr_tls_server_on_keylog(ScrNetServer *server, ScrClosure *cb /*moves*/, void *fn, bool once) {
-  ScrTlsSrv *s = scr_tls_srv_of_server(server, "server.on('keylog')");
+  ScrTlsSrv *s = scr_tls_srv_of_server_or_null(server);
   if (s == NULL) {
-    scr_closure_release(cb);
+    /* Node's EventEmitter keeps a listener for any event name: a plain net
+     * or HTTP server's 'keylog' listener is registered and never fires */
+    scr_net_server_on_inert(server, cb, fn, once);
     return;
   }
   scr_net_ls_add(&s->keylog_ls, cb, fn, once);

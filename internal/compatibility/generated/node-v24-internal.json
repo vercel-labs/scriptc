@@ -103538,6 +103538,7 @@
           "tests/corpus/7454-tls-peer-embedded-pem.ts",
           "tests/corpus/8176-tls-empty-context-ca.ts",
           "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/net-server-inert-keylog.ts",
           "tests/corpus/tls-check-server-identity-malformed.ts",
           "tests/corpus/tls-check-server-identity.ts",
           "tests/corpus/tls-connect-forms.ts",
@@ -103547,6 +103548,7 @@
           "tests/corpus/tls-handshake-events.ts",
           "tests/corpus/tls-keylog.ts",
           "tests/corpus/tls-server-class.ts",
+          "tests/corpus/tls-server-keylog-this.cjs",
           "tests/corpus/tls-server-members.ts",
           "tests/corpus/tls-session-event.ts",
           "tests/corpus/tls-session-listener-timing.cjs",
@@ -104244,7 +104246,9 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.'keylog'",
         "tests": [
-          "tests/corpus/tls-keylog.ts"
+          "tests/corpus/tls-keylog.ts",
+          "tests/corpus/net-server-inert-keylog.ts",
+          "tests/corpus/tls-server-keylog-this.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -105575,7 +105579,9 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.'keylog'",
         "tests": [
-          "tests/corpus/tls-keylog.ts"
+          "tests/corpus/tls-keylog.ts",
+          "tests/corpus/net-server-inert-keylog.ts",
+          "tests/corpus/tls-server-keylog-this.cjs"
         ]
       },
       "anchorSource": "exact"

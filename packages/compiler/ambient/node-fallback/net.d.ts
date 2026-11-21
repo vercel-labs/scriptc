@@ -283,8 +283,11 @@ declare module "net" {
       event: "tlsClientError",
       listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
     ): void;
-    /* tls and https servers: the NSS key-log lines of their connections */
+    /* tls and https servers: the NSS key-log lines of their connections;
+     * a plain server keeps the listener inert, as Node's EventEmitter does */
     on(event: "keylog", listener: (line: Buffer) => void): void;
+    addListener(event: "keylog", listener: (line: Buffer) => void): void;
+    once(event: "keylog", listener: (line: Buffer) => void): void;
     on(event: "close" | "listening", listener: () => void): void;
     on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;

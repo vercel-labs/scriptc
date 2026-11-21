@@ -533,6 +533,9 @@ struct ScrNetServer {
   /* tls/https servers: 'tlsClientError' (err, tlsSocket), fired by the
    * TLS unit for a handshake that fails */
   ScrNetLs client_error_ls;
+  /* listeners for events this server never fires ('keylog' on a plain
+   * server, any unknown name): Node's EventEmitter keeps them, inert */
+  ScrNetLs inert_ls;
   /* server.maxConnections (unset = undefined) and its 'drop' listeners */
   bool max_conns_set;
   double max_conns;
@@ -2858,6 +2861,13 @@ void scr_net_server_get_connections(ScrNetServer *s, const ScrDyn *callback /*bo
 void scr_net_server_set_close_override(ScrNetServer *s, ScrClosure *ov /*moves*/) {
   scr_closure_release(s->close_override);
   s->close_override = ov;
+}
+
+/* A listener for an event this server never fires (Node's EventEmitter
+ * keeps any event name): it stays registered and inert until the server
+ * settles, so listenerCount/removeListener see it as Node's would. */
+void scr_net_server_on_inert(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  scr_net_ls_add(&s->inert_ls, cb, fn, once);
 }
 
 void scr_net_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
@@ -8884,6 +8894,7 @@ static void scr_net_server_settle(ScrNetServer *srv) {
   scr_net_ls_drop(&srv->listening_cbs);
   scr_net_ls_drop(&srv->timeout_ls);
   scr_net_ls_drop(&srv->client_error_ls);
+  scr_net_ls_drop(&srv->inert_ls);
   scr_net_ls_drop(&srv->new_listener_ls);
   scr_net_ls_drop(&srv->drop_ls);
   /* listen({ signal }): the registration detaches at the close — readline's

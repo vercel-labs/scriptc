@@ -85511,6 +85511,7 @@
           "tests/corpus/process-channel-ipc/main.ts",
           "tests/corpus/process-channel-ref-cycle/main.ts",
           "tests/corpus/process-chdir-value-forms.cjs",
+          "tests/corpus/process-config-build-description.cjs",
           "tests/corpus/process-constrained-memory.ts",
           "tests/corpus/process-cpu-usage-previous-value.cjs",
           "tests/corpus/process-credential-arguments.cjs",
@@ -85575,9 +85576,7 @@
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/diagnostics/compat-absent-node-values.ts",
           "tests/fixtures/node-types/env-files.ts",
-          "tests/fixtures/node-types/fenced.ts",
           "tests/fixtures/node-types/util-callables.ts",
-          "tests/harness/__snapshots__/node-types-fenced.txt",
           "tests/harness/event-loop.test.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -87330,11 +87329,10 @@
       "anchor": "",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:process.config",
         "tests": [
-          "tests/fixtures/node-types/fenced.ts",
-          "tests/harness/__snapshots__/node-types-fenced.txt"
+          "tests/corpus/process-config-build-description.cjs"
         ]
       },
       "anchorSource": "chapter"

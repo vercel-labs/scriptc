@@ -263,6 +263,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // lookup and a retain, with no allocation, coercion or program code. The
   // cursor methods use it to reach the same object process.stdio answers.
   "process.stdioOf",
+  "process.configValue",
   // Stores the encoding's spelling beside the decoder setEncoding installed.
   // readable.iterator builds the async iterator object; its members run later.
   "readable.iterator",

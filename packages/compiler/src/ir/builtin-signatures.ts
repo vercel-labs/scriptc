@@ -5274,6 +5274,8 @@ function buildLibFnSignatures() {
     "module.dynObjectOrAbsent": { argTypes: [F64], result: DYN },
     "module.dynOf": { argTypes: [DYN], result: DYN },
     "module.setExportsDyn": { argTypes: [F64, DYN], result: VOID },
+    /** process.config: the frozen build-description object. */
+    "process.configValue": { argTypes: [], result: DYN },
     /** The same stream object for a procStream VALUE (the cursor methods'
      * receiver): its scalar representation IS the descriptor. */
     "process.stdioOf": { argTypes: [PROCSTREAM_T], result: DYN },

@@ -1974,6 +1974,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "http.validateHeaderName": "scr_http_validate_header_name",
   "http.validateHeaderValue": "scr_http_validate_header_value",
   "http.setMaxIdleParsers": "scr_http_set_max_idle_parsers",
+  "http.agentCreateConnectionCheck": "scr_http_agent_create_connection_check",
   "http.reqMethod": "scr_http_req_method",
   "http.reqHttpVersion": "scr_http_req_http_version",
   "http.reqHttpVersionMajor": "scr_http_req_http_version_major",

@@ -2796,6 +2796,8 @@ function buildLibFnSignatures() {
     "http.validateHeaderValue": { argTypes: [STRING, DYN], result: VOID },
     /** http.setMaxIdleHTTPParsers(max): Node's argument validation. */
     "http.setMaxIdleParsers": { argTypes: [DYN], result: VOID },
+    /** The typed createConnection rewrite's secure-agent check. */
+    "http.agentCreateConnectionCheck": { argTypes: [DYN], result: VOID },
     "http.serverJoinDupHeaders": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverAllowMissingHostHeader": { argTypes: [NETSERVER_T], result: VOID },
     /** The five writable numeric http.Server timeout fields use one

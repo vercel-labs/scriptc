@@ -5283,11 +5283,34 @@ function lowerDynReceiverMethodCall(
   // instance-dispatching form if hook overrides ever become reachable.
   if (access.name.text === "createConnection" && isHttpAgentReceiver(lowerer, access.expression)) {
     const callsLoc = locOf(call);
+    const recvLoc = locOf(access.expression);
     const receiver = lowerer.lowerExpr(access.expression);
+    const recvDyn: IrExpr =
+      receiver.type.kind === "dyn"
+        ? receiver
+        : { kind: "dynFrom", value: receiver, type: DYN, loc: recvLoc };
+    const local = lowerer.declareHiddenLocal("%connAgent", DYN);
+    const agentRef: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc: recvLoc };
     const net = lowerNetConnectCall(lowerer, call, "createConnection", callsLoc);
+    // An https.Agent can flow here typed as http.Agent: its default dialer
+    // needs TLS, which the net lowering does not build, so the runtime
+    // refuses the plaintext dial for a secure agent instead.
     return {
       kind: "seqExpr",
-      stmts: [{ kind: "exprStmt", expr: receiver, loc: locOf(access.expression) }],
+      stmts: [
+        { kind: "varDecl", localId: local.id, init: recvDyn, loc: recvLoc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "http.agentCreateConnectionCheck",
+            args: [agentRef],
+            type: VOID,
+            loc: recvLoc,
+          },
+          loc: recvLoc,
+        },
+      ],
       result: net,
       type: net.type,
       loc: callsLoc,

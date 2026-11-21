@@ -5828,7 +5828,16 @@ void scr_crypto_fips_set(ScrDyn *value) {
     return;
   }
 #endif
-  atomic_store_explicit(&sp_fips_enabled, scr_dyn_truthy(value), memory_order_relaxed);
+  /* This build links a static mbedTLS with no FIPS-validated provider,
+   * so FIPS mode cannot be switched on: Node refuses in a non-FIPS build
+   * rather than reporting a mode nothing enforces. */
+  if (scr_dyn_truthy(value)) {
+    static const char message[] = "Cannot set FIPS mode in a non-FIPS build.";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1,
+                             "ERR_CRYPTO_FIPS_UNAVAILABLE");
+    return;
+  }
+  atomic_store_explicit(&sp_fips_enabled, false, memory_order_relaxed);
 }
 
 /* ── Sign and Verify objects ──────────────────────────────────────────── */

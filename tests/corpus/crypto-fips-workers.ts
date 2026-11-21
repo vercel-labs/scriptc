@@ -16,7 +16,7 @@ if (isMainThread) {
     worker.once("exit", () => resolve(text));
   });
   console.log("worker", report);
-  setFips(true);
+  setFips(false);
   console.log("main after", getFips());
 } else {
   const before = getFips();

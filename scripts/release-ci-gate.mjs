@@ -19,9 +19,28 @@ import { appendFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
+/** The branch the gate points at the release commit to dispatch CI on it. */
+export const gateBranch = (sha) => `release-ci/${sha}`;
+
 /**
- * What to do next, given the CI runs on the release commit (push and
- * workflow_dispatch runs, any order):
+ * The CI runs on the release commit that can vouch for it: its push run,
+ * which runs every lane a push to main runs, and the complete runs the gate
+ * dispatched on its own branch. A manual run on another ref can select fewer
+ * lanes (scope shape_overlay runs the shape overlay alone, macos_suite darwin
+ * a smaller macOS suite), and the runs API does not report its inputs, so it
+ * does not count.
+ */
+export function eligibleRuns(runs, sha) {
+  return runs.filter(
+    (run) =>
+      run.event === "push" ||
+      (run.event === "workflow_dispatch" && run.head_branch === gateBranch(sha)),
+  );
+}
+
+/**
+ * What to do next, given the eligible CI runs on the release commit (any
+ * order):
  * - pass: one succeeded;
  * - fail: the newest run that ran to the end failed, and nothing newer is running;
  * - wait: a run is queued, pending or in progress;
@@ -55,10 +74,9 @@ function main() {
   const gh = (...args) =>
     execFileSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
   const runsOnCommit = () =>
-    JSON.parse(
-      gh(`repos/${repo}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=50`),
-    ).workflow_runs.filter((run) => run.event === "push" || run.event === "workflow_dispatch");
-  const branch = `release-ci/${sha}`;
+    JSON.parse(gh(`repos/${repo}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=50`))
+      .workflow_runs;
+  const branch = gateBranch(sha);
   const summary = (line) => {
     console.log(line);
     if (process.env.GITHUB_STEP_SUMMARY)
@@ -76,7 +94,7 @@ function main() {
   return (async () => {
     let last = "";
     for (;;) {
-      const decision = decide(runsOnCommit(), { dispatched });
+      const decision = decide(eligibleRuns(runsOnCommit(), sha), { dispatched });
       if (decision.action === "pass") {
         summary(`CI passed on ${sha}: ${decision.run.html_url}`);
         cleanUp();

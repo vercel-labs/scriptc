@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import { preflight, publishedPackages, releaseNotes } from "../../scripts/release-preflight.mjs";
-import { decide } from "../../scripts/release-ci-gate.mjs";
+import { decide, eligibleRuns, gateBranch } from "../../scripts/release-ci-gate.mjs";
 import { PUBLISHING_JOBS, staleRuns } from "../../scripts/release-supersede.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
@@ -109,6 +109,34 @@ test("the release CI gate waits for, accepts, rejects or dispatches CI on the re
   expect(decide(dispatchedRuns, { dispatched: true }).action).toBe("pass");
   dispatchedRuns[1] = run("workflow_dispatch", "completed", "cancelled", "2");
   expect(decide(dispatchedRuns, { dispatched: true }).action).toBe("fail");
+});
+
+test("only the push run and the gate's own complete dispatch vouch for the release commit", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const run = (event: string, head_branch: string, conclusion: string, created_at: string) => ({
+    event,
+    head_branch,
+    status: "completed",
+    conclusion,
+    created_at,
+    html_url: `https://example.test/${created_at}`,
+  });
+  // A manual run on main may have run the shape overlay alone (scope
+  // shape_overlay) or the smaller darwin macOS suite; its success does not
+  // outweigh the push run's failure.
+  const runs = [
+    run("push", "main", "failure", "1"),
+    run("workflow_dispatch", "main", "success", "2"),
+    run("pull_request", "ctate/x", "success", "3"),
+  ];
+  expect(eligibleRuns(runs, sha).map((r) => r.created_at)).toEqual(["1"]);
+  expect(decide(eligibleRuns(runs, sha)).action).toBe("fail");
+  // The same manual run with the push run dropped: the gate dispatches its own.
+  runs[0] = run("push", "main", "cancelled", "1");
+  expect(decide(eligibleRuns(runs, sha)).action).toBe("dispatch");
+  // The run the gate dispatched on its branch counts.
+  runs.push(run("workflow_dispatch", gateBranch(sha), "success", "4"));
+  expect(decide(eligibleRuns(runs, sha), { dispatched: true }).action).toBe("pass");
 });
 
 test("CI on main keeps one group without cancelling, and pull requests keep cancelling", () => {

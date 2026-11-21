@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import { FAST_TEST_BUDGET_MS, fastTests } from "../../scripts/ci-fast-tests.mjs";
-import { decide, forkStatus, reviewState } from "../../scripts/ci-review-gate.mjs";
+import { decide, forkStatus, reviewState, staleRuns } from "../../scripts/ci-review-gate.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const repo = "vercel-labs/scriptc";
@@ -151,7 +151,7 @@ test("a fork's pull request run reports ci/full from its test job", () => {
 
 test("the gate workflow triggers on the reviews, the label, fork runs and by hand, and runs no pull request code", () => {
   expect(gateWorkflow.on["check_run"]).toEqual({ types: ["completed"] });
-  expect(gateWorkflow.on["pull_request"]).toEqual({ types: ["labeled"] });
+  expect(gateWorkflow.on["pull_request"]).toEqual({ types: ["labeled", "synchronize"] });
   expect(gateWorkflow.on["workflow_run"]).toEqual({ workflows: ["CI"], types: ["completed"] });
   expect(gateWorkflow.on["workflow_dispatch"]).toBeDefined();
   expect(gateWorkflow.permissions).toEqual({ contents: "read" });
@@ -227,4 +227,30 @@ test("the fast tier runs the changed tests and the tests named after changed sou
     deferred: ["tests/harness/differential.test.ts", "tests/harness/slow.test.ts"],
     total: 300,
   });
+});
+
+test("a push cancels the expensive tier still running on the pull request's older head", () => {
+  const run = (id: number, head: string, status: string) => ({ id, head_sha: head, status });
+  const newHead = "b".repeat(40);
+  expect(
+    staleRuns(
+      [
+        run(1, sha, "in_progress"),
+        run(2, sha, "queued"),
+        run(3, sha, "completed"),
+        run(4, newHead, "queued"),
+      ],
+      newHead,
+    ).map((stale) => stale.id),
+  ).toEqual([1, 2]);
+  expect(gateWorkflow.jobs["gate"]!.if).toContain("github.event.action == 'synchronize'");
+});
+
+test("a re-run of the fast tier does not turn a reported ci/full back to pending", () => {
+  const ci = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as Workflow;
+  const report = ci.jobs["test"]!.steps.find((step) => step.run?.includes("context=ci/full"))!.run!;
+  const keep = report.indexOf('if [ "$reported" = success ] || [ "$reported" = failure ]; then');
+  expect(report.indexOf('if [ "$state" = pending ]; then')).toBeGreaterThan(-1);
+  expect(keep).toBeGreaterThan(report.indexOf('if [ "$state" = pending ]; then'));
+  expect(keep).toBeLessThan(report.indexOf("gh api --method POST"));
 });

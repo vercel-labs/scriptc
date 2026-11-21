@@ -43,9 +43,10 @@ concurrency:
   # covers every commit merged before it. Releases still require a green run on their own commit: the release's
   # CI gate (scripts/release-ci-gate.mjs) dispatches one when that commit's push run was dropped. Each merge queue
   # group runs in a group of its own commit. The nightly sweep and manual runs neither cancel nor are cancelled by
-  # main pushes. A pull request's expensive tier (a dispatch with pr) shares the pull request's group: it replaces
-  # the fast run of the same commit, which it repeats, and a new push cancels it.
-  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && (inputs.pr || format('dispatch-{0}', github.run_id)) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
+  # main pushes. A pull request's expensive tier (a dispatch with pr) runs in a group of its own beside the pull
+  # request's: it never cancels the pull request run, whose checks the merge gate requires. A second dispatch for
+  # the pull request replaces it, and a new push cancels it (ci-review-gate.yml on synchronize).
+  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && (inputs.pr && format('full-{0}', inputs.pr) || format('dispatch-{0}', github.run_id)) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' && inputs.pr != '' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here
@@ -1626,6 +1627,15 @@ jobs:
             state=success description="Every CI lane passed"
           else
             state=failure description="A CI lane failed or was cancelled"
+          fi
+          # A re-run of the fast tier leaves a result an expensive-tier run already reported on this commit.
+          if [ "$state" = pending ]; then
+            reported=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses?per_page=100" \
+              --jq '[.[] | select(.context == "ci/full")][0].state // ""')
+            if [ "$reported" = success ] || [ "$reported" = failure ]; then
+              echo "ci/full on $SHA is already $reported; leaving it"
+              exit 0
+            fi
           fi
           gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=ci/full \
             -f description="$description" -f target_url="$URL" --silent

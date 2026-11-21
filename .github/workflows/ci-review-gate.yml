@@ -11,8 +11,9 @@ on:
     types: [completed]
   # The override: labeling a pull request ci:full starts its expensive tier at once, and its later pull request
   # runs run every lane while the label stays.
+  # A push to a pull request cancels the expensive tier still running on its older head.
   pull_request:
-    types: [labeled]
+    types: [labeled, synchronize]
   # A fork's pull request runs every lane but cannot write ci/full; this reports it.
   workflow_run:
     workflows: [CI]
@@ -39,8 +40,8 @@ jobs:
     if: >-
       (github.event_name == 'check_run' && github.event.check_run.app.slug == 'vercel' &&
       (github.event.check_run.name == 'Vercel Agent Review' || github.event.check_run.name == 'Vercel Security Review')) ||
-      (github.event_name == 'pull_request' && github.event.label.name == 'ci:full' &&
-      github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action == 'synchronize' || github.event.label.name == 'ci:full')) ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name != github.repository) ||
       github.event_name == 'workflow_dispatch'

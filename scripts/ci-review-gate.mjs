@@ -10,8 +10,9 @@
 //   check_run completed: when Vercel Agent Review or Vercel Security Review completes, and both have passed
 //     (success or neutral) on the pull request's current head;
 //   pull_request labeled ci:full, or workflow_dispatch with a pr: at once, whatever the reviews say.
-// The dispatched run checks that the branch is still at sha, and a new push cancels it (they share the pull
-// request's concurrency group). CI runs on the branch, never here: this workflow runs in the default branch's
+// The dispatched run checks that the branch is still at sha. It runs in a concurrency group of its own, never
+// cancelling the pull request run whose checks the merge gate requires; pull_request synchronize cancels it here
+// once the branch moves on. CI runs on the branch, never here: this workflow runs in the default branch's
 // context, whose caches main and the release restore.
 //
 // workflow_run completed: a fork's token cannot write statuses, so its pull request runs (which run every lane)
@@ -83,6 +84,11 @@ export function decide({ mode, pr, repo, defaultBranch, reviewedSha, checkRuns, 
   };
 }
 
+/** The dispatched runs on a pull request's branch to cancel after a push: unfinished, on another commit. */
+export function staleRuns(runs, headSha) {
+  return runs.filter((run) => run.status !== "completed" && run.head_sha !== headSha);
+}
+
 /** The ci/full status of a fork's pull request run, from its required test job; null when there is none. */
 export function forkStatus(run, jobs, repo) {
   if (run.event !== "pull_request" || run.head_repository?.full_name === repo) return null;
@@ -145,6 +151,25 @@ function main() {
     reviewedSha = check.head_sha;
     // GitHub lists only pull requests whose head is in this repository.
     numbers = (check.pull_requests ?? []).map((pr) => pr.number);
+  } else if (eventName === "pull_request" && event.action === "synchronize") {
+    // The expensive tier runs in a concurrency group of its own, so the new head's pull request run cannot cancel
+    // the one still running on an older head; this does.
+    const pr = event.pull_request;
+    const runs = json(
+      `repos/${repo}/actions/workflows/ci.yml/runs?event=workflow_dispatch&branch=${encodeURIComponent(pr.head.ref)}&per_page=100`,
+    ).workflow_runs;
+    for (const run of staleRuns(runs, pr.head.sha)) {
+      console.log(
+        `#${pr.number}: cancelling the expensive tier of ${run.head_sha}: ${run.html_url}`,
+      );
+      try {
+        gh("--method", "POST", `repos/${repo}/actions/runs/${run.id}/cancel`);
+      } catch (error) {
+        // It finished meanwhile.
+        console.log(`  not cancelled: ${error.message}`);
+      }
+    }
+    return;
   } else if (eventName === "pull_request") {
     if (event.label?.name !== FULL_LABEL)
       return console.log(`The label ${event.label?.name} does not gate CI`);

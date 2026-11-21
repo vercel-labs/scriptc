@@ -3557,15 +3557,15 @@ static void scr_child_bridge_flush(ScrChildStream *s) {
 
 void scr_child_bridge_stream_closed(ScrChild *c) {
   if (!c || c->close_done || !scr_child_close_ready(c)) return;
+  /* Only the closing list owns a reference to fire 'close' from. A stream
+   * that closes while its child still runs records nothing here: the exit
+   * path re-checks readiness and completes 'close' once, with the settle
+   * registry's reference. */
   ScrChild **link = &scr_children_closing;
-  while (*link) {
-    if (*link == c) {
-      *link = c->next;
-      c->next = NULL;
-      break;
-    }
-    link = &(*link)->next;
-  }
+  while (*link && *link != c) link = &(*link)->next;
+  if (*link == NULL) return;
+  *link = c->next;
+  c->next = NULL;
   scr_child_fire_close(c);
 }
 
@@ -7725,15 +7725,15 @@ static void scr_child_bridge_flush(ScrChildStream *s) {
 
 void scr_child_bridge_stream_closed(ScrChild *c) {
   if (!c || c->close_done || !scr_child_close_ready(c)) return;
+  /* Only the closing list owns a reference to fire 'close' from. A stream
+   * that closes while its child still runs records nothing here: the exit
+   * path re-checks readiness and completes 'close' once, with the settle
+   * registry's reference. */
   ScrChild **link = &scr_children_closing;
-  while (*link) {
-    if (*link == c) {
-      *link = c->next;
-      c->next = NULL;
-      break;
-    }
-    link = &(*link)->next;
-  }
+  while (*link && *link != c) link = &(*link)->next;
+  if (*link == NULL) return;
+  *link = c->next;
+  c->next = NULL;
   scr_child_fire_close(c);
 }
 

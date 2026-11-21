@@ -4329,10 +4329,28 @@ ScrDyn *scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name /*borrowed*/,
   ScrDyn *registry = scr_test_ctx_assert_snapshot(t);
   ScrDyn *fn = registry ? scr_dyn_obj_get(registry, name->data, name->len) : NULL;
   if (!fn) {
-    char msg[192];
-    int len = snprintf(msg, sizeof msg, "t.assert.%.*s is not a function", (int)name->len,
+    /* The name is program data of any length: format into a stack buffer
+     * and, when the message does not fit, into an exactly-sized heap
+     * buffer, so a long name neither truncates the message nor reads past
+     * the buffer (Node's message carries the whole name). */
+    char stack[96];
+    const char *msg = stack;
+    char *heap = NULL;
+    int len = snprintf(stack, sizeof stack, "t.assert.%.*s is not a function", (int)name->len,
                        name->data);
+    if (len < 0) len = 0;
+    if ((size_t)len >= sizeof stack) {
+      heap = malloc((size_t)len + 1);
+      if (heap) {
+        snprintf(heap, (size_t)len + 1, "t.assert.%.*s is not a function", (int)name->len,
+                 name->data);
+        msg = heap;
+      } else {
+        len = (int)sizeof stack - 1;
+      }
+    }
     scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    free(heap);
     return NULL;
   }
   /* An assertion that replaces its own registration while it runs (or a

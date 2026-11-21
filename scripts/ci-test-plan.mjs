@@ -13,7 +13,11 @@ export const corpusFiles = [
   "tests/harness/test262.test.ts",
   "tests/harness/three.test.ts",
 ];
-const coverageFile = "tests/harness/coverage.test.ts";
+// The coverage report snapshots and fixtures run once per run, in their own job (coverage in
+// .github/workflows/ci.yml), so a stale snapshot fails one job instead of every plain shard. The corpus half of the
+// sweep splits the corpus across the plain shards.
+export const coverageFile = "tests/harness/coverage.test.ts";
+export const coverageCorpusFile = "tests/harness/coverage-corpus.test.ts";
 const cacheFile = "packages/compiler/src/backend/native-toolchain.test.ts";
 // Expensive integration suites run in their own vitest process, serially
 // beside the corpus, avoiding worker contention between large compilations.
@@ -51,6 +55,7 @@ export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
   coverageFile,
+  coverageCorpusFile,
   cacheFile,
   ...isolatedFiles.map(([, file]) => file),
   ...caseShardedSideFiles.map(([, file]) => file),
@@ -339,8 +344,8 @@ export function ciTestPlan({
       },
     });
     side.push({
-      name: "coverage sweep",
-      args: ["test", coverageFile],
+      name: "coverage corpus sweep",
+      args: ["test", coverageCorpusFile],
       env: { ...env, SCRIPTC_TEST_WORKERS: "1" },
     });
   }

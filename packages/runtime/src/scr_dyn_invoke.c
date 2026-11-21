@@ -2730,9 +2730,12 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
   if (strcmp(name->data, dyn_s20) == 0) return dyn_function_constructor();
   ScrDyn *error = scr_dyn_error_constructor(name->data);
   if (error) return error;
-  ScrDyn *ctor = dyn_global_ctor(name->data);
-  if (!ctor) scr_trap(dyn_s3);
-  return ctor;
+  /* A name the table does not model answers NULL: a prototype a program
+   * only reaches through a value's kind (Object.getPrototypeOf of a
+   * primitive or an unlinked unit) asks with names such as String or
+   * Number that the table need not hold. Aborting here ended the process
+   * from inside user code that no build-time refusal covered. */
+  return dyn_global_ctor(name->data);
 }
 
 #ifdef SCR_JS_OBJECT_MODEL

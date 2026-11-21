@@ -2579,8 +2579,12 @@ static bool scr_events_emit_lifecycle(const ScrStr *event, ScrDyn *const *args, 
     return scr_emit_exit_listeners(scr_emit_code_of(args, argc));
   if (event->len == 10 && memcmp(event->data, "beforeExit", 10) == 0)
     return scr_run_before_exit_listeners(scr_emit_code_of(args, argc));
+  /* Signal registration, delivery and cleanup belong to the main thread (a
+   * worker's registration leaves the list alone), and the registry is one
+   * process-wide list of main-thread listeners. A worker's emit answers
+   * false instead of reading that list from the wrong thread. */
   if (event->len >= 3 && memcmp(event->data, "SIG", 3) == 0)
-    return scr_emit_signal_listeners(event, args, argc);
+    return scr_context_is_main() && scr_emit_signal_listeners(event, args, argc);
   return false;
 }
 

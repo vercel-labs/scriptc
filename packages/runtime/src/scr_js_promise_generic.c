@@ -314,8 +314,8 @@ static bool js_pg_is_promise(const ScrDyn *value) {
   ScrStr *name = scr_str_new("Promise", 7);
   ScrDyn *promise = scr_dyn_global_constructor(name);
   scr_str_release(name);
-  bool same = scr_dyn_strict_eq(promise, value);
-  scr_dyn_release(promise);
+  bool same = promise != NULL && scr_dyn_strict_eq(promise, value);
+  if (promise != NULL) scr_dyn_release(promise);
   return same;
 }
 

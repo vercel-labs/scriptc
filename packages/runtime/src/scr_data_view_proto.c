@@ -321,11 +321,13 @@ ScrDyn *scr_data_view_prototype(ScrDyn *tag_key) {
   ScrStr *constructor_name = scr_str_new("DataView", sizeof "DataView" - 1);
   ScrDyn *ctor = scr_dyn_global_constructor(constructor_name);
   scr_str_release(constructor_name);
-  ScrStr *constructor = scr_str_new("constructor", sizeof "constructor" - 1);
-  scr_dv_define(prototype, constructor, ctor);
-  scr_str_release(constructor);
-  scr_dyn_fn_seed_prototype(ctor, scr_dyn_retain(prototype));
-  scr_dyn_release(ctor);
+  if (ctor) {
+    ScrStr *constructor = scr_str_new("constructor", sizeof "constructor" - 1);
+    scr_dv_define(prototype, constructor, ctor);
+    scr_str_release(constructor);
+    scr_dyn_fn_seed_prototype(ctor, scr_dyn_retain(prototype));
+    scr_dyn_release(ctor);
+  }
   scr_atexit(scr_dv_proto_cleanup);
   return scr_dyn_retain(scr_dv_proto_object);
 }

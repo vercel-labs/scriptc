@@ -7104,7 +7104,11 @@ function lowerPrimitiveProtoCall(
     (name === "toFixed" || name === "toExponential") &&
     call.arguments.nodes.length <= 1 &&
     !call.arguments.nodes.some(ts.isSpreadElement) &&
-    isJsSourceFile(ts.getSourceFileOfNode(call))
+    // toFixed's digits conversion is the same for a typed file: a
+    // fractionDigits the checker cannot type (an `any` value) is what Node's
+    // ToIntegerOrInfinity answers, and the other casts below stay for the
+    // untyped-JavaScript forms.
+    (name === "toFixed" || isJsSourceFile(ts.getSourceFileOfNode(call)))
   ) {
     const operand = lowerer.lowerExpr(recv);
     if (
@@ -7119,6 +7123,60 @@ function lowerPrimitiveProtoCall(
         name,
         `${ts.getTextOfNode(recv)}.${name}`,
         lowerer.coerceToExpected(operand, DYN),
+      );
+      if (dispatched) return dispatched;
+    }
+    // A statically typed number with a fractionDigits value the checker
+    // leaves untyped (`n.toFixed(digits)` where a function assigns `digits`):
+    // the number branch of the primitive dispatch converts the argument with
+    // Node's ToIntegerOrInfinity and picks the absent form when it is
+    // undefined. Without it the call keeps the standard-library fence and
+    // throws where Node formats.
+    if (name === "toFixed" && operand.type.kind === "f64" && call.arguments.nodes.length === 1) {
+      const digits = lowerer.lowerExpr(call.arguments.nodes[0]!);
+      const loc = locOf(call);
+      if (digits.type.kind === "f64")
+        return { kind: "libCall", fn: "num.toFixed", args: [operand, digits], type: STRING, loc };
+      if (digits.type.kind === "undefinedT" || digits.type.kind === "void") {
+        // The argument is written, so the call is toFixed(0): the exact
+        // decimal integer, not the omitted-digits fast path (which answers
+        // the shortest round-trip text for a large integer).
+        const zero: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
+        const exact: IrExpr = {
+          kind: "libCall",
+          fn: "num.toFixed",
+          args: [operand, zero],
+          type: STRING,
+          loc,
+        };
+        if (isSafeToDiscard(digits)) return exact;
+        // JavaScript evaluates the receiver before its arguments: the
+        // discarded digits expression runs after the receiver is read.
+        const receiver = lowerer.declareHiddenLocal("%toFixedReceiver", F64);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: receiver.id, init: operand, loc },
+            { kind: "exprStmt", expr: digits, loc },
+          ],
+          result: {
+            kind: "libCall",
+            fn: "num.toFixed",
+            args: [varRef(receiver.id, F64, loc), zero],
+            type: STRING,
+            loc,
+          },
+          type: STRING,
+          loc,
+        };
+      }
+      const dispatched = lowerDynPrimitiveMethodCall(
+        lowerer,
+        call,
+        name,
+        `${ts.getTextOfNode(recv)}.${name}`,
+        lowerer.coerceToExpected(operand, DYN),
+        [digits],
       );
       if (dispatched) return dispatched;
     }

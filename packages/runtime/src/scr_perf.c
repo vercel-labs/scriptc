@@ -1641,7 +1641,14 @@ static void scr_perf_observe_function(const ScrStr *name, double start, double d
 static bool scr_perf_timerified_record(ScrDyn *histogram, const ScrStr *name, double start,
                                        double duration, ScrDyn *detail) {
   if (histogram != NULL) {
-    scr_histo_record_checked(histogram, ceil(duration * 1e6));
+    /* Node measures the call with its nanosecond clock, so a completed call
+     * always records at least 1ns. This runtime times calls with the
+     * monotonic clock in milliseconds, whose tick can be coarser than the
+     * call: a trivial call then measures 0, and the histogram's own range
+     * check (integer >= 1, as Node's) would turn it into an uncaught
+     * ERR_OUT_OF_RANGE. Record the minimum instead. */
+    double recorded = ceil(duration * 1e6);
+    scr_histo_record_checked(histogram, recorded < 1 ? 1 : recorded);
     if (scr_exc_pending()) return false;
   }
   scr_perf_observe_function(name, start, duration, detail);

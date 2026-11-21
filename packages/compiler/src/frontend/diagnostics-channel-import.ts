@@ -43,8 +43,25 @@ function importsChannel(file: ts.SourceFile): boolean {
   return false;
 }
 
+/** Whether this file's own code can import node:diagnostics_channel. A
+ * declaration file's module specifiers are types and run nothing, and a file
+ * whose text never spells the module cannot name it in a static import,
+ * export or require — the two cheap answers that keep the program's library
+ * and declaration files out of the walk. */
+export function sourceImportsDiagnosticsChannel(file: ts.SourceFile): boolean {
+  if (file.isDeclarationFile) return false;
+  // A static import, export or require spells the module's name, but a
+  // string literal may spell any character as an escape
+  // (`require("node:diagnostics\\u005fchannel")`), and the parsed literal's
+  // text is the decoded name. A file is walked when its text spells the name
+  // or contains a backslash, the only other way to write it.
+  if (!ts.sourceTextIncludes(file, "diagnostics_channel") && !ts.sourceTextIncludes(file, "\\"))
+    return false;
+  return importsChannel(file);
+}
+
 export function programImportsDiagnosticsChannel(program: ts.Program): boolean {
-  if (program.getSourceFiles().some(importsChannel)) return true;
+  if (program.getSourceFiles().some(sourceImportsDiagnosticsChannel)) return true;
   // A module imported through the CJS linker that is not in the source
   // files (an npm package's require) cannot subscribe: the compiler treats
   // such a module as its own body, whose own sources are in the program.

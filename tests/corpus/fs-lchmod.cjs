@@ -15,12 +15,15 @@ const { tmpdir } = require("node:os");
     ["file", () => fs.promises.lchmod(file, 0o600)],
     ["bad mode", () => fs.promises.lchmod(file, Number("nope"))],
   ];
+  // The temp directory's name is per process: messages print it as <dir> so
+  // the Node oracle and the compiled program compare equal.
+  const scrub = (text) => String(text).split(dir).join("<dir>");
   for (const [label, run] of attempts) {
     try {
       await run();
       console.log("lchmod", label, "ok");
     } catch (err) {
-      console.log("lchmod", label, err.name, err.code, err.message);
+      console.log("lchmod", label, err.name, err.code, err.syscall, scrub(err.message));
     }
   }
 

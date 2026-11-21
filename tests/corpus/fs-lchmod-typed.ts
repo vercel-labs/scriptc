@@ -26,4 +26,16 @@ try {
 } catch (err) {
   console.log("promises.lchmod", (err as Error).name, (err as { code?: string }).code);
 }
+// A path is a C string at the lchmod(2) call: an embedded NUL would cut it
+// short and reach another file, so it is refused as an invalid argument
+// where the operation exists at all (macOS).
+if (process.platform === "darwin") {
+  try {
+    await lchmod(`${file}\u0000suffix`, 0o600);
+    console.log("nul", "ok");
+  } catch (err) {
+    console.log("nul", (err as Error).name, (err as { code?: string }).code);
+  }
+}
+
 fs.rmSync(dir, { recursive: true, force: true });

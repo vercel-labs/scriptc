@@ -30393,6 +30393,7 @@
           "tests/corpus/2211-dc-trace-promise.cjs",
           "tests/corpus/2214-dc-bind-store.cjs",
           "tests/corpus/diagnostics-channel-audit.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs",
           "tests/corpus/diagnostics-channel-console.cjs"
         ]
       },
@@ -30814,7 +30815,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.log'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30840,7 +30842,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.info'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30866,7 +30869,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.debug'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30892,7 +30896,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.warn'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30918,7 +30923,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.error'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -58687,6 +58693,7 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-agent-create-connection-typed.ts",
           "tests/corpus/http-agent-create-connection.mjs",
           "tests/corpus/http-agent-keep-alive-hooks.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
@@ -58884,10 +58891,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.agent.createConnection",
         "tests": [
-          "tests/corpus/http-agent-create-connection.mjs"
+          "tests/corpus/http-agent-create-connection.mjs",
+          "tests/corpus/http-agent-create-connection-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74416,11 +74424,13 @@
           "tests/corpus/2675-create-require-nested-esm.js",
           "tests/corpus/2932-create-require-program/main.ts",
           "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/module-builtin-modules/main.ts",
           "tests/corpus/module-compile-cache-disabled.ts",
           "tests/corpus/module-compile-cache-entry.mjs",
           "tests/corpus/module-compile-cache-require.cjs",
           "tests/corpus/module-compile-cache-values.mjs",
           "tests/corpus/module-find-package-json/main.ts",
+          "tests/corpus/module-function-values/main.ts",
           "tests/corpus/module-source-map-class-values.mjs",
           "tests/corpus/module-source-map-class.ts",
           "tests/corpus/module-source-maps-values.mjs",
@@ -74516,11 +74526,12 @@
       "anchor": "moduleisbuiltinmodulename",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:module.module.isBuiltin",
         "tests": [
           "tests/corpus/2932-create-require-program/main.ts",
-          "tests/corpus/5846-events-esm-default-max.ts"
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/module-function-values/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74610,11 +74621,12 @@
       "anchor": "modulesyncbuiltinesmexports",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:module.module.syncBuiltinESMExports",
         "tests": [
           "tests/corpus/2932-create-require-program/main.ts",
-          "tests/corpus/5846-events-esm-default-max.ts"
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/module-function-values/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74632,12 +74644,13 @@
       "anchor": "the-module-object",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:module.builtinModules",
         "tests": [
           "tests/corpus/2631-create-require/main.ts",
           "tests/corpus/2637-create-require-bare/main.ts",
-          "tests/corpus/2932-create-require-program/main.ts"
+          "tests/corpus/2932-create-require-program/main.ts",
+          "tests/corpus/module-builtin-modules/main.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -81124,6 +81137,7 @@
           "tests/corpus/perf-entry-globals.cjs",
           "tests/corpus/perf-entry-object-tag.ts",
           "tests/corpus/perf-event-loop-utilization.ts",
+          "tests/corpus/perf-histogram-ewma.ts",
           "tests/corpus/perf-histogram-inference.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/perf-hooks-now-arguments.cjs",
@@ -83135,6 +83149,8 @@
         "tests": [
           "tests/corpus/9999-histogram-core.ts",
           "tests/corpus/9990-histogram-comparison.ts",
+          "tests/corpus/perf-histogram-ewma.ts",
+          "tests/corpus/perf-histogram-inference.ts",
           "tests/corpus/9998-histogram-recordable.js",
           "tests/corpus/9995-histogram-upcast.ts",
           "tests/corpus/9994-histogram-short-lived.ts",
@@ -83324,8 +83340,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.burnRate",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83373,8 +83392,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.linearBuckets",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83396,8 +83418,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.logBuckets",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83554,8 +83579,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.percentilesAt",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83778,8 +83806,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.ewmaMean",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83801,8 +83832,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.ewmaStddev",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83824,8 +83858,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.ewmaErrorRate",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -83847,8 +83884,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.kurtosis",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9990-histogram-comparison.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -84056,8 +84097,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.percentilesBigInt",
+        "tests": [
+          "tests/corpus/perf-histogram-ewma.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -84079,8 +84123,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.skewness",
+        "tests": [
+          "tests/corpus/9999-histogram-core.ts",
+          "tests/corpus/9990-histogram-comparison.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -98634,18 +98682,15 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-message-forms.ts",
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
           "tests/fixtures/node-test/cases/assert-integration.ts",
+          "tests/fixtures/node-test/cases/assert-register.ts",
           "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
@@ -99386,13 +99431,11 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
-        "evidence": "compiler-dedicated:assert",
+        "status": "partial",
+        "evidence": "compiler-feature:test.assert",
         "tests": [
-          "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-message-forms.ts"
+          "tests/fixtures/node-test/cases/assert-register.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"

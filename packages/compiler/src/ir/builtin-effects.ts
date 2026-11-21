@@ -70,6 +70,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // ERR_INVALID_ARG_VALUE for a missing method.
   "test.accessorDescriptor",
   "test.accessorRequire",
+  // assert.register validates its function; a registered assertion and the
+  // missing-name error throw from the call the runner makes.
+  "test.assertRegister",
+  "test.ctxCustomAssert",
   "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
@@ -456,6 +460,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
+  "http.agentCreateConnectionCheck",
   // 'prefinish' on the HTTP/2 compatibility response is refused by name.
   "http.resOnPrefinish",
   "http.serverTimeoutGet",
@@ -731,6 +736,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -844,6 +850,14 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.histoMannWhitneyU",
   "perf.histoMannWhitneyZ",
   "perf.histoMannWhitneyP",
+  // burnRate validates its SLO target (Node's ERR_INVALID_ARG_TYPE /
+  // ERR_OUT_OF_RANGE).
+  "perf.histoBurnRate",
+  // The bucket views validate their arguments (stepSize, firstBucket, base
+  // and percentilesAt's array) before iterating.
+  "perf.histoLinearView",
+  "perf.histoLogView",
+  "perf.histoPercentilesAtView",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",

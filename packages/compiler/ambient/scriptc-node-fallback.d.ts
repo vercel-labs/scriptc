@@ -2102,12 +2102,25 @@ declare module "node:perf_hooks" {
     readonly min: number;
     readonly minBigInt: bigint;
     readonly percentiles: Map<number, number>;
+    /* Node's Map holds the percentile tick as a number key and the bucket
+     * value as a BigInt (@types/node declares bigint keys, but the running
+     * implementation stores the numbers it gets from hdr_iter_percentile). */
+    readonly percentilesBigInt: Map<number, bigint>;
     readonly stddev: number;
+    readonly skewness: number;
+    readonly kurtosis: number;
+    readonly ewmaMean: number;
+    readonly ewmaStddev: number;
+    readonly ewmaErrorRate: number;
     percentile(percentile: number): number;
     percentileBigInt(percentile: number): bigint;
+    percentilesAt(percentiles: number[]): Map<number, number>;
     countAt(value: number): number;
     cdf(value: number): number;
     ccdf(value: number): number;
+    linearBuckets(stepSize: number): Map<number, number>;
+    logBuckets(firstBucket: number, base: number): Map<number, number>;
+    burnRate(sloTarget: number): number;
     ksTest(other: Histogram): number;
     cohensD(other: Histogram): number;
     cliffsD(other: Histogram): number;
@@ -2148,6 +2161,8 @@ declare module "node:perf_hooks" {
     lowest?: number | bigint | undefined;
     highest?: number | bigint | undefined;
     figures?: number | undefined;
+    halfLife?: number | undefined;
+    threshold?: number | undefined;
   }
   export interface RecordableHistogram extends Histogram {
     record(val: number | bigint): void;

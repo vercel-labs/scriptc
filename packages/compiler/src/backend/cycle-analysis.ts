@@ -96,8 +96,17 @@ export function computeTraced(
   /** computeCycleMutability's answer for this module, when the caller has it. */
   precomputed?: CycleMutability,
   prototypeShapes?: ReadonlySet<string>,
+  forcedArrayKinds?: ReadonlySet<number>,
 ): { shapes: Set<string>; unions: Set<string> } {
-  const { shapes, unions } = analyzeCycles(mod, false, stores, precomputed, true, prototypeShapes);
+  const { shapes, unions } = analyzeCycles(
+    mod,
+    false,
+    stores,
+    precomputed,
+    true,
+    prototypeShapes,
+    forcedArrayKinds,
+  );
   return { shapes, unions };
 }
 
@@ -126,9 +135,11 @@ export function computeCyclic(
   stores?: DynamicFieldStores,
   precomputed?: CycleMutability,
   prototypeShapes?: ReadonlySet<string>,
+  forcedArrayKinds?: ReadonlySet<number>,
 ): ReadonlySet<string> | null {
   if (mod.weakKeys === undefined) return null;
-  return analyzeCycles(mod, false, stores, precomputed, false, prototypeShapes).cyclic;
+  return analyzeCycles(mod, false, stores, precomputed, false, prototypeShapes, forcedArrayKinds)
+    .cyclic;
 }
 
 /** Values that can reference any object. */
@@ -185,6 +196,25 @@ export function explainCycle(mod: IrModule, key: string): CycleExplanation | nul
   return analyzeCycles(mod, true).explain(key);
 }
 
+/** The SCR_ELEM_* kind an array of `elem` allocates as: llvm/shapes.ts's
+ * arrayAllocKind and the runtime's scr_arr_new argument. */
+function arrayAllocKindOf(elem: IrType): number {
+  switch (elem.kind) {
+    case "f64":
+      return 0;
+    case "bool":
+      return 1;
+    case "string":
+      return 2;
+    case "array":
+      return 3;
+    case "bytes":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
 function analyzeCycles(
   mod: IrModule,
   labels: boolean,
@@ -198,6 +228,11 @@ function analyzeCycles(
    * object, so the shape is intrinsic from the start — and every shape that
    * holds it is traced with it. */
   prototypeShapes?: ReadonlySet<string>,
+  /** Array element kinds the program gives a prototype
+   * (prototypeOverrideArrayKinds): such an array is born with the collector
+   * header and keeps a protected prototype, so a shape that holds one can
+   * reach anything through it. */
+  forcedArrayKinds?: ReadonlySet<number>,
 ): {
   shapes: Set<string>;
   /** The shapes that are traced themselves, before a hierarchy shares the
@@ -435,9 +470,25 @@ function analyzeCycles(
         addType(from, t.value, true, label?.kind === "field" ? { ...label, via: "map" } : label);
         break;
       case "set":
-      case "array":
+      case "array": {
+        // A forced-cyclic array keeps its prototype on its own metadata, and
+        // that prototype's closure can capture whatever holds the array: the
+        // holder reaches any object through it.
+        if (t.kind === "array" && forcedArrayKinds?.has(arrayAllocKindOf(t.elem))) {
+          from.intrinsic = true;
+          from.edges.clear();
+          if (from.labels !== null) {
+            from.labels.clear();
+            from.intrinsicField = {
+              field: label?.kind === "field" ? label.field : "",
+              holds: "dyn",
+            };
+          }
+          break;
+        }
         addType(from, t.elem, true, label?.kind === "field" ? { ...label, via: t.kind } : label);
         break;
+      }
     }
   };
   for (const s of shapeDefs) {

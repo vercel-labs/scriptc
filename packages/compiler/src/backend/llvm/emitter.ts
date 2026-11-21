@@ -2903,17 +2903,29 @@ export class LlEmitter {
     // that answer. A checked-dynamic receiver can be any record, so every
     // shape then carries the slot.
     this.prototypeOverrideShapes = prototypeShapeIds(mod);
-    const traced = computeTraced(mod, dynamicStores, cycleMutability, this.prototypeOverrideShapes);
+    this.forcedCyclicArrayKinds = new Set(mod.prototypeOverrideArrayKinds ?? []);
+    const traced = computeTraced(
+      mod,
+      dynamicStores,
+      cycleMutability,
+      this.prototypeOverrideShapes,
+      this.forcedCyclicArrayKinds,
+    );
     // The shapes the collector must nominate and walk when weak-collection
     // keys give more of them the header (ShapeHost.weakOnly). A library
     // keeps every traced type the collector's: scr_weak_traces is the
     // executable's.
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
-    this.forcedCyclicArrayKinds = new Set(mod.prototypeOverrideArrayKinds ?? []);
     const weakCyclic =
       mod.lib === undefined
-        ? computeCyclic(mod, dynamicStores, cycleMutability, this.prototypeOverrideShapes)
+        ? computeCyclic(
+            mod,
+            dynamicStores,
+            cycleMutability,
+            this.prototypeOverrideShapes,
+            this.forcedCyclicArrayKinds,
+          )
         : null;
     const cyclic = weakCyclic;
     // A shape union's value is whichever record it holds, and the collector

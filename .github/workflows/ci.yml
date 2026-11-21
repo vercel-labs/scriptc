@@ -27,10 +27,14 @@ on:
         default: all
 
 concurrency:
-  # A new push to a pull request cancels its previous run. Every push to main, and every merge queue group, runs
-  # to completion in a group of its own commit, so each merged commit gets a result (releases require a green run
-  # on their commit). The nightly sweep and manual runs neither cancel nor are cancelled by main pushes.
-  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.sha }}
+  # A new push to a pull request cancels its previous run. Pushes to main share one group without cancelling: a
+  # running main run finishes, and of the pushes that land meanwhile only the newest gets a run (GitHub cancels the
+  # older pending ones before they start), so a burst of merges costs one run instead of one each. A main run
+  # covers every commit merged before it. Releases still require a green run on their own commit: the release's
+  # CI gate (scripts/release-ci-gate.mjs) dispatches one when that commit's push run was dropped. Each merge queue
+  # group runs in a group of its own commit. The nightly sweep and manual runs neither cancel nor are cancelled by
+  # main pushes.
+  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here

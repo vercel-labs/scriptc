@@ -36,9 +36,12 @@ on:
       - ".github/workflows/libnode-packs.yml"
 
 concurrency:
-  # A fixed name: under workflow_call, github.workflow is the caller's, and
-  # sharing the caller's group would cancel the run as a deadlock.
-  group: libnode-packs-${{ github.ref }}
+  # A fixed prefix: under workflow_call, github.workflow is the caller's, and
+  # sharing the caller's group would cancel the run as a deadlock. The
+  # caller's name keeps the release's call and the release dry run's call
+  # in groups of their own, so a nightly dry run never replaces a release's
+  # pending pack build.
+  group: libnode-packs-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

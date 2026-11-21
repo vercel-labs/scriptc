@@ -3556,7 +3556,11 @@ static void scr_child_bridge_flush(ScrChildStream *s) {
 }
 
 void scr_child_bridge_stream_closed(ScrChild *c) {
-  if (!c || c->close_done || !scr_child_close_ready(c)) return;
+  if (!c) return;
+  /* An island child's own object emits its 'close'; the runtime's running
+   * and closing registries never hold it. */
+  SCR_IF_ISLAND(c, return);
+  if (c->close_done || !scr_child_close_ready(c)) return;
   /* Only the closing list owns a reference to fire 'close' from. A stream
    * that closes while its child still runs records nothing here: the exit
    * path re-checks readiness and completes 'close' once, with the settle
@@ -7724,7 +7728,11 @@ static void scr_child_bridge_flush(ScrChildStream *s) {
 }
 
 void scr_child_bridge_stream_closed(ScrChild *c) {
-  if (!c || c->close_done || !scr_child_close_ready(c)) return;
+  if (!c) return;
+  /* An island child's own object emits its 'close'; the runtime's running
+   * and closing registries never hold it. */
+  SCR_IF_ISLAND(c, return);
+  if (c->close_done || !scr_child_close_ready(c)) return;
   /* Only the closing list owns a reference to fire 'close' from. A stream
    * that closes while its child still runs records nothing here: the exit
    * path re-checks readiness and completes 'close' once, with the settle

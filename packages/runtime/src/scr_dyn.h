@@ -277,6 +277,7 @@ typedef enum {
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
   Y(SLIDING_HISTOGRAM) /* perf_hooks SlidingWindowHistogram (scr_perf_loop.c) */ \
+  Y(SOURCE_MAP) /* node:module SourceMap (scr_source_map.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \

@@ -4128,6 +4128,22 @@ function mapTwinClassInstance(type: ts.Type, ctx: TypeMapperCtx): IrType | null 
     : { kind: "object", className: ctx.classNamer(implementation) };
 }
 
+/** node:module's checked-dynamic declarations: the compile cache result and
+ * options, the source-map support record and options, and a SourceMap with
+ * the records it answers (a compiled program registers no source map, so
+ * findSourceMap answers undefined, but the declared shapes must still map so
+ * code that reads them compiles). */
+const MODULE_DYN_TYPES: ReadonlySet<string> = new Set([
+  "EnableCompileCacheResult",
+  "EnableCompileCacheOptions",
+  "SourceMapsSupport",
+  "SetSourceMapsSupportOptions",
+  "SourceMap",
+  "SourceMapPayload",
+  "SourceMapping",
+  "SourceOrigin",
+]);
+
 function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const { checker, unions, classNamer, resolveTypeParam } = ctx;
   // TypeScript's intrinsic globalThis symbol has no declaration. A stored
@@ -5903,15 +5919,16 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     return DYN;
   // module.enableCompileCache()'s result and its options argument
   // (@types/node's EnableCompileCacheResult and EnableCompileCacheOptions,
-  // and the fallback's twins) are the plain objects Node passes: a result
+  // and the fallback's twins), and node:module's source-map support record,
+  // its options and a SourceMap, are the plain objects Node passes: a result
   // lacks the members Node did not set, and an options object is read by the
   // runtime the way Node reads it.
   if (
     psym !== undefined &&
-    (psymName === "EnableCompileCacheResult" || psymName === "EnableCompileCacheOptions") &&
+    MODULE_DYN_TYPES.has(psymName) &&
     psym.declarations.some(
       (d) =>
-        ts.isInterfaceDeclaration(d) &&
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
         ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
         isDeclaredInAmbientModule(d, "module"),
     )

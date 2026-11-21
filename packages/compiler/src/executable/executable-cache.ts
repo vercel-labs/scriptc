@@ -75,6 +75,7 @@ export interface EarlyExecutableNativeFeatures {
   fsFlags?: boolean;
   fsExistsValue?: boolean;
   moduleCompileCache?: boolean;
+  sourceMap?: boolean;
   /** A function's inherited member shadowed by an own data property:
    * SCR_FN_MEMBER_PROPS. */
   fnMemberProps?: boolean;

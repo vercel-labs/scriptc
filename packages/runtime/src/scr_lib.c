@@ -4506,19 +4506,143 @@ void scr_process_set_debug_port(ScrDyn *port) {
   scr_debug_port = converted;
 }
 
-/* process.sourceMapsEnabled — node:internal/source_map/source_map_cache's
- * flag, read through the getter-only accessor and written through
- * setSourceMapsEnabled(validateBoolean). */
-static SCR_TL bool scr_source_maps_enabled = false;
+/* process.sourceMapsEnabled, process.setSourceMapsEnabled and node:module's
+ * source-map support (getSourceMapsSupport, setSourceMapsSupport,
+ * findSourceMap) — node:internal/source_map/source_map_cache.js.
+ *
+ * Node keeps ONE frozen null-prototype record { enabled, nodeModules,
+ * generatedCode }; getSourceMapsSupport() answers that same object every
+ * time, process.sourceMapsEnabled reads its `enabled`, and
+ * process.setSourceMapsEnabled(v) is setSourceMapsSupport(v, undefined),
+ * which resets the two option flags to false.
+ *
+ * A compiled program has no V8 source-map registry: it runs no JavaScript, so
+ * no module carries a sourceMappingURL for a parse to cache. The record still
+ * answers exactly what Node's answers after the same calls, and
+ * findSourceMap() answers undefined, as Node does for a file whose map was
+ * never parsed. */
+static SCR_TL ScrDyn *scr_source_maps_support = NULL;
 
-bool scr_process_source_maps_enabled(void) { return scr_source_maps_enabled; }
+static void scr_source_maps_support_clear(void) {
+  ScrDyn *support = scr_source_maps_support;
+  scr_source_maps_support = NULL;
+  scr_dyn_release(support);
+}
 
-void scr_process_set_source_maps_enabled(ScrDyn *value) {
-  if (value->kind != SCR_DYN_BOOL) {
-    scr_dyn_arg_type_fail("enabled", "of type boolean", value);
+static ScrDyn *scr_source_maps_support_build(bool enabled, bool node_modules, bool generated_code) {
+  ScrDyn *support = scr_dyn_new_obj_null_proto();
+  scr_dyn_obj_set(support, "enabled", 7, scr_dyn_new_bool(enabled));
+  scr_dyn_obj_set(support, "nodeModules", 11, scr_dyn_new_bool(node_modules));
+  scr_dyn_obj_set(support, "generatedCode", 13, scr_dyn_new_bool(generated_code));
+  scr_dyn_release(scr_dyn_freeze_data(support));
+  return support;
+}
+
+/* The record this thread's earlier calls left, or Node's initial one. */
+ScrDyn *scr_module_source_maps_support(void) {
+  if (scr_source_maps_support == NULL) {
+    scr_source_maps_support = scr_source_maps_support_build(false, false, false);
+    scr_atexit(scr_source_maps_support_clear);
+  }
+  return scr_dyn_retain(scr_source_maps_support);
+}
+
+bool scr_process_source_maps_enabled(void) {
+  ScrDyn *support = scr_module_source_maps_support();
+  ScrDyn *value = scr_dyn_obj_read(support, "enabled", 7);
+  scr_dyn_release(support);
+  if (value == NULL) return false;
+  bool enabled = value->kind == SCR_DYN_BOOL && value->v.b;
+  scr_dyn_release(value);
+  return enabled;
+}
+
+/* Reads `key` off the options object the way a property read in the program
+ * does: a checked record or class instance boxed as a dynamic value answers
+ * from its native fields or its view. NULL with the error pending when a
+ * getter throws. */
+static ScrDyn *scr_source_maps_option(const ScrDyn *object, const char *key, size_t key_len) {
+  if (object->kind != SCR_DYN_TYPED_REF) return scr_dyn_obj_read(object, key, key_len);
+  ScrStr *name = scr_str_new(key, key_len);
+  ScrDyn *value = scr_dyn_typed_ref_own_get(object, name);
+  if (!value) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+    if (view) {
+      value = scr_dyn_obj_read(view, key, key_len);
+      scr_dyn_release(view);
+    }
+  }
+  scr_str_release(name);
+  return value;
+}
+
+/* setSourceMapsSupport(enabled, options): validateBoolean(enabled),
+ * validateObject(options), then the two option flags (each defaulting to
+ * false, each validateBoolean'd under its dotted property name). Unknown
+ * option members are ignored. */
+void scr_module_set_source_maps_support(ScrDyn *enabled, ScrDyn *options) {
+  if (enabled->kind != SCR_DYN_BOOL) {
+    scr_dyn_arg_type_fail("enabled", "of type boolean", enabled);
     return;
   }
-  scr_source_maps_enabled = value->v.b;
+  bool node_modules = false;
+  bool generated_code = false;
+  if (options->kind != SCR_DYN_UNDEF) {
+    /* validateObject: a null, a non-object and an Array are all refused. */
+    if (options->kind == SCR_DYN_NULL || !scr_dyn_is_object(options) ||
+        options->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(options)) {
+      scr_dyn_arg_type_fail("options", "of type object", options);
+      return;
+    }
+    ScrDyn *node_modules_value = scr_source_maps_option(options, "nodeModules", 11);
+    if (node_modules_value == NULL) return;
+    ScrDyn *generated_code_value =
+        scr_source_maps_option(options, "generatedCode", 13);
+    if (generated_code_value == NULL) {
+      scr_dyn_release(node_modules_value);
+      return;
+    }
+    bool valid = true;
+    if (node_modules_value->kind != SCR_DYN_UNDEF) {
+      if (node_modules_value->kind == SCR_DYN_BOOL) {
+        node_modules = node_modules_value->v.b;
+      } else {
+        scr_dyn_arg_type_fail("options.nodeModules", "of type boolean", node_modules_value);
+        valid = false;
+      }
+    }
+    if (valid && generated_code_value->kind != SCR_DYN_UNDEF) {
+      if (generated_code_value->kind == SCR_DYN_BOOL) {
+        generated_code = generated_code_value->v.b;
+      } else {
+        scr_dyn_arg_type_fail("options.generatedCode", "of type boolean", generated_code_value);
+        valid = false;
+      }
+    }
+    scr_dyn_release(node_modules_value);
+    scr_dyn_release(generated_code_value);
+    if (!valid) return;
+  }
+  ScrDyn *support = scr_source_maps_support_build(enabled->v.b, node_modules, generated_code);
+  ScrDyn *previous = scr_source_maps_support;
+  scr_source_maps_support = support;
+  if (previous == NULL) scr_atexit(scr_source_maps_support_clear);
+  scr_dyn_release(previous);
+}
+
+/* process.setSourceMapsEnabled(v): setSourceMapsSupport(v) with the option
+ * defaults, leaving the support record as Node leaves it. */
+void scr_process_set_source_maps_enabled(ScrDyn *value) {
+  scr_module_set_source_maps_support(value, scr_dyn_undefined());
+}
+
+/* findSourceMap(sourceURL): no source map is registered in a compiled
+ * program, and Node answers undefined — never throwing — for a file whose
+ * map was not parsed, a non-string source URL, a node: builtin and a path
+ * under node_modules while that support is off. */
+ScrDyn *scr_module_find_source_map(const ScrDyn *path) {
+  (void)path;
+  return scr_dyn_undefined();
 }
 
 

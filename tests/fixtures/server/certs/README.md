@@ -36,3 +36,5 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
 
     openssl ecparam -genkey -name prime256v1 -noout -out expired-key.pem
     openssl req -new -x509 -key expired-key.pem -out expired.pem -subj "/CN=localhost" -config san.cnf -extensions ext -not_before 20200101000000Z -not_after 20210101000000Z
+
+`long-san.pem`/`long-san-key.pem` is a self-signed localhost certificate with a very long URI subjectAltName (600 characters), minted with `openssl req -x509 ... -addext "subjectAltName=DNS:localhost,URI:https://example.com/<600 a's>"`. It exercises rendering and reporting of a SAN longer than any fixed stack buffer.

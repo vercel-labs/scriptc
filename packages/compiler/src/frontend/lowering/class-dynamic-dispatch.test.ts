@@ -9,7 +9,12 @@ import {
   type IrFunction,
   type IrStmt,
 } from "../../ir/ir.js";
-import { ClassDynamicDispatch, classPropertiesHelper } from "./class-dynamic-dispatch.js";
+import {
+  ClassDynamicDispatch,
+  classPropertiesHelper,
+  groupStaticFieldBranches,
+  type StaticFieldBranch,
+} from "./class-dynamic-dispatch.js";
 import { classValueSlot } from "../../ir/class-key-index.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -942,4 +947,125 @@ test("keeps returning and completing class branches in separate runs", () => {
   expect(completing!.cases.every(({ body }) => body[body.length - 1]!.kind === "break")).toBe(true);
   expect(returning!.cases.every(({ body }) => body.every((stmt) => stmt.kind === "if"))).toBe(true);
   expect(returning!.cases).toHaveLength(keys.length - 2);
+});
+
+test("regroups static-field branches by the class value they test", () => {
+  const value = variable("target");
+  const key = variable("key");
+  const ready = (cls: string): IrExpr => ({
+    kind: "varRef",
+    localId: `${cls}.ready`,
+    type: BOOL,
+    loc,
+  });
+  const identity = (keyClass: string, actual: string): IrExpr => ({
+    kind: "logical",
+    op: "&&",
+    left: {
+      kind: "libCall",
+      fn: "dyn.classIs",
+      args: [value, literal(`classval:${keyClass}`)],
+      type: BOOL,
+      loc,
+    },
+    right: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "dynCheck", value, type: { kind: "classval", className: keyClass }, loc },
+      right: {
+        kind: "classRef",
+        className: actual,
+        type: { kind: "classval", className: actual },
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  });
+  const branches = new WeakMap<IrStmt, StaticFieldBranch>();
+  const fence = (keyClass: string, actual: string, field: string): IrStmt => {
+    const branch: IrStmt = {
+      kind: "if",
+      cond: {
+        kind: "logical",
+        op: "&&",
+        left: {
+          kind: "logical",
+          op: "&&",
+          left: ready(actual),
+          right: identity(keyClass, actual),
+          type: BOOL,
+          loc,
+        },
+        right: { kind: "dynScalarEq", left: key, right: literal(field), type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+      then: [{ kind: "runtimeFence", code: "SC1090", message: `${actual}.${field}`, loc }],
+      else_: null,
+      loc,
+    };
+    branches.set(branch, { value, keyClass, actual, ready: true });
+    return branch;
+  };
+  const head = statement(literal("head"));
+  const tail: IrStmt = { kind: "return", value: null, loc };
+  const run = [
+    fence("Base", "Sub", "B"),
+    fence("Base", "Base", "A"),
+    fence("Base", "Sub", "A"),
+    fence("Other", "Other", "C"),
+    fence("Base", "Base", "B"),
+    fence("Base", "Sub", "C"),
+    fence("Other", "Other", "D"),
+    fence("Base", "Base", "C"),
+  ];
+  // A branch another pass rebuilt is no longer listed and keeps its place.
+  const copied = { ...run[3]! };
+  const locals: string[] = [];
+  let next = 0;
+  const grouped = groupStaticFieldBranches(
+    [head, ...run, copied, tail],
+    branches,
+    () => `held.${next++}`,
+    (id) => locals.push(id),
+  );
+  expect(locals).toEqual(["held.0", "held.1"]);
+  expect(grouped[0]).toBe(head);
+  expect(grouped.slice(-2)).toEqual([copied, tail]);
+  const groups = grouped.slice(1, -2);
+  expect(groups).toHaveLength(2);
+  const messages = (stmt: IrStmt): string[][] => {
+    if (stmt.kind !== "if") throw new Error("expected a class test");
+    expect(stmt.then[0]).toMatchObject({ kind: "varDecl", init: { kind: "dynCheck", value } });
+    return stmt.then
+      .slice(1)
+      .map((held) =>
+        held.kind === "if"
+          ? held.then.map((test) =>
+              test.kind === "if" && test.then[0]!.kind === "runtimeFence"
+                ? test.then[0]!.message
+                : "",
+            )
+          : [],
+      );
+  };
+  // Each held class keeps its fields in the order the flat run tested them.
+  expect(messages(groups[0]!)).toEqual([
+    ["Sub.B", "Sub.A", "Sub.C"],
+    ["Base.A", "Base.B", "Base.C"],
+  ]);
+  expect(messages(groups[1]!)).toEqual([["Other.C", "Other.D"]]);
+  // A run shorter than the threshold stays flat.
+  const short = [fence("Base", "Sub", "A"), fence("Base", "Base", "A")];
+  expect(
+    groupStaticFieldBranches(
+      short,
+      branches,
+      () => "unused",
+      () => {},
+    ),
+  ).toBe(short);
 });

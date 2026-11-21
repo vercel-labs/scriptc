@@ -455,6 +455,10 @@ typedef struct ScrTlsSrv {
   } *contexts;
   size_t ncontexts;
   ScrSecureCtx *default_ctx;
+  /* tls.Server's 'keylog' listeners: Node attaches the SSL_CTX keylog
+   * callback for the server's connections, so every secret line reaches
+   * them whether or not the socket has a listener of its own. */
+  ScrNetLs keylog_ls;
 } ScrTlsSrv;
 
 /* The ALPN answers (static storage — mbedTLS keeps the pointers). Plain
@@ -558,6 +562,7 @@ static void scr_tls_srv_release(ScrTlsSrv *s) {
   }
   free(s->contexts);
   scr_secure_ctx_release(s->default_ctx);
+  scr_net_ls_drop(&s->keylog_ls);
   free(s);
 }
 
@@ -823,7 +828,12 @@ typedef struct ScrTlsSock {
   /* the client 'session' event: listeners + the fired-once latch (Node
    * fires per received ticket; this surface fires once per socket) */
   ScrNetLs session_ls;
+  ScrNetLs keylog_ls; /* TLSSocket.on('keylog') */
   bool session_fired;
+  /* a 'session' listener existed when the handshake completed: Node's TLS
+   * 1.2 ticket rides the handshake, so only a listener that was already
+   * there when it arrived sees the event (a later one is never replayed) */
+  bool session_armed;
   /* what the verify callback saw (the peer chain is gone once the
    * handshake has failed, so the shape is recorded as it verifies) */
   bool vrfy_leaf_self;
@@ -1850,7 +1860,9 @@ static int scr_tls_handshake(void *tctx) {
 static void scr_tls_on_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   t->established = true;
-  if (t->cli != NULL) scr_tls_fire_session(t); /* the 1.2 arm; 1.3 fires on ticket receipt */
+  /* sampled before secureConnect's listeners run: the 1.2 session belongs
+   * to the listeners the handshake found */
+  t->session_armed = t->cli != NULL && t->session_ls.n > 0;
   if (t->srv != NULL && t->srv->h2_conn != NULL) {
     /* the h2 secure server: dispatch on the NEGOTIATED protocol — the
      * h2 session attaches as the socket's native reader (it reads
@@ -1898,6 +1910,7 @@ static void scr_tls_free(void *tctx) {
   if (t->srv) scr_tls_srv_release(t->srv);
   if (t->cli) scr_tls_cli_free(t->cli);
   scr_net_ls_drop(&t->session_ls);
+  scr_net_ls_drop(&t->keylog_ls);
   scr_net_ls_drop(&t->secure_ls);
   free(t->hello);
   scr_secure_ctx_release(t->sni_ctx);
@@ -1918,6 +1931,15 @@ static void scr_tls_drain(void *tctx) {
  * emits it. */
 static void scr_tls_after_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  /* The 1.2 session arrives after secureConnect and before 'secure', as
+   * Node emits it. A 1.3 ticket comes after the handshake, so a listener
+   * added during secureConnect still sees that session. */
+  if (t->cli != NULL && !scr_exc_pending()) {
+    const char *ver = mbedtls_ssl_get_version(&t->ssl);
+    bool tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
+    if (tls13 ? t->session_ls.n > 0 : t->session_armed) scr_tls_fire_session(t);
+  }
+  if (scr_exc_pending()) return;
   scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
   scr_net_ls_drop(&t->secure_ls);
 }
@@ -1931,6 +1953,7 @@ static void scr_tls_settle(void *tctx) {
   t->settled = true;
   scr_net_ls_drop(&t->secure_ls);
   scr_net_ls_drop(&t->session_ls);
+  scr_net_ls_drop(&t->keylog_ls);
   if (t->hang_up_pending) {
     t->hang_up_pending = false;
     scr_tls_client_error(t, "socket hang up", "ECONNRESET");
@@ -1952,6 +1975,14 @@ static const ScrNetTransportOps SCR_TLS_OPS = {
 
 /* ── the server surface ──────────────────────────────────────────────── */
 
+/* The 'keylog' export callback (defined with the event surface below): the
+ * engine exports each handshake secret through it. */
+static void scr_tls_keylog_cb(void *ctx, mbedtls_ssl_key_export_type type,
+                              const unsigned char *secret, size_t secret_len,
+                              const unsigned char client_random[32],
+                              const unsigned char server_random[32],
+                              mbedtls_tls_prf_types tls_prf_type);
+
 /* The server's native-connection hook: one TLS engine per accepted
  * socket; the deferred 'connection' fires from the net pump once the
  * handshake stands. */
@@ -1961,6 +1992,7 @@ static void scr_tls_srv_on_conn(void *ctx, ScrNetSocket *sock) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &srv->conf) != 0) scr_tls_oom();
+  mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   if (srv->request_cert) {
     mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
     t->vrfy_trust = srv->has_ca ? &srv->ca : scr_tls_system_ca();
@@ -2086,6 +2118,7 @@ static void scr_tls_cli_wrap(ScrNetSocket *sock, void *ctx) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
+  mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   /* NULL sends no SNI and skips mbedTLS's name check; the verify callback
    * checks cli->verify_name instead */
   (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
@@ -2183,6 +2216,7 @@ static ScrTlsSock *scr_tls_cli_sock(ScrNetSocket *sock, ScrTlsCli *cli) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
+  mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
   mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
   if (cli->verify_recorded)
@@ -3657,6 +3691,7 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
   if (!ts) scr_tls_oom();
   mbedtls_ssl_init(&ts->ssl);
   if (mbedtls_ssl_setup(&ts->ssl, &srv->conf) != 0) scr_tls_oom();
+  mbedtls_ssl_set_export_keys_cb(&ts->ssl, &scr_tls_keylog_cb, ts);
   if (srv->request_cert) {
     mbedtls_ssl_set_verify(&ts->ssl, &scr_tls_vrfy_cb, ts);
     ts->vrfy_trust = srv->has_ca ? &srv->ca : scr_tls_system_ca();
@@ -4646,10 +4681,11 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
 
 
 /* The client 'session' event: fires ONCE per socket with the serialized
- * mbedTLS session — a real ticket where one arrived (the 1.3 receipt
- * path), the established session otherwise (1.2). Node fires per
- * received ticket; the once-latch satisfies the suite's once-listener
- * shapes, and resumption itself stays out (divergence 55). */
+ * mbedTLS session — the established session for TLS 1.2 (its ticket rides
+ * the handshake), the ticket receipt for TLS 1.3. Node delivers the event
+ * once per received ticket and replays nothing to later listeners; this
+ * surface's server issues one session, and resumption stays out
+ * (SEMANTICS.md divergence 55). */
 /* The current session as a Buffer (+1), NULL when the handshake has no
  * resumable session yet (a TLS 1.3 client before its ticket). */
 static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
@@ -4671,6 +4707,101 @@ static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
     return NULL;
   }
   return buf;
+}
+
+/* ── the 'keylog' event: Node's NSS key-log lines ──────────────────────
+ * mbedTLS hands the exported secrets to scr_tls_keylog_cb — the master
+ * secret for TLS 1.2 and the TLS 1.3 handshake/application traffic secrets
+ * — and each line is emitted as Node's is: a Buffer holding
+ * "<LABEL> <client_random hex> <secret hex>\n", to the socket's listeners
+ * and to the server's. mbedTLS exports no TLS 1.3 exporter secret, so a
+ * TLS 1.3 handshake emits no EXPORTER_SECRET line (see the ledger row). */
+
+static void scr_tls_keylog_fire(ScrTlsSock *t, ScrBytes *line) {
+  if (t->keylog_ls.n > 0) {
+    ScrNetL *snap;
+    size_t n = scr_net_ls_snapshot(&t->keylog_ls, &snap);
+    scr_dyn_this_push(t->sock, SCR_DYNH_NET_SOCKET);
+    for (size_t i = 0; i < n; i++) {
+      if (!scr_exc_pending()) ((ScrNetDataFn)snap[i].fn)(snap[i].cb, line);
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+  }
+  if (t->srv != NULL && t->srv->keylog_ls.n > 0 && !scr_exc_pending()) {
+    ScrNetL *snap;
+    size_t n = scr_net_ls_snapshot(&t->srv->keylog_ls, &snap);
+    for (size_t i = 0; i < n; i++) {
+      if (!scr_exc_pending()) ((ScrNetDataFn)snap[i].fn)(snap[i].cb, line);
+      scr_closure_release(snap[i].cb);
+    }
+    free(snap);
+  }
+}
+
+static void scr_tls_keylog_line(ScrTlsSock *t, const char *label, const unsigned char *secret,
+                                size_t secret_len, const unsigned char client_random[32]) {
+  static const char hex[] = "0123456789abcdef";
+  size_t label_len = strlen(label);
+  size_t len = label_len + 1 + 64 + 1 + secret_len * 2 + 1;
+  ScrBytes *line = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  line->is_buffer = true; /* the event carries a Buffer */
+  char *p = (char *)line->data;
+  memcpy(p, label, label_len);
+  p += label_len;
+  *p++ = ' ';
+  for (size_t i = 0; i < 32; i++) {
+    *p++ = hex[client_random[i] >> 4];
+    *p++ = hex[client_random[i] & 0x0f];
+  }
+  *p++ = ' ';
+  for (size_t i = 0; i < secret_len; i++) {
+    *p++ = hex[secret[i] >> 4];
+    *p++ = hex[secret[i] & 0x0f];
+  }
+  *p = '\n';
+  scr_tls_keylog_fire(t, line);
+  scr_bytes_release(line);
+}
+
+static void scr_tls_keylog_cb(void *ctx, mbedtls_ssl_key_export_type type,
+                              const unsigned char *secret, size_t secret_len,
+                              const unsigned char client_random[32],
+                              const unsigned char server_random[32],
+                              mbedtls_tls_prf_types tls_prf_type) {
+  (void)server_random;
+  (void)tls_prf_type;
+  ScrTlsSock *t = ctx;
+  const char *label = NULL;
+  switch (type) {
+    case MBEDTLS_SSL_KEY_EXPORT_TLS12_MASTER_SECRET:
+      label = "CLIENT_RANDOM";
+      break;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_EARLY_SECRET:
+      label = "CLIENT_EARLY_TRAFFIC_SECRET";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_EARLY_EXPORTER_SECRET:
+      label = "EARLY_EXPORTER_SECRET";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_HANDSHAKE_TRAFFIC_SECRET:
+      label = "CLIENT_HANDSHAKE_TRAFFIC_SECRET";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_HANDSHAKE_TRAFFIC_SECRET:
+      label = "SERVER_HANDSHAKE_TRAFFIC_SECRET";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_APPLICATION_TRAFFIC_SECRET:
+      label = "CLIENT_TRAFFIC_SECRET_0";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_APPLICATION_TRAFFIC_SECRET:
+      label = "SERVER_TRAFFIC_SECRET_0";
+      break;
+#endif
+    default:
+      return;
+  }
+  scr_tls_keylog_line(t, label, secret, secret_len, client_random);
 }
 
 static void scr_tls_fire_session(ScrTlsSock *t) {
@@ -5100,6 +5231,24 @@ void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once
   scr_net_ls_add(&t->secure_ls, cb, NULL, once);
 }
 
+void scr_tls_sock_on_keylog(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || t->settled) {
+    scr_closure_release(cb); /* a plain socket never fires it, like Node */
+    return;
+  }
+  scr_net_ls_add(&t->keylog_ls, cb, fn, once);
+}
+
+void scr_tls_server_on_keylog(ScrNetServer *server, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  ScrTlsSrv *s = scr_tls_srv_of_server(server, "server.on('keylog')");
+  if (s == NULL) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->keylog_ls, cb, fn, once);
+}
+
 void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
   ScrTlsSock *t = scr_tls_sock_of(s);
   if (t == NULL) {
@@ -5111,7 +5260,6 @@ void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn
     return;
   }
   scr_net_ls_add(&t->session_ls, cb, fn, once);
-  if (t->established) scr_tls_fire_session(t); /* the ticket already arrived */
 }
 
 static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
@@ -5153,12 +5301,14 @@ static bool scr_tls_dynh_on(ScrNetSocket *s, const char *event, const ScrDyn *cb
     scr_tls_sock_on_secure(s, scr_dyn_listener_closure0(cb), once);
     return true;
   }
+  if (strcmp(event, "keylog") == 0) {
+    scr_net_ls_add(&t->keylog_ls, scr_dyn_listener_closure_data(cb),
+                   (void *)&scr_dyn_listener_fire_data, once);
+    return true;
+  }
   if (strcmp(event, "session") == 0) {
     scr_net_ls_add(&t->session_ls, scr_dyn_listener_closure_data(cb),
                    (void *)&scr_dyn_listener_fire_data, once);
-    /* a late registration on an established socket fires directly (the
-     * ticket already arrived — nothing further would trigger it) */
-    if (t->established) scr_tls_fire_session(t);
     return true;
   }
   return false;

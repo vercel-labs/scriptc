@@ -103545,8 +103545,12 @@
           "tests/corpus/tls-export-keying-material-context.ts",
           "tests/corpus/tls-export-keying-material.ts",
           "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/tls-keylog.ts",
           "tests/corpus/tls-server-class.ts",
           "tests/corpus/tls-server-members.ts",
+          "tests/corpus/tls-session-event.ts",
+          "tests/corpus/tls-session-listener-timing.cjs",
+          "tests/corpus/tls-session-listener-timing.ts",
           "tests/corpus/tls-socket-audit.ts",
           "tests/corpus/tls-socket-extras.ts",
           "tests/corpus/tls-unix-connect.ts"
@@ -104237,8 +104241,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.'keylog'",
+        "tests": [
+          "tests/corpus/tls-keylog.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105565,8 +105572,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.'keylog'",
+        "tests": [
+          "tests/corpus/tls-keylog.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105701,8 +105711,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.'session'",
+        "tests": [
+          "tests/corpus/tls-session-event.ts",
+          "tests/corpus/tls-session-listener-timing.ts",
+          "tests/corpus/tls-session-listener-timing.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -304,6 +304,14 @@ double scr_histo_percentiles_count(ScrDyn *handle);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
 void scr_histo_dispose(ScrDyn *handle);
+/* Histogram inference: the confidence-interval and Welch readings lower
+ * through selectors after their arguments are validated once. */
+double scr_histo_confidence(ScrDyn *options);
+double scr_histo_percentile_arg(ScrDyn *value);
+void scr_histo_other_check(ScrDyn *other);
+double scr_histo_mean_ci(ScrDyn *handle, double confidence, double which);
+double scr_histo_welch(ScrDyn *handle, ScrDyn *other, double confidence, double which);
+double scr_histo_percentile_ci(ScrDyn *handle, double percentile, double confidence, double which);
 /* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
  * family and the clears take the call's dyn argument vector (borrowed)
  * and apply Node's validation and errors. mark and measure answer 1 and

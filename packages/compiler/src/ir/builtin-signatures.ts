@@ -3998,6 +3998,10 @@ function buildLibFnSignatures() {
       result: CHILD_T,
     },
     "child.connected": { argTypes: [CHILD_T], result: BOOL },
+    /** Node's shell form command line, [file, ...args].join(' '): the
+     * string a shell runs with -c, reporting DEP0190 once when the list is
+     * not empty. +1 string. */
+    "child.shellCommand": { argTypes: [STRING, arrayOf(STRING)], result: STRING },
     /** child.stdio's length: the child's stdio slot count (3, or 4 for a
      * fork's IPC slot). A plain read of the child's fixed slot count. */
     "child.stdioLen": { argTypes: [CHILD_T], result: F64 },

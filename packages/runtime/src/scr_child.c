@@ -43,6 +43,64 @@
   } while (0)
 #endif
 
+static void scr_child_oom(void);
+static void scr_child_warn_shell_args(void);
+
+/* Node's shell form: the command line [file, ...args].join(' '), the string
+ * a shell runs with -c. The compiled argv holds strings. +1. */
+ScrStr *scr_child_shell_command(ScrStr *cmd, ScrArr *args) {
+  size_t n = (size_t)scr_arr_len(args);
+  if (n == 0) return scr_str_retain(cmd);
+  scr_child_warn_shell_args();
+  ScrStr **parts = malloc((1 + 2 * n) * sizeof *parts);
+  if (!parts) scr_child_oom();
+  ScrStr *space = scr_str_new(" ", 1);
+  parts[0] = cmd;
+  for (size_t i = 0; i < n; i++) {
+    parts[1 + 2 * i] = space;
+    parts[2 + 2 * i] = scr_arr_get_ref(args, (double)i);
+  }
+  ScrStr *command = scr_str_concat_parts(parts, 1 + 2 * n);
+  for (size_t i = 0; i < n; i++) scr_str_release(parts[2 + 2 * i]);
+  scr_str_release(space);
+  free(parts);
+  return command;
+}
+
+/* DEP0190, which Node's deprecate() wrapper reports once per process on the
+ * next tick when a shell form carries separate arguments: the arguments are
+ * concatenated, never escaped. */
+static SCR_TL bool scr_child_shell_args_warned = false;
+
+static void scr_child_warn_shell_args_report(void) {
+  static const char text[] =
+      "Passing args to a child process with shell option true can lead to security "
+      "vulnerabilities, as the arguments are not escaped, only concatenated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  if (scr_warning_emit_hook) {
+    scr_stdout_settle();
+    fflush(stdout);
+    scr_warning_emit_hook("DeprecationWarning", "DEP0190", message);
+  } else {
+    scr_stdout_settle();
+    fflush(stdout);
+    fprintf(stderr, "(node:%ld) [DEP0190] DeprecationWarning: %.*s\n", (long)scr_process_pid(),
+            (int)message->len, message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+            stderr);
+    }
+  }
+  scr_str_release(message);
+}
+
+static void scr_child_warn_shell_args(void) {
+  if (scr_child_shell_args_warned) return;
+  scr_child_shell_args_warned = true;
+  scr_next_tick_raw(&scr_child_warn_shell_args_report);
+}
+
 typedef struct ScrIpc ScrIpc;
 static ScrIpc *scr_ipc_new(ScrChildStream *reader, ScrChildWriter *writer);
 static ScrIpc *scr_ipc_retain(ScrIpc *ipc);
@@ -962,11 +1020,22 @@ static void scr_win_create_process(ScrStr *cmd, ScrArr *args, ScrWinSpawn *sp,
     free(cwd_w);
     return;
   }
-  WCHAR *command_w = shell ? scr_child_wide(cmd->data, cmd->len) : NULL;
+  /* Node's shell form joins the file and its arguments with single spaces;
+   * separate arguments report DEP0190 once. */
+  ScrStr *shell_line = NULL;
+  if (shell && scr_arr_len(args) > 0) {
+    shell_line = scr_child_shell_command(cmd, args);
+    scr_child_warn_shell_args();
+  }
+  WCHAR *command_w =
+      shell ? scr_child_wide(shell_line != NULL ? shell_line->data : cmd->data,
+                             shell_line != NULL ? shell_line->len : cmd->len)
+            : NULL;
   WCHAR *cmdline = shell
       ? scr_child_shell_cmdline(file_w, command_w)
       : scr_child_cmdline(cmd, args);
   free(command_w);
+  scr_str_release(shell_line);
 
   STARTUPINFOW si;
   memset(&si, 0, sizeof si);
@@ -3884,7 +3953,14 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     scr_arr_push_ref(shell_args, scr_str_new("/d", 2));
     scr_arr_push_ref(shell_args, scr_str_new("/s", 2));
     scr_arr_push_ref(shell_args, scr_str_new("/c", 2));
-    scr_arr_push_ref(shell_args, scr_str_retain(cmd));
+    if (scr_arr_len(args) > 0) {
+      /* The command line joins the file and its arguments; separate
+       * arguments report DEP0190 once. */
+      scr_arr_push_ref(shell_args, scr_child_shell_command(cmd, args));
+      scr_child_warn_shell_args();
+    } else {
+      scr_arr_push_ref(shell_args, scr_str_retain(cmd));
+    }
     run_args = shell_args;
   }
   scr_win_run_sync(run_cmd, run_args, has_input ? input : NULL, encoding, in_mode, out_mode,
@@ -7167,7 +7243,15 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 #else
   (void)detached; /* hosts without the flag: the child stays attached */
 #endif
-  char *shell_argv[] = {(char *)"/bin/sh", (char *)"-c", cmd->data, NULL};
+  /* Node's shell form: the shell runs the command line [file, ...args]
+   * joined with single spaces; separate arguments report DEP0190 once. */
+  ScrStr *shell_line = NULL;
+  if (shell && scr_arr_len(args) > 0) {
+    shell_line = scr_child_shell_command(cmd, args);
+    scr_child_warn_shell_args();
+  }
+  char *shell_argv[] = {(char *)"/bin/sh", (char *)"-c",
+                        shell_line != NULL ? shell_line->data : cmd->data, NULL};
   char **argv = shell ? shell_argv : scr_child_argv(cmd, args);
   char **envp = has_env && env_pairs != NULL ? scr_exec_envp(env_pairs) : NULL;
   pid_t pid = -1;
@@ -7177,6 +7261,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   posix_spawnattr_destroy(&at);
   posix_spawn_file_actions_destroy(&fa);
   if (!shell) free(argv);
+  scr_str_release(shell_line);
   scr_exec_envp_free(envp);
 
   /* Parent keeps only its side of each pipe. A failed spawn still exposes
@@ -8128,18 +8213,22 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 
   char **argv = scr_child_argv(cmd, args);
   /* `shell`: the command line through /bin/sh -c (the async spawn's exact
-   * shape), so the command's quoting and operators apply. The form is
-   * emitted with an EMPTY args list only (Node's DEP0190 warns otherwise,
-   * and a native build has no warning channel), so the command string IS
-   * the command line. */
+   * shape), so the command's quoting and operators apply. The command line
+   * joins the file and its arguments with single spaces; separate arguments
+   * report DEP0190 once. */
+  ScrStr *shell_line = NULL;
   const char *file = cmd->data;
   if (shell) {
     free(argv);
     argv = malloc(4 * sizeof(char *));
     if (!argv) scr_child_oom();
+    if (scr_arr_len(args) > 0) {
+      shell_line = scr_child_shell_command(cmd, args);
+      scr_child_warn_shell_args();
+    }
     argv[0] = (char *)"/bin/sh";
     argv[1] = (char *)"-c";
-    argv[2] = cmd->data;
+    argv[2] = shell_line != NULL ? shell_line->data : cmd->data;
     argv[3] = NULL;
     file = "/bin/sh";
   }
@@ -8149,6 +8238,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
                                     use_cwd ? cwd->data : NULL);
   posix_spawn_file_actions_destroy(&fa);
   free(argv);
+  scr_str_release(shell_line);
   scr_exec_envp_free(envp);
   if (cap_out) close(outfd[1]);
   if (cap_err) close(errfd[1]);

@@ -243,6 +243,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // child.stdio's length is the child's fixed stdio slot count: a plain
   // read of the handle's field, with no allocation and no program code.
   "child.stdioLen",
+  // Node's shell form command line: a string join; the DEP0190 report is
+  // deferred to its own tick, so the call itself raises nothing.
+  "child.shellCommand",
   // The child's cached stdio array: a flag read, a retain of the array the
   // first read built, and a store of that array (a retain); no program code.
   "child.stdioCached",

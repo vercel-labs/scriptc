@@ -3730,6 +3730,10 @@ function buildLibFnSignatures() {
     "http2.streamClosed": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamAborted": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamPending": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    "http2.sessionAltsvc": { argTypes: [HTTP2SESSION_T, STRING, DYN], result: VOID },
+    "http2.sessionOrigin": { argTypes: [HTTP2SESSION_T, arrayOf(STRING)], result: VOID },
+    "http2.sessionOnAltsvc": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+    "http2.sessionOnOrigin": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
     /** ...statCheck: the trailing slot is the (stat, headers) callback. */
     "http2.streamRespondWithFile": {
       argTypes: [HTTP2STREAM_T, STRING, arrayOf(STRING), F64, F64, BOOL, DYN, DYN],

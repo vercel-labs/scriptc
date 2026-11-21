@@ -629,6 +629,8 @@ enum {
   SCR_H2_F_GOAWAY = 0x7,
   SCR_H2_F_WINDOW_UPDATE = 0x8,
   SCR_H2_F_CONTINUATION = 0x9,
+  SCR_H2_F_ALTSVC = 0xa,
+  SCR_H2_F_ORIGIN = 0xc,
 };
 
 enum {
@@ -847,7 +849,7 @@ struct ScrH2Session {
   bool connected;    /* client: the transport is established */
   bool error_emitted;
   ScrNetLs stream_ls, close_ls, err_ls, connect_ls, goaway_ls,
-      remote_settings_ls, local_settings_ls, ping_ls;
+      remote_settings_ls, local_settings_ls, ping_ls, altsvc_ls, origin_ls;
   /* The stream the last lookup by id found (borrowed from `streams`):
    * the frames of one stream arrive together, and a frame's context
    * lookup and its handling ask for the same stream. */
@@ -964,6 +966,8 @@ static void scr_h2_session_drop_lists(ScrH2Session *s) {
   scr_net_ls_drop(&s->remote_settings_ls);
   scr_net_ls_drop(&s->local_settings_ls);
   scr_net_ls_drop(&s->ping_ls);
+  scr_net_ls_drop(&s->altsvc_ls);
+  scr_net_ls_drop(&s->origin_ls);
 }
 
 static void scr_h2_session_free(ScrH2Session *s) {
@@ -1680,6 +1684,9 @@ static void scr_h2_fire_settings(ScrNetLs *ls, ScrH2Session *s, const ScrH2Setti
   free(snap);
 }
 
+static void scr_h2_fire_altsvc(ScrH2Session *s, ScrStr *alt, ScrStr *origin, double stream_id);
+static void scr_h2_fire_origin(ScrH2Session *s, ScrArr *origins);
+
 /* One complete frame. Returns false when the session tore down. */
 static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int32_t stream_id,
                                 const uint8_t *p, size_t n);
@@ -1998,8 +2005,35 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
     scr_h2_send_rst(s, promised, 7 /* NGHTTP2_REFUSED_STREAM */);
     break;
   }
+  case SCR_H2_F_ALTSVC: {
+    /* origin length (2), origin, then the alternative service. */
+    if (n < 2) break;
+    size_t olen = ((size_t)p[0] << 8) | p[1];
+    if (2 + olen > n) break;
+    ScrStr *origin = scr_str_new((const char *)p + 2, olen);
+    ScrStr *alt = scr_str_new((const char *)p + 2 + olen, n - 2 - olen);
+    scr_h2_fire_altsvc(s, alt, origin, (double)stream_id);
+    scr_str_release(alt);
+    scr_str_release(origin);
+    if (scr_exc_pending()) return false;
+    break;
+  }
+  case SCR_H2_F_ORIGIN: {
+    ScrArr *origins = scr_arr_new(SCR_ELEM_STR, 4);
+    size_t off = 0;
+    while (off + 2 <= n) {
+      size_t len = ((size_t)p[off] << 8) | p[off + 1];
+      if (off + 2 + len > n) break;
+      scr_arr_push_ref(origins, scr_str_new((const char *)p + off + 2, len));
+      off += 2 + len;
+    }
+    scr_h2_fire_origin(s, origins);
+    scr_arr_release(origins);
+    if (scr_exc_pending()) return false;
+    break;
+  }
   default:
-    break; /* PRIORITY, ALTSVC, ORIGIN, unknown: ignored */
+    break; /* PRIORITY, unknown: ignored */
   }
   return true;
 proto_err:
@@ -4910,6 +4944,39 @@ static void scr_h2_dyn_fire_settings_cb(ScrClosure *cb, ScrDyn *settings /*+1*/)
   scr_dyn_release(settings);
 }
 
+static void scr_h2_dyn_fire_altsvc(ScrClosure *cb, ScrStr *alt, ScrStr *origin,
+                                    double stream_id) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);
+  ScrDyn *dalt = scr_dyn_new_str(scr_str_retain(alt));
+  ScrDyn *dorigin = scr_dyn_new_str(scr_str_retain(origin));
+  ScrDyn *did = scr_dyn_new_num(stream_id);
+  ScrDyn *args[3] = { dalt, dorigin, did };
+  ScrDyn *r = scr_dyn_call(fn, args, 3, "listener");
+  scr_dyn_release(r);
+  scr_dyn_release(did);
+  scr_dyn_release(dorigin);
+  scr_dyn_release(dalt);
+  scr_dyn_release(fn);
+  scr_str_release(alt);
+  scr_str_release(origin);
+}
+
+static void scr_h2_dyn_fire_origin(ScrClosure *cb, ScrArr *origins) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);
+  ScrDyn *list = scr_dyn_new_arr();
+  size_t n = (size_t)scr_arr_len(origins);
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *origin = scr_arr_get_ref(origins, (double)i);
+    scr_dyn_arr_push(list, scr_dyn_new_str(origin));
+  }
+  ScrDyn *args[1] = { list };
+  ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");
+  scr_dyn_release(r);
+  scr_dyn_release(list);
+  scr_dyn_release(fn);
+  scr_arr_release(origins);
+}
+
 static void scr_h2_dyn_fire_goaway(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
   ScrDyn *a0 = scr_dyn_new_num(code);
@@ -5174,6 +5241,10 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
       scr_http2_session_on_goaway(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_goaway), (ScrH2GoawayFn)&scr_h2_dyn_fire_goaway, once);
     } else if (strcmp(ev, "localSettings") == 0 || strcmp(ev, "remoteSettings") == 0) {
       scr_http2_session_on_settings(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_settings), (ScrH2SettingsFn)&scr_h2_dyn_fire_settings, once, ev[0] == 'l');
+    } else if (strcmp(ev, "altsvc") == 0) {
+      scr_http2_session_on_altsvc(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_altsvc), (ScrH2AltsvcFn)&scr_h2_dyn_fire_altsvc, once);
+    } else if (strcmp(ev, "origin") == 0) {
+      scr_http2_session_on_origin(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_origin), (ScrH2OriginFn)&scr_h2_dyn_fire_origin, once);
     } else if (strcmp(ev, "ping") == 0) {
       scr_http2_session_on_ping(s, scr_dyn_listener_closure_data(args[1]), (ScrNetDataFn)&scr_dyn_listener_fire_data, once);
     } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {
@@ -5212,9 +5283,22 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
     if (answer == SCR_H2_PING_NOT_OPEN) return scr_dyn_undefined();
     return scr_dyn_new_bool(answer == SCR_H2_PING_SENT);
   }
+  if (strcmp(method, "altsvc") == 0) {
+    if (argc >= 2 && args[0]->kind == SCR_DYN_STR)
+      scr_http2_session_altsvc(s, args[0]->v.str, args[1]);
+    return scr_dyn_undefined();
+  }
+  if (strcmp(method, "origin") == 0) {
+    ScrArr *origins = scr_arr_new(SCR_ELEM_STR, argc > 0 ? argc : 1);
+    for (size_t i = 0; i < argc; i++) {
+      if (args[i]->kind == SCR_DYN_STR) scr_arr_push_ref(origins, scr_str_retain(args[i]->v.str));
+    }
+    scr_http2_session_origin(s, origins);
+    scr_arr_release(origins);
+    return scr_dyn_undefined();
+  }
   if (strcmp(method, "setTimeout") == 0 || strcmp(method, "unref") == 0 || strcmp(method, "goaway") == 0 ||
-      strcmp(method, "setLocalWindowSize") == 0 ||
-      strcmp(method, "altsvc") == 0 || strcmp(method, "origin") == 0) {
+      strcmp(method, "setLocalWindowSize") == 0) {
     scr_h2_dyn_refuse_call(method, "Http2Session");
     return NULL;
   }
@@ -5267,6 +5351,128 @@ static const ScrDynHandleOps scr_h2_dynh_session_ops = {
   "Http2Session", &scr_http2_session_retain_v, &scr_http2_session_release_v,
   &scr_h2_dynh_session_invoke, &scr_h2_dynh_session_get, &scr_h2_dynh_session_set, NULL,
 };
+
+/* ── ALTSVC and ORIGIN (RFC 7838, RFC 8336) ─────────────────────────── */
+
+void scr_http2_session_altsvc(ScrH2Session *s, ScrStr *alt /*borrowed*/,
+                               const ScrDyn *origin_or_stream /*borrowed*/) {
+  if (s->destroyed || scr_exc_pending()) return;
+  double stream_id = 0;
+  ScrStr *origin = NULL;
+  if (origin_or_stream != NULL && origin_or_stream->kind == SCR_DYN_NUM) {
+    stream_id = origin_or_stream->v.num;
+  } else if (origin_or_stream != NULL && origin_or_stream->kind == SCR_DYN_STR) {
+    origin = origin_or_stream->v.str;
+  }
+  size_t olen = origin != NULL ? origin->len : 0;
+  ScrH2Buf payload = {0};
+  uint8_t head[2] = { (uint8_t)(olen >> 8), (uint8_t)olen };
+  scr_h2_buf_put(&payload, head, 2);
+  if (olen > 0) scr_h2_buf_put(&payload, origin->data, olen);
+  scr_h2_buf_put(&payload, alt->data, alt->len);
+  int32_t id = stream_id > 0 && stream_id <= 0x7fffffffu ? (int32_t)stream_id : 0;
+  scr_h2_send_frame(s, SCR_H2_F_ALTSVC, 0, id, payload.data, payload.len);
+  free(payload.data);
+}
+
+void scr_http2_session_origin(ScrH2Session *s, ScrArr *origins /*borrowed*/) {
+  if (s->destroyed || scr_exc_pending()) return;
+  ScrH2Buf payload = {0};
+  size_t n = origins != NULL ? (size_t)scr_arr_len(origins) : 0;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *origin = scr_arr_get_ref(origins, (double)i);
+    uint8_t head[2] = { (uint8_t)(origin->len >> 8), (uint8_t)origin->len };
+    scr_h2_buf_put(&payload, head, 2);
+    scr_h2_buf_put(&payload, origin->data, origin->len);
+    scr_str_release(origin);
+  }
+  if (payload.len > 0) scr_h2_send_frame(s, SCR_H2_F_ORIGIN, 0, 0, payload.data, payload.len);
+  free(payload.data);
+}
+
+/* Fire the ALTSVC list: (alt +1, origin +1, streamId). */
+static void scr_h2_fire_altsvc(ScrH2Session *s, ScrStr *alt, ScrStr *origin, double stream_id) {
+  if (s->altsvc_ls.n == 0) return;
+  ScrNetL *snap;
+  size_t n = scr_net_ls_snapshot(&s->altsvc_ls, &snap);
+  scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) {
+      ((ScrH2AltsvcFn)snap[i].fn)(snap[i].cb, scr_str_retain(alt), scr_str_retain(origin),
+                                   stream_id);
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  free(snap);
+}
+
+static void scr_h2_fire_origin(ScrH2Session *s, ScrArr *origins) {
+  if (s->origin_ls.n == 0) return;
+  ScrNetL *snap;
+  size_t n = scr_net_ls_snapshot(&s->origin_ls, &snap);
+  scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) {
+      ((ScrH2OriginFn)snap[i].fn)(snap[i].cb, scr_arr_retain(origins));
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  free(snap);
+}
+
+void scr_http2_session_on_altsvc(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2AltsvcFn fn,
+                                  bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->altsvc_ls, cb, (void *)fn, once);
+}
+
+void scr_http2_session_on_origin(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2OriginFn fn,
+                                  bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->origin_ls, cb, (void *)fn, once);
+}
+
+/* The typed-listener thunks: Node passes (alt, origin, streamId) and an
+ * origins string[]; a shorter listener releases the values it does not
+ * take, a zero-argument one releases all of them. */
+void scr_http2_altsvc_thunk3(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id) {
+  ((void (*)(ScrClosure *, ScrStr *, ScrStr *, double))cb->fn)(cb, alt, origin, stream_id);
+}
+
+void scr_http2_altsvc_thunk2(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id) {
+  (void)stream_id;
+  ((void (*)(ScrClosure *, ScrStr *, ScrStr *))cb->fn)(cb, alt, origin);
+}
+
+void scr_http2_altsvc_thunk1(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id) {
+  (void)stream_id;
+  scr_str_release(origin);
+  ((void (*)(ScrClosure *, ScrStr *))cb->fn)(cb, alt);
+}
+
+void scr_http2_altsvc_thunk0(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id) {
+  (void)stream_id;
+  scr_str_release(alt);
+  scr_str_release(origin);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_http2_origin_thunk(ScrClosure *cb, ScrArr *origins) {
+  ((void (*)(ScrClosure *, ScrArr *))cb->fn)(cb, origins);
+}
+
+void scr_http2_origin_thunk0(ScrClosure *cb, ScrArr *origins) {
+  scr_arr_release(origins);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
 
 void scr_http2_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_H2_STREAM, &scr_h2_dynh_stream_ops);

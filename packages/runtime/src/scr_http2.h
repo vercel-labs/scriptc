@@ -29,6 +29,9 @@ typedef void (*ScrH2ConnectFn)(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket 
 typedef void (*ScrH2GoawayFn)(ScrClosure *cb, double code, double last,
                               ScrBytes *opaque /*borrowed, NULL = none*/);
 typedef void (*ScrH2SettingsFn)(ScrClosure *cb, ScrDyn *settings /*+1*/);
+typedef void (*ScrH2AltsvcFn)(ScrClosure *cb, ScrStr *alt /*+1*/, ScrStr *origin /*+1*/,
+                              double stream_id);
+typedef void (*ScrH2OriginFn)(ScrClosure *cb, ScrArr *origins /*+1*/);
 
 ScrH2Session *scr_http2_session_retain(ScrH2Session *s);
 void scr_http2_session_release(ScrH2Session *s);
@@ -80,6 +83,22 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
 
 /* session */
 void scr_http2_session_close(ScrH2Session *s, ScrClosure *cb /*moves, nullable*/);
+/* serverhttp2session.altsvc(alt, originOrStream) and origin(...origins):
+ * the RFC 7838 / RFC 8336 frames. A numeric originOrStream rides that
+ * stream's ALTSVC frame; a string sends it on stream 0. */
+void scr_http2_session_altsvc(ScrH2Session *s, ScrStr *alt /*borrowed*/,
+                               const struct ScrDyn *origin_or_stream /*borrowed*/);
+void scr_http2_session_origin(ScrH2Session *s, ScrArr *origins /*borrowed*/);
+void scr_http2_session_on_altsvc(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2AltsvcFn fn,
+                                  bool once);
+void scr_http2_session_on_origin(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2OriginFn fn,
+                                  bool once);
+void scr_http2_altsvc_thunk3(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id);
+void scr_http2_altsvc_thunk2(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id);
+void scr_http2_altsvc_thunk1(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id);
+void scr_http2_altsvc_thunk0(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id);
+void scr_http2_origin_thunk(ScrClosure *cb, ScrArr *origins);
+void scr_http2_origin_thunk0(ScrClosure *cb, ScrArr *origins);
 void scr_http2_session_destroy(ScrH2Session *s);
 void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);

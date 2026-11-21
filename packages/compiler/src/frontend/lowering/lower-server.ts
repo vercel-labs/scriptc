@@ -4478,6 +4478,53 @@ function lowerH2SessionMethodCall(
     requireStatementPosition(lowerer, call, "session.destroy(...)");
     return { kind: "libCall", fn: "http2.sessionDestroy", args: [receiver()], type: VOID, loc };
   }
+  if (name === "altsvc") {
+    requireStatementPosition(lowerer, call, "session.altsvc(...)");
+    if (args.length !== 2) {
+      lowerer.noLowering(
+        `session.altsvc with ${args.length} arguments`,
+        call,
+        "use altsvc(alt, originOrStream)",
+      );
+    }
+    const alt = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const origin = lowerer.lowerExpr(args[1]!);
+    if (origin.type.kind !== "string" && origin.type.kind !== "f64") {
+      lowerer.noLowering(
+        `session.altsvc with a '${lowerer.fmt(origin.type)}' originOrStream`,
+        args[1]!,
+        "pass an origin URL string or a stream id number",
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.sessionAltsvc",
+      args: [receiver(), alt, lowerer.coerceToExpected(origin, DYN)],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "origin") {
+    requireStatementPosition(lowerer, call, "session.origin(...)");
+    if (args.length < 1) {
+      lowerer.noLowering("session.origin with no arguments", call, "pass at least one origin");
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.sessionOrigin",
+      args: [
+        receiver(),
+        {
+          kind: "arrayLit",
+          elems: args.map((arg) => lowerer.lowerExprExpecting(arg, STRING)),
+          type: arrayOf(STRING),
+          loc,
+        },
+      ],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "ping") {
     // session.ping([payload, ]callback): the (err, duration, payload)
     // callback crosses the checked-dynamic boundary. Node answers a
@@ -4593,6 +4640,42 @@ function lowerH2SessionMethodCall(
         kind: "libCall",
         fn: "http2.sessionOnSettings0",
         args: [receiver(), cb, once, local],
+        type: VOID,
+        loc,
+      };
+    }
+    if (event === "altsvc") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "altsvc listeners",
+        3,
+        (p, i) => p.kind === (i === 2 ? "f64" : "string"),
+        "use (alt, origin, streamId), (alt, origin), (alt), or ()",
+        [STRING, STRING, F64],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionOnAltsvc",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
+    if (event === "origin") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "origin listeners",
+        1,
+        (p) => p.kind === "array" && p.elem.kind === "string",
+        "use (origins) or ()",
+        [arrayOf(STRING)],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionOnOrigin",
+        args: [receiver(), cb, once],
         type: VOID,
         loc,
       };

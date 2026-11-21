@@ -63801,6 +63801,7 @@
           "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-http2-settings.mjs",
           "tests/corpus/compat-http2-state.mjs",
+          "tests/corpus/http2-altsvc-origin.ts",
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
@@ -65008,8 +65009,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.serverhttp2session.altsvc",
+        "tests": [
+          "tests/corpus/http2-altsvc-origin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65031,8 +65035,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.serverhttp2session.origin",
+        "tests": [
+          "tests/corpus/http2-altsvc-origin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65103,8 +65110,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'altsvc'",
+        "tests": [
+          "tests/corpus/http2-altsvc-origin.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65126,8 +65136,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'origin'",
+        "tests": [
+          "tests/corpus/http2-altsvc-origin.ts"
+        ]
       },
       "anchorSource": "exact"
     },

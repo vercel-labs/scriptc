@@ -99,7 +99,8 @@ declare module "http2" {
     once(event: "close", listener: () => void): void;
   }
   export interface Http2SecureServer {
-    listen(port: number, callback?: () => void): void;
+    listen(port?: number, callback?: () => void): void;
+    listen(port: number, host: string, callback?: () => void): void;
     close(callback?: () => void): void;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort
@@ -509,6 +510,8 @@ declare module "http2" {
     on(event: "localSettings" | "remoteSettings", listener: (settings: any) => void): void;
     on(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
     on(event: "ping", listener: (payload: Uint8Array) => void): void;
+    on(event: "altsvc", listener: (alt: string, origin: string, streamId: number) => void): void;
+    on(event: "origin", listener: (origins: string[]) => void): void;
     once(event: "close" | "timeout", listener: () => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(
@@ -526,6 +529,8 @@ declare module "http2" {
     once(event: "localSettings" | "remoteSettings", listener: (settings: any) => void): void;
     once(event: "frameError", listener: (type: number, code: number, id: number) => void): void;
     once(event: "ping", listener: (payload: Uint8Array) => void): void;
+    once(event: "altsvc", listener: (alt: string, origin: string, streamId: number) => void): void;
+    once(event: "origin", listener: (origins: string[]) => void): void;
     addListener(event: "close" | "timeout", listener: () => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(
@@ -546,6 +551,11 @@ declare module "http2" {
       listener: (type: number, code: number, id: number) => void,
     ): void;
     addListener(event: "ping", listener: (payload: Uint8Array) => void): void;
+    addListener(
+      event: "altsvc",
+      listener: (alt: string, origin: string, streamId: number) => void,
+    ): void;
+    addListener(event: "origin", listener: (origins: string[]) => void): void;
   }
 
   export interface ClientHttp2Session extends Http2Session {
@@ -593,6 +603,8 @@ declare module "http2" {
   }
 
   export interface ServerHttp2Stream extends Http2StreamCore {
+    readonly session: ServerHttp2Session;
+    readonly id: number;
     on(event: "data", listener: (chunk: any) => void): void;
     on(
       event:
@@ -692,6 +704,7 @@ declare module "http2" {
   }
 
   export interface ClientHttp2Stream extends Http2StreamCore {
+    readonly session: ClientHttp2Session;
     on(event: "continue", listener: () => void): void;
     once(event: "continue", listener: () => void): void;
     addListener(event: "continue", listener: () => void): void;

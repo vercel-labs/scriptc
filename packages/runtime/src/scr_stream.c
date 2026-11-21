@@ -9021,12 +9021,39 @@ static bool scr_stream_wants_chunks(ScrStream *s) {
   return st->r.flowing == 1 || st->r.readable_listening || st->r.need_readable;
 }
 
+/* Resumes a bridged child stream no consumer holds (Node's flushStdio), so a
+ * child that exited still reaches EOF and 'end' instead of holding the
+ * child's 'close'. */
+static void scr_stream_child_flush(ScrStream *s) { scr_stream_release(scr_stream_resume(s)); }
+
+/* Registers the child bridge's 'close' listener on the stream, ahead of every
+ * listener the program registers afterwards (Node's maybeClose runs inside
+ * the stdio stream's close). */
+static void scr_stream_child_on_close(ScrStream *s, ScrClosure *cb /*moves*/) {
+  ScrStr *name = scr_str_new("close", 5);
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, cb, scr_ee_inv_fixed0, false, false));
+  scr_str_release(name);
+}
+
+/* Whether a bridged child stream has closed: its 'close' was emitted or it
+ * was destroyed, which is what Node's maybeClose waits on for the stdio
+ * streams a ChildProcess holds. */
+static bool scr_stream_child_closed(ScrStream *s) {
+  const ScrStreamState *st = s->st;
+  if (!st) return true;
+  return st->destroyed || st->close_emitted;
+}
+
 const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_child_readable, scr_stream_child_writable,
   scr_stream_retain_v, scr_stream_release_v, scr_stream_trace,
   scr_stream_push, scr_stream_push_null,
   scr_stream_write_done, scr_stream_final_done,
   scr_stream_wants_chunks,
+  scr_stream_fail,
+  scr_stream_child_closed,
+  scr_stream_child_flush,
+  scr_stream_child_on_close,
 };
 
 static ScrDyn *scr_stream_dyn_view_v(void *stream) { return scr_stream_dyn_view(stream); }

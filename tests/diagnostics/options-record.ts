@@ -45,7 +45,6 @@ tls.createServer({ cert: "c", key: "k", ticketKeys: new Uint8Array(48) }, () => 
 // fs.watch: the options that would CHANGE behavior fence by name; the
 // stated defaults are accepted (corpus 1751), and `persistent` is lowered
 // (corpus fs-watch-ref-unref).
-fs.watch("/tmp", { recursive: true }, () => {});
 fs.watch("/tmp", { encoding: "buffer" }, () => {});
 
 

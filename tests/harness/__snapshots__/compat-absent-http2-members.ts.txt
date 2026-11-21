@@ -1,44 +1,26 @@
-compat-absent-http2-members.ts:7:3 - error SC2020: 'stream.respondWithFile' is part of the standard library types but has no scriptc lowering yet
+compat-absent-http2-members.ts:7:3 - error SC2020: 'stream.pushStream' is part of the standard library types but has no scriptc lowering yet
 
   6 | server.on("stream", (stream) => {
-  7 |   stream.respondWithFile("/tmp/file");
-    |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  8 |   stream.respondWithFD(0);
+  7 |   stream.pushStream({ ":path": "/pushed" }, () => {});
+    |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  8 |   console.log(stream.state, stream.sentHeaders);
 
   hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
 
-compat-absent-http2-members.ts:8:3 - error SC2020: 'stream.respondWithFD' is part of the standard library types but has no scriptc lowering yet
+compat-absent-http2-members.ts:8:15 - error SC2020: 'ServerHttp2Stream.state' is part of the standard library types but has no scriptc lowering yet
 
-  7 |   stream.respondWithFile("/tmp/file");
-  8 |   stream.respondWithFD(0);
-    |   ^~~~~~~~~~~~~~~~~~~~~~~
-  9 |   stream.pushStream({ ":path": "/pushed" }, () => {});
-
-  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
-
-compat-absent-http2-members.ts:9:3 - error SC2020: 'stream.pushStream' is part of the standard library types but has no scriptc lowering yet
-
-   8 |   stream.respondWithFD(0);
-   9 |   stream.pushStream({ ":path": "/pushed" }, () => {});
-     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  10 |   console.log(stream.state, stream.sentHeaders);
-
-  hint: respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members
-
-compat-absent-http2-members.ts:10:15 - error SC2020: 'ServerHttp2Stream.state' is part of the standard library types but has no scriptc lowering yet
-
-   9 |   stream.pushStream({ ":path": "/pushed" }, () => {});
-  10 |   console.log(stream.state, stream.sentHeaders);
-     |               ^~~~~~~~~~~~
-  11 | });
+  7 |   stream.pushStream({ ":path": "/pushed" }, () => {});
+  8 |   console.log(stream.state, stream.sentHeaders);
+    |               ^~~~~~~~~~~~
+  9 | });
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-compat-absent-http2-members.ts:14:12 - error SC2020: 'stream.on("push", ...)' is part of the standard library types but has no scriptc lowering yet
+compat-absent-http2-members.ts:12:12 - error SC2020: 'stream.on("push", ...)' is part of the standard library types but has no scriptc lowering yet
 
-  13 | const request = client.request({ ":path": "/" });
-  14 | request.on("push", () => {});
+  11 | const request = client.request({ ":path": "/" });
+  12 | request.on("push", () => {});
      |            ^~~~~~
-  15 | 
+  13 | 
 
   hint: "data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events

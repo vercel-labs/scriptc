@@ -88,6 +88,9 @@ export interface NativeLinkFeatures {
    * or hasColors: links scr_tty_colors.c and the SCR_TTY_COLORS build of
    * the events unit, whose stream object has the two methods. */
   ttyColors?: boolean;
+  /** A Console built with inspectOptions or colorMode: its option-aware
+   * methods read the environment's color depth (scr_tty_colors.c). */
+  consoleOptions?: boolean;
   /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
    * which installs Node's pipe lifecycle into the stream unit. */
   streamPipeEvents?: boolean;
@@ -507,6 +510,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // scr_stream_dyn.c tests values and calls JavaScript stream members through
   // the dyn-invoke unit (the checked-dynamic stream slots).
   { feature: "streamDyn", requires: ["dynInvoke"] },
+  // A Console built with inspectOptions or colorMode formats through the
+  // inspect unit's console entries, and colorMode 'auto' reads the
+  // environment's color depth (scr_tty_colors.c).
+  { feature: "consoleOptions", requires: ["inspect"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

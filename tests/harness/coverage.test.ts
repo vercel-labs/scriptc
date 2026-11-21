@@ -982,9 +982,12 @@ test("CommonJS table exports of bindings that can change after the export keep t
   expect(refused).toEqual(["tab", "twice"]);
 });
 
-test("CommonJS namespace reads of exports a re-exported module assigns later keep their refusal", () => {
+test("CommonJS namespace reads of exports a re-exported module assigns later read the end-of-evaluation value", () => {
   // wrapper.cjs re-exports impl.cjs, whose set() assigns `current` after
-  // evaluation; `version` never changes.
+  // evaluation; `version` never changes. Node's namespace keeps impl.cjs's
+  // end-of-evaluation values, so the reads compile to the snapshot slots
+  // registered for the names a re-exported module assigns later
+  // (tests/corpus/cjs-namespace-reexport-later-assignment).
   const { coverage } = analyze(fixture("cjs-namespace-reexports/main.mjs"));
   const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
     .map(
@@ -993,9 +996,8 @@ test("CommonJS namespace reads of exports a re-exported module assigns later kee
           d.message,
         )?.[1],
     )
-    .filter((name) => name !== undefined)
-    .sort();
-  expect(refused).toEqual(["current"]);
+    .filter((name) => name !== undefined);
+  expect(refused).toEqual([]);
 });
 
 test("inferred JavaScript compiles natively", async () => {

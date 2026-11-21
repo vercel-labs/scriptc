@@ -432,6 +432,20 @@ static ScrDyn *scr_tty_has_colors(ScrClosure *cb, ScrDyn *const *args, size_t ar
  * stdout's and stderr's are the same function, as the prototype's are. */
 static SCR_TL ScrDyn *scr_tty_colors_methods[2];
 
+/* Console colorMode 'auto' (Node's shouldColorize): FORCE_COLOR decides on
+ * its own; otherwise the target must be a terminal, and the environment's
+ * color depth must exceed 2 (NO_COLOR, NODE_DISABLE_COLORS and TERM=dumb
+ * lower it; the terminal and CI variables raise it). */
+bool scr_tty_console_auto_colors(bool is_tty) {
+  ScrTtyEnv e = {NULL, false};
+  bool force = scr_tty_env_defined(&e, "FORCE_COLOR");
+  if (e.failed || scr_exc_pending()) return false;
+  if (!force && !is_tty) return false;
+  double depth = scr_tty_color_depth(&e);
+  if (e.failed || scr_exc_pending()) return false;
+  return depth > 2;
+}
+
 ScrDyn *scr_tty_colors_method(const char *key, size_t length) {
   bool has = length == 9 && memcmp(key, "hasColors", 9) == 0;
   if (!has && !(length == 13 && memcmp(key, "getColorDepth", 13) == 0)) return NULL;

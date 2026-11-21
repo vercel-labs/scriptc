@@ -106,3 +106,11 @@ shape("hash finalized", () => {
 });
 shape("random size", () => crypto.randomBytes(-1));
 shape("timingSafeEqual lengths", () => crypto.timingSafeEqual(Buffer.alloc(1), Buffer.alloc(2)));
+
+// OpenSSL 3 no longer reports a function name on its errors: the documented
+// `function` property is absent, while library and reason remain.
+try {
+  crypto.createPrivateKey("garbage");
+} catch (error) {
+  console.log("openssl function", "function" in error, typeof error.function, "library" in error, "reason" in error);
+}

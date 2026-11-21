@@ -4,8 +4,6 @@ import * as http2 from "node:http2";
 
 const server = http2.createServer();
 server.on("stream", (stream) => {
-  stream.respondWithFile("/tmp/file");
-  stream.respondWithFD(0);
   stream.pushStream({ ":path": "/pushed" }, () => {});
   console.log(stream.state, stream.sentHeaders);
 });

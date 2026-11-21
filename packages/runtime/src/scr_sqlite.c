@@ -2235,6 +2235,14 @@ static bool scr_sqlite_db_close_all(ScrSqliteDb *db) {
     db->stmts[db->stmt_n - 1] = NULL;
     db->stmt_n--;
     scr_sqlite_stmt_finalize(s);
+    /* The database owned the statement and the statement owned the
+     * database: a program that stores a statement on the database object
+     * would leave that pair uncollectable. A closed statement needs no
+     * database, so its reference becomes the closed stand-in. */
+    if (s->db != &scr_sqlite_closed_db) {
+      scr_sqlite_db_release(s->db);
+      s->db = &scr_sqlite_closed_db;
+    }
   }
   scr_sqlite_db_delete_sessions(db);
   if (db->conn != NULL) {

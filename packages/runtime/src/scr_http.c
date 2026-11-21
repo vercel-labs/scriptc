@@ -5601,6 +5601,11 @@ typedef struct {
 } ScrHttpProxyEnv;
 
 static SCR_TL ScrHttpProxyEnv scr_http_proxy_env;
+/* An explicit setGlobalProxyFromEnv call outranks the startup switch. */
+static SCR_TL bool scr_http_proxy_env_explicit;
+/* Whether the startup switch has been read (the environment is read once,
+ * as Node reads it at startup). */
+static SCR_TL bool scr_http_proxy_env_checked;
 
 static void scr_http_proxy_env_clear(void) {
   scr_str_release(scr_http_proxy_env.http_proxy);
@@ -5637,12 +5642,29 @@ static ScrStr *scr_http_proxy_env_value(const ScrDyn *env, const char *upper,
   return raw != NULL ? scr_str_new(raw, strlen(raw)) : NULL;
 }
 
-void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/) {
+static void scr_http_proxy_env_apply(const ScrDyn *env /*borrowed, nullable*/) {
   scr_http_proxy_env_clear();
   scr_http_proxy_env.http_proxy = scr_http_proxy_env_value(env, "HTTP_PROXY", "http_proxy");
   scr_http_proxy_env.https_proxy = scr_http_proxy_env_value(env, "HTTPS_PROXY", "https_proxy");
   scr_http_proxy_env.no_proxy = scr_http_proxy_env_value(env, "NO_PROXY", "no_proxy");
   scr_http_proxy_env.enabled = true;
+}
+
+void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/) {
+  scr_http_proxy_env_apply(env);
+  scr_http_proxy_env_explicit = true;
+  scr_http_proxy_env_checked = true;
+}
+
+/* NODE_USE_ENV_PROXY=1 is Node 24's startup switch for the same
+ * configuration: the module's proxy is the process environment, with no
+ * explicit call. Only "1" enables it, and a program's own call wins. */
+static void scr_http_proxy_env_default(void) {
+  if (scr_http_proxy_env_checked || scr_http_proxy_env_explicit) return;
+  scr_http_proxy_env_checked = true;
+  const char *use = getenv("NODE_USE_ENV_PROXY");
+  if (use == NULL || strcmp(use, "1") != 0) return;
+  scr_http_proxy_env_apply(NULL);
 }
 
 /* The createServer option checks Node's constructor runs as it reads each
@@ -8300,6 +8322,7 @@ static ScrStr *scr_http_pct_decode(const char *p, size_t n) {
 
 /* The module's proxy value for a scheme, when one is configured. */
 static const ScrStr *scr_http_proxy_spec(bool secure) {
+  scr_http_proxy_env_default();
   if (!scr_http_proxy_env.enabled) return NULL;
   return secure ? scr_http_proxy_env.https_proxy : scr_http_proxy_env.http_proxy;
 }
@@ -8318,6 +8341,7 @@ static bool scr_http_proxy_spec_invalid(const ScrStr *spec) {
 static bool scr_http_proxy_resolve(const ScrStr *host, double port, bool secure,
                                    ScrHttpProxyTarget *out) {
   memset(out, 0, sizeof *out);
+  scr_http_proxy_env_default();
   if (!scr_http_proxy_env.enabled) return false;
   const ScrStr *spec = secure ? scr_http_proxy_env.https_proxy : scr_http_proxy_env.http_proxy;
   if (spec == NULL || spec->len < 8 || memcmp(spec->data, "http://", 7) != 0) return false;

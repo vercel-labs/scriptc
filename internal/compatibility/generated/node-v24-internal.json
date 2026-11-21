@@ -12080,6 +12080,7 @@
           "tests/corpus/child-spawn-timeout-overflow.ts",
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawnfile-spawnargs.ts",
+          "tests/corpus/child-spawnsync-pid.cjs",
           "tests/corpus/child-stdin-pipe-interface.ts",
           "tests/corpus/child-stdio-array-general-streams.ts",
           "tests/corpus/child-stdio-array/main.ts",
@@ -12264,7 +12265,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawn-signal.ts",
           "tests/corpus/child-spawn-timeout-overflow.ts",
-          "tests/corpus/child-spawn-options-dynamic.cjs"
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/child-spawnsync-pid.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12381,7 +12383,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawn-signal.ts",
           "tests/corpus/child-spawn-timeout-overflow.ts",
-          "tests/corpus/child-spawn-options-dynamic.cjs"
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/child-spawnsync-pid.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12422,7 +12425,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawn-signal.ts",
           "tests/corpus/child-spawn-timeout-overflow.ts",
-          "tests/corpus/child-spawn-options-dynamic.cjs"
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/child-spawnsync-pid.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12463,7 +12467,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawn-signal.ts",
           "tests/corpus/child-spawn-timeout-overflow.ts",
-          "tests/corpus/child-spawn-options-dynamic.cjs"
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/child-spawnsync-pid.cjs"
         ]
       },
       "anchorSource": "exact"

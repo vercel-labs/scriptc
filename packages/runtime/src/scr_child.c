@@ -1336,6 +1336,8 @@ struct ScrSpawnRes {
   size_t rc;
   bool has_status;
   double status;
+  /* Node's result.pid: the child's id, 0 when the spawn itself failed. */
+  double pid;
   ScrStr *out;
   ScrStr *err;
   /* The call's encoding option as a canonical Buffer encoding name (+1;
@@ -1389,6 +1391,8 @@ void scr_spawn_res_release_v(void *p) { scr_spawn_res_release((ScrSpawnRes *)p);
 
 bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
+/* Node's result.pid — the child's id, 0 when the spawn itself failed. */
+double scr_spawn_res_pid(ScrSpawnRes *r) { return r->pid; }
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) {
   return scr_child_capture_text(r->out, r->encoding);
 }
@@ -1429,6 +1433,7 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->rc = 1;
   r->has_status = has_status;
   r->status = status;
+  r->pid = 0;
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
@@ -1480,6 +1485,7 @@ static ScrSpawnRes *scr_win_enobufs_res(const ScrWinSyncRes *w, ScrStr *cmd, Scr
 #else
   (void)args;
 #endif
+  r->pid = (double)w->pid;
   return r;
 }
 
@@ -1507,7 +1513,9 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   free(w.err.data);
   if (w.enobufs) return scr_win_enobufs_res(&w, cmd, args, killsig, out_s, err_s);
   if (!w.timed_out) {
-    return scr_spawn_res_new(true, (double)w.exit_code, out_s, err_s);
+    ScrSpawnRes *r = scr_spawn_res_new(true, (double)w.exit_code, out_s, err_s);
+    r->pid = (double)w.pid;
+    return r;
   }
   /* Node's timeout shape: status null, signal = killSignal's name, error
    * ETIMEDOUT (the kill may have raced a normal exit; Node reports the
@@ -1523,6 +1531,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   r->spawn_errno = -4039.0;
   r->args = scr_child_snapshot_args(args);
 #endif
+  r->pid = (double)w.pid;
   return r;
 }
 
@@ -3912,7 +3921,9 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   free(w.err.data);
   if (w.enobufs) return scr_win_enobufs_res(&w, cmd, args, killsig, out_s, err_s);
   if (!w.timed_out) {
-    return scr_spawn_res_new(true, (double)w.exit_code, out_s, err_s);
+    ScrSpawnRes *r = scr_spawn_res_new(true, (double)w.exit_code, out_s, err_s);
+    r->pid = (double)w.pid;
+    return r;
   }
   ScrSpawnRes *r = scr_spawn_res_new(false, 0, out_s, err_s);
   r->signal_name = scr_signal_name(killsig);
@@ -3923,6 +3934,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   r->spawn_errno = -4039.0;
   r->args = scr_child_snapshot_args(args);
 #endif
+  r->pid = (double)w.pid;
   return r;
 }
 
@@ -4082,6 +4094,8 @@ struct ScrSpawnRes {
   size_t rc;
   bool has_status;  /* false: signal death or spawn failure (status null) */
   double status;
+  /* Node's result.pid: the child's id, 0 when the spawn itself failed. */
+  double pid;
   ScrStr *out; /* captured stdout bytes */
   ScrStr *err; /* captured stderr bytes */
   /* The call's encoding option as a canonical Buffer encoding name (+1;
@@ -4139,6 +4153,8 @@ void scr_spawn_res_release_v(void *p) { scr_spawn_res_release((ScrSpawnRes *)p);
 
 bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
+/* Node's result.pid — the child's id, 0 when the spawn itself failed. */
+double scr_spawn_res_pid(ScrSpawnRes *r) { return r->pid; }
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) {
   return scr_child_capture_text(r->out, r->encoding);
 }
@@ -4256,6 +4272,7 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->rc = 1;
   r->has_status = has_status;
   r->status = status;
+  r->pid = 0;
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
@@ -4561,6 +4578,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     r->args = scr_child_snapshot_args(args);
 #endif
   }
+  r->pid = (double)pid;
   return r;
 }
 
@@ -8301,6 +8319,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     r->args = scr_child_snapshot_args(args);
 #endif
   }
+  r->pid = (double)pid;
   return r;
 }
 

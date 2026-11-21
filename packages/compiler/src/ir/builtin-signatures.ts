@@ -4159,6 +4159,9 @@ function buildLibFnSignatures() {
     // Like process.envGet, spawnRes.status's result type is program-dependent
     // (the interned `number | null` union) — the libCall case checks the arms.
     "spawnRes.status": { argTypes: [SPAWNRES_T], result: VOID },
+    /** Node's spawnSync-result `pid`: the child's id, 0 when the spawn
+     * itself failed. */
+    "spawnRes.pid": { argTypes: [SPAWNRES_T], result: F64 },
     // spawnRes.error's result is the interned `Error | undefined` union —
     // the libCall case checks the arms, the spawnRes.status pattern.
     /** Node's spawn-failure carrier `error?: Error`: a fresh +1 %Error

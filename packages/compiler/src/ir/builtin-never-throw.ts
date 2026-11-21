@@ -246,6 +246,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // The child's cached stdio array: a flag read, a retain of the array the
   // first read built, and a store of that array (a retain); no program code.
   "child.stdioCached",
+  // spawnSync's result.pid is a plain number read off the result handle:
+  // no allocation and no program code.
+  "spawnRes.pid",
   "child.stdioArray",
   "child.stdioStore",
   // Builds the flags object once from constants and retains it.

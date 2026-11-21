@@ -720,6 +720,7 @@ struct ScrH2Stream {
   bool file_done;          /* drained, gone, or replaced */
   scr_h2_file_off file_off;
   scr_h2_file_off file_remaining;
+  double file_retry_handle; /* a pending backpressure retry timer (0 none) */
   /* respond(..., { waitForTrailers: true }), sendTrailers and the
    * 'wantTrailers'/'trailers' pair of events. */
   bool want_trailers;   /* the response waits for a trailer block */
@@ -1385,60 +1386,41 @@ static void scr_h2_stream_want_trailers(ScrH2Stream *st);
 
 /* The peer's HTTP/2 window is not the only bound on a file response: the
  * socket's own write backlog is. A pump that would push the transport
- * past this cap stops, and the sweep retries it once the backlog drains
- * (Node's file pipe pauses on the stream's backpressure the same way). */
+ * past this cap stops and arms a short timer; the retry runs through the
+ * loop's ordinary timer dispatch, which still polls the sockets. A
+ * blocked response must never report itself as immediately runnable work:
+ * the dispatch loop would then spin without polling, so the socket could
+ * never drain, timers could not run, and one slow reader would freeze
+ * every connection. */
 #define SCR_H2_FILE_BACKLOG_BYTES (64.0 * 1024.0)
-static SCR_TL ScrH2Stream **scr_h2_file_wait = NULL;
-static SCR_TL size_t scr_h2_file_wait_n = 0, scr_h2_file_wait_cap = 0;
+#define SCR_H2_FILE_RETRY_MS 1.0
 
 static void scr_h2_stream_flush(ScrH2Stream *st);
-static void scr_h2_file_block(ScrH2Stream *st) {
-  for (size_t i = 0; i < scr_h2_file_wait_n; i++) {
-    if (scr_h2_file_wait[i] == st) return;
-  }
-  if (scr_h2_file_wait_n == scr_h2_file_wait_cap) {
-    scr_h2_file_wait_cap = scr_h2_file_wait_cap ? scr_h2_file_wait_cap * 2 : 4;
-    scr_h2_file_wait = realloc(scr_h2_file_wait, scr_h2_file_wait_cap * sizeof *scr_h2_file_wait);
-    if (!scr_h2_file_wait) scr_h2_oom();
-  }
-  scr_h2_file_wait[scr_h2_file_wait_n++] = scr_http2_stream_retain(st);
-}
 
-static void scr_h2_file_wait_drop(size_t i) {
-  scr_http2_stream_release(scr_h2_file_wait[i]);
-  memmove(scr_h2_file_wait + i, scr_h2_file_wait + i + 1,
-          (scr_h2_file_wait_n - i - 1) * sizeof *scr_h2_file_wait);
-  scr_h2_file_wait_n--;
-}
-
-/* Retry the pumps stopped by the transport backlog, as the sweep's turn. */
-static void scr_h2_file_retry(void) {
-  for (size_t i = 0; i < scr_h2_file_wait_n;) {
-    ScrH2Stream *st = scr_h2_file_wait[i];
-    if (st->destroyed || st->close_queued || st->file_fd < 0 || st->file_remaining <= 0) {
-      scr_h2_file_wait_drop(i);
-      continue;
-    }
-    ScrH2Session *sess = st->sess;
-    if (sess->sock == NULL || !scr_h2_sock_alive(sess) ||
-        scr_net_sock_writable_length(sess->sock) >= SCR_H2_FILE_BACKLOG_BYTES) {
-      i++;
-      continue;
-    }
-    scr_http2_stream_retain(st);
-    scr_h2_file_wait_drop(i);
+static void scr_h2_file_retry_tick(ScrClosure *cb) {
+  ScrH2Stream *st = (ScrH2Stream *)scr_box_get_ref(cb->caps[0]); /* +1 */
+  st->file_retry_handle = 0;
+  if (!st->destroyed && !st->close_queued && st->file_fd >= 0 && st->file_remaining > 0) {
     scr_h2_stream_flush(st);
-    scr_http2_stream_release(st);
+  }
+  scr_http2_stream_release(st);
+}
+
+static void scr_h2_file_schedule_retry(ScrH2Stream *st) {
+  if (st->file_retry_handle > 0) return;
+  ScrClosure *tick = scr_closure_new((void *)&scr_h2_file_retry_tick, 1);
+  tick->caps[0] = scr_box_new_obj(scr_http2_stream_retain_v, scr_http2_stream_release_v, NULL);
+  scr_box_set_ref(tick->caps[0], scr_http2_stream_retain(st));
+  double handle = scr_set_timeout_handle(tick, SCR_H2_FILE_RETRY_MS);
+  if (handle > 0) {
+    scr_timer_unref(handle);
+    st->file_retry_handle = handle;
   }
 }
 
-static bool scr_h2_proto_pending(void) {
-  return scr_h2_emits_head < scr_h2_emits_len || scr_h2_file_wait_n > 0;
-}
+static bool scr_h2_proto_pending(void) { return scr_h2_emits_head < scr_h2_emits_len; }
 
 static void scr_h2_proto_sweep(void) {
-  scr_h2_file_retry();
-  if (scr_exc_pending()) return;
   while (scr_h2_emits_head < scr_h2_emits_len) {
     ScrH2Emit e = scr_h2_emits[scr_h2_emits_head++];
     ScrAlsCtx *prev = scr_als_dispatch_enter(
@@ -1531,10 +1513,6 @@ static void scr_h2_cleanup_atexit(void) {
   free(scr_h2_emits);
   scr_h2_emits = NULL;
   scr_h2_emits_head = scr_h2_emits_len = scr_h2_emits_cap = 0;
-  for (size_t i = 0; i < scr_h2_file_wait_n; i++) scr_http2_stream_release(scr_h2_file_wait[i]);
-  free(scr_h2_file_wait);
-  scr_h2_file_wait = NULL;
-  scr_h2_file_wait_n = scr_h2_file_wait_cap = 0;
 }
 
 static const ScrHttpH2Ops scr_h2_compat_ops;
@@ -2720,6 +2698,10 @@ static void scr_h2_respond_with_content(ScrH2Stream *st, ScrArr *pairs, const ch
 }
 
 static void scr_h2_file_close(ScrH2Stream *st) {
+  if (st->file_retry_handle > 0) {
+    scr_clear_interval(st->file_retry_handle);
+    st->file_retry_handle = 0;
+  }
   if (st->file_fd >= 0) {
     if (st->file_owns_fd) {
 #ifdef _WIN32
@@ -2743,7 +2725,7 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
   size_t max_frame = s->peer_max_frame ? s->peer_max_frame : SCR_H2_DEFAULT_MAX_FRAME;
   while (st->file_remaining > 0 && !st->destroyed) {
     if (s->sock != NULL && scr_net_sock_writable_length(s->sock) >= SCR_H2_FILE_BACKLOG_BYTES) {
-      scr_h2_file_block(st);
+      scr_h2_file_schedule_retry(st);
       return false;
     }
     int64_t window = st->send_window < s->send_window ? st->send_window : s->send_window;

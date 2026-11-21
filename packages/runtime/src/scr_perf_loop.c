@@ -2066,6 +2066,15 @@ double scr_histo_linear_buckets_count(ScrDyn *handle, double step_d) {
     if (index > max_index) max_index = index;
   }
   if (max_index == 0) return 0;
+  /* A small step multiplies a raw recorded value (an interval histogram
+   * records nanoseconds) into a dense slot count no service can hold, and
+   * the Map Node answers for it cannot be materialized either. The build
+   * refuses catchably instead of exhausting memory. */
+  if ((uint64_t)max_index > ((uint64_t)1u << 20u)) {
+    static const char msg[] = "Memory allocation failed";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return 0;
+  }
   /* The allocation must fit the target's size_t: a maximum beyond it would
    * truncate to a smaller allocation that the sample indices below then
    * write past. */

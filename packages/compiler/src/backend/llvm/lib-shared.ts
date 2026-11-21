@@ -1959,6 +1959,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "net.sockDestroySoon": "scr_net_sock_destroy_soon",
   "net.sockResetAndDestroy": "scr_net_sock_reset_and_destroy",
   "net.sockAddress": "scr_net_sock_address",
+  "net.sockTimeoutGet": "scr_net_sock_timeout_get",
+  "net.sockAllowHalfOpen": "scr_net_sock_allow_half_open",
   "net.sockBytesWritten": "scr_net_sock_bytes_written",
   "net.sockWritableLength": "scr_net_sock_writable_length",
   "net.sockWritableNeedDrain": "scr_net_sock_writable_need_drain",

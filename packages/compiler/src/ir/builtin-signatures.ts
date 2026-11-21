@@ -2441,6 +2441,11 @@ function buildLibFnSignatures() {
      * budget runs Node's validateInt32-from-1 ladder and is then inert —
      * the single dial has nothing to time). May-throw. */
     "net.connectAttempt": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
+    /** new net.Socket([options]): an unconnected socket. args [options,
+     * fence]; allowHalfOpen and signal lower, a descriptor (a number
+     * argument or options.fd) and the readable/writable sides throw the
+     * caller-rendered fence. May-throw seed. */
+    "net.socketNew": { argTypes: [DYN, STRING, BOOL], result: NETSOCKET_T },
     /** net.connect/createConnection over dynamic arguments (a runtime
      * option bag, or positional values whose kinds only the run decides):
      * args [arg0, arg1, arg2, fence]. The runtime runs Node's normalizeArgs
@@ -3282,11 +3287,24 @@ function buildLibFnSignatures() {
     /** setNoDelay(enable): the argument as written (undefined means true);
      * answers the socket. */
     "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, DYN], result: NETSOCKET_T },
+    /** socket.connect(port[, host][, connectListener]): an idle socket
+     * starts the dial net.connect's port form performs (port and host run
+     * the validation ladder first); answers the socket. */
+    "net.sockConnect": { argTypes: [NETSOCKET_T, F64, STRING], result: VOID },
+    "net.sockConnectCb": {
+      argTypes: [NETSOCKET_T, F64, STRING, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
     /** RST close, answers the socket; throws ERR_INVALID_HANDLE_TYPE on TLS. */
     "net.sockResetAndDestroy": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
     /** socket.address(): { address, family, port } or {} as a dyn. */
     "net.sockAddress": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.timeout: the idle timeout setTimeout set (undefined until
+     * one was set, 0 once disabled). */
+    "net.sockTimeoutGet": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.allowHalfOpen: the constructor's stream option. */
+    "net.sockAllowHalfOpen": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
     /** socket.writableLength: Node's state.length, the length of every
      * write not yet completely sent. */

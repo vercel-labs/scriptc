@@ -176,6 +176,7 @@ const TIMEOUTS: Record<string, number> = {
   "hono-zod-validator": 900_000,
   undici5: 600_000,
   undici7: 600_000,
+  undici8: 600_000,
   "zod4-boundary": 900_000,
   "zod4-record": 900_000,
   zod3: 600_000,

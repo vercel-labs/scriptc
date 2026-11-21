@@ -128,6 +128,13 @@ struct ScrSqliteIter {
   bool done;
   unsigned generation;
 };
+/* The closed-database stand-in a finalized statement's database reference
+ * becomes when its database closes: every field is the closed state (no
+ * connection, no properties, no callbacks), and the immortal reference count
+ * keeps a release a no-op, so a statement that a program still holds cannot
+ * keep its database alive or reach a freed one. */
+static ScrSqliteDb scr_sqlite_closed_db = {.rc = SIZE_MAX, .conn = NULL};
+
 /* A changeset session (Node's Session): the SQLite session and the database
  * it observes. */
 typedef struct ScrSqliteSession {
@@ -2215,6 +2222,14 @@ static void scr_sqlite_db_close_statements(ScrSqliteDb *db) {
     db->stmts[db->stmt_n - 1] = NULL;
     db->stmt_n--;
     scr_sqlite_stmt_finalize(s);
+    /* The database owned the statement and the statement owned the
+     * database: a program that stores a statement on the database object
+     * would leave that pair uncollectable. A closed statement needs no
+     * database, so its reference becomes the closed stand-in. */
+    if (s->db != &scr_sqlite_closed_db) {
+      scr_sqlite_db_release(s->db);
+      s->db = &scr_sqlite_closed_db;
+    }
   }
 }
 

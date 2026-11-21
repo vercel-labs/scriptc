@@ -48,6 +48,13 @@ server.on("stream", (stream, headers) => {
       fs.closeSync(fd);
     });
     stream.respondWithFD(fd, { ":status": 200 }, { offset: 0, length: 5 });
+  } else if (headers[":path"] === "/range-length") {
+    // A caller-supplied length must not survive a range response: Node
+    // replaces it with the range's actual byte count.
+    stream.respondWithFile(bodyPath, { ":status": 200, "content-length": 999 }, {
+      offset: 6,
+      length: 5,
+    });
   } else if (headers[":path"] === "/onerror") {
     stream.respondWithFile("/nonexistent-http2-file-onerror", { ":status": 200 }, {
       onError: (error) => {
@@ -137,6 +144,7 @@ server.listen(0, "127.0.0.1", () => {
     await get("/fd-position");
     await get("/fd-unreadable");
     await get("/missing");
+    await get("/range-length");
     await get("/onerror");
     await get("/slow-reader");
     await get("/mutate");

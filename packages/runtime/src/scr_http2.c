@@ -3005,10 +3005,30 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
     owned_pairs = scr_h2_dom_to_pairs(hdrs);
     pairs = owned_pairs;
     scr_dyn_release(hdrs);
-  } else if (owns && is_file && !scr_h2_pairs_has(pairs, "content-length")) {
+  } else if (owns && is_file) {
+    /* Node replaces the caller's content-length with the range's actual
+     * byte count for a regular file (a range response with the full
+     * length would be rejected by the peer), so the old field goes and the
+     * computed one takes its place. */
     size_t n = (size_t)scr_arr_len(pairs);
     owned_pairs = scr_arr_new(SCR_ELEM_STR, (double)n + 2);
-    for (size_t i = 0; i < n; i++) scr_arr_push_ref(owned_pairs, scr_arr_get_ref(pairs, (double)i));
+    for (size_t i = 0; i + 1 < n; i += 2) {
+      ScrStr *name = scr_arr_get_ref(pairs, (double)i);
+      ScrStr *value = scr_arr_get_ref(pairs, (double)(i + 1));
+      bool clen = name->len == 14;
+      for (size_t k = 0; clen && k < 14; k++) {
+        char ch = name->data[k];
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+        clen = ch == "content-length"[k];
+      }
+      if (clen) {
+        scr_str_release(name);
+        scr_str_release(value);
+      } else {
+        scr_arr_push_ref(owned_pairs, name);  /* moves the refs */
+        scr_arr_push_ref(owned_pairs, value);
+      }
+    }
     char lenbuf[32];
     int lenlen = snprintf(lenbuf, sizeof lenbuf, "%lld", (long long)want);
     scr_arr_push_ref(owned_pairs, scr_str_new("content-length", 14));

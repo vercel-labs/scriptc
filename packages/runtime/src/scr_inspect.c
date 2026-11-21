@@ -5192,6 +5192,9 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           return insp_bracketed_class(ops->cls);
         }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
+        /* The class's view is built by reading native state and threw
+         * (a closed database): the caller reports the exception. */
+        if (view == NULL) return scr_str_new("", 0);
         if (ops->inspect_view_nested) {
           scr_insp_nested_begin();
           ScrStr *inner = scr_insp_dyn(view, 0, depth);

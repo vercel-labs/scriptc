@@ -2753,12 +2753,49 @@ typedef struct ScrDynHandleOps {
    * answer). The web stream classes answer Node's symbol getters here;
    * only they set it. */
   ScrDyn *(*stream_predicate)(void *h, ScrDynHandleTag tag, double which);
+  /* The class's own string keys as a fresh array (+1), in enumeration
+   * order, or NULL when the class has none. Object.getOwnPropertyNames,
+   * for-in, Object.hasOwn and Object.keys read it; it answers without
+   * touching native state, so it also works when that state is gone (a
+   * closed database). NULL hook = the class has no own properties. */
+  ScrDyn *(*own_names)(void *h);
+  /* The class's own enumerable properties as a fresh ordinary object (+1;
+   * a snapshot built on the call), or NULL when the class has none. The
+   * keys, values, descriptors and serialization of such a handle read it,
+   * so they follow the object's own attributes. NULL hook = none. */
+  ScrDyn *(*own_view)(void *h);
+  /* The descriptor of the class's own property `key` (+1), using the same
+   * attributes the view would have: the undefined value when `key` names
+   * no own property, or NULL with an exception pending (a closed
+   * database's native limits). NULL hook = descriptors read own_view. */
+  ScrDyn *(*own_descriptor)(void *h, const char *key, size_t key_len);
+  /* `delete handle[key]`: true when the property was removed or never
+   * existed, false for a non-configurable own property (the caller throws
+   * in strict code). NULL hook = the delete is refused. */
+  bool (*delete_key)(void *h, const char *key, size_t key_len);
   /* The owning unit takes the own-property table (+1) of a handle whose
    * properties its native object holds and traces, so the cycle collector
    * sees the table's references like any other edge of the object (the
    * fetch classes). NULL = scr_dyn_handle_props.c's slot table owns the
    * table. See ScrDynHandlePropsHooks.table. */
   void (*adopt_props)(void *h, ScrDyn *props);
+  /* The class's own symbol-keyed properties as a fresh ordinary object
+   * (+1) whose own properties are symbol-keyed data properties with the
+   * class's attributes (DatabaseSync's Symbol(sqlite-type) brand), or NULL
+   * when the class has none. Object.getOwnPropertySymbols,
+   * getOwnPropertyDescriptors, hasOwn and `in` read it; NULL hook = none. */
+  ScrDyn *(*own_symbols)(void *h);
+  /* The class's own enumerable string keys as a fresh array (+1), in
+   * enumeration order, answered without reading native state (so a closed
+   * database's Object.keys and for-in keep working). NULL hook = the
+   * own_names list, all of whose properties are enumerable. */
+  ScrDyn *(*own_enumerable_names)(void *h);
+  /* Object.defineProperty and Reflect.defineProperty on the class's own
+   * properties, `descriptor` read as any descriptor object: the class
+   * applies the definition (an added property, or a class accessor's
+   * identity rule) or raises Node's TypeError. True when handled (defined
+   * or threw); false to leave the definition to the ordinary path. */
+  bool (*define_own)(void *h, const char *key, size_t key_len, ScrDyn *descriptor);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),
@@ -2883,6 +2920,12 @@ ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *ke
  * NULL with the exception pending. */
 ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
                                          ScrDyn *const *args, size_t argc);
+/* The native method value whose call is running (a method read from a handle
+ * and called, possibly after being stored): the handle's implementation
+ * consults these to answer the method rather than a property of the same
+ * name that happens to hold that very value. NULL between calls. */
+extern SCR_TL void *scr_dyn_method_value_target;
+extern SCR_TL const char *scr_dyn_method_value_name;
 /* The class operations scr_json.c's handle paths reach (instanceof, a method
  * value's receiver and call, and `in`); scr_dyn_handle_class.c installs them
  * from a constructor, so scr_json.c builds one object whether or not a
@@ -2896,6 +2939,10 @@ typedef struct ScrDynHandleClassOps {
    * handle whose class declares none; an alias tag answers its class's
    * table. */
   const ScrDynHandleAccessor *(*accessors)(const ScrDyn *handle);
+  /* The class's own method function for `name` (+1), or NULL: the value a
+   * handle read answers, so a property that was written back with it is
+   * recognised as the method rather than as a replacement. */
+  ScrDyn *(*method_value)(ScrDynHandleTag tag, const char *name);
 } ScrDynHandleClassOps;
 extern const ScrDynHandleClassOps *scr_dyn_handle_class_ops;
 

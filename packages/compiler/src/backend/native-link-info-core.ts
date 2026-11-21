@@ -486,6 +486,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // scr_sqlite.c interns DatabaseSync's Symbol(sqlite-type) brand through
+  // the symbol unit's registry, and reflection and util.inspect show it
+  // whatever the program does with symbols.
+  { feature: "sqlite", requires: ["symbol"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
   // scr_perf.c resolves performance.measure's Node timing milestone names

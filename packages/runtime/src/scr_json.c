@@ -15798,6 +15798,13 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_TYPED_REF && !scr_dyn_generator(v)) {
     if (scr_typed_ref_array_has_own(v, key)) return true;
+    /* An Array subclass instance: its class's methods and accessors are
+     * its prototype's members. */
+    if (v->v.typed_ref.array && !v->v.typed_ref.record && !v->v.typed_ref.klass &&
+        !v->v.typed_ref.bag_class) {
+      const ScrArrClass *cls = scr_arr_class_of(v->v.typed_ref.ptr);
+      if (cls && scr_dyn_name_in_strs(key, cls->members, cls->member_count)) return true;
+    }
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) {
       /* With no checked view, the snapshot's prototype is Object.prototype. */

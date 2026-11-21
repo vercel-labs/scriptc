@@ -538,6 +538,9 @@ export interface ClassHost extends ShapeHost {
   readonly unionsById: Map<string, IrUnionDef>;
   unitInstanceRef(unionId: string, tag: number): string;
   cstr(text: string): string;
+  /** An immortal string constant's symbol (an Array subclass descriptor's
+   * member names). */
+  internLiteral(text: string): string;
   /** The symbol a vtable stores for a method implementation (its owned
    * entry point unless the slot's calling convention borrows; see
    * LlEmitter.virtualEntry). */
@@ -1630,12 +1633,20 @@ export function emitClassShapes(
         ? cls.name.slice(cls.name.lastIndexOf(".") + 1)
         : cls.name;
       const jsName = cls.jsName ?? displayName;
+      const members = (cls.prototypeNames ?? []).map((name) => `ptr ${host.internLiteral(name)}`);
       defs.push(
         ...destroyBody,
         // The name is the class's own copy: its address identifies the
         // class in dyn snapshots of an instance (scr_arr_copy_metadata).
         `${arrayClassDescriptor(cls.name)}.name = private constant [${Buffer.byteLength(jsName, "utf8") + 1} x i8] c"${nulTerminatedBytes(jsName)}"`,
-        `${arrayClassDescriptor(cls.name)} = internal constant { ptr, ptr, ptr, ptr } { ptr ${arrayClassDescriptor(cls.name)}.name, ptr @${destroy}, ptr ${arrayClassFn(cls.arrayFields)}, ptr ${arrayClassFn(cls.arraySpecies)} }`,
+        // The methods and accessors the class declares, which `in` answers
+        // on an instance (ScrArrClass.members).
+        ...(members.length > 0
+          ? [
+              `${arrayClassDescriptor(cls.name)}.members = private constant [${members.length} x ptr] [${members.join(", ")}]`,
+            ]
+          : []),
+        `${arrayClassDescriptor(cls.name)} = internal constant { ptr, ptr, ptr, ptr, ${host.sizeType}, ptr } { ptr ${arrayClassDescriptor(cls.name)}.name, ptr @${destroy}, ptr ${arrayClassFn(cls.arrayFields)}, ptr ${arrayClassFn(cls.arraySpecies)}, ${host.sizeType} ${members.length}, ptr ${members.length > 0 ? `${arrayClassDescriptor(cls.name)}.members` : "null"} }`,
         ``,
         `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (the array's)`,
         `entry:`,

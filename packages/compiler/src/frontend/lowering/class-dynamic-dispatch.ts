@@ -451,6 +451,11 @@ interface PropertyReceiver {
  * property of the instance. */
 function arrayClassAnswers(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
   if (!isClassOwnEnumerableFieldName(name)) return false;
+  // The class's member table spells an accessor as get:<key> / set:<key>, so
+  // a string key that begins with one of those prefixes names no property of
+  // the instance: it must not match the accessor's internal entry (a private
+  // getter's key included).
+  if (name.startsWith("get:") || name.startsWith("set:")) return false;
   if (info.fields.has(name)) return true;
   return [name, `get:${name}`, `set:${name}`].some((member) => {
     const found = findMethodOn(lowerer, info, member);

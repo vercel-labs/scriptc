@@ -169,6 +169,65 @@ test("versioning is bounded and requires an integer consumer", () => {
   expect(matchIntegerCountedForLoop(counted(number(4)), locals)?.guarded).toBe(false);
 });
 
+test("an index through a constant body temp is integer work", () => {
+  const withBytes = new Map(locals);
+  withBytes.set("data", {
+    id: "data",
+    name: "data",
+    type: { kind: "bytes", elem: "f64" },
+    mutable: false,
+  });
+  withBytes.set("at", { id: "at", name: "at", type: F64, mutable: false });
+  const strided = (mutableAt: boolean): IrStmt & { kind: "for" } => {
+    const s = counted(number(4));
+    s.body = [
+      {
+        kind: "varDecl",
+        localId: "at",
+        init: { kind: "bin", op: "*", left: ref("i"), right: number(7), type: F64, loc },
+        loc,
+      },
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "bytesIntrinsic",
+          method: "get",
+          receiver: { kind: "varRef", localId: "data", type: { kind: "bytes", elem: "f64" }, loc },
+          args: [ref("at")],
+          type: F64,
+          loc,
+        },
+        loc,
+      },
+    ];
+    if (mutableAt) withBytes.set("at", { ...withBytes.get("at")!, mutable: true });
+    return s;
+  };
+  // `data[at]` with `const at = i * 7` indexes at the counter.
+  expect(matchIntegerCountedForLoop(strided(false), withBytes)?.localId).toBe("i");
+  // A temp the body may rewrite does not stand for its initializer.
+  withBytes.set("at", { ...withBytes.get("at")!, mutable: true });
+  expect(matchIntegerCountedForLoop(strided(false), withBytes)).toBeNull();
+  withBytes.set("at", { ...withBytes.get("at")!, mutable: false });
+  // Nor does one the body assigns after declaring it.
+  const assigned = strided(false);
+  assigned.body.push({ kind: "assign", localId: "at", value: number(0), loc });
+  expect(matchIntegerCountedForLoop(assigned, withBytes)).toBeNull();
+  // A temp whose initializer reads itself ends the chain instead of
+  // unfolding forever.
+  const selfReading = strided(false);
+  selfReading.body = [
+    {
+      kind: "varDecl",
+      localId: "at",
+      init: { kind: "bin", op: "*", left: ref("at"), right: number(7), type: F64, loc },
+      loc,
+    },
+    selfReading.body[1]!,
+  ];
+  expect(matchIntegerCountedForLoop(selfReading, withBytes)).toBeNull();
+});
+
 test("a limit that multiplies loop-invariant values is a stable bound", () => {
   const withRows = new Map(locals);
   withRows.set("rows", { id: "rows", name: "rows", type: F64, mutable: false });

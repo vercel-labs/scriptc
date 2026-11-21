@@ -12,9 +12,9 @@ import {
 
 type Entry = { platform: string; helper?: string; llvm_dist?: string };
 const release = load(
-  readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8"),
+  readFileSync(new URL("../../.github/workflows/release-build.yml", import.meta.url), "utf8"),
 ) as { jobs: Record<string, { strategy?: { matrix?: { include?: Entry[] } } }> };
-const entries = release.jobs["build-native-packages"]!.strategy!.matrix!.include!;
+const entries = release.jobs["native"]!.strategy!.matrix!.include!;
 
 const saved = { ...process.env };
 afterEach(() => {

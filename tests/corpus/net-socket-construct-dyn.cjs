@@ -19,7 +19,9 @@ const idle = () =>
     console.log("idle", describe(new net.Socket()));
     console.log("half open", describe(new net.Socket({ allowHalfOpen: true })));
     const controller = new AbortController();
-    const signalled = new net.Socket({ signal: controller.signal });
+    /* the signal arrives through a spread: the construction must still arm it */
+    const spread = { signal: controller.signal };
+    const signalled = new net.Socket({ ...spread });
     /* the listener joins after abort(): Node's deferred error reaches it */
     controller.abort();
     signalled.on("error", (error) => {

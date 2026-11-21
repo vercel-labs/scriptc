@@ -6449,7 +6449,9 @@ export function lowerNetSocketNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
         (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
           ? p.name.text
           : null;
-      hasSignal = node.properties.nodes.some((p) => nameOf(p) === "signal");
+      /* a spread or a computed name may carry a signal the lowering cannot
+       * see, so both keep the helper reference (and its runtime unit) */
+      hasSignal = node.properties.nodes.some((p) => nameOf(p) === "signal" || nameOf(p) === null);
       for (const p of node.properties.nodes) {
         const name = nameOf(p);
         if (name !== null && name !== "allowHalfOpen" && name !== "signal") {

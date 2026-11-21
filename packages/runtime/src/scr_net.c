@@ -3387,6 +3387,7 @@ static void scr_net_sock_dial_peer(ScrNetSocket *s) {
     return;
   }
   s->fd = fd;
+  scr_net_sock_touch(s); /* a timeout set before connect() starts now */
   int rc = connect(fd, sa, salen);
   if (rc == 0) {
     /* Immediate success (loopback can): still async — the write filter
@@ -5124,6 +5125,7 @@ static void scr_net_sock_dial_unix(ScrNetSocket *s) {
     }
     scr_net_nonblock(fd);
     s->fd = fd;
+    scr_net_sock_touch(s); /* a timeout set before connect() starts now */
     if (connect(fd, (struct sockaddr *)&sa, sizeof sa) == 0 || errno == EINPROGRESS) {
       s->connecting = true;
       scr_net_sock_update_write(s);
@@ -5500,6 +5502,7 @@ static bool scr_net_sock_dial_ip(ScrNetSocket *s, const ScrStr *ip) {
   if (rc == 0 || errno == EINPROGRESS) {
     s->fd = fd;
     s->connecting = true;
+    scr_net_sock_touch(s); /* a timeout set before connect() starts now */
     scr_net_sock_update_write(s);
     if (s->dial_i < s->dial_n) scr_net_attempt_arm(s);
     else scr_net_attempt_cancel(s);
@@ -6186,9 +6189,13 @@ bool scr_net_sock_readable(ScrNetSocket *s) {
  * clock at the call — connecting time counts), ms <= 0 disables. */
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms) {
   s->timeout_ever = true;
-  if (ms > 0 && s->fd >= 0) {
+  if (ms > 0) {
+    /* the value is kept even without a descriptor: a socket configured
+     * before connect() keeps its deadline, which the dial arms as soon as
+     * the connection starts (so connecting time counts too) */
     s->timeout_ms = ms;
-    scr_net_sock_timer_arm(s);
+    if (s->fd >= 0) scr_net_sock_timer_arm(s);
+    else scr_net_sock_timer_cancel(s);
   } else {
     s->timeout_ms = 0;
     scr_net_sock_timer_cancel(s);

@@ -105,6 +105,11 @@ ScrStr *scr_strdec_encoding_value(const ScrDyn *enc);
 /* util.format(...pack) and util.formatWithOptions(options, ...pack) over a
  * dyn array of the arguments (+1). */
 ScrStr *scr_insp_format_pack(ScrDyn *pack);
+/* The same over a private copy of the pack's elements: a published console
+ * argument array can be retained by a subscriber and mutated from a value's
+ * toString or inspect hook while the formatter runs, so the formatter must
+ * not borrow that array's element vector. */
+ScrStr *scr_insp_format_pack_snapshot(ScrDyn *pack);
 /* util.format over a native list of checked values, the compiled calls'
  * held arguments (+1). */
 struct ScrArr;

@@ -344,6 +344,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // The runtime formatter calls toString, valueOf and toJSON, and refuses
   // renderings it has no lowering for.
   "insp.format",
+  "insp.formatSnapshot",
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
@@ -719,6 +720,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.wrap",
   "stream.wrapDyn",
   "webstream.writableFromWeb",
+  "webstream.writableFromWebOpts",
   "webstream.duplexFromWeb",
   "stream.destroy",
   "stream.destroyErr",
@@ -811,6 +813,11 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
+  // Histogram inference validates the confidence option and the other
+  // histogram before the readings are computed.
+  "perf.histoConfidence",
+  "perf.histoPercentileArg",
+  "perf.histoOther",
   // createHistogram's options and RecordableHistogram's record forms: Node's
   // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
   "perf.histoNew",

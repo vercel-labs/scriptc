@@ -37,7 +37,7 @@ import {
   recordTextCodecClass,
   typeEquals,
 } from "../../../ir/ir.js";
-import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { isNodeModuleHandle, lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { builtinImportBindingByName } from "../builtins/module-bindings.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
@@ -492,7 +492,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     }
-    if (local.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr))
+    // A binding whose storage holds a CommonJS Module view reads that view:
+    // the checker's module type is the numeric handle, which cannot hold the
+    // object Node stores.
+    if (
+      local.type.kind === "dyn" &&
+      (isJsWidenedBinding(lowerer, expr) || isNodeModuleHandle(lowerer, expr))
+    )
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     const narrowed = lowerer.maybeNarrow(
       { kind: "varRef", localId: local.id, type: local.type, loc },
@@ -622,7 +628,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (use?.kind === "call") return runtimeOptionalReceiverRead(lowerer, expr, g, null, loc);
       return ref;
     }
-    if (g.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr)) return ref;
+    if (
+      g.type.kind === "dyn" &&
+      (isJsWidenedBinding(lowerer, expr) || isNodeModuleHandle(lowerer, expr))
+    )
+      return ref;
     return lowerer.maybeNarrow(ref, expr);
   }
   // `undefined` — tsc's intrinsic global (a local shadowing the name

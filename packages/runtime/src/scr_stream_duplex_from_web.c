@@ -314,9 +314,13 @@ static void sdfw_await(SdfwCtx *c, ScrDyn *result, int which) {
 
 /* _write: writer.write(chunk) */
 static void sdfw_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
-  (void)s;
   SdfwCtx *c = sdfw_of(cb);
-  ScrDyn *value = scr_dyn_new_bytes(chunk);
+  /* A typed record arrives as the record with the write's descriptor; an
+   * object-mode or decodeStrings: false side arrives as a dyn value. */
+  const ScrStreamTypedDesc *typed = scr_stream_write_desc(s);
+  ScrDyn *value = typed != NULL ? typed->box((void *)chunk)
+                  : scr_stream_writes_values(s) ? scr_dyn_retain((ScrDyn *)chunk)
+                                                : scr_dyn_new_bytes(chunk);
   ScrDyn *result = NULL;
   if (c->writer) result = scr_dyn_invoke(c->writer, "write", &value, 1, "writer.write");
   scr_dyn_release(value);
@@ -416,17 +420,94 @@ static void sdfw_closed_settle(SdfwCtx *c, ScrDyn *reason) {
   if (scr_exc_pending()) scr_exc_clear();
 }
 
-/* Duplex.fromWeb({ readable, writable }): the Duplex (+1), or NULL with
- * ERR_INVALID_ARG_TYPE pending for a pair whose members are not web streams.
- * The options (allowHalfOpen, objectMode, encoding, decodeStrings,
- * highWaterMark, signal) have no lowering. */
-ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
-  (void)flags;
+/* The resolver the events unit installs for a signal's abort listener, so an
+ * earlier listener's stopImmediatePropagation does not skip it (Node's
+ * kResistStopPropagation). */
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
+    __attribute__((weak));
+
+/* Destroy the duplex now with Node's AbortError whose cause is the signal's
+ * reason. */
+static void sdfw_destroy_aborted(ScrStream *d, ScrDyn *signal) {
+  ScrDyn *reason = scr_dyn_obj_read(signal, "reason", 6);
+  ScrError *aborted = scr_error_abort(reason); /* +1; reason borrowed */
+  if (aborted) {
+    ScrStream *destroyed = scr_stream_destroy(d, aborted);
+    if (destroyed) scr_stream_release(destroyed);
+    scr_error_release(aborted);
+  }
+  if (reason) scr_dyn_release(reason);
+  if (scr_exc_pending()) scr_exc_clear();
+}
+
+/* The fallback when the events unit is not linked: the signal's own
+ * addEventListener destroys the duplex when it fires. */
+static ScrDyn *sdfw_on_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrStream *d = scr_box_get_ref(cl->caps[0]); /* +1 */
+  ScrDyn *signal = scr_box_get_ref(cl->caps[1]); /* +1 */
+  if (d && signal) sdfw_destroy_aborted(d, signal);
+  if (signal) scr_dyn_release(signal);
+  if (d) scr_stream_release(d);
+  return scr_dyn_undefined();
+}
+
+/* The option's signal: the runtime's addAbortSignal when the events unit is
+ * linked, the signal's own listener otherwise. */
+static void sdfw_attach_signal(ScrStream *d, ScrDyn *signal) {
+  if (scr_events_add_abort_listener != NULL) {
+    ScrStream *attached =
+        scr_stream_add_abort_signal(d, signal, true, scr_events_add_abort_listener);
+    if (attached) scr_stream_release(attached);
+    else if (scr_exc_pending()) scr_exc_clear();
+    return;
+  }
+  ScrDyn *aborted = scr_dyn_obj_read(signal, "aborted", 7);
+  bool is_aborted = scr_dyn_truthy(aborted);
+  if (aborted) scr_dyn_release(aborted);
+  if (is_aborted) {
+    sdfw_destroy_aborted(d, signal);
+    return;
+  }
+  ScrClosure *clo = scr_closure_new((void *)&sdfw_on_abort, 2);
+  clo->caps[0] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, NULL);
+  scr_box_set_ref(clo->caps[0], scr_stream_retain(d));
+  clo->caps[1] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  scr_box_set_ref(clo->caps[1], scr_dyn_retain(signal));
+  ScrDyn *listener = scr_dyn_new_func(clo, &sdfw_on_abort, 1, "(event)", "onAbort");
+  ScrStr *abort_name = scr_str_new("abort", 5);
+  ScrDyn *name = scr_dyn_new_str(abort_name);
+  ScrDyn *args[2] = {name, listener};
+  ScrDyn *result = scr_dyn_invoke(signal, "addEventListener", args, 2, "addEventListener");
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(name);
+  scr_str_release(abort_name);
+  scr_dyn_release(listener);
+  if (scr_exc_pending()) scr_exc_clear();
+}
+
+/* Duplex.fromWeb({ readable, writable }[, options]): the Duplex (+1), or NULL
+ * with ERR_INVALID_ARG_TYPE pending for a pair whose members are not web
+ * streams. flags: bit 1 allowHalfOpen, bit 2 objectMode, bit 4
+ * decodeStrings: false; hwm < 0 takes the default; encoding is NULL when
+ * absent; signal may be NULL. */
+static ScrStream *sdfw_build(ScrDyn *pair, double flags, double hwm, ScrDyn *signal,
+                             ScrStr *encoding) {
   /* Node's validateObject(pair, 'pair'), then validateReadableStream and
    * validateWritableStream over the pair's members. */
   if (!pair || !scr_dyn_is_object(pair)) {
     scr_dyn_arg_type_fail("pair", "of type object", pair ? pair : scr_dyn_undefined());
     return NULL;
+  }
+  if (signal && signal->kind != SCR_DYN_UNDEF && signal->kind != SCR_DYN_NULL) {
+    ScrDyn *aborted = scr_dyn_obj_read(signal, "aborted", 7);
+    if (aborted == NULL || aborted->kind == SCR_DYN_UNDEF) {
+      if (aborted) scr_dyn_release(aborted);
+      scr_dyn_arg_type_fail("signal", "an instance of AbortSignal", signal);
+      return NULL;
+    }
+    scr_dyn_release(aborted);
   }
   ScrDyn *readable = scr_dyn_obj_read(pair, "readable", 8);
   bool readable_ok = readable && readable->kind == SCR_DYN_HANDLE &&
@@ -467,11 +548,20 @@ ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
   c->reader = reader;
   c->writer = writer;
   ScrStream *d = scr_stream_new_duplex(
-      -1, -1, true, true, false, true, true, sdfw_closure((void *)&sdfw_read_inv, c),
+      hwm, hwm, true, true, ((int)flags & 1) != 0, true, true,
+      sdfw_closure((void *)&sdfw_read_inv, c),
       &sdfw_read_inv, sdfw_closure((void *)&sdfw_write_inv, c), &sdfw_write_inv,
       sdfw_closure((void *)&sdfw_final_inv, c), &sdfw_final_inv,
       sdfw_closure((void *)&sdfw_destroy_inv, c), &sdfw_destroy_inv);
   c->duplex = scr_stream_retain(d);
+  if (((int)flags & 2) != 0) scr_stream_set_object_mode(d, true, true);
+  if (((int)flags & 4) != 0) scr_stream_set_decode_strings(d, false);
+  if (encoding != NULL && encoding->len > 0) {
+    ScrStream *decoded = scr_stream_set_encoding(d, encoding);
+    if (decoded) scr_stream_release(decoded);
+    ScrStream *named = scr_stream_set_encoding_name(d, encoding);
+    if (named) scr_stream_release(named);
+  }
   static SCR_TL bool registered = false;
   if (!registered) {
     registered = true;
@@ -482,6 +572,17 @@ ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
   sdfw_live = c;
   sdfw_watch_closed(writer, c, SDFW_WATCH_WRITER_CLOSED);
   sdfw_watch_closed(reader, c, SDFW_WATCH_READER_CLOSED);
+  if (signal && signal->kind != SCR_DYN_UNDEF && signal->kind != SCR_DYN_NULL)
+    sdfw_attach_signal(d, signal);
   sdfw_unref(c);
   return d;
+}
+
+ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
+  return sdfw_build(pair, flags, -1, NULL, NULL);
+}
+
+ScrStream *scr_stream_duplex_from_web_opts(ScrDyn *pair, double flags, double hwm,
+                                           ScrDyn *signal, ScrStr *encoding) {
+  return sdfw_build(pair, flags, hwm, signal, encoding);
 }

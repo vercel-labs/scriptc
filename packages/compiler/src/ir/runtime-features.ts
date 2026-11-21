@@ -386,6 +386,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebDuplexDyn",
   "readable.iterator",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -482,6 +483,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebDuplexDyn",
   "readable.iterator",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -2026,6 +2028,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
@@ -2404,6 +2407,7 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.

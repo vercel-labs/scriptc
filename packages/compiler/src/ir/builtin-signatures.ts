@@ -3671,6 +3671,10 @@ function buildLibFnSignatures() {
     "http2.streamClosed": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamAborted": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamPending": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    "http2.streamEndAfterHeaders": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    "http2.streamBufferSize": { argTypes: [HTTP2STREAM_T], result: F64 },
+    "http2.reqAuthority": { argTypes: [HTTPREQ_T], result: STRING },
+    "http2.reqScheme": { argTypes: [HTTPREQ_T], result: STRING },
     "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
     // Http2ServerRequest.complete: true once aborted, ended or closed.
     "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },

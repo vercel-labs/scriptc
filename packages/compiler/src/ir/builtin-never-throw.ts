@@ -199,6 +199,10 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Reads of the session's, the stream's or the request's state bits.
   "http2.sessionConnecting",
   "http2.streamHeadersSent",
+  "http2.streamEndAfterHeaders",
+  "http2.streamBufferSize",
+  "http2.reqAuthority",
+  "http2.reqScheme",
   "http2.reqComplete",
   // The default settings packed: there is no record to validate.
   "http2.getPackedSettings0",

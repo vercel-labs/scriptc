@@ -673,13 +673,24 @@ export function lowerPrototypeReflectionCall(
   if (
     object.kind === "dynFrom" &&
     (object.value.type.kind === "record" || object.value.type.kind === "array")
-  ) {
+  )
     object.liveRef = true;
-    // The array keeps the prototype on its own metadata, and the reference
-    // is only visible to the collector when the array carries the header:
-    // the kinds the program prototypes are stamped before the program runs.
-    if (member === "setPrototypeOf" && object.value.type.kind === "array")
-      lowerer.prototypeArrayKinds.add(arrayElemKindNumber(object.value.type.elem));
+  // The array keeps the prototype on its own metadata, and the reference is
+  // only visible to the collector when the array carries the header: the
+  // kinds the program prototypes are stamped before the program runs. A
+  // receiver held as a checked-dynamic value (or a union that can hold an
+  // array) can be an array of any kind, so every kind is stamped.
+  if (member === "setPrototypeOf") {
+    const receiverType = object.kind === "dynFrom" ? object.value.type : null;
+    if (receiverType?.kind === "array")
+      lowerer.prototypeArrayKinds.add(arrayElemKindNumber(receiverType.elem));
+    else if (
+      receiverType === null ||
+      (receiverType.kind === "union" &&
+        (lowerer.unions.get(receiverType.unionId)?.arms.some((arm) => arm.kind === "array") ??
+          false))
+    )
+      for (const kind of [0, 1, 2, 3, 4, 5]) lowerer.prototypeArrayKinds.add(kind);
   }
   if (member === "getPrototypeOf") {
     let parent: ts.Node | undefined = call.parent;

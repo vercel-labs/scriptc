@@ -2904,7 +2904,13 @@ export class LlEmitter {
     this.tracedShapes = traced.shapes;
     this.tracedUnions = traced.unions;
     this.forcedCyclicArrayKinds = new Set(mod.prototypeOverrideArrayKinds ?? []);
-    this.prototypeOverrideShapes = prototypeOverrides(mod).shapes;
+    const prototypeOverride = prototypeOverrides(mod);
+    // A receiver held as a checked-dynamic value can be a record of any
+    // shape: every shape carries the hidden prototype slot, so the pointer
+    // the runtime stores is the record's own edge whatever it is.
+    this.prototypeOverrideShapes = prototypeOverride.allRecords
+      ? new Set([...prototypeOverride.shapes, ...(mod.records ?? []).map((shape) => shape.id)])
+      : prototypeOverride.shapes;
     // A receiver of Object.setPrototypeOf holds the prototype's reference in
     // its own hidden slot: the object carries a collector header so the edge
     // (and a prototype whose closure captures the receiver) is walked.

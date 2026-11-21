@@ -44,9 +44,16 @@ import { weakKeyUnits } from "./weak-keys.js";
  * must be traced for the collector to walk the edge and reclaim a prototype
  * whose closure captures the receiver; the emitter adds these shapes to the
  * traced set and emits the slot (llvm/shapes.ts recordPrototypeIndex). */
-export function prototypeOverrides(mod: IrModule): { shapes: Set<string>; arrays: boolean } {
+export function prototypeOverrides(mod: IrModule): {
+  shapes: Set<string>;
+  arrays: boolean;
+  /** Some call's receiver is held as a checked-dynamic (or union) value: any
+   * record shape can arrive, so every shape needs the hidden slot. */
+  allRecords: boolean;
+} {
   const shapes = new Set<string>();
   let arrays = false;
+  let allRecords = false;
   const seen = new WeakSet<object>();
   const scan = (value: unknown): void => {
     if (typeof value !== "object" || value === null) return;
@@ -58,15 +65,19 @@ export function prototypeOverrides(mod: IrModule): { shapes: Set<string>; arrays
     }
     const node = value as { kind?: unknown; fn?: unknown; args?: unknown };
     if (node.kind === "libCall" && node.fn === "dyn.setPrototype" && Array.isArray(node.args)) {
-      const receiver = node.args[0] as { kind?: unknown; value?: { type?: IrType } } | undefined;
-      const type = receiver?.kind === "dynFrom" ? receiver.value?.type : undefined;
+      const receiver = node.args[0] as
+        | { kind?: unknown; type?: IrType; value?: { type?: IrType } }
+        | undefined;
+      const type = receiver?.kind === "dynFrom" ? receiver.value?.type : receiver?.type;
       if (type?.kind === "record") shapes.add(type.shapeId);
-      if (type?.kind === "array") arrays = true;
+      else if (type?.kind === "array") arrays = true;
+      else if (type === undefined || type.kind === "dyn" || type.kind === "union")
+        allRecords = true;
     }
     for (const key of Object.keys(value)) scan((value as Record<string, unknown>)[key]);
   };
   scan(mod);
-  return { shapes, arrays };
+  return { shapes, arrays, allRecords };
 }
 
 export function computeTraced(

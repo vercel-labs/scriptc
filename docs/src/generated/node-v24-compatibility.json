@@ -12124,9 +12124,9 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "detail": "Explicitly rejected by a named compiler diagnostic.",
-        "verification": "explicit-refusal"
+        "status": "supported",
+        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "verification": "test-backed"
       }
     },
     {

@@ -822,14 +822,6 @@
       "status": "static"
     },
     {
-      "id": "node-builtin.crypto.setFips",
-      "kind": "node-builtin",
-      "name": "crypto.setFips",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) in a non-FIPS build — getFips() answers 0 here"
-    },
-    {
       "id": "node-builtin.crypto.sign",
       "kind": "node-builtin",
       "name": "crypto.sign",

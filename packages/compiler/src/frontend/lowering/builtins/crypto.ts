@@ -1189,7 +1189,7 @@ export function lowerCryptoModuleCall(
     lowerer.noLowering(`crypto.${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
   }
   if (bi.member === "getFips") {
-    return { kind: "numLit", value: 0, type: F64, loc };
+    return { kind: "libCall", fn: "crypto.getFips", args: [], type: F64, loc };
   }
   return {
     kind: "arrayLit",
@@ -1856,6 +1856,7 @@ function lowerPkiCall(
     createSign: ["crypto.createSign", 0, 2, "createSign(algorithm[, options])"],
     createVerify: ["crypto.createVerify", 0, 2, "createVerify(algorithm[, options])"],
     setEngine: ["crypto.setEngine", 1, 2, "setEngine(engine[, flags])"],
+    setFips: ["crypto.setFips", 1, 1, "setFips(fips)"],
   };
   const form = forms[member];
   if (!form) return null;
@@ -1924,7 +1925,11 @@ function lowerPkiCall(
   // options position as the callback, as Node does.
   const values: IrExpr[] = [];
   for (let i = 0; i < max; i++) values.push(dynArg(lowerer, args[i], loc));
-  if (baseFn === "crypto.generateKeyPairCb" || baseFn === "crypto.setEngine")
+  if (
+    baseFn === "crypto.generateKeyPairCb" ||
+    baseFn === "crypto.setEngine" ||
+    baseFn === "crypto.setFips"
+  )
     return { kind: "libCall", fn: baseFn, args: values, type: VOID, loc };
   return pkiResult(lowerer, expr, { kind: "libCall", fn: baseFn, args: values, type: DYN, loc });
 }

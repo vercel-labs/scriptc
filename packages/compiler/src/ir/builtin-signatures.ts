@@ -7371,6 +7371,8 @@ function buildLibFnSignatures() {
      * crypto.fips read, which reports DEP0093 once per process. */
     "crypto.setEngine": { argTypes: [DYN, DYN], result: VOID },
     "crypto.fipsGet": { argTypes: [], result: F64 },
+    "crypto.getFips": { argTypes: [], result: F64 },
+    "crypto.setFips": { argTypes: [DYN], result: VOID },
     "crypto.createSign": { argTypes: [DYN, DYN], result: DYN },
     "crypto.createVerify": { argTypes: [DYN, DYN], result: DYN },
     /** The Buffer brand of a Uint8Array source onto a fresh Uint8Array

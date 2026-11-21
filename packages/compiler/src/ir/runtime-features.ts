@@ -1146,6 +1146,8 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.secureHeapUsed",
   "crypto.setEngine",
   "crypto.fipsGet",
+  "crypto.getFips",
+  "crypto.setFips",
   "crypto.x509PublicKey",
   "crypto.x509Verify",
   "crypto.x509CheckPrivateKey",

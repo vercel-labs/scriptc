@@ -16,6 +16,7 @@
 #include "scr_runtime.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6152,6 +6153,13 @@ void scr_crypto_set_engine(ScrDyn *engine, ScrDyn *flags) {
   sp_throw_engine_unknown(id);
 }
 
+/* The FIPS flag crypto.setFips stores and crypto.getFips reads. Node's
+ * setFips in a build without a FIPS provider only records the requested
+ * state: the C-level FIPS mode is not switched, and getFips reports the
+ * flag. Workers read the process-wide flag, so it is atomic; only the main
+ * context writes it (a worker's setFips throws). */
+static atomic_bool sp_fips_enabled = false;
+
 /* crypto.fips is getFips() behind a deprecation wrapper: the DEP0093
  * report is emitted once per process, at the first read. */
 double scr_crypto_fips_get(void) {
@@ -6163,7 +6171,36 @@ double scr_crypto_fips_get(void) {
     scr_emit_warning("DeprecationWarning", "DEP0093", message);
     scr_str_release(message);
   }
-  return 0;
+  return atomic_load_explicit(&sp_fips_enabled, memory_order_relaxed) ? 1 : 0;
+}
+
+/* crypto.getFips(): the flag, without the deprecation report. */
+double scr_crypto_fips_get_quiet(void) {
+  return atomic_load_explicit(&sp_fips_enabled, memory_order_relaxed) ? 1 : 0;
+}
+
+/* crypto.setFips(fips): the argument's truthiness becomes the flag; the
+ * call answers undefined. Node refuses it in a worker, where the flag is
+ * shared with the main context. */
+void scr_crypto_fips_set(ScrDyn *value) {
+#ifdef SCR_WORKERS
+  if (!scr_context_is_main()) {
+    static const char message[] = "Calling crypto.setFips() is not supported in workers";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
+                             "ERR_WORKER_UNSUPPORTED_OPERATION");
+    return;
+  }
+#endif
+  /* This build links a static mbedTLS with no FIPS-validated provider,
+   * so FIPS mode cannot be switched on: Node refuses in a non-FIPS build
+   * rather than reporting a mode nothing enforces. */
+  if (scr_dyn_truthy(value)) {
+    static const char message[] = "Cannot set FIPS mode in a non-FIPS build.";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1,
+                             "ERR_CRYPTO_FIPS_UNAVAILABLE");
+    return;
+  }
+  atomic_store_explicit(&sp_fips_enabled, false, memory_order_relaxed);
 }
 
 /* ── Sign and Verify objects ──────────────────────────────────────────── */

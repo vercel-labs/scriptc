@@ -20517,6 +20517,8 @@
           "tests/corpus/crypto-dep0203-warning-override.cjs",
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/crypto-fips-deprecated.cjs",
+          "tests/corpus/crypto-fips-flag-deprecated.cjs",
+          "tests/corpus/crypto-fips-flag.ts",
           "tests/corpus/crypto-fips-namespace.mjs",
           "tests/corpus/crypto-introspection.ts",
           "tests/corpus/crypto-kdf-arguments.cjs",
@@ -22556,7 +22558,9 @@
         "status": "supported",
         "evidence": "compiler-dedicated:crypto.setEngine",
         "tests": [
-          "tests/corpus/crypto-introspection.ts"
+          "tests/corpus/crypto-introspection.ts",
+          "tests/corpus/crypto-fips-flag.ts",
+          "tests/corpus/crypto-fips-flag-deprecated.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -22579,8 +22583,13 @@
         "inherited": true
       },
       "static": {
-        "status": "refused",
-        "evidence": "surface-manifest:unsupported:node-builtin.crypto.setFips"
+        "status": "supported",
+        "evidence": "compiler-dedicated:crypto.setFips",
+        "tests": [
+          "tests/corpus/crypto-introspection.ts",
+          "tests/corpus/crypto-fips-flag.ts",
+          "tests/corpus/crypto-fips-flag-deprecated.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

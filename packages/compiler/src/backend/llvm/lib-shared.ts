@@ -1654,6 +1654,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "crypto.publicDecrypt": "scr_crypto_public_decrypt",
   "crypto.setEngine": "scr_crypto_set_engine",
   "crypto.fipsGet": "scr_crypto_fips_get",
+  "crypto.getFips": "scr_crypto_fips_get_quiet",
+  "crypto.setFips": "scr_crypto_fips_set",
   "crypto.createSign": "scr_crypto_create_sign",
   "crypto.createVerify": "scr_crypto_create_verify",
   "crypto.x509Raw": "scr_crypto_x509_raw",
